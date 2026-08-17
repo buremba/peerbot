@@ -25,7 +25,10 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
-import { invalidateOrgAcl } from "../authz/acl-generation";
+import {
+	invalidateOrgAcl,
+	lockOrgForAclInvalidation,
+} from "../authz/acl-generation";
 import { type DbClient, getDb, pgBigintArray } from "../db/client";
 import { mergeEntityState } from "../entity-resolution/merge-state";
 import {
@@ -102,6 +105,12 @@ export async function applyMergeGroupInTransaction(
 		throw new Error("applyMergeGroup: canonical entity is also a duplicate");
   }
 
+  // The organization outranks the entities: this transaction bumps the org
+  // generation after locking entity rows, while organization deletion locks the
+  // org and then cascades into `entities`. Claim the parent first or the two
+  // deadlock.
+  await lockOrgForAclInvalidation(tx, params.orgId);
+
   // Lock the whole group in one global order before applying any member. Pairwise
   // locking inside the loop is not sufficient: overlapping groups with different
   // winners can otherwise each hold one entity while waiting for the other.
@@ -143,6 +152,11 @@ export async function applyMergeGroupInTransaction(
     movedIdentities += result.movedIdentities;
     repointedEdges += result.repointedEdges;
   }
+  // ONCE for the whole group, not once per loser. The invalidation is org-wide
+  // and idempotent within a transaction, so a 100-loser group doing 100 bumps
+  // and 100 org-wide state updates buys nothing and multiplies the write cost
+  // and the row-lock hold time by 100.
+  await invalidateOrgAcl(tx, params.orgId);
   return { mergedEntityIds: loserIds, movedIdentities, repointedEdges };
 }
 
@@ -156,7 +170,15 @@ export async function applyMerge(
   params: ApplyMergeParams,
   db: DbClient = getDb(),
 ): Promise<ApplyMergeResult> {
-	return db.begin((tx) => applyMergeInTransaction(params, tx));
+	// Invalidation lives with the transaction OWNER, not inside
+	// `applyMergeInTransaction`, so the group path can invalidate once for all its
+	// losers instead of once each.
+	return db.begin(async (tx) => {
+		await lockOrgForAclInvalidation(tx, params.orgId);
+		const result = await applyMergeInTransaction(params, tx);
+		await invalidateOrgAcl(tx, params.orgId);
+		return result;
+	});
 }
 
 async function applyMergeInTransaction(
@@ -329,11 +351,6 @@ async function applyMergeInTransaction(
         AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
     `;
   });
-  // Keep the projection untrusted until a post-merge sync completes. Merely
-  // skipping an older sync's stamp is insufficient when the existing state row
-  // is already fresh.
-  await invalidateOrgAcl(tx, orgId);
-
   // 3. Tombstone loser edges that would become self-loops or collide with an
   //    existing winner edge. This must happen before repointing: the live-edge
   //    unique index rejects the collision during UPDATE, before a later cleanup
@@ -534,6 +551,7 @@ export async function applyUnmerge(
   const { orgId, loserId, unmergedBy } = params;
 
   return db.begin(async (tx) => {
+    await lockOrgForAclInvalidation(tx, orgId);
     // Discover the winner WITHOUT locking first: we can't name the winner until
     // we read merged_into, but taking the loser's lock here would grab the
     // loser's row before the winner's — inverting applyMerge's lowest-id-first

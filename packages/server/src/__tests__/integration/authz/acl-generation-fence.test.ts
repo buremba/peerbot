@@ -55,6 +55,14 @@ describe("ACL generation fence", () => {
 		return { loserId: loser.id, winnerId: winner.id };
 	}
 
+	/** Stamp with a fence captured right now — the ordinary uncontended case. */
+	async function stampFresh(): Promise<void> {
+		await markAclFresh(orgId, connectionId, {
+			startedAt: await syncCutoff(),
+			generation: await observeGeneration(),
+		});
+	}
+
 	async function syncCutoff(): Promise<string> {
 		const sql = getDb();
 		const rows = await sql<{ now: string }>`
@@ -84,7 +92,7 @@ describe("ACL generation fence", () => {
 	it("stamps fresh when nothing invalidated mid-sync", async () => {
 		const generation = await observeGeneration();
 		const cutoff = await syncCutoff();
-		await markAclFresh(orgId, connectionId, cutoff, generation);
+		await markAclFresh(orgId, connectionId, { startedAt: cutoff, generation });
 		expect(await freshnessState()).toBe("fresh");
 	});
 
@@ -97,12 +105,12 @@ describe("ACL generation fence", () => {
 		await getDb().begin(async (tx) => {
 			await bumpAclGeneration(tx, orgId);
 		});
-		await markAclFresh(orgId, connectionId, cutoff, generation);
+		await markAclFresh(orgId, connectionId, { startedAt: cutoff, generation });
 		expect(await freshnessState()).toBeNull();
 	});
 
 	it("refuses to UPDATE an existing row to fresh when a bump landed mid-sync", async () => {
-		await markAclFresh(orgId, connectionId, await syncCutoff(), await observeGeneration());
+		await stampFresh();
 		const sql = getDb();
 		await sql`
       UPDATE authz_source_acl_state SET freshness_state = 'stale'
@@ -114,12 +122,12 @@ describe("ACL generation fence", () => {
 		await getDb().begin(async (tx) => {
 			await bumpAclGeneration(tx, orgId);
 		});
-		await markAclFresh(orgId, connectionId, cutoff, generation);
+		await markAclFresh(orgId, connectionId, { startedAt: cutoff, generation });
 		expect(await freshnessState()).toBe("stale");
 	});
 
 	it("refuses a revocation whose write timestamp precedes the sync but commits afterward", async () => {
-		await markAclFresh(orgId, connectionId, await syncCutoff(), await observeGeneration());
+		await stampFresh();
 		const generation = await observeGeneration();
 
 		let signalInvalidationWritten!: (writtenAt: string) => void;
@@ -156,7 +164,7 @@ describe("ACL generation fence", () => {
 		const [{ cutoff }] = await getDb()<{ cutoff: string }>`
       SELECT (${invalidatedAtWrite}::timestamptz + interval '1 microsecond')::text AS cutoff
     `;
-		const stamping = markAclFresh(orgId, connectionId, cutoff, generation);
+		const stamping = markAclFresh(orgId, connectionId, { startedAt: cutoff, generation });
 		let blockingError: unknown;
 		try {
 			await waitForBlockedGenerationRead();
@@ -183,12 +191,12 @@ describe("ACL generation fence", () => {
 		});
 		const generation = await observeGeneration();
 		const cutoff = await syncCutoff();
-		await markAclFresh(orgId, connectionId, cutoff, generation);
+		await markAclFresh(orgId, connectionId, { startedAt: cutoff, generation });
 		expect(await freshnessState()).toBe("fresh");
 	});
 
 	it("invalidates an in-flight sync when another ACL sync fails", async () => {
-		await markAclFresh(orgId, connectionId, await syncCutoff(), await observeGeneration());
+		await stampFresh();
 		const generation = await observeGeneration();
 		await markConnectionAclFailed(orgId, connectionId, "generation fence test");
 		expect(Number(await observeGeneration())).toBeGreaterThan(Number(generation));
@@ -203,7 +211,7 @@ describe("ACL generation fence", () => {
 
 		it("invalidates on merge", async () => {
 			const { loserId, winnerId } = await seedMergePair();
-			await markAclFresh(orgId, connectionId, await syncCutoff(), await observeGeneration());
+			await stampFresh();
 			const before = await generation();
 			await applyMerge(
 				{ orgId, loserId, winnerId, mergedBy: "generation-test" },
@@ -219,7 +227,7 @@ describe("ACL generation fence", () => {
 				{ orgId, loserId, winnerId, mergedBy: "generation-test" },
 				getDb(),
 			);
-			await markAclFresh(orgId, connectionId, await syncCutoff(), await observeGeneration());
+			await stampFresh();
 			const before = await generation();
 			await applyUnmerge({ orgId, loserId, unmergedBy: "generation-test" }, getDb());
 			expect(await generation()).toBeGreaterThan(before);
@@ -227,17 +235,22 @@ describe("ACL generation fence", () => {
 		});
 	});
 
-	it("keeps stamping for a synthetic org with no organization row", async () => {
-		// Standalone graph tests use synthetic org ids. NULL observed against a
-		// missing row must compare equal, or the materializer silently stops
-		// stamping for every one of them.
+	it("refuses to stamp when the organization row is missing", async () => {
+		// No organization row means no generation to compare, so there is no fence
+		// to satisfy. Publishing anyway would bless a projection whose freshness
+		// cannot be verified, so this fails closed instead. `connections` cascades
+		// from `organization`, so in production this is an orphaned state row or a
+		// job racing org deletion — never a live connection.
 		const syntheticOrg = "org_does_not_exist_generation";
-		await markAclFresh(syntheticOrg, connectionId, await syncCutoff(), null);
+		await markAclFresh(syntheticOrg, connectionId, {
+			startedAt: await syncCutoff(),
+			generation: null,
+		});
 		const sql = getDb();
 		const rows = await sql<{ freshness_state: string }>`
       SELECT freshness_state FROM authz_source_acl_state
       WHERE organization_id = ${syntheticOrg} AND connection_id = ${connectionId}
     `;
-		expect(rows[0]?.freshness_state).toBe("fresh");
+		expect(rows).toHaveLength(0);
 	});
 });

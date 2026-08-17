@@ -64,12 +64,15 @@ export async function markConnectionAclFailed(
 	const sql = getDb();
 	const message = formatAclErrorMessage(reason);
 	await sql.begin(async (tx) => {
-		// Lock the live connection row FIRST and UNCONDITIONALLY. Two reasons:
-		// (1) lock order begins with connections, matching connection deletion and
-		// fresh-state stamping, so a failing sync cannot deadlock against a concurrent
-		// delete; (2) the message UPDATE below is conditional, so a
-		// repeated identical failure would take no row lock at all and could
-		// interleave with `clearConnectionAclError`.
+		// ORGANIZATION FIRST, then connections, then ACL state — the same order as
+		// `markAclFresh` and as organization deletion, whose `ON DELETE CASCADE`
+		// reaches connections while already holding the org row. Bumping after the
+		// connection lock would invert that and deadlock against a concurrent org
+		// delete.
+		await bumpAclGeneration(tx, organizationId);
+		// Then lock the live connection row UNCONDITIONALLY: the message UPDATE
+		// below is conditional, so a repeated identical failure would take no row
+		// lock at all and could interleave with `clearConnectionAclError`.
 		await tx`
       SELECT 1
       FROM connections
@@ -90,8 +93,6 @@ export async function markConnectionAclFailed(
         )
         AND error_message IS DISTINCT FROM ${message}
     `;
-		// Take the generation lock before ACL state, matching `markAclFresh`.
-		await bumpAclGeneration(tx, organizationId);
 		await tx`
       UPDATE authz_source_acl_state
       SET freshness_state = 'failed', updated_at = clock_timestamp()

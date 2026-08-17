@@ -273,7 +273,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps prior external aliases on the external template they originally referenced', async () => {
+  it('serves every external-mapped alias from the external template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     for (const uri of [
       'ui://lobu/interaction/v3.html',

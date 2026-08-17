@@ -196,6 +196,8 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
     'ui://lobu/interaction/v35.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
   ],
+  // v36-v40 were issued to live ChatGPT preview apps while this reload fix
+  // was iterated. ChatGPT caches these immutable URIs, so keep them readable.
   [
     'ui://lobu/interaction/v36.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },

@@ -41,6 +41,7 @@ import { ToolUserError } from "./errors";
 import logger from "./logger";
 import { requireWriteAccess } from "./organization-access";
 import { RESERVED_ENTITY_TYPE_SLUGS } from "./reserved";
+import { invalidateOrgAcl } from "../authz/acl-generation";
 import { withAclPrivilege } from "./relationship-validation";
 
 /** Minimal type shape needed to count stored vs derived entity rows. */
@@ -1357,6 +1358,10 @@ export async function deleteEntity(
              OR to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
         `;
       });
+      // Fail closed until a sync based on the post-delete graph completes. The
+      // generation also fences an older sync that has resolved, but not yet
+      // written, a grant involving one of the deleted entities.
+      await invalidateOrgAcl(tx, ctx.organizationId);
 
       // Canvas-on-events: window_id link rows carry canvas root event ids, so
       // key the cleanup on the denormalized automation_id.

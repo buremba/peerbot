@@ -6,6 +6,7 @@
  */
 
 import { type DbClient, getDb } from "../db/client.js";
+import { bumpAclGeneration } from "./acl-generation.js";
 
 const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
 
@@ -52,8 +53,8 @@ export function aclConnectionIdSql(tableAlias?: "c"): string {
  * `ChatInstanceManager` hydrates chat adapters against (`rowVersion`), so a
  * repeated identical failure would otherwise tear down and rehydrate
  * otherwise-working Slack instances for the length of the outage. The ACL
- * state's own timestamp still advances on every failure: `markAclFresh` uses it
- * as a fence so an older in-flight snapshot cannot overwrite a newer failure.
+ * state's own timestamp and the org generation still advance on every failure,
+ * so an older in-flight snapshot cannot overwrite a newer failure.
  */
 export async function markConnectionAclFailed(
 	organizationId: string,
@@ -64,9 +65,9 @@ export async function markConnectionAclFailed(
 	const message = formatAclErrorMessage(reason);
 	await sql.begin(async (tx) => {
 		// Lock the live connection row FIRST and UNCONDITIONALLY. Two reasons:
-		// (1) lock order is connections → ACL state, matching connection deletion
-		// and fresh-state stamping, so a failing sync cannot deadlock against a
-		// concurrent delete; (2) the message UPDATE below is conditional, so a
+		// (1) lock order begins with connections, matching connection deletion and
+		// fresh-state stamping, so a failing sync cannot deadlock against a concurrent
+		// delete; (2) the message UPDATE below is conditional, so a
 		// repeated identical failure would take no row lock at all and could
 		// interleave with `clearConnectionAclError`.
 		await tx`
@@ -89,6 +90,8 @@ export async function markConnectionAclFailed(
         )
         AND error_message IS DISTINCT FROM ${message}
     `;
+		// Take the generation lock before ACL state, matching `markAclFresh`.
+		await bumpAclGeneration(tx, organizationId);
 		await tx`
       UPDATE authz_source_acl_state
       SET freshness_state = 'failed', updated_at = clock_timestamp()

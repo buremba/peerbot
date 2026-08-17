@@ -321,6 +321,15 @@ describe("authorization-bearing relationship types are not caller-writable", () 
     `;
 		expect(before).toHaveLength(1);
 
+		const [{ acl_generation: generationBefore }] = await sql<{
+			acl_generation: string;
+		}>`SELECT acl_generation::text AS acl_generation FROM organization WHERE id = ${orgId}`;
+		await sql`
+      INSERT INTO authz_source_acl_state
+        (organization_id, connection_id, acl_support, freshness_state)
+      VALUES (${orgId}, 'force-delete-generation', 'full', 'fresh')
+    `;
+
 		await deleteEntity(person, true, env, ctx(orgId, userId));
 
 		const live = await sql`
@@ -328,6 +337,19 @@ describe("authorization-bearing relationship types are not caller-writable", () 
       WHERE relationship_type_id = ${typeId} AND deleted_at IS NULL
     `;
 		expect(live).toHaveLength(0);
+
+		// Dropping the grant must also invalidate any sync already in flight, or it
+		// can stamp the connection fresh over a projection it never saw.
+		const [{ acl_generation: generationAfter }] = await sql<{
+			acl_generation: string;
+		}>`SELECT acl_generation::text AS acl_generation FROM organization WHERE id = ${orgId}`;
+		expect(Number(generationAfter)).toBeGreaterThan(Number(generationBefore));
+		const [{ freshness_state: freshnessAfter }] = await sql<{ freshness_state: string }>`
+      SELECT freshness_state
+      FROM authz_source_acl_state
+      WHERE organization_id = ${orgId} AND connection_id = 'force-delete-generation'
+    `;
+		expect(freshnessAfter).toBe("stale");
 	});
 
 	it("refuses member_of by slug before it is classified", async () => {

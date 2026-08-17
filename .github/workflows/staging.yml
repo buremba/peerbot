@@ -1,0 +1,106 @@
+name: Staging lock
+
+# The 'staging' label pins the rolling staging URL (staging.<tailnet>) to one PR.
+# Adding the label acquires the lock (strips it from other open PRs, moves the
+# staging ingress to this PR's namespace); removing it releases the lock.
+on:
+  pull_request:
+    types: [labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Global: serializes all staging-lock operations so concurrent label changes
+# converge instead of racing.
+concurrency:
+  group: staging-lock
+  cancel-in-progress: true
+
+env:
+  KUBECONFIG: /tmp/kubeconfig
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    if: github.event.label.name == 'staging'
+    env:
+      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
+      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
+      STAGING_INGRESS: lobu-staging
+      STAGING_HOST: staging.${{ vars.TAILNET_DOMAIN }}
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+
+      - name: Release lock (unlabeled)
+        if: github.event.action == 'unlabeled'
+        run: |
+          kubectl delete ingress "$STAGING_INGRESS" -A --ignore-not-found
+          echo "staging lock released (staging.${{ vars.TAILNET_DOMAIN }} no longer mapped)"
+
+      - name: Acquire lock (labeled)
+        if: github.event.action == 'labeled'
+        run: |
+          set -euo pipefail
+          PR_NUM="${{ github.event.pull_request.number }}"
+
+          # Single-holder enforcement: strip the label from every other open PR.
+          for n in $(gh pr list --state open --json number --jq '.[].number'); do
+            if [ "$n" != "$PR_NUM" ] \
+              && gh pr view "$n" --json labels --jq '.labels[].name' | grep -qx staging; then
+              gh pr edit "$n" --remove-label staging
+              echo "stripped staging label from PR #$n"
+            fi
+          done
+
+          # Wait for the preview namespace + service (the preview workflow may
+          # still be building when the label lands).
+          for i in $(seq 1 36); do
+            kubectl get svc "$PREVIEW_NAME" -n "$PREVIEW_NS" >/dev/null 2>&1 && break
+            echo "waiting for $PREVIEW_NAME service... ($i)"
+            sleep 10
+          done
+          kubectl get svc "$PREVIEW_NAME" -n "$PREVIEW_NS" >/dev/null 2>&1 || {
+            echo "preview service $PREVIEW_NAME not found in $PREVIEW_NS" >&2
+            exit 1
+          }
+
+          # Move the staging ingress: delete it from any other namespace.
+          for ns in $(kubectl get ingress "$STAGING_INGRESS" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null); do
+            if [ "$ns" != "$PREVIEW_NS" ]; then
+              kubectl delete ingress "$STAGING_INGRESS" -n "$ns" --ignore-not-found
+              echo "moved staging ingress out of $ns"
+            fi
+          done
+
+          # Pin the staging ingress to this PR's preview.
+          kubectl apply -f - <<EOF
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: $STAGING_INGRESS
+            namespace: $PREVIEW_NS
+          spec:
+            ingressClassName: tailscale
+            tls:
+              - hosts: ["$STAGING_HOST"]
+            rules:
+              - host: $STAGING_HOST
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: $PREVIEW_NAME
+                          port: { number: 80 }
+          EOF
+
+          gh pr comment "$PR_NUM" --body "## Staging URL locked to this PR
+          - **App**: https://$STAGING_HOST
+          - **MCP endpoint**: https://$STAGING_HOST/mcp
+
+          Removing the \`staging\` label releases the lock."
+          echo "staging locked to PR #$PR_NUM at https://$STAGING_HOST"

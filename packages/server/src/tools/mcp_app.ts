@@ -18,7 +18,7 @@ import { getOrgUrlContext } from './view-urls';
 
 // The URI is the host cache key for the immutable template. Bump it whenever
 // the shipped HTML changes; ChatGPT caches both successful and failed fetches.
-export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v35.html';
+export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v36.html';
 
 const TITLE_MAX_LENGTH = 200;
 const BLOCK_MAX_ITEMS = 100;

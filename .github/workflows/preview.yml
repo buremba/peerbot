@@ -87,18 +87,21 @@ jobs:
             --image=${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }} \
             --port=8787
 
+          # The embedded runner binds 127.0.0.1 (HOST below) so /api/local-init
+          # sees a loopback peer. socat accepts external connections on 8788 and
+          # forwards them over loopback to the app on 8787.
           kubectl -n "$PREVIEW_NS" patch deployment "$PREVIEW_NAME" --type='json' -p='[
-            {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["node", "packages/server/dist/server.bundle.mjs"]},
+            {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["sh", "-c", "socat TCP-LISTEN:8788,fork,reuseaddr TCP:127.0.0.1:8787 & exec node packages/server/dist/server.bundle.mjs"]},
             {"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Always"},
             {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
               {"name": "PORT", "value": "8787"},
-              {"name": "HOST", "value": "0.0.0.0"},
+              {"name": "HOST", "value": "127.0.0.1"},
               {"name": "DATABASE_URL", "value": "file:///var/lib/lobu/data/lobu.db"},
               {"name": "NODE_ENV", "value": "development"},
               {"name": "ENCRYPTION_KEY", "valueFrom": {"secretKeyRef": {"name": "preview-encryption", "key": "key"}}}
             ]},
             {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe", "value": {
-              "httpGet": {"path": "/api/health", "port": 8787},
+              "httpGet": {"path": "/api/health", "port": 8788},
               "initialDelaySeconds": 30,
               "periodSeconds": 5,
               "failureThreshold": 30
@@ -118,7 +121,7 @@ jobs:
           kubectl expose deployment "$PREVIEW_NAME" \
             -n "$PREVIEW_NS" \
             --port=80 \
-            --target-port=8787 \
+            --target-port=8788 \
             --type=ClusterIP
 
           cat <<EOF | kubectl apply -f -

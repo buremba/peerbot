@@ -297,9 +297,19 @@ async function ensureDeviceConnectorWired(
     // leave it resolving against raw descriptor fallbacks. `conn_config` is the
     // raw jsonb value (`null` only when the column is SQL NULL), so an empty
     // explicit `{}` still counts as configured. Seeded in wireOnce below.
+    // The predicate gates on the CONNECTION-scoped half of the default
+    // (`splitConfigByFeedScope(…).connectionConfig`), the exact value seeding
+    // can write: a wholly feed-scoped default must not keep a NULL-config
+    // connection spinning the wire path forever. `def_feeds_schema` equals the
+    // manifest feeds on this path (definitionMatchesSource above), so the split
+    // here mirrors the one wireOnce performs; don't re-split against a
+    // different feeds schema, or the gate and the seed stop agreeing.
     const needsDefaultConfigSeed =
       existingReady[0]?.conn_config == null &&
-      Object.keys(parseJsonObject(existingReady[0]?.def_default_config)).length > 0;
+      splitConfigByFeedScope(
+        parseJsonObject(existingReady[0]?.def_default_config),
+        (existingReady[0]?.def_feeds_schema as Record<string, FeedDefinition> | null) ?? null,
+      ).connectionConfig != null;
     const ready =
       readyConnectionId != null &&
       existingReady[0]?.version_key != null &&

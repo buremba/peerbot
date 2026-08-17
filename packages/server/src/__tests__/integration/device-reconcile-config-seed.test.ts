@@ -14,8 +14,9 @@
  * shape (and anything downstream that expects NULL) is untouched.
  */
 
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileDeviceCapabilities } from '../../worker-api/device-reconcile';
+import logger from '../../utils/logger';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization, createTestUser } from '../setup/test-fixtures';
 
@@ -27,7 +28,11 @@ const VERSION = '1.0.0';
 
 const DEFAULT_CONFIG = { action_modes: { upload_file: 'auto' } };
 
-async function seedDefinition(orgId: string, defaultConfig: Record<string, unknown> | null) {
+async function seedDefinition(
+  orgId: string,
+  defaultConfig: Record<string, unknown> | null,
+  feedsSchema: Record<string, unknown> = {}
+) {
   await sql`
     INSERT INTO connector_definitions (
       organization_id, key, name, version, status, required_capability,
@@ -35,7 +40,7 @@ async function seedDefinition(orgId: string, defaultConfig: Record<string, unkno
       default_connection_config
     ) VALUES (
       ${orgId}, ${CONNECTOR}, 'Test Device Config Seed', ${VERSION}, 'active', ${CAPABILITY},
-      ${sql.json({ kind: 'device' })}, ${sql.json({})}, ${sql.json({})},
+      ${sql.json({ platforms: ['macos'] })}, ${sql.json(feedsSchema)}, ${sql.json({})},
       ${sql.json({})}, ${sql.json({})}, ${defaultConfig ? sql.json(defaultConfig) : null}
     )
   `;
@@ -49,6 +54,24 @@ async function seedDefinition(orgId: string, defaultConfig: Record<string, unkno
   `;
 }
 
+async function manifestFor(feeds: Record<string, unknown>): Promise<typeof MANIFEST> {
+  return {
+    key: CONNECTOR,
+    version: VERSION,
+    name: 'Test Device Config Seed',
+    required_capability: CAPABILITY,
+    runtime: { platforms: ['macos'] },
+    // Mirror the definition row the harness seeds so the manifest-matches-
+    // source check (and with it the ready fast path) can actually pass —
+    // without these the wildcard fields fall back to `{ methods: [...none] }`
+    // / null and no poll ever converges to the fast path.
+    auth_schema: {},
+    actions_schema: {},
+    options_schema: {},
+    feeds_schema: feeds,
+  };
+}
+
 const MANIFEST = {
   key: CONNECTOR,
   version: VERSION,
@@ -58,11 +81,16 @@ const MANIFEST = {
   feeds_schema: {},
 };
 
-async function seedWorker(userId: string, orgId: string): Promise<string> {
+async function seedWorker(
+  userId: string,
+  orgId: string,
+  feeds: Record<string, unknown> = {}
+): Promise<string> {
   const workerId = `mac-${Math.random().toString(36).slice(2, 10)}`;
+  const manifest = Object.keys(feeds).length > 0 ? await manifestFor(feeds) : MANIFEST;
   const manifests = {
     [CONNECTOR]: {
-      manifest: MANIFEST,
+      manifest,
       manifest_hash: `hash-${CONNECTOR}-${VERSION}`,
       received_at: new Date().toISOString(),
     },
@@ -177,5 +205,43 @@ describe('device reconcile config seeding', () => {
     `) as unknown as Array<{ config: unknown }>;
     expect(row).toBeDefined();
     expect(row.config).toBeNull();
+  });
+
+  it('converges without re-wiring when the definition default is wholly feed-scoped', async () => {
+    const FEEDS = {
+      main: {
+        configSchema: {
+          type: 'object',
+          properties: { lookback_days: { type: 'number' } },
+        },
+      },
+    };
+    await seedDefinition(orgId, { lookback_days: 30 }, FEEDS);
+    await seedWorker(userId, orgId, FEEDS);
+
+    const info = vi.spyOn(logger, 'info');
+    try {
+      await reconcileDeviceCapabilities(userId);
+      await reconcileDeviceCapabilities(userId);
+
+      const [row] = (await sql`
+        SELECT config FROM connections
+        WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR} AND deleted_at IS NULL
+      `) as unknown as Array<{ config: unknown }>;
+      // Feed-scoped defaults never belong on the connection row.
+      expect(row).toBeDefined();
+      expect(row.config).toBeNull();
+
+      const wired = info.mock.calls.filter(
+        (call) => call[1] === '[device-connectors] Wired device connector'
+      );
+      // Exactly one wire pass. A ready-gate that approximated "default exists"
+      // with the raw default instead of the seedable CONNECTION-scoped half
+      // spun forever here: NULL config + wholly feed-scoped default re-wired
+      // (and re-upserted the definition) on every single poll.
+      expect(wired).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
   });
 });

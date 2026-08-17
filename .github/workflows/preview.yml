@@ -33,6 +33,8 @@ jobs:
       PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -50,7 +52,7 @@ jobs:
           context: .
           file: docker/app/Dockerfile.preview
           push: true
-          tags: ${{ env.PREVIEW_IMAGE }}:pr-${{ github.event.pull_request.number }}
+          tags: ${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -62,6 +64,14 @@ jobs:
         run: |
           kubectl create namespace "$PREVIEW_NS" --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Provision encryption key
+        run: |
+          # Stable per-namespace key so stored secrets survive redeploys.
+          if ! kubectl -n "$PREVIEW_NS" get secret preview-encryption >/dev/null 2>&1; then
+            kubectl -n "$PREVIEW_NS" create secret generic preview-encryption \\
+              --from-literal=key="$(openssl rand -base64 32)"
+          fi
+
       - name: Deploy preview
         run: |
           # Clean up any existing resources from previous runs
@@ -71,15 +81,18 @@ jobs:
 
           kubectl create deployment "$PREVIEW_NAME" \
             -n "$PREVIEW_NS" \
-            --image=${{ env.PREVIEW_IMAGE }}:pr-${{ github.event.pull_request.number }} \
+            --image=${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }} \
             --port=8787
 
           kubectl -n "$PREVIEW_NS" patch deployment "$PREVIEW_NAME" --type='json' -p='[
             {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["node", "packages/server/dist/server.bundle.mjs"]},
+            {"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Always"},
             {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
               {"name": "PORT", "value": "8787"},
+              {"name": "HOST", "value": "0.0.0.0"},
               {"name": "DATABASE_URL", "value": "file:///var/lib/lobu/data/lobu.db"},
-              {"name": "NODE_ENV", "value": "development"}
+              {"name": "NODE_ENV", "value": "development"},
+              {"name": "ENCRYPTION_KEY", "valueFrom": {"secretKeyRef": {"name": "preview-encryption", "key": "key"}}}
             ]},
             {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe", "value": {
               "httpGet": {"path": "/api/health", "port": 8787},
@@ -138,7 +151,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = context.payload.pull_request.number;
+            const prNumber = context.payload.pull_request?.number ?? Number(process.env.PR_NUMBER);
             const previewUrl = `https://lobu-pr-${prNumber}.${{ vars.TAILNET_DOMAIN }}`;
 
             const comments = await github.rest.issues.listComments({

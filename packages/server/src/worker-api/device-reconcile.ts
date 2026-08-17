@@ -9,8 +9,10 @@
  * creating runs nothing can claim.
  */
 
+import { parseJsonObject } from '@lobu/core';
 import { getDb, pgTextArray } from '../db/client';
 import { findExistingPersonalOrg } from '../auth/personal-org-provisioning';
+import { splitConfigByFeedScope, type FeedDefinition } from '../tools/admin/helpers/feed-helpers';
 import {
   type BundledDeviceConnector,
   bundledConnectorSourcePath,
@@ -33,6 +35,10 @@ const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
  * Install + wire a bundled device connector into the user's personal org:
  * connector definition (idempotent), a no-auth connection, the first feed, and
  * re-activate the feed if a previous "capability went away" pass had paused it.
+ * New connections are seeded with the org definition's `default_connection_config`
+ * (connection-scoped keys only), and surviving NULL-config rows are healed the
+ * same way — mirroring manage_connections create/connect — so device swaps
+ * don't silently regress action modes to descriptor fallbacks.
  * Called by {@link reconcileDeviceCapabilities} for each device connector whose
  * `requiredCapability` is currently advertised by the user's fleet — which
  * connectors those are is read from the catalog, never hardcoded here.
@@ -201,6 +207,8 @@ async function ensureDeviceConnectorWired(
         cd.favicon_domain AS def_favicon_domain,
         cd.required_capability AS def_required_capability,
         cd.runtime AS def_runtime,
+        cd.default_connection_config AS def_default_config,
+        c.config AS conn_config,
         -- jsonb_agg, not array_agg: postgres.js (fetch_types:false) returns a
         -- text[] result column as the literal string "{a,b}", which would make
         -- the fast-path feed check below silently always miss. jsonb arrays are
@@ -251,6 +259,8 @@ async function ensureDeviceConnectorWired(
       def_favicon_domain: string | null;
       def_required_capability: string | null;
       def_runtime: unknown;
+      def_default_config: unknown;
+      conn_config: unknown;
       active_feed_keys: string[] | null;
     }>;
     // Device-manifest connectors carry their full metadata in-hand (`source`),
@@ -282,10 +292,19 @@ async function ensureDeviceConnectorWired(
     };
     const activeFeedKeys = new Set(existingReady[0]?.active_feed_keys ?? []);
     const readyConnectionId = existingReady[0]?.connection_id;
+    // A ready connection whose config is SQL NULL while the org definition
+    // carries a default needs the default seeded — the fast path must not
+    // leave it resolving against raw descriptor fallbacks. `conn_config` is the
+    // raw jsonb value (`null` only when the column is SQL NULL), so an empty
+    // explicit `{}` still counts as configured. Seeded in wireOnce below.
+    const needsDefaultConfigSeed =
+      existingReady[0]?.conn_config == null &&
+      Object.keys(parseJsonObject(existingReady[0]?.def_default_config)).length > 0;
     const ready =
       readyConnectionId != null &&
       existingReady[0]?.version_key != null &&
       definitionMatchesSource(existingReady[0]) &&
+      !needsDefaultConfigSeed &&
       // userManaged-only connectors (e.g. local.directory, browser/*) report
       // declaredFeedKeys=[]. Once the connection + definition are installed,
       // every subsequent poll has nothing to verify — fast-path out.
@@ -375,6 +394,27 @@ async function ensureDeviceConnectorWired(
         versionScope: source ? 'organization' : 'shared',
       });
 
+      // Seed new/repaired auto-wired connections from the org's definition
+      // default, exactly like manage_connections create/connect merge
+      // `default_connection_config` into the new row's config — auto-wire is
+      // the only creation path that previously skipped this, so a device swap
+      // silently regressed action modes to descriptor fallbacks. Feed-scoped
+      // default keys belong on feeds (wired below), never on the connection.
+      const defaultConnectionConfig =
+        (await tx`
+          SELECT default_connection_config
+          FROM connector_definitions
+          WHERE organization_id = ${organizationId}
+            AND key = ${connectorKey}
+            AND status = 'active'
+          LIMIT 1
+        `) as unknown as Array<{ default_connection_config: unknown }>;
+      const splitConfig = splitConfigByFeedScope(
+        parseJsonObject(defaultConnectionConfig[0]?.default_connection_config),
+        (metadata.feeds as unknown as Record<string, FeedDefinition>) ?? null,
+      );
+      const seedConfig = splitConfig.connectionConfig;
+
       // 3. Reuse or create the connection (no-auth, active, private). Match on
       //    (org, connector, no auth_profile) — the device-connector identity —
       //    rather than created_by, so orphan rows (created_by IS NULL, or
@@ -398,6 +438,18 @@ async function ensureDeviceConnectorWired(
           UPDATE connections
           SET created_by = ${userId}, updated_at = NOW()
           WHERE id = ${connectionId} AND created_by IS NULL
+        `;
+      }
+      if (connectionId && seedConfig) {
+        // Heal a surviving connection whose config is still SQL NULL (a row
+        // created before the definition default existed, or by the old
+        // no-seed path): seed the same default now. Guarded by `config IS NULL`
+        // so an explicit per-connection config is never clobbered. Idempotent —
+        // once seeded, this UPDATE stops matching.
+        await tx`
+          UPDATE connections
+          SET config = ${sql.json(seedConfig)}, updated_at = NOW()
+          WHERE id = ${connectionId} AND config IS NULL AND deleted_at IS NULL
         `;
       }
       if (!connectionId) {
@@ -430,7 +482,7 @@ async function ensureDeviceConnectorWired(
             auth_profile_id, app_auth_profile_id, config, created_by, visibility
           ) VALUES (
             ${organizationId}, ${connectorKey}, ${slug}, ${metadata.name}, 'active',
-            NULL, NULL, NULL, ${userId}, 'private'
+            NULL, NULL, ${seedConfig ? sql.json(seedConfig) : null}, ${userId}, 'private'
           )
           RETURNING id
         `) as unknown as Array<{ id: number }>;

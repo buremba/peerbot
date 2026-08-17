@@ -112,11 +112,11 @@ jobs:
             name: $PREVIEW_NAME
             namespace: $PREVIEW_NS
             annotations:
-              tailscale.com/tags: "tag:preview,tag:pr-${{ github.event.pull_request.number }}"
+              tailscale.com/tags: "tag:preview,tag:pr-$PR_NUMBER"
           spec:
             ingressClassName: tailscale
             rules:
-              - host: lobu-pr-${{ github.event.pull_request.number }}.${{ vars.TAILNET_DOMAIN }}
+              - host: lobu-pr-$PR_NUMBER.${{ vars.TAILNET_DOMAIN }}
                 http:
                   paths:
                     - path: /

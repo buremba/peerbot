@@ -25,6 +25,10 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
+import {
+	invalidateOrgAcl,
+	lockOrgForAclInvalidation,
+} from "../authz/acl-generation";
 import { type DbClient, getDb, pgBigintArray } from "../db/client";
 import { mergeEntityState } from "../entity-resolution/merge-state";
 import {
@@ -101,6 +105,12 @@ export async function applyMergeGroupInTransaction(
 		throw new Error("applyMergeGroup: canonical entity is also a duplicate");
   }
 
+  // The organization outranks the entities: this transaction bumps the org
+  // generation after locking entity rows, while organization deletion locks the
+  // org and then cascades into `entities`. Claim the parent first or the two
+  // deadlock.
+  await lockOrgForAclInvalidation(tx, params.orgId);
+
   // Lock the whole group in one global order before applying any member. Pairwise
   // locking inside the loop is not sufficient: overlapping groups with different
   // winners can otherwise each hold one entity while waiting for the other.
@@ -142,6 +152,11 @@ export async function applyMergeGroupInTransaction(
     movedIdentities += result.movedIdentities;
     repointedEdges += result.repointedEdges;
   }
+  // ONCE for the whole group, not once per loser. The invalidation is org-wide
+  // and idempotent within a transaction, so a 100-loser group doing 100 bumps
+  // and 100 org-wide state updates buys nothing and multiplies the write cost
+  // and the row-lock hold time by 100.
+  await invalidateOrgAcl(tx, params.orgId);
   return { mergedEntityIds: loserIds, movedIdentities, repointedEdges };
 }
 
@@ -155,7 +170,15 @@ export async function applyMerge(
   params: ApplyMergeParams,
   db: DbClient = getDb(),
 ): Promise<ApplyMergeResult> {
-	return db.begin((tx) => applyMergeInTransaction(params, tx));
+	// Invalidation lives with the transaction OWNER, not inside
+	// `applyMergeInTransaction`, so the group path can invalidate once for all its
+	// losers instead of once each.
+	return db.begin(async (tx) => {
+		await lockOrgForAclInvalidation(tx, params.orgId);
+		const result = await applyMergeInTransaction(params, tx);
+		await invalidateOrgAcl(tx, params.orgId);
+		return result;
+	});
 }
 
 async function applyMergeInTransaction(
@@ -328,7 +351,6 @@ async function applyMergeInTransaction(
         AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
     `;
   });
-
   // 3. Tombstone loser edges that would become self-loops or collide with an
   //    existing winner edge. This must happen before repointing: the live-edge
   //    unique index rejects the collision during UPDATE, before a later cleanup
@@ -529,6 +551,7 @@ export async function applyUnmerge(
   const { orgId, loserId, unmergedBy } = params;
 
   return db.begin(async (tx) => {
+    await lockOrgForAclInvalidation(tx, orgId);
     // Discover the winner WITHOUT locking first: we can't name the winner until
     // we read merged_into, but taking the loser's lock here would grab the
     // loser's row before the winner's — inverting applyMerge's lowest-id-first
@@ -812,10 +835,9 @@ export async function applyUnmerge(
 		// Dropping the edges is not enough on its own: a sync that resolved the
 		// loser's provider identity to the WINNER before this transaction can
 		// still be in flight and would write that already-resolved grant back
-		// moments after we commit. Marking the ACL state stale closes that race
-		// from both ends — the gate stops trusting the snapshot, and the in-flight
-		// sync's own `fresh` stamp is suppressed because it only applies while
-		// `updated_at < syncStartedAt`, which this write invalidates.
+		// moments after we commit. Marking the ACL state stale makes the gate stop
+		// trusting the snapshot; bumping the generation below prevents that sync
+		// from marking it fresh again after this transaction commits.
 		//
 		// NOT gated on having dropped anything, which is the subtle part. The race
 		// this exists for is exactly the case where the drop finds nothing: the
@@ -823,30 +845,16 @@ export async function applyUnmerge(
 		// written the edge, so counting dropped rows would skip the invalidation
 		// in precisely the window that needs it.
 		//
-		// Marking unconditionally is cheap where it does not apply: the statement
-		// matches no rows for an org that has never onboarded an ACL connection,
-		// so an ERP-only tenant pays nothing. Where it does match, `stale` FAILS
-		// CLOSED for every enforced connection until the next sync — an
+		// Marking unconditionally is harmless where it does not apply: the state
+		// update matches no rows for an org that has never onboarded an ACL
+		// connection. Where it does match, `stale` FAILS CLOSED for every enforced
+		// connection until the next sync — an
 		// availability cost taken deliberately on a rare, admin-initiated action,
 		// because the alternative is serving access the provider never granted.
 		//
-		// `clock_timestamp()` rather than `current_timestamp` is load-bearing for
-		// the same reason it is in `slack-acl-sync.ts`: the latter is
-		// transaction-START time, which would record a cutoff below an in-flight
-		// sync's and slip under the fence.
-		//
-		// KNOWN RESIDUAL, narrower than what it replaces: a sync that starts after
-		// this statement executes but before the transaction commits reads the old
-		// identity mapping and can still satisfy `updated_at < syncStartedAt`,
-		// because that predicate orders statement timestamps, not commit
-		// visibility. Closing it needs a generation counter observed at sync start
-		// rather than a timestamp. Today unmerge invalidates nothing at all, so the
-		// winner keeps the grant indefinitely; this is strictly better.
-		await tx`
-      UPDATE authz_source_acl_state
-      SET freshness_state = 'stale', updated_at = clock_timestamp()
-      WHERE organization_id = ${orgId}
-    `;
+		// `clock_timestamp()` remains the secondary fence for two syncs within one
+		// generation; the counter covers commit visibility across invalidations.
+		await invalidateOrgAcl(tx, orgId);
 
 		// 1. Restore every identity this operation moved, including identities an
 		//    inner merge had already placed on the loser. Legacy operations have no

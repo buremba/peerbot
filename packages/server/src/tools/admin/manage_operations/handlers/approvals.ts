@@ -12,6 +12,7 @@ import {
 	resolveWritePolicyDecision,
 	automationIdFromPrincipalId,
 } from "../../../../authz/entity-policy";
+import { lockOrgForAclInvalidation } from "../../../../authz/acl-generation";
 import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from "../../../../db/client";
 import { lockResolutionCandidate, wasResolutionRejected } from "../../../../entity-resolution/rejection";
 import { droppedEvidence } from "../../../../entity-resolution/evidence-strength";
@@ -1050,6 +1051,11 @@ async function tryApproveEntityChangeRun(
 	if (pendingOperation === "merge") {
 		try {
 			return await sql.begin(async (tx) => {
+				// The merge below bumps the org ACL generation, so claim the org
+				// row before the approval-run and candidate entity rows —
+				// organization deletion locks the parent and cascades downward, and
+				// the reverse order deadlocks against it.
+				await lockOrgForAclInvalidation(tx, ctx.organizationId);
 				const claimed = await claimEntityChangeRun(
 					args.run_id,
 					ctx.organizationId,

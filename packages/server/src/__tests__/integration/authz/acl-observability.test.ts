@@ -306,8 +306,8 @@ describe("acl observability", () => {
       `;
 			expect(repeatConn?.updated_at).toEqual(new Date(SENTINEL));
 			// Unlike the shared connection row, ACL state must record every failure.
-			// `markAclFresh` compares this timestamp with its snapshot start, so an
-			// older in-flight sync cannot overwrite a newer repeated failure.
+			// The timestamp and generation fences keep an older in-flight sync from
+			// overwriting a newer repeated failure.
 			expect(repeatState?.updated_at).not.toEqual(new Date(SENTINEL));
 
 			// A genuinely different reason still lands — the guard suppresses

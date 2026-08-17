@@ -51,6 +51,8 @@ import {
   markConnectionAclFailed,
 } from './acl-observability.js';
 import { buildAccessGraph, markAclFresh } from './access-graph.js';
+import { bumpAclGeneration, captureAclSyncFence } from './acl-generation.js';
+import { withAclConnectionSyncLock } from './acl-sync-lock.js';
 
 const logger = createLogger('slack-acl-sync');
 
@@ -63,9 +65,9 @@ const logger = createLogger('slack-acl-sync');
  * first-sync race: a connection that has never been graphed has no row, the
  * revocation matches nothing, and the sync already holding a pre-departure
  * snapshot then INSERTs `fresh` — blessing exactly the membership Slack just
- * told us was gone. Writing the row makes the departure visible to
- * `markAclFresh`'s freshness fence, which refuses to bless a snapshot older
- * than it.
+ * told us was gone. Writing the stale row fails closed immediately; bumping the
+ * org generation in the same transaction prevents that older sync from
+ * overwriting or bypassing it.
  *
  * Writing the row DOES change enforcement, and that is the point: any existing
  * `authz_source_acl_state` row moves the connection from `not-graphed` (legacy
@@ -80,17 +82,15 @@ export async function invalidateSlackConnectionAcl(params: {
   organizationId: string;
   connectionId: string;
 }): Promise<{ aclSupport: string }> {
-  /*
-   * `clock_timestamp()`, not `current_timestamp`. The sync's freshness fence
-   * (`markAclFresh`) refuses to re-mark a connection fresh when this row was
-   * written after the snapshot began, and it captures that cutoff with
-   * `clock_timestamp()`. `current_timestamp` is TRANSACTION start time, so a
-   * revocation whose transaction opened before the cutoff but committed after
-   * it would record an `updated_at` below the cutoff, slip under the fence, and
-   * be overwritten as fresh — the precise race the fence exists to stop. Both
-   * sides have to measure the same clock.
-   */
-  const rows = await getDb()<{ acl_support: string }>`
+  // `clock_timestamp()`, not transaction-start `current_timestamp`, preserves
+  // the secondary ordering fence between syncs in the same generation. The
+  // `markAclFresh` generation comparison handles commit visibility across
+  // invalidations.
+  // The stale write and the generation bump commit together: a sync observing
+  // one without the other would see an inconsistent invalidation.
+  const rows = await getDb().begin(async (tx) => {
+    await bumpAclGeneration(tx, params.organizationId);
+    const stamped = await tx<{ acl_support: string }>`
 		INSERT INTO authz_source_acl_state
 			(organization_id, connection_id, acl_support, freshness_state, updated_at)
 		VALUES (${params.organizationId}, ${params.connectionId}, 'none', 'stale', clock_timestamp())
@@ -98,6 +98,8 @@ export async function invalidateSlackConnectionAcl(params: {
 		DO UPDATE SET freshness_state = 'stale', updated_at = clock_timestamp()
 		RETURNING acl_support
 	`;
+    return stamped;
+  });
   // The upsert always yields a row, so a boolean "did it work" would be a
   // constant. Report the resulting support level instead — 'full' means an
   // already-enforcing connection went stale, 'none' means this revocation is
@@ -137,6 +139,13 @@ export interface SlackAclSyncDeps {
 export interface SlackAclSyncResult {
   /** True when every bound Slack channel was fetched and graphed. */
   ok: boolean;
+  /**
+   * True when another sync already held this connection and this call published
+   * nothing. Distinct from `ok: false`: a skip is not a failure and must NOT
+   * mark the connection failed, but it is not success either — nothing was
+   * reconciled, so the tick must not count it as a completed sync.
+   */
+  skipped?: boolean;
   teamsSynced: number;
   channelsSynced: number;
 }
@@ -147,6 +156,23 @@ export interface SlackAclSyncResult {
  * the file header for the fail-closed contract.
  */
 export async function syncSlackConnectionAcl(
+  deps: SlackAclSyncDeps,
+  params: { connectionId: string; organizationId: string },
+): Promise<SlackAclSyncResult> {
+  const outcome = await withAclConnectionSyncLock(params.connectionId, () =>
+    syncSlackConnectionAclLocked(deps, params),
+  );
+  if (!outcome.ran) {
+    logger.info('Slack ACL sync skipped: another sync holds this connection', {
+      organization_id: params.organizationId,
+      connection_id: params.connectionId,
+    });
+    return { ok: false, skipped: true, teamsSynced: 0, channelsSynced: 0 };
+  }
+  return outcome.value;
+}
+
+async function syncSlackConnectionAclLocked(
   deps: SlackAclSyncDeps,
   params: { connectionId: string; organizationId: string },
 ): Promise<SlackAclSyncResult> {
@@ -217,11 +243,7 @@ export async function syncSlackConnectionAcl(
    * snapshot — a per-team cutoff would let a late team bless membership the
    * revocation had already contradicted for an earlier one.
    */
-  const [{ sync_started_at: syncStartedAt }] = await sql<{
-    sync_started_at: string;
-  }>`
-		SELECT clock_timestamp()::text AS sync_started_at
-	`;
+  const syncFence = await captureAclSyncFence(organizationId, sql);
   try {
     for (const [teamId, channelIds] of byTeam) {
       const identity = await deps.resolveBotIdentity({ organizationId, teamId, connectionId });
@@ -305,7 +327,7 @@ export async function syncSlackConnectionAcl(
         resourceNamespace: slackAclSource.resourceNamespace,
         memberIdentities: slackAclSource.memberIdentities,
         resources: slackChannelsToResources(teamId, channels),
-        syncStartedAt,
+        syncFence,
         // The stamp is connection-wide; this loop is per-workspace. See below.
         markFresh: false,
       });
@@ -322,7 +344,7 @@ export async function syncSlackConnectionAcl(
      * out of the loop to the catch below, which marks the connection failed
      * instead, so a partial reconcile can never be blessed fresh.
      */
-    await markAclFresh(organizationId, connectionId, syncStartedAt);
+    await markAclFresh(organizationId, connectionId, syncFence);
     await clearConnectionAclError(organizationId, connectionId);
     return { ok: true, teamsSynced, channelsSynced };
   } catch (error) {
@@ -534,13 +556,23 @@ export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<v
 
   let ok = 0;
   let failed = 0;
+  let skipped = 0;
   for (const conn of connections) {
     const result = await syncSlackConnectionAcl(deps, {
       connectionId: conn.id,
       organizationId: conn.organization_id,
     });
     if (result.ok) ok += 1;
+    // A skip means another sync of this connection is in flight and will
+    // publish; counting it as failed would make an overlapping tick look like
+    // an outage.
+    else if (result.skipped) skipped += 1;
     else failed += 1;
   }
-  logger.info('Slack ACL sync tick complete', { connections: connections.length, ok, failed });
+  logger.info('Slack ACL sync tick complete', {
+    connections: connections.length,
+    ok,
+    failed,
+    skipped,
+  });
 }

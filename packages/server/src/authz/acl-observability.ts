@@ -6,6 +6,7 @@
  */
 
 import { type DbClient, getDb } from "../db/client.js";
+import { bumpAclGeneration } from "./acl-generation.js";
 
 const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
 
@@ -52,8 +53,8 @@ export function aclConnectionIdSql(tableAlias?: "c"): string {
  * `ChatInstanceManager` hydrates chat adapters against (`rowVersion`), so a
  * repeated identical failure would otherwise tear down and rehydrate
  * otherwise-working Slack instances for the length of the outage. The ACL
- * state's own timestamp still advances on every failure: `markAclFresh` uses it
- * as a fence so an older in-flight snapshot cannot overwrite a newer failure.
+ * state's own timestamp and the org generation still advance on every failure,
+ * so an older in-flight snapshot cannot overwrite a newer failure.
  */
 export async function markConnectionAclFailed(
 	organizationId: string,
@@ -63,12 +64,15 @@ export async function markConnectionAclFailed(
 	const sql = getDb();
 	const message = formatAclErrorMessage(reason);
 	await sql.begin(async (tx) => {
-		// Lock the live connection row FIRST and UNCONDITIONALLY. Two reasons:
-		// (1) lock order is connections → ACL state, matching connection deletion
-		// and fresh-state stamping, so a failing sync cannot deadlock against a
-		// concurrent delete; (2) the message UPDATE below is conditional, so a
-		// repeated identical failure would take no row lock at all and could
-		// interleave with `clearConnectionAclError`.
+		// ORGANIZATION FIRST, then connections, then ACL state — the same order as
+		// `markAclFresh` and as organization deletion, whose `ON DELETE CASCADE`
+		// reaches connections while already holding the org row. Bumping after the
+		// connection lock would invert that and deadlock against a concurrent org
+		// delete.
+		await bumpAclGeneration(tx, organizationId);
+		// Then lock the live connection row UNCONDITIONALLY: the message UPDATE
+		// below is conditional, so a repeated identical failure would take no row
+		// lock at all and could interleave with `clearConnectionAclError`.
 		await tx`
       SELECT 1
       FROM connections

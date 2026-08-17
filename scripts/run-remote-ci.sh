@@ -84,11 +84,10 @@ echo ">> checking Depot repository access"
 depot ci migrate preflight --org "$DEPOT_ORG_ID" >/dev/null
 
 full_gate=0
-attested_tree=""
 if [ "$#" -eq 0 ]; then
   jobs=("${DEFAULT_JOBS[@]}")
   full_gate=1
-  attested_tree="$(remote_ci_staged_tree)" || exit $?
+  remote_ci_staged_tree >/dev/null || exit $?
 else
   jobs=("$@")
   remote_ci_require_no_untracked || exit $?
@@ -170,18 +169,4 @@ fi
 echo ">> Depot run $run_id passed"
 jq -r '.workflows[].jobs[].attempts[-1].view_url // empty' <<<"$status_json" | sort -u
 
-# Only an unchanged, settled full-graph success may suppress review.sh's
-# duplicate local package build. The tree id remains stable across the commit
-# that follows this staged preflight; a subset run can never attest.
-if [ "$full_gate" = "1" ]; then
-  current_tree="$(remote_ci_staged_tree)" || {
-    echo "The worktree changed while Depot was running; remote preflight is not attested." >&2
-    exit 1
-  }
-  if [ "$current_tree" != "$attested_tree" ]; then
-    echo "The staged tree changed while Depot was running; rerun the full preflight." >&2
-    exit 1
-  fi
-  printf '%s\n' "$attested_tree" > "$ATTESTATION_FILE"
-  echo ">> recorded full remote preflight for tree $attested_tree"
-fi
+

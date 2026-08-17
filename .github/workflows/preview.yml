@@ -26,7 +26,7 @@ env:
 jobs:
   preview:
     runs-on: ubuntu-24.04
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -111,46 +111,55 @@ jobs:
           kubectl -n "$PREVIEW_NS" delete svc "$PREVIEW_NAME" --ignore-not-found
           kubectl -n "$PREVIEW_NS" delete ingress "$PREVIEW_NAME" --ignore-not-found
 
-          kubectl create deployment "$PREVIEW_NAME" \
-            -n "$PREVIEW_NS" \
-            --image=${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }} \
-            --port=8787
-
           # The embedded runner binds 127.0.0.1 (HOST below) so /api/local-init
           # sees a loopback peer. socat accepts external connections on 8788 and
           # forwards them over loopback to the app on 8787.
           # LOBU_LOCAL_INIT_ALLOW_PROXY: the private tailnet ingress (Tailscale
           # Serve) injects Forwarded-* headers; tolerate them for this single-user
           # preview so /api/local-init sign-in works (peer is loopback via socat).
-          kubectl -n "$PREVIEW_NS" patch deployment "$PREVIEW_NAME" --type='json' -p='[
-            {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["sh", "-c", "socat TCP-LISTEN:8788,fork,reuseaddr TCP:127.0.0.1:8787 & exec node packages/server/dist/server.bundle.mjs"]},
-            {"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Always"},
-            {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
-              {"name": "PORT", "value": "8787"},
-              {"name": "HOST", "value": "127.0.0.1"},
-              {"name": "DATABASE_URL", "value": "file:///var/lib/lobu/data/lobu.db"},
-              {"name": "NODE_ENV", "value": "development"},
-              {"name": "ENCRYPTION_KEY", "valueFrom": {"secretKeyRef": {"name": "preview-encryption", "key": "key"}}},
-              {"name": "LOBU_LOCAL_INIT_ALLOW_PROXY", "value": "1"}
-            ]},
-            {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe", "value": {
-              "httpGet": {"path": "/api/health", "port": 8788},
-              "initialDelaySeconds": 30,
-              "periodSeconds": 5,
-              "failureThreshold": 30
-            }},
-            {"op": "add", "path": "/spec/template/spec/containers/0/resources", "value": {
-              "requests": {"cpu": "1", "memory": "2Gi"},
-              "limits": {"cpu": "4", "memory": "8Gi"}
-            }},
-            {"op": "add", "path": "/spec/template/spec/priorityClassName", "value": "preview"},
-            {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts", "value": [
-              {"name": "data", "mountPath": "/var/lib/lobu/data"}
-            ]},
-            {"op": "add", "path": "/spec/template/spec/volumes", "value": [
-              {"name": "data", "emptyDir": {}}
-            ]}
-          ]'
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: $PREVIEW_NAME
+            namespace: $PREVIEW_NS
+          spec:
+            replicas: 1
+            selector:
+              matchLabels: { app: $PREVIEW_NAME }
+            template:
+              metadata:
+                labels: { app: $PREVIEW_NAME }
+              spec:
+                priorityClassName: preview
+                containers:
+                  - name: preview
+                    image: ${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }}
+                    imagePullPolicy: Always
+                    command: ["sh", "-c", "socat TCP-LISTEN:8788,fork,reuseaddr TCP:127.0.0.1:8787 & exec node packages/server/dist/server.bundle.mjs"]
+                    env:
+                      - { name: PORT, value: "8787" }
+                      - { name: HOST, value: "127.0.0.1" }
+                      - { name: DATABASE_URL, value: "file:///var/lib/lobu/data/lobu.db" }
+                      - { name: NODE_ENV, value: "development" }
+                      - { name: ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: preview-encryption, key: key } } }
+                      - { name: LOBU_LOCAL_INIT_ALLOW_PROXY, value: "1" }
+                    ports:
+                      - { containerPort: 8787 }
+                    readinessProbe:
+                      httpGet: { path: /api/health, port: 8788 }
+                      initialDelaySeconds: 30
+                      periodSeconds: 5
+                      failureThreshold: 30
+                    resources:
+                      requests: { cpu: "1", memory: 2Gi }
+                      limits: { cpu: "4", memory: 8Gi }
+                    volumeMounts:
+                      - { name: data, mountPath: /var/lib/lobu/data }
+                volumes:
+                  - name: data
+                    emptyDir: {}
+          EOF
 
           kubectl expose deployment "$PREVIEW_NAME" \
             -n "$PREVIEW_NS" \
@@ -212,7 +221,7 @@ jobs:
               "## Preview environment ready",
               "",
               "| | |",
-              "|---|---|---|",
+              "|---|---|",
               `| **URL** | [${previewUrl}](${previewUrl}) |`,
               `| **Namespace** | \`lobu-preview-${prNumber}\` |`,
               "| **Status** | Running |",
@@ -238,7 +247,7 @@ jobs:
 
   cleanup:
     runs-on: ubuntu-24.04
-    if: github.event.action == 'closed'
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}

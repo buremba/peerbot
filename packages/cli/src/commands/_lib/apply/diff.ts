@@ -4,6 +4,7 @@ import type {
   InferenceModality,
 } from "../../../config/define.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
+import { isPlatformOwnedRelationshipSlug } from "../platform-owned-types.js";
 import type {
   RemoteAgent,
   RemoteAuthProfile,
@@ -1102,25 +1103,13 @@ export const effectiveRelationshipTypeAfterApply = (
 });
 
 /**
- * Relationship types whose lifecycle the platform owns, not a config.
- *
  * `member_of` is minted and maintained by the connector ACL syncs. A config may
  * legitimately DECLARE it — `examples/personal-agent/lobu.config.ts` does — but
- * apply must not create, update, or delete it, declared or not. Once the server
- * classifies it as authorization-bearing, the schema surfaces refuse those
- * writes outright, so an apply that still attempted them would fail for every
- * such config.
- *
- * Keyed on the slug rather than the server's `purpose`, which the apply client
- * does not fetch. That is deliberate: the slug is reserved, and keying on it
- * covers the window BEFORE classification as well as after.
+ * apply must not create, update, or delete it, declared or not. `lobu memory
+ * seed` shares the rule and the same slug set.
  */
-const PLATFORM_OWNED_RELATIONSHIP_SLUGS = new Set(["member_of"]);
-
 function isPlatformOwnedRelationshipType(kind: string, slug: string): boolean {
-  return (
-    kind === "relationship-type" && PLATFORM_OWNED_RELATIONSHIP_SLUGS.has(slug)
-  );
+  return kind === "relationship-type" && isPlatformOwnedRelationshipSlug(slug);
 }
 
 /** Classify a remote-only definition without deleting unproven ownership. */

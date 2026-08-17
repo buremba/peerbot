@@ -1130,11 +1130,11 @@ async function rtHandleUpdate(
 ): Promise<ManageEntitySchemaResult> {
   const { typeId, sql } = await requireRelationshipType(args.slug, 'update', ctx);
 
-  // Before purpose is backfilled, config may still declare member_of and update
-  // its harmless fields. It may not archive the type: the materializer upserts
-  // against active slugs, so archiving would make the next sync create a second
-  // type while existing grants remain attached to the old one and stop being
-  // reconciled.
+  // A config can declare member_of before its first ACL sync classifies the row,
+  // and may update harmless fields while it is still unclassified. It may not
+  // archive the type: the materializer upserts against active slugs, so the next
+  // sync would create a second type while existing grants remain attached to the
+  // old one and stop being reconciled.
   if (
     isAclManagedRelationshipSlug(args.slug ?? '') &&
     args.status === 'archived'

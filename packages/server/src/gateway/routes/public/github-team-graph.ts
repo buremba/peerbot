@@ -291,8 +291,8 @@ export async function buildGithubTeamGraph(params: {
 	const typeId = await ensureMemberOfType(params.organizationId);
 	// person -> company. Idempotent on the live-triple unique index; a re-bind
 	// re-affirms the edge without duplicating it.
-	// Set the ACL write flag now; the trigger starts requiring it when the
-	// follow-up deploy classifies `member_of` as authorization-bearing.
+	// The classified `member_of` type makes the trigger require the ACL write
+	// flag for this edge.
 	const created = await withAclEdgeWrite(getDb(), (tx) =>
 		upsertEdges({
 			db: tx,

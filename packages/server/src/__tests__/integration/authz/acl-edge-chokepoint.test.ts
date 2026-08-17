@@ -36,17 +36,7 @@ describe("authorization edges have one enforcement point", () => {
 		alice = (await mk("person", "Alice")).id;
 		bob = (await mk("person", "Bob")).id;
 		channel = (await mk("channel", "#secrets")).id;
-		await classifyMemberOf();
 	});
-
-	/** The follow-up deployment classifies this in production; these tests arm it. */
-	async function classifyMemberOf(): Promise<void> {
-		const sql = getTestDb();
-		await sql`
-      UPDATE entity_relationship_types SET purpose = 'authorization'
-      WHERE id = ${typeId}
-    `;
-	}
 
 	async function seedGrant(person: number): Promise<number> {
 		return withAclEdgeWrite(getTestDb(), async (tx) => {
@@ -328,7 +318,7 @@ describe("authorization edges have one enforcement point", () => {
 			{ orgId, winnerId: bob, loserId: alice, mergedBy: "chokepoint-test" },
 			sql,
 		);
-		// The follow-up deploy classifies the type the ledger already references.
+		// Simulate classifying the type after the ledger already references it.
 		await sql`
       UPDATE entity_relationship_types SET purpose = 'authorization'
       WHERE id = ${legacyTypeId}

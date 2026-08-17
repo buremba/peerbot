@@ -6,6 +6,7 @@ import type {
   DesiredRelationshipType,
 } from "../../_lib/apply/desired-state.js";
 import { loadDesiredStateFromConfig } from "../../_lib/apply/desired-state.js";
+import { isPlatformOwnedRelationshipSlug } from "../../_lib/platform-owned-types.js";
 import { ApiError, ValidationError } from "./errors.js";
 import {
   getSessionForOrg,
@@ -536,9 +537,16 @@ export async function seedMemoryWorkspace(
     }
   }
 
-  if (relationshipTypes.length > 0) {
-    printText(`\nRelationship types (${relationshipTypes.length}):`);
-    for (const rel of relationshipTypes) {
+  // Platform-owned slugs are skipped for the same reason apply skips them: the
+  // create returns "already exists", the fallback issues an update, and the
+  // schema surface rejects that outright once the type is classified as
+  // authorization-bearing — aborting the whole seed for any config declaring one.
+  const seedableRelationshipTypes = relationshipTypes.filter(
+    (rel) => !isPlatformOwnedRelationshipSlug(rel.slug)
+  );
+  if (seedableRelationshipTypes.length > 0) {
+    printText(`\nRelationship types (${seedableRelationshipTypes.length}):`);
+    for (const rel of seedableRelationshipTypes) {
       await seedRelationshipType(rel, ctx);
     }
   }

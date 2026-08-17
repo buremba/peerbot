@@ -67,7 +67,6 @@ describe("authorization-bearing relationship types are not caller-writable", () 
 				name: "#secrets",
 			})
 		).id;
-		await classifyMemberOf();
 	});
 
 	/**
@@ -87,15 +86,6 @@ describe("authorization-bearing relationship types are not caller-writable", () 
       `;
 			return Number(rows[0].id);
 		});
-	}
-
-	/** The follow-up deployment classifies this in production; these tests arm it. */
-	async function classifyMemberOf(): Promise<void> {
-		const sql = getTestDb();
-		await sql`
-      UPDATE entity_relationship_types SET purpose = 'authorization'
-      WHERE id = ${typeId}
-    `;
 	}
 
 	it("refuses to LINK on an authorization type — creating one would mint access", async () => {
@@ -152,10 +142,9 @@ describe("authorization-bearing relationship types are not caller-writable", () 
 	});
 
 	it("allows a config to declare member_of while it is unclassified", async () => {
-		// `lobu apply` configs legitimately declare member_of — and must, or prune
-		// flags it removed and aborts the apply (examples/personal-agent). Refusing
-		// the TYPE surface would break apply today. Declaring a type grants nobody
-		// access; only an edge on it does, and that surface stays closed.
+		// Legacy and direct config paths can declare member_of before the first ACL
+		// sync creates it. Declaring a type grants nobody access; only an edge on it
+		// does, and that surface stays closed.
 		const sql = getTestDb();
 		await sql`
       UPDATE entity_relationship_types
@@ -353,8 +342,8 @@ describe("authorization-bearing relationship types are not caller-writable", () 
 	});
 
 	it("refuses member_of by slug before it is classified", async () => {
-		// During the staged rollout, ACL reads still trust the slug while `purpose`
-		// is null. The temporary slug guard keeps that interval fail-closed.
+		// ACL reads still trust the slug during the staged cutover. The slug guard
+		// keeps a newly declared row fail-closed before its first sync classifies it.
 		const sql = getTestDb();
 		await sql`
       UPDATE entity_relationship_types SET purpose = NULL WHERE id = ${typeId}

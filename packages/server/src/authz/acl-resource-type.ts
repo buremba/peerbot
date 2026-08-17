@@ -4,14 +4,22 @@
  */
 
 import { ACL_RESOURCE_TYPE } from '@lobu/connector-sdk';
-import { getDb } from '../db/client.js';
+import type { DbClient } from '../db/client.js';
 
 /**
  * Find-or-create the org-scoped `$resource` entity type. Idempotent; empty
  * metadata schema (graph anchor only).
+ *
+ * The handle is REQUIRED rather than defaulted to `getDb()`: attribution
+ * auto-create calls this from inside `withEntityWriteTransaction`, where a
+ * pooled query would hold the transaction's connection while waiting for a
+ * second one — the pool deadlock behind #2818. Requiring it means the next call
+ * site has to answer the same question instead of inheriting the pool silently.
  */
-export async function ensureResourceEntityType(orgId: string): Promise<void> {
-  const sql = getDb();
+export async function ensureResourceEntityType(
+  sql: DbClient,
+  orgId: string
+): Promise<void> {
   await sql`
     INSERT INTO entity_types (slug, name, description, icon, organization_id, created_at, updated_at)
     VALUES (

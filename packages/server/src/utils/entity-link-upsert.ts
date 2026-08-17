@@ -89,9 +89,17 @@ const RULES_CACHE_TTL_MS = 60_000;
 const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
 
-async function resolveOrgCreator(orgId: string): Promise<string | null> {
+/**
+ * Takes the caller's handle rather than reaching for `getDb()`, because both
+ * call sites run INSIDE `withEntityWriteTransaction`. A pooled query there asks
+ * for a second connection while still holding the transaction's own, so
+ * `DB_POOL_MAX` concurrent writers deadlock the pool permanently — #2818.
+ *
+ * A cache hit performs no query at all; racing misses each query through their
+ * own caller-owned handle.
+ */
+async function resolveOrgCreator(sql: DbClient, orgId: string): Promise<string | null> {
   return creatorCache.getOrSet(orgId, async () => {
-    const sql = getDb();
     const rows = await sql<{ userId: string }>`
       SELECT "userId"
       FROM "member"
@@ -113,14 +121,16 @@ function randomSlug(entityType: string): string {
   return `${prefix}-${randomBytes(5).toString('hex')}`;
 }
 
-async function loadEventAttributionRules(params: {
-  connectorKey: string;
-  feedKey: string;
-  orgId: string;
-}): Promise<RuleMap> {
+async function loadEventAttributionRules(
+  sql: DbClient,
+  params: {
+    connectorKey: string;
+    feedKey: string;
+    orgId: string;
+  }
+): Promise<RuleMap> {
   const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
   return rulesCache.getOrSet(cacheKey, async () => {
-    const sql = getDb();
     const rows = await sql`
       SELECT feeds_schema
       FROM connector_definitions
@@ -155,16 +165,18 @@ async function loadEventAttributionRules(params: {
  * pass the role the caller actually wants ('authored_by' for a webhook actor)
  * rather than relying on declaration order.
  */
-export async function loadAttributionRuleByType(params: {
-  connectorKey: string;
-  orgId: string;
-  entityType: string;
-  role?: EventAttributionRule['role'];
-}): Promise<ResolvedEventAttributionRule | null> {
+export async function loadAttributionRuleByType(
+  sql: DbClient,
+  params: {
+    connectorKey: string;
+    orgId: string;
+    entityType: string;
+    role?: EventAttributionRule['role'];
+  }
+): Promise<ResolvedEventAttributionRule | null> {
   const roleKey = params.role ?? '__any__';
   const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
   const map = await rulesCache.getOrSet(cacheKey, async () => {
-    const sql = getDb();
     const rows = await sql`
       SELECT feeds_schema
       FROM connector_definitions
@@ -468,7 +480,7 @@ async function createEntityWithIdentities(
     // Platform ACL type is ensured on the fly so event attribution can race
     // ahead of the first ACL sync without failing closed on a missing type.
     if (params.entityType === ACL_RESOURCE_TYPE_SLUG) {
-      await ensureResourceEntityType(params.orgId);
+      await ensureResourceEntityType(sql, params.orgId);
       typeRow = await sql<{ id: number; backing_sql: string | null }>`
         SELECT et.id, et.backing_sql
         FROM entity_types et
@@ -660,14 +672,17 @@ export async function applyEventAttributions(
 ): Promise<void> {
   if (!params.feedKey || params.items.length === 0) return;
 
-  const rulesByKind = await loadEventAttributionRules({
+  // Resolved BEFORE the rule load: the sync dry-run path supplies its
+  // rolled-back transaction, and reading rules on the pool while that is open is
+  // the starvation this file exists to avoid (#2818).
+  const db = sql ?? getDb();
+
+  const rulesByKind = await loadEventAttributionRules(db, {
     connectorKey: params.connectorKey,
     feedKey: params.feedKey,
     orgId: params.orgId,
   });
   if (Object.keys(rulesByKind).length === 0) return;
-
-  const db = sql ?? getDb();
   await withEntityWriteTransaction(db, (tx) =>
     resolveLinksByKind(
       {
@@ -750,7 +765,7 @@ async function resolveLinksByKind(
 
   // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
   // so auto-created entities attribute to a real member rather than a seed user.
-  const creatorUserId = await resolveOrgCreator(params.orgId);
+  const creatorUserId = await resolveOrgCreator(sql, params.orgId);
 
   // rule -> per-item extracted link, carrying the source item + index (the
   // caller recovers the resolved entity per item; metadata is stamped onto the
@@ -1062,7 +1077,7 @@ async function resolveSenderIdentityInTransaction(
   if (hit !== null) return hit;
 
   // 2) Mint. The only remaining gate is a real org member to attribute to.
-  const creatorUserId = await resolveOrgCreator(params.orgId);
+  const creatorUserId = await resolveOrgCreator(sql, params.orgId);
   if (!creatorUserId) return null;
 
   const created = await createEntityWithIdentities(sql, {

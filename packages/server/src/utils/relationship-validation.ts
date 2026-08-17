@@ -44,8 +44,9 @@ const ACL_MANAGED_SLUG = 'member_of';
 
 /**
  * The same test as {@link isAclManagedRelationshipSlug}, in SQL, for statements
- * that select edges by their type. Expects the type table aliased `rt`. Static
- * text with no interpolation, so it is safe through `sql.unsafe`.
+ * that classify by relationship type — selecting edges, or listing the types
+ * themselves. Expects the type table aliased `rt`. Static text with no
+ * interpolation, so it is safe through `sql.unsafe`.
  *
  * `IS NOT DISTINCT FROM` rather than `=` so the negation is sound: `purpose` is
  * NULL on every unclassified type, and `NOT (NULL = 'authorization' OR …)`

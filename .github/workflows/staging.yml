@@ -52,10 +52,8 @@ jobs:
       - name: Release lock (unlabeled)
         if: env.STAGING_ACTION == 'unlabeled'
         run: |
-          for ns in $(kubectl get ingress "$STAGING_INGRESS" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null); do
-            kubectl delete ingress "$STAGING_INGRESS" -n "$ns" --ignore-not-found
-            echo "released staging ingress from $ns"
-          done
+          # Only release if THIS PR holds the lock (scoped to this namespace).
+          kubectl delete ingress "$STAGING_INGRESS" -n "$PREVIEW_NS" --ignore-not-found
           echo "staging lock released (staging.${{ vars.TAILNET_DOMAIN }} no longer mapped)"
 
       - name: Acquire lock (labeled)

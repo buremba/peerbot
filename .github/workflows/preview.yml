@@ -7,7 +7,7 @@ on:
     inputs:
       pr_number:
         description: 'PR number for manual trigger'
-        required: false
+        required: true
         type: string
 
 permissions:
@@ -53,7 +53,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/app/Dockerfile.preview
+          file: docker/app/Dockerfile
+          # Keep the embedded-postgres runtime for DATABASE_URL=file:// previews.
+          build-args: |
+            KEEP_EMBEDDED_PG=1
           push: true
           tags: ${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }}
           cache-from: type=gha
@@ -259,6 +262,17 @@ jobs:
       - name: Delete preview namespace
         run: |
           kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
+
+      - name: Delete preview image tag
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          VERSION_ID=$(gh api "orgs/lobu-ai/packages/container/lobu%2Fpreview/versions" --paginate -q ".[] | select(.metadata.container.tags[]? == \"pr-${PR_NUM}\") | .id" | head -1)
+          if [ -n "$VERSION_ID" ]; then
+            gh api -X DELETE "orgs/lobu-ai/packages/container/lobu%2Fpreview/versions/$VERSION_ID"
+            echo "deleted preview image tag pr-$PR_NUM"
+          else
+            echo "no preview image tag pr-$PR_NUM to delete"
+          fi
 
       - name: Comment on PR
         uses: actions/github-script@v7

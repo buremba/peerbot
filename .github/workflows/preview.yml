@@ -26,7 +26,7 @@ env:
 jobs:
   preview:
     runs-on: ubuntu-24.04
-    if: github.event.action != 'closed'
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -208,15 +208,17 @@ jobs:
               c.user.type === 'Bot' && c.body.includes('Preview environment')
             );
 
-            const body = `## Preview environment ready
-
-            | | |
-            |---|---|
-            | **URL** | [${previewUrl}](${previewUrl}) |
-            | **Namespace** | \`lobu-preview-${prNumber}\` |
-            | **Status** | Running |
-
-            _This preview will be automatically deleted when the PR is closed._`;
+            const body = [
+              "## Preview environment ready",
+              "",
+              "| | |",
+              "|---|---|---|",
+              `| **URL** | [${previewUrl}](${previewUrl}) |`,
+              `| **Namespace** | \`lobu-preview-${prNumber}\` |`,
+              "| **Status** | Running |",
+              "",
+              "_This preview will be automatically deleted when the PR is closed._",
+            ].join("\n");
 
             if (botComment) {
               await github.rest.issues.updateComment({

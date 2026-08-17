@@ -4,7 +4,8 @@
 # Usage (build; the image declares no CMD - the k8s deployment patches command):
 #   docker build -f docker/app/Dockerfile.preview -t lobu-preview .
 #
-# This reuses the builder stage from the main Dockerfile. To build, pass:
+# This is an intentional fork of docker/app/Dockerfile that KEEPS embedded-
+# postgres; keep the builder stage in sync with the main Dockerfile. Build:
 #   --build-arg BUN_VERSION=1.3.5
 
 # Rebuild the builder stage from the main Dockerfile

@@ -27,7 +27,6 @@ permissions:
 # converge instead of racing.
 concurrency:
   group: staging-lock
-  cancel-in-progress: true
 
 env:
   KUBECONFIG: /tmp/kubeconfig
@@ -117,9 +116,11 @@ jobs:
                           port: { number: 80 }
           EOF
 
-          gh pr comment "$PR_NUM" --body "## Staging URL locked to this PR
-          - **App**: https://$STAGING_HOST
-          - **MCP endpoint**: https://$STAGING_HOST/mcp
-
-          Removing the \`staging\` label releases the lock."
+          STAGING_BODY=$(printf "%s\n" \
+            "## Staging URL locked to this PR" \
+            "- **App**: https://$STAGING_HOST" \
+            "- **MCP endpoint**: https://$STAGING_HOST/mcp" \
+            "" \
+            "Removing the \`staging\` label releases the lock.")
+          gh pr comment "$PR_NUM" --body "$STAGING_BODY"
           echo "staging locked to PR #$PR_NUM at https://$STAGING_HOST"

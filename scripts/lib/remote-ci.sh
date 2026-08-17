@@ -50,13 +50,6 @@ remote_ci_print_failures() {
   '
 }
 
-remote_ci_attestation_matches() {
-  local expected_sha="$1"
-  local marker_file="$2"
-
-  [ -f "$marker_file" ] && [ "$(cat "$marker_file")" = "$expected_sha" ]
-}
-
 remote_ci_require_no_untracked() {
   local untracked
   untracked="$(git ls-files --others --exclude-standard)"

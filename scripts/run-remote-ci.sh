@@ -20,7 +20,6 @@ REMOTE_CI_MAX_RETRIES="${REMOTE_CI_MAX_RETRIES:-1}"
 WORKFLOW=".github/workflows/ci.yml"
 SOURCE_ACTION=".github/actions/setup-submodule/action.yml"
 DEPOT_ACTION=".depot/actions/setup-submodule/action.yml"
-ATTESTATION_FILE="$(git rev-parse --git-path lobu-remote-preflight)"
 
 # All Linux jobs, including the two dependency aggregators. mac-build-smoke is
 # intentionally absent: it requires macOS and remains on GitHub/Mac hardware.
@@ -93,12 +92,6 @@ if [ "$#" -eq 0 ]; then
 else
   jobs=("$@")
   remote_ci_require_no_untracked || exit $?
-fi
-
-# Starting a new full run invalidates any prior tree attestation until the new
-# run reaches an authoritative success state. Subset runs do not attest.
-if [ "$full_gate" = "1" ]; then
-  rm -f "$ATTESTATION_FILE"
 fi
 
 job_args=()

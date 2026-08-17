@@ -48,6 +48,7 @@ import {
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
 import { withAclEdgeWrite } from '../utils/relationship-validation.js';
 import { aclConnectionIdSql } from './acl-observability.js';
+import { type AclSyncFence, captureAclSyncFence } from './acl-generation.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
 
 const logger = createLogger('access-graph');
@@ -131,11 +132,12 @@ export function ensureMemberOfType(orgId: string): Promise<number> {
  * already contradicted. Skipping the stamp leaves the row `stale`, the gate
  * fails closed, and the next sync rebuilds from current membership.
  *
- * NOT a general concurrency fix: overlapping syncs can still interleave their
- * EDGE writes, which this cannot see. That race predates this fence (on
- * `origin/main` the stamp was unconditional) and closing it properly needs one
- * graph build per connection plus a real snapshot generation — a separate
- * change, deliberately not smuggled in here.
+ * This fence covers the STAMP only. It cannot see an EDGE write, so on its own
+ * it does not stop two overlapping syncs of one connection from interleaving:
+ * the loser's stamp is refused, but its edges are already written. That half is
+ * closed by `withAclConnectionSyncLock`, which orders syncs of a connection so
+ * the interleaving cannot arise; this fence then covers the case no
+ * per-connection lock can order — an invalidation racing a sync.
  *
  * Exported because the stamp is CONNECTION-wide while a build is per-resource-
  * set: a caller that reconciles one connection across several source scopes
@@ -147,10 +149,32 @@ export function ensureMemberOfType(orgId: string): Promise<number> {
 export async function markAclFresh(
   orgId: string,
   connectionId: string,
-  syncStartedAt: string,
+  fence: AclSyncFence,
 ): Promise<void> {
+  const { startedAt: syncStartedAt, generation: aclGeneration } = fence;
   const sql = getDb();
   await sql.begin(async (tx) => {
+    // ORGANIZATION FIRST, and the order is the whole point.
+    //
+    // Every writer here takes organization -> connections -> ACL state. That
+    // matches the one path that already locks in that order and cannot be
+    // changed: deleting an organization locks the org row, then its
+    // `ON DELETE CASCADE` deletes the connections beneath it
+    // (`connections_organization_id_fkey`). Locking the connection first and
+    // then waiting for the org row would invert that and deadlock a stamp
+    // against a concurrent org deletion.
+    //
+    // Holding it as FOR SHARE also fences the comparison: an invalidation's
+    // `UPDATE organization` conflicts with the share lock, so if it began first
+    // this waits and then reads the NEW generation, and if this began first the
+    // invalidation waits and applies after this transaction commits.
+    const generationRows = await tx<{ acl_generation: string }>`
+      SELECT acl_generation::text AS acl_generation
+      FROM organization
+      WHERE id = ${orgId}
+      FOR SHARE
+    `;
+
     // Serialize the state stamp with the connection tombstone. A sync can spend
     // seconds fetching a remote membership snapshot after the scheduler selected
     // the row; without this lock, deletion can remove the old ACL state and the
@@ -167,6 +191,29 @@ export async function markAclFresh(
     `;
     if (connections.length > 0 && connections.every((row) => row.deleted_at != null)) return;
 
+    // A missing organization row is not a fence we can evaluate: there is no
+    // generation to compare, so refuse the stamp rather than publish a
+    // projection whose freshness cannot be verified. `connections` has an
+    // ON DELETE CASCADE FK to `organization`, so a live connection cannot
+    // outlive its org — this fires only for an orphaned state row or a job
+    // racing org deletion, and both must fail closed.
+    if (generationRows.length === 0) return;
+    if (generationRows[0].acl_generation !== aclGeneration) return;
+
+    // Two fences, and both are load-bearing.
+    //
+    // The generation is the real one: it was captured before this sync read or
+    // reconciled membership, so an invalidation that COMMITTED mid-sync fails
+    // the comparison even though its statement timestamp precedes
+    // `syncStartedAt`. It also guards the INSERT, which the timestamp cannot —
+    // `ON CONFLICT … WHERE` never runs when there is no conflicting row, so a
+    // sync that began pre-invalidation could otherwise create a brand-new
+    // `fresh` row afterward.
+    //
+    // The timestamp fence stays for the same-generation case: two concurrent
+    // syncs of one connection, where the later-starting one must not be
+    // overwritten by an older snapshot finishing after it.
+    //
     await tx`
 		INSERT INTO authz_source_acl_state
 			(organization_id, connection_id, acl_support, freshness_state, last_synced_at, created_at, updated_at)
@@ -340,11 +387,11 @@ export async function buildAccessGraph(params: {
   memberIdentities: AccessIdentitySpec[];
   resources: AccessResource[];
   /**
-   * Database time captured before the source snapshot began. A newer ACL-state
-   * write means that snapshot lost a revocation race and must not mark the
-   * connection fresh.
+   * Database time and org generation captured together before the source
+   * snapshot began. A caller that captures its own remote snapshot supplies
+   * this pair; otherwise the graph builder captures it before reconciliation.
    */
-  syncStartedAt?: string;
+  syncFence?: AclSyncFence;
   /**
    * Whether this build may stamp the connection fresh. Default true — one build
    * IS the whole connection for a single-scope source (GitHub). A caller that
@@ -358,13 +405,12 @@ export async function buildAccessGraph(params: {
   const resources = params.resources.filter((r) => r.key);
   if (resources.length === 0) return EMPTY_RESULT;
 
-  const syncStartedAt =
-    params.syncStartedAt ??
-    (
-      await getDb()<{ sync_started_at: string }>`
-        SELECT clock_timestamp()::text AS sync_started_at
-      `
-    )[0].sync_started_at;
+  // A caller that reads a remote snapshot BEFORE calling this must capture its
+  // own fence first and pass it — capturing here would observe a generation an
+  // invalidation had already bumped during that read, so the stale snapshot
+  // would satisfy its own fence. Both production syncs do exactly that; this
+  // fallback serves direct callers that build from data already in hand.
+  const syncFence = params.syncFence ?? (await captureAclSyncFence(organizationId));
 
   const creatorUserId = await resolveOrgCreator(organizationId);
   if (!creatorUserId) {
@@ -560,7 +606,7 @@ export async function buildAccessGraph(params: {
   );
 
   if (params.markFresh !== false) {
-    await markAclFresh(organizationId, connectionId, syncStartedAt);
+    await markAclFresh(organizationId, connectionId, syncFence);
   }
 
   logger.info(

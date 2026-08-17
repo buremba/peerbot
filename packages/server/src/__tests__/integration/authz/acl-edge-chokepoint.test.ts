@@ -404,10 +404,9 @@ describe("authorization edges have one enforcement point", () => {
 		expect(rows[0].freshness_state).toBe("stale");
 	});
 
-	it("costs an ERP-only tenant nothing — there is no ACL state to invalidate", async () => {
-		// The availability cost only lands where ACL is actually onboarded. An org
-		// that has never graphed a connection has no row, so the statement matches
-		// nothing and no visibility is lost.
+	it("does not change visibility for an ERP-only tenant with no ACL state", async () => {
+		// The generation still advances, but an org that has never graphed a
+		// connection has no state row to mark stale, so no visibility changes.
 		const sql = getTestDb();
 		await applyMerge(
 			{ orgId, winnerId: bob, loserId: alice, mergedBy: "chokepoint-test" },

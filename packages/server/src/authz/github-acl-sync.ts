@@ -29,6 +29,8 @@ import {
   markConnectionAclFailed,
 } from './acl-observability.js';
 import { buildAccessGraph } from './access-graph.js';
+import { captureAclSyncFence } from './acl-generation.js';
+import { withAclConnectionSyncLock } from './acl-sync-lock.js';
 
 const logger = createLogger('github-acl-sync');
 
@@ -52,6 +54,12 @@ export interface GithubAclSyncDeps {
 
 export interface GithubAclSyncResult {
   ok: boolean;
+  /**
+   * True when another sync already held this connection and this call published
+   * nothing. Distinct from `ok: false`: a skip is not a failure and must NOT
+   * mark the connection failed, but nothing was reconciled either.
+   */
+  skipped?: boolean;
   reposSynced: number;
 }
 
@@ -64,7 +72,31 @@ export async function syncGithubConnectionAcl(
   deps: GithubAclSyncDeps,
   params: { connectionId: string; organizationId: string },
 ): Promise<GithubAclSyncResult> {
+  const outcome = await withAclConnectionSyncLock(params.connectionId, () =>
+    syncGithubConnectionAclLocked(deps, params),
+  );
+  if (!outcome.ran) {
+    logger.info('GitHub ACL sync skipped: another sync holds this connection', {
+      organization_id: params.organizationId,
+      connection_id: params.connectionId,
+    });
+    return { ok: false, skipped: true, reposSynced: 0 };
+  }
+  return outcome.value;
+}
+
+async function syncGithubConnectionAclLocked(
+  deps: GithubAclSyncDeps,
+  params: { connectionId: string; organizationId: string },
+): Promise<GithubAclSyncResult> {
   const { connectionId, organizationId } = params;
+
+  // Captured BEFORE any provider read. Capturing it inside `buildAccessGraph`
+  // instead — after every collaborator fetch — would observe a generation that
+  // an invalidation had already bumped while this snapshot was being taken, so
+  // the stale snapshot would then satisfy its own fence. Slack captures its
+  // fence in the same position, before its channel fetches.
+  const syncFence = await captureAclSyncFence(organizationId);
 
   const repos = await deps.listRepos({ organizationId, connectionId });
   if (repos.length === 0) {
@@ -90,6 +122,7 @@ export async function syncGithubConnectionAcl(
       resourceNamespace: githubAclSource.resourceNamespace,
       memberIdentities: githubAclSource.memberIdentities,
       resources: githubReposToResources(repoInputs),
+      syncFence,
     });
     await clearConnectionAclError(organizationId, connectionId);
     return { ok: true, reposSynced: repoInputs.length };
@@ -194,15 +227,25 @@ export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<
 
   let ok = 0;
   let failed = 0;
+  let skipped = 0;
   for (const conn of connections) {
     const result = await syncGithubConnectionAcl(deps, {
       connectionId: conn.id,
       organizationId: conn.organization_id,
     });
     if (result.ok) ok += 1;
+    // A skip means another sync of this connection is in flight and will
+    // publish; counting it as failed would make an overlapping tick look like
+    // an outage.
+    else if (result.skipped) skipped += 1;
     else failed += 1;
   }
-  logger.info('GitHub ACL sync tick complete', { connections: connections.length, ok, failed });
+  logger.info('GitHub ACL sync tick complete', {
+    connections: connections.length,
+    ok,
+    failed,
+    skipped,
+  });
 }
 
 /** Resolve an org's GitHub App installation token (collaborator-capable), minted

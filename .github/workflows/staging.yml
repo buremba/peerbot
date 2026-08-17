@@ -3,9 +3,21 @@ name: Staging lock
 # The 'staging' label pins the rolling staging URL (staging.<tailnet>) to one PR.
 # Adding the label acquires the lock (strips it from other open PRs, moves the
 # staging ingress to this PR's namespace); removing it releases the lock.
+# Also dispatchable manually (workflow_dispatch) for manual lock control.
 on:
   pull_request:
     types: [labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR to lock/unlock the staging URL'
+        required: true
+        type: string
+      action:
+        description: 'labeled = acquire the lock, unlabeled = release'
+        required: true
+        type: choice
+        options: [labeled, unlabeled]
 
 permissions:
   contents: read
@@ -23,28 +35,30 @@ env:
 jobs:
   reconcile:
     runs-on: ubuntu-24.04
-    if: github.event.label.name == 'staging'
+    if: github.event.label.name == 'staging' || github.event_name == 'workflow_dispatch'
     env:
-      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
-      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
+      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
+      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       STAGING_INGRESS: lobu-staging
       STAGING_HOST: staging.${{ vars.TAILNET_DOMAIN }}
+      # labeled = acquire, unlabeled = release (label event or manual dispatch)
+      STAGING_ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || github.event.action }}
     steps:
       - name: Setup kubeconfig
         run: |
           echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
 
       - name: Release lock (unlabeled)
-        if: github.event.action == 'unlabeled'
+        if: env.STAGING_ACTION == 'unlabeled'
         run: |
           kubectl delete ingress "$STAGING_INGRESS" -A --ignore-not-found
           echo "staging lock released (staging.${{ vars.TAILNET_DOMAIN }} no longer mapped)"
 
       - name: Acquire lock (labeled)
-        if: github.event.action == 'labeled'
+        if: env.STAGING_ACTION == 'labeled'
         run: |
           set -euo pipefail
-          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_NUM="${{ github.event.pull_request.number || inputs.pr_number }}"
 
           # Single-holder enforcement: strip the label from every other open PR.
           for n in $(gh pr list --state open --json number --jq '.[].number'); do

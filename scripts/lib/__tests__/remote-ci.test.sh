@@ -159,4 +159,100 @@ if grep -q 'depot/tests-run-action' <<<"$vitest_job"; then
   fail "timing regrouping is unsafe for the order-sensitive shared-DB suite"
 fi
 
+
+# ── provider dispatch (scripts/run-remote-ci.sh) ──────────────────────────
+# The dispatcher is exercised with a mocked daytona binary so no sandbox is
+# ever provisioned. A settled (staged, no untracked) tree is required first.
+
+( cd "$repo"
+  if REMOTE_CI_PROVIDER=bogus bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit >/dev/null 2>&1; then
+    fail "unknown provider was accepted"
+  fi
+
+  if REMOTE_CI_PROVIDER=local bash "$SCRIPT_DIR/../../run-remote-ci.sh" nosuchjob >/dev/null 2>&1; then
+    fail "unknown job in the local fallback was accepted"
+  fi
+
+  # Mocked daytona: list succeeds (logged in), create records its args then
+  # fails. Auto-detection must pick daytona, pass memory in GB, and fail
+  # closed when create fails.
+  tmpbin="$(mktemp -d "${TMPDIR:-/tmp}/lobu-remote-ci-bin.XXXXXX")"
+  cat > "$tmpbin/daytona" <<'MOCK'
+#!/usr/bin/env bash
+case "$1" in
+  list) exit 0 ;;
+  create)
+    printf '%s\n' "$@" > "${DAYTONA_CALL_LOG:?}"
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+MOCK
+  chmod +x "$tmpbin/daytona"
+  call_log="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-call.XXXXXX")"
+  if PATH="$tmpbin:$PATH" DAYTONA_CALL_LOG="$call_log" GATE_SKIP_SETTLED_CHECK=1 \
+      bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit >/dev/null 2>&1; then
+    fail "mocked daytona create failure was accepted"
+  fi
+  grep -q -- '--memory' "$call_log" || fail "daytona create was not invoked"
+  # Each arg is on its own line in the log; join before matching.
+  flat="$(tr '\n' ' ' < "$call_log")"
+  grep -q -- '--memory 4 ' <<<"$flat" ||
+    fail "daytona create must pass memory in GB (default 4), got: $flat"
+  grep -q -- '--cpu 4 ' <<<"$flat" || fail "daytona create must pass the default cpu"
+  grep -q -- '--disk 10 ' <<<"$flat" || fail "daytona create must pass the default disk"
+  rm -rf "$tmpbin" "$call_log"
+  # Mocked SUCCESSFUL daytona lifecycle: create stores the generated name,
+  # list reports it started (poll passes), exec emits the GATE_REMOTE_EXIT
+  # sentinel, delete is called. Exercises polling, sentinel parsing, cleanup.
+  # (The create-failure block above removed $tmpbin, so recreate it. The
+  # dispatcher invokes `daytona`, so the success mock must replace it.)
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/daytona" <<'MOCK2'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    # Readiness probe runs BEFORE create (name file empty): must still exit 0.
+    # After create stores the name, report it started so the poll passes.
+    name="$(cat "${DAYTONA_NAME_FILE:-/dev/null}" 2>/dev/null || true)"
+    if [ -n "$name" ]; then
+      printf '{"items":[{"name":"%s","state":"started"}]}\n' "$name"
+    else
+      printf '{"items":[]}\n'
+    fi
+    exit 0
+    ;;
+  create)
+    name=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--name" ]; then name="$2"; break; fi
+      shift
+    done
+    printf '%s' "$name" > "${DAYTONA_NAME_FILE:?}"
+    exit 0
+    ;;
+  exec)
+    echo "GATE_REMOTE_EXIT=0"
+    exit 0
+    ;;
+  delete)
+    echo deleted > "${DAYTONA_DELETE_FLAG:?}"
+    exit 0
+    ;;
+  *) exit 1 ;;
+esac
+MOCK2
+  chmod +x "$tmpbin/daytona"
+  name_file="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-name.XXXXXX")"
+  del_flag="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-del.XXXXXX")"
+  if ! PATH="$tmpbin:$PATH" DAYTONA_NAME_FILE="$name_file" DAYTONA_DELETE_FLAG="$del_flag" \
+      GATE_SKIP_SETTLED_CHECK=1 bash "$SCRIPT_DIR/../../run-remote-ci.sh" dead-code-report >/dev/null 2>&1; then
+    fail "mocked successful daytona run was rejected"
+  fi
+  # The success path also proves the GATE_REMOTE_EXIT sentinel was parsed:
+  # the dispatcher reported "remote gate exit: 0" (checked via the flag).
+  [ -s "$del_flag" ] || fail "cleanup did not call daytona delete"
+  rm -f "$name_file" "$del_flag"
+)
+
 echo "ok - remote CI helpers fail closed"

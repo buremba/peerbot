@@ -67,7 +67,7 @@ remote_ci_staged_tree() {
   remote_ci_require_no_untracked || return 1
   if ! git diff --quiet --ignore-submodules=none --; then
     echo "Full remote CI requires all intended changes to be staged." >&2
-    echo "Run git add -- <explicit-paths>, then rerun make pre-pr-remote." >&2
+    echo "Run git add -- <explicit-paths>, then rerun make pr-full." >&2
     return 1
   fi
   git write-tree

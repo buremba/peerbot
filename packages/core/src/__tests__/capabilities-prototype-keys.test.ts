@@ -47,4 +47,23 @@ describe("platform allowlist lookups ignore inherited keys", () => {
       "os.files"
     );
   });
+
+  test("headless devices authorize shell+files but nothing browser-ish", () => {
+    // A server/VM device (herdr) advertises the shell/files it actually has;
+    // browser and UI capabilities must be dropped, never silently granted.
+    expect(isKnownPlatform("headless")).toBe(true);
+    const authorized = authorizeCapabilities("headless", [
+      "os.shell",
+      "os.files",
+      "os.notifications",
+      "browser.tabs",
+      "computer_use",
+    ]);
+    expect(authorized.authorized.sort()).toEqual(["os.files", "os.shell"]);
+    expect(authorized.dropped.sort()).toEqual([
+      "browser.tabs",
+      "computer_use",
+      "os.notifications",
+    ]);
+  });
 });

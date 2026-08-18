@@ -53,6 +53,15 @@ export const MAC_DEVICE_CAPABILITIES = [
   "computer_use",
 ] as const;
 
+// A server/VM with no UI or browser (the herdr box, a CI node, a k8s pod).
+// The device daemon can run agent work and touch a shell/files, but has no
+// browser to drive and no screen to notify. Keep this set small and honest -
+// add strings here only as headless connectors actually land.
+export const HEADLESS_CAPABILITIES = [
+  "os.shell",
+  "os.files",
+] as const;
+
 const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {
   macos: [
     ...OS_CAPABILITIES,
@@ -61,6 +70,7 @@ const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {
   ],
   ios: IOS_CAPABILITIES,
   "chrome-extension": BROWSER_CAPABILITIES,
+  headless: HEADLESS_CAPABILITIES,
 };
 
 export interface CapabilityAuthorizationResult {

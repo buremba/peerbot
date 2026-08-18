@@ -32,7 +32,7 @@ Options:
   --api-url <url>    Backend API URL (required for daemon)
   --worker-id <id>   Worker ID (required in device mode; fleet default: UUID)
   --version <ver>    Worker version (default: 1.0.0)
-  --platform <name>  Run as a device worker on this host platform (e.g. macos)
+  --platform <name>  Run as a device worker on this host platform (e.g. macos, headless)
                      instead of a cloud-fleet worker. Requires a durable
                      personal access token in WORKER_API_TOKEN — mint one with
                      \`lobu token create --raw\`. Note \`lobu whoami --json\`

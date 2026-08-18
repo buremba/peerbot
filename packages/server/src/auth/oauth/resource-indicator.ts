@@ -32,11 +32,45 @@ export function publicMcpRequestUrl(request: Request): string {
   // WWW-Authenticate stay bound to the URL the client called.
   const servingOrigin = resolveBaseUrl({ request, skipEnvOverride: true });
   const configuredOrigin = getConfiguredPublicOrigin();
-  const origin = isTrustedPublicOrigin(servingOrigin, configuredOrigin)
-    ? servingOrigin
-    : (configuredOrigin ?? new URL(request.url).origin);
+  const origin =
+    forwardedPublicOrigin(request) ??
+    (isTrustedPublicOrigin(servingOrigin, configuredOrigin)
+      ? servingOrigin
+      : (configuredOrigin ?? new URL(request.url).origin));
   const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
   return `${origin}${pathname}`;
+}
+
+/**
+ * Public origin recovered from `x-forwarded-for-origin`.
+ *
+ * The `lobu.ai` Cloudflare Pages worker proxies `/mcp` to `app.lobu.ai` and
+ * sets `x-forwarded-host` AND this header to the host the client actually
+ * called. Traefik in front of the pod then overwrites `x-forwarded-host` with
+ * its own request host, so only this header survives the hop. Without reading
+ * it, a token bound to `https://lobu.ai/mcp` is audience-checked against
+ * `https://app.lobu.ai/mcp` and every MCP call 401s — the failure mode this
+ * function exists to prevent.
+ *
+ * A request that skips the edge can set the header itself, so it is honoured
+ * only after `isTrustedPublicOrigin` — the same gate the standard forwarded
+ * host clears. That confines it to the configured zone, which is one resource
+ * server under one operator, so it can never name a foreign resource server.
+ */
+function forwardedPublicOrigin(request: Request): string | null {
+  const raw = request.headers.get('x-forwarded-for-origin')?.trim();
+  if (!raw) return null;
+  let origin: string;
+  try {
+    const parsed = new URL(raw);
+    // Origin only: a path, query, or fragment means this is not a bare origin
+    // and we should not guess at what the client called.
+    if (parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
+    origin = parsed.origin;
+  } catch {
+    return null;
+  }
+  return isTrustedPublicOrigin(origin) ? origin : null;
 }
 
 function isTrustedPublicOrigin(

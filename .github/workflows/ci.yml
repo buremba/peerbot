@@ -100,7 +100,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/|bun\.lock$|package\.json$|db/|scripts/|config/|\.github/workflows/ci\.yml$|\.github/actions/|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/|bun\.lock$|package\.json$|tsconfig\.json$|bunfig\.toml$|Makefile$|patches/|docker/|db/|scripts/|config/|\.github/workflows/ci\.yml$|\.github/actions/|\.gitmodules$)' >/dev/null; then
             echo "packages=true" >> "$GITHUB_OUTPUT"
           else
             echo "packages=false" >> "$GITHUB_OUTPUT"
@@ -155,9 +155,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-unit-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-unit-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -332,9 +333,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-sdk-cli-build-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-sdk-cli-build-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -384,10 +386,8 @@ jobs:
         id: cache-keys
         shell: bash
         run: |
-          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-dead-code-report-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -622,9 +622,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-frontend-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-frontend-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -735,9 +736,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-integration-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-integration-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -866,9 +868,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-integration-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-integration-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -1236,9 +1239,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-typecheck-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-typecheck-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache
@@ -1734,9 +1738,10 @@ jobs:
         shell: bash
         run: |
           PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile 2>/dev/null; git rev-parse HEAD:patches 2>/dev/null; } | git hash-object --stdin || echo no-root)
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
-          echo "dist-key=dist-connector-parity-$PKG_TREE-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-connector-parity-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         id: bun-cache

@@ -20,7 +20,7 @@
  *
  * Identity is the (source run, case key) pair, claimed in `entity_identities`
  * under the `eval_case` namespace. The partial unique index
- * `idx_entity_identities_live_unique (organization_id, namespace, identifier,
+ * `idx_entity_identities_live_unique_scoped (organization_id, namespace, identifier,
  * COALESCE(scope_connection_id, 0))
  * WHERE deleted_at IS NULL` is the multi-replica lock, so two operators
  * promoting the same run concurrently resolve to one case rather than two.

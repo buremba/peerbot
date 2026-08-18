@@ -278,7 +278,7 @@ async function applyMergeInTransaction(
   `;
 
   // 1. Move the loser's LIVE identities to the winner. The move can never hit
-  //    `idx_entity_identities_live_unique`: `entity_id` is not part of that
+  //    `idx_entity_identities_live_unique_scoped`: `entity_id` is not part of that
   //    index, so repointing a row leaves its key
   //    (org, namespace, identifier, COALESCE(scope_connection_id, 0))
   //    untouched. That holds even when loser and winner both claim the same

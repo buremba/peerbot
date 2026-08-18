@@ -9,7 +9,7 @@
  *
  * Identity: a lazy per-automation "canvas" entity claimed via `entity_identities`
  * (namespace `automation_canvas`, identifier = `<automationId>`), anchoring the chain
- * via `entity_ids`. The partial unique index `idx_entity_identities_live_unique`
+ * via `entity_ids`. The partial unique index `idx_entity_identities_live_unique_scoped`
  * (org, namespace, identifier WHERE deleted_at IS NULL) is the multi-replica lock.
  *
  * Invariants (enforced by DB indexes, not in-memory state):

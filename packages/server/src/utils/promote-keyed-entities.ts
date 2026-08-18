@@ -8,7 +8,7 @@
  * typed key tuple; the full tuple remains in entity metadata for inspection,
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
- * `idx_entity_identities_live_unique (organization_id, namespace, identifier,
+ * `idx_entity_identities_live_unique_scoped (organization_id, namespace, identifier,
  * COALESCE(scope_connection_id, 0))
  * WHERE deleted_at IS NULL` is the lock.
  *

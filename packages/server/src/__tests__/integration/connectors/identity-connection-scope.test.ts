@@ -1,7 +1,7 @@
 /**
  * Identity scope: does an identifier mean the same thing across connections?
  *
- * `idx_entity_identities_live_unique` keys on
+ * `idx_entity_identities_live_unique_scoped` keys on
  * `(organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))`.
  * A connector declares `scope` per identity namespace, because only it knows
  * whether its namespace is globally meaningful:

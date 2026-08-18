@@ -421,7 +421,7 @@ function extractLink(
  * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
  *
  * An identity value belongs to at most ONE entity within its scope (the
- * `idx_entity_identities_live_unique` index on
+ * `idx_entity_identities_live_unique_scoped` index on
  * `(org, namespace, identifier, COALESCE(scope_connection_id, 0))`), so a key
  * resolves to a single entity of ANY type. Org-scoped identities carry a NULL
  * scope and therefore still resolve org-wide, which is every identity a

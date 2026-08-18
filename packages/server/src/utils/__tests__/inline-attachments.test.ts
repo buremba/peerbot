@@ -3,8 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ArtifactStore } from '../../gateway/files/artifact-store';
-import { materializeActionOutputAttachments } from '../inline-attachments';
+import {
+  ArtifactStore,
+  runArtifactBinding,
+} from '../../gateway/files/artifact-store';
+import {
+  deleteMaterializedArtifacts,
+  materializeActionOutputAttachments,
+} from '../inline-attachments';
 
 describe('materializeActionOutputAttachments', () => {
   let artifactsDir: string;
@@ -27,7 +33,7 @@ describe('materializeActionOutputAttachments', () => {
 
   it('reuses connector attachment materialization for device action media', async () => {
     const bytes = Buffer.from('device-photo-bytes');
-    const output = await materializeActionOutputAttachments(
+    const { output, publishedArtifactIds } = await materializeActionOutputAttachments(
       42,
       {
         asset_local_id: 'photo-123',
@@ -45,6 +51,7 @@ describe('materializeActionOutputAttachments', () => {
     );
 
     expect(output.asset_local_id).toBe('photo-123');
+    expect(publishedArtifactIds).toHaveLength(1);
     const attachment = (output.attachments as Array<Record<string, unknown>>)[0];
     expect(attachment).toEqual(
       expect.objectContaining({
@@ -58,8 +65,73 @@ describe('materializeActionOutputAttachments', () => {
     );
     expect(attachment).not.toHaveProperty('data');
 
-    const stored = await artifactStore.read(String(attachment.artifact_id));
+    const stored = await artifactStore.read(String(attachment.artifact_id), {
+      binding: runArtifactBinding(42),
+    });
     expect(stored).toBeTruthy();
     expect(await readFile(stored!.filePath)).toEqual(bytes);
   });
+  it('deletes partial publishes when a later attachment publish fails', async () => {
+    let publishCalls = 0;
+    let firstArtifactId: string | undefined;
+    const flakyStore = {
+      publish: async (params: Parameters<ArtifactStore['publish']>[0]) => {
+        publishCalls += 1;
+        if (publishCalls === 2) throw new Error('second publish failed');
+        const published = await artifactStore.publish(params);
+        firstArtifactId = published.artifactId;
+        return published;
+      },
+      delete: (artifactId: string) => artifactStore.delete(artifactId),
+    };
+
+    await expect(
+      materializeActionOutputAttachments(
+        77,
+        {
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'first.jpg',
+              mime_type: 'image/jpeg',
+              data: Buffer.from('first').toString('base64'),
+            },
+            {
+              kind: 'image',
+              filename: 'second.jpg',
+              mime_type: 'image/jpeg',
+              data: Buffer.from('second').toString('base64'),
+            },
+          ],
+        },
+        flakyStore
+      )
+    ).rejects.toThrow('second publish failed');
+
+    expect(firstArtifactId).toBeTruthy();
+    expect(await artifactStore.read(firstArtifactId!)).toBeNull();
+  });
+
+  it('deletes materialized action artifacts when finalization is abandoned', async () => {
+    const { publishedArtifactIds } = await materializeActionOutputAttachments(
+      88,
+      {
+        attachments: [
+          {
+            kind: 'image',
+            filename: 'abandoned.jpg',
+            mime_type: 'image/jpeg',
+            data: Buffer.from('abandoned').toString('base64'),
+          },
+        ],
+      },
+      artifactStore
+    );
+    expect(publishedArtifactIds).toHaveLength(1);
+    expect(await artifactStore.read(publishedArtifactIds[0])).toBeTruthy();
+
+    await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
+    expect(await artifactStore.read(publishedArtifactIds[0])).toBeNull();
+  });
+
 });

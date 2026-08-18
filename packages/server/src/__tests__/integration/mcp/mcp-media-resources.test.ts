@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
-import { ArtifactStore } from '../../../gateway/files/artifact-store';
+import {
+  ArtifactStore,
+  eventArtifactBinding,
+  runArtifactBinding,
+} from '../../../gateway/files/artifact-store';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -94,6 +98,10 @@ describe('MCP media resources', () => {
       filename: 'memory-photo.webp',
       contentType: 'image/webp',
       publicGatewayUrl: 'http://localhost',
+      binding: eventArtifactBinding({
+        organizationId: org.id,
+        originId: 'mcp-media-event',
+      }),
     });
     const event = await insertEvent({
       entityIds: [],
@@ -177,6 +185,10 @@ describe('MCP media resources', () => {
       filename: 'private.jpg',
       contentType: 'image/jpeg',
       publicGatewayUrl: 'http://localhost',
+      binding: eventArtifactBinding({
+        organizationId: otherOrg.id,
+        originId: 'other-mcp-media-event',
+      }),
     });
     const event = await insertEvent({
       entityIds: [],
@@ -215,37 +227,103 @@ describe('MCP media resources', () => {
     expect(body.error?.message).toContain('Unknown resource');
   });
 
+  it('rejects an artifact grafted from another authorized resource', async () => {
+    const otherOrg = await createTestOrganization({
+      name: 'Foreign Artifact Org',
+      slug: 'foreign-artifact-org',
+    });
+    const sql = getDb();
+    const [foreignRun, localRun] = await Promise.all([
+      sql`
+        INSERT INTO runs (organization_id, run_type, status, approval_status)
+        VALUES (${otherOrg.id}, 'action', 'completed', 'auto')
+        RETURNING id
+      `.then((rows) => rows[0]),
+      sql`
+        INSERT INTO runs (organization_id, run_type, status, approval_status)
+        VALUES (${org.id}, 'action', 'completed', 'auto')
+        RETURNING id
+      `.then((rows) => rows[0]),
+    ]);
+    const foreignRunId = Number(foreignRun!.id);
+    const localRunId = Number(localRun!.id);
+    const foreignBytes = Buffer.from('foreign-artifact-bytes');
+    const foreignArtifact = await artifactStore.publish({
+      buffer: foreignBytes,
+      filename: 'foreign.jpg',
+      contentType: 'image/jpeg',
+      publicGatewayUrl: 'http://localhost',
+      binding: runArtifactBinding(foreignRunId),
+    });
+    await sql`
+      UPDATE runs
+      SET action_output = ${sql.json({
+        attachments: [
+          {
+            kind: 'image',
+            filename: 'foreign.jpg',
+            mime_type: 'image/jpeg',
+            artifact_id: foreignArtifact.artifactId,
+            size_bytes: foreignBytes.length,
+          },
+        ],
+      })}
+      WHERE id = ${localRunId}
+    `;
+
+    const sessionId = await initSession();
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'grafted-media',
+        method: 'resources/read',
+        params: { uri: `lobu://run/${localRunId}/attachment/0` },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result).toBeUndefined();
+    expect(body.error?.message).toContain('Unknown resource');
+  });
+
   it('returns operation attachments as stable resource links and serves their bytes', async () => {
     const imageBytes = Buffer.from('fake-image-bytes');
+    const sql = getDb();
+    const [run] = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status
+      ) VALUES (
+        ${org.id}, 'action', 'completed', 'auto'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run!.id);
     const artifact = await artifactStore.publish({
       buffer: imageBytes,
       filename: 'candidate.jpg',
       contentType: 'image/jpeg',
       publicGatewayUrl: 'http://localhost',
+      binding: runArtifactBinding(runId),
     });
-
-    const sql = getDb();
-    const [run] = await sql`
-      INSERT INTO runs (
-        organization_id, run_type, status, approval_status, action_output
-      ) VALUES (
-        ${org.id}, 'action', 'completed', 'auto',
-        ${sql.json({
-          attachments: [
-            {
-              kind: 'image',
-              filename: 'candidate.jpg',
-              mime_type: 'image/jpeg',
-              artifact_id: artifact.artifactId,
-              download_url: artifact.downloadUrl,
-              size_bytes: imageBytes.length,
-            },
-          ],
-        })}
-      )
-      RETURNING id
+    await sql`
+      UPDATE runs
+      SET action_output = ${sql.json({
+        attachments: [
+          {
+            kind: 'image',
+            filename: 'candidate.jpg',
+            mime_type: 'image/jpeg',
+            artifact_id: artifact.artifactId,
+            download_url: artifact.downloadUrl,
+            size_bytes: imageBytes.length,
+          },
+        ],
+      })}
+      WHERE id = ${runId}
     `;
-    const runId = Number(run!.id);
 
     const sessionId = await initSession();
     const path = `/mcp/${org.slug}`;

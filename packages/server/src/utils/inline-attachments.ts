@@ -23,7 +23,10 @@
 import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
 import { getLobuCoreServices } from "../lobu/gateway";
-import type { ArtifactStore } from "../gateway/files/artifact-store";
+import {
+  runArtifactBinding,
+  type ArtifactStore,
+} from "../gateway/files/artifact-store";
 import { resolvePublicGatewayUrl } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
@@ -86,16 +89,22 @@ function publicGatewayUrl(): string {
  */
 export async function materializeInlineAttachments<T extends StreamItemLike>(
   items: T[],
-  artifactStoreOverride?: Pick<ArtifactStore, "publish">
-): Promise<{ items: T[]; pendingTranscriptions: AudioTranscriptionPending[] }> {
+  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">,
+  bindingForItem?: (item: T) => string | undefined
+): Promise<{
+  items: T[];
+  pendingTranscriptions: AudioTranscriptionPending[];
+  publishedArtifactIds: string[];
+}> {
   const coreServices = getLobuCoreServices();
   const artifactStore = artifactStoreOverride ?? coreServices?.getArtifactStore?.();
   if (!artifactStore) {
-    return { items, pendingTranscriptions: [] };
+    return { items, pendingTranscriptions: [], publishedArtifactIds: [] };
   }
 
   const baseUrl = publicGatewayUrl();
   const pendingTranscriptions: AudioTranscriptionPending[] = [];
+  const publishedArtifactIds: string[] = [];
   const out: T[] = [];
 
   for (const item of items) {
@@ -142,12 +151,22 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         continue;
       }
 
-      const published = await artifactStore.publish({
-        buffer,
-        filename,
-        contentType: mime,
-        publicGatewayUrl: baseUrl,
-      });
+      let published: Awaited<ReturnType<ArtifactStore["publish"]>>;
+      try {
+        published = await artifactStore.publish({
+          buffer,
+          filename,
+          contentType: mime,
+          publicGatewayUrl: baseUrl,
+          binding: bindingForItem?.(item),
+        });
+        publishedArtifactIds.push(published.artifactId);
+      } catch (error) {
+        await Promise.allSettled(
+          publishedArtifactIds.map((artifactId) => artifactStore.delete(artifactId))
+        );
+        throw error;
+      }
 
       const materialized: MaterializedAttachment = {
         kind,
@@ -173,21 +192,50 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
     out.push({ ...item, attachments: rewritten });
   }
 
-  return { items: out, pendingTranscriptions };
+  return { items: out, pendingTranscriptions, publishedArtifactIds };
 }
 
 /** Materialize connector-style attachments returned by a device action. */
 export async function materializeActionOutputAttachments(
   runId: number,
   actionOutput: Record<string, unknown>,
-  artifactStoreOverride?: Pick<ArtifactStore, "publish">
-): Promise<Record<string, unknown>> {
-  if (!Array.isArray(actionOutput.attachments)) return actionOutput;
-  const { items } = await materializeInlineAttachments(
+  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">
+): Promise<{
+  output: Record<string, unknown>;
+  publishedArtifactIds: string[];
+}> {
+  if (!Array.isArray(actionOutput.attachments)) {
+    return { output: actionOutput, publishedArtifactIds: [] };
+  }
+  const { items, publishedArtifactIds } = await materializeInlineAttachments(
     [{ id: `action:${runId}`, attachments: actionOutput.attachments }],
-    artifactStoreOverride
+    artifactStoreOverride,
+    () => runArtifactBinding(runId)
   );
-  return { ...actionOutput, attachments: items[0]?.attachments ?? [] };
+  return {
+    output: { ...actionOutput, attachments: items[0]?.attachments ?? [] },
+    publishedArtifactIds,
+  };
+}
+
+export async function deleteMaterializedArtifacts(
+  artifactIds: string[],
+  artifactStoreOverride?: Pick<ArtifactStore, "delete">
+): Promise<void> {
+  if (artifactIds.length === 0) return;
+  const coreServices = getLobuCoreServices();
+  const artifactStore = artifactStoreOverride ?? coreServices?.getArtifactStore?.();
+  if (!artifactStore) return;
+  const results = await Promise.allSettled(
+    artifactIds.map((artifactId) => artifactStore.delete(artifactId))
+  );
+  const failed = results.filter((result) => result.status === "rejected").length;
+  if (failed > 0) {
+    logger.warn(
+      { artifact_count: artifactIds.length, failed },
+      "[inline-attachments] failed to delete some uncommitted artifacts"
+    );
+  }
 }
 
 function inferKindFromMime(mime: string): string {

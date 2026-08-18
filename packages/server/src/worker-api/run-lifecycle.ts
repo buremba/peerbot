@@ -33,6 +33,7 @@ import { materializeConnectorAutomationSignal } from "../automations/connector-s
 import { feedBackoff } from "../connectors/feed-backoff";
 import { maybeEmitFeedAutoPausedAfterFailure } from "../automations/platform-events";
 import { getDb, parsePgNumberArray } from "../db/client";
+import { eventArtifactBinding } from "../gateway/files/artifact-store";
 import { emit } from "../events/emitter";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import type { Env } from "../index";
@@ -51,6 +52,7 @@ import { applyEventAttributions } from "../utils/entity-link-upsert";
 import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
 import {
+	deleteMaterializedArtifacts,
 	materializeActionOutputAttachments,
 	materializeInlineAttachments,
 	triggerAudioTranscriptions,
@@ -311,7 +313,17 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			>["pendingTranscriptions"] = [];
 			if (!isDry) {
 				const { items: materializedItems, pendingTranscriptions: pending } =
-					await materializeInlineAttachments(batch.items);
+					await materializeInlineAttachments(
+						batch.items,
+						undefined,
+						(item) =>
+							eventArtifactBinding({
+								organizationId: run.organization_id,
+								connectionId: run.connection_id,
+								feedId: run.feed_id,
+								originId: item.id,
+							})
+					);
 				batch.items = materializedItems as typeof batch.items;
 				pendingTranscriptions = pending;
 			}
@@ -1899,6 +1911,7 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
  * Worker signals action run completion (for async high-risk actions).
  */
 export async function completeActionRun(c: Context<{ Bindings: Env }>) {
+	let publishedActionArtifactIds: string[] = [];
 	try {
 		const req = await c.req.json<CompleteActionRequest>();
 
@@ -1909,9 +1922,12 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
-		const actionOutput = req.action_output
+		const materializedActionOutput = req.action_output
 			? await materializeActionOutputAttachments(req.run_id, req.action_output)
 			: undefined;
+		const actionOutput = materializedActionOutput?.output;
+		publishedActionArtifactIds =
+			materializedActionOutput?.publishedArtifactIds ?? [];
 
 		// Atomic terminal-state transition with the shared F2 guard (see
 		// finalizeRun) AND, for approval-gated runs, the card supersede in ONE
@@ -1966,6 +1982,8 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 			return rows;
 		});
 		if (updatedRuns.length === 0) {
+			await deleteMaterializedArtifacts(publishedActionArtifactIds);
+			publishedActionArtifactIds = [];
 			// Either the run was already finalized (timeout race) or the
 			// worker isn't the claimant. authorizeRunForWorker already gated
 			// ownership, so this is almost always the timeout race; return
@@ -1981,6 +1999,8 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 			return c.json({ success: false, reason: "already_finalized" });
 		}
 
+		// The transaction committed; from here these artifacts are durable run output.
+		publishedActionArtifactIds = [];
 		const organizationId = (updatedRuns[0] as any)?.organization_id;
 
 		if (organizationId) {
@@ -1993,6 +2013,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		);
 		return c.json({ success: true });
 	} catch (err: unknown) {
+		await deleteMaterializedArtifacts(publishedActionArtifactIds);
 		logger.error({ error: errorMessage(err) }, "[completeActionRun] Error");
 		return c.json({ error: errorMessage(err) }, 500);
 	}

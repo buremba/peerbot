@@ -1,6 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ArtifactStore } from './gateway/files/artifact-store';
+import {
+  ArtifactStore,
+  eventArtifactBinding,
+  runArtifactBinding,
+} from './gateway/files/artifact-store';
 import type { Env } from './index';
 import { type AuthContext, executeTool } from './tools/execute';
 
@@ -146,7 +150,7 @@ async function loadResourceAttachment(
   ref: ResourceRef,
   env: Env,
   authCtx: AuthContext
-): Promise<Record<string, unknown> | null> {
+): Promise<{ attachment: Record<string, unknown>; binding: string } | null> {
   if (ref.kind === 'run') {
     const result = await executeTool(
       'manage_operations',
@@ -160,7 +164,9 @@ async function loadResourceAttachment(
     const output = result.run.output;
     if (!isRecord(output) || !Array.isArray(output.attachments)) return null;
     const raw = output.attachments[ref.index];
-    return isRecord(raw) ? raw : null;
+    return isRecord(raw)
+      ? { attachment: raw, binding: runArtifactBinding(ref.id) }
+      : null;
   }
 
   const result = await executeTool(
@@ -175,7 +181,18 @@ async function loadResourceAttachment(
   );
   if (!isRecord(item) || !Array.isArray(item.attachments)) return null;
   const raw = item.attachments[ref.index];
-  return isRecord(raw) ? raw : null;
+  if (!isRecord(raw) || !authCtx.organizationId) return null;
+  const originId = typeof item.origin_id === 'string' ? item.origin_id : '';
+  if (!originId) return null;
+  return {
+    attachment: raw,
+    binding: eventArtifactBinding({
+      organizationId: authCtx.organizationId,
+      connectionId: positiveInteger(item.connection_id),
+      feedId: positiveInteger(item.feed_id),
+      originId,
+    }),
+  };
 }
 
 /**
@@ -199,13 +216,16 @@ export async function readMcpAttachmentResource(
   const ref = parseAttachmentUri(uri);
   if (!ref) return null;
 
-  const attachment = await loadResourceAttachment(ref, env, authCtx);
-  if (!attachment || typeof attachment.artifact_id !== 'string') {
+  const loaded = await loadResourceAttachment(ref, env, authCtx);
+  const attachment = loaded?.attachment;
+  if (!loaded || !attachment || typeof attachment.artifact_id !== 'string') {
     throw new Error(`Unknown resource: ${uri}`);
   }
 
   const artifactStore = new ArtifactStore();
-  const stored = await artifactStore.read(attachment.artifact_id);
+  const stored = await artifactStore.read(attachment.artifact_id, {
+    binding: loaded.binding,
+  });
   if (!stored) throw new Error(`Unknown resource: ${uri}`);
   if (stored.metadata.size > MAX_MCP_RESOURCE_BYTES) {
     throw new Error(

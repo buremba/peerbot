@@ -126,9 +126,9 @@ jobs:
           # Serve) injects Forwarded-* headers; tolerate them for this single-user
           # preview so /api/local-init sign-in works (peer is loopback via socat).
           # CHOKIDAR_USEPOLLING: the container's default nofile ulimit is 1024, and
-          # Vite's inotify watchers blow through it at boot on a monorepo tree
-          # (EMFILE crash, seen after the image grew). Polling uses stat() instead
-          # of watch fds; the 4-CPU limit absorbs the polling cost.
+          # Vite's inotify watch fds blow through it at boot on a monorepo tree
+          # (EMFILE crash, seen after the image grew). Polling uses stat() calls
+          # instead; the 4-CPU limit absorbs the polling cost.
           cat <<EOF | kubectl apply -f -
           apiVersion: apps/v1
           kind: Deployment

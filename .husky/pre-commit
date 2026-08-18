@@ -2,11 +2,16 @@
 
 echo "🔍 Running pre-commit checks..."
 
-# Run biome check (format + lint + organize imports) and auto-fix
+# Biome check (format + lint + organize imports) in FAIL mode - never
+# auto-fix. check:fix used to write fixes to the working tree that the commit
+# then silently dropped (staged snapshot won), shipping unformatted code that
+# CI rejected while the hook printed green; any re-staging scheme then had to
+# fight partial staging and pathname edge cases. Fail loudly instead: the
+# commit carries exactly what you staged, and you fix + re-stage by hand.
 echo "📝 Running Biome checks..."
-bun run check:fix
+bun run check
 if [ $? -ne 0 ]; then
-  echo "❌ Biome check failed. Fix issues before committing."
+  echo "❌ Biome check failed. Run \`bun run check:fix\`, review the diff, then git add the changes and re-commit."
   exit 1
 fi
 

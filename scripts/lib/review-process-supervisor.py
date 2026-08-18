@@ -26,13 +26,21 @@ def group_alive(process_group: int) -> bool:
         return True
 
 
-def signal_group(process_group: Optional[int], sig: signal.Signals) -> None:
+def signal_group(process_group: Optional[int], sig: signal.Signals) -> bool:
+    """Signal the group. False means we cannot reap it — gone, or not ours.
+
+    `group_alive` reports a group we lack permission to signal as alive, so a
+    caller that retried on a denied signal would spin forever. Returning the
+    outcome lets the teardown path stop instead of escalating against a group
+    it will never be able to kill.
+    """
     if process_group is None:
-        return
+        return False
     try:
         os.killpg(process_group, sig)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
 
 
 def wait_for_group_exit(
@@ -103,12 +111,11 @@ def main() -> int:
     # A command may exit while leaving workers behind, or a TERM handler may
     # fork one last cleanup child after the first group signal. Keep supervising
     # the session until it is empty; escalate only after the grace period.
-    if group_alive(process_group):
-        signal_group(process_group, signal.SIGTERM)
+    if group_alive(process_group) and signal_group(process_group, signal.SIGTERM):
         if not wait_for_group_exit(child, process_group, grace):
-            signal_group(process_group, signal.SIGKILL)
-            while not wait_for_group_exit(child, process_group, 0.5):
-                signal_group(process_group, signal.SIGKILL)
+            while signal_group(process_group, signal.SIGKILL):
+                if wait_for_group_exit(child, process_group, 0.5):
+                    break
 
     if child_exit is None:
         child_exit = child.wait()

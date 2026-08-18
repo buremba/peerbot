@@ -588,7 +588,8 @@ export interface EventAttributionRule {
 /**
  * Normalized identifier that uniquely names an entity within a namespace.
  * Stored as a row in `entity_identities` with UNIQUE on
- * (organization_id, namespace, identifier) — matching, creation races, and
+ * (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+ * — matching, creation races, and
  * accrete all collapse onto this constraint.
  */
 export interface EntityIdentitySpec {
@@ -617,6 +618,29 @@ export interface EntityIdentitySpec {
    * matched by ANY of them — cross-channel WhatsApp/email matching relies on this).
    */
   primary?: boolean;
+  /**
+   * Does this identifier mean the same thing across connections?
+   *
+   * - `organization` (default) — globally meaningful within the org. A Slack
+   *   user id names the same person no matter which connection observed it, so
+   *   two connections seeing it must converge on ONE entity.
+   * - `connection` — only meaningful inside the connection that produced it.
+   *   `erp_customer` `CARI-001` is a different customer in two different ERP
+   *   tenants, so two connections seeing it must stay SEPARATE entities.
+   *
+   * Only the connector knows which it is: the namespace string is declared by
+   * the manifest, and nothing about `invoice_no` or `customer_code` tells the
+   * platform whether it is globally unique. Declaring it wrong in the
+   * `connection` direction fragments one entity into several; declaring it
+   * wrong in the `organization` direction merges two tenants' records, so the
+   * default is the conservative one only for connectors whose namespaces really
+   * are global.
+   *
+   * Distinct from the deleted `uniquePerOrg` flag, which was CARDINALITY — does
+   * this value name one entity or many (`email_domain` names many). Scope is
+   * orthogonal: `email_domain` is many-per-org yet globally meaningful.
+   */
+  scope?: 'organization' | 'connection';
 }
 
 /**

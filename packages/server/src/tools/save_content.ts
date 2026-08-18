@@ -440,8 +440,9 @@ async function saveContentImpl(
     // guard); this call is a verified signed-in user resolved to their own
     // member, so it IS that trusted tier. save_content historically wrote the
     // claim with source 'save_content', which — because the live-unique index
-    // is on (org, namespace, identifier) — permanently blocks the correct
-    // insert and poisons the member for the authz gate. Only that legacy source
+    // is on (org, namespace, identifier, COALESCE(scope_connection_id, 0)) and
+    // this claim is org-scoped (NULL) — permanently blocks the correct insert
+    // and poisons the member for the authz gate. Only that legacy source
     // is eligible for promotion: upgrading an arbitrary conflicting source
     // would defeat the gate's anti-hijack boundary.
     if (memberRows.length > 0 && authId) {
@@ -452,7 +453,7 @@ async function saveContentImpl(
         ) VALUES (
           ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup'
         )
-        ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+        ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
         DO UPDATE SET
           source_connector = 'auth:signup',
           entity_id = EXCLUDED.entity_id

@@ -50,6 +50,10 @@ export function buildSenderIdentity(sender: RawChatSender): SenderIdentitySpec |
             identifier: slackId,
             matchOnly: false,
             primary: false,
+            // Org-scoped: a Slack user id already carries its workspace
+            // (`T…:U…`), so it names the same person through every connection
+            // that observes it — which is exactly the collapse we want.
+            scopeConnectionId: null,
           },
         ],
         mintEntityType: 'person',

@@ -144,7 +144,7 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
       ) VALUES (
         ${params.organizationId}, ${memberEntityId}, 'auth_user_id', ${params.userId}, 'auth:signup'
       )
-      ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
       DO NOTHING
     `;
   }

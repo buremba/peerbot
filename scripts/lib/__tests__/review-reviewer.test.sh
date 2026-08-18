@@ -79,8 +79,8 @@ case "$failure_message" in
 esac
 
 review_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review.sh"
-grep -Fq 'CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"' "$review_script" ||
-  fail "Claude reviewer must default to the Fable model"
+grep -Fq 'CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"' "$review_script" ||
+  fail "Claude reviewer must default to the Opus model"
 
 grep -Fq 'review_validate_claude_model "$CLAUDE_REVIEW_MODEL"' "$review_script" ||
   fail "review.sh must fail closed on disallowed Claude reviewer models"

@@ -109,10 +109,15 @@ jobs:
 
       - name: Deploy preview
         run: |
-          # Clean up any existing resources from previous runs
+          # Clean up any existing resources from previous runs. The ingress is
+          # deliberately NOT deleted: the tailscale operator's proxy pod carries
+          # the TLS cert, and deleting + recreating the ingress spins a fresh
+          # proxy that must re-issue a Let's Encrypt cert (5/week per hostname -
+          # redeploys exhaust it and the host goes dark until the limit resets).
+          # Apply updates the ingress in place; PR close deletes the namespace,
+          # which removes the ingress and lets the operator reap the proxy.
           kubectl -n "$PREVIEW_NS" delete deployment "$PREVIEW_NAME" --ignore-not-found
           kubectl -n "$PREVIEW_NS" delete svc "$PREVIEW_NAME" --ignore-not-found
-          kubectl -n "$PREVIEW_NS" delete ingress "$PREVIEW_NAME" --ignore-not-found
 
           # The embedded runner binds 127.0.0.1 (HOST below) so /api/local-init
           # sees a loopback peer. socat accepts external connections on 8788 and

@@ -32,6 +32,7 @@ import {
 } from "../../services/agent-thread-list.js";
 import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
+import { agentExistsInOrganization } from "../../../lobu/stores/postgres-stores.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { findConversationById } from "../../services/conversations-store.js";
 import { readAutomationRunThreads } from "../../services/automation-run-thread.js";
@@ -406,6 +407,15 @@ export function createAgentHistoryRoutes(deps: {
 		organizationId: string | undefined;
 		userId: string;
 		isAdmin: boolean;
+		/**
+		 * True when the caller does not OWN the agent and was authorized by org
+		 * membership alone. Every route below is already keyed on
+		 * `scope.userId` (thread ids are rebuilt from it), so a member reads
+		 * only their own conversations — except the two live worker-session
+		 * proxies, which expose whoever is driving the agent right now and are
+		 * therefore refused for this scope.
+		 */
+		viaMembership?: boolean;
 	} | null> {
 		const session = await verifySettingsSession(c);
 		if (!session) return null;
@@ -445,6 +455,38 @@ export function createAgentHistoryRoutes(deps: {
 					userId,
 					isAdmin: false,
 				};
+			}
+			// Not the owner: an org MEMBER may read their OWN conversations with
+			// an org's agent (they may now chat with it — see
+			// `authorizeOrgMemberUse` in routes/public/agent.ts). The agent must
+			// exist in this membership-verified org: the same agent id string can
+			// exist in every org, so membership alone would authorize the wrong
+			// tenant's agent.
+			try {
+				const memberRole = await getCachedMembershipRole(
+					ambientOrgId,
+					userId,
+				);
+				if (
+					memberRole &&
+					(await agentExistsInOrganization(ambientOrgId, agentId))
+				) {
+					return {
+						agentId,
+						organizationId: ambientOrgId,
+						userId,
+						isAdmin: false,
+						viaMembership: true,
+					};
+				}
+			} catch (error) {
+				// Fail closed: an unreachable membership lookup denies (401 below)
+				// rather than surfacing a 500 from an authorization path.
+				logger.warn("member history authorization lookup failed — denying", {
+					error,
+					agentId,
+					organizationId: ambientOrgId,
+				});
 			}
 			return null;
 		}
@@ -950,6 +992,10 @@ export function createAgentHistoryRoutes(deps: {
 	app.get("/session/messages", async (c) => {
 		const scope = await getAuthorizedAgentScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
+		// The live worker session belongs to whoever is driving the agent right
+		// now, which for an org-shared agent need not be this caller. Owners
+		// keep it; a member reads their own threads through /threads/* instead.
+		if (scope.viaMembership) return errorResponse(c, "Unauthorized", 401);
 
 		const cursor = c.req.query("cursor") || "";
 		const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
@@ -980,6 +1026,8 @@ export function createAgentHistoryRoutes(deps: {
 	app.get("/session/stats", async (c) => {
 		const scope = await getAuthorizedAgentScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
+		// Same live-session reasoning as /session/messages above.
+		if (scope.viaMembership) return errorResponse(c, "Unauthorized", 401);
 
 		const result = await proxyOrFallback(
 			scope.agentId,

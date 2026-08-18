@@ -20,7 +20,12 @@ import {
   type RouteSpec,
 } from "../shared/define-route.js";
 import { getDb } from "../../../db/client.js";
-import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
+import {
+  getCachedMembershipRole,
+  getCachedOrgBySlug,
+} from "../../../workspace/multi-tenant.js";
+import { agentExistsInOrganization } from "../../../lobu/stores/postgres-stores.js";
+import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
@@ -49,7 +54,10 @@ import { buildAutomationRunWorkerAccess } from "../../services/automation-run-wo
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
 import type { ISessionManager, ThreadSession } from "../../session.js";
-import { verifyOwnedAgentAccess } from "../shared/agent-ownership.js";
+import {
+  resolveSettingsLookupUserId,
+  verifyOwnedAgentAccess,
+} from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
 import { errorResponses } from "../shared/openapi-responses.js";
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
@@ -59,6 +67,25 @@ import {
 } from "../../../tools/admin/manage_operations/activity-feed.js";
 
 const logger = createLogger("agent-api");
+
+/**
+ * What one request is allowed to do with one agent.
+ *
+ * `organizationId` is the tenant the agent was authorized under (resolved from
+ * `agent_users` for an owner, from the request's workspace scope for a
+ * member) — never the caller's ambient default org.
+ *
+ * `callerUserId` / `orgMemberRole` are populated only for a HUMAN web-session
+ * caller. `orgMemberRole` being set means the caller does NOT own the agent and
+ * was authorized by org membership alone, which grants `use`, not `manage`
+ * (agent management lives on the org-scoped REST routes and is gated
+ * owner/admin there).
+ */
+interface AgentAccessGrant {
+  organizationId?: string;
+  callerUserId?: string;
+  orgMemberRole?: string;
+}
 
 // =============================================================================
 // Constants
@@ -439,15 +466,78 @@ export function createAgentApi(config: AgentApiConfig): Hono {
   }
 
   /**
-   * Authorize access to an agent via per-user ownership. Workers (a worker
-   * IS its own agent) always take the ownership path. Returns a denial
-   * Response, or the resolved access ({ organizationId }).
+   * Authorize a HUMAN web-session caller to USE an agent they do not own,
+   * because they are a member of the org the agent lives in.
+   *
+   * An agent is an org-level object: it is stored `(organization_id, id)`,
+   * listed org-wide and its config is readable org-wide. Chat was the one
+   * surface still keyed on per-user ownership (`agent_users`), so a fellow
+   * member could read an agent's whole prompt and tool surface yet got 403 on
+   * `POST /api/v1/agents`. This closes that asymmetry for `use` only.
+   *
+   * Tenant safety rests on `candidateOrgId` being a PROVEN org, never the
+   * caller's ambient default org: it is either the workspace the SPA named via
+   * `x-lobu-org` (resolved by slug at the call site) or the org stamped on the
+   * existing session row. Membership in THAT org is then verified against the
+   * `member` table, and the agent must actually exist in it — the same agent id
+   * string can exist in every org, so proving membership without pinning the
+   * row would authorize the wrong tenant's agent.
+   *
+   * Returns null (caller keeps its ownership denial) rather than a Response, so
+   * the response shape stays the uniform `Forbidden` with no oracle for which
+   * check failed.
+   */
+  async function authorizeOrgMemberUse(
+    session: SettingsTokenPayload,
+    agentId: string,
+    candidateOrgId: string | undefined
+  ): Promise<{ organizationId: string; role: string; userId: string } | null> {
+    if (!candidateOrgId) return null;
+    // An agent-scoped session (worker/self) is bound to its own agent and must
+    // not borrow its human's org membership.
+    if (session.agentId) return null;
+    const callerUserId = resolveSettingsLookupUserId(session);
+    if (!callerUserId) return null;
+    try {
+      const role = await getCachedMembershipRole(candidateOrgId, callerUserId);
+      if (!role) return null;
+      if (!(await agentExistsInOrganization(candidateOrgId, agentId))) {
+        return null;
+      }
+      return { organizationId: candidateOrgId, role, userId: callerUserId };
+    } catch (error) {
+      // Fail closed: an unreachable membership lookup must deny (the caller
+      // keeps its ownership denial), never turn an authorization decision into
+      // a 500 that hides which answer the gate would have given.
+      logger.warn(
+        { err: error, agentId, organizationId: candidateOrgId },
+        "member-use authorization lookup failed — denying"
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Authorize access to an agent: per-user ownership first, then org
+   * membership for a human web-session caller (`use`, not `manage`). Workers
+   * (a worker IS its own agent) always take the ownership path. Returns a
+   * denial Response, or the resolved `AgentAccessGrant`.
    */
   async function authorizeAgentAccess(
     c: Context,
     agentId: string,
-    sessionForTenantCheck?: { organizationId?: string } | null
-  ): Promise<Response | { organizationId?: string }> {
+    sessionForTenantCheck?: {
+      organizationId?: string;
+      /**
+       * Present only when the value IS an existing session row (every
+       * ThreadSession has one). The create route passes a bare
+       * `{ organizationId }` workspace scope instead, and must not be read as
+       * a session — there is no session to be a member of yet.
+       */
+      conversationId?: string;
+      createdByUserId?: string;
+    } | null
+  ): Promise<Response | AgentAccessGrant> {
     const bearer = tokenFromHeader(c);
     // Authoritative auth-method-bound org (mirrors requireAgentOwnership): set
     // only by token auth (worker/external-OAuth `authContext`, or a PAT's pinned
@@ -468,12 +558,30 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     }
     const owned = await requireAgentOwnership(c, agentId, sessionForTenantCheck);
     if (owned instanceof Response) return owned;
-    return { organizationId: owned.organizationId };
+
+    // Own-conversation restriction for the member path. A member authorized by
+    // org membership may USE the agent, which does not extend to reading
+    // another member's conversation: these routes take a sessionKey, so
+    // without this any member could attach to a colleague's SSE stream, send
+    // messages into their thread or delete their session. Org owner/admins keep
+    // oversight, and the ownership path is untouched. `createdByUserId` is
+    // stamped at create time for every human caller; a session without one
+    // predates that (owner-created, since members could not create any before
+    // this change) and stays member-inaccessible.
+    if (owned.orgMemberRole && sessionForTenantCheck?.conversationId) {
+      const isOversight = isAdminOrOwnerRole(owned.orgMemberRole);
+      if (
+        !isOversight &&
+        sessionForTenantCheck.createdByUserId !== owned.callerUserId
+      ) {
+        return c.json({ success: false, error: "Forbidden" }, 403);
+      }
+    }
+    return owned;
   }
 
   /**
-   * Verify that the caller is authorized to act on `resolvedAgentId` via
-   * per-user ownership.
+   * Verify that the caller is authorized to act on `resolvedAgentId`.
    *
    * The agent API middleware accepts three auth methods (worker token,
    * external OAuth, settings session). Each needs its own ownership rule:
@@ -481,7 +589,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
    *   - worker token         → scoped to its own agentId
    *   - settings session     → verifyOwnedAgentAccess (handles admin bypass,
    *                            agent-scoped sessions, and UserAgentsStore
-   *                            / AgentMetadataStore lookups)
+   *                            / AgentMetadataStore lookups), then
+   *                            `authorizeOrgMemberUse` for a member of the
+   *                            workspace the request names
    *   - external OAuth       → treated as an external-platform identity and
    *                            run through verifyOwnedAgentAccess
    *
@@ -496,7 +606,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     c: Context,
     resolvedAgentId: string,
     sessionForTenantCheck?: { organizationId?: string } | null
-  ): Promise<Response | { organizationId?: string }> {
+  ): Promise<Response | AgentAccessGrant> {
     const deny = () =>
       c.json({ success: false, error: "Forbidden" }, 403) as Response;
 
@@ -617,7 +727,31 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         resolvedAgentId,
         ownershipAccessConfig
       );
-      return authorizeOwnership(access);
+      const owned = authorizeOwnership(access);
+      if (!(owned instanceof Response)) {
+        return {
+          organizationId: owned.organizationId,
+          callerUserId: resolveSettingsLookupUserId(settingsSession) || undefined,
+        };
+      }
+
+      // Not an owner — fall back to the org-membership USE path. Scoped to a
+      // PROVEN org: the workspace the request named (`x-lobu-org`, resolved by
+      // the create route) or the existing session's org, never the caller's
+      // ambient default org. Bearer callers keep the ownership rule: a PAT or
+      // third-party OAuth token is not a person acting in the web app, and its
+      // own tier (`mcp:*` scopes) is enforced elsewhere.
+      const member = await authorizeOrgMemberUse(
+        settingsSession,
+        resolvedAgentId,
+        sessionForTenantCheck?.organizationId ?? authoritativeCallerOrgId
+      );
+      if (!member) return owned;
+      return {
+        organizationId: member.organizationId,
+        callerUserId: member.userId,
+        orgMemberRole: member.role,
+      };
     }
 
     if (!bearer) return deny();
@@ -885,13 +1019,30 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       };
     };
 
-    // Try to resume existing session (unless forceNew is requested).
-    // Refuse cross-tenant resume defensively: even though the userId fallback
-    // above is per-org-unique for the default-agent path, a future caller that
-    // bypasses the auth bridge or passes a colliding requestedUserId would
-    // otherwise resume another tenant's session and leak its worker token.
+    // Read the session this request would resume or overwrite once, then run
+    // both guards over it.
+    const existing = await sessMgr.getSession(conversationId);
+
+    // A human may only resume — or overwrite with `forceNew` — a session they
+    // created themselves. Org members can now USE an agent they do not own, and
+    // the `userId` half of the conversationId is caller-supplied (request body),
+    // so without this a member could name a colleague's userId to resume their
+    // thread (receiving a worker token scoped to it) or clobber it outright.
+    // Bearer/automation callers have no `callerUserId` and are unaffected.
+    if (
+      access.callerUserId &&
+      existing?.createdByUserId &&
+      existing.createdByUserId !== access.callerUserId
+    ) {
+      return c.json({ success: false, error: "Forbidden" }, 403);
+    }
+
+    // Resume (unless forceNew). Refuse cross-tenant resume defensively: even
+    // though the userId fallback above is per-org-unique for the default-agent
+    // path, a future caller that bypasses the auth bridge or passes a colliding
+    // requestedUserId would otherwise resume another tenant's session and leak
+    // its worker token.
     if (!effectiveForceNew) {
-      const existing = await sessMgr.getSession(conversationId);
       if (
         existing &&
         existing.organizationId &&
@@ -945,6 +1096,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       nixConfig,
       agentId,
       ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
+      ...(access.callerUserId
+        ? { createdByUserId: access.callerUserId }
+        : {}),
       dryRun: effectiveDryRun,
       intent: automationIntent ?? undefined,
       ...(automationExecutionMode

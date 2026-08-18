@@ -705,23 +705,26 @@ function parseEntityJsonObject(value: unknown): Record<string, unknown> {
 // ============================================
 
 /**
- * Why the write the caller ACTUALLY proposed is illegal, or `null` if it is not.
+ * What the rule says about the write the caller ACTUALLY proposed — `null` if it
+ * is outright legal.
  *
  * A hold can split a legal write into an illegal fragment, and rescuing that is
- * the whole point of deferring. But the rescue only makes sense if the full
- * proposal stands on its own: a card built from a proposal the rule rejects
- * anyway could never be applied, because approving replays it and the rule
- * denies it again — an approval request nobody can satisfy.
+ * the whole point of deferring. But the rescue only makes sense measured against
+ * the FULL proposal, because that is what a card replays:
  *
- * Returning the denial rather than a boolean is what lets the caller fail in the
- * proposer's own terms. Throwing the RESIDUAL's error instead would describe a
- * write nobody made — the misattribution this whole branch exists to avoid.
+ *  - deny → the caller's own proposal is illegal. Deferring would mint a card no
+ *    approval could clear, so the denial stands. Returning it (rather than a
+ *    boolean) lets the caller fail in the proposer's own terms; throwing the
+ *    RESIDUAL's error would describe a write nobody made.
+ *  - escalate → the card is right, and `fields` is what it must record. The
+ *    caught residual verdict cannot supply that: the residual may have DENIED
+ *    while the full proposal escalates, and a card recording no escalated fields
+ *    is stuck the moment it is approved.
  *
- * An `escalate` is not a denial: the rule asking for review IS the card. A rule
- * that crashes or times out IS one, so a broken rule surfaces as an error rather
- * than an unanswerable approval.
+ * A rule that crashes or times out reads as a deny, so a broken rule surfaces as
+ * an error rather than an unanswerable approval.
  */
-async function fullProposalDenial(params: {
+async function fullProposalVerdict(params: {
 	tx: DbClient;
 	entityId: number;
 	patch: EntityRowPatch;
@@ -735,7 +738,7 @@ async function fullProposalDenial(params: {
 		return null;
 	} catch (err) {
 		if (!(err instanceof EntityRowValidationError)) throw err;
-		return err.verdict.outcome === "escalate" ? null : err;
+		return err;
 	}
 }
 
@@ -1231,9 +1234,9 @@ export async function updateEntity(
 			//
 			// Skipped when nothing was held: the residual IS the full proposal then,
 			// so the rule has already answered this exact question.
-			const denial =
+			const fullVerdict =
 				heldFields.length > 0
-					? await fullProposalDenial({
+					? await fullProposalVerdict({
 							tx,
 							entityId,
 							patch: {
@@ -1263,16 +1266,26 @@ export async function updateEntity(
 						})
 					: null;
 			// Stated in the terms the caller proposed, not the residual's.
-			if (denial) throw denial;
+			if (fullVerdict?.verdict.outcome === "deny") throw fullVerdict;
 
-			if (err.verdict.outcome === "escalate") {
+			// Prefer the FULL proposal's escalation: that is the write the card
+			// replays, so its fields are what the approver is consenting to. The
+			// residual's verdict only stands in when nothing was held.
+			const escalation =
+				fullVerdict?.verdict.outcome === "escalate"
+					? fullVerdict.verdict
+					: err.verdict.outcome === "escalate"
+						? err.verdict
+						: null;
+
+			if (escalation) {
 				// `escalate(fields, reason)` documents those fields as what the
 				// approver reads; the card itself carries the whole proposal.
-				deferEscalatedFields = err.verdict.fields;
+				deferEscalatedFields = escalation.fields;
 				deferWholeWrite =
-					err.verdict.fields.length > 0
-						? `${err.verdict.reason} (${err.verdict.fields.join(", ")})`
-						: err.verdict.reason;
+					escalation.fields.length > 0
+						? `${escalation.reason} (${escalation.fields.join(", ")})`
+						: escalation.reason;
 			} else if (heldFields.length > 0) {
 				deferWholeWrite =
 					`${err.verdict.reason} — the write is legal as proposed but ` +

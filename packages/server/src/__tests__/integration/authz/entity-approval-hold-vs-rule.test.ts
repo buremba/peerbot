@@ -97,10 +97,29 @@ export default (row) => {
 };
 `;
 
+/**
+ * The MIRROR of ESCALATE_RESIDUAL_RULE: the residual DENIES while the full
+ * proposal ESCALATES. Restoring the held `status` is what turns the deny into an
+ * escalate, so the card must record what the FULL proposal escalated — that is
+ * the write applying replays.
+ */
+const DENY_RESIDUAL_RULE = `
+export default (row) => {
+  if (row.op === "create") return;
+  if (!row.changed("status") && row.changed("amount")) {
+    row.deny("amount cannot change without a status move");
+  }
+  if (row.next.amount > 50000) {
+    row.escalate(["amount"], "an invoice over 50k needs sign-off");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 let invoiceCompiled: string;
 let escalateResidualCompiled: string;
 let escalateVendorCompiled: string;
+let denyResidualCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -172,6 +191,7 @@ describe("approval hold vs a frozen-state rule", () => {
 				compileEntityRule(ESCALATE_RESIDUAL_RULE),
 				compileEntityRule(ESCALATE_VENDOR_RULE),
 			]);
+		denyResidualCompiled = await compileEntityRule(DENY_RESIDUAL_RULE);
 	}, 60_000);
 
 	beforeEach(async () => {
@@ -458,6 +478,65 @@ describe("approval hold vs a frozen-state rule", () => {
 		).rejects.toThrow(/vendor/);
 
 		expect((await readMetadata(invoice.id)).amount ?? null).toBeNull();
+	}, 60_000);
+
+	it("records what the FULL proposal escalates when the residual only denies", async () => {
+		const sql = getTestDb();
+		const { org, user, agent, invoice } = await seed(denyResidualCompiled);
+
+		// A HUMAN claims `status`.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "issued" } },
+			TEST_ENV,
+			ctxFor(org.id, { userId: user.id }),
+		);
+
+		// Agent proposes status + amount. `status` is held, so the residual is a
+		// bare `amount` edit — which this rule DENIES. Put `status` back and the
+		// full proposal is legal but ESCALATES on amount.
+		// A DIFFERENT value, or the merge has nothing to hold and the residual is
+		// the full proposal.
+		const result = await updateEntity(
+			invoice.id,
+			{ metadata: { status: "posted", amount: 90000 } },
+			TEST_ENV,
+			ctxFor(org.id, { agentId: agent.agentId }),
+		);
+		expect(result.deferred).toBeDefined();
+
+		await result.deferred?.queue(
+			ctxFor(org.id, { agentId: agent.agentId }),
+			TEST_ENV,
+		);
+
+		// The escalate came from the FULL proposal, not the caught residual verdict.
+		// Recording nothing here mints a card that can never be applied: the replay
+		// escalates a field the grant does not cover.
+		const [queued] = await sql<{ action_input: unknown }[]>`
+      SELECT action_input FROM runs
+      WHERE organization_id = ${org.id}
+      ORDER BY id DESC LIMIT 1
+    `;
+		const input = (
+			typeof queued.action_input === "string"
+				? JSON.parse(queued.action_input)
+				: queued.action_input
+		) as { escalated_fields?: string[] };
+		expect(input.escalated_fields).toEqual(["amount"]);
+
+		// And it actually clears.
+		await applyEntityFieldChangeProposal(
+			{
+				entity_id: invoice.id,
+				fields: result.deferred?.display.fields ?? {},
+				current: result.deferred?.display.current ?? {},
+				escalated_fields: input.escalated_fields ?? [],
+				reason: "approved in test",
+			} as Parameters<typeof applyEntityFieldChangeProposal>[0],
+			user.id,
+		);
+		expect((await readMetadata(invoice.id)).amount).toBe(90000);
 	}, 60_000);
 
 	it("still DENIES outright when nothing was held and the caller's own proposal is illegal", async () => {

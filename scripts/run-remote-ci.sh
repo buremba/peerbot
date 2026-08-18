@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Run the Linux CI graph on Depot against local changes. Full preflights
-# require a staged tree and reject untracked files, so their attestation can
-# survive the following commit without using local CPU.
+# Run the Linux CI graph against local changes (optional; GitHub CI is canonical).
 
 set -euo pipefail
 
@@ -11,6 +9,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 . "$SCRIPT_DIR/lib/remote-ci.sh"
 cd "$REPO_ROOT"
 
+# ── Depot mode (default) ──────────────────────────────────────────────────
 DEPOT_ORG_ID="${DEPOT_ORG_ID:-b9ffw2rv84}"
 REMOTE_CI_TIMEOUT_SECONDS="${REMOTE_CI_TIMEOUT_SECONDS:-2700}"
 REMOTE_CI_POLL_INTERVAL_SECONDS="${REMOTE_CI_POLL_INTERVAL_SECONDS:-5}"
@@ -18,7 +17,6 @@ REMOTE_CI_MAX_RETRIES="${REMOTE_CI_MAX_RETRIES:-1}"
 WORKFLOW=".github/workflows/ci.yml"
 SOURCE_ACTION=".github/actions/setup-submodule/action.yml"
 DEPOT_ACTION=".depot/actions/setup-submodule/action.yml"
-ATTESTATION_FILE="$(git rev-parse --git-path lobu-remote-preflight)"
 
 # All Linux jobs, including the two dependency aggregators. mac-build-smoke is
 # intentionally absent: it requires macOS and remains on GitHub/Mac hardware.
@@ -82,21 +80,12 @@ fi
 echo ">> checking Depot repository access"
 depot ci migrate preflight --org "$DEPOT_ORG_ID" >/dev/null
 
-full_gate=0
-attested_tree=""
 if [ "$#" -eq 0 ]; then
   jobs=("${DEFAULT_JOBS[@]}")
-  full_gate=1
-  attested_tree="$(remote_ci_staged_tree)" || exit $?
+  remote_ci_staged_tree >/dev/null || exit $?
 else
   jobs=("$@")
   remote_ci_require_no_untracked || exit $?
-fi
-
-# Starting a new full run invalidates any prior tree attestation until the new
-# run reaches an authoritative success state. Subset runs do not attest.
-if [ "$full_gate" = "1" ]; then
-  rm -f "$ATTESTATION_FILE"
 fi
 
 job_args=()
@@ -175,18 +164,4 @@ fi
 echo ">> Depot run $run_id passed"
 jq -r '.workflows[].jobs[].attempts[-1].view_url // empty' <<<"$status_json" | sort -u
 
-# Only an unchanged, settled full-graph success may suppress review.sh's
-# duplicate local package build. The tree id remains stable across the commit
-# that follows this staged preflight; a subset run can never attest.
-if [ "$full_gate" = "1" ]; then
-  current_tree="$(remote_ci_staged_tree)" || {
-    echo "The worktree changed while Depot was running; remote preflight is not attested." >&2
-    exit 1
-  }
-  if [ "$current_tree" != "$attested_tree" ]; then
-    echo "The staged tree changed while Depot was running; rerun the full preflight." >&2
-    exit 1
-  fi
-  printf '%s\n' "$attested_tree" > "$ATTESTATION_FILE"
-  echo ">> recorded full remote preflight for tree $attested_tree"
-fi
+

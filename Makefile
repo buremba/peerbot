@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded dev-remote dev-remote-pause dev-remote-status dev-remote-logs build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pre-pr-remote-fast pre-pr-remote owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pre-pr-remote-fast pre-pr-remote owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -8,10 +8,6 @@ help:
 	@echo "  make setup                                 - Setup development environment (run once)"
 	@echo "  make dev [NAME=<x>] [FROM=<db>] [OPEN=1]   - Local dev (brew Postgres@18); prints App URL; OPEN=1 opens it in the system browser after boot"
 	@echo "  make dev-embedded                          - Dev against the zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime); == LOBU_EMBEDDED=1 make dev"
-	@echo "  make dev-remote [OPEN=1]                   - Sync committed code to private Daytona compute, resume/start Lobu, and print a signed preview URL"
-	@echo "  make dev-remote-pause                      - Stop/pause Daytona compute immediately while preserving the remote filesystem"
-	@echo "  make dev-remote-status                     - Show the Daytona state, resources, source SHA, and active preview URL"
-	@echo "  make dev-remote-logs                       - Print logs from the remote Lobu development server"
 	@echo "  make build-packages                        - Build all TypeScript packages"
 	@echo "  make test                                  - Run test bot"
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
@@ -29,9 +25,9 @@ help:
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
 	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
-	@echo "  make pre-pr-remote-fast                    - Run required Linux merge jobs on Depot (broad iteration; no attestation)"
-	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Run staged full Linux CI on Depot (default final gate; no local CPU)"
-	@echo "  make pre-pr                                - Run the CPU-heavy deterministic gate locally (explicit fallback)"
+	@echo "  make pre-pr                                 - Local fast gates before push (GitHub CI is the canonical gate)"
+	@echo "  make pre-pr-remote-fast                    - Optional: Linux merge jobs on Depot (broad iteration)"
+	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Optional: staged full Linux CI on Depot"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 
@@ -78,22 +74,6 @@ dev: ensure-submodule
 # Zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime).
 dev-embedded: ensure-submodule
 	@./scripts/dev-native.sh
-
-# Persistent remote development on a private Daytona sandbox. Source sync is
-# committed-only by default; dependencies, build output, embedded data, and the
-# signed preview URL survive stop/resume. VM snapshots also preserve processes
-# and memory when Daytona makes them available. The signed URL expires after 24h.
-dev-remote: ensure-submodule
-	@bun scripts/dev-remote.ts up
-
-dev-remote-pause:
-	@bun scripts/dev-remote.ts pause
-
-dev-remote-status:
-	@bun scripts/dev-remote.ts status
-
-dev-remote-logs:
-	@bun scripts/dev-remote.ts logs
 
 # Explicit alias for the default `make dev` backend (shared brew Postgres@18, one
 # database per branch). NAME defaults to the current branch; FROM=<db> forks an
@@ -171,7 +151,6 @@ bump:
 # Unit suite — bun:test on the per-package units that don't need Postgres.
 test-unit:
 	@echo "🧪 Unit suite (no Postgres)…"
-	@bun test scripts/__tests__/dev-remote.test.ts
 	@bun test packages/core packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp packages/cli
 	@bun test packages/agent-worker
 	@bun test packages/server/src/__tests__/unit
@@ -342,15 +321,14 @@ pre-pr:
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."
 
-# Default deterministic gate for development sessions. Stage intended files
-# explicitly first: Depot applies tracked local changes and runs Linux jobs in
-# parallel without consuming the developer Mac. REMOTE_JOBS narrows the run;
-# omit it for the full settled-tree attested gate.
+# OPTIONAL remote gate (GitHub CI is canonical). Stage intended files first:
+# Depot applies tracked local changes and runs Linux jobs in parallel without
+# consuming the developer Mac. REMOTE_JOBS narrows the run.
 REMOTE_FAST_JOBS := unit frontend server-integration-vitest server-integration-bun integration format-lint typecheck migrations
 
-# Broad iteration gate: the entire required Linux merge graph, without the
-# post-gate SDK/CLI and connector parity smokes. It never creates the final
-# tree attestation, so agents cannot substitute it for pre-pr-remote.
+# Optional broad iteration gate: the entire required Linux merge graph,
+# without the post-gate SDK/CLI and connector parity smokes. GitHub CI is
+# the canonical gate.
 pre-pr-remote-fast:
 	@./scripts/run-remote-ci.sh $(REMOTE_FAST_JOBS)
 

@@ -9,6 +9,9 @@ ARG BUN_VERSION=1.3.5
 
 FROM node:22-slim AS builder
 ARG BUN_VERSION
+# 1 keeps the embedded-postgres + pgvector runtime (preview envs use
+# DATABASE_URL=file://); 0 (default, prod) prunes them after the build.
+ARG KEEP_EMBEDDED_PG=0
 
 WORKDIR /app
 
@@ -143,7 +146,9 @@ RUN cd packages/cli && bun run build
 # for the type-check + bundle above, so we drop them only afterward. This also
 # means the in-image `lobu run` cannot boot an embedded database; it must use
 # the container's external DATABASE_URL.
-RUN rm -rf node_modules/embedded-postgres node_modules/@embedded-postgres
+RUN if [ "$KEEP_EMBEDDED_PG" != "1" ]; then \
+      rm -rf node_modules/embedded-postgres node_modules/@embedded-postgres; \
+    fi
 
 # Build frontend static assets (production only)
 ARG VITE_API_URL=
@@ -179,7 +184,7 @@ WORKDIR /app
 # every agent invocation exits 127 — the credential works and the command does
 # not.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates git gh unzip bubblewrap \
+      curl ca-certificates git gh unzip bubblewrap socat \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
       libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
       libgbm1 libpango-1.0-0 libcairo2 libasound2 libwayland-client0 \
@@ -214,6 +219,15 @@ COPY --from=builder /app/packages/server ./packages/server
 COPY --from=builder /app/packages/cli ./packages/cli
 RUN ln -s /app/packages/cli/bin/lobu.js /usr/local/bin/lobu
 COPY --from=builder /app/packages/owletto ./packages/owletto
+
+# The embedded runtime (DATABASE_URL=file://, previews) loads the pgvector
+# injector from the server bundle dist/vendor; the CLI build vendors it into
+# its own dist. Copy it when keeping the embedded-postgres runtime.
+ARG KEEP_EMBEDDED_PG=0
+RUN if [ "$KEEP_EMBEDDED_PG" = "1" ]; then \
+      mkdir -p /app/packages/server/dist/vendor \
+      && cp -r /app/packages/cli/dist/vendor/pgvector-embedded /app/packages/server/dist/vendor/pgvector-embedded; \
+    fi
 
 # Database migrations (+ statement-at-a-time runner for transaction:false)
 COPY db/migrations ./db/migrations

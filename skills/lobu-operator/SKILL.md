@@ -55,7 +55,7 @@ gh pr checks <number> --required
 gh pr merge <number> --squash --admin
 ```
 
-`make pre-pr-remote-fast` runs the complete required Linux merge graph for broad iteration but never creates a final attestation. `make pre-pr-remote` uploads committed and staged tracked work, so it does not require a push. Stage every intended new file explicitly; the full command fails closed on untracked or unstaged changes so its tree attestation survives the following commit. It excludes the macOS-only app lane. Rerun a single failed lane with `make pre-pr-remote REMOTE_JOBS=unit`; subset runs never attest. Use the CPU-heavy local `make pre-pr` only as an explicit fallback when Depot is unavailable; reviewed CI workflow/action changes require `DEPOT_ALLOW_WORKFLOW_CHANGES=1 make pre-pr-remote`.
+GitHub CI (`ci.yml`) is the canonical gate: free on this public repo, full Linux graph in ~5–7 min per PR. `make pre-pr` runs the fast local gates (typecheck, knip, lint, naming) before push; `make review` requires CI green for HEAD. `make pre-pr-remote` (Depot) is optional tooling, not part of the required loop. Stage every intended new file explicitly before pushing.
 
 Never bypass a check that has not reported. For a production-visible change, wait for deployment and prove the PR's squash merge commit is an ancestor of the deployed SHA before running the live check. Clean up the task worktree with `make task-clean` after merge.
 

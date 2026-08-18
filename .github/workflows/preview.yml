@@ -1,0 +1,326 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number for manual trigger'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+  KUBECONFIG: /tmp/kubeconfig
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    env:
+      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
+      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+      PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push preview image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/app/Dockerfile
+          # Keep the embedded-postgres runtime for DATABASE_URL=file:// previews.
+          build-args: |
+            KEEP_EMBEDDED_PG=1
+          push: true
+          tags: ${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+
+      - name: Create preview namespace
+        run: |
+          kubectl create namespace "$PREVIEW_NS" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Cap preview capacity (half-node budget)
+        run: |
+          # Previews + herdr share half of the node (6 CPU / 63Gi on lobu-prod).
+          # A low priority class means prod pods preempt preview/herdr pods under
+          # pressure; the per-namespace quota caps one PR at its slice.
+          kubectl apply -f - <<'EOF'
+          apiVersion: scheduling.k8s.io/v1
+          kind: PriorityClass
+          metadata:
+            name: preview
+          value: -10
+          globalDefault: false
+          description: "PR previews + herdr - preempted by prod (default) pods"
+          EOF
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ResourceQuota
+          metadata:
+            name: preview-quota
+            namespace: $PREVIEW_NS
+          spec:
+            hard:
+              requests.cpu: "1"
+              requests.memory: 2Gi
+              limits.cpu: "4"
+              limits.memory: 8Gi
+              pods: "2"
+          EOF
+
+      - name: Provision encryption key
+        run: |
+          # Stable per-namespace key so a redeploy (or mid-life pod restart) can
+          # still read secrets written by the previous pod. The data volume is
+          # emptyDir, so nothing survives a redeploy itself.
+          if ! kubectl -n "$PREVIEW_NS" get secret preview-encryption >/dev/null 2>&1; then
+            kubectl -n "$PREVIEW_NS" create secret generic preview-encryption \
+              --from-literal=key="$(openssl rand -base64 32)"
+          fi
+
+      - name: Deploy preview
+        run: |
+          # Clean up any existing resources from previous runs. The ingress is
+          # deliberately NOT deleted: the tailscale operator's proxy pod carries
+          # the TLS cert, and deleting + recreating the ingress spins a fresh
+          # proxy that must re-issue a Let's Encrypt cert (5/week per hostname -
+          # redeploys exhaust it and the host goes dark until the limit resets).
+          # Apply updates the ingress in place; PR close deletes the namespace,
+          # which removes the ingress and lets the operator reap the proxy.
+          kubectl -n "$PREVIEW_NS" delete deployment "$PREVIEW_NAME" --ignore-not-found
+          kubectl -n "$PREVIEW_NS" delete svc "$PREVIEW_NAME" --ignore-not-found
+
+          # The embedded runner binds 127.0.0.1 (HOST below) so /api/local-init
+          # sees a loopback peer. socat accepts external connections on 8788 and
+          # forwards them over loopback to the app on 8787.
+          # LOBU_LOCAL_INIT_ALLOW_PROXY: the private tailnet ingress (Tailscale
+          # Serve) injects Forwarded-* headers; tolerate them for this single-user
+          # preview so /api/local-init sign-in works (peer is loopback via socat).
+          # CHOKIDAR_USEPOLLING: the container's default nofile ulimit is 1024, and
+          # Vite's inotify watch fds blow through it at boot on a monorepo tree
+          # (EMFILE crash, seen after the image grew). Polling uses stat() calls
+          # instead; the 4-CPU limit absorbs the polling cost.
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: $PREVIEW_NAME
+            namespace: $PREVIEW_NS
+          spec:
+            replicas: 1
+            selector:
+              matchLabels: { app: $PREVIEW_NAME }
+            template:
+              metadata:
+                labels: { app: $PREVIEW_NAME }
+              spec:
+                priorityClassName: preview
+                containers:
+                  - name: preview
+                    image: ${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }}
+                    imagePullPolicy: Always
+                    command: ["sh", "-c", "socat TCP-LISTEN:8788,fork,reuseaddr TCP:127.0.0.1:8787 & exec node packages/server/dist/server.bundle.mjs"]
+                    env:
+                      - { name: PORT, value: "8787" }
+                      - { name: HOST, value: "127.0.0.1" }
+                      - { name: DATABASE_URL, value: "file:///var/lib/lobu/data/lobu.db" }
+                      - { name: NODE_ENV, value: "development" }
+                      - { name: CHOKIDAR_USEPOLLING, value: "true" }
+                      - { name: ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: preview-encryption, key: key } } }
+                      - { name: LOBU_LOCAL_INIT_ALLOW_PROXY, value: "1" }
+                    ports:
+                      - { containerPort: 8787 }
+                    readinessProbe:
+                      httpGet: { path: /api/health, port: 8788 }
+                      initialDelaySeconds: 30
+                      periodSeconds: 5
+                      failureThreshold: 30
+                    resources:
+                      requests: { cpu: "1", memory: 2Gi }
+                      limits: { cpu: "4", memory: 8Gi }
+                    volumeMounts:
+                      - { name: data, mountPath: /var/lib/lobu/data }
+                volumes:
+                  - name: data
+                    emptyDir: {}
+          EOF
+
+          kubectl expose deployment "$PREVIEW_NAME" \
+            -n "$PREVIEW_NS" \
+            --port=80 \
+            --target-port=8788 \
+            --type=ClusterIP
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: $PREVIEW_NAME
+            namespace: $PREVIEW_NS
+          spec:
+            ingressClassName: tailscale
+            # The tailscale operator only serves rules whose host matches the
+            # TLS host, and rejects tags its OAuth client may not create
+            # (defaults to tag:k8s). No tags annotation here.
+            tls:
+              - hosts:
+                  - lobu-pr-$PR_NUMBER.${{ vars.TAILNET_DOMAIN }}
+            rules:
+              - host: lobu-pr-$PR_NUMBER.${{ vars.TAILNET_DOMAIN }}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: $PREVIEW_NAME
+                          port:
+                            number: 80
+          EOF
+
+      - name: Wait for preview to be ready
+        run: |
+          kubectl rollout status deployment/"$PREVIEW_NAME" \
+            -n "$PREVIEW_NS" \
+            --timeout=600s
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request?.number ?? Number(process.env.PR_NUMBER);
+            const previewUrl = `https://lobu-pr-${prNumber}.${{ vars.TAILNET_DOMAIN }}`;
+
+            // Paginate: listComments defaults to 30 per page, and busy PRs
+            // (review bots post here) routinely exceed that - the existing
+            // preview comment would never be found and a duplicate posted.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Preview environment')
+            );
+
+            const body = [
+              "## Preview environment ready",
+              "",
+              "| | |",
+              "|---|---|",
+              `| **URL** | [${previewUrl}](${previewUrl}) |`,
+              `| **Namespace** | \`lobu-preview-${prNumber}\` |`,
+              "| **Status** | Running |",
+              "",
+              "_This preview will be automatically deleted when the PR is closed._",
+            ].join("\n");
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+  cleanup:
+    runs-on: ubuntu-24.04
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
+      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+
+      - name: Delete preview namespace
+        run: |
+          kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
+
+      - name: Delete preview image tag
+        # Best-effort GC: GITHUB_TOKEN cannot always delete org-owned package
+        # versions, and the namespace is already gone - a failure here should
+        # not turn a completed cleanup into a red check.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          VERSION_ID=$(gh api "orgs/lobu-ai/packages/container/lobu%2Fpreview/versions" --paginate -q ".[] | select(.metadata.container.tags[]? == \"pr-${PR_NUM}\") | .id" | head -1)
+          if [ -n "$VERSION_ID" ]; then
+            gh api -X DELETE "orgs/lobu-ai/packages/container/lobu%2Fpreview/versions/$VERSION_ID"
+            echo "deleted preview image tag pr-$PR_NUM"
+          else
+            echo "no preview image tag pr-$PR_NUM to delete"
+          fi
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            // Paginate: listComments defaults to 30 per page, and busy PRs
+            // (review bots post here) routinely exceed that - the existing
+            // preview comment would never be found and a duplicate posted.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Preview environment')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: '## Preview environment cleaned up\n\n_The preview environment for this PR has been deleted._',
+              });
+            }

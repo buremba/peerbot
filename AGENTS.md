@@ -20,17 +20,17 @@
 - **Request paths never aggregate history.** No `GROUP BY`, `DISTINCT ON`, per-row `regexp_*`, or leading-wildcard `LIKE` over `events`, `agent_transcript_snapshot`, `session_calls`, … on a user-facing read path: history grows, the answer doesn't. Materialize at write time, read back by index, backfill in a migration. Bounded config tables (`connections`, `automations`, `agent_users`) are fine.
 - **Shared state must be Postgres-mediated.** An in-memory Map or singleton is invisible to other replicas — correct in dev, broken in prod.
 - **Workers never receive real credentials** — placeholders or proxied access only. The exceptions are device-pinned connectors and short-lived provider-derived leases (`packages/server/AGENTS.md`); a durable stored credential is never one.
-- **Automation is the product, API, and storage vocabulary.** Use it consistently in public contracts and internal identifiers; `make pre-pr-remote` rejects retired product and engine terminology.
+- **Automation is the product, API, and storage vocabulary.** Use it consistently in public contracts and internal identifiers; `make pre-pr`'s exposed-surface naming gate rejects retired product and engine terminology.
 - **`make review` is the semantic review gate, not CI.** It runs no typecheck, knip, or tests; a verdict or safe-class skip is not evidence CI will pass.
-- **Depot serializes org-wide.** A newer dispatch silently cancels a peer session's running gate, and `gh run rerun` counts as a dispatch. Check `pgrep -f "make pre-pr-remote"` before dispatching.
+- **GitHub CI is the canonical gate** — free on this public repo, full graph in ~5–7 min per PR. `make pre-pr` (local fast gates: typecheck, knip, lint, naming) catches the cheap misses before push; `make review` verifies CI is green for HEAD. `make pre-pr-remote` (Depot) is optional tooling, not part of the required loop.
 - Default to static `import`; a new production dynamic import needs measured justification plus a call-site rationale comment. Tests may import dynamically after mocks; two Node-version gates are grandfathered (playbook).
 
 ## Ship a change
 1. `make task-setup NAME=<slug>` → work in `.claude/worktrees/<slug>/`.
 2. Reproduce red → fix → prove green, and paste both outputs in the PR. Cannot reproduce = report the dead end; never ship a speculative fix.
-3. Iterate on focused tests: `bun test <path>`, or `cd packages/server && bunx vitest run <path>` for vitest suites. `make pre-pr-remote-fast` gives interim breadth and never substitutes for the final gate.
+3. Iterate on focused tests: `bun test <path>`, or `cd packages/server && bunx vitest run <path>` for vitest suites. `make pre-pr` catches the cheap common misses; the full graph runs on GitHub CI for the PR.
 4. `make review-fix` on the settled diff, then re-read what it touched. Safe-class changes self-skip before selecting an LLM. Otherwise it runs BEFORE the first `make review` — never iterate `make review` as a find-fix loop, since each posted round costs a review + CI cycle.
-5. Stage by explicit path, then `make pre-pr-remote`; it fails closed on unstaged or untracked changes. Reviewed workflow/action changes need `DEPOT_ALLOW_WORKFLOW_CHANGES=1`.
+5. Stage by explicit path, then commit and push; GitHub CI is the gate. `make review` fails unless CI is green for HEAD (override: `REVIEW_ALLOW_LOCAL_BUILD=1`).
 6. Commit, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list.
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title).
 8. `make review` **once** on the settled HEAD; it posts the required `pi-review` status. Narrow path/content-gated safe classes skip the cross-harness review; this includes pure `packages/owletto` pointer bumps and exact `model:` literal swaps, but not mixed runtime and source changes. The submodule's own repo owns its content review.
@@ -51,4 +51,3 @@
 - Never poll in the foreground — run long waits in the background and act on the notification. Poll delegated CLIs at most once every 4.5 minutes unless they finish or request input.
 - Prefer DOM reads over screenshots, the top context-bloat source. The paired Owletto extension drives the user's real logged-in browser; CDP is not required (`docs/BROWSER_TESTING.md`).
 - Slack link pasted → run `scripts/slack-thread-viewer.js "<link>"` first.
-- `make dev-remote` runs the live app on remote compute (commit first; `make dev-remote-pause` when finished).

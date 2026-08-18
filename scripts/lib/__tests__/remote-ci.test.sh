@@ -91,13 +91,6 @@ fi
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lobu-remote-ci-test.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
-marker="$tmp_dir/attestation"
-printf 'abc123\n' > "$marker"
-remote_ci_attestation_matches abc123 "$marker" || fail "matching attestation was rejected"
-if remote_ci_attestation_matches different "$marker"; then
-  fail "stale attestation was accepted"
-fi
-
 repo="$tmp_dir/repo"
 mkdir -p "$repo"
 (
@@ -128,8 +121,6 @@ mkdir -p "$repo"
   git add tracked.txt
   settled_tree="$(remote_ci_staged_tree)"
   assert_eq "$settled_tree" "$(git write-tree)"
-  printf '%s\n' "$settled_tree" > "$marker"
-  remote_ci_attestation_matches "$settled_tree" "$marker" || fail "settled tree attestation was rejected"
 )
 
 workflow="$SCRIPT_DIR/../../../.github/workflows/ci.yml"

@@ -29,7 +29,6 @@ import { buildConnectionsUrl } from "../../../../utils/url-builder";
 import { isSystemContext } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
-import { callerIsAdmin } from "../../helpers/db-helpers";
 import { qualifiedOperationKey } from "./shared";
 
 type ExecutionTarget = {
@@ -510,7 +509,6 @@ async function loadVisibleOperationTargets(
 		{
 			...authzScopeFromToolContext(ctx),
 			principal: visibilityUserId,
-			principalIsAdmin: await callerIsAdmin(sql, ctx),
 		},
 		"c",
 	);

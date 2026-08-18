@@ -31,8 +31,7 @@ interface ConnectorQueryParams {
   /** Read-only SQL to push down (a derived entity's backing_sql, or a feed query). */
   query: string;
   /** Owner/admin callers see every connection; members only org-visible or their
-   * own. A full management-tier bypass — deliberately broader than
-   * `scope.principalIsAdmin`, which only adds legacy-unowned rows. */
+   * own. A full management-tier bypass. */
   isAdmin: boolean;
   feedKey?: string;
   config?: Record<string, unknown>;

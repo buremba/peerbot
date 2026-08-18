@@ -18,15 +18,6 @@ export interface AuthzScope {
   principal: string | null;
   /** The durable agent identity when the read happens inside an agent run. */
   agentId?: string | null;
-  /**
-   * True when the principal holds owner/admin in the org. Must come from a
-   * server-side role check (`callerIsAdmin` / `getWorkspaceRole`), never from
-   * client input. Honored only by `compileConnectionRowVisibility`, where it
-   * additionally exposes LEGACY-UNOWNED private connections (`created_by IS
-   * NULL` rows predating the column) — it does NOT bypass another member's
-   * private connections, and the FK (events/content) form ignores it.
-   */
-  principalIsAdmin?: boolean;
   /** Policy snapshot the read is compiled against. Reserved for M2+/M6. */
   policyVersion?: number | null;
 }

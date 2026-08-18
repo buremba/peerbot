@@ -779,19 +779,23 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 		expect(runRows).toHaveLength(0);
 	});
 
-	it("legacy-unowned private connection (created_by IS NULL): list and operations agree per role", async () => {
-		const { org, user: owner } = await setupOwner("Ops Legacy Unowned Org");
+	it("an unowned private connection is fail-closed: management list may show it, operations never do", async () => {
+		const { org, user: owner } = await setupOwner("Ops Orphaned Org");
 		const member = await createTestUser();
 		await addUserToOrganization(member.id, org.id, "member");
-		await seedConnector(org.id, KEY_READY, "Legacy Unowned Connector");
-		// A row predating the created_by column: private with NO creator.
+		await seedConnector(org.id, KEY_READY, "Orphaned Connector");
+		// A private connection with no creator — the pre-backfill legacy shape,
+		// or a future row orphaned by a hard-deleted owner. There is no admin
+		// arm anymore, so operations must treat it like any other row it cannot
+		// prove the caller may touch.
 		const unowned = await createTestConnection({
 			organization_id: org.id,
 			connector_key: KEY_READY,
 			visibility: "private",
 		});
 
-		// connections.list (management surface) shows it to the owner…
+		// The admin management list (a deliberate broader surface for
+		// owners/admins) may still surface the row…
 		const ownerList = (await manageConnections(
 			{ action: "list", connector_key: KEY_READY } as never,
 			TEST_ENV(),
@@ -801,33 +805,29 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 			unowned.id,
 		);
 
-		// …so operations must AGREE: the owner gets an executable target, not a
-		// "disconnected" connector whose next_action says to connect a duplicate.
+		// …but operations must NOT expose it: no executable target, no
+		// connection_count, and execute rejects exactly like an invisible row.
 		const { operations } = await listAll(org.id, owner.id, {
 			connector_key: KEY_READY,
 		});
 		const create = getOperation(operations, "create_issue");
-		expect(create.readiness).toBe("ready");
-		expect(create.connection_count).toBe(1);
-		expect(
-			create.execution_targets.map((target) => target.connection_id),
-		).toEqual([unowned.id]);
+		expect(create.readiness).toBe("disconnected");
+		expect(create.connection_count).toBe(0);
+		expect(create.execution_targets).toEqual([]);
 
-		// Execute clears the visibility fence for the owner (any downstream error
-		// would be about running the demo connector, never the fence).
 		const ownerExec = (await manageOperations(
 			{
 				action: "execute",
 				connection_id: unowned.id,
 				operation_key: "create_issue",
-				input: { title: "legacy row stays usable" },
+				input: { title: "orphaned row must stay unusable" },
 			},
 			TEST_ENV(),
 			ctxFor(org.id, owner.id),
 		).catch((err) => ({ error: String(err) }))) as { error?: string };
-		expect(ownerExec.error).not.toBe("Connection not found or not visible.");
+		expect(ownerExec.error).toBe("Connection not found or not visible.");
 
-		// Fail-closed: a plain member sees the unowned row NOWHERE — list and
+		// Fail-closed: a plain member sees the row NOWHERE — list and
 		// operations agree for them too.
 		const memberList = (await manageConnections(
 			{ action: "list", connector_key: KEY_READY } as never,

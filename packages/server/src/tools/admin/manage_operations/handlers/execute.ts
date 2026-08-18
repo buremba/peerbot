@@ -35,7 +35,6 @@ import { dispatchChromeActionToExtension } from "../../../../worker-api/dispatch
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
 import { waitForDeviceActionRun } from "../../device-action-wait";
-import { callerIsAdmin } from "../../helpers/db-helpers";
 import {
 	qualifiedOperationKey,
 	type ConnectionRow,
@@ -423,7 +422,6 @@ export async function handleExecute(
 		{
 			...authzScopeFromToolContext(ctx),
 			principal: visibilityUserId,
-			principalIsAdmin: await callerIsAdmin(sql, ctx),
 		},
 		"c",
 	);

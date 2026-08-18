@@ -120,6 +120,15 @@ else
   rm -rf "$worktree_dir" 2>/dev/null || true
 fi
 
+# Drop any registration still pointing at the path we just removed. Without
+# this, `git branch -D` below fails with "cannot delete branch ... used by
+# worktree at <path>" for a worktree whose directory no longer exists — git
+# keeps the admin files under .git/worktrees until pruned. The `rm -rf` branch
+# above guarantees that state, and `worktree remove` can leave it too when the
+# tree contains submodules ("working trees containing submodules cannot be
+# moved or removed"). Cheap and idempotent, so it runs unconditionally.
+git -C "$repo" worktree prune
+
 # Returns 0 if branch <b> in <gitdir> carries no local-only commits (its tip is
 # reachable from origin/main, or equals its pushed remote ref). Used to protect
 # the feat/<name> default below — we never auto-delete unpushed work.

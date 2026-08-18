@@ -52,6 +52,7 @@ import {
   insertEntityRow,
   mergeEntityFields,
 } from './entity-management';
+import { validateEntityRowInsert } from '../authz/entity-row-validation';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 import { resolveEntityCreator } from './resolve-entity-creator';
@@ -211,19 +212,26 @@ async function insertEntityWithUniqueSlug(params: {
   createdBy: string;
 }): Promise<number> {
   const { tx } = params;
+  // Automation output promoted into tenant state — the single most important
+  // create to govern, since it is the path an agent's work reaches the table by.
+  // Validation runs INSIDE the savepoint so a rule reads the same snapshot the
+  // insert writes into.
   const insertWithSlug = (slug: string) =>
-    tx.savepoint((sp) =>
+    tx.savepoint(async (sp) =>
       insertEntityRow({
         tx: sp,
-        row: {
-          organizationId: params.organizationId,
-          entityTypeId: params.entityTypeId,
-          name: params.name,
-          slug,
-          parentId: params.parentEntityId,
-          metadata: params.metadata,
-          createdBy: params.createdBy,
-        },
+        row: await validateEntityRowInsert({
+          tx: sp,
+          row: {
+            organizationId: params.organizationId,
+            entityTypeId: params.entityTypeId,
+            name: params.name,
+            slug,
+            parentId: params.parentEntityId,
+            metadata: params.metadata,
+            createdBy: params.createdBy,
+          },
+        }),
       })
     );
 

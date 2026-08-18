@@ -65,6 +65,12 @@ export interface DesiredEntityType {
    */
   resolutionPolicy?: Record<string, unknown>;
   /**
+   * Write rules as raw source, read from the `rulesFromFile(path)` marker.
+   * Present only when declared, so a type without rules never churns the diff.
+   * The server compiles it; the CLI never ships a compiled artifact.
+   */
+  rulesSource?: { sourcePath: string; sourceCode: string };
+  /**
    * Default view template (render-DSL root node) for this type's detail page.
    * Present only when declared. Applied via manage_view_templates set/clear and
    * diffed against the remote current default (which apply-cmd fetches per
@@ -943,37 +949,50 @@ function resolveConnectorSources(
 }
 
 const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
+const ENTITY_RULES_MAX_BYTES = 32 * 1024;
 
 /**
- * Resolve + read an Automation reaction script (`reactionFromFile(path)`): relative
- * POSIX path under the config directory, ends in `.ts`, no `..` / absolute /
- * backslash segments, ≤256KB. Ships RAW source — the server compiles it on
- * receipt via `set_reaction_script`.
+ * Resolve + read a local source file referenced from the config: relative POSIX
+ * path under the config directory, ends in `.ts`, no `..` / absolute / backslash
+ * segments, under a byte cap. Ships RAW source — the server compiles it.
+ *
+ * Shared by Automation reaction scripts and entity-type write rules. Both ship
+ * source the same way and both need the same containment checks, so they get one
+ * implementation rather than two that drift; only the wording differs.
  */
-function resolveReactionScript(
-  cwd: string,
-  automationSlug: string,
-  rel: string
-): { sourcePath: string; sourceCode: string } {
+function resolveLocalSourceFile(args: {
+  cwd: string;
+  /** e.g. `Automation "daily-digest"` — names the owner in every error. */
+  owner: string;
+  /** The config field, e.g. `reaction` or `rules`. */
+  field: string;
+  /** A correct call to show when the path is missing or malformed. */
+  example: string;
+  rel: string;
+  maxBytes: number;
+  /** Appended to the size error to say what a sane file looks like. */
+  sizeHint: string;
+}): { sourcePath: string; sourceCode: string } {
+  const { cwd, owner, field, example, rel, maxBytes, sizeHint } = args;
   const trimmed = rel.trim();
   if (!trimmed) {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
+      `${owner} \`${field}\` must be a path to a sibling .ts file (e.g. \`${example}\`)`
     );
   }
   if (trimmed.startsWith("/") || trimmed.includes("\\")) {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
+      `${owner} \`${field}\` must be a relative POSIX path (./foo.ts) — absolute paths and backslashes are not allowed`
     );
   }
   if (trimmed.split("/").some((seg) => seg === "..")) {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
+      `${owner} \`${field}\` must not contain \`..\` segments — keep the file under the config directory`
     );
   }
   if (!trimmed.endsWith(".ts")) {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
+      `${owner} \`${field}\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
     );
   }
   const baseDir = resolve(cwd);
@@ -989,7 +1008,7 @@ function resolveReactionScript(
     isAbsolute(relPath)
   ) {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` resolves outside the config directory (${abs})`
+      `${owner} \`${field}\` resolves outside the config directory (${abs})`
     );
   }
   let sourceCode: string;
@@ -997,15 +1016,58 @@ function resolveReactionScript(
     sourceCode = readFileSync(abs, "utf-8");
   } catch {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
+      `${owner} \`${field}\` ${trimmed} does not exist (resolved to ${abs})`
     );
   }
-  if (Buffer.byteLength(sourceCode, "utf8") > REACTION_SCRIPT_MAX_BYTES) {
+  if (Buffer.byteLength(sourceCode, "utf8") > maxBytes) {
     throw new ValidationError(
-      `Automation "${automationSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
+      `${owner} \`${field}\` exceeds the ${maxBytes}-byte cap — ${sizeHint}`
     );
   }
   return { sourcePath: abs, sourceCode };
+}
+
+/** Ships RAW source; the server compiles it on receipt via `set_reaction_script`. */
+function resolveReactionScript(
+  cwd: string,
+  automationSlug: string,
+  rel: string
+): { sourcePath: string; sourceCode: string } {
+  return resolveLocalSourceFile({
+    cwd,
+    owner: `Automation ${JSON.stringify(automationSlug)}`,
+    field: "reaction",
+    example: 'reactionFromFile("./reactions/foo.reaction.ts")',
+    rel,
+    maxBytes: REACTION_SCRIPT_MAX_BYTES,
+    sizeHint:
+      "reaction scripts should be a few hundred lines, not a vendored library",
+  });
+}
+
+/**
+ * Entity-type write rules (`rulesFromFile(path)`). Ships RAW source; the server
+ * compiles it into `entity_types.rules_compiled` on receipt.
+ *
+ * Capped far below a reaction script on purpose: a rule runs inside the write
+ * transaction on every write to its type, so it is meant to be a page of
+ * invariants, not a program.
+ */
+function resolveEntityRules(
+  cwd: string,
+  entityTypeKey: string,
+  rel: string
+): { sourcePath: string; sourceCode: string } {
+  return resolveLocalSourceFile({
+    cwd,
+    owner: `Entity type ${JSON.stringify(entityTypeKey)}`,
+    field: "rules",
+    example: 'rulesFromFile("./rules/invoice.ts")',
+    rel,
+    maxBytes: ENTITY_RULES_MAX_BYTES,
+    sizeHint:
+      "write rules run inside the write transaction and should be a page of invariants, not a program",
+  });
 }
 
 /**
@@ -1140,6 +1202,25 @@ export async function loadDesiredStateFromConfig(
       automation.slug,
       reactionPath
     );
+  });
+
+  // Entity-type write rules: same shape as reaction scripts — a sibling `.ts`
+  // referenced by path, read here (raw) rather than in the pure mapper.
+  // state.memorySchema.entityTypes[i] aligns with typedProject.entities[i].
+  (typedProject.entities ?? []).forEach((entity, i) => {
+    if (entity.rules === undefined) return;
+    const desired = state.memorySchema?.entityTypes?.[i];
+    if (!desired) return;
+    // Typed as EntityRulesSource, but jiti evaluates the config without
+    // typechecking, so a bare string path slips through and would read `.path`
+    // as undefined. Reject it with a clear message, matching the reaction path.
+    const rulesPath = (entity.rules as { path?: unknown }).path;
+    if (typeof rulesPath !== "string") {
+      throw new Error(
+        `Entity type "${entity.key}": set rules with rulesFromFile("./rules/x.ts"), not a bare string path.`
+      );
+    }
+    desired.rulesSource = resolveEntityRules(opts.cwd, entity.key, rulesPath);
   });
 
   // `--only agents|memory` skips connectors (matching the mapper), so don't

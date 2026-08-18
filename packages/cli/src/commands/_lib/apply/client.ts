@@ -102,6 +102,12 @@ export interface RemoteEntityType {
    */
   schemaExtras?: Record<string, unknown>;
   /**
+   * Write rules as stored, hoisted from the row's `rules_source`. The compiled
+   * artifact is never fetched — it is a build output, so diffing it would churn
+   * on a compiler change rather than on a rule change.
+   */
+  rulesSource?: string | null;
+  /**
    * Owning org id. The list endpoint also returns *public* types from OTHER
    * orgs (`o.visibility = 'public'`), so prune must compare this against the
    * target org and never delete a type this org doesn't own.
@@ -302,6 +308,7 @@ function hoistEntityTypeSchema(
     backing_sql?: string | null;
     backing_source?: string | null;
     metrics_config?: unknown;
+    rules_source?: string | null;
   }
 ): RemoteEntityType {
   const schema = row.metadata_schema;
@@ -354,6 +361,11 @@ function hoistEntityTypeSchema(
   // stays `undefined` on both sides and never churns the diff (mirrors metrics).
   if (isRecord(row.event_kinds) && Object.keys(row.event_kinds).length > 0) {
     out.eventKinds = row.event_kinds as Record<string, unknown>;
+  }
+  // Hoist rules_source only when non-empty, so a type with no rules stays
+  // `undefined` on both sides and never churns (mirrors metrics/eventKinds).
+  if (typeof row.rules_source === "string" && row.rules_source.length > 0) {
+    out.rulesSource = row.rules_source;
   }
   return out;
 }
@@ -766,6 +778,7 @@ export class ApplyClient {
       backing,
       metrics,
       resolutionPolicy,
+      rulesSource,
     } = entity;
     const payload: Record<string, unknown> = { slug };
     if (name !== undefined) payload.name = name;
@@ -847,6 +860,12 @@ export class ApplyClient {
     }
     if (metrics !== undefined || clearFacets?.has("metrics")) {
       payload.metrics_config = metrics ?? null;
+    }
+    // RAW source only — the server compiles it and owns `rules_compiled`. The
+    // CLI shipping a compiled artifact would pin the sandbox's build settings to
+    // whatever version of the CLI happened to run the apply.
+    if (rulesSource !== undefined || clearFacets?.has("rules")) {
+      payload.rules_source = rulesSource?.sourceCode ?? null;
     }
     return this.upsertSchemaResource("entity_type", payload);
   }

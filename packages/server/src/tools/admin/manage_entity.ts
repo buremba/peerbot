@@ -31,7 +31,11 @@ import {
 	type RelationshipCountByType,
 	type RelationshipRow,
 } from "@lobu/core/contracts/tools/manage-entity";
-import { runMutationGate } from "../../authz/entity-mutation-gate";
+import {
+	deferEntityCreate,
+	runMutationGate,
+} from "../../authz/entity-mutation-gate";
+import { EntityRowValidationError } from "../../authz/entity-row-validation";
 import {
 	type ActingPrincipal,
 	evaluateEntityMutation,
@@ -372,13 +376,55 @@ async function handleCreate(
 		} as unknown as ManageEntityResult;
 	}
 
-	const entity = await createEntity(entityData, {
-		hookContext: {
-			organizationId: ctx.organizationId,
-			userId: ctx.userId,
-			env,
-		},
-	});
+	// A write rule can also hold a create, and it can only say so from INSIDE the
+	// insert transaction — the gate above judges the principal, the rule judges
+	// the row. An escalate aborts that transaction, so nothing was created and
+	// the whole proposal becomes the card, exactly like the policy-held path
+	// above. A `deny` is not caught: the caller proposed an illegal row.
+	let entity: Awaited<ReturnType<typeof createEntity>>;
+	try {
+		entity = await createEntity(entityData, {
+			hookContext: {
+				organizationId: ctx.organizationId,
+				userId: ctx.userId,
+				env,
+			},
+		});
+	} catch (err) {
+		if (
+			!(err instanceof EntityRowValidationError) ||
+			err.verdict.outcome !== "escalate"
+		) {
+			throw err;
+		}
+		const res = await deferEntityCreate({
+			entityData,
+			proposal,
+			attribution,
+			// The rule's own words, not "an agent proposes creating x" — the
+			// approver needs to know WHY this row needs a human.
+			reason: err.verdict.reason,
+			// Exactly what the approver consents to; a later, different escalation
+			// still needs its own card.
+			escalatedFields: err.verdict.fields,
+			automationId:
+				ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
+			windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
+		}).queue(ctx, env);
+		return {
+			action: "create",
+			approval_queued: true,
+			approval_url: res.approvalUrl,
+			approval_run_id: res.runId,
+			approval_action: "create",
+			approval_proposal: proposal,
+			approval_current: {},
+			approval_attribution: attribution,
+			next_steps: [
+				`${capitalize(args.entity_type)} "${args.name}" needs approval before it is created: ${err.verdict.reason}`,
+			],
+		} as unknown as ManageEntityResult;
+	}
 
 	const entityTypeLabel = capitalize(entity.entity_type);
 

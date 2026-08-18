@@ -59,6 +59,14 @@ export function buildCreateDeferral(args: {
 	entityData: EntityData;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
+	/**
+	 * Overrides the generated "an agent proposes creating x" line. Set when a
+	 * WRITE RULE caused the hold, so the approver reads the rule's own words
+	 * instead of a sentence that does not say why this create needs a human.
+	 */
+	reason?: string;
+	/** Fields the rule escalated — what the approver is consenting to. */
+	escalatedFields?: string[];
 	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
@@ -74,15 +82,18 @@ export function buildCreateDeferral(args: {
 			proposeEntityCreate(ctx, {
 				entity_data: args.entityData,
 				proposal: args.proposal,
+				escalated_fields: args.escalatedFields,
 				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
-				reason: reasonFor(
-					args.attribution,
-					"creating",
-					args.entityData.entity_type,
-					name,
-				),
+				reason:
+					args.reason ??
+					reasonFor(
+						args.attribution,
+						"creating",
+						args.entityData.entity_type,
+						name,
+					),
 			}),
 	};
 }
@@ -92,6 +103,14 @@ export function buildFieldChangeDeferral(args: {
 	fields: Record<string, unknown>;
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
+	/**
+	 * Overrides the generated "agent wants to change x, y" line. Set when a
+	 * WRITE RULE caused the hold, so the approver reads the rule's own words
+	 * instead of a field list that does not explain itself.
+	 */
+	reason?: string;
+	/** Fields the rule escalated — what the approver is consenting to. */
+	escalatedFields?: string[];
 	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
@@ -107,10 +126,13 @@ export function buildFieldChangeDeferral(args: {
 				entity_id: args.entityId,
 				fields: args.fields,
 				current: args.current,
+				escalated_fields: args.escalatedFields,
 				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
-				reason: fieldChangeReason(args.attribution, Object.keys(args.fields)),
+				reason:
+					args.reason ??
+					fieldChangeReason(args.attribution, Object.keys(args.fields)),
 			}),
 	};
 }

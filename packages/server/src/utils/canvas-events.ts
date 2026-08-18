@@ -26,6 +26,7 @@
 
 import type { DbClient } from '../db/client';
 import { CANVAS_ENTITY_TYPE_SLUG } from '../tools/constants';
+import { unvalidatedEntityRowInsert } from '../authz/entity-row-validation';
 import { hardDeleteEntityRows, tryInsertEntityRow } from './entity-management';
 import { resolveEntityCreator } from './resolve-entity-creator';
 
@@ -108,15 +109,21 @@ export async function ensureCanvasEntity(params: {
   const baseSlug = `automation-canvas-${automationId}`;
   const inserted = await tryInsertEntityRow({
     tx,
-    row: {
-      organizationId,
-      entityTypeId,
-      name: `Canvas · automation ${automationId}`,
-      slug: baseSlug,
-      parentId: parentEntityId,
-      metadata: { automation_id: automationId, source: 'automation_canvas' },
-      createdBy,
-    },
+    row: unvalidatedEntityRowInsert({
+      row: {
+        organizationId,
+        entityTypeId,
+        name: `Canvas · automation ${automationId}`,
+        slug: baseSlug,
+        parentId: parentEntityId,
+        metadata: { automation_id: automationId, source: 'automation_canvas' },
+        createdBy,
+      },
+      reason:
+        'platform bookkeeping: the canvas row is a container this module ' +
+        'creates for its own use, on a platform-owned type no tenant declares ' +
+        'rules for',
+    }),
   });
 
   let entityId: number | null = inserted?.id ?? null;

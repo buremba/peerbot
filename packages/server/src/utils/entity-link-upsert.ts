@@ -16,6 +16,10 @@
  * recovers the relationship via entity_identities.
  */
 
+import {
+  validateEntityRowInsert,
+  validateEntityRowPatch,
+} from '../authz/entity-row-validation';
 import { randomBytes } from 'node:crypto';
 import {
   ACL_RESOURCE_TYPE_SLUG,
@@ -287,12 +291,16 @@ async function ensureAliases(
   await patchEntityRows({
     tx: sql,
     ids: [params.entityId],
-    patch: {
-      metadata: {
-        ...current,
-        aliases: [...new Set([...aliases, ...params.identifiers])].sort(),
+    patch: await validateEntityRowPatch({
+      tx: sql,
+      ids: [params.entityId],
+      patch: {
+        metadata: {
+          ...current,
+          aliases: [...new Set([...aliases, ...params.identifiers])].sort(),
+        },
       },
-    },
+    }),
   });
 }
 
@@ -520,16 +528,23 @@ async function createEntityWithIdentities(
   let entityId: number | null = null;
   for (let attempt = 0; attempt < 3 && entityId === null; attempt++) {
     const slug = randomSlug(params.entityType);
+    // Auto-created from a connector link, but a tenant row on a tenant type all
+    // the same — so it is subject to the type's rules. Validating inside the
+    // retry loop costs one extra evaluation per slug collision, which the
+    // comment above already calls improbable.
     const inserted = await tryInsertEntityRow({
       tx: sql,
-      row: {
-        organizationId: params.orgId,
-        entityTypeId,
-        name,
-        slug,
-        metadata,
-        createdBy: params.creatorUserId,
-      },
+      row: await validateEntityRowInsert({
+        tx: sql,
+        row: {
+          organizationId: params.orgId,
+          entityTypeId,
+          name,
+          slug,
+          metadata,
+          createdBy: params.creatorUserId,
+        },
+      }),
     });
     if (inserted) entityId = Number(inserted.id);
   }
@@ -641,7 +656,11 @@ async function applyTraits(
   await patchEntityRows({
     tx: sql,
     ids: [params.entityId],
-    patch: { metadata: next },
+    patch: await validateEntityRowPatch({
+      tx: sql,
+      ids: [params.entityId],
+      patch: { metadata: next },
+    }),
   });
 }
 

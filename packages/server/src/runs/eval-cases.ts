@@ -25,6 +25,10 @@
  * promoting the same run concurrently resolve to one case rather than two.
  */
 
+import {
+	unvalidatedEntityRowInsert,
+	validateEntityRowPatch,
+} from "../authz/entity-row-validation";
 import { type DbClient, getDb } from "../db/client.js";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../tools/constants.js";
 import {
@@ -373,9 +377,13 @@ export async function setEvalCaseJudgeModel(
 		await patchEntityRows({
 			tx,
 			ids: [entityId],
-			patch: {
-				metadata: { ...(rows[0].metadata ?? {}), judge_model: judgeModel },
-			},
+			patch: await validateEntityRowPatch({
+				tx,
+				ids: [entityId],
+				patch: {
+					metadata: { ...(rows[0].metadata ?? {}), judge_model: judgeModel },
+				},
+			}),
 		});
 	});
 }
@@ -464,14 +472,20 @@ async function insertCaseEntity(params: {
 			attempt === 1 ? params.baseSlug : `${params.baseSlug}-${attempt}`;
 		const inserted = await tryInsertEntityRow({
 			tx: sql,
-			row: {
-				organizationId: params.organizationId,
-				entityTypeId: params.entityTypeId,
-				name: params.name,
-				slug,
-				metadata: params.metadata,
-				createdBy: params.createdBy,
-			},
+			row: unvalidatedEntityRowInsert({
+				row: {
+					organizationId: params.organizationId,
+					entityTypeId: params.entityTypeId,
+					name: params.name,
+					slug,
+					metadata: params.metadata,
+					createdBy: params.createdBy,
+				},
+				reason:
+					"eval scaffolding: a synthetic case row exists to score a run, not " +
+					"to represent tenant state, and must materialise even for a type " +
+					"whose rules would reject a bare fixture",
+			}),
 		});
 		if (inserted) {
 			return { entityId: Number(inserted.id), created: true };

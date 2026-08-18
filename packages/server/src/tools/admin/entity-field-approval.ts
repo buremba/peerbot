@@ -7,6 +7,7 @@
  * lives in manage_operations next to `supersedeActionEvent`.
  */
 
+import { validateEntityRowPatch } from "../../authz/entity-row-validation";
 import { createHash } from "node:crypto";
 import {
 	ApprovalAttribution,
@@ -96,6 +97,12 @@ export interface EntityFieldChangeProposal {
 	 * compares the canonical change identity, so replays still collapse.
 	 */
 	owner_user_id?: string | null;
+	/**
+	 * Fields the RULE escalated when this card was minted — exactly what the
+	 * approver is consenting to. Applying waives only these; an escalation the
+	 * rule raises for the first time later still needs its own card.
+	 */
+	escalated_fields?: string[];
 }
 
 export interface EntityDeleteProposal {
@@ -126,6 +133,12 @@ export interface EntityCreateProposal {
 	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
+	/**
+	 * Fields the RULE escalated when this card was minted — exactly what the
+	 * approver is consenting to. Applying waives only these; an escalation the
+	 * rule raises for the first time later still needs its own card.
+	 */
+	escalated_fields?: string[];
 }
 
 export interface EntityMergeProposal {
@@ -1109,6 +1122,8 @@ export async function applyEntityFieldChangeProposal(
 						note: proposal.reason ?? null,
 						// Don't overwrite a field the human re-edited after this proposal was queued.
 						expectedCurrent: proposal.current ?? null,
+						// This IS the approval — but only for what the card showed.
+						approvedFields: proposal.escalated_fields ?? [],
 					})
 				: ({
 						changed: false,
@@ -1158,18 +1173,30 @@ export async function applyEntityFieldChangeProposal(
 			if (Object.keys(apply).length > 0) {
 				const nextName =
 					"$name" in apply ? String(apply.$name ?? "") || null : null;
+				// Applying an approval is a WRITE, so it revalidates. A human blessing
+				// a field cannot bless an illegal state: without this, a rule could be
+				// satisfied by escalating, and the approval would then commit unchecked.
 				await patchEntityRows({
 					tx,
 					ids: [proposal.entity_id],
-					patch: {
-						...(nextName !== null ? { name: nextName } : {}),
-						...("$parent_id" in apply
-							? { parentId: apply.$parent_id as number | null }
-							: {}),
-						...("$content" in apply
-							? { content: apply.$content as string | null }
-							: {}),
-					},
+					patch: await validateEntityRowPatch({
+						tx,
+						ids: [proposal.entity_id],
+						patch: {
+							...(nextName !== null ? { name: nextName } : {}),
+							...("$parent_id" in apply
+								? { parentId: apply.$parent_id as number | null }
+								: {}),
+							...("$content" in apply
+								? { content: apply.$content as string | null }
+								: {}),
+						},
+						// Same as the metadata half above, and it has to be set on BOTH: a
+						// card mixing `$name` with a metadata field runs through both
+						// writers inside one transaction, so an escalate re-thrown here
+						// rolls the approved metadata back out too.
+						approvedFields: proposal.escalated_fields ?? [],
+					}),
 				});
 			}
 		}
@@ -1263,6 +1290,9 @@ export async function applyEntityChangeProposal(
 					userId: ctx.userId,
 					env,
 				},
+				// This IS the approval, scoped to what the card showed. A `deny` still
+				// throws: approval cannot make an illegal row legal.
+				approvedFields: createProposal.escalated_fields ?? [],
 			},
 		);
 	}

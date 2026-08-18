@@ -20,6 +20,7 @@ import {
   type ViewTemplateTab,
 } from '@lobu/core/contracts/tools/manage-entity-schema';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
+import { compileEntityRule } from '../../authz/entity-rule-executor';
 import { type DbClient, getDb } from '../../db/client';
 import { validateMetricReadModes } from '../../metrics/read-mode';
 import { recordToolConfigChange } from './helpers/config-audit';
@@ -115,11 +116,30 @@ async function manageEntitySchemaImpl(
 // Entity Type Helpers
 // ============================================
 
+/**
+ * Compile a type's write rules, surfacing a compile error to the AUTHOR.
+ *
+ * Returns null for absent or cleared rules, which is what every existing type
+ * already stores and what the write seam reads as "no rule for this type".
+ */
+async function compileRulesOrThrow(source: string | null): Promise<string | null> {
+  if (!source || !source.trim()) return null;
+  try {
+    return await compileEntityRule(source);
+  } catch (err) {
+    throw new ToolUserError(
+      `[invalid_rules] write rules failed to compile: ${(err as Error).message}`,
+      422
+    );
+  }
+}
+
 const ENTITY_TYPE_COLUMNS =
-  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_source, metrics_config, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
+  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_source, metrics_config, rules_source, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
 
 const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, et.icon, et.color,
   et.metadata_schema, et.event_kinds, et.backing_sql, et.backing_source, et.metrics_config,
+  et.rules_source,
   et.created_by, et.organization_id,
   et.created_at, et.updated_at, et.current_view_template_version_id,
   o.slug AS organization_slug`;
@@ -496,6 +516,10 @@ async function etHandleCreate(
   const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
   const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
+  // Compile here, at apply time, so the WRITE path never invokes esbuild. A rule
+  // that does not compile is rejected now rather than failing closed on every
+  // write later, when the author is nowhere near the error.
+  const rulesCompiled = await compileRulesOrThrow(args.rules_source ?? null);
 
   let inserted: unknown[];
   try {
@@ -504,6 +528,7 @@ async function etHandleCreate(
       slug, name, description, icon, color,
       metadata_schema, event_kinds,
       backing_sql, backing_source, metrics_config,
+      rules_source, rules_compiled,
       organization_id, created_by,
       created_at, updated_at
     ) VALUES (
@@ -517,6 +542,8 @@ async function etHandleCreate(
       ${args.backing?.sql ?? null},
       ${args.backing?.connection ?? null},
       ${metricsConfig},
+      ${args.rules_source ?? null},
+      ${rulesCompiled},
       ${ctx.organizationId},
       ${ctx.userId},
       current_timestamp,
@@ -619,6 +646,13 @@ async function etHandleUpdate(
   const hasMetricsConfig = args.metrics_config !== undefined;
   const metricsConfigJson = args.metrics_config ? sql.json(args.metrics_config) : null;
 
+  // Rules set as a unit, like backing and metrics: a string declares them, null
+  // clears BOTH columns, omit to leave unchanged. Source and compiled artifact
+  // are only ever written together — a pair that drifts apart would run a rule
+  // nobody can read, or read one that never runs.
+  const hasRules = args.rules_source !== undefined;
+  const rulesCompiled = await compileRulesOrThrow(args.rules_source ?? null);
+
   await sql`
     UPDATE entity_types SET
       name = COALESCE(${args.name ?? null}, name),
@@ -632,6 +666,14 @@ async function etHandleUpdate(
       event_kinds = CASE
         WHEN ${hasEventKinds} THEN ${eventKindsJson}
         ELSE event_kinds
+      END,
+      rules_source = CASE
+        WHEN ${hasRules} THEN ${args.rules_source ?? null}::text
+        ELSE rules_source
+      END,
+      rules_compiled = CASE
+        WHEN ${hasRules} THEN ${rulesCompiled}::text
+        ELSE rules_compiled
       END,
       backing_sql = CASE
         WHEN ${hasBacking} THEN ${args.backing?.sql ?? null}::text
@@ -686,6 +728,7 @@ async function etHandleUpdate(
     ...(args.icon !== undefined ? ['icon'] : []),
     ...(args.color !== undefined ? ['color'] : []),
     ...(hasMetadataSchema ? ['metadata_schema'] : []),
+    ...(hasRules ? ['rules_source'] : []),
     ...(hasEventKinds ? ['event_kinds'] : []),
     ...(hasBacking ? ['backing'] : []),
     ...(hasMetricsConfig ? ['metrics_config'] : []),

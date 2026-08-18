@@ -6,6 +6,7 @@
  * (auth hook → ensureMemberEntity → createEntity → beforeCreate hook → invitation insert).
  */
 
+import { unvalidatedEntityRowPatch, validateEntityRowPatch } from "../authz/entity-row-validation";
 import { getDb } from '../db/client';
 import {
   createEntity,
@@ -186,7 +187,11 @@ export async function updateMemberEntityStatus(
       await patchEntityRows({
         tx,
         ids: [Number(row.id)],
-        patch: { metadata: { ...(row.metadata ?? {}), status } },
+        patch: await validateEntityRowPatch({
+          tx,
+          ids: [Number(row.id)],
+          patch: { metadata: { ...(row.metadata ?? {}), status } },
+        }),
       });
     }
   });
@@ -225,7 +230,11 @@ export async function updateMemberEntityAccess(
     await patchEntityRows({
       tx,
       ids: [Number(rows[0].id)],
-      patch: { metadata },
+      patch: await validateEntityRowPatch({
+        tx,
+        ids: [Number(rows[0].id)],
+        patch: { metadata },
+      }),
     });
   });
 }
@@ -255,7 +264,11 @@ export async function deleteMemberEntity(organizationId: string, email: string):
     await patchEntityRows({
       tx,
       ids: rows.map((row) => Number(row.id)),
-      patch: { softDelete: true },
+      patch: unvalidatedEntityRowPatch({
+        patch: { softDelete: true },
+        reason:
+          'membership deprovisioning: removing a user must never be blockable by a tenant state rule',
+      }),
     });
   });
 }

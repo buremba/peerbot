@@ -22,10 +22,16 @@
 -- with no corresponding operations visibility, which is the split the change
 -- eliminates.
 --
--- Scope: only private, non-deleted, unpinned rows. Org-visible rows already
--- match `visibility = 'org'`, and device-pinned rows are adopted to the real
--- device user by device-reconcile.ts (which guards on `created_by IS NULL`), so
--- adopting either here would steal the ownership a later pass would assign.
+-- Scope: only private, non-deleted, non-device rows. Org-visible rows already
+-- match `visibility = 'org'`, so they need no creator. Device connectors
+-- (definitions declaring `required_capability`) are adopted to the real device
+-- user by device-reconcile.ts (which matches the row by
+-- (org, connector_key, no auth/app-auth profile) and guards on
+-- `created_by IS NULL`), so adopting any of them here — pinned or not — would
+-- permanently pre-empt that self-heal and strand the device user. The pin
+-- alone is not a safe test: reconcilePin clears it whenever a fleet has more
+-- than one fresh device, so a live-but-unpinned device row must be excluded by
+-- connector kind, not by whether a pin happens to be set.
 --
 -- Runs outside dbmate's transaction sandbox. The body is a single UPDATE, which
 -- is atomic on its own and idempotent on re-run (the WHERE clause only matches
@@ -49,7 +55,14 @@ WHERE c.organization_id = sub.org_id
   AND c.created_by IS NULL
   AND c.visibility = 'private'
   AND c.deleted_at IS NULL
-  AND c.device_worker_id IS NULL;
+  AND c.device_worker_id IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM connector_definitions cd
+    WHERE cd.key = c.connector_key
+      AND (cd.organization_id = c.organization_id OR cd.organization_id IS NULL)
+      AND cd.required_capability IS NOT NULL
+  );
 
 -- migrate:down
 

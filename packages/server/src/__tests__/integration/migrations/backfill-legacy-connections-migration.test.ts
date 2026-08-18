@@ -11,10 +11,14 @@
  *  - an org with NO members keeps NULL (fail-closed: no principal exists there);
  *  - rows already owned are untouched;
  *  - idempotent on a re-run (only NULL rows match);
- *  - scope: org-visible, soft-deleted, and device-pinned rows keep NULL —
- *    org-visible rows already match `visibility = 'org'`, and device rows are
- *    adopted to the real device user by device-reconcile.ts (which guards on
- *    `created_by IS NULL`), so adopting them here would steal that ownership.
+ *  - scope: org-visible, soft-deleted, and device-connector rows keep NULL —
+ *    org-visible rows already match `visibility = 'org'`, and device connectors
+ *    (definitions declaring `required_capability`) are adopted to the real
+ *    device user by device-reconcile.ts (which matches by
+ *    (org, connector_key, no auth/app-auth profile) and guards on
+ *    `created_by IS NULL`), so adopting any of them here — pinned or not —
+ *    would steal that ownership. A non-device connector whose key merely contains
+ *    "device" is still adopted.
  */
 
 import { existsSync } from 'node:fs';
@@ -211,14 +215,19 @@ describe('backfill legacy connections migration', () => {
     expect(await creatorOf(deleted.id)).toBeNull();
   });
 
-  it('leaves device-pinned rows NULL (device-reconcile owns their creator)', async () => {
+  it('leaves device-connector rows NULL even when pinned (device-reconcile owns them)', async () => {
     const org = await createTestOrganization();
     const owner = await createTestUser();
     await addUserToOrganization(owner.id, org.id, 'owner');
 
+    await getDb()`
+      INSERT INTO connector_definitions (key, name, organization_id, required_capability)
+      VALUES ('device.computer_use', 'Device connector', ${org.id}, 'device.chrome')
+    `;
+
     const orphan = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'github',
+      connector_key: 'device.computer_use',
       visibility: 'private',
     });
     const [worker] = await getDb()<{ id: string }[]>`
@@ -232,5 +241,45 @@ describe('backfill legacy connections migration', () => {
 
     await runBackfill();
     expect(await creatorOf(orphan.id)).toBeNull();
+  });
+
+  it('leaves an UNPINNED device-connector row NULL (pin alone is not the discriminator)', async () => {
+    const org = await createTestOrganization();
+    const owner = await createTestUser();
+    await addUserToOrganization(owner.id, org.id, 'owner');
+
+    await getDb()`
+      INSERT INTO connector_definitions (key, name, organization_id, required_capability)
+      VALUES ('device.computer_use', 'Device connector', ${org.id}, 'device.chrome')
+    `;
+
+    const orphan = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'device.computer_use',
+      visibility: 'private',
+    });
+
+    await runBackfill();
+    expect(await creatorOf(orphan.id)).toBeNull();
+  });
+
+  it('adopts a private orphan whose connector merely resembles a device key (non-device definition)', async () => {
+    const org = await createTestOrganization();
+    const owner = await createTestUser();
+    await addUserToOrganization(owner.id, org.id, 'owner');
+
+    await getDb()`
+      INSERT INTO connector_definitions (key, name, organization_id)
+      VALUES ('device.github', 'Non-device connector', ${org.id})
+    `;
+
+    const orphan = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'device.github',
+      visibility: 'private',
+    });
+
+    await runBackfill();
+    expect(await creatorOf(orphan.id)).toBe(owner.id);
   });
 });

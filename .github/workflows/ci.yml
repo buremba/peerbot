@@ -72,12 +72,54 @@ jobs:
             echo "runner=$LINUX" >> "$GITHUB_OUTPUT"
           fi
 
+  # Decide which package/frontend suites must run. Same git-diff pattern as
+  # optional-smoke-filter: a PR touching only workflows/docs skips the heavy
+  # suites (they report "skipped", which satisfies branch protection), while
+  # any runtime change runs everything. On push/main (no base SHA) all run.
+  paths:
+    runs-on: ubuntu-24.04
+    outputs:
+      packages: ${{ steps.filter.outputs.packages }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Need the PR base commit so we can diff against it. The default
+          # fetch-depth=1 only has HEAD.
+          fetch-depth: 0
+
+      - name: Decide which test suites to run
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "packages=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          if echo "$changed" | grep -E '^(packages/|examples/|bun\.lock$|package\.json$|tsconfig\.json$|bunfig\.toml$|Makefile$|patches/|docker/|db/|scripts/|config/|\.github/workflows/ci\.yml$|\.github/actions/|\.gitmodules$)' >/dev/null; then
+            echo "packages=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "packages=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No runtime/test paths changed - skipping package suites."
+          fi
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.gitmodules$|\.github/actions/setup-submodule/)' >/dev/null; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No frontend paths changed - skipping frontend."
+          fi
+
   # Fast unit tests — no Postgres, no submodule needed for most.
   # Splits from `integration` so a unit failure surfaces in <2 min instead of
   # waiting behind DB setup. Worker tests run under bun (full suite, not the
   # cherry-picked subset that used to live here).
   unit:
-    needs: check-author
+    needs: [check-author, paths]
+    if: needs.paths.outputs.packages == 'true'
     runs-on: ${{ needs.check-author.outputs.runner }}
     timeout-minutes: 15
     steps:
@@ -108,6 +150,27 @@ jobs:
         # https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
         run: bash scripts/install-bubblewrap.sh probe
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-unit-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         run: bun install
 
@@ -117,6 +180,7 @@ jobs:
         run: node scripts/check-connector-runtime-deps.mjs
 
       - name: Build package graph for unit-test runtime resolution
+        if: steps.dist-cache.outputs.cache-hit != 'true'
         # connector-worker integration tests import from its compiled `dist/`
         # (subprocess-mode tests spawn the built executor); build it here
         # so those run. embeddings must build before connector-worker —
@@ -264,9 +328,31 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-sdk-cli-build-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         run: bun install
       - name: Build all packages (CLI + server bundle + sdk + pgvector-embedded)
+        if: steps.dist-cache.outputs.cache-hit != 'true'
         run: make build-packages
       - name: Package built distributions
         run: tar -czf "$RUNNER_TEMP/sdk-cli-distributions.tgz" packages/*/dist
@@ -296,6 +382,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
       - name: Dead-code report (knip full, non-blocking)
@@ -317,6 +415,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
       - name: Install bubblewrap (worker exec-sandbox)
@@ -384,6 +494,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
       - name: Install bubblewrap (worker exec-sandbox)
@@ -413,6 +535,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
       - name: Install bubblewrap (worker exec-sandbox)
@@ -446,9 +580,14 @@ jobs:
           echo "SDK lifecycle: $SDK_RESULT"
           echo "Error taxonomy: $ERROR_TAXONOMY_RESULT"
           echo "CLI surface: $CLI_RESULT"
-          test "$SDK_RESULT" = success
-          test "$ERROR_TAXONOMY_RESULT" = success
-          test "$CLI_RESULT" = success
+          # Skipped is success here: the deep smokes skip (paths filter) when
+          # no runtime paths changed, and this fan-in must stay green then.
+          for r in "$SDK_RESULT" "$ERROR_TAXONOMY_RESULT" "$CLI_RESULT"; do
+            if [ "$r" != success ] && [ "$r" != skipped ]; then
+              echo "job result \"$r\" is neither success nor skipped"
+              exit 1
+            fi
+          done
 
   # Frontend: vitest (jsdom) + prod SPA build + Chromium cold-boot smoke.
   # The boot smoke is the SPA equivalent of connector-parity-smoke: unit tests
@@ -456,7 +595,8 @@ jobs:
   # white-screen" packaging bugs. Build uses the same `bun run build` path as
   # docker/app/Dockerfile. Forks without the deploy key get a stub and skip.
   frontend:
-    needs: check-author
+    needs: [check-author, paths]
+    if: needs.paths.outputs.frontend == 'true' || needs.paths.outputs.packages == 'true'
     runs-on: ${{ needs.check-author.outputs.runner }}
     timeout-minutes: 25
     steps:
@@ -477,6 +617,27 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-frontend-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         if: steps.submodule.outputs.stubbed != 'true'
         run: bun install
@@ -485,7 +646,7 @@ jobs:
         # connector-sdk imports @lobu/core; resolving the type-only barrel
         # import needs core/dist on disk first. core/reserved subpath is what
         # the SPA imports at runtime — must be on disk for the prod build.
-        if: steps.submodule.outputs.stubbed != 'true'
+        if: steps.submodule.outputs.stubbed != 'true' && steps.dist-cache.outputs.cache-hit != 'true'
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
@@ -517,7 +678,8 @@ jobs:
   # closed unless every shard and Bun/Postgres suite succeeds.
   server-integration-vitest:
     name: integration-vitest (${{ matrix.shard }}/3)
-    needs: check-author
+    needs: [check-author, paths]
+    if: needs.paths.outputs.packages == 'true'
     runs-on: ${{ needs.check-author.outputs.runner }}
     timeout-minutes: 15
     strategy:
@@ -569,6 +731,27 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-integration-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         run: bun install
 
@@ -589,6 +772,7 @@ jobs:
         # `@lobu/pgvector-embedded`, so vite resolves its `import` condition
         # (./dist/index.js) at transform time even though the embedded backend
         # is never started when DATABASE_URL points at the external Postgres.
+        if: steps.dist-cache.outputs.cache-hit != 'true'
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
@@ -643,7 +827,8 @@ jobs:
   # Vitest shards removes another ~2 minutes from the serial critical path.
   server-integration-bun:
     name: integration-bun
-    needs: check-author
+    needs: [check-author, paths]
+    if: needs.paths.outputs.packages == 'true'
     runs-on: ${{ needs.check-author.outputs.runner }}
     timeout-minutes: 15
     services:
@@ -678,10 +863,32 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-integration-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         run: bun install
 
       - name: Build packages server depends on
+        if: steps.dist-cache.outputs.cache-hit != 'true'
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
@@ -793,8 +1000,14 @@ jobs:
         run: |
           echo "Vitest matrix: $VITEST_RESULT"
           echo "Bun/Postgres: $BUN_RESULT"
-          test "$VITEST_RESULT" = success
-          test "$BUN_RESULT" = success
+          # Skipped is success here: the shards skip (paths filter) when no
+          # runtime paths changed, and this required fan-in must stay green.
+          for r in "$VITEST_RESULT" "$BUN_RESULT"; do
+            if [ "$r" != success ] && [ "$r" != skipped ]; then
+              echo "job result \"$r\" is neither success nor skipped"
+              exit 1
+            fi
+          done
 
   format-lint:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
@@ -810,6 +1023,18 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
 
@@ -1009,10 +1234,32 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-typecheck-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         run: bun install
 
       - name: Build workspace packages (needed for downstream tsc resolution)
+        if: steps.dist-cache.outputs.cache-hit != 'true'
         run: make build-packages
 
       - name: Run TypeScript type check
@@ -1486,10 +1733,32 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          PKG_TREE=$(git rev-parse HEAD:packages 2>/dev/null || echo no-tree)
+          ROOT=$( { git hash-object tsconfig.json bunfig.toml Makefile package.json scripts/build-packages.mjs 2>/dev/null; git rev-parse HEAD:patches HEAD:config HEAD:db HEAD:skills 2>/dev/null; } | git hash-object --stdin || echo no-root)
+          LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
+          echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
+          echo "dist-key=dist-connector-parity-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: node_modules
+          key: ${{ steps.cache-keys.outputs.bun-key }}
+
+      - uses: actions/cache@v4
+        id: dist-cache
+        with:
+          path: packages/*/dist
+          key: ${{ steps.cache-keys.outputs.dist-key }}
       - name: Install dependencies
         run: bun install
 
       - name: Build workspace packages (CLI + deps)
+        if: steps.dist-cache.outputs.cache-hit != 'true'
         run: make build-packages
 
       - name: CLI runtime self-check (host)

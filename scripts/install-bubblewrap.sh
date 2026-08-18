@@ -11,10 +11,14 @@ set -euo pipefail
 
 # apt mirrors flake. Because a failed install is now a RED build rather than a
 # silent skip, retry to keep that rare — then fail loudly instead of falling
-# through to the test steps with no sandbox.
+# through to the test steps with no sandbox. The retry loop only helps when
+# apt FAILS fast: a stalled mirror (or dpkg lock) hangs the command until the
+# job timeout, so every apt call is wrapped in `timeout` — a stall becomes a
+# fast failure that the next attempt rides over.
 installed=""
 for attempt in 1 2 3; do
-  if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
+  if sudo timeout 240 apt-get update -o Acquire::Retries=3 \
+      && sudo timeout 300 apt-get install -y --no-install-recommends bubblewrap coreutils; then
     installed=1
     break
   fi

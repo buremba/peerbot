@@ -57,10 +57,7 @@ export const MAC_DEVICE_CAPABILITIES = [
 // The device daemon can run agent work and touch a shell/files, but has no
 // browser to drive and no screen to notify. Keep this set small and honest -
 // add strings here only as headless connectors actually land.
-export const HEADLESS_CAPABILITIES = [
-  "os.shell",
-  "os.files",
-] as const;
+export const HEADLESS_CAPABILITIES = ["os.shell", "os.files"] as const;
 
 const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {
   macos: [

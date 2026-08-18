@@ -2,7 +2,7 @@ name: PR Preview
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, closed, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -24,9 +24,13 @@ env:
   KUBECONFIG: /tmp/kubeconfig
 
 jobs:
+  # Previews are opt-in: deploy only when the PR carries the `preview` label
+  # (or a manual workflow_dispatch). Every PR used to auto-deploy, and the
+  # accumulated namespaces pinned the shared node's CPU requests at ~97% so new
+  # previews could not schedule. Unlabeling tears the preview down (cleanup).
   preview:
     runs-on: ubuntu-24.04
-    if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'preview')))
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -245,7 +249,7 @@ jobs:
               `| **Namespace** | \`lobu-preview-${prNumber}\` |`,
               "| **Status** | Running |",
               "",
-              "_This preview will be automatically deleted when the PR is closed._",
+              "_This preview is deleted when the PR closes or when the `preview` label is removed._",
             ].join("\n");
 
             if (botComment) {
@@ -266,7 +270,7 @@ jobs:
 
   cleanup:
     runs-on: ubuntu-24.04
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview')) && github.event.pull_request.head.repo.full_name == github.repository
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}

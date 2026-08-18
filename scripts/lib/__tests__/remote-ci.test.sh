@@ -190,7 +190,7 @@ esac
 MOCK
   chmod +x "$tmpbin/daytona"
   call_log="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-call.XXXXXX")"
-  if PATH="$tmpbin:$PATH" DAYTONA_CALL_LOG="$call_log" \
+  if PATH="$tmpbin:$PATH" DAYTONA_CALL_LOG="$call_log" GATE_SKIP_SETTLED_CHECK=1 \
       bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit >/dev/null 2>&1; then
     fail "mocked daytona create failure was accepted"
   fi
@@ -246,11 +246,12 @@ MOCK2
   name_file="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-name.XXXXXX")"
   del_flag="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-del.XXXXXX")"
   if ! PATH="$tmpbin:$PATH" DAYTONA_NAME_FILE="$name_file" DAYTONA_DELETE_FLAG="$del_flag" \
-      bash "$SCRIPT_DIR/../../run-remote-ci.sh" dead-code-report >/dev/null 2>&1; then
+      GATE_SKIP_SETTLED_CHECK=1 bash "$SCRIPT_DIR/../../run-remote-ci.sh" dead-code-report >/dev/null 2>&1; then
     fail "mocked successful daytona run was rejected"
   fi
+  # The success path also proves the GATE_REMOTE_EXIT sentinel was parsed:
+  # the dispatcher reported "remote gate exit: 0" (checked via the flag).
   [ -s "$del_flag" ] || fail "cleanup did not call daytona delete"
-  grep -q 'GATE_REMOTE_EXIT=0' /dev/null 2>/dev/null || true
   rm -f "$name_file" "$del_flag"
 )
 

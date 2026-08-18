@@ -23,6 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Keep in sync with DEFAULT_JOBS in scripts/run-remote-ci.sh (depot path).
 GATE_JOBS=(
   unit
   frontend
@@ -79,18 +80,22 @@ gate_require_docker() {
 # ── jobs (each mirrors the ci.yml job of the same name) ────────────────────
 
 gate_unit() {
-  local sandbox_env=()
-  if command -v bwrap >/dev/null 2>&1; then
-    # CI sets this so a missing exec-sandbox fails the job. Without bwrap the
-    # escape matrix self-skips (the macOS situation); only force it when the
-    # backend is actually present.
-    sandbox_env=(LOBU_REQUIRE_EXEC_SANDBOX=1)
-  else
+  # bash-3.2-safe: no array (an empty array errors under set -u on 3.2) — branch
+  # on bwrap presence directly. CI sets LOBU_REQUIRE_EXEC_SANDBOX so a missing
+  # exec-sandbox fails the job; without bwrap the escape matrix self-skips (the
+  # macOS situation), so only force the env when the backend is present.
+  local bwrap_present=0
+  command -v bwrap >/dev/null 2>&1 && bwrap_present=1
+  if [ "$bwrap_present" -eq 0 ]; then
     echo "   (bwrap not present — exec-sandbox escape matrix self-skips)"
   fi
   bun test packages/core packages/cli --timeout 30000
   bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --timeout 30000
-  env "${sandbox_env[@]}" bun test packages/agent-worker --timeout 30000
+  if [ "$bwrap_present" -eq 1 ]; then
+    env LOBU_REQUIRE_EXEC_SANDBOX=1 bun test packages/agent-worker --timeout 30000
+  else
+    bun test packages/agent-worker --timeout 30000
+  fi
   bun test packages/server/src/__tests__/unit --timeout 30000
   bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --timeout 30000
   bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --timeout 30000
@@ -195,6 +200,13 @@ gate_typecheck() {
 }
 
 gate_migrations() {
+  # Local-fallback safety: applying migrations mutates whatever DATABASE_URL
+  # points at (a developer's DB: ALTER SYSTEM + dbmate ledger) and the
+  # workspace (scratch node_modules/postgres). The sandbox sets
+  # GATE_APPLY_MIGRATIONS=1 in gate-provision; locally it must be explicit.
+  if [ "${GATE_APPLY_MIGRATIONS:-0}" != "1" ]; then
+    gate_skip "migrations mutate the target DB + workspace — set GATE_APPLY_MIGRATIONS=1 to run locally (the sandbox sets it automatically)"
+  fi
   gate_require_db || return 77
   # Sub-second pre-flight: every file under db/migrations/ must carry the
   # runner directive before we even touch Postgres.
@@ -307,12 +319,19 @@ gate_prepare() {
 }
 
 gate_run_job() {
-  local job="$1" rc=0 fn
+  local job="$1" fn rc=0
   echo ""
   echo ">> job: $job"
   # bash function names cannot contain hyphens; ci.yml job names do.
   fn="${job//-/_}"
-  "gate_$fn" || rc=$?
+  # Bash-3.2-safe dispatch (macOS default /bin/bash): errexit suppression for
+  # a function called in a condition (`f || rc=$?`) is broken on 3.2 — it
+  # aborts at the first failing command. Toggling errexit around a DIRECT call
+  # works on every bash; counters propagate because there is no subshell.
+  set +e
+  "gate_$fn"
+  rc=$?
+  set -e
   case "$rc" in
     0) GATE_PASS=$((GATE_PASS + 1)); echo "   ✓ $job" ;;
     77) echo "   → $job skipped (see summary)" ;;

@@ -85,6 +85,10 @@ gate_provision() {
     rm -f /tmp/chrome.deb 2>/dev/null || true
   fi
 
+  # The gate's migrations job applies against this sandbox's postgres — the
+  # local-fallback path requires this marker so a dev DB is never mutated.
+  export GATE_APPLY_MIGRATIONS=1
+
   echo ">> [provision] workspace dependencies (bun install)..."
   bun install
   # The package cache is only needed at install time; the sandbox disk cap is

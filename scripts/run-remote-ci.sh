@@ -29,6 +29,9 @@ DEPOT_ACTION=".depot/actions/setup-submodule/action.yml"
 
 # All Linux jobs, including the two dependency aggregators. mac-build-smoke is
 # intentionally absent: it requires macOS and remains on GitHub/Mac hardware.
+# NOTE: keep in sync with GATE_JOBS in scripts/lib/gate-runner.sh (the
+# daytona/local paths default through gate-runner; this list only feeds the
+# Depot --job flags).
 DEFAULT_JOBS=(
   unit
   frontend
@@ -102,8 +105,12 @@ run_local() {
 
 run_daytona() {
   local jobs=("$@")
-  # The sandbox only sees committed/staged content, so require a settled tree.
-  remote_ci_staged_tree >/dev/null || exit $?
+  # The sandbox only sees committed/staged content, so require a settled tree
+  # (GATE_SKIP_SETTLED_CHECK=1 is a test-only escape hatch so the dispatch
+  # tests don't depend on this checkout's tree state).
+  if [ "${GATE_SKIP_SETTLED_CHECK:-0}" != "1" ]; then
+    remote_ci_staged_tree >/dev/null || exit $?
+  fi
   # base/name are GLOBALS on purpose: the EXIT trap runs after this function
   # returns, when its locals are gone — a local would silently skip cleanup.
   local stage ctx ws
@@ -172,7 +179,7 @@ run_daytona() {
     sleep 5
   done
 
-  ws="$(daytona_workspace_dir "$name")"
+  ws="/workspace/lobu"  # deterministic: the generated Dockerfile COPYs the tree here
   echo ">> sandbox running; workspace $ws"
   local job_args="" j
   for j in "${jobs[@]}"; do job_args+="$(printf '%q ' "$j")"; done
@@ -202,11 +209,6 @@ daytona_sandbox_running() { # name
   # This CLI reports a usable sandbox as "started" (stopped/starting otherwise).
   state="$(daytona list --format json 2>/dev/null | jq -r --arg n "$name" '.items[] | select(.name == $n) | .state' | head -1)"
   [ "$state" = "started" ] || [ "$state" = "running" ]
-}
-
-daytona_workspace_dir() { # name → workspace path
-  # Deterministic: our generated Dockerfile COPYs the tree to /workspace/lobu.
-  printf '%s' "/workspace/lobu"
 }
 
 # ── Depot (legacy, opt-in) ─────────────────────────────────────────────────

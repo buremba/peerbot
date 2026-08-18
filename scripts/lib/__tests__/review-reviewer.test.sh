@@ -39,6 +39,8 @@ assert_auto_selected codex CODEX_CI=0
   fail "claude override was not honored"
 [ "$(review_select_reviewer pi)" = "pi" ] ||
   fail "pi override was not honored"
+[ "$(review_select_reviewer opencode)" = "opencode" ] ||
+  fail "opencode override was not honored"
 
 if review_select_reviewer invalid >/dev/null 2>&1; then
   fail "invalid reviewer override unexpectedly succeeded"
@@ -74,7 +76,7 @@ case "$failure_message" in
   *) fail "fail-closed message does not explain fallback policy" ;;
 esac
 case "$failure_message" in
-  *"REVIEWER_CLI=claude|codex|pi"*) ;;
+  *"REVIEWER_CLI=claude|codex|pi|opencode"*) ;;
   *) fail "fail-closed message does not explain the explicit override" ;;
 esac
 
@@ -108,6 +110,13 @@ if grep -E -- 'pi[^|]*--tools [^[:space:]]*(edit|write)' "$review_script"; then
   fail "pi reviewer arm must not carry edit/write tools"
 fi
 
+grep -Fq 'OPENCODE_REVIEW_MODEL="${OPENCODE_REVIEW_MODEL:-opencode-go/deepseek-v4-flash}"' "$review_script" ||
+  fail "OpenCode reviewer must default to DeepSeek v4 Flash"
+grep -Fq 'opencode run' "$review_script" ||
+  fail "review.sh must keep its OpenCode invocation arm"
+grep -Fq -- '--agent plan' "$review_script" ||
+  fail "OpenCode reviewer must use the non-writing plan agent"
+
 if grep -Eiq 'herdr|CLAUDE_REVIEW_HERDR' "$review_script"; then
   fail "review.sh must not reference Herdr (inline-only reviewer)"
 fi
@@ -138,6 +147,8 @@ grep -Eq -- '--tools [^[:space:]]*Edit[^[:space:]]*Write' "$review_fix_script" |
   fail "review-fix.sh claude arm must carry the Edit/Write tools that make it a fixer"
 grep -Fq -- '--tools "read,bash,edit,write"' "$review_fix_script" ||
   fail "review-fix.sh pi arm must carry the edit/write tools that make it a fixer"
+grep -Fq 'opencode run --pure --agent build --auto' "$review_fix_script" ||
+  fail "review-fix.sh OpenCode arm must use the explicit writing build agent"
 if grep -Fq 'command -v codex >/dev/null' "$review_fix_script"; then
   fail "review-fix.sh must not gate every run on codex being installed"
 fi

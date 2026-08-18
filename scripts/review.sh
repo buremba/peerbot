@@ -30,7 +30,7 @@
 # If there's no PR, the verdict still prints locally.
 #
 # Reviewer selection: Codex harnesses run Claude, while other environments
-# (including Claude Code) run Codex. Override with REVIEWER_CLI=codex|claude.
+# (including Claude Code) run Codex. Override with REVIEWER_CLI=codex|claude|pi|opencode.
 # Auth uses the operator's selected CLI auth for the local review verdict, and
 # `gh auth token` for GitHub (optional — missing auth just skips posting).
 # Commit statuses use the legacy Statuses API because `gh api check-runs`
@@ -92,6 +92,7 @@ CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
 # gpt-5.6-terra, so terra is the default; override with PI_REVIEW_MODEL.
 PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"
 PI_REVIEW_PROVIDER="${PI_REVIEW_PROVIDER:-openai-codex}"
+OPENCODE_REVIEW_MODEL="${OPENCODE_REVIEW_MODEL:-opencode-go/deepseek-v4-flash}"
 REVIEWER_CLI="${REVIEWER_CLI:-auto}"
 # light (default): skip the cross-harness reviewer for small safe-class diffs
 # (docs/renames/generated/root bun.lock/snapshots/additive-tests, exact model
@@ -299,6 +300,17 @@ run_reviewer_inline() {
         HEAD_SHA="$HEAD_SHA" \
         CI_CHECKS_FILE="$CI_CHECKS_FILE" \
         "${pi_args[@]}" "$(cat "$prompt_file")" < /dev/null > "$raw_file" 2> "$diagnostic_file"
+      ;;
+    opencode)
+      # Explicit independent reviewer. Plan mode keeps this pass non-writing;
+      # the final answer is still validated by the shared verdict schema.
+      local opencode_args=(
+        opencode run
+        --pure
+        --agent plan
+        --model "$OPENCODE_REVIEW_MODEL"
+      )
+      run_review_child env         BASE_BRANCH="$BASE_BRANCH"         HEAD_SHA="$HEAD_SHA"         CI_CHECKS_FILE="$CI_CHECKS_FILE"         "${opencode_args[@]}" "$(cat "$prompt_file")" < /dev/null > "$raw_file" 2> "$diagnostic_file"
       ;;
   esac
   REVIEWER_EXIT=$?

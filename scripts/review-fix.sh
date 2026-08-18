@@ -5,7 +5,7 @@
 # nothing. The driving agent inspects the edits (shown at the end), commits,
 # then runs `make review` once on the settled HEAD.
 #
-# Reviewer selection matches review.sh — REVIEWER_CLI=auto|codex|claude|pi. This
+# Reviewer selection matches review.sh — REVIEWER_CLI=auto|codex|claude|pi|opencode. This
 # step is mandated by AGENTS.md but is not a gate: unlike review.sh it posts no
 # status, so a reviewer outage here silently skips the fixer instead of failing
 # a check. Being hard-wired to one CLI therefore costs a whole quality pass
@@ -73,6 +73,7 @@ CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
 PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"
 PI_REVIEW_PROVIDER="${PI_REVIEW_PROVIDER:-openai-codex}"
+OPENCODE_REVIEW_MODEL="${OPENCODE_REVIEW_MODEL:-opencode-go/deepseek-v4-flash}"
 if [ "$FIXER_CLI" = "claude" ]; then
   review_validate_claude_model "$CLAUDE_REVIEW_MODEL" || exit $?
 fi
@@ -122,6 +123,11 @@ case "$FIXER_CLI" in
     fi
     env BASE_BRANCH="$BASE_BRANCH" \
       "${PI_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > "$LAST_MSG_FILE"
+    FIXER_EXIT=$?
+    ;;
+  opencode)
+    # Explicit writing fixer. The caller still inspects and stages the result.
+    env BASE_BRANCH="$BASE_BRANCH"       opencode run --pure --agent build --auto         --model "$OPENCODE_REVIEW_MODEL"         "$(cat "$PROMPT_FILE")" < /dev/null > "$LAST_MSG_FILE" 2> "$LAST_MSG_FILE.stderr"
     FIXER_EXIT=$?
     ;;
 esac

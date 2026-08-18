@@ -7,40 +7,19 @@
  * reconcile never touches `about` edges.
  */
 
-import { createLogger } from "@lobu/core";
 import { ACL_RESOURCE_TYPE_SLUG } from "@lobu/connector-sdk";
 import {
 	type DbClient,
 	getDb,
 	pgBigintArray,
-	pgTextArray,
 } from "../db/client.js";
 import { upsertEdges } from "../utils/edge-writes.js";
 import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
-import {
-	EDGE_SOURCE_CONFIG,
-	EDGE_SOURCE_MANUAL,
-} from "../utils/relationship-validation";
+import { EDGE_SOURCE_MANUAL } from "../utils/relationship-validation";
 import { aclSourceFor, channelReadIdentityFor } from "./sources.js";
 
-const logger = createLogger("channel-about");
-
 export const ABOUT_RELATIONSHIP_SLUG = "about";
-
-export interface ChannelAboutTarget {
-	/** Bare or platform-prefixed channel id as stored on the binding. */
-	channelId: string;
-	/** The concrete workspace/tenant this channel lives in — the SAME real team
-	 *  the subscription is keyed on (for Slack Grid: the workspace `T…`, NEVER the
-	 *  enterprise `E…`). Resolved connector-side (`resolveSubscriptionTeam`) and threaded
-	 *  in so the about edge attaches to the SAME channel resource entity the ACL
-	 *  graph + subscription own. `null`/undefined = unknown yet (skip, heal from inbound)
-	 *  for a team-scoped connector, mirroring the subscription's null-team semantics. */
-	teamId: string | null | undefined;
-	/** Resolved business-entity ids to link (channel --about--> each). */
-	aboutEntityIds: number[];
-}
 
 export interface ChannelAboutMetadata {
 	connection_id: string;
@@ -218,47 +197,6 @@ async function findChannelResourceEntityId(opts: {
 	return rows[0] ? Number(rows[0].id) : null;
 }
 
-/** Resolve entity slugs to ids; throws when any slug is missing in the org. */
-export async function resolveEntitySlugsToIds(
-	organizationId: string,
-	slugs: string[],
-	sql: DbClient = getDb(),
-): Promise<number[]> {
-	const requested = [...new Set(slugs.map((s) => s.trim()).filter(Boolean))];
-	if (requested.length === 0) return [];
-	const rows = await sql<{ id: number; slug: string }>`
-    SELECT id, slug
-    FROM entities
-    WHERE organization_id = ${organizationId}
-      AND slug = ANY(${pgTextArray(requested)}::text[])
-      AND deleted_at IS NULL
-  `;
-	const bySlug = new Map(rows.map((r) => [r.slug, Number(r.id)]));
-	const missing = requested.filter((slug) => !bySlug.has(slug));
-	if (missing.length > 0) {
-		throw new Error(
-			`entity slug(s) do not exist in this organization: ${missing.join(", ")}`,
-		);
-	}
-	return requested.map((slug) => bySlug.get(slug)!);
-}
-
-/** Normalize about targets: numbers pass through, strings resolve as slugs. */
-export async function resolveAboutEntityRefs(
-	organizationId: string,
-	refs: Array<number | string>,
-	sql: DbClient = getDb(),
-): Promise<number[]> {
-	const ids: number[] = [];
-	const slugs: string[] = [];
-	for (const ref of refs) {
-		if (typeof ref === "number" && Number.isFinite(ref)) ids.push(ref);
-		else if (typeof ref === "string" && ref.trim()) slugs.push(ref.trim());
-	}
-	const fromSlugs = await resolveEntitySlugsToIds(organizationId, slugs, sql);
-	return [...new Set([...ids, ...fromSlugs])];
-}
-
 /**
  * Take ownership of one channel's `about` edges: create what is missing and
  * re-stamp metadata/source on what already exists.
@@ -292,101 +230,6 @@ async function upsertAboutEdges(opts: {
 		metadata: opts.metadata,
 		onConflict: 'update',
 	});
-}
-
-/**
- * Upsert config-sourced `about` edges for one connection and reconcile away
- * stale config edges. A desired pair takes ownership of any existing live edge
- * for the same relationship triple.
- */
-export async function syncConnectionChannelAboutEdges(opts: {
-	organizationId: string;
-	connectionId: string | number;
-	connectorKey: string;
-	channels: ChannelAboutTarget[];
-	userId?: string | null;
-	sql?: DbClient;
-}): Promise<{ linked: number; removed: number }> {
-	const sql = opts.sql ?? getDb();
-	const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
-	const connectionId = String(opts.connectionId);
-
-	const desiredPairs = new Set<string>();
-	let linked = 0;
-
-	for (const channel of opts.channels) {
-		const { key } = channelResourceIdentity(
-			opts.connectorKey,
-			channel.teamId,
-			channel.channelId,
-		);
-		const channelEntityId = await ensureChannelResourceEntity({
-			organizationId: opts.organizationId,
-			connectorKey: opts.connectorKey,
-			teamId: channel.teamId,
-			channelId: channel.channelId,
-			sql,
-		});
-		if (channelEntityId === null) {
-			logger.warn(
-				{
-					organization_id: opts.organizationId,
-					connection_id: connectionId,
-					channel_id: channel.channelId,
-				},
-				"Skipped channel about sync — channel entity could not be resolved",
-			);
-			continue;
-		}
-
-		const metadata: ChannelAboutMetadata = {
-			connection_id: connectionId,
-			channel_key: key,
-		};
-
-		for (const businessEntityId of channel.aboutEntityIds) {
-			desiredPairs.add(`${channelEntityId}:${businessEntityId}`);
-		}
-		await upsertAboutEdges({
-			organizationId: opts.organizationId,
-			fromChannelEntityId: channelEntityId,
-			toBusinessEntityIds: channel.aboutEntityIds,
-			source: EDGE_SOURCE_CONFIG,
-			metadata,
-			userId: opts.userId,
-			typeId,
-			sql,
-		});
-		linked += channel.aboutEntityIds.length;
-	}
-
-	const existing = await sql<{
-		id: number;
-		from_entity_id: number;
-		to_entity_id: number;
-	}>`
-    SELECT r.id, r.from_entity_id, r.to_entity_id
-    FROM entity_relationships r
-    WHERE r.organization_id = ${opts.organizationId}
-      AND r.relationship_type_id = ${typeId}
-      AND r.source = ${EDGE_SOURCE_CONFIG}
-      AND r.deleted_at IS NULL
-      AND r.metadata->>'connection_id' = ${connectionId}
-  `;
-
-	let removed = 0;
-	for (const row of existing) {
-		const pairKey = `${Number(row.from_entity_id)}:${Number(row.to_entity_id)}`;
-		if (desiredPairs.has(pairKey)) continue;
-		await sql`
-      UPDATE entity_relationships
-      SET deleted_at = current_timestamp, updated_at = current_timestamp
-      WHERE id = ${row.id}
-    `;
-		removed += 1;
-	}
-
-	return { linked, removed };
 }
 
 /** Replace manual `about` edges for one channel, taking ownership of desired pairs. */

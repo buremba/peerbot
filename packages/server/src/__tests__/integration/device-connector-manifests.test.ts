@@ -530,6 +530,31 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId)).not.toBeNull();
   });
 
+  it('admits os.shell for a headless device', async () => {
+    const { userId, workerId } = await seedDeviceOwner('headless');
+    const shell = manifest({
+      key: 'os.shell',
+      required_capability: 'os.shell',
+      name: 'Headless Shell Probe',
+      runtime: { platforms: ['headless'] },
+      feeds_schema: {},
+    });
+
+    const res = await poll(workerId, [shell], 'headless', { 'os.shell': true });
+    expect(res.status).toBe(200);
+
+    // The manifest was admitted and stored on the device row (the headless
+    // shell connector is what makes a connection pinned to this device able to
+    // run commands). Feedless, so no definition materialization is asserted.
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT connector_manifests FROM device_workers
+      WHERE user_id = ${userId} AND worker_id = ${workerId}
+    `) as unknown as Array<{ connector_manifests: unknown }>;
+    const stored = rows[0]?.connector_manifests as Record<string, unknown> | undefined;
+    expect(stored?.['os.shell']).toBeDefined();
+  });
+
   it('drops a manifest that still declares removed entityLinks rules', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const legacyManifest = manifest({

@@ -103,6 +103,7 @@ export class WorkerClient implements ExecutorClient {
   private version: string;
   private platform?: string;
   private label?: string;
+  private manifests: unknown[] = [];
 
   constructor(config: {
     apiUrl: string;
@@ -114,6 +115,8 @@ export class WorkerClient implements ExecutorClient {
     platform?: string;
     /** Human-readable device name for the Devices page. */
     label?: string;
+    /** Device-manifest connector definitions to register on each poll. */
+    manifests?: unknown[];
   }) {
     this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
@@ -122,6 +125,7 @@ export class WorkerClient implements ExecutorClient {
     this.version = config.version ?? '1.0.0';
     this.platform = config.platform?.trim() || undefined;
     this.label = config.label?.trim() || undefined;
+    this.manifests = config.manifests ?? [];
   }
 
   private authHeaders(): Record<string, string> {
@@ -165,6 +169,7 @@ export class WorkerClient implements ExecutorClient {
       // fleet workers rather than sending empty values.
       ...(this.platform ? { platform: this.platform, app_version: this.version } : {}),
       ...(this.label ? { label: this.label } : {}),
+      ...(this.manifests.length > 0 ? { connector_manifests: this.manifests } : {}),
     });
   }
 

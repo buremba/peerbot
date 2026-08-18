@@ -133,6 +133,29 @@ export function isReservedEntityTypeSlug(slug: string): boolean {
   return (RESERVED_ENTITY_TYPE_SLUGS as readonly string[]).includes(s);
 }
 
+/**
+ * Canonical stored form of an entity-type slug.
+ *
+ * Entity-type create has always rewritten anything outside `[a-z0-9-]` to `-`,
+ * so a `snake_case` key from `lobu.config.ts` is STORED hyphenated. Every other
+ * verb must resolve through this same function or it looks up a spelling that
+ * was never written: `lobu apply` upserts by probing create and retrying as
+ * update on the 409, so a one-sided normalization turned that retry into a 404
+ * and halted apply for every snake_case entity key.
+ *
+ * `$` system slugs (`$member`, `$resource`) are passed through untouched —
+ * they are stored WITH the sigil, so canonicalizing them would rewrite
+ * `$member` to `-member` and strand every system-type lookup.
+ *
+ * Deliberately NOT `slugify()` from ./utils/slug — that one also strips
+ * diacritics and trims edge hyphens, which would retarget slugs that existing
+ * rows are already stored under.
+ */
+export function normalizeEntityTypeSlug(slug: string): string {
+  const lower = slug.toLowerCase();
+  return lower.startsWith("$") ? lower : lower.replace(/[^a-z0-9-]/g, "-");
+}
+
 // ── Inference-provider connector keys ───────────────────────────────────────
 
 /**

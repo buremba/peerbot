@@ -5,6 +5,7 @@
 export {
   isReservedConnectorKey,
   isReservedEntityTypeSlug,
+  normalizeEntityTypeSlug,
   RESERVED_ENTITY_TYPE_SLUGS,
   RESERVED_PATHS_SET,
 } from "@lobu/core";

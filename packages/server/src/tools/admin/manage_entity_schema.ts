@@ -45,6 +45,7 @@ import {
 } from '../../utils/entity-management';
 import {
   isReservedEntityTypeSlug,
+  normalizeEntityTypeSlug,
   RESERVED_ENTITY_TYPE_SLUGS,
 } from '../../utils/reserved';
 import { resolveUsernames } from '../../utils/resolve-usernames';
@@ -410,6 +411,7 @@ async function etHandleGet(
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
   if (!slug) throw new ToolUserError('slug is required for get action', 400);
+  const normalizedSlug = normalizeEntityTypeSlug(slug);
 
   const sql = getDb();
   const fetchRow = () =>
@@ -422,14 +424,14 @@ async function etHandleGet(
          AND (et.organization_id = $2 OR o.visibility = 'public')
        ORDER BY (et.organization_id = $2) DESC, et.id ASC
        LIMIT 1`,
-      [slug, ctx.organizationId]
+      [normalizedSlug, ctx.organizationId]
     );
 
   let rows = await fetchRow();
 
   // $member is per-tenant: if the resolved row is cross-org (or missing), provision in the caller's org.
   const needsMemberProvision =
-    slug === '$member' &&
+    normalizedSlug === '$member' &&
     (rows.length === 0 || rows[0].organization_id !== ctx.organizationId);
   if (needsMemberProvision) {
     await ensureMemberEntityType(ctx.organizationId);
@@ -490,7 +492,7 @@ async function etHandleCreate(
     );
   }
 
-  const slug = args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const slug = normalizeEntityTypeSlug(args.slug);
 
   const sql = getDb();
 
@@ -598,11 +600,12 @@ async function etHandleUpdate(
   if (!args.slug) throw new ToolUserError('slug is required for update action', 400);
   if (!ctx.userId) throw new ToolUserError('Authentication required to update entity types', 401);
 
+  const slug = normalizeEntityTypeSlug(args.slug);
   const sql = getDb();
 
   const existing = await sql`
     SELECT * FROM entity_types
-    WHERE slug = ${args.slug}
+    WHERE slug = ${slug}
       AND deleted_at IS NULL
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
@@ -735,7 +738,7 @@ async function etHandleUpdate(
   ];
   recordToolConfigChange(ctx, {
     resourceKind: 'entity-type',
-    resourceId: args.slug,
+    resourceId: slug,
     op: 'updated',
     summary: `Entity type '${result.name ?? args.slug}' updated`,
     state: updated[0] as Record<string, unknown>,
@@ -746,10 +749,11 @@ async function etHandleUpdate(
 }
 
 async function etHandleDelete(
-  slug: string | undefined,
+  rawSlug: string | undefined,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!slug) throw new ToolUserError('slug is required for delete action', 400);
+  if (!rawSlug) throw new ToolUserError('slug is required for delete action', 400);
+  const slug = normalizeEntityTypeSlug(rawSlug);
   if (!ctx.userId) throw new ToolUserError('Authentication required to delete entity types', 401);
 
   const sql = getDb();
@@ -807,10 +811,11 @@ async function etHandleDelete(
 }
 
 async function etHandleAudit(
-  slug: string | undefined,
+  rawSlug: string | undefined,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!slug) throw new ToolUserError('slug is required for audit action', 400);
+  if (!rawSlug) throw new ToolUserError('slug is required for audit action', 400);
+  const slug = normalizeEntityTypeSlug(rawSlug);
 
   const sql = getDb();
 

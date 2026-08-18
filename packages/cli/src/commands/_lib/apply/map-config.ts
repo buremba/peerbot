@@ -9,7 +9,11 @@
  */
 
 import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
-import { type AgentSettings, isHostedChatPlatform } from "@lobu/core";
+import {
+  type AgentSettings,
+  isHostedChatPlatform,
+  normalizeEntityTypeSlug,
+} from "@lobu/core";
 import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
 import {
   normalizeWorkspaceEventTrigger,
@@ -212,7 +216,7 @@ function connectorKey(ref: ConnectorRef): string {
 }
 
 function entitySlug(ref: EntityType | string): string {
-  return typeof ref === "string" ? ref : ref.key;
+  return normalizeEntityTypeSlug(typeof ref === "string" ? ref : ref.key);
 }
 
 function agentId(ref: Agent | string): string {
@@ -482,7 +486,7 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     }
   }
   return {
-    slug: entity.key,
+    slug: normalizeEntityTypeSlug(entity.key),
     ...(entity.name ? { name: entity.name } : {}),
     ...(entity.description ? { description: entity.description } : {}),
     ...(entity.required ? { required: entity.required } : {}),
@@ -670,7 +674,13 @@ function mapAutomation(automation: Automation): DesiredAutomation {
       };
     }
     if (trigger.kind === "event" && trigger.source === "workspace") {
-      return normalizeWorkspaceEventTrigger(trigger);
+      const normalizedTrigger = normalizeWorkspaceEventTrigger(trigger);
+      return normalizedTrigger.entity_type
+        ? {
+            ...normalizedTrigger,
+            entity_type: normalizeEntityTypeSlug(normalizedTrigger.entity_type),
+          }
+        : normalizedTrigger;
     }
     const { connection, ...eventTrigger } = trigger;
     const normalizedEventTrigger = {

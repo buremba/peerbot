@@ -9,12 +9,11 @@ import {
 	slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import {
-	ensureAboutRelationshipType,
 	listChannelEntitiesAboutBusinessEntity,
-	syncConnectionChannelAboutEdges,
+	setManualChannelAboutEdges,
 } from "../../../authz/channel-about";
 import { buildAccessGraph } from "../../../authz/access-graph";
-import { EDGE_SOURCE_CONFIG } from "../../../utils/relationship-validation";
+import { EDGE_SOURCE_MANUAL } from "../../../utils/relationship-validation";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -62,7 +61,7 @@ describe("channel about edges", () => {
 		clearEntityLinkRulesCache();
 	});
 
-	it("config about edge survives slack channel graph membership re-sync", async () => {
+	it("manual about edge survives slack channel graph membership re-sync", async () => {
 		const org = await createTestOrganization({ name: "About Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
@@ -77,24 +76,20 @@ describe("channel about edges", () => {
 		});
 
 		const connectionId = "conn-about-1";
-		await syncConnectionChannelAboutEdges({
+		await setManualChannelAboutEdges({
 			organizationId: org.id,
 			connectionId,
 			connectorKey: "slack",
-			channels: [
-				{
-					channelId: CHANNEL,
-					teamId: TEAM,
-					aboutEntityIds: [company.id],
-				},
-			],
+			channelId: CHANNEL,
+			teamId: TEAM,
+			aboutEntityIds: [company.id],
 			userId: user.id,
 		});
 
 		const before = await aboutEdges(org.id);
 		expect(before).toHaveLength(1);
 		expect(Number(before[0].to_entity_id)).toBe(company.id);
-		expect(before[0].source).toBe(EDGE_SOURCE_CONFIG);
+		expect(before[0].source).toBe(EDGE_SOURCE_MANUAL);
 
 		await buildAccessGraph({
 			organizationId: org.id,
@@ -129,11 +124,13 @@ describe("channel about edges", () => {
 			created_by: user.id,
 		});
 
-		await syncConnectionChannelAboutEdges({
+		await setManualChannelAboutEdges({
 			organizationId: org.id,
 			connectionId: "99",
 			connectorKey: "slack",
-			channels: [{ channelId: CHANNEL, teamId: TEAM, aboutEntityIds: [company.id] }],
+			channelId: CHANNEL,
+			teamId: TEAM,
+			aboutEntityIds: [company.id],
 		});
 
 		const channels = await listChannelEntitiesAboutBusinessEntity({
@@ -143,6 +140,5 @@ describe("channel about edges", () => {
 		expect(channels).toHaveLength(1);
 		expect(channels[0].connectionId).toBe("99");
 		expect(channels[0].channelKey).toBe(slackChannelKey(TEAM, CHANNEL));
-		await ensureAboutRelationshipType(org.id);
 	});
 });

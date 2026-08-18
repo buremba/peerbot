@@ -9,6 +9,9 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
 import {
   ConnectorRuntime,
   type ActionContext,
@@ -35,6 +38,20 @@ interface RunOutput {
 const MAX_TIMEOUT_MS = 300000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
+// Cap captured output so a chatty command cannot balloon daemon memory.
+// Streams keep draining (the child must not block on a full pipe), but
+// anything past the cap is dropped with a truncation marker.
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+const TRUNCATED_MARKER = '\n... (output truncated)';
+
+function appendCapped(target: string, chunk: string, truncated: boolean): string {
+  if (truncated) return target;
+  const next = target + chunk;
+  if (next.length > MAX_OUTPUT_BYTES) {
+    return next.slice(0, MAX_OUTPUT_BYTES) + TRUNCATED_MARKER;
+  }
+  return next;
+}
 
 function runShellCommand(
   command: string,
@@ -49,14 +66,22 @@ function runShellCommand(
     });
     let stdout = '';
     let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let timedOut = false;
 
     if (opts.stdin) child.stdin.write(opts.stdin);
     child.stdin.end();
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.on('data', (chunk: string) => {
+      stdout = appendCapped(stdout, chunk, stdoutTruncated);
+      if (stdout.includes(TRUNCATED_MARKER)) stdoutTruncated = true;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr = appendCapped(stderr, chunk, stderrTruncated);
+      if (stderr.includes(TRUNCATED_MARKER)) stderrTruncated = true;
+    });
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -175,8 +200,22 @@ export default class OsShellConnector extends ConnectorRuntime {
       typeof input.timeout_ms === 'number' ? input.timeout_ms : DEFAULT_TIMEOUT_MS,
       MAX_TIMEOUT_MS
     );
+    // cwd must be an existing absolute path (the declared contract); default
+    // to the device home. Reject rather than let bash guess at a relative cwd.
+    let cwd: string | undefined;
+    if (input.cwd) {
+      if (!isAbsolute(input.cwd) || !existsSync(input.cwd)) {
+        return {
+          success: false,
+          error: `cwd must be an existing absolute path (got '${input.cwd}')`,
+        };
+      }
+      cwd = input.cwd;
+    } else {
+      cwd = homedir();
+    }
     const output = await runShellCommand(command, {
-      cwd: input.cwd,
+      cwd,
       timeoutMs,
       stdin: input.stdin,
     });

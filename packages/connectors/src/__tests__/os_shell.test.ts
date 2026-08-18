@@ -52,4 +52,32 @@ describe('os.shell connector', () => {
     const result = await connector.execute(runContext('nope', {}));
     expect(result.success).toBe(false);
   });
+
+  it('truncates oversized output instead of buffering it all', async () => {
+    const result = await connector.execute(
+      runContext('run', { command: 'yes x | head -c 4000000' }),
+    );
+    expect(result.success).toBe(true);
+    const output = result.output as Record<string, unknown>;
+    expect(String(output.stdout).length).toBeLessThan(2000000);
+    expect(String(output.stdout)).toContain('(output truncated)');
+  });
+
+  it('rejects a relative or non-existent cwd', async () => {
+    const rel = await connector.execute(
+      runContext('run', { command: 'pwd', cwd: 'relative/path' }),
+    );
+    expect(rel.success).toBe(false);
+    const missing = await connector.execute(
+      runContext('run', { command: 'pwd', cwd: '/definitely/not/a/real/dir' }),
+    );
+    expect(missing.success).toBe(false);
+  });
+
+  it('defaults cwd to the device home', async () => {
+    const result = await connector.execute(runContext('run', { command: 'pwd' }));
+    expect(result.success).toBe(true);
+    const output = result.output as Record<string, unknown>;
+    expect(String(output.stdout).trim()).toBe(require('node:os').homedir());
+  });
 });

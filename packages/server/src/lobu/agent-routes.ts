@@ -217,28 +217,28 @@ export function requireSessionOrAdminPat(c: any): Response | null {
  * owner/admin. `requireSessionOrAdminPat` alone only proves an
  * authenticated caller — any org MEMBER passes it, so a member could
  * rewrite or delete another member's agent (or change its soulMd,
- * guardrails or tool surface) via PATCH/DELETE. Role check mirrors
- * index.ts `requireOrganizationSettingsAdmin`: a web session needs
- * owner/admin; a PAT/OAuth token keeps passing only with `mcp:admin`
- * scope (an explicit admin delegation, the same rule the manage_agents
- * tool's write gate applies).
+ * guardrails or tool surface) via PATCH/DELETE. On top of that
+ * session-or-admin-scope check, the caller's member role must be
+ * owner/admin for EVERY auth source — mirroring index.ts
+ * `requireOrganizationSettingsAdmin` and the manage_agents tool's admin
+ * tier, both of which treat the role check as non-authorizable: an
+ * `mcp:admin` scope alone never elevates a plain member, and a demoted
+ * owner's stale admin token stays denied.
  */
 function requireManageAgentAccess(c: any): Response | null {
 	const denied = requireSessionOrAdminPat(c);
 	if (denied) return denied;
 
-	if (c.get("authSource") === "session") {
-		const memberRole = c.get("memberRole") as string | null | undefined;
-		if (memberRole !== "owner" && memberRole !== "admin") {
-			return c.json(
-				{
-					error: "forbidden",
-					error_description:
-						"Agent management requires owner or admin access.",
-				},
-				403
-			);
-		}
+	const memberRole = c.get("memberRole") as string | null | undefined;
+	if (memberRole !== "owner" && memberRole !== "admin") {
+		return c.json(
+			{
+				error: "forbidden",
+				error_description:
+					"Agent management requires owner or admin access.",
+			},
+			403
+		);
 	}
 	return null;
 }

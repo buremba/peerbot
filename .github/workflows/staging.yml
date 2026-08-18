@@ -63,7 +63,7 @@ jobs:
           PR_NUM="${{ github.event.pull_request.number || inputs.pr_number }}"
 
           # Single-holder enforcement: strip the label from every other open PR.
-          for n in $(gh pr list --state open --json number --jq '.[].number'); do
+          for n in $(gh pr list --state open --limit 200 --json number --jq '.[].number'); do
             if [ "$n" != "$PR_NUM" ] \
               && gh pr view "$n" --json labels --jq '.labels[].name' | grep -qx staging; then
               gh pr edit "$n" --remove-label staging

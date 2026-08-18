@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Run the Linux CI graph against local changes.
-#
-# Usage:
-#   make pre-pr-remote              # Depot (optional; GitHub CI is canonical)
+# Run the Linux CI graph against local changes (optional; GitHub CI is canonical).
 
 set -euo pipefail
 

@@ -256,7 +256,10 @@ run_depot() {
   echo ">> checking Depot repository access"
   depot ci migrate preflight --org "${DEPOT_ORG_ID:-b9ffw2rv84}" >/dev/null
 
-  if [ "${#jobs[@]}" -eq 0 ]; then
+  # `$#` is the ORIGINAL argv (run_depot receives raw args from the
+  # dispatcher): the full-graph default keeps the staged-tree invariant,
+  # an explicit job list only requires no-untracked.
+  if [ "$#" -eq 0 ]; then
     jobs=("${DEFAULT_JOBS[@]}")
     remote_ci_staged_tree >/dev/null || exit $?
   else
@@ -347,5 +350,7 @@ run_depot() {
 case "$PROVIDER" in
   local) run_local "${jobs[@]}" ;;
   daytona) run_daytona "${jobs[@]}" ;;
-  depot) run_depot "${jobs[@]}" ;;
+  # depot gets the RAW args: run_depot resolves the default itself so its
+  # full-graph staged-tree invariant keeps working (see its $# check).
+  depot) run_depot "$@" ;;
 esac

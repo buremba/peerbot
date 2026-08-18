@@ -50,6 +50,10 @@ declare -a GATE_FAILED=()
 declare -a GATE_SKIPPED=()
 GATE_RAN_VITEST=0
 GATE_RAN_BUN=0
+GATE_RAN_SDK_BUILD=0
+GATE_RAN_SDK_LIFECYCLE=0
+GATE_RAN_SDK_ERROR=0
+GATE_RAN_CLI_SMOKE=0
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -89,35 +93,35 @@ gate_unit() {
   if [ "$bwrap_present" -eq 0 ]; then
     echo "   (bwrap not present — exec-sandbox escape matrix self-skips)"
   fi
-  bun test packages/core packages/cli --timeout 30000
-  bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --timeout 30000
+  bun test packages/core packages/cli --timeout 30000 || return 1
+  bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --timeout 30000 || return 1
   if [ "$bwrap_present" -eq 1 ]; then
-    env LOBU_REQUIRE_EXEC_SANDBOX=1 bun test packages/agent-worker --timeout 30000
+    env LOBU_REQUIRE_EXEC_SANDBOX=1 bun test packages/agent-worker --timeout 30000 || return 1
   else
-    bun test packages/agent-worker --timeout 30000
+    bun test packages/agent-worker --timeout 30000 || return 1
   fi
-  bun test packages/server/src/__tests__/unit --timeout 30000
-  bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --timeout 30000
-  bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --timeout 30000
-  bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --timeout 30000
-  bun test packages/connector-worker --timeout 30000
-  bun test packages/client packages/promptfoo-provider --timeout 30000
-  bun test packages/connector-sdk --timeout 30000
-  bun test packages/connectors --timeout 30000
-  bun test packages/embeddings --timeout 30000
-  bun test examples/personal-agent --timeout 30000
-  bun test examples/brand-intelligence --timeout 30000
-  bun test examples/lobu-team --timeout 30000
+  bun test packages/server/src/__tests__/unit --timeout 30000 || return 1
+  bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --timeout 30000 || return 1
+  bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --timeout 30000 || return 1
+  bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --timeout 30000 || return 1
+  bun test packages/connector-worker --timeout 30000 || return 1
+  bun test packages/client packages/promptfoo-provider --timeout 30000 || return 1
+  bun test packages/connector-sdk --timeout 30000 || return 1
+  bun test packages/connectors --timeout 30000 || return 1
+  bun test packages/embeddings --timeout 30000 || return 1
+  bun test examples/personal-agent --timeout 30000 || return 1
+  bun test examples/brand-intelligence --timeout 30000 || return 1
+  bun test examples/lobu-team --timeout 30000 || return 1
 }
 
 gate_frontend() {
   gate_require_submodule || return 77
-  (cd packages/core && bun run build)
-  (cd packages/connector-sdk && bun run build)
-  (cd packages/owletto && ../../node_modules/.bin/vitest run)
-  (cd packages/owletto && bun run build)
+  (cd packages/core && bun run build) || return 1
+  (cd packages/connector-sdk && bun run build) || return 1
+  (cd packages/owletto && ../../node_modules/.bin/vitest run) || return 1
+  (cd packages/owletto && bun run build) || return 1
   if [ -x /usr/bin/google-chrome-stable ]; then
-    (cd packages/owletto && bun run smoke:boot)
+    (cd packages/owletto && bun run smoke:boot) || return 1
   else
     echo "   (no google-chrome-stable — SPA cold-boot smoke skipped; vitest + prod build still ran)"
   fi
@@ -125,7 +129,7 @@ gate_frontend() {
 
 gate_server_integration_vitest() {
   gate_require_db || return 77
-  (cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default)
+  (cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default) || return 1
   GATE_RAN_VITEST=1
 }
 
@@ -143,8 +147,8 @@ gate_server_integration_bun() {
     for f in $files; do echo ">> bun test $f"; bun test "$f" || rc=1; done
   done
   [ "$rc" -eq 0 ] || return 1
-  bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__ packages/server/src/tools/admin/__tests__ packages/server/src/auth/oauth/__tests__ --timeout 30000
-  bun test packages/connector-worker/integration-tests
+  bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__ packages/server/src/tools/admin/__tests__ packages/server/src/auth/oauth/__tests__ --timeout 30000 || return 1
+  bun test packages/connector-worker/integration-tests || return 1
   GATE_RAN_BUN=1
 }
 
@@ -156,47 +160,47 @@ gate_integration() {
 }
 
 gate_format_lint() {
-  bun run format:check
-  bun run lint
-  ./scripts/check-security-patterns.sh
-  bun run dupes
-  bun scripts/check-test-runner-coverage.mjs
-  bun scripts/check-exposed-surface-naming.ts
-  bun test scripts/__tests__/check-exposed-surface-naming.test.ts --timeout 30000
-  node scripts/check-gateway-llm-calls.mjs
-  bun test scripts/__tests__/check-gateway-llm-calls.test.ts --timeout 30000
-  bun test scripts/__tests__/publish-packages-guard.test.ts --timeout 30000
-  bun test scripts/__tests__/derive-image-tags.test.ts --timeout 30000
-  bun test scripts/__tests__/release-publish-order.test.ts --timeout 30000
-  bun test scripts/__tests__/audit-release-images.test.ts --timeout 30000
-  bun test scripts/__tests__/check-merge-integrity.test.ts --timeout 30000
-  bun test scripts/__tests__/review-prompt-env-blockers.test.ts --timeout 30000
-  bun test scripts/__tests__/review-output-schema.test.ts --timeout 30000
-  bun test scripts/__tests__/migrate-up-check-pending.test.ts --timeout 30000
-  bun test scripts/__tests__/migrate-up-duplicate-version.test.ts --timeout 30000
-  bun scripts/check-raw-array-params.mjs
-  bun scripts/check-entity-write-funnel.mjs
-  bun test scripts/__tests__/check-entity-write-funnel.test.ts --timeout 30000
-  bun scripts/check-connection-visibility-compiler.mjs
-  bun scripts/check-directory-structure.mjs
-  bun test scripts/__tests__/check-directory-structure.test.ts --timeout 30000
-  bash scripts/lib/__tests__/review-commit-lock.test.sh
-  bash scripts/lib/__tests__/review-process.test.sh
-  bash scripts/lib/__tests__/review-reviewer.test.sh
-  bash scripts/lib/__tests__/review-upstream-guard.test.sh
-  bash scripts/lib/__tests__/review-skip.test.sh
-  bash scripts/lib/__tests__/review-cache.test.sh
-  cmp -s .github/actions/setup-submodule/action.yml .depot/actions/setup-submodule/action.yml
-  bash scripts/lib/__tests__/remote-ci.test.sh
-  bash scripts/lib/__tests__/submodule-drift.test.sh
-  bash scripts/lib/__tests__/submodule-bump.test.sh
+  bun run format:check || return 1
+  bun run lint || return 1
+  ./scripts/check-security-patterns.sh || return 1
+  bun run dupes || return 1
+  bun scripts/check-test-runner-coverage.mjs || return 1
+  bun scripts/check-exposed-surface-naming.ts || return 1
+  bun test scripts/__tests__/check-exposed-surface-naming.test.ts --timeout 30000 || return 1
+  node scripts/check-gateway-llm-calls.mjs || return 1
+  bun test scripts/__tests__/check-gateway-llm-calls.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/publish-packages-guard.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/derive-image-tags.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/release-publish-order.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/audit-release-images.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/check-merge-integrity.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/review-prompt-env-blockers.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/review-output-schema.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/migrate-up-check-pending.test.ts --timeout 30000 || return 1
+  bun test scripts/__tests__/migrate-up-duplicate-version.test.ts --timeout 30000 || return 1
+  bun scripts/check-raw-array-params.mjs || return 1
+  bun scripts/check-entity-write-funnel.mjs || return 1
+  bun test scripts/__tests__/check-entity-write-funnel.test.ts --timeout 30000 || return 1
+  bun scripts/check-connection-visibility-compiler.mjs || return 1
+  bun scripts/check-directory-structure.mjs || return 1
+  bun test scripts/__tests__/check-directory-structure.test.ts --timeout 30000 || return 1
+  bash scripts/lib/__tests__/review-commit-lock.test.sh || return 1
+  bash scripts/lib/__tests__/review-process.test.sh || return 1
+  bash scripts/lib/__tests__/review-reviewer.test.sh || return 1
+  bash scripts/lib/__tests__/review-upstream-guard.test.sh || return 1
+  bash scripts/lib/__tests__/review-skip.test.sh || return 1
+  bash scripts/lib/__tests__/review-cache.test.sh || return 1
+  cmp -s .github/actions/setup-submodule/action.yml .depot/actions/setup-submodule/action.yml || return 1
+  bash scripts/lib/__tests__/remote-ci.test.sh || return 1
+  bash scripts/lib/__tests__/submodule-drift.test.sh || return 1
+  bash scripts/lib/__tests__/submodule-bump.test.sh || return 1
 }
 
 gate_typecheck() {
-  bun run typecheck
-  (cd packages/server && bunx tsc --noEmit)
-  bun run check:packages
-  bun run knip --include files
+  bun run typecheck || return 1
+  (cd packages/server && bunx tsc --noEmit) || return 1
+  bun run check:packages || return 1
+  bun run knip --include files || return 1
 }
 
 gate_migrations() {
@@ -206,6 +210,7 @@ gate_migrations() {
   # GATE_APPLY_MIGRATIONS=1 in gate-provision; locally it must be explicit.
   if [ "${GATE_APPLY_MIGRATIONS:-0}" != "1" ]; then
     gate_skip "migrations mutate the target DB + workspace — set GATE_APPLY_MIGRATIONS=1 to run locally (the sandbox sets it automatically)"
+    return 77
   fi
   gate_require_db || return 77
   # Sub-second pre-flight: every file under db/migrations/ must carry the
@@ -222,7 +227,7 @@ gate_migrations() {
   # the default 64MB fails. Best-effort; if it truly can't raise, the apply
   # below fails loudly with the real error.
   if command -v psql >/dev/null 2>&1; then
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=0       -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()" >/dev/null 2>&1 || true
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=0       -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()" >/dev/null 2>&1 || true || return 1
   fi
   # Apply with the SAME runner production uses (scripts/migrate-up.mjs), NOT
   # dbmate up: migrate-up splits top-level statements so transaction:false
@@ -232,23 +237,23 @@ gate_migrations() {
   # top-level node_modules entry the ESM loader resolves.
   local tmp
   tmp="$(mktemp -d)"
-  (cd "$tmp" && npm init -y >/dev/null && npm install --no-audit --no-fund postgres@^3.4.7 >/dev/null)
-  mkdir -p node_modules
-  cp -r "$tmp/node_modules/postgres" node_modules/postgres
-  rm -rf "$tmp"
-  node scripts/migrate-up.mjs
+  (cd "$tmp" && npm init -y >/dev/null && npm install --no-audit --no-fund postgres@^3.4.7 >/dev/null) || return 1
+  mkdir -p node_modules || return 1
+  cp -r "$tmp/node_modules/postgres" node_modules/postgres || return 1
+  rm -rf "$tmp" || return 1
+  node scripts/migrate-up.mjs || return 1
   # Ledger verify + pending-check contract (only with dbmate on PATH).
   if command -v dbmate >/dev/null 2>&1; then
-    dbmate --migrations-dir db/migrations status
+    dbmate --migrations-dir db/migrations status || return 1
     local pending
     pending=$(dbmate --migrations-dir db/migrations status | grep -c '^\[ \]' || true)
     [ "$pending" = "0" ] || { echo "::error::$pending migrations still pending after migrate-up" >&2; return 1; }
     local pending_rc=0
-    node scripts/migrate-up.mjs --check-pending || pending_rc=$?
+    node scripts/migrate-up.mjs --check-pending || pending_rc=$? || return 1
     test "$pending_rc" -eq 3 || { echo "::error::--check-pending on a complete ledger returned $pending_rc, expected 3" >&2; return 1; }
-    printf -- '-- migrate:up\nSELECT 1;\n' > db/migrations/99999999999999_pending_probe.sql
+    printf -- '-- migrate:up\nSELECT 1;\n' > db/migrations/99999999999999_pending_probe.sql || return 1
     pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
-    rm db/migrations/99999999999999_pending_probe.sql
+    rm db/migrations/99999999999999_pending_probe.sql || return 1
     test "$pending_rc" -eq 0 || { echo "::error::--check-pending with an unapplied migration returned $pending_rc, expected 0" >&2; return 1; }
   else
     echo "   (dbmate not on PATH — schema_migrations verify + pending-check contract skipped)"
@@ -256,10 +261,10 @@ gate_migrations() {
   # glibc floor on committed pgvector prebuilts (needs docker).
   gate_require_docker || return 0
   for arch in linux-x64 linux-arm64; do
-    packages/pgvector-embedded/scripts/assert-glibc-floor.sh "packages/pgvector-embedded/prebuilt/${arch}"
+    packages/pgvector-embedded/scripts/assert-glibc-floor.sh "packages/pgvector-embedded/prebuilt/${arch}" || return 1
   done
   local out
-  out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1)
+  out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1) || return 1
   echo "$out"
   if echo "$out" | grep -qi "not found"; then
     echo "::error::vector.so has unresolved dependencies on debian:bullseye (glibc 2.31)." >&2
@@ -268,26 +273,34 @@ gate_migrations() {
 }
 
 gate_sdk_cli_build() {
-  make build-packages
+  make build-packages || return 1
+  GATE_RAN_SDK_BUILD=1
 }
 
 gate_sdk_lifecycle_e2e() {
-  bash scripts/sdk-e2e.sh
+  bash scripts/sdk-e2e.sh || return 1
+  GATE_RAN_SDK_LIFECYCLE=1
 }
 
 gate_sdk_error_taxonomy_e2e() {
-  bash scripts/sdk-e2e-error.sh
+  bash scripts/sdk-e2e-error.sh || return 1
+  GATE_RAN_SDK_ERROR=1
 }
 
 gate_cli_command_smoke() {
-  bash scripts/cli-smoke.sh
+  bash scripts/cli-smoke.sh || return 1
+  GATE_RAN_CLI_SMOKE=1
 }
 
 gate_sdk_cli_e2e() {
-  gate_sdk_cli_build
-  gate_sdk_lifecycle_e2e
-  gate_sdk_error_taxonomy_e2e
-  gate_cli_command_smoke
+  # ci.yml's sdk-cli-e2e is a needs: fan-in over the three deep smokes; mirror
+  # that so the default job list does not run them twice. Local errexit means
+  # a failure aborts THIS job only.
+  set -e
+  [ "$GATE_RAN_SDK_BUILD" -eq 1 ] || gate_sdk_cli_build
+  [ "$GATE_RAN_SDK_LIFECYCLE" -eq 1 ] || gate_sdk_lifecycle_e2e
+  [ "$GATE_RAN_SDK_ERROR" -eq 1 ] || gate_sdk_error_taxonomy_e2e
+  [ "$GATE_RAN_CLI_SMOKE" -eq 1 ] || gate_cli_command_smoke
 }
 
 gate_dead_code_report() {
@@ -305,7 +318,7 @@ gate_connector_parity_smoke() {
   gate_require_docker || return 77
   docker build -f docker/worker/Dockerfile -t lobu-worker:parity-smoke .
   docker run --rm --network=none lobu-worker:parity-smoke bun src/bin.ts self-check --json
-  node packages/cli/bin/lobu.js connector runtime-self-check --json
+  node packages/cli/bin/lobu.js connector runtime-self-check --json || return 1
 }
 
 # ── runner ─────────────────────────────────────────────────────────────────

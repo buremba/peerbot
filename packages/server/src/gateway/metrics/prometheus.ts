@@ -123,6 +123,15 @@ function initializeMetrics() {
     "SSE events skipped from fan-out for exceeding the NOTIFY payload cap",
     "counter"
   );
+  // Terminal rows whose owner never claimed them inside the retry budget. Each
+  // increment is a turn the client did not receive live; before the local
+  // fallback these were dropped outright, so a rising rate here is the signal
+  // that owner-routing is failing (pod affinity, rollout churn, long turns).
+  registerMetric(
+    "lobu_sse_owner_gate_final_attempt_total",
+    "Terminal thread_response rows rendered locally after the owner-gate retry budget was exhausted",
+    "counter"
+  );
 
   // Scheduler + Automation health. These back the prod alerting rules
   // (charts/lobu PrometheusRule): a silent scheduler / failing Automation tick is

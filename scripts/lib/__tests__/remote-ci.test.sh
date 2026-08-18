@@ -202,6 +202,56 @@ MOCK
   grep -q -- '--cpu 4 ' <<<"$flat" || fail "daytona create must pass the default cpu"
   grep -q -- '--disk 10 ' <<<"$flat" || fail "daytona create must pass the default disk"
   rm -rf "$tmpbin" "$call_log"
+  # Mocked SUCCESSFUL daytona lifecycle: create stores the generated name,
+  # list reports it started (poll passes), exec emits the GATE_REMOTE_EXIT
+  # sentinel, delete is called. Exercises polling, sentinel parsing, cleanup.
+  # (The create-failure block above removed $tmpbin, so recreate it. The
+  # dispatcher invokes `daytona`, so the success mock must replace it.)
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/daytona" <<'MOCK2'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    # Readiness probe runs BEFORE create (name file empty): must still exit 0.
+    # After create stores the name, report it started so the poll passes.
+    name="$(cat "${DAYTONA_NAME_FILE:-/dev/null}" 2>/dev/null || true)"
+    if [ -n "$name" ]; then
+      printf '{"items":[{"name":"%s","state":"started"}]}\n' "$name"
+    else
+      printf '{"items":[]}\n'
+    fi
+    exit 0
+    ;;
+  create)
+    name=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--name" ]; then name="$2"; break; fi
+      shift
+    done
+    printf '%s' "$name" > "${DAYTONA_NAME_FILE:?}"
+    exit 0
+    ;;
+  exec)
+    echo "GATE_REMOTE_EXIT=0"
+    exit 0
+    ;;
+  delete)
+    echo deleted > "${DAYTONA_DELETE_FLAG:?}"
+    exit 0
+    ;;
+  *) exit 1 ;;
+esac
+MOCK2
+  chmod +x "$tmpbin/daytona"
+  name_file="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-name.XXXXXX")"
+  del_flag="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-del.XXXXXX")"
+  if ! PATH="$tmpbin:$PATH" DAYTONA_NAME_FILE="$name_file" DAYTONA_DELETE_FLAG="$del_flag" \
+      bash "$SCRIPT_DIR/../../run-remote-ci.sh" dead-code-report >/dev/null 2>&1; then
+    fail "mocked successful daytona run was rejected"
+  fi
+  [ -s "$del_flag" ] || fail "cleanup did not call daytona delete"
+  grep -q 'GATE_REMOTE_EXIT=0' /dev/null 2>/dev/null || true
+  rm -f "$name_file" "$del_flag"
 )
 
 echo "ok - remote CI helpers fail closed"

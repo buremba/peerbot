@@ -52,6 +52,9 @@ DEFAULT_JOBS=(
 
 daytona_ready() {
   command -v daytona >/dev/null 2>&1 || return 1
+  # Sandbox polling pipes `daytona list --format json` through jq; without
+  # jq the run would fail mid-way, so fall back to local instead.
+  command -v jq >/dev/null 2>&1 || return 1
   # `daytona list` fails when not logged in — that's the readiness probe.
   daytona list >/dev/null 2>&1
 }
@@ -112,7 +115,8 @@ run_daytona() {
   git checkout-index -a -f --prefix="$stage/"
   # Submodule content at the pinned commit (the sandbox has no .git to fetch
   # it; owletto is a private repo whose deploy key lives on GitHub only).
-  if [ -d packages/owletto/.git ]; then
+  # NOTE: .git is a FILE (gitdir: ...) in normal submodule checkouts, not a dir.
+  if [ -e packages/owletto/.git ]; then
     git -C packages/owletto archive HEAD | tar -x -C "$stage/packages/owletto"
   else
     # Stub package.json (mirrors .github/actions/setup-submodule) so bun

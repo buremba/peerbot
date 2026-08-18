@@ -6,13 +6,19 @@ echo "🔍 Running pre-commit checks..."
 # check:fix WRITES the fixes to the working tree; re-stage them so the commit
 # carries the formatted content, not the pre-fix snapshot that was staged.
 # Without this, "check passed" commits ship unformatted code that CI rejects.
+# Re-stage ONLY the paths that were intentionally staged before the hook -
+# never `git add -u`, which would silently fold unrelated unstaged WIP into
+# the commit.
 echo "📝 Running Biome checks..."
+STAGED_BEFORE=$(git diff --cached --name-only)
 bun run check:fix
 if [ $? -ne 0 ]; then
   echo "❌ Biome check failed. Fix issues before committing."
   exit 1
 fi
-git add -u
+if [ -n "$STAGED_BEFORE" ]; then
+  git add -- $STAGED_BEFORE
+fi
 
 # Run TypeScript type check
 echo "📘 Running TypeScript type check..."

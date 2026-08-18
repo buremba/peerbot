@@ -50,12 +50,14 @@ import {
 } from './mcp-session-state';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
+import { readMcpAttachmentResource } from './mcp-media-resources';
 import {
   type AuthContext,
   executeTool,
   extractAuthContext,
   isSoftErrorResult,
 } from './tools/execute';
+import { getMcpResultContent } from './tools/mcp-result-content';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
@@ -383,6 +385,8 @@ function createServerForContext(
   // resources/read — return the built bundle HTML for a `ui://` app resource.
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const uri = request.params.uri;
+    const mediaResource = await readMcpAttachmentResource(uri, env, authCtx);
+    if (mediaResource) return mediaResource;
     const skill = MCP_SKILL_RESOURCES[uri];
     if (skill) {
       return {
@@ -463,6 +467,8 @@ function createServerForContext(
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);
       }
 
+      const attachedContent = getMcpResultContent(result) ?? [];
+
       // executeTool has already passed the rich SDK result through the internal
       // audit seam. Do not expose logs, stacks, org traversal, or call traces to
       // MCP clients.
@@ -523,7 +529,7 @@ function createServerForContext(
         const structured = validateToolResult(tool.outputSchema, publicResult);
         if (structured !== null) {
           return {
-            content: [{ type: 'text' as const, text }],
+            content: [{ type: 'text' as const, text }, ...attachedContent],
             structuredContent: structured as Record<string, unknown>,
             _meta: resultMeta,
             ...(softError ? { isError: true } : {}),
@@ -531,7 +537,7 @@ function createServerForContext(
         }
       }
       return {
-        content: [{ type: 'text' as const, text }],
+        content: [{ type: 'text' as const, text }, ...attachedContent],
         _meta: resultMeta,
         ...(softError ? { isError: true } : {}),
       };

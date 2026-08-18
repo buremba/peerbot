@@ -23,6 +23,7 @@
 import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
 import { getLobuCoreServices } from "../lobu/gateway";
+import type { ArtifactStore } from "../gateway/files/artifact-store";
 import { resolvePublicGatewayUrl } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
@@ -84,10 +85,11 @@ function publicGatewayUrl(): string {
  * an existing artifact).
  */
 export async function materializeInlineAttachments<T extends StreamItemLike>(
-  items: T[]
+  items: T[],
+  artifactStoreOverride?: Pick<ArtifactStore, "publish">
 ): Promise<{ items: T[]; pendingTranscriptions: AudioTranscriptionPending[] }> {
   const coreServices = getLobuCoreServices();
-  const artifactStore = coreServices?.getArtifactStore?.();
+  const artifactStore = artifactStoreOverride ?? coreServices?.getArtifactStore?.();
   if (!artifactStore) {
     return { items, pendingTranscriptions: [] };
   }
@@ -172,6 +174,20 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
   }
 
   return { items: out, pendingTranscriptions };
+}
+
+/** Materialize connector-style attachments returned by a device action. */
+export async function materializeActionOutputAttachments(
+  runId: number,
+  actionOutput: Record<string, unknown>,
+  artifactStoreOverride?: Pick<ArtifactStore, "publish">
+): Promise<Record<string, unknown>> {
+  if (!Array.isArray(actionOutput.attachments)) return actionOutput;
+  const { items } = await materializeInlineAttachments(
+    [{ id: `action:${runId}`, attachments: actionOutput.attachments }],
+    artifactStoreOverride
+  );
+  return { ...actionOutput, attachments: items[0]?.attachments ?? [] };
 }
 
 function inferKindFromMime(mime: string): string {

@@ -51,6 +51,7 @@ import { applyEventAttributions } from "../utils/entity-link-upsert";
 import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
 import {
+	materializeActionOutputAttachments,
 	materializeInlineAttachments,
 	triggerAudioTranscriptions,
 } from "../utils/inline-attachments";
@@ -1908,6 +1909,9 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
+		const actionOutput = req.action_output
+			? await materializeActionOutputAttachments(req.run_id, req.action_output)
+			: undefined;
 
 		// Atomic terminal-state transition with the shared F2 guard (see
 		// finalizeRun) AND, for approval-gated runs, the card supersede in ONE
@@ -1926,7 +1930,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 				workerId: req.worker_id,
 				status: req.status === "success" ? "completed" : "failed",
 				extraSet: tx`,
-					action_output = ${req.action_output ? tx.json(req.action_output) : null},
+					action_output = ${actionOutput ? tx.json(actionOutput) : null},
 					error_message = ${req.error_message ?? null}`,
 				returning: tx`organization_id, action_key, approval_status`,
 			});
@@ -1948,7 +1952,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 						? `Action completed: ${actionKey}`
 						: `Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
 					req.status === "success"
-						? { action_output: req.action_output }
+						? { action_output: actionOutput }
 						: { error_message: req.error_message },
 					null,
 					tx,

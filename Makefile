@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pre-pr-remote-fast pre-pr-remote owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pr-fast pr-full owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -26,8 +26,8 @@ help:
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
 	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
 	@echo "  make pre-pr                                 - Local fast gates before push (GitHub CI is the canonical gate)"
-	@echo "  make pre-pr-remote-fast                    - Optional: Linux merge jobs on Depot (broad iteration)"
-	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Optional: staged full Linux CI on Depot"
+	@echo "  make pr-fast                                - Optional: broad Linux merge jobs (Daytona sandbox, else local)"
+	@echo "  make pr-full [REMOTE_JOBS='unit …']        - Optional: full Linux CI (Daytona sandbox, else local)"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 
@@ -321,16 +321,18 @@ pre-pr:
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."
 
-# OPTIONAL remote gate (GitHub CI is canonical). Stage intended files first:
-# Depot applies tracked local changes and runs Linux jobs in parallel without
-# consuming the developer Mac. REMOTE_JOBS narrows the run.
+# OPTIONAL full-gate runner (GitHub CI is canonical). Default provider auto:
+# a Daytona ephemeral sandbox when the CLI is available, otherwise the SAME
+# jobs run on this machine — the command never hard-depends on Daytona.
+# REMOTE_CI_PROVIDER=depot|local forces a provider; REMOTE_JOBS narrows the
+# job list. Stage intended files first: the sandbox only sees staged content.
 REMOTE_FAST_JOBS := unit frontend server-integration-vitest server-integration-bun integration format-lint typecheck migrations
 
-# Optional broad iteration gate: the entire required Linux merge graph,
-# without the post-gate SDK/CLI and connector parity smokes. GitHub CI is
-# the canonical gate.
-pre-pr-remote-fast:
+# Optional broad iteration gate: the required Linux merge graph without the
+# post-gate SDK/CLI and connector parity smokes. GitHub CI is canonical.
+pr-fast:
 	@./scripts/run-remote-ci.sh $(REMOTE_FAST_JOBS)
 
-pre-pr-remote:
+# Optional full staged Linux graph (every Linux job in ci.yml).
+pr-full:
 	@./scripts/run-remote-ci.sh $(REMOTE_JOBS)

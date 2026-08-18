@@ -314,8 +314,6 @@ jobs:
   # graph and ran these smokes serially, adding a second critical path after
   # required checks were already green.
   sdk-cli-build:
-    needs: paths
-    if: needs.paths.outputs.packages == 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
@@ -368,8 +366,7 @@ jobs:
   # artifact fan-out. It remains behind the required merge graph so GitHub's
   # finite hosted-runner pool gives merge-critical work priority.
   dead-code-report:
-    needs: [unit, frontend, integration, format-lint, typecheck, migrations, paths]
-    if: needs.paths.outputs.packages == 'true'
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
@@ -404,8 +401,7 @@ jobs:
         run: bun run knip
 
   sdk-lifecycle-e2e:
-    needs: [sdk-cli-build, paths]
-    if: needs.paths.outputs.packages == 'true'
+    needs: sdk-cli-build
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
@@ -484,8 +480,7 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
 
   sdk-error-taxonomy-e2e:
-    needs: [sdk-cli-build, paths]
-    if: needs.paths.outputs.packages == 'true'
+    needs: sdk-cli-build
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
@@ -526,8 +521,7 @@ jobs:
         run: bash scripts/sdk-e2e-error.sh
 
   cli-command-smoke:
-    needs: [sdk-cli-build, paths]
-    if: needs.paths.outputs.packages == 'true'
+    needs: sdk-cli-build
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:

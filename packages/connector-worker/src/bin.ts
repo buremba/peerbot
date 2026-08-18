@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isKnownPlatform } from '@lobu/core';
 import { startDaemon } from './daemon/index.js';
+import { DEVICE_MANIFESTS_BY_PLATFORM } from './daemon/device-manifests.js';
 import { buildConnectorWorkerEnv } from './env.js';
 import { assertExternalDepsResolvable } from './compile/index.js';
 import { printSelfCheckResult, runConnectorRuntimeSelfCheck } from './self-check/index.js';
@@ -202,6 +203,8 @@ async function main(): Promise<void> {
           capabilities,
           ...(platform ? { platform } : {}),
           ...(label ? { label } : {}),
+          // Device manifests to register on poll (headless declares os.shell).
+          ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
           ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
         },
         env

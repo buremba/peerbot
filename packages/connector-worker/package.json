@@ -11,6 +11,10 @@
       "import": "./dist/daemon/index.js",
       "types": "./dist/daemon/index.d.ts"
     },
+    "./daemon/device-manifests": {
+      "import": "./dist/daemon/device-manifests.js",
+      "types": "./dist/daemon/device-manifests.d.ts"
+    },
     "./env": {
       "import": "./dist/env.js",
       "types": "./dist/env.d.ts"

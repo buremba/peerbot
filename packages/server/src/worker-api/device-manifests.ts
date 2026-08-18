@@ -281,6 +281,12 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
   if (platform === 'chrome-extension') {
     return key === 'chrome' || key.startsWith('chrome.');
   }
+  // Headless devices (servers/VMs/pods, the herdr box) serve the shell
+  // connector: bundled `os.shell` executes `bash -lc` and returns structured
+  // output. Keep this list tight - nothing browser/OS-UI based.
+  if (platform === 'headless') {
+    return key === 'os.shell';
+  }
   return false;
 }
 

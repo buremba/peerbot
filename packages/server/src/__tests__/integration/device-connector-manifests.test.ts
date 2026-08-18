@@ -8,6 +8,7 @@ import { materializeDueFeeds } from '../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestConnection, createTestConnectorDefinition } from '../setup/test-fixtures';
 import { post } from '../setup/test-helpers';
+import { HEADLESS_OS_SHELL_MANIFEST } from '@lobu/connector-worker/daemon/device-manifests';
 
 const CONNECTOR_KEY = 'apple.test_device_manifest';
 
@@ -528,6 +529,25 @@ describe('device connector manifests', () => {
     // it declares no feeds, and what reconcile does with a feedless device
     // connector is a separate question this test has no business pinning.
     expect(await readDefinition(orgId)).not.toBeNull();
+  });
+
+  it('admits the daemon-emitted os.shell manifest for a headless device', async () => {
+    const { userId, workerId } = await seedDeviceOwner('headless');
+    // The exact manifest the connector-worker daemon sends on poll - not a
+    // synthetic fixture - so the test validates what herdr actually declares.
+    const res = await poll(workerId, [HEADLESS_OS_SHELL_MANIFEST], 'headless', { 'os.shell': true });
+    expect(res.status).toBe(200);
+
+    // The manifest was admitted and stored on the device row (the headless
+    // shell connector is what makes a connection pinned to this device able to
+    // run commands). Feedless, so no definition materialization is asserted.
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT connector_manifests FROM device_workers
+      WHERE user_id = ${userId} AND worker_id = ${workerId}
+    `) as unknown as Array<{ connector_manifests: unknown }>;
+    const stored = rows[0]?.connector_manifests as Record<string, unknown> | undefined;
+    expect(stored?.['os.shell']).toBeDefined();
   });
 
   it('drops a manifest that still declares removed entityLinks rules', async () => {

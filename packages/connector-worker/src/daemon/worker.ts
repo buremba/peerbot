@@ -21,6 +21,8 @@ export interface DaemonConfig {
   platform?: string;
   /** Human-readable device name for the Devices page. */
   label?: string;
+  /** Device-manifest connector definitions to register on each poll. */
+  manifests?: unknown[];
 }
 
 const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
@@ -51,6 +53,7 @@ export class WorkerDaemon {
       version: daemonConfig.version,
       platform: daemonConfig.platform,
       label: daemonConfig.label,
+      manifests: daemonConfig.manifests,
     });
 
     this.env = env;

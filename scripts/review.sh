@@ -79,7 +79,7 @@ elif git show-ref --verify --quiet refs/remotes/origin/main; then
 else
   BASE_BRANCH="main"
 fi
-CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
 # `pi` is the explicit third reviewer (never chosen by `auto`): useful when the

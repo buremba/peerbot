@@ -120,6 +120,10 @@ jobs:
           # LOBU_LOCAL_INIT_ALLOW_PROXY: the private tailnet ingress (Tailscale
           # Serve) injects Forwarded-* headers; tolerate them for this single-user
           # preview so /api/local-init sign-in works (peer is loopback via socat).
+          # CHOKIDAR_USEPOLLING: the container's default nofile ulimit is 1024, and
+          # Vite's inotify watchers blow through it at boot on a monorepo tree
+          # (EMFILE crash, seen after the image grew). Polling uses stat() instead
+          # of watch fds; the 4-CPU limit absorbs the polling cost.
           cat <<EOF | kubectl apply -f -
           apiVersion: apps/v1
           kind: Deployment
@@ -145,6 +149,7 @@ jobs:
                       - { name: HOST, value: "127.0.0.1" }
                       - { name: DATABASE_URL, value: "file:///var/lib/lobu/data/lobu.db" }
                       - { name: NODE_ENV, value: "development" }
+                      - { name: CHOKIDAR_USEPOLLING, value: "true" }
                       - { name: ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: preview-encryption, key: key } } }
                       - { name: LOBU_LOCAL_INIT_ALLOW_PROXY, value: "1" }
                     ports:

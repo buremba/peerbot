@@ -17,7 +17,7 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
   description:
     'Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands run in the device\'s real environment (host PATH, files) - gate with approval.',
   required_capability: 'os.shell',
-  runtime: { platforms: ['linux'] },
+  runtime: { platforms: ['headless'] },
   auth_schema: { methods: [{ type: 'none' }] },
   feeds_schema: {},
   actions_schema: {

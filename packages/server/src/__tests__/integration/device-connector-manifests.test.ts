@@ -8,6 +8,7 @@ import { materializeDueFeeds } from '../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestConnection, createTestConnectorDefinition } from '../setup/test-fixtures';
 import { post } from '../setup/test-helpers';
+import { HEADLESS_OS_SHELL_MANIFEST } from '@lobu/connector-worker/daemon/device-manifests';
 
 const CONNECTOR_KEY = 'apple.test_device_manifest';
 
@@ -530,17 +531,11 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId)).not.toBeNull();
   });
 
-  it('admits os.shell for a headless device', async () => {
+  it('admits the daemon-emitted os.shell manifest for a headless device', async () => {
     const { userId, workerId } = await seedDeviceOwner('headless');
-    const shell = manifest({
-      key: 'os.shell',
-      required_capability: 'os.shell',
-      name: 'Headless Shell Probe',
-      runtime: { platforms: ['headless'] },
-      feeds_schema: {},
-    });
-
-    const res = await poll(workerId, [shell], 'headless', { 'os.shell': true });
+    // The exact manifest the connector-worker daemon sends on poll - not a
+    // synthetic fixture - so the test validates what herdr actually declares.
+    const res = await poll(workerId, [HEADLESS_OS_SHELL_MANIFEST], 'headless', { 'os.shell': true });
     expect(res.status).toBe(200);
 
     // The manifest was admitted and stored on the device row (the headless

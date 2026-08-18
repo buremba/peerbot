@@ -21,6 +21,7 @@
 - **Shared state must be Postgres-mediated.** An in-memory Map or singleton is invisible to other replicas — correct in dev, broken in prod.
 - **Workers never receive real credentials** — placeholders or proxied access only. The exceptions are device-pinned connectors and short-lived provider-derived leases (`packages/server/AGENTS.md`); a durable stored credential is never one.
 - **Automation is the product, API, and storage vocabulary.** Use it consistently in public contracts and internal identifiers; `make pre-pr`'s exposed-surface naming gate rejects retired product and engine terminology.
+- **Per-connection approval override is `connection.config.action_modes`** (`'disabled' | 'approval' | 'auto'`), consulted by `resolveActionMode` BEFORE the connector's `requiresApproval` default. A run parked at `approval_status='pending'` does not mean "no auto path exists" — grep `action_modes` / `operations/action-modes.ts`, not `auto_approve`. Connector-run approvals (`resolve_approval` / `approve_batch`) are human-only by design: the server rejects agent/token approval of operation runs.
 - **`make review` is the semantic review gate, not CI.** It runs no typecheck, knip, or tests; a verdict or safe-class skip is not evidence CI will pass.
 - **GitHub CI is the canonical gate** — free on this public repo, full graph in ~5–7 min per PR. `make pre-pr` (local fast gates: typecheck, knip, lint, naming) catches the cheap misses before push; `make review` verifies CI is green for HEAD. `make pre-pr-remote` (Depot) is optional tooling, not part of the required loop.
 - Default to static `import`; a new production dynamic import needs measured justification plus a call-site rationale comment. Tests may import dynamically after mocks; two Node-version gates are grandfathered (playbook).
@@ -45,6 +46,7 @@
 - **Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`. A working-tree grep proves nothing, and the fetch is load-bearing.
 - Deleting code needs structural evidence — a dangling import, a completed migration, a superseded implementation. Low prod usage is not evidence, and docs and help text are load-bearing.
 - Fix the class, not the instance: on the first hit, grep every other occurrence and fix in one pass. A diff-scoped reviewer only ever finds the next one.
+- When a run/operation hits a gate (approval, auth, resolution), **trace the existing decision path** (handler → policy → config readers, e.g. `resolveActionMode`) and grep the product's own vocabulary BEFORE proposing new surface — the mechanism usually exists under a name you have not tried yet.
 - One branch = one concern. Never `git stash`; use WIP commits.
 - Prefer `bun`, never npm/yarn/pnpm. Before adding an env var, grep for the one already read, and do not rename existing vars unasked.
 - Block only on irreversible or destructive actions and decisions genuinely the user's; otherwise take the recommended option and flag it in your summary.

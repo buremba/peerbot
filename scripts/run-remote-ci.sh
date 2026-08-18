@@ -125,11 +125,13 @@ run_daytona() {
   tar -czf "$ctx/repo.tar.gz" -C "$stage" .
   printf 'FROM ubuntu:24.04\nADD repo.tar.gz /workspace/lobu\nWORKDIR /workspace/lobu\n' > "$ctx/Dockerfile"
   # $$ keeps the name unique when a previous run is still deleting its sandbox.
-  name="lobu-pr-full-$(git rev-parse --short HEAD)-$$"
+  name="lobu-pr-full-$(git rev-parse --short HEAD 2>/dev/null || echo local)-$$"
   echo ">> creating ephemeral Daytona sandbox '$name' (${#jobs[@]} jobs)"
   local create_out create_rc=0
-  # NOTE: on CLI v0.204.0 --memory is in GB (the help text says MB; the API
-  # rejects e.g. 4096 with "4096GB exceeds maximum allowed per sandbox").
+  # NOTE: --memory is in GB on CLI v0.204.0 despite the help text saying MB.
+  # Empirically verified: --memory 4096 → API rejects "Memory request 4096GB
+  # exceeds maximum allowed per sandbox (8GB)"; --memory 4 → sandbox reports
+  # memory=4 (GB). Do NOT switch to MB units — that would request 4GB×1024.
   # The org's free tier caps total running memory (~10GiB), so default small.
   create_out="$(daytona create -c "$ctx" --dockerfile "$ctx/Dockerfile" --name "$name" \
     --cpu "${DAYTONA_CPU:-4}" --memory "${DAYTONA_MEMORY_GB:-4}" --disk "${DAYTONA_DISK_GB:-10}" \

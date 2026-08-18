@@ -159,4 +159,49 @@ if grep -q 'depot/tests-run-action' <<<"$vitest_job"; then
   fail "timing regrouping is unsafe for the order-sensitive shared-DB suite"
 fi
 
+
+# ── provider dispatch (scripts/run-remote-ci.sh) ──────────────────────────
+# The dispatcher is exercised with a mocked daytona binary so no sandbox is
+# ever provisioned. A settled (staged, no untracked) tree is required first.
+
+( cd "$repo"
+  if REMOTE_CI_PROVIDER=bogus bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit >/dev/null 2>&1; then
+    fail "unknown provider was accepted"
+  fi
+
+  if REMOTE_CI_PROVIDER=local bash "$SCRIPT_DIR/../../run-remote-ci.sh" nosuchjob >/dev/null 2>&1; then
+    fail "unknown job in the local fallback was accepted"
+  fi
+
+  # Mocked daytona: list succeeds (logged in), create records its args then
+  # fails. Auto-detection must pick daytona, pass memory in GB, and fail
+  # closed when create fails.
+  tmpbin="$(mktemp -d "${TMPDIR:-/tmp}/lobu-remote-ci-bin.XXXXXX")"
+  cat > "$tmpbin/daytona" <<'MOCK'
+#!/usr/bin/env bash
+case "$1" in
+  list) exit 0 ;;
+  create)
+    printf '%s\n' "$@" > "${DAYTONA_CALL_LOG:?}"
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+MOCK
+  chmod +x "$tmpbin/daytona"
+  call_log="$(mktemp "${TMPDIR:-/tmp}/lobu-daytona-call.XXXXXX")"
+  if PATH="$tmpbin:$PATH" DAYTONA_CALL_LOG="$call_log" \
+      bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit >/dev/null 2>&1; then
+    fail "mocked daytona create failure was accepted"
+  fi
+  grep -q -- '--memory' "$call_log" || fail "daytona create was not invoked"
+  # Each arg is on its own line in the log; join before matching.
+  flat="$(tr '\n' ' ' < "$call_log")"
+  grep -q -- '--memory 4 ' <<<"$flat" ||
+    fail "daytona create must pass memory in GB (default 4), got: $flat"
+  grep -q -- '--cpu 4 ' <<<"$flat" || fail "daytona create must pass the default cpu"
+  grep -q -- '--disk 10 ' <<<"$flat" || fail "daytona create must pass the default disk"
+  rm -rf "$tmpbin" "$call_log"
+)
+
 echo "ok - remote CI helpers fail closed"

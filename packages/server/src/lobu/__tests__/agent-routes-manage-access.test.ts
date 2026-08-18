@@ -55,7 +55,11 @@ async function importAgentRoutes() {
   return mod.agentRoutes;
 }
 
+/** Every `authStash` field this file overwrites, as found on entry. */
+let stashOnEntry: typeof authStash;
+
 beforeAll(async () => {
+  stashOnEntry = { ...authStash };
   await ensureDbForGatewayTests();
 }, 60_000);
 
@@ -76,16 +80,14 @@ beforeEach(async () => {
   // leaves a non-default value here breaks whichever sibling runs next and
   // relies on the default. `deployment-routes.test.ts` already save/restores
   // around its own override. So reset to the helper default (`owner`) here,
-  // let each test opt into `member` explicitly, and restore in `afterAll` —
-  // otherwise the last test's role leaks out of this file.
+  // let each test opt into `member` explicitly, and put the whole stash back
+  // in `afterAll` — otherwise this file's role, org and user leak out of it.
   authStash.memberRole = DEFAULT_MEMBER_ROLE;
   coreServicesStash.services = null;
 }, 30_000);
 
 afterAll(() => {
-  authStash.memberRole = DEFAULT_MEMBER_ROLE;
-  authStash.authSource = "session";
-  authStash.mcpAuthInfo = null;
+  Object.assign(authStash, stashOnEntry);
 });
 
 describe("agent management mutations — role gate", () => {

@@ -2,13 +2,17 @@
 
 echo "🔍 Running pre-commit checks..."
 
-# Run biome check (format + lint + organize imports) and auto-fix
+# Run biome check (format + lint + organize imports) and auto-fix.
+# check:fix WRITES the fixes to the working tree; re-stage them so the commit
+# carries the formatted content, not the pre-fix snapshot that was staged.
+# Without this, "check passed" commits ship unformatted code that CI rejects.
 echo "📝 Running Biome checks..."
 bun run check:fix
 if [ $? -ne 0 ]; then
   echo "❌ Biome check failed. Fix issues before committing."
   exit 1
 fi
+git add -u
 
 # Run TypeScript type check
 echo "📘 Running TypeScript type check..."

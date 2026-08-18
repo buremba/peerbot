@@ -10,7 +10,11 @@
  *    oldest membership — matching `resolveEntityCreator`'s fallback;
  *  - an org with NO members keeps NULL (fail-closed: no principal exists there);
  *  - rows already owned are untouched;
- *  - idempotent on a re-run (only NULL rows match).
+ *  - idempotent on a re-run (only NULL rows match);
+ *  - scope: org-visible, soft-deleted, and device-pinned rows keep NULL —
+ *    org-visible rows already match `visibility = 'org'`, and device rows are
+ *    adopted to the real device user by device-reconcile.ts (which guards on
+ *    `created_by IS NULL`), so adopting them here would steal that ownership.
  */
 
 import { existsSync } from 'node:fs';
@@ -172,5 +176,61 @@ describe('backfill legacy connections migration', () => {
     await runBackfill();
     await runBackfill();
     expect(await creatorOf(orphan.id)).toBe(owner.id);
+  });
+
+  it('leaves org-visible rows NULL (they already match `visibility = org`)', async () => {
+    const org = await createTestOrganization();
+    const owner = await createTestUser();
+    await addUserToOrganization(owner.id, org.id, 'owner');
+
+    const managed = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      visibility: 'org',
+    });
+
+    await runBackfill();
+    expect(await creatorOf(managed.id)).toBeNull();
+  });
+
+  it('leaves soft-deleted rows NULL (fail-closed on dead rows)', async () => {
+    const org = await createTestOrganization();
+    const owner = await createTestUser();
+    await addUserToOrganization(owner.id, org.id, 'owner');
+
+    const deleted = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      visibility: 'private',
+    });
+    await getDb()`
+      UPDATE connections SET deleted_at = NOW() WHERE id = ${deleted.id}
+    `;
+
+    await runBackfill();
+    expect(await creatorOf(deleted.id)).toBeNull();
+  });
+
+  it('leaves device-pinned rows NULL (device-reconcile owns their creator)', async () => {
+    const org = await createTestOrganization();
+    const owner = await createTestUser();
+    await addUserToOrganization(owner.id, org.id, 'owner');
+
+    const orphan = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      visibility: 'private',
+    });
+    const [worker] = await getDb()<{ id: string }[]>`
+      INSERT INTO device_workers (user_id, worker_id)
+      VALUES (${owner.id}, 'dw_test')
+      RETURNING id
+    `;
+    await getDb()`
+      UPDATE connections SET device_worker_id = ${worker.id} WHERE id = ${orphan.id}
+    `;
+
+    await runBackfill();
+    expect(await creatorOf(orphan.id)).toBeNull();
   });
 });

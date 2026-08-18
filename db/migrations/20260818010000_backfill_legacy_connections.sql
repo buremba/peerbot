@@ -14,6 +14,11 @@
 -- member; orgs with zero members keep NULL (those connections are invisible to
 -- everyone anyway — the org has no principals).
 --
+-- Scope: only private, non-deleted, unpinned rows. Org-visible rows already
+-- match `visibility = 'org'`, and device-pinned rows are adopted to the real
+-- device user by device-reconcile.ts (which guards on `created_by IS NULL`), so
+-- adopting either here would steal the ownership a later pass would assign.
+--
 -- Runs outside a transaction (statement-at-a-time) for large backfills.
 -- Idempotent: re-running after partial application is safe because the WHERE
 -- clause only matches NULL rows.
@@ -26,13 +31,15 @@ FROM (
     m."organizationId" AS org_id,
     m."userId" AS adopter_id
   FROM "member" m
-  WHERE m."userId" IN (SELECT id FROM "user")
   ORDER BY m."organizationId",
            CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
            m."createdAt" ASC
 ) sub
 WHERE c.organization_id = sub.org_id
-  AND c.created_by IS NULL;
+  AND c.created_by IS NULL
+  AND c.visibility = 'private'
+  AND c.deleted_at IS NULL
+  AND c.device_worker_id IS NULL;
 
 -- migrate:down
 

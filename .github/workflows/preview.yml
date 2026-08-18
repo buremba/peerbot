@@ -101,7 +101,9 @@ jobs:
 
       - name: Provision encryption key
         run: |
-          # Stable per-namespace key so stored secrets survive redeploys.
+          # Stable per-namespace key so a redeploy (or mid-life pod restart) can
+          # still read secrets written by the previous pod. The data volume is
+          # emptyDir, so nothing survives a redeploy itself.
           if ! kubectl -n "$PREVIEW_NS" get secret preview-encryption >/dev/null 2>&1; then
             kubectl -n "$PREVIEW_NS" create secret generic preview-encryption \
               --from-literal=key="$(openssl rand -base64 32)"
@@ -220,13 +222,17 @@ jobs:
             const prNumber = context.payload.pull_request?.number ?? Number(process.env.PR_NUMBER);
             const previewUrl = `https://lobu-pr-${prNumber}.${{ vars.TAILNET_DOMAIN }}`;
 
-            const comments = await github.rest.issues.listComments({
+            // Paginate: listComments defaults to 30 per page, and busy PRs
+            // (review bots post here) routinely exceed that - the existing
+            // preview comment would never be found and a duplicate posted.
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
+              per_page: 100,
             });
 
-            const botComment = comments.data.find(c =>
+            const botComment = comments.find(c =>
               c.user.type === 'Bot' && c.body.includes('Preview environment')
             );
 
@@ -274,6 +280,10 @@ jobs:
           kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
 
       - name: Delete preview image tag
+        # Best-effort GC: GITHUB_TOKEN cannot always delete org-owned package
+        # versions, and the namespace is already gone - a failure here should
+        # not turn a completed cleanup into a red check.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -292,13 +302,17 @@ jobs:
           script: |
             const prNumber = context.payload.pull_request.number;
 
-            const comments = await github.rest.issues.listComments({
+            // Paginate: listComments defaults to 30 per page, and busy PRs
+            // (review bots post here) routinely exceed that - the existing
+            // preview comment would never be found and a duplicate posted.
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
+              per_page: 100,
             });
 
-            const botComment = comments.data.find(c =>
+            const botComment = comments.find(c =>
               c.user.type === 'Bot' && c.body.includes('Preview environment')
             );
 

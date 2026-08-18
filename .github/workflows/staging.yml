@@ -34,7 +34,9 @@ env:
 jobs:
   reconcile:
     runs-on: ubuntu-24.04
-    if: github.event.label.name == 'staging' || github.event_name == 'workflow_dispatch'
+    # Fork guard (same shape as preview.yml): a 'staging' label on a fork PR
+    # would run this job without secrets - empty kubeconfig, noisy failures.
+    if: (github.event.label.name == 'staging' || github.event_name == 'workflow_dispatch') && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}

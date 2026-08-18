@@ -378,6 +378,98 @@ describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
   });
 });
 
+describe("UnifiedThreadResponseConsumer owner-gate last-attempt fallback", () => {
+  function makeApiConsumer() {
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+    };
+    const renderer = {
+      handleCompletion: mock(async () => undefined),
+      handleError: mock(async () => undefined),
+    };
+    const sseManager = {
+      broadcast: mock(() => undefined),
+      hasActiveConnection: mock(() => false),
+    };
+    const platformRegistry = {
+      get: mock(() => ({ getResponseRenderer: () => renderer })),
+    };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      sseManager as any
+    ) as any;
+    return { consumer, renderer };
+  }
+
+  const directApiTerminal = {
+    messageId: "m-d-1",
+    channelId: "api_u1",
+    conversationId: "conv-d-1",
+    userId: "u1",
+    teamId: "api",
+    timestamp: 99,
+    processedMessageIds: ["m-d-1"],
+    platformMetadata: { source: "direct-api" },
+  };
+
+  test("success row delivers locally on the final attempt instead of dropping the reply", async () => {
+    const { consumer, renderer } = makeApiConsumer();
+
+    await consumer.handleThreadResponse({
+      id: "job-final-ok",
+      attempt: 29,
+      maxAttempts: 30,
+      data: { ...directApiTerminal, finalText: "the answer" },
+    });
+
+    expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  test("error row delivers locally on the final attempt so the run still resolves", async () => {
+    const { consumer, renderer } = makeApiConsumer();
+
+    await consumer.handleThreadResponse({
+      id: "job-final-err",
+      attempt: 29,
+      maxAttempts: 30,
+      data: {
+        ...directApiTerminal,
+        processedMessageIds: undefined,
+        error: "The agent didn't finish responding in time.",
+      },
+    });
+
+    expect(renderer.handleError).toHaveBeenCalledTimes(1);
+    expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  test("still re-queues while attempts remain", async () => {
+    const { consumer, renderer } = makeApiConsumer();
+
+    await expect(
+      consumer.handleThreadResponse({
+        id: "job-mid",
+        attempt: 28,
+        maxAttempts: 30,
+        data: directApiTerminal,
+      })
+    ).rejects.toThrow(/not owned by this gateway instance/);
+    expect(renderer.handleCompletion).not.toHaveBeenCalled();
+  });
+
+  test("re-queues when the queue supplies no attempt budget", async () => {
+    const { consumer } = makeApiConsumer();
+
+    await expect(
+      consumer.handleThreadResponse({ id: "job-nobudget", data: directApiTerminal })
+    ).rejects.toThrow(/not owned by this gateway instance/);
+  });
+});
+
 describe("UnifiedThreadResponseConsumer dead-letters instead of silent drops", () => {
   test("missing platform adapter throws so the row retries then dead-letters", async () => {
     const queue = {

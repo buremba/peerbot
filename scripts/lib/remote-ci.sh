@@ -61,9 +61,8 @@ remote_ci_require_no_untracked() {
   fi
 }
 
-# Return the exact Git tree the full remote gate will attest. Requiring a
-# settled index makes the attestation survive the subsequent commit: the
-# commit's tree id equals this tree id even though the commit SHA is new.
+# Return the exact staged Git tree, failing closed on a dirty index or
+# untracked files so a full remote gate runs against a settled tree.
 remote_ci_staged_tree() {
   remote_ci_require_no_untracked || return 1
   if ! git diff --quiet --ignore-submodules=none --; then

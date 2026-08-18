@@ -326,9 +326,9 @@ pre-pr:
 # consuming the developer Mac. REMOTE_JOBS narrows the run.
 REMOTE_FAST_JOBS := unit frontend server-integration-vitest server-integration-bun integration format-lint typecheck migrations
 
-# Broad iteration gate: the entire required Linux merge graph, without the
-# post-gate SDK/CLI and connector parity smokes. It never creates the final
-# tree attestation, so agents cannot substitute it for pre-pr-remote.
+# Optional broad iteration gate: the entire required Linux merge graph,
+# without the post-gate SDK/CLI and connector parity smokes. GitHub CI is
+# the canonical gate.
 pre-pr-remote-fast:
 	@./scripts/run-remote-ci.sh $(REMOTE_FAST_JOBS)
 

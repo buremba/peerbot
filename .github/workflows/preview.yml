@@ -264,6 +264,8 @@ jobs:
           kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
 
       - name: Delete preview image tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           VERSION_ID=$(gh api "orgs/lobu-ai/packages/container/lobu%2Fpreview/versions" --paginate -q ".[] | select(.metadata.container.tags[]? == \"pr-${PR_NUM}\") | .id" | head -1)

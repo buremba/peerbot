@@ -83,10 +83,8 @@ fi
 echo ">> checking Depot repository access"
 depot ci migrate preflight --org "$DEPOT_ORG_ID" >/dev/null
 
-full_gate=0
 if [ "$#" -eq 0 ]; then
   jobs=("${DEFAULT_JOBS[@]}")
-  full_gate=1
   remote_ci_staged_tree >/dev/null || exit $?
 else
   jobs=("$@")

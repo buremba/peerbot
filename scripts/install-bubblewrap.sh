@@ -15,10 +15,17 @@ set -euo pipefail
 # apt FAILS fast: a stalled mirror (or dpkg lock) hangs the command until the
 # job timeout, so every apt call is wrapped in `timeout` — a stall becomes a
 # fast failure that the next attempt rides over.
+#
+# The GitHub runner's default azure.archive.ubuntu.com mirror stalls (~5min:
+# the update burns the whole 240s timeout on attempt 1, then a retry succeeds).
+# Per-request Acquire::http::Timeout makes a hanging mirror fail in seconds
+# instead, so apt falls through to the responsive mirror (archive.ubuntu.com)
+# on the SAME attempt — the retry loop stays for the genuinely-down case.
 installed=""
+APT_FLAGS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::ftp::Timeout=15"
 for attempt in 1 2 3; do
-  if sudo timeout 240 apt-get update -o Acquire::Retries=3 \
-      && sudo timeout 300 apt-get install -y --no-install-recommends bubblewrap coreutils; then
+  if sudo timeout 240 apt-get update $APT_FLAGS \
+      && sudo timeout 300 apt-get install $APT_FLAGS -y --no-install-recommends bubblewrap coreutils; then
     installed=1
     break
   fi

@@ -14,14 +14,24 @@
 -- member; orgs with zero members keep NULL (those connections are invisible to
 -- everyone anyway — the org has no principals).
 --
+-- Adoption seam note: setting created_by also makes the row match
+-- compileConnectionFkVisibility (events/content/operations), so the adopting
+-- owner gains search/recall visibility into that connection's content that NO
+-- principal had before (the removed admin arm was row-form only). That widening
+-- is the point of this backfill — the alternative is admin-only row visibility
+-- with no corresponding operations visibility, which is the split the change
+-- eliminates.
+--
 -- Scope: only private, non-deleted, unpinned rows. Org-visible rows already
 -- match `visibility = 'org'`, and device-pinned rows are adopted to the real
 -- device user by device-reconcile.ts (which guards on `created_by IS NULL`), so
 -- adopting either here would steal the ownership a later pass would assign.
 --
--- Runs outside a transaction (statement-at-a-time) for large backfills.
--- Idempotent: re-running after partial application is safe because the WHERE
--- clause only matches NULL rows.
+-- Runs outside dbmate's transaction sandbox. The body is a single UPDATE, which
+-- is atomic on its own and idempotent on re-run (the WHERE clause only matches
+-- NULL rows), so re-running after a partial application — e.g. an interruption,
+-- or this migration replayed against a live DB mid-write — cannot double-adopt
+-- or strand a row in a half-adopted state.
 
 UPDATE connections c
 SET created_by = sub.adopter_id,

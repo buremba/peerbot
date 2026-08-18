@@ -142,9 +142,11 @@ jobs:
           node-version: "22"
 
       - name: Install bubblewrap (for embedded exec-sandbox tests)
-        # The worker exec-sandbox uses bwrap on Linux; without it, the live
-        # bwrap escape-matrix tests in `packages/agent-worker/src/__tests__/exec-sandbox.test.ts`
-        # auto-skip and we lose the only Linux verification path.
+        # The ONLY job that requires bwrap: the worker exec-sandbox escape
+        # matrix here (LOBU_REQUIRE_EXEC_SANDBOX=1) hard-fails without it, and
+        # this is the only Linux isolation verification path. The SDK
+        # lifecycle/transcript gates dropped their installs - their workers
+        # probe the strategy and fall back to kind:"none" (pass-through).
         # Ubuntu 24.04 (ubuntu-latest) blocks unprivileged user namespaces via
         # AppArmor by default; bwrap needs them, so flip the sysctl. See
         # https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
@@ -429,8 +431,12 @@ jobs:
           key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
-      - name: Install bubblewrap (worker exec-sandbox)
-        run: bash scripts/install-bubblewrap.sh
+      # bwrap intentionally NOT installed: the worker probes for a sandbox
+      # backend and falls back to kind:"none" (pass-through), so these
+      # lifecycle/transcript gates don't need it. Real isolation is verified
+      # ONLY in the unit job's escape matrix (LOBU_REQUIRE_EXEC_SANDBOX=1),
+      # which keeps the install. Dropping it here removed the flaky 5-min apt
+      # mirror stall from the SDK critical path (see #2894).
       - name: Download built distributions
         uses: actions/download-artifact@v8
         with:
@@ -508,8 +514,12 @@ jobs:
           key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
-      - name: Install bubblewrap (worker exec-sandbox)
-        run: bash scripts/install-bubblewrap.sh
+      # bwrap intentionally NOT installed: the worker probes for a sandbox
+      # backend and falls back to kind:"none" (pass-through), so these
+      # lifecycle/transcript gates don't need it. Real isolation is verified
+      # ONLY in the unit job's escape matrix (LOBU_REQUIRE_EXEC_SANDBOX=1),
+      # which keeps the install. Dropping it here removed the flaky 5-min apt
+      # mirror stall from the SDK critical path (see #2894).
       - name: Download built distributions
         uses: actions/download-artifact@v8
         with:
@@ -549,8 +559,12 @@ jobs:
           key: ${{ steps.cache-keys.outputs.bun-key }}
       - name: Install dependencies
         run: bun install
-      - name: Install bubblewrap (worker exec-sandbox)
-        run: bash scripts/install-bubblewrap.sh
+      # bwrap intentionally NOT installed: the worker probes for a sandbox
+      # backend and falls back to kind:"none" (pass-through), so these
+      # lifecycle/transcript gates don't need it. Real isolation is verified
+      # ONLY in the unit job's escape matrix (LOBU_REQUIRE_EXEC_SANDBOX=1),
+      # which keeps the install. Dropping it here removed the flaky 5-min apt
+      # mirror stall from the SDK critical path (see #2894).
       - name: Download built distributions
         uses: actions/download-artifact@v8
         with:

@@ -8,16 +8,20 @@ echo "🔍 Running pre-commit checks..."
 # Without this, "check passed" commits ship unformatted code that CI rejects.
 # Re-stage ONLY the paths that were intentionally staged before the hook -
 # never `git add -u`, which would silently fold unrelated unstaged WIP into
-# the commit.
+# the commit. Use NUL-delimited pathspecs so staged filenames containing
+# spaces or glob metacharacters can neither abort the hook nor glob-expand
+# into matching unstaged files.
 echo "📝 Running Biome checks..."
-STAGED_BEFORE=$(git diff --cached --name-only)
+STAGED_FILE=$(mktemp)
+trap 'rm -f "$STAGED_FILE"' EXIT
+git diff --cached --name-only -z > "$STAGED_FILE"
 bun run check:fix
 if [ $? -ne 0 ]; then
   echo "❌ Biome check failed. Fix issues before committing."
   exit 1
 fi
-if [ -n "$STAGED_BEFORE" ]; then
-  git add -- $STAGED_BEFORE
+if [ -s "$STAGED_FILE" ]; then
+  git --literal-pathspecs add --pathspec-from-file="$STAGED_FILE" --pathspec-file-nul
 fi
 
 # Run TypeScript type check

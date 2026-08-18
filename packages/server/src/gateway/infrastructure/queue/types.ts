@@ -11,6 +11,18 @@ export interface QueueJob<T = any> {
   id: string;
   data: T;
   name?: string;
+  /**
+   * Attempts already consumed by this row, and the budget they run against.
+   * Both are present only for handlers invoked by `RunsQueue`; a handler must
+   * treat `undefined` as "budget unknown" and keep its normal retry policy.
+   *
+   * A handler whose drop policy IS attempt exhaustion (the `thread_response`
+   * owner-gate, see TERMINAL_DELIVERY_SEND_OPTS) reads these to recognise its
+   * LAST claim and degrade to a local, best-effort delivery instead of letting
+   * the row dead-letter with its side effects unrun.
+   */
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 export interface QueueOptions {
@@ -35,8 +47,11 @@ export interface QueueOptions {
  * A short FIXED retry delay (not the default exponential backoff, which would
  * span hours) plus a raised retry limit gives a ~30s re-claim window. That
  * covers both the cross-pod hand-off and the client's POST→connect gap at the
- * small replica counts we run. After the budget is exhausted the row is
- * dropped (the client is genuinely gone).
+ * small replica counts we run. On the LAST claim the consumer stops re-queueing
+ * and renders locally instead (see the owner-gate in unified-thread-consumer):
+ * the client may well be gone, but the terminal row's durable side effects —
+ * Automation run resolution above all — must still run, and dead-lettering the
+ * row skipped them.
  *
  * Non-terminal rows (deltas/status) are NOT owner-gated, so they don't need
  * this and keep the default send options.

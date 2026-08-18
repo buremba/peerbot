@@ -16,6 +16,7 @@ import type {
 } from "../infrastructure/queue/index.js";
 import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
+import { incrementCounter } from "../metrics/prometheus.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
 import { AUTOMATION_RUN_SOURCE } from "../automation-run-session.js";
@@ -188,6 +189,14 @@ export class UnifiedThreadResponseConsumer {
     job: QueueJob<ThreadResponsePayload>
   ): Promise<void> {
     const data = job.data;
+    // Last claim before `RunsQueue.runHandler` dead-letters this row (its
+    // rule: attempts + 1 >= max_attempts). The owner-gate below uses the
+    // exhausted budget as its drop policy, so it needs to know when dropping
+    // is the only remaining outcome.
+    const isFinalAttempt =
+      typeof job.attempt === "number" &&
+      typeof job.maxAttempts === "number" &&
+      job.attempt + 1 >= job.maxAttempts;
 
     if (!data?.messageId) {
       logger.error(`Invalid thread response data: ${JSON.stringify(data)}`);
@@ -227,7 +236,12 @@ export class UnifiedThreadResponseConsumer {
       }
       if (await this.chatResponseBridge?.ensureDeliverable(data)) {
         const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
-        await this.routeToRenderer(this.chatResponseBridge!, data, sessionKey);
+        await this.routeToRenderer(
+          this.chatResponseBridge!,
+          data,
+          sessionKey,
+          isFinalAttempt
+        );
         return;
       }
       if (chatConnectionId) {
@@ -272,7 +286,7 @@ export class UnifiedThreadResponseConsumer {
         `Processing thread response for platform=${platformName}, message=${data.messageId}, session=${sessionKey}`
       );
 
-      await this.routeToRenderer(renderer, data, sessionKey);
+      await this.routeToRenderer(renderer, data, sessionKey, isFinalAttempt);
     } catch (error) {
       logger.error(
         `Error processing thread response for message ${data.messageId}:`,
@@ -368,7 +382,8 @@ export class UnifiedThreadResponseConsumer {
   private async routeToRenderer(
     renderer: ResponseRenderer,
     data: ThreadResponsePayload,
-    sessionKey: string
+    sessionKey: string,
+    isFinalAttempt = false
   ): Promise<void> {
     // Owner-routing for API/SSE TERMINAL delivery (success completion OR
     // error). The SseManager is per-pod and in-memory, so a terminal event
@@ -482,17 +497,40 @@ export class UnifiedThreadResponseConsumer {
         sseKey &&
         !this.sseManager.hasActiveConnection(sseKey)
       ) {
-        throw new Error(
-          `API SSE session ${sseKey} not owned by this gateway instance; re-queueing for owner delivery`
+        // Budget exhausted: this claim is the row's last, so re-queueing again
+        // would dead-letter it and drop the terminal event entirely. Dropping
+        // was the original policy ("the client is genuinely gone"), but it also
+        // discards the renderer's DURABLE side effects — most critically
+        // `resolveAutomationRunsByMessageIds`, without which an Automation run
+        // never reaches a terminal state and hangs until the 2h stale sweep.
+        // A completed reply is lost the same way, even though the worker
+        // produced it.
+        //
+        // So on the final attempt we deliver here instead. The broadcast is
+        // best-effort: `SseManager.broadcast` still fans out to peer replicas
+        // over LISTEN/NOTIFY, so a small event reaches the owning pod anyway;
+        // an oversized one (>7000B, see SseFanout) stays local and the client
+        // recovers it from the transcript snapshot on reload. Either way the
+        // durable side effects run exactly where they otherwise would not.
+        if (!isFinalAttempt) {
+          throw new Error(
+            `API SSE session ${sseKey} not owned by this gateway instance; re-queueing for owner delivery`
+          );
+        }
+        logger.warn(
+          `API SSE session ${sseKey} still unowned on the final delivery attempt; rendering locally so terminal side effects are not dropped`
         );
+        incrementCounter("lobu_sse_owner_gate_final_attempt_total");
       }
     }
 
     // Output-stage guardrails for the API/SSE path (see `outputGuardrail`).
     // Scoped to API rows — chat rows route through ChatResponseBridge, which
     // owns their output scanning, so scanning them here would double-enforce.
-    // Runs on the owning pod (terminal rows are owner-gated above), so the
-    // authoritative finalText scan is replica-safe.
+    // Runs on the owning pod (terminal rows are owner-gated above) — or, on a
+    // row's final attempt, on whichever pod renders it locally. Either way the
+    // authoritative finalText scan is replica-safe: it scans the WHOLE terminal
+    // text in one place, so unlike a delta it cannot be split across pods.
     if (isApiRow && this.outputGuardrail.enabled) {
       const md = readPlatformMetadata(data.platformMetadata);
       const agentId = md.agentId;

@@ -204,9 +204,11 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'platform is required' }, 400);
   }
   // Only known device platforms can mint children — keeps the surface tight.
-  // Today: chrome-extension. (The Mac app calling for itself would just use
-  // its existing OAuth token; macos/ios don't need this path.)
-  if (platform !== 'chrome-extension' || !isKnownPlatform(platform)) {
+  // Today: chrome-extension (Mac bridge pairs the extension) and headless
+  // (a server/VM registers itself via a CLI session, then runs the worker
+  // daemon with the minted PAT). The Mac app calling for itself would just
+  // use its existing OAuth token; macos/ios don't need this path.
+  if ((platform !== 'chrome-extension' && platform !== 'headless') || !isKnownPlatform(platform)) {
     return c.json({ error: `platform '${platform}' is not eligible for child-token mint` }, 400);
   }
   const label = body.label?.toString().trim() || null;

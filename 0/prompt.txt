@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx2yp2ob8</task-id>
+<tool-use-id>toolu_01MKoauY3utEFwTm9FGw9A9L</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bx2yp2ob8.output</output-file>
+<status>completed</status>
+<summary>Background command "Test approval-apply, link-upsert, view-templates" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs0xq0b23</task-id>
+<tool-use-id>toolu_01WgZr3GKf4g5udKBXdK8scb</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bs0xq0b23.output</output-file>
+<status>completed</status>
+<summary>Background command "Build with count badge and activity dot" completed (exit code 0)</summary>
+</task-notification>

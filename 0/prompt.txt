@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The restoration state machine can retain an authoritatively missing card's host identity and consequently reject a later capability-backed result in a reused iframe.
+
+Review comment:
+
+- [P2] Detach stale host identity after a missing restore — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:766-775
+  When an ID-only restore returns `found:false` because the previous snapshot expired or was evicted, `hasAuthoritativeResultAbsence` is set but ignored by this result-boundary calculation. If the host then reuses the iframe without refreshing `toolInfo` and delivers a capability-only result from a different tool, the restore request retains the old call ID and tool name; `restore_lobu_app_result` rejects the capability snapshot on that name mismatch, leaving the new card unavailable. Treat a result following authoritative absence as a new boundary and mirror this in the compatibility-globals predicate.
+  </results>
+  </user_action>

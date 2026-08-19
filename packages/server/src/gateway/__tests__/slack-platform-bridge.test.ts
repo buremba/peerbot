@@ -125,6 +125,49 @@ describe("Slack platform bridge", () => {
       ...over,
     }) as any;
 
+  test("home tab stays inside Slack's limits with a large inbox and history", async () => {
+    // Slack rejects the whole views.publish past 100 blocks, or past 3000 chars
+    // in any one section — so an unbounded inbox produced NO home tab, not a
+    // truncated one. This pins the clamp rather than the helper that does it.
+    const many = (n: number, make: (i: number) => unknown) =>
+      Array.from({ length: n }, (_, i) => make(i));
+    const h = makeHomeChat();
+    registerSlackAppHome(h.chat, connection(), {
+      publicGatewayUrl: "https://app.lobu.ai",
+      resolveUserInbox: mock(async () => ({
+        orgSlug: "acme",
+        unreadCount: 400,
+        items: many(400, (i) => ({
+          title: `Notification ${i} ${"x".repeat(120)}`,
+          url: `/acme/events/${i}`,
+          isRead: false,
+        })),
+      })) as never,
+      resolveHomeContext: mock(async () => ({
+        orgSlug: "acme",
+        entitiesTracked: 1,
+        capturedToday: 1,
+        recent: many(400, (i) => ({
+          title: `Recent ${i} ${"y".repeat(120)}`,
+          platform: "gmail",
+          ts: 1_700_000_000 + i,
+        })),
+      })) as never,
+    });
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    const view = publishHomeView.mock.calls[0]![1] as {
+      blocks: Array<Record<string, unknown>>;
+    };
+    expect(view.blocks.length).toBeLessThanOrEqual(100);
+    for (const block of view.blocks) {
+      const text = (block.text as { text?: string } | undefined)?.text;
+      if (typeof text === "string") expect(text.length).toBeLessThanOrEqual(3000);
+    }
+    // Still says how much it dropped rather than silently showing a prefix.
+    expect(blocksText(view)).toContain("more_");
+  });
+
   test("home tab renders the bot intro with only the default deps", async () => {
     const h = makeHomeChat();
     registerSlackAppHome(h.chat, connection(), {});

@@ -21,6 +21,9 @@ import type { EventKindDefinition } from "./event-kind-validation";
 
 export const CONNECTOR_OPERATION_APPROVAL_KIND = "connector_operation_approval";
 export const ENTITY_CHANGE_APPROVAL_KIND = "entity_change_approval";
+export const CONNECTION_AUTHORIZATION_KIND = "connection_authorization_needed";
+export const BROWSER_SESSION_EXPIRED_KIND = "browser_session_expired";
+export const INVITATION_RECEIVED_KIND = "invitation_received";
 
 export const PLATFORM_EVENT_KINDS: Readonly<
 	Record<string, EventKindDefinition>
@@ -172,6 +175,46 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 					],
 				},
 			],
+		},
+	},
+	/**
+	 * A connection that cannot sync until someone authorizes it.
+	 *
+	 * Schema-only, no authored template: these are a handful of scalars, which
+	 * is exactly the case the default table was synthesized for. Authoring a
+	 * template here would be a second layout to keep in step for no gain.
+	 */
+	[CONNECTION_AUTHORIZATION_KIND]: {
+		description: "A connection waiting for OAuth authorization.",
+		metadataSchema: {
+			type: "object",
+			properties: {
+				connector: { type: "string", title: "Connector", "x-table-column": 1 },
+				status: { type: "string", title: "Status", "x-table-column": 2 },
+			},
+		},
+	},
+
+	[BROWSER_SESSION_EXPIRED_KIND]: {
+		description: "A connector whose stored browser session has expired.",
+		metadataSchema: {
+			type: "object",
+			properties: {
+				connector: { type: "string", title: "Connector", "x-table-column": 1 },
+				status: { type: "string", title: "Status", "x-table-column": 2 },
+				fix: { type: "string", title: "How to fix it", "x-table-column": 3 },
+			},
+		},
+	},
+
+	[INVITATION_RECEIVED_KIND]: {
+		description: "An invitation to join an organization.",
+		metadataSchema: {
+			type: "object",
+			properties: {
+				organization: { type: "string", title: "Organization", "x-table-column": 1 },
+				invitedBy: { type: "string", title: "Invited by", "x-table-column": 2 },
+			},
 		},
 	},
 };

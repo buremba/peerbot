@@ -190,6 +190,28 @@ export function formatValue(value: unknown, format?: ValueFormat): string {
 export type TemplateNode = Record<string, unknown>;
 
 /**
+ * The node types the DSL itself defines. Everything else is a component, whose
+ * vocabulary is extended app-side and deliberately NOT allowlisted.
+ *
+ * Shared so the validator and the renderers cannot disagree about which types
+ * are structural. They do NOT share a traversal, and shouldn't: validation must
+ * be strict (a malformed node is an authoring error worth failing on) while
+ * rendering must be lenient (a half-valid template should still show what it
+ * can). Same grammar, opposite failure modes.
+ */
+export const STRUCTURAL_NODE_TYPES = ["text", "data", "if", "each"] as const;
+export type StructuralNodeType = (typeof STRUCTURAL_NODE_TYPES)[number];
+
+export function isStructuralNodeType(
+  value: unknown
+): value is StructuralNodeType {
+  return (
+    typeof value === "string" &&
+    (STRUCTURAL_NODE_TYPES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Resolve a `data` path against the render scope.
  *
  * Byte-for-byte the rule owletto's renderer uses (`renderer.tsx:434`), so a

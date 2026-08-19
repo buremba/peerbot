@@ -3,8 +3,11 @@ import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import {
+	BROWSER_SESSION_EXPIRED_KIND,
+	CONNECTION_AUTHORIZATION_KIND,
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	ENTITY_CHANGE_APPROVAL_KIND,
+	INVITATION_RECEIVED_KIND,
 } from "../utils/platform-event-kinds";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
@@ -632,13 +635,18 @@ export async function notifyConnectionPermissionRequest(params: {
 	connectUrl?: string;
 }): Promise<void> {
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
-		const urlLine = params.connectUrl
-			? `\n\nAuthorize: ${params.connectUrl}`
-			: "";
+		// No "Authorize: <url>" line glued into the body any more: the card
+		// carries the destination as a link button, and the inbox has the
+		// resource URL, so interpolating it here only duplicated it as prose.
 		return {
 			type: "connection_permission_request",
 			title: `Connection "${params.connectorKey}" needs authorization`,
-			body: `A new connection was created and requires OAuth authorization.${urlLine}`,
+			body: "A new connection was created and requires OAuth authorization.",
+			semanticType: CONNECTION_AUTHORIZATION_KIND,
+			payloadData: {
+				connector: params.connectorKey,
+				status: "Waiting for OAuth authorization",
+			},
 			resourceType: "connection",
 			resourceId: String(params.connectionId),
 			// Land on the connection that needs OAuth — not the bare connectors index.
@@ -666,12 +674,15 @@ export async function notifyBrowserAuthExpired(params: {
 	await notifyOrgAdmins(params.orgId, (orgSlug) => ({
 		type: "browser_auth_expired",
 		title: `${params.connectorKey} needs sign-in`,
-		body: params.authProfileSlug
-			? "Session needs re-authentication.\n" +
-				"Enable remote debugging in Chrome: chrome://inspect/#remote-debugging\n" +
-				`Or run: lobu memory browser-auth --connector ${params.connectorKey} --auth-profile-slug ${params.authProfileSlug}`
-			: `Your ${params.connectorKey} session has expired, so syncing has stopped. ` +
-				`Open ${params.connectorKey} in the browser where your Owletto extension runs and sign in to resume.`,
+		body: "Syncing has stopped until the session is renewed.",
+		semanticType: BROWSER_SESSION_EXPIRED_KIND,
+		payloadData: {
+			connector: params.connectorKey,
+			status: "Session expired — syncing stopped",
+			fix: params.authProfileSlug
+				? `Run: lobu memory browser-auth --connector ${params.connectorKey} --auth-profile-slug ${params.authProfileSlug}`
+				: `Open ${params.connectorKey} in the browser where your Owletto extension runs and sign in.`,
+		},
 		resourceType: "connection",
 		resourceId: String(params.connectionId),
 		// Connection detail is where re-auth / browser profile is managed —
@@ -698,6 +709,11 @@ export async function notifyInvitationReceived(params: {
 	await sendNotification(params.orgId, [params.userId], {
 		type: "invitation_received",
 		title: `You've been invited to ${params.orgName}`,
+		semanticType: INVITATION_RECEIVED_KIND,
+		payloadData: {
+			organization: params.orgName,
+			invitedBy: params.inviterName ?? null,
+		},
 		body: `You were invited${inviterLabel} to join the organization.`,
 		resourceType: "invitation",
 		resourceId: params.invitationId,

@@ -1,0 +1,282 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The user reported a production bug and it evolved into a root-cause investigation, a partial fix, and an architectural design discussion.
+
+   - **Initial:** Diagnose "Failed to apply entity merge: Merge evidence or resolution policy changed after review was requested. The approval is back to pending — approve again after fixing the blocker, or reject it." occurring at `https://buremba.lobu.ai/agents/lobu-builder/chat` when merging users.
+   - **Then:** Explain in plain language what it means and why it happens.
+   - **Then:** Determine whether the system knows *what* changed, and whether a user could see the change and override or re-discuss from there.
+   - **Then:** Assess whether storing full snapshots scales, and whether the pattern applies to all interactions, not just approvals.
+   - **Then:** "ok what's the best way to fix our thing, guide me."
+   - **Then:** "ok let's do it and you will run dev server and we will test" — implement PR 1 and boot the dev environment for joint testing.
+   - **Then:** Reproduce the actual conflict/stranded case ("ok the conflict etc example we havent tried yet though").
+   - **Then:** Make it useful for DX so people can see new evidence and still approve if it changed for the better.
+   - **Then:** Challenge whether the whole guardrail approach is overengineered vs being "more agentic."
+   - **Then:** Handle the shared/work-phone risk properly.
+   - **Then:** "understand and look up my data and suggest next steps."
+   - **Then:** Determine whether this problem is best solved this way, given prod may have many such cases.
+   - **Then:** Challenge that connectors (Instagram, WhatsApp) are separate.
+   - **Most recent:** "shouldn't connectors normalize it properly?" — asking whether normalization belongs at the connector boundary.
+   - **Also explicitly requested:** "ok remember how to set this up next time properly you're messing up all the time" — save the dev-environment setup recipe to memory.
+
+2. **Key Technical Concepts:**
+   - Entity resolution fingerprinting (`assessEntityResolution`, `policyHash`, `normalizedIdentities`, SHA-256 over canonical JSON)
+   - Staleness re-check at merge apply time (`assertResolutionFingerprintCurrent`)
+   - Durable approval runs (`runs.action_input`, `approval_status`, `action_key='entity_change'`)
+   - Interaction envelope on events (`interaction_type`, `interaction_input`, `interaction_status`, `supersedes_event_id`, `superseded_by`)
+   - `entity_identities` table (namespace/identifier/source_connector) vs `entities.metadata`
+   - MCP streamable HTTP (initialize → `mcp-session-id` → `notifications/initialized` → `tools/call`)
+   - Personal Access Tokens (`owl_pat_` + base64url(24 bytes), sha256 hash, 12-char prefix)
+   - `classifyMutationPrincipal` — `agentId` beats `userId` → kind "agent"
+   - Bun workspace, vitest integration suites, tsx watch, Vite dev proxy
+   - CNPG Postgres on k8s (`summaries-prod` namespace, `lobu-ai-prod-db`)
+   - E.164 phone normalization and the connector-SDK identity contract
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/entity-resolution/policy.ts`** (MODIFIED — PR1)
+     - Core of the fingerprint. Exposes per-entity normalized rule keys so proposals can record *why* they were proposed.
+     - Added:
+     ```typescript
+     /**
+      * One entity's normalized rule keys, labelled by the rule that produced them —
+      * the same label `evidence.kind` uses. These are the exact values the
+      * fingerprint hashes, exposed so a proposal can record WHY it was proposed
+      * rather than only who was involved. Rules that match nothing are omitted.
+      */
+     export interface ResolutionKeySet {
+     	id: number;
+     	keys: Record<string, string[]>;
+     }
+     ```
+     - Added `resolutionKeys: ResolutionKeySet[]` to `EntityResolutionAssessment`, and after the `fingerprint` digest:
+     ```typescript
+     // Derived from `normalizedIdentities` itself, not recomputed, so the recorded
+     // keys cannot drift from what the fingerprint hashed. Labelling is the only
+     // added step — the fingerprint input above is untouched, so exposing these
+     // does not change any fingerprint and cannot strand pending proposals.
+     const resolutionKeys: ResolutionKeySet[] = normalizedIdentities.map(
+     	({ id, values }) => {
+     		const keys: Record<string, string[]> = {};
+     		values.forEach((ruleKeys, index) => {
+     			const rule = rules[index];
+     			if (!rule || ruleKeys.length === 0) return;
+     			const label = rule.fields.join(" + ");
+     			keys[label] = [...new Set([...(keys[label] ?? []), ...ruleKeys])].sort();
+     		});
+     		return { id, keys };
+     	},
+     );
+     ```
+     - Existing `normalizeScalar` phone branch (UNCHANGED, and the source of the 4-pair bug): `const digits = text.replace(/\D/g, ""); return digits.length >= 7 && digits.length <= 15 ? digits : null;`
+     - `DEFAULT_PERSON_RESOLUTION_RULES` — all four rules (`email`, `emails`, `phone`, `phones`) have `onMatch: "review"`, which is why person never auto-merges.
+
+   - **`packages/server/src/entity-resolution/staleness.ts`** (READ — not modified)
+     - Contains the thrown error at line 67. Critically, it calls `assessEntityResolution` and holds the complete new assessment, then discards everything but a hash comparison:
+     ```typescript
+     if (assessment.fingerprint !== input.expectedFingerprint) {
+     	throw new Error(
+     		"Merge evidence or resolution policy changed after review was requested",
+     	);
+     }
+     ```
+
+   - **`packages/server/src/tools/admin/entity-field-approval.ts`** (MODIFIED — PR1)
+     - Added `import type { ResolutionKeySet } from "../../entity-resolution/policy";`
+     - `toEntityReviewSnapshot` gained a third param and emits `resolution_keys`:
+     ```typescript
+     function toEntityReviewSnapshot(
+     	urlContext: Awaited<ReturnType<typeof getOrgUrlContext>>,
+     	entity: EntitySnapshot,
+     	resolutionKeys?: Record<string, string[]>,
+     ) {
+     ```
+     ```typescript
+     // The normalized values that made this entity a merge candidate. Recorded
+     // per side because the same value can reach the policy from metadata on one
+     // entity and from an entity_identities row on the other — storing only the
+     // identity rows below left the metadata side with no record at all.
+     ...(resolutionKeys && Object.keys(resolutionKeys).length > 0
+     	? { resolution_keys: resolutionKeys }
+     	: {}),
+     ```
+     - `proposeEntityMerge` gained a 3rd parameter `resolutionKeys?: readonly ResolutionKeySet[]` and a `keysById` Map, passing keys into both `linkedDuplicates` and `linkedWinner`.
+     - UNCHANGED but important: `reuseExisting` at ~751-756 reuses an existing pending run without refreshing `action_input` — the reason stranding is permanent.
+     - UNCHANGED but important: field-change drift reporting at ~989 `merge.stale[key] = { expected, live }` — the pattern the merge path lacks.
+
+   - **`packages/server/src/tools/admin/manage_entity.ts`** (MODIFIED — PR1)
+     - Reformatted the `proposeEntityMerge` call to pass the new third argument:
+     ```typescript
+     const queued = await proposeEntityMerge(
+     	ctx,
+     	{
+     		entity_ids: loserIds,
+     		winner_entity_id: winnerId,
+     		evidence: resolution.evidence,
+     		/* ...unchanged fields... */
+     		proposer_rationale: args.merge_rationale?.trim() || null,
+     	},
+     	resolution.resolutionKeys,
+     );
+     ```
+
+   - **`packages/server/src/__tests__/integration/entities/entity-merge-tool.test.ts`** (MODIFIED — red test)
+     - New test "records the matching values that justify the merge on both sides of the snapshot", replicating prod run 702099: winner phone in `metadata`, loser phone in `entity_identities`. Asserts `current.winner.resolution_keys` and `current.duplicates[0].resolution_keys` both contain `{ phone: ["905395102240"] }`, and that `current.winner` still has no `metadata` property.
+
+   - **`packages/connector-sdk/src/identity-normalize.ts`** (READ — decisive for the current discussion)
+     - Documents the existing design decision that answers the user's latest question:
+     ```typescript
+     /**
+      * Return the E.164-style digit string for a phone number, or null when the
+      * input doesn't look like a phone. Strips all non-digit characters (including
+      * the leading `+`); does not attempt country-code inference.
+      *
+      * Connectors should pass in values that already represent a specific E.164
+      * number. The normalizer's job is cleanup (spaces, dashes, parens, `+`),
+      * not country-code guessing.
+      */
+     export function normalizePhone(raw: string | null | undefined): string | null {
+       if (typeof raw !== 'string') return null;
+       const digits = raw.replace(/\D+/g, '');
+       if (digits.length < PHONE_MIN_DIGITS || digits.length > PHONE_MAX_DIGITS) return null;
+       return digits;
+     }
+     ```
+     - Header also says: "The ingestion pipeline also re-runs normalization as a defensive pass, so mismatched connector behavior can't poison cross-channel matching."
+     - Sibling files: `identity-namespaces.ts`, and exports `normalizeEmail`, `normalizeEmailDomain`, `normalizeAuthUserId`, `normalizeIdentifier`.
+
+   - **`packages/owletto/src/components/entity-tabs/events-tab/event-card.tsx:1095-1098`** (READ)
+     - `const actionInput = (content.interaction_input || ...)` — proves the interactive card is driven by `interaction_input`, not `metadata`.
+
+   - **`packages/server/src/utils/entity-merge.ts:724-746`** (READ)
+     - Merges ARE reversible: un-forwards and un-tombstones the loser (`SET merged_into = NULL, deleted_at = NULL`), restores identities, ledger-backed via `entity_merge_operations`.
+
+   - **`packages/server/src/utils/entity-management.ts`** (READ)
+     - `grep -c "entity_identities"` returned **0** — `createEntity` has no identity-resolution capability at all.
+
+   - **Memory files created:**
+     - `~/.claude/projects/-Users-burakemre-Code-lobu/memory/reference_worktree_dev_boot_recipe.md`
+     - `~/.claude/projects/-Users-burakemre-Code-lobu/memory/project_merge_fingerprint_stranding.md`
+     - Both indexed in `MEMORY.md`.
+
+4. **Errors and fixes:**
+
+   - **zsh glob error** `--include=*.ts` → "no matches found". Fixed by quoting: `--include="*.ts"`.
+   - **`make build` is a no-op** — prints "Nothing to be done for `build'" and exits 0. Real target is `make build-packages`. Recorded in memory.
+   - **Missing `packages/*/dist` in fresh worktree** → vitest failed with `Failed to resolve entry for package "@lobu/pgvector-embedded"` then `Failed to load url @lobu/core/contracts/interaction-envelope`. Fixed by `make build-packages`.
+   - **Wrong SPA API base** — I set `VITE_API_URL=http://127.0.0.1:9143/lobu`, producing `GET /lobu/api/auth-config 404` and "Not signed in". **User reported this.** Verified `/api/auth-config` → 200 vs `/lobu/api/auth-config` → 404; `/lobu` is the Agent API gateway only. Fixed by restarting vite with `LOBU_API_PROXY=http://127.0.0.1:9143` (same-origin proxy for `/api`, `/oauth`, `/connect` with cookie rewriting).
+   - **User pushback: "did you verify yourself, i don't see it"** — I had handed browser verification to the user instead of verifying myself. Fixed by minting a dev PAT and driving the real MCP HTTP path end-to-end (run 56), then reading the stored snapshot back from Postgres. This was important feedback; I later recorded the PAT+MCP technique in memory as the way to exercise agent-attributed paths without an LLM.
+   - **Hand-written approval event rendered as a bare title** (user sent a screenshot). Root cause: missing `interaction_input`; the card renderer reads `content.interaction_input` (event-card.tsx:1098), not `metadata`. Fixed by cloning the genuine event 1 row and retargeting it at run 103.
+   - **`interaction_status = 'superseded'` violated `events_interaction_status_check`** (allowed: `pending, approved, rejected, completed, failed, current`). Fixed by leaving status alone and only setting the `superseded_by` pointer.
+   - **Multiple psql column errors**: `created_at` vs `createdAt` on `organization`/`user`; `agents.model` vs `agents.models`; `entities.merged_into_id` vs `merged_into`; `runs.output`/`events.content` don't exist.
+   - **Hook blocks**: a grep containing "npm run" was blocked (enforce-bun); a truncated `pg_constraint` query was blocked (no-truncated-schema-proof) — fixed by adding `count(*)` and removing truncation.
+   - **Chrome extension not connected** — `tabs_context_mcp` returned "Browser extension is not connected." Handed browser driving to the user rather than rabbit-holing.
+   - **My own overreach, corrected twice:** (a) I claimed the before/after diff was constructible today, then corrected it — the snapshot has no metadata, so there is no "before" for pre-#2152 proposals. (b) I proposed a "workspace default region" for E.164 normalization; the user asked "shouldn't connectors normalize it properly?" and the SDK docstring explicitly documents the opposite design decision ("not country-code guessing"), so I withdrew the idea.
+
+5. **Problem Solving:**
+
+   **Root cause (proven):** The 18 pending merge proposals in `buremba` were minted 2026-07-22 22:08 with metadata-only fingerprints. PR #2152 (`7c190dd08`, merged 2026-07-23 18:51) added `entity_identities` as a fingerprint input. Recomputation against live prod rows showed `full=MISMATCH` / `metadataOnly=MATCH` for all 18 with `policyHash` unchanged. No data changed; the hash function did. There is no version stamp, so pre-change proposals can never validate, and `reuseExisting` prevents re-proposal from minting a fresh fingerprint.
+
+   **PR 1 implemented and verified:**
+   - Red: `AssertionError: expected undefined to match object { phone: [ '905395102240' ] }` at entity-merge-tool.test.ts:331 (captured by backing files up to scratchpad, `git checkout --`, running, then restoring).
+   - Green: `entity-merge-tool.test.ts (23)`, `events/entity-merge.test.ts (13)`, `discovery.test.ts (19)` = 55/55 passed. `make typecheck` clean.
+   - Fingerprint stability: recomputing all 18 prod proposals under the modified policy produced byte-identical hashes (`cfb69107`, `6ca24e37`, `16f817dd`, `dd2f8f17`, `c3c8838b`, `0141173a`) — PR1 strands nothing.
+   - Live e2e: PAT + MCP session → `manage_entity` merge with `x-lobu-agent-id: lobu-builder` → run 56, `approval_attribution: "agent"`, snapshot carried `resolution_keys: {"phone":["905395102240"]}` on winner (whose `identities` was `[]`) and duplicate, and on the approval event. User then approved in the UI: run 56 `completed/approved`, entity 3 tombstoned with `merged_into=2`, identities folded onto entity 2.
+
+   **Stranded case reproduced locally:** Seeded entities 4 (Deniz, `metadata.phone = "+90 532 111 22 33"`) and 5 (WhatsApp shell, `entity_identities.phone = 905321112233`). Computed v1 metadata-only fingerprint `2e5b7ac5…` vs current `e97c9cc9…`. Inserted run 103 with the v1 fingerprint and a cloned approval event. User clicked approve → exact prod error, run 103 back to `pending`, entities untouched (clean rollback), events 9→11→13→15 with two "apply failed, still pending" events each carrying another 819-byte snapshot copy.
+
+   **Data analysis (prod):**
+   - Snapshot anatomy: `current` = 1625 of 1972 bytes; contains id/name/slug/href/parent/identities but NOT metadata; `evidence: []`; `duplicates[0]` byte-identical to `loser`; snapshot re-copied per approval attempt.
+   - Storage scale is a non-issue: 124 approval events = 828 kB vs events 12 GB / event_embeddings 19 GB.
+   - Merge-approval lifetime output in all of prod: 18 pending, 6 expired/cancelled, 2 approved/completed, 1 rejected.
+   - Workspace scan (buremba, 4358 persons): 612 distinct normalized values, 598 exclusive, 14 shared by exactly 2, **0 shared by 3+** (so the work-phone risk has zero instances).
+   - All 18 pairs are named-contact ↔ WhatsApp-JID-shell (Fozkan, Annem, Babam, Dedem, Dayim, Hilal Yenge, etc.).
+   - Ingest timeline: `connector:whatsapp` 714 identities all 2026-04-18 (one sync, never since); `linkedin.takeout` 2692 on 07-08; `twitter.takeout` 1293 on 07-09; `instagram.takeout` 499 on 07-08; 4336 persons created 07-06→07-09.
+   - **Storage split:** 534 persons have phone in `metadata` only; 18 have it in `entity_identities` only; **0 have both.** Two disjoint populations.
+   - **Normalization bug:** the 4 "no evidence" pairs are Turkish local vs international format — `053-559-51101`/`905355951101`, `0532 476 48 81`/`905324764881`, `050-627-77370`/`905062777370`, `050-678-88845`/`905067888845`. All four are the same numbers. So **18 of 18 are mechanically provable**; none needs human judgement.
+   - `createEntity` has zero `entity_identities` references — the write path cannot resolve identity.
+   - Other orgs: `lobu-crm` 994 entities / 958 persons with **zero** phone/email values (duplicates there are undetectable); all other orgs 1-3 entities.
+   - Cross-connector namespaces (`linkedin_slug` 2624, `x_user_id` 736, `x_handle` 557, `ig_username` 499) do not participate in duplicate detection at all — the rules only match `email`/`phone`.
+
+   **Architectural conclusion reached:** Three distinct problems wearing one costume — (a) same identifier in two storage locations (14 pairs), (b) same identifier in two formats (4 pairs), (c) different identifiers, same human (Instagram ↔ WhatsApp), which is currently undetectable. (a) and (b) are plumbing bugs being paid for with human attention; (c) is the case merge-approval would genuinely serve but never sees.
+
+6. **All user messages:**
+   - "i'm getting Failed to apply entity merge: Merge evidence or resolution policy changed after review was requested. The approval is back to pending — approve again after fixing the blocker, or reject it.\n\n on here when merging users https://buremba.lobu.ai/agents/lobu-builder/chat"
+   - "what does that mean"
+   - "why would this happen? because the entity values change etc?"
+   - "do we know what happended? would it be easy fort he user to see the changes and override or start another discussion from there for example?"
+   - "what? if we store full results can we scale the dat alayer easily? also this is true for all all interactions and everything nor just approval?"
+   - "full snapshots of what are we storing?"
+   - "ok what's the best way to fix our thing, guide me"
+   - "ok let's do it and you will run dev server and we will test"
+   - "sayds Not signed in\nPlease sign in to view your settings.\n\n but it can't talk to backend probs http://127.0.0.1:5273/account/settings GET http://127.0.0.1:9143/lobu/api/auth-config?callbackUrl=http%3A%2F%2F127.0.0.1%3A5273%2Faccount%2Fsettings 404 (Not Found)"
+   - "i don't see any activity?"
+   - "did you verify yourself, i don't see it"
+   - "ok was able to merge"
+   - "ok remember how to set this up next time properly you're messing up all the time"
+   - "ok the conflict etc example we havent tried yet though"
+   - "where was the gap"
+   - (mid-turn) "says this Failed to apply entity merge: Merge evidence or resolution policy changed after review was requested. The approval is back to pending — approve again after fixing the blocker, or reject it.\n\ni can't do anything can't see evidences and how they are changes"
+   - "we want to make it useful for the dx to undersand. people can still approve maybe if they see the new version of evidence etc and if it changed for a good?"
+   - "is this overengineered feature? do you think we could be more agentic instead of these guardrails and agents figure things out?"
+   - "phone could be a workphone maybe, or how is best to manage this?"
+   - "understand and look up my data and suggest next steps"
+   - "in the prod we might have many of those. but we want to udnerstand if this problem is best solved this way"
+   - "hmm. you say creation path but we have instagram and whatsapp seperately right"
+   - "any design decisions or anything needed?"
+   - (AskUserQuestion rejected) "The user wants to clarify these questions."
+   - "shouldn't connectors normalize it properly?"
+
+   Security/operational constraints in force (from CLAUDE.md/AGENTS.md, must persist): never write to `~/Code/lobu` directly (work in a worktree); never `git switch` in the main checkout; `events` is append-only — never `DELETE FROM events`, tombstone/supersede instead; never bulk-delete prod `organization` rows; workers never receive real credentials; never `git stash` (use WIP commits); stage by explicit path (`git add -- <paths>`, never `-A`); no "Co-Authored-By" or "Generated with Claude Code" in commit messages; prefer `bun`, never npm/yarn/pnpm; do NOT create accounts or enter passwords (sign-in is the user's step); prefer DOM reads over screenshots; never poll in the foreground.
+
+7. **Pending Tasks:**
+   - **PR 1 is UNCOMMITTED** — still owes `make pre-pr`, `make review-fix`, explicit-path commit, `git push`, `gh pr create`, `make review` once, squash merge.
+   - Fix the stranded/dead-end class (recompute-on-read is the current recommendation; version-stamp/refresh/diff-card were proposed then withdrawn as overengineering).
+   - Decide and implement phone normalization fix — now reframed as a connector-side responsibility per the SDK contract.
+   - Decide canonical home for phone/email (`metadata` vs `entity_identities`); 534 persons would need backfill.
+   - Merge the 18 prod proposals (deliberately left untouched).
+   - Investigate why the July 6-9 import created 4336 persons without resolving identities.
+   - Separate design question: what evidence should link `ig_username` to `wa_jid` (the cross-connector case).
+   - Cleanup owed: drop throwaway PAT `owl_pat_BEQ2` (id 2) from the dev DB.
+
+8. **Current Work:**
+
+   The user asked "shouldn't connectors normalize it properly?" — challenging my proposal to add workspace-default-region E.164 normalization to the matcher.
+
+   I found `packages/connector-sdk/src/identity-normalize.ts`, which contains an explicit, pre-existing design decision that validates the user and invalidates my proposal:
+
+   ```typescript
+   /**
+    * Connectors should pass in values that already represent a specific E.164
+    * number. The normalizer's job is cleanup (spaces, dashes, parens, `+`),
+    * not country-code guessing.
+    */
+   ```
+
+   The SDK already exports `normalizePhone`, `normalizeEmail`, `normalizeEmailDomain`, `normalizeAuthUserId`, `normalizeIdentifier`, backed by an identity-namespace registry — so the contract exists and country-code resolution is documented as the connector's job.
+
+   I then ran a query to identify what actually wrote `053-559-51101`. The result (last tool output before this summary):
+
+   ```
+   id   |name     |created_by                        |created_at                    |meta_source|event_connectors
+   23606|Bedircan |8a2D2Yb57odFHO2PldhD6n392Cf6456B  |2026-07-06 21:45:10.848047+00 |           |
+   23881|Fozkan   |8a2D2Yb57odFHO2PldhD6n392Cf6456B  |2026-07-06 21:45:15.567456+00 |           |
+   24002|Ilyas abi|8a2D2Yb57odFHO2PldhD6n392Cf6456B  |2026-07-06 21:45:16.919935+00 |           |
+   ```
+
+   Notably: `created_by` is a **user id**, not a connector; `meta_source` is empty; and there are **no associated events with a `connector_key`**. This suggests the named contacts were NOT created by a registered connector at all — meaning the SDK normalization contract was never in the path, and the writer (likely an agent or direct API/import path) bypassed both `normalizePhone` and the identity-claim contract entirely. This has not yet been reported back to the user.
+
+   WhatsApp, by contrast, behaved correctly: it wrote `905355951101` (proper E.164 digits) into `entity_identities`.
+
+9. **Optional Next Step:**
+
+   Report the finding back to the user, answering their question "shouldn't connectors normalize it properly?" with: yes — and the SDK already documents exactly that ("Connectors should pass in values that already represent a specific E.164 number… not country-code guessing"), which is why my workspace-default-region idea was wrong. But the writer that produced `053-559-51101` appears not to have been a connector at all (`created_by` = user id `8a2D2Yb57odFHO2PldhD6n392Cf6456B`, no `meta_source`, no `connector_key` on any related event), so it bypassed both the normalizer and the identity-claim contract. WhatsApp did it right.
+
+   Before asserting that, I should confirm what that write path actually was (agent tool call vs direct import), since the conclusion — whether the fix belongs in a connector, in the agent write path, or in a shared entity-write boundary — depends on it.
+
+   This continues directly from the user's most recent message, "shouldn't connectors normalize it properly?", and from the immediately preceding decision to re-aim the design questions rather than re-ask them as originally posed (the user rejected the AskUserQuestion and I asked "What would you like to clarify?", to which their reply was the connector-normalization question).
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

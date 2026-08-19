@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhfidhdy3</task-id>
+<tool-use-id>toolu_01Egm4YSAG3vtFPfceMEqtGY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bhfidhdy3.output</output-file>
+<status>completed</status>
+<summary>Background command "Run ui-review gate" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwnx2egoq</task-id>
+<tool-use-id>toolu_016KhGHtvCceo1hVejv7RVEF</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bwnx2egoq.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix" completed (exit code 0)</summary>
+</task-notification>

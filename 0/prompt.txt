@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhm1mt3su</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/bhm1mt3su.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on integrated head" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4ixu73z9</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/957f3182-b92b-4e7f-9988-fa5fcd2420b5/tasks/b4ixu73z9.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on docker PR" completed (exit code 0)</summary>
+</task-notification>

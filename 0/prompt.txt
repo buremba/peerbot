@@ -1,0 +1,1 @@
+why don't we put the edit entitty type and create entity type in there instead of a seperate page? also no need to put needs setup chip here, we already show the needs setup at first anyways. [Image #2]

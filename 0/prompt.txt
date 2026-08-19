@@ -1,0 +1,1 @@
+does it make sense to have seperate notifications? maybe we should show the notifications at top? isn't all notifications are attached to events?

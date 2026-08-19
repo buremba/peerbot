@@ -1,0 +1,1 @@
+hmm, should that be a project wide hook you think or under the entity type definion

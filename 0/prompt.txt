@@ -1,0 +1,1 @@
+just to understand. is the approval only way to do bidirectional? can't the mcp clients send custom form etc to the user

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bflvvtbga</task-id>
+<summary>Monitor event: "prod rollout + smoke for 2683"</summary>
+<event>ok   — /health status=ok</event>
+</task-notification>

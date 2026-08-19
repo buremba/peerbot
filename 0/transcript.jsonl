@@ -1,0 +1,3 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:37:29.916Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:37:34.347Z","id":"65444c7c","input_tokens":171,"output_tokens":198,"content":[{"type":"tool_use","id":"call_9640b93abcdc471784215638","name":"skip_reply","input":{},"result":{"output":"Skipped.","status":"success"}}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:37:36.092Z","id":"45e3773e","input_tokens":152,"output_tokens":58,"content":[{"type":"text","text":"Casual social message not relevant to my work — skipped."}]}

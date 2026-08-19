@@ -10,7 +10,7 @@ import {
   getConfiguredPublicOrigin,
   getConfiguredSubdomainZone,
 } from '../../utils/public-origin';
-import { resolveBaseUrl } from '../base-url';
+import { resolveBaseUrl, safeParseUrl } from '../base-url';
 import { DEFAULT_SCOPES_STRING } from './scopes';
 
 /**
@@ -32,18 +32,56 @@ export function publicMcpRequestUrl(request: Request): string {
   // WWW-Authenticate stay bound to the URL the client called.
   const servingOrigin = resolveBaseUrl({ request, skipEnvOverride: true });
   const configuredOrigin = getConfiguredPublicOrigin();
-  const origin = isTrustedPublicOrigin(servingOrigin, configuredOrigin)
-    ? servingOrigin
-    : (configuredOrigin ?? new URL(request.url).origin);
+  const origin =
+    forwardedPublicOrigin(request) ??
+    (isTrustedPublicOrigin(servingOrigin, configuredOrigin)
+      ? servingOrigin
+      : (configuredOrigin ?? new URL(request.url).origin));
   const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
   return `${origin}${pathname}`;
+}
+
+/**
+ * Public origin recovered from `x-forwarded-for-origin`.
+ *
+ * The `lobu.ai` Cloudflare Pages worker proxies `/mcp` to `app.lobu.ai` and
+ * sets `x-forwarded-host` AND this header to the host the client actually
+ * called. Traefik in front of the pod then overwrites `x-forwarded-host` with
+ * its own request host, so only this header survives the hop. Without reading
+ * it, a token bound to `https://lobu.ai/mcp` is audience-checked against
+ * `https://app.lobu.ai/mcp` and every MCP call 401s — the failure mode this
+ * function exists to prevent.
+ *
+ * A request that skips the edge can set the header itself, so it is accepted
+ * only when it names the apex zone host — the one host the edge worker fronts
+ * (`lobu.ai/mcp` -> `app.lobu.ai/mcp`). Admitting the whole zone the way the
+ * standard forwarded host does would let any caller reaching the pod directly
+ * relocate the MCP resource onto a sibling in-zone host and satisfy the RFC
+ * 8707 audience check for a token bound to that host. Tenant orgs are
+ * themselves subdomains of this zone, so the apex restriction is what keeps
+ * audience binding meaningful between them.
+ */
+function forwardedPublicOrigin(request: Request): string | null {
+  const raw = request.headers.get('x-forwarded-for-origin')?.trim();
+  const parsed = raw ? safeParseUrl(raw) : null;
+  if (!parsed) return null;
+  // Origin only: a path, query, or fragment means this is not a bare origin
+  // and we should not guess at what the client called.
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
+  const zone = getConfiguredSubdomainZone();
+  if (!zone || parsed.hostname !== zone) return null;
+  return isTrustedPublicOrigin(parsed.origin) ? parsed.origin : null;
 }
 
 function isTrustedPublicOrigin(
   candidateOrigin: string,
   configuredOrigin = getConfiguredPublicOrigin()
 ): boolean {
-  const candidate = new URL(candidateOrigin);
+  // Client-supplied headers reach here: `x-forwarded-proto: file` makes
+  // `resolveBaseUrl` return the opaque origin string `null`, which is not a
+  // parseable URL. Fail closed instead of throwing a 500 on every such call.
+  const candidate = safeParseUrl(candidateOrigin);
+  if (!candidate) return false;
   const zone = getConfiguredSubdomainZone();
   if (!configuredOrigin) {
     return !zone || candidate.hostname === zone || candidate.hostname.endsWith(`.${zone}`);

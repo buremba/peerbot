@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new restoration path can merge and persist view state from a stale card when compatibility metadata and full output come from different revisions. Focused tests and builds pass, but this reproduced cross-card state regression remains.
+
+Review comment:
+
+- [P2] Reject mismatched split-capability restores — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:492-495
+  When same-origin ChatGPT globals hold different card revisions, a current inner full-result output without `_meta` can inherit a stale snapshot capability from the outer globals. Because the current data is loaded before this RPC starts, `dataRevision` remains unchanged and this guard accepts restored data with a different fingerprint; the code then applies the stale card's view state and persists it through the stale capability. Reject mismatched restored data when the capability was sourced separately from already-authoritative output.
+  </results>
+  </user_action>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bigqvvv07</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/ea8a1309-37c6-4b0d-89f9-f7712d53a7bd/tasks/bigqvvv07.output</output-file>
+<status>completed</status>
+<summary>Background command "Resume deleting remaining merged worktrees" completed (exit code 0)</summary>
+</task-notification>

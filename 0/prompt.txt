@@ -1,0 +1,1 @@
+long term goal i was thinging we will have workflow script optionally, which can take the parameters in the sources and fan out the agents in a script etc. that way can we cover all the use-cases we're doing in these hacks

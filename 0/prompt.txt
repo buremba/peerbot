@@ -1,0 +1,1 @@
+hmm, then let's not do workaround and recent doesn't require conversation all the time and mcp clients can be union if that makes more sense?

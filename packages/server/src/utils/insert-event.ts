@@ -8,6 +8,11 @@
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
 import {
+  AUDIT_EVENT_TYPE_METADATA_KEY,
+  type AuditEventType,
+  formatAuditEventType,
+} from './audit-event-type';
+import {
   type AuditResourceKind,
   type ConfigResourceKind,
   redactConfigState,
@@ -690,39 +695,6 @@ interface ChangeEventParams {
   clientId?: string | null;
 }
 
-/**
- * What happened, as one `<subject>.<op>` pair — the single vocabulary every
- * audit writer speaks.
- *
- * Required by the funnel rather than optional so a new writer cannot introduce
- * an untyped audit row by omission: leaving it out is a compile error, not a
- * silently unclassifiable event. The four `record*` helpers below each supply
- * it from data they already hold, so adding a new event type costs no code
- * here — pass a new `subject`.
- *
- * Dotted and past-tense to match the event-type vocabulary already in use
- * (`feed.auto_paused`, `message.created`), NOT the underscored `origin_type`
- * audit tag, which stays an internal provenance field.
- */
-export interface AuditEventType {
-  /**
-   * The domain object: `device`, `connection`, `entity`, `relationship`, …
-   *
-   * Free-form so a new subject costs no code here. State-change writers pass
-   * their existing `AuditResourceKind` slugs, which are hyphenated and
-   * sometimes compound (`agent-settings`, `auth-profile`) — kept as-is rather
-   * than renamed, since those slugs are already the dashboard's pivot.
-   */
-  subject: string;
-  /** Past-tense transition: `created`, `updated`, `deleted`, `linked`, … */
-  op: string;
-}
-
-/** `{subject:'device', op:'created'}` -> `'device.created'`. */
-export function formatAuditEventType(type: AuditEventType): string {
-  return `${type.subject}.${type.op}`;
-}
-
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
 
 /**
@@ -734,6 +706,12 @@ const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
  * `_lobu_idempotency_key` (unique per org via `idx_events_org_idempotency_key`)
  * so a concurrent or retry insert after an ambiguous success resolves to the
  * winner instead of appending a duplicate.
+ *
+ * `eventType` is required rather than optional so a new writer cannot introduce
+ * an untyped audit row by omission: leaving it out is a compile error, not a
+ * silently unclassifiable event. The `record*` helpers below each supply it
+ * from data they already hold, so adding a new event type costs no code here —
+ * pass a new `subject`.
  */
 export async function insertConnectionlessAuditEvent(
   params: InsertEventParams,
@@ -743,7 +721,7 @@ export async function insertConnectionlessAuditEvent(
   const metadata: Record<string, unknown> = {
     ...(params.metadata ?? {}),
     _lobu_idempotency_key: idempotencyKey,
-    _lobu_event_type: formatAuditEventType(eventType),
+    [AUDIT_EVENT_TYPE_METADATA_KEY]: formatAuditEventType(eventType),
   };
 
   try {

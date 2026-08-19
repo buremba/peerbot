@@ -1,0 +1,1 @@
+why seperate connector, also should we move our jira one to there? explain why this change needed

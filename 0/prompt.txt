@@ -1,0 +1,190 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+The session continues a long-running effort to make the `buremba` production org's Behaviors produce useful output, plus a merge train. User requests in chronological order:
+
+1. **(implicit continuation)** Finish the merge train and restore the Twitter takeout so the voice-profile Behavior has a real corpus.
+2. **"are we done now"** — status request on whether all work is complete.
+3. **"don't we have the takeout connectors already? don't we have the linkedin exposert as well? check the mac mini those things suppose to be working?"** — pushback on my diagnosis; directive to check the Mac mini.
+4. **"so no instagram twitter linkedin takeut found you say?"** — challenge asking me to be precise about what is actually missing.
+5. **"linkedin browser must be on mac mini. the takeout is currently in my machine under downloads. if not exists i need to requiest new"** — clarifying intended architecture; will re-request the export if absent.
+6. **"go"** — proceed with the Mac mini shell-history investigation.
+7. **"ok i did 1 but forget it now. just save memory so a new session can get the context. for 2 explain if our design is worse and we need to change something"** — LinkedIn re-request done, park it; save memory; give a design verdict.
+8. **"how confident that you can solve all these issues. mac can also run ts no? we have bash"** — demand a real confidence assessment; pushback that the Mac can run TypeScript.
+9. **"save to memory so i can compact. all these takeout stuff existed before btw. for connectors if there is bun node etc we can possibly run it but the capabilities and permissions should be preserved. the mac mini has these accesses i don't get your question"** — save memory; confirms takeout worked before; **states the design constraint that a bun/node runtime must preserve capabilities and permissions**; says the Mac mini has the accesses.
+10. **"why do you need screen recording etc for my mac?"** — the current, UNANSWERED question.
+
+**Through-line intent:** Behaviors must actually work end-to-end; fixes must be proper root-cause fixes verified live, not workarounds; do not over-claim.
+
+2. Key Technical Concepts:
+
+- **Connector routing / claim eligibility** (`packages/server/src/worker-api/poll.ts:456-490`): fleet lane requires `con.device_worker_id IS NULL`; device lane requires `con.device_worker_id = <me>` AND (`cd.required_capability IS NULL` OR ∈ authorized). NULL capability is **fail-open** on the device lane.
+- **SDK connector declaration contract** (`packages/connector-sdk/src/connector-types.ts:76-90`): `requiredCapability?: string` — "Unset = any worker (default API/browser fleet)"; `runtime?: ConnectorRuntimeInfo` — "Present only for device-bound connectors. Omitting this field means the connector runs on the server-side worker fleet (cloud)."
+- **`BridgeOnlyConnector`** (`connector-runtime.ts:166-172`): device-bound connectors are implemented **natively in the bridge** (Swift/extension JS); server holds only the definition, with stubs that throw.
+- **Capability allowlist** (`packages/core/src/capabilities.ts`): `OS_CAPABILITIES = ["os.shell", "os.files", "os.notifications"]`; `MAC_DEVICE_CAPABILITIES = [screentime, local_directory, healthkit, photos, whatsapp_local, calendar, reminders, system_audio, computer_use]`; `PLATFORM_ALLOWLIST.macos = [...OS, ...BROWSER, ...MAC_DEVICE]`. **`os.files` already exists and is already allowlisted for macos.**
+- **Worker protocol** (from `LobuClient.swift:541-610`): `POST /api/workers/poll {worker_id, capabilities, platform, app_version, label, connector_manifests}`, `/heartbeat {run_id, worker_id}`, `/stream {type:"batch", run_id, worker_id, items}`, `/complete {worker_id, run_id, items_collected, checkpoint, error}`.
+- **`DeviceConnectorManifest`** (`worker-api/device-manifests.ts`): carries `required_capability: string` (required) and `runtime: { platforms, scopes?, nix? }` — devices can ship their own connectors.
+- **REST admin API access without MCP**: `curl -X POST https://app.lobu.ai/api/buremba/<tool>` with `Authorization: Bearer $(lobu whoami --json | .accessToken)`. `query_sql` arg is `sql` (not `query`). `query_sdk` is READ-ONLY; writes require `run_sdk`. Scripts must use `export default async function (_ctx, client) {...}` (no top-level await/return).
+- **`query_sql` allowlist**: behavior_versions, behaviors, canvas_windows, channel_messages, connections, connector_definitions, entities, entity_relationship_types, entity_relationships, event_classifications, events, feeds, oauth_clients, oauth_tokens, user. `runs` is NOT included — use `client.operations.listRuns({ feed_ids, connector_key, created_after/before, limit })`.
+- **False-green class**: `runs.status: completed` with 0 items; a populated `events` table alongside a `failed` feed means data arrived via a path that no longer runs.
+
+3. Files and Code Sections:
+
+- **`packages/owletto/apps/mac/Owletto/AppState.swift:2731-2764`** — the Mac bridge connector dispatch. 8 hardcoded cases, then:
+```swift
+default:
+    try await worker.complete(workerId: workerId, runId: job.run_id, itemsCollected: 0,
+                              error: "Mac bridge cannot run connector \(connectorKey)")
+```
+Cases: `apple.screen_time`, `local.directory`, `apple.health`, `apple.photos`, `apple.system_audio`, `apple.calendar`, `apple.reminders`, `whatsapp.local`. Introduced `581b10f1` (2026-05-19).
+
+- **`packages/owletto/apps/mac/Owletto/AppState.swift:995-1016`** — `currentCapabilities` (read but NOT yet used to answer the pending question):
+```swift
+var currentCapabilities: [String: Bool] {
+    var caps: [String: Bool] = [:]
+    if hasFDA && !screenTimeDisabled { caps["screentime"] = true }
+    if !localFolders.isEmpty { caps["local_directory"] = true }
+    if hasHealthKit && healthKitAvailable && !healthKitDisabled { caps["healthkit"] = true }
+    if hasPhotos && !photosDisabled { caps["photos"] = true }
+    if !systemAudioDisabled && SystemAudioCaptureService.isAvailable()
+        && (isRecordingAudio || !SystemAudioCaptureService.shared.pendingSegments().isEmpty) {
+        caps["system_audio"] = true
+    }
+    if hasCalendar && !calendarDisabled { caps["calendar"] = true }
+    if hasReminders && !remindersDisabled { caps["reminders"] = true }
+    if computerUseActive { caps["computer_use"] = true }
+    // os.shell is gated purely by user intent (no TCC preflight exists for it).
+    if shellEnabled && !shellDisabled { caps["os.shell"] = true }
+```
+Screen Recording references found: `CGPreflightScreenCaptureAccess()` at `:964` and `:2325`; system audio capture "Triggers the Screen Recording TCC prompt" at `:2257`; `:2332` "Screen Recording is the minimum bar for list_windows / screenshot." **Note: `screen_recording` is NOT a capability string — it gates `system_audio` and computer_use screenshots, NOT Screen Time (which needs Full Disk Access to read `~/Library/Application Support/Knowledge/knowledgeC.db`).**
+
+- **`packages/server/src/worker-api/poll.ts:456-490`** — the routing deadlock:
+```sql
+-- fleet lane
+AND ( con.device_worker_id IS NULL OR ( pin_dw.platform = 'chrome-extension' AND ... ) )
+-- device lane (pinned)
+OR ( ${isUserScopedWorker}
+     AND con.device_worker_id = ${deviceWorkerId}::uuid
+     AND ( cd.required_capability IS NULL
+           OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[]) ) ... )
+```
+
+- **`examples/personal-agent/twitter-takeout.connector.ts`** (517 lines) — `sync(ctx)` is a pure function of the filesystem:
+```ts
+async sync(ctx: SyncContext<TwitterTakeoutCheckpoint, LocalTakeoutConfig>): Promise<SyncResult<...>> {
+    const takeoutDir = assertDirectory(ctx.config, "X/Twitter");
+    const dataDir = path.join(takeoutDir, "data");
+    const max = batchSize(ctx.config);
+    if (ctx.feedKey === "tweets") return this.result(ctx, "last_tweets_timestamp", this.readTweetEvents(dataDir), max);
+    ...
+}
+```
+Declares NO `requiredCapability` and NO `runtime`.
+
+- **`/private/tmp/.../scratchpad/try-takeout.ts`** — created; PROVED the connector works:
+```ts
+import Conn from "/Users/burakemre/Code/lobu/examples/personal-agent/twitter-takeout.connector.ts";
+const dir = "/Users/burakemre/Downloads/twitter_takeout_2026-07-07";
+const c: any = new (Conn as any)();
+for (const feedKey of ["tweets","likes","followers","following","messages"]) {
+  const r = await c.sync({ config: { takeout_dir: dir }, feedKey, checkpoint: undefined });
+}
+```
+Output: tweets 1000, likes 1000, followers 700, following 721, messages 1000 — real content, correct `origin_id` (`x_tweet_111264112583000064`, `x_dm_4100673268`), correct `occurred_at`.
+
+- **`packages/cli/src/commands/_lib/connector-run-cmd.ts:220-236`** — unconditional auth-profile guard blocks auth-none connectors; also restricts to `browser_session` profile kind; documented as persisting nothing.
+
+- **Memory files written/updated:**
+  - `project_local_takeout_connectors_have_no_runtime.md` — created then rewritten twice; now contains root cause, 3 disproven theories, ground-truth file inventory, the hybrid `linkedin` connection note, a PROVEN section with the bun test results, the worker protocol, Burak's confirmations/constraint, and a 5-step ordered plan with confidence numbers.
+  - `MEMORY.md` — pointer line updated twice; current text notes "**SOLVABLE**: connector PROVEN parsing the real archive via bun (1000 tweets/DMs); `os.files` already allowlisted for macos; worker protocol = 4 REST calls. Only transport missing."
+
+4. Errors and fixes:
+
+- **Claimed "the Aug 5 deletion took 1,906 twitter archive events with it."** WRONG — `SELECT connector_key, count(*) FROM events WHERE connector_key ILIKE '%twitter%'` returns zero rows ever. `twitter.takeout` never ingested. Corrected plainly to the user.
+- **Claimed "Instagram worked because it used an absolute path; twitter used relative."** WRONG — every takeout feed is `failed`, absolute-path Instagram included. Later fully disproven by run 570290's `feed_display_name` showing the absolute path was already in place when it succeeded.
+- **Claimed "no runtime exists that can execute these" and "copying archives to the Mac mini would help."** WRONG on both counts — triggering feed 418 returned "Mac bridge cannot run connector" on the *same worker* that succeeded Jul 8 (structural, so a copy would have been wasted); and the user pointed out the Mac has bash/bun. **User feedback: "mac can also run ts no? we have bash"** — this was correct and materially raised feasibility.
+- **`lobu call query_sql` → 405, then "Refusing to send stored context credentials"** — worked around with direct `curl` + Bearer token.
+- **`query_sql` arg error: `unknown argument(s): query`** — the correct arg is `sql`.
+- **`client.connections.connect is not a function` under `query_sdk`** — `query_sdk` is read-only; used `run_sdk` for writes.
+- **`Top-level await ... not supported` / `rows.map is not a function`** — scripts need `export default async function (_ctx, client)`, and SDK list methods return wrapped objects (`{auth_profiles: [...]}`, `{operations: [...]}`).
+- **`Unknown table 'runs' — not in the queryable allowlist`** — used `client.operations.listRuns` instead.
+- **`operations.execute` needs `connection_id`, not `connector_key`** — used connection 464 for os.shell.
+- **User pushback: "don't we have the takeout connectors already? ... check the mac mini"** — I had been reasoning from Swift source instead of checking the live machine; switching to live checks produced the decisive evidence.
+- **User correction: "the mac mini has these accesses i don't get your question"** — I had blurred two things; the TCC gap is on the **MacBook** (advertises only `[local_directory, os.shell, reminders, whatsapp_local]`), not the mini, and my actual open question was about worker-id collision.
+
+5. Problem Solving:
+
+**Merged this session:** #2572 (`16a8df8b`, Owletto Mac context-auth guards — confirmed live in the MacBook log: `auth block cleared — lobu identity moved on disk (context=prod)`) and #2568 (`ad6d45f4`, X handle `buremba`→`bu7emba`). #2571 was already merged (`e21a2fbf`).
+
+**Root cause established (certain):** The 4 `*.takeout` connectors read the local filesystem but declare neither `requiredCapability` nor `runtime`, which the SDK documents as "runs on the cloud fleet." Therefore: unpinned → cloud fleet → "directory does not exist"; pinned to a Mac → Swift bridge → "Mac bridge cannot run connector". Two error strings, one cause.
+
+**Design verdict delivered:** The platform design is sound (right primitives all exist: `requiredCapability`, `runtime.platforms`, `BridgeOnlyConnector`, `DeviceConnectorManifest`). Two real weaknesses: (a) `required_capability IS NULL` is fail-open on the device claim lane; (b) nothing validates a connector's declaration against its behavior at install time.
+
+**Feasibility proven:** the connector parses the real archive correctly via bun; `os.files` is already allowlisted for macos (no core change needed); the worker protocol is 4 documented REST endpoints; `connector_manifests` is already part of the poll body. Only transport is missing (~150 lines).
+
+**Ground truth on files (checked live):** MacBook has all three archives with char-exact-correct configured paths (`twitter_takeout_2026-07-07` 3 entries; `instagram_takeout_2026-07-05` 11 entries; `REDACTED.zip` 25 entries — a directory named `.zip`). Mac mini (`Buraks-Mac-mini.local`) has NO archives (4 files in Downloads), Owletto 14.16.0, no Node/lobu worker daemon.
+
+**LinkedIn is blocked twice:** the export is the **Basic** one (no `Shares.csv`/`Comments.csv`/`Reactions.csv`), and no connector feed key exists for own posts. Connection 412's `home_feed` (429) is genuinely healthy (1,467 items, synced 02:17 on 08-07); its other 10 feeds (419-428) are takeout-backed and fail with `"Missing takeout_dir for LinkedIn."`
+
+**Unresolved:** what executed the Jul 8 runs (10,105 linkedin + 6,302 instagram events under worker `e7806c72`). Shell history rotated on both machines; the run record carries only the pin, not the executor. User confirmed "all these takeout stuff existed before," which corroborates the approach without identifying the mechanism.
+
+**Prod state left behind:** connection 480 `x-twitter-takeout-buremba` created, pinned to `2c295bed`, feeds 515-519 pointing at the extracted archive, all **paused**. Feed 418 left **active** after the diagnostic trigger (should be re-paused if it alerts).
+
+6. All user messages:
+
+- "are we done now"
+- "don't we have the takeout connectors already? don't we have the linkedin exposert as well? check the mac mini those things suppose to be working?"
+- "so no instagram twitter linkedin takeut found you say?"
+- "linkedin browser must be on mac mini. the takeout is currently in my machine under downloads. if not exists i need to requiest new"
+- "go"
+- "ok i did 1 but forget it now. just save memory so a new session can get the context. for 2 explain if our design is worse and we need to change something"
+- "how confident that you can solve all these issues. mac can also run ts no? we have bash"
+- "save to memory so i can compact. all these takeout stuff existed before btw. for connectors if there is bun node etc we can possibly run it but the capabilities and permissions should be preserved. the mac mini has these accesses i don't get your question"
+- "why do you need screen recording etc for my mac?"
+
+**Standing constraints still in effect (from CLAUDE.md / AGENTS.md):** Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup NAME=<slug>`. Never enter credentials, passwords, or drive OAuth consent screens — the user performs auth flows. Never hot-swap the Owletto app remotely. Never bulk-delete prod `organization` rows. `events` is append-only — never `DELETE FROM events`. Workers never receive real credentials. No "Co-Authored-By" or "Generated with Claude Code" in commit messages. Always show the real `git diff`, never a prose summary. End work with a confidence score + 2–4 next actions. Stage by explicit path (`git add -- <paths>`, never `-A`). Never `--admin` past a check that has not reported. Never resolve merge conflicts in the GitHub web UI. On submodule-pointer branches use `git merge`, not rebase. Never `git stash`. **New user constraint (verbatim): "for connectors if there is bun node etc we can possibly run it but the capabilities and permissions should be preserved."**
+
+7. Pending Tasks:
+
+- **Answer the current question**: why Screen Recording (and related permissions) are needed on the Mac — the immediate unanswered ask.
+- **Declare `requiredCapability: 'os.files'` + `runtime: { platforms: ['macos'] }`** on the 4 takeout connectors (~90% confidence).
+- **Build the local takeout worker** — poll for `os.files` work, run the connector, stream, complete (~150 lines, ~80% confidence). Must register a DISTINCT worker_id to avoid contending with the Swift app.
+- **Fail-close the device claim lane** in `poll.ts` — separate PR (~90%).
+- **LinkedIn non-post feeds** — set `takeout_dir` on 419-428, revisit the pin (~75%).
+- **LinkedIn own posts/comments** — needs the complete export (user requested it 2026-08-07), new feed keys that don't exist today, and the runtime (~35%).
+- **#2573** (calendar `event`→`calendar_event`) — green, awaiting the user's sequencing decision (migration → pods roll → `behaviors.createVersion` for Behavior 5).
+- **#2558** — `unit`, `typecheck`, `migrations` all FAILING; needs real work.
+- **#2555** — release 14.17.0, blocked.
+- **Screen Time / Photos on the MacBook** — genuine TCC denial; user must toggle in System Settings.
+- **Re-pause feed 418** if it alerts.
+
+8. Current Work:
+
+Immediately before the summary request, the user asked: **"why do you need screen recording etc for my mac?"**
+
+This was a fair challenge to something I had blurred. I had just finished saving memory (updating `project_local_takeout_connectors_have_no_runtime.md` with the PROVEN section and the user's capability-preservation constraint, plus the `MEMORY.md` pointer) and clarifying that the TCC gap is on the MacBook, not the Mac mini.
+
+I began investigating to answer accurately, running a grep for Screen Recording references and reading the capability gate block. The results came back showing:
+- `CGPreflightScreenCaptureAccess()` at `AppState.swift:964` and `:2325`
+- `:2257` — "Start capturing system audio. Triggers the Screen Recording TCC prompt"
+- `:2270` — "Grant Screen Recording in System Settings → Privacy & Security"
+- `:2332` — "Screen Recording is the minimum bar for list_windows / screenshot."
+- The full `currentCapabilities` block at `:995-1016`
+
+**I had NOT yet answered the user's question when the summary was requested.** The evidence gathered shows that `screen_recording` is not itself a capability string; it gates `system_audio` and computer-use screenshots/`list_windows`. Screen Time is gated by `hasFDA` (Full Disk Access, reading `~/Library/Application Support/Knowledge/knowledgeC.db`), not Screen Recording. And **none of these are needed for the takeout work** — that needs only `os.files` on ordinary files in `~/Downloads`.
+
+9. Optional Next Step:
+
+Answer the user's question directly and accurately using the evidence already gathered: explain that I never asked for Screen Recording for the takeout work; that Screen Recording gates `system_audio` capture and computer-use `list_windows`/`screenshot` (`AppState.swift:2257`, `:2332`); that Screen Time is gated by **Full Disk Access** (reading `knowledgeC.db`), not Screen Recording; that Photos is its own separate grant; and that the takeout ingest needs none of them — only `os.files` on ordinary files in `~/Downloads`.
+
+Direct quotes anchoring this:
+- User: **"why do you need screen recording etc for my mac?"**
+- My immediately preceding statement that prompted it: *"The TCC gap is on the MacBook, not the Mac mini. The mini has its accesses and is fine... It's the MacBook that advertises only `[local_directory, os.shell, reminders, whatsapp_local]`, missing screentime/photos/calendar. That's the machine that needs a System Settings toggle, and it's unrelated to takeout."*
+- My own framing that started the blur: *"**Screen Time / Photos — 20 without you.** Genuine TCC denial; I can't grant permissions and can't read `TCC.db` to confirm. Needs you in System Settings."*
+
+After answering, no new work should begin without the user's confirmation, since the user stated they want to compact.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

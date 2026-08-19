@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b1yu85pwa</task-id>
+<summary>Monitor event: "PR 2398+2399 relaunched review verdicts and checks"</summary>
+<event>2398 FINAL: 1 non-pass of 9
+2398 NONPASS base-branch-guard: skipping</event>
+</task-notification>

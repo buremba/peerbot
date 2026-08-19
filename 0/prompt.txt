@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvwt2hb4p</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bvwt2hb4p.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pi-review on bump PR 2366" completed (exit code 0)</summary>
+</task-notification>

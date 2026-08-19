@@ -1,0 +1,1 @@
+for lobu do we have this info, how does it work. for all types show how would it look like. for slack for example the channel info is actually the best but now the raw channel id. it's a single conversation like in a way no

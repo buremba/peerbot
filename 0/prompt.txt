@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b26oq5ede</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/b26oq5ede.output</output-file>
+<status>killed</status>
+<summary>Background command "Restart dev server with Anthropic API key blanked" was stopped</summary>
+</task-notification>

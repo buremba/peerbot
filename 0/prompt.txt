@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu3dz104g</task-id>
+<tool-use-id>toolu_01Sg7vrxjHNbRjuhmxsVnyso</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bu3dz104g.output</output-file>
+<status>completed</status>
+<summary>Monitor "auto-merge of PR 2337" stream ended</summary>
+</task-notification>

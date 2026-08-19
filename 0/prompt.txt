@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf9p52v8m</task-id>
+<tool-use-id>toolu_01LSqfty4J4m7gymdaofC573</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab/tasks/bf9p52v8m.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for package build" was stopped</summary>
+</task-notification>

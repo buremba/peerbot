@@ -1,13 +1,39 @@
 import { Buffer } from "node:buffer";
 
-export interface UiReviewProof {
+interface UiReviewProofBase {
   version: 1;
   lobu_repo: string;
   lobu_pr: number;
   lobu_base_owletto_sha: string;
   owletto_sha: string;
   owletto_pr: number;
+}
+
+/** Screenshot-based proof: a hosted before/after comparison a human reviews. */
+export interface ArtifactUiReviewProof extends UiReviewProofBase {
   artifact_url: string;
+}
+
+/**
+ * Agent-judged proof: an independent reviewer CLI (the same one `make review`
+ * uses) concluded the range has no user-visible UI surface at all, so a
+ * screenshot comparison would have nothing to show. Recorded with its
+ * reasoning and how the change was otherwise verified — evidence, not
+ * assertion — so a human can audit the call same as a screenshot.
+ */
+export interface AgentUiReviewProof extends UiReviewProofBase {
+  no_ui_surface: true;
+  reviewer: string;
+  reasoning: string;
+  verification_summary: string;
+}
+
+export type UiReviewProof = ArtifactUiReviewProof | AgentUiReviewProof;
+
+export function isArtifactProof(
+  proof: UiReviewProof
+): proof is ArtifactUiReviewProof {
+  return "artifact_url" in proof;
 }
 
 export interface UiReviewComment {
@@ -38,9 +64,7 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const FLUX_AUTHOR_EMAIL = "fluxcd@lobu.ai";
 const FLUX_SUBJECT = "chore: update images";
 
-function isProof(value: unknown): value is UiReviewProof {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<UiReviewProof>;
+function isProofBase(candidate: Partial<UiReviewProofBase>): boolean {
   return (
     candidate.version === 1 &&
     typeof candidate.lobu_repo === "string" &&
@@ -52,7 +76,27 @@ function isProof(value: unknown): value is UiReviewProof {
     typeof candidate.owletto_sha === "string" &&
     SHA_PATTERN.test(candidate.owletto_sha) &&
     Number.isInteger(candidate.owletto_pr) &&
-    (candidate.owletto_pr ?? 0) > 0 &&
+    (candidate.owletto_pr ?? 0) > 0
+  );
+}
+
+function isProof(value: unknown): value is UiReviewProof {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<
+    ArtifactUiReviewProof & AgentUiReviewProof
+  >;
+  if (!isProofBase(candidate)) return false;
+  if (candidate.no_ui_surface === true) {
+    return (
+      typeof candidate.reviewer === "string" &&
+      candidate.reviewer.length > 0 &&
+      typeof candidate.reasoning === "string" &&
+      candidate.reasoning.length > 0 &&
+      typeof candidate.verification_summary === "string" &&
+      candidate.verification_summary.length > 0
+    );
+  }
+  return (
     typeof candidate.artifact_url === "string" &&
     isHttpsArtifact(candidate.artifact_url)
   );
@@ -71,7 +115,8 @@ export function buildProofBody(proof: UiReviewProof): string {
     "base64url"
   );
   const marker = `${PROOF_MARKER}${encoded} -->`;
-  return `${marker}
+  if (isArtifactProof(proof)) {
+    return `${marker}
 ## UI proof
 
 Visual evidence for the Owletto version proposed by ${proof.lobu_repo}#${proof.lobu_pr}.
@@ -82,6 +127,24 @@ Visual evidence for the Owletto version proposed by ${proof.lobu_repo}#${proof.l
 
 The comparison is captured from one booted instance against the same data on
 both sides. A later pointer change that needs visual proof republishes it.`;
+  }
+  return `${marker}
+## UI review: no UI surface
+
+Independent review (\`${proof.reviewer}\`) for the Owletto version proposed by
+${proof.lobu_repo}#${proof.lobu_pr} found no user-visible UI surface in this
+range, so a screenshot comparison would have nothing to show.
+
+- Before: \`${proof.lobu_base_owletto_sha}\`
+- After: \`${proof.owletto_sha}\`
+
+**Reasoning:** ${proof.reasoning}
+
+**Verification:** ${proof.verification_summary}
+
+A later pointer change that touches UI surface still needs a real screenshot
+comparison — this classification is scoped to this exact range and republishes
+whenever the range changes.`;
 }
 
 export function parseProof(body: string): UiReviewProof | null {
@@ -148,49 +211,19 @@ export function selectOwlettoPullRequest(
  * The pointer can span several merged PRs, so inspect its endpoint diff rather
  * than only the head PR. GitHub caps comparison files at COMPARE_FILE_CAP and
  * reports no total, so empty and cap-sized responses fail closed. Renames must
- * stay inside the unhosted prefixes at both ends.
+ * stay under `deploy/` at both ends.
  */
 export const COMPARE_FILE_CAP = 300;
 
-/**
- * Owletto trees that ship no hosted web surface, so a before/after URL cannot
- * exist for them:
- *
- *   deploy/      k8s manifests — nothing user-visible
- *   apps/chrome/ the browser extension — distributed as a Web Store zip
- *   apps/mac/    the native Mac app — distributed as a signed build
- *   scripts/     build and post-build checks — run in CI, never served
- *
- * The extension and the Mac app do have their own UI (the Owletto side panel,
- * for one), and this exemption deliberately does NOT claim otherwise. It says
- * only that hosted proof is the wrong instrument for them: there is no URL to
- * compare, and the sole way to satisfy the gate would be a screenshot, which
- * is exactly the unverifiable artifact the proof mechanism exists to reject.
- * Their content review belongs to the Owletto repo's own PR review.
- *
- * Kept as an explicit allowlist rather than "anything that isn't src/" so the
- * gate stays fail-closed: a future hosted tree (say apps/web/) correctly
- * demands proof instead of inheriting an exemption nobody revisited.
- */
-export const UNHOSTED_PREFIXES = [
-  "deploy/",
-  "apps/chrome/",
-  "apps/mac/",
-  "scripts/",
-];
-
-const isUnhostedPath = (path: string) =>
-  UNHOSTED_PREFIXES.some((prefix) => path.startsWith(prefix));
-
-export function isUnhostedRange(
+export function isDeployOnlyRange(
   files: Array<{ filename: string; previous_filename?: string }>
 ): boolean {
   if (files.length === 0 || files.length >= COMPARE_FILE_CAP) return false;
   return files.every(
     (file) =>
-      isUnhostedPath(file.filename) &&
+      file.filename.startsWith("deploy/") &&
       (file.previous_filename === undefined ||
-        isUnhostedPath(file.previous_filename))
+        file.previous_filename.startsWith("deploy/"))
   );
 }
 

@@ -1,11 +1,16 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  type AgentUiReviewProof,
   buildProofBody,
   findProofComment,
-  isUnhostedRange,
-  UNHOSTED_PREFIXES,
+  isArtifactProof,
+  isDeployOnlyRange,
   isHttpsArtifact,
   permittedFluxTailParent,
   type OwlettoPullRequest,
@@ -15,6 +20,8 @@ import {
   type UiReviewComment,
   type UiReviewProof,
 } from "./lib/ui-review-proof";
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const STATUS_CONTEXT = "ui-review";
 const PARENT_MARKER = "<!-- lobu-ui-review-marker -->";
@@ -226,6 +233,94 @@ function parentCommentBody(
 - Proof: ${proofUrl}`;
 }
 
+interface CompareResponse {
+  status?: string;
+  files?: Array<{
+    filename: string;
+    previous_filename?: string;
+    status?: string;
+    patch?: string;
+  }>;
+  commits?: Array<{ commit: { message: string } }>;
+}
+
+interface AgentVerdict {
+  has_ui_surface: boolean;
+  reasoning: string;
+  verification_summary: string;
+  reviewer: string;
+}
+
+function buildAgentContext(
+  comparison: CompareResponse,
+  basePointer: string,
+  headPointer: string
+): string {
+  const files = comparison.files ?? [];
+  const lines: string[] = [
+    `## Range ${basePointer}...${headPointer}`,
+    "",
+    "### Changed files",
+    ...files.map((f) => `- ${f.status ?? "modified"}: ${f.filename}`),
+    "",
+    "### Commit messages (squash PR bodies)",
+    ...(comparison.commits ?? []).map((c) => `---\n${c.commit.message}`),
+    "",
+    "### Unified diffs",
+  ];
+  for (const file of files) {
+    if (!file.patch) continue;
+    lines.push(`--- ${file.filename} ---`, file.patch, "");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Ask an independent reviewer CLI (the same one `make review` uses — see
+ * ui-review-agent.sh) whether this range has any user-visible UI surface at
+ * all. Returns null on ANY failure (reviewer unavailable, non-zero exit,
+ * invalid verdict) so the caller falls back to requiring a real ARTIFACT —
+ * this must never be the thing that silently waves through a real UI change.
+ * UI_REVIEW_AGENT_SCRIPT overrides the script path — test-only, so a command
+ * test can point this at a fake without spawning a real reviewer CLI.
+ */
+function tryAgentClassification(
+  comparison: CompareResponse,
+  basePointer: string,
+  headPointer: string
+): AgentVerdict | null {
+  if (process.env.UI_REVIEW_AGENT === "0") return null;
+  const dir = mkdtempSync(join(tmpdir(), "lobu-ui-review-agent-"));
+  try {
+    const contextFile = join(dir, "context.md");
+    const outFile = join(dir, "verdict.json");
+    writeFileSync(
+      contextFile,
+      buildAgentContext(comparison, basePointer, headPointer)
+    );
+    const agentScript =
+      process.env.UI_REVIEW_AGENT_SCRIPT ??
+      join(SCRIPT_DIR, "ui-review-agent.sh");
+    const result = spawnSync(agentScript, [contextFile, outFile], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      console.log(
+        `ui-review: agent classification unavailable (${(result.stderr || result.stdout || "").trim().slice(0, 300)})`
+      );
+      return null;
+    }
+    return JSON.parse(readFileSync(outFile, "utf8")) as AgentVerdict;
+  } catch (error) {
+    console.log(
+      `ui-review: agent classification failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function main(): number {
   const options = parseOptions(process.argv.slice(2));
   const localHead = run("git", ["rev-parse", "HEAD"]);
@@ -304,30 +399,29 @@ function main(): number {
     );
   }
 
-  const comparison = ghApi<{
-    status?: string;
-    files?: Array<{ filename: string; previous_filename?: string }>;
-  }>(`repos/${owlettoRepo}/compare/${basePointer}...${headPointer}`);
+  const comparison = ghApi<CompareResponse>(
+    `repos/${owlettoRepo}/compare/${basePointer}...${headPointer}`
+  );
   const rangeFiles = comparison.files ?? [];
-  if (comparison.status === "ahead" && isUnhostedRange(rangeFiles)) {
+  if (comparison.status === "ahead" && isDeployOnlyRange(rangeFiles)) {
     const parentComment = findComment(lobuRepo, parentPr.number, PARENT_MARKER);
     if (parentComment) {
       ghApi(`repos/${lobuRepo}/issues/comments/${parentComment.id}`, "PATCH", {
         body: `${PARENT_MARKER}
 **UI review not applicable** for Lobu head \`${localHead}\`.
 
-\`${basePointer}...${headPointer}\` touches no hosted surface (${rangeFiles.length} files under ${UNHOSTED_PREFIXES.join(", ")}, through Owletto #${owlettoPr.number}).`,
+\`${basePointer}...${headPointer}\` changes only \`deploy/\` (${rangeFiles.length} files, through Owletto #${owlettoPr.number}).`,
       });
     }
     postStatus(
       lobuRepo,
       localHead,
       "success",
-      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} ships no hosted surface; no URL to prove`,
+      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} is deploy-only; no UI to prove`,
       owlettoPr.html_url
     );
     console.log(
-      `ui-review: not applicable; Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} touches no hosted surface (${rangeFiles.length} files)`
+      `ui-review: not applicable; Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} changes only deploy/ (${rangeFiles.length} files)`
     );
     if (options.open) openPullRequest(owlettoPr.html_url);
     return 0;
@@ -349,39 +443,75 @@ function main(): number {
       owlettoPr.number
     );
 
+  const currentArtifactUrl =
+    currentProof && isArtifactProof(currentProof)
+      ? currentProof.artifact_url
+      : undefined;
+
   if (
     !exactProof ||
-    (options.artifactUrl && currentProof?.artifact_url !== options.artifactUrl)
+    (options.artifactUrl && currentArtifactUrl !== options.artifactUrl)
   ) {
     if (!options.artifactUrl) {
-      postStatus(
-        lobuRepo,
-        localHead,
-        "error",
-        "UI proof missing; rerun make ui-review with ARTIFACT=...",
-        owlettoPr.html_url
+      // No screenshot supplied — ask an independent reviewer whether this
+      // range has any UI surface at all before demanding one. Fails closed:
+      // any classification failure, or a `true` verdict, falls through to
+      // the existing ARTIFACT-required error unchanged.
+      const verdict = tryAgentClassification(
+        comparison,
+        basePointer,
+        headPointer
       );
-      if (options.open) openPullRequest(owlettoPr.html_url);
-      throw new Error(
-        `No current proof on ${owlettoPr.html_url}. Rerun with ARTIFACT=<hosted HTTPS comparison>.`
+      if (verdict && verdict.has_ui_surface === false) {
+        const agentProof: AgentUiReviewProof = {
+          version: 1,
+          lobu_repo: lobuRepo,
+          lobu_pr: parentPr.number,
+          lobu_base_owletto_sha: basePointer,
+          owletto_sha: headPointer,
+          owletto_pr: owlettoPr.number,
+          no_ui_surface: true,
+          reviewer: verdict.reviewer,
+          reasoning: verdict.reasoning,
+          verification_summary: verdict.verification_summary,
+        };
+        currentProof = agentProof;
+        proofComment = writeComment(
+          owlettoRepo,
+          owlettoPr.number,
+          proofComment,
+          buildProofBody(agentProof)
+        );
+      } else {
+        postStatus(
+          lobuRepo,
+          localHead,
+          "error",
+          "UI proof missing; rerun make ui-review with ARTIFACT=...",
+          owlettoPr.html_url
+        );
+        if (options.open) openPullRequest(owlettoPr.html_url);
+        throw new Error(
+          `No current proof on ${owlettoPr.html_url}. Rerun with ARTIFACT=<hosted HTTPS comparison>.`
+        );
+      }
+    } else {
+      currentProof = {
+        version: 1,
+        lobu_repo: lobuRepo,
+        lobu_pr: parentPr.number,
+        lobu_base_owletto_sha: basePointer,
+        owletto_sha: headPointer,
+        owletto_pr: owlettoPr.number,
+        artifact_url: options.artifactUrl,
+      };
+      proofComment = writeComment(
+        owlettoRepo,
+        owlettoPr.number,
+        proofComment,
+        buildProofBody(currentProof)
       );
     }
-
-    currentProof = {
-      version: 1,
-      lobu_repo: lobuRepo,
-      lobu_pr: parentPr.number,
-      lobu_base_owletto_sha: basePointer,
-      owletto_sha: headPointer,
-      owletto_pr: owlettoPr.number,
-      artifact_url: options.artifactUrl,
-    };
-    proofComment = writeComment(
-      owlettoRepo,
-      owlettoPr.number,
-      proofComment,
-      buildProofBody(currentProof)
-    );
   }
 
   if (!currentProof || !proofComment) {

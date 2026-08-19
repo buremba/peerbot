@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bn1ik7mwg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bn1ik7mwg.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for slot, then claim" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+what do you mean behavior drawn everything? in the recent we have one row per behavior, is the sql structure not good or there is a design issue?

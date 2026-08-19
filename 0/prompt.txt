@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bhvl5082m</task-id>
+<summary>Monitor event: "prod rollout of PR #2321"</summary>
+<event>DEPLOYED: #2321 (4bdae93c4f1812679fda54f442765235c27a65a9) is live in prod; revision=4bdae93c4f1812679fda54f442765235c27a65a9</event>
+</task-notification>

@@ -1,0 +1,1 @@
+why don't we remove the skills feature as it can be implemented as behavior easily?

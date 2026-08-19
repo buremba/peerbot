@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The primary empty-replay repair remains ineffective when ChatGPT preloads an empty compatibility output, and full replays can erase previously persisted view state. Focused existing tests and the bundle build pass, but they do not cover these reload sequences.
+
+Full review comments:
+
+- [P1] Treat preloaded empty output as missing before restore — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:343-343
+  When ChatGPT preloads `window.openai.toolOutput` with the same `{}` replay before firing this event, initialization marks `hasData.current` true because the object is non-null. This branch then calls `restoreSnapshot()`, which immediately returns without using the retained capability, leaving the card empty. Empty compatibility output must also keep `hasData` false so the intended reload repair runs.
+
+- [P2] Restore capability state before saving defaults — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:338-338
+  When a host without `toolInfo` replays a nonempty result after reload, `viewStateRef` starts as `{}` and this call writes that default through the retained capability. Because the nonempty branch never restores first, previously saved pagination, sorting, and disclosure state is erased. Restore capability-backed state first, or defer capability-only persistence until the user changes the state.
+  </results>
+  </user_action>

@@ -1,0 +1,1 @@
+what does agent owning connection mean? agent doesn't work telegram connection but owns the binding no? how does this work properly? i thought behavior is in the agent and it can link to connections

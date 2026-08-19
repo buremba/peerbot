@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1h4xlokg</task-id>
+<tool-use-id>toolu_01HsBYS1yi2eov1i3W1T2Eda</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/tasks/b1h4xlokg.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch required CI checks to completion" completed (exit code 0)</summary>
+</task-notification>

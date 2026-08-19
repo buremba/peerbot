@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdh8fr9oc</task-id>
+<tool-use-id>toolu_01CgAb4dDA5oTi7613VnETEA</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bdh8fr9oc.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-attest 2691 on Depot (staged tree)" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+reinstall is fine we need emails, dig into that as a seperate teammate maybe. for our feature we're doing? maybe we need to support multiple models and the user can change the knobs accordingly to plug the behavior?

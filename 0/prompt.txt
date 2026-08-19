@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bat2yrwsi</task-id>
+<tool-use-id>toolu_012qv7ecSpjiQ2uc8vpsQoTp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/tasks/bat2yrwsi.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review after blocker fix" completed (exit code 0)</summary>
+</task-notification>

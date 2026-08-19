@@ -1,0 +1,59 @@
+<task-notification>
+<task-id>a06f8299d6fde1614</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/a06f8299d6fde1614.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix credential failover gaps" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Sanity check done: full unit suite green (2777/0), `make pre-pr` clean, tree clean, and the diff is exactly the 11 intended files. PR #2268 is open and left unmerged as instructed.
+
+## Ground truth
+
+`git status`: clean. `git diff --stat origin/main...HEAD`:
+```
+ packages/agent-worker/src/__tests__/error-handler.test.ts       |  37 +
+ packages/agent-worker/src/__tests__/error-signal-once.test.ts   | 145 +
+ packages/agent-worker/src/__tests__/model-resolver.test.ts      |  70 +
+ packages/agent-worker/src/core/error-handler.ts                 |  23 +
+ packages/agent-worker/src/gateway/gateway-integration.ts        |  27 +
+ packages/agent-worker/src/runtime/model-resolver.ts             |  37 +-
+ packages/core/src/errors.ts                                     |  17 +
+ .../integration/connectors/oauth-env-app-creds.test.ts          |  34 +
+ .../helpers/__tests__/personal-connection-scope-warning.test.ts |  51 +
+ packages/server/src/tools/admin/helpers/connection-helpers.ts   |  30 +
+ .../admin/manage_connections/handlers/connect.ts                |  22 +-
+```
+
+## Red → green
+
+**RED** (5 failures, each for the right reason — note `Expected: "gemini" / Received: "openai"` reproduces the live wrong-provider CTA exactly):
+```
+Expected: "gemini" / Received: "openai"
+(fail) resolveModelRef — providerSlug must describe the REQUESTED model
+Expected: "PROVIDER_QUOTA_EXHAUSTED" / Received: undefined
+(fail) classifyError &gt; recognizes a credit/billing-exhausted 400 as quota
+Expected: "PROVIDER_TOOL_CALL_FAILED" / Received: undefined
+(fail) classifyError &gt; recognizes Gemini MALFORMED_FUNCTION_CALL
+Expected length: 1 / Received length: 2  → (fail) a second signalError is dropped
+Expected length: 1 / Received length: 3  → (fail) three emitters yield one error
+ 59 pass, 5 fail
+```
+**GREEN**: targeted `100 pass, 0 fail`; full unit `TOTAL pass: 2777  TOTAL fail: 0`. Seven mutations each killed their matching test.
+
+## Confidence
+
+- **Gap 1 / dead-key classification — 80.** Ran the classifier red→green plus mutation. The raw-blob leak is fixed, but I did *not* boot a live instance with a dead key.
+- **Wrong-provider CTA — 85.** Reproduced empirically at HEAD (`providerSlug= anthropic` for an OpenRouter model), fixed, mutation-verified both directions.
+- **Duplicate chat errors — 75.** Unit-level only, against a stubbed `fetch`. The three-emitter path was traced in source, not exercised live.
+- **MALFORMED_FUNCTION_CALL — 70.** Classifier-only; I never made Gemini actually emit it.
+- **Gap 2 legibility — 75.** Unit + a real DB integration test asserting `visibility='private'` on the OAuth path. Never driven through an actual Gmail DM.
+
+**Two things you should know.** First, `make review-fix` repeatedly overwrote my working tree and silently deleted two fixes plus a test file; I only recovered by committing before each pass — worth treating as a mechanical trap. Second, **automatic failover off a dead key is not implemented** and I'd call that a dead end rather than ship it speculatively: the gate already walks `allowedRefs`, but routability is `hasSystemKey() || hasCredentials()` — presence, never liveness — and no health state exists anywhere in the repo. Adding it needs Postgres-mediated cross-replica state.
+
+Also correcting one briefed premise: the "four runs" was **not** a retry storm (retries mutate the same row and set `failed`, not `completed`), and `agents.models` *is* authoritative at runtime — the column edit looked ignored because of the same `if (!primaryProvider)` fallback behind the wrong-slug CTA.
+
+Next actions: (1) merge #2268 once CI + the re-review land; (2) boot a local instance with a dead `ANTHROPIC_API_KEY` and confirm the chat now shows the quota CTA instead of the JSON blob; (3) DM-connect a Gmail as a non-owner and verify the scope warning appears; (4) decide whether provider liveness tracking is worth its own PR.
+
+result: PR #2268 open with four credential-resolution fixes (dead-key classification, wrong-provider CTA, duplicate chat errors, Gemini tool-call filter) plus personal-connection scope legibility — red→green + 7 mutations verified, 2777 unit tests green, both review blockers fixed; automatic dead-key failover reported as a dead end requiring new cross-replica state.</result>
+<usage><subagent_tokens>283429</subagent_tokens><tool_uses>162</tool_uses><duration_ms>3643278</duration_ms></usage>
+</task-notification>

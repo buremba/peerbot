@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqont9rpw</task-id>
+<tool-use-id>toolu_01D8Bee8qiiF6u8sHFyE1bFZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/bqont9rpw.output</output-file>
+<status>completed</status>
+<summary>Background command "Review the bump PR head from a detached worktree" completed (exit code 0)</summary>
+</task-notification>

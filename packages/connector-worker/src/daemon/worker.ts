@@ -55,6 +55,9 @@ export class WorkerDaemon {
       platform: daemonConfig.platform,
       label: daemonConfig.label,
       manifests: daemonConfig.manifests,
+      // The poll advertisement and the spawn path must resolve the same
+      // binaries, or the device advertises a kind it then fails to launch.
+      binaryOverrides: daemonConfig.executor?.binaryOverrides,
     });
 
     this.env = env;

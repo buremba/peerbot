@@ -24,7 +24,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import {
@@ -39,6 +39,7 @@ import type {
   PollResponse,
   WorkerExitReason,
 } from '@lobu/core/contracts/worker/protocol';
+import { locateBinary, searchDirs } from './agent-binaries.js';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
 import type { ExecutorConfig } from './executor.js';
@@ -67,29 +68,6 @@ class ExecutableNotFoundError extends Error {
     super(`${name} binary not found on PATH`);
     this.name = 'ExecutableNotFoundError';
   }
-}
-
-/** Search prefixes for CLI discovery — mirrors the Mac app's detector list. */
-function searchDirs(): string[] {
-  const home = homedir();
-  return [
-    `${home}/.local/bin`,
-    `${home}/.bun/bin`,
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-  ];
-}
-
-function locateBinary(name: string): string | null {
-  const dirs = [
-    ...searchDirs(),
-    ...(process.env.PATH ?? '').split(':').filter(Boolean),
-  ];
-  for (const dir of dirs) {
-    const candidate = path.join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 function sleep(ms: number): Promise<void> {

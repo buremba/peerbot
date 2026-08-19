@@ -15,7 +15,7 @@ import type { Context } from 'hono';
 import { createAuth } from '../auth';
 import { findExistingPersonalOrg } from '../auth/personal-org-provisioning';
 import { PersonalAccessTokenService } from '../auth/tokens';
-import { getDb, pgBigintArray } from '../db/client';
+import { getDb, parsePgTextArray, pgBigintArray } from '../db/client';
 import type { Env } from '../index';
 import { captureServerError } from '../sentry';
 import { errorMessage } from '../utils/errors';
@@ -53,6 +53,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         dw.platform,
         dw.app_version,
         dw.capabilities,
+        dw.agent_kinds,
         dw.label,
         dw.last_seen_at,
         (dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})) AS online,
@@ -99,6 +100,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
       platform: string | null;
       app_version: string | null;
       capabilities: string[];
+      agent_kinds: string | string[] | null;
       label: string | null;
       last_seen_at: string;
       online: boolean;
@@ -123,6 +125,12 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         platform: r.platform,
         app_version: r.app_version,
         capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+        // null (never advertised) is distinct from [] (advertised none): the
+        // automation lane leaves the former unrestricted and withholds every run
+        // from the latter, so the UI must be able to tell "unknown" from "runs
+        // nothing". The driver hands text[] back as a raw '{a,b}' literal, so it
+        // needs parsing, not Array.isArray.
+        agent_kinds: r.agent_kinds == null ? null : parsePgTextArray(r.agent_kinds),
         label: r.label,
         last_seen_at: r.last_seen_at,
         online: r.online,

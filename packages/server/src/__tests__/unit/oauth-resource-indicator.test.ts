@@ -221,6 +221,24 @@ describe('MCP OAuth resource indicators', () => {
     }
   });
 
+  // Tenant orgs are subdomains of this same zone, so admitting the whole zone
+  // would let any caller reaching the pod directly present a sibling org's host
+  // and pass the audience check for a token bound to it. Only the apex host the
+  // edge worker actually fronts is accepted.
+  test('publicMcpRequestUrl rejects an in-zone sibling host in x-forwarded-for-origin', () => {
+    process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
+    __resetPublicOriginCachesForTests();
+
+    const request = new Request('https://app.lobu.ai/mcp', {
+      headers: {
+        host: 'app.lobu.ai',
+        'x-forwarded-for-origin': 'https://buremba.lobu.ai',
+      },
+    });
+    expect(publicMcpRequestUrl(request)).toBe('https://app.lobu.ai/mcp');
+  });
+
   test('publicMcpRequestUrl falls back when a forwarded proto yields an opaque origin', () => {
     process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
     process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';

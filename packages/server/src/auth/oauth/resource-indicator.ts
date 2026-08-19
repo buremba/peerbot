@@ -52,12 +52,14 @@ export function publicMcpRequestUrl(request: Request): string {
  * `https://app.lobu.ai/mcp` and every MCP call 401s — the failure mode this
  * function exists to prevent.
  *
- * A request that skips the edge can set the header itself, so it is honoured
- * only after `isTrustedPublicOrigin` — the same gate the standard forwarded
- * host clears. With an origin or zone configured, that gate confines it to one
- * operator's hosts, so it can never name a foreign resource server; a
- * deployment that configures neither trusts this header exactly as much as it
- * already trusts `x-forwarded-host`.
+ * A request that skips the edge can set the header itself, so it is accepted
+ * only when it names the apex zone host — the one host the edge worker fronts
+ * (`lobu.ai/mcp` -> `app.lobu.ai/mcp`). Admitting the whole zone the way the
+ * standard forwarded host does would let any caller reaching the pod directly
+ * relocate the MCP resource onto a sibling in-zone host and satisfy the RFC
+ * 8707 audience check for a token bound to that host. Tenant orgs are
+ * themselves subdomains of this zone, so the apex restriction is what keeps
+ * audience binding meaningful between them.
  */
 function forwardedPublicOrigin(request: Request): string | null {
   const raw = request.headers.get('x-forwarded-for-origin')?.trim();
@@ -66,6 +68,8 @@ function forwardedPublicOrigin(request: Request): string | null {
   // Origin only: a path, query, or fragment means this is not a bare origin
   // and we should not guess at what the client called.
   if (parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
+  const zone = getConfiguredSubdomainZone();
+  if (!zone || parsed.hostname !== zone) return null;
   return isTrustedPublicOrigin(parsed.origin) ? parsed.origin : null;
 }
 

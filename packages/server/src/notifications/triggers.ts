@@ -6,6 +6,7 @@ import { CONNECTOR_OPERATION_APPROVAL_KIND } from "../utils/platform-event-kinds
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
+import { escapeSlackText } from "./template-card";
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */
 type OrgNotification = Omit<
@@ -41,24 +42,6 @@ type EntityChangeApprovalDetails = {
 export type ActionApprovalDetails =
 	| FieldChangeApprovalDetails
 	| EntityChangeApprovalDetails;
-
-/**
- * Escape user/agent-controlled text before it lands in Slack mrkdwn. Without
- * this, a proposed field value containing `<!channel>` pings the room from
- * inside a trusted approval card, and `<https://evil|Review in Lobu>` spoofs
- * the review link.
- *
- * Slack-only: the persisted in-app body is Markdown source, not Slack mrkdwn.
- * Storing Slack's HTML entities there couples plain-text consumers to Slack
- * escaping. The Markdown emitter neutralises its own injection vectors via
- * `escapeMarkdownText`.
- */
-function escapeSlackText(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-}
 
 /**
  * Escape user/agent-controlled text for the in-app Markdown body (GFM, so

@@ -43,7 +43,34 @@ import { orderedSchemaFields } from "../utils/default-entity-template";
  * freely, so nothing upstream bounds this.
  */
 const MAX_FIELDS = 10;
-const MAX_FIELD_CHARS = 1800;
+/**
+ * Slack's 2000-char cap is on the RENDERED field — `*label*\nvalue` — not on
+ * label and value separately, so the two share one budget. Clamping them
+ * independently is how a long label plus a long value silently produced a
+ * 3600-char field and lost the whole message.
+ */
+const MAX_FIELD_CHARS = 1900;
+/** Labels are schema titles; capping them keeps the budget for the value. */
+const MAX_LABEL_CHARS = 200;
+
+/**
+ * Escape user/agent-controlled text before it lands in Slack mrkdwn.
+ *
+ * Load-bearing here: this card renders a connector operation's INPUT, which the
+ * agent controls. Without this, an input containing `<!channel>` pings the room
+ * from inside a trusted approval card, and `<https://evil|Review in Lobu>`
+ * renders as a link that spoofs the real review link right next to the genuine
+ * one.
+ *
+ * Slack-only, matching the in-app body's separate treatment: the persisted body
+ * is Markdown source, not Slack mrkdwn.
+ */
+export function escapeSlackText(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
 
 function clamp(value: string, max: number): string {
 	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -76,12 +103,18 @@ export function buildKindCard(params: {
 	// reformat what the web leaves raw. Objects still get formatValue's compact
 	// line-item text, which is how an operation's input becomes readable.
 	const fields = schemaFields
-		.map(({ key, label }) =>
-			Field({
-				label: clamp(label, MAX_FIELD_CHARS),
-				value: clamp(formatValue(params.data[key]) || "—", MAX_FIELD_CHARS),
-			}),
-		)
+		// Clamp AFTER escaping, so the budget covers what Slack actually receives
+		// and an escaped entity is never cut in half into a broken sequence.
+		.map(({ key, label }) => {
+			const safeLabel = clamp(escapeSlackText(label), MAX_LABEL_CHARS);
+			// `.trim() ||` so a whitespace-only value reads as unset rather than
+			// rendering a blank field the reader cannot interpret.
+			const raw = escapeSlackText(formatValue(params.data[key])).trim();
+			return Field({
+				label: safeLabel,
+				value: clamp(raw, MAX_FIELD_CHARS - safeLabel.length) || "—",
+			});
+		})
 		.filter((field) => field.label);
 	if (fields.length === 0) return null;
 

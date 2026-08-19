@@ -182,11 +182,11 @@ describe("chat platform limits", () => {
 		expect(links(card).length).toBe(1);
 	});
 
-	it("truncates an oversized value", () => {
+	it("truncates an oversized value within the shared field budget", () => {
 		const card = wide(1, 4000);
-		const value = fields(card)[0]?.split("=")[1] ?? "";
-		expect(value.length).toBeLessThanOrEqual(1800);
-		expect(value.endsWith("…")).toBe(true);
+		const [label, value] = (fields(card)[0] ?? "").split("=");
+		expect((label?.length ?? 0) + (value?.length ?? 0)).toBeLessThanOrEqual(1900);
+		expect(value?.endsWith("…")).toBe(true);
 	});
 });
 
@@ -219,5 +219,77 @@ describe("decision buttons", () => {
 		});
 		expect(buttons(card)).toEqual([]);
 		expect(links(card)).toEqual(["https://app.lobu.dev/o/acme/events/7"]);
+	});
+});
+
+describe("Slack mrkdwn injection", () => {
+	/**
+	 * This card renders a connector operation's INPUT, which the agent controls.
+	 * Unescaped, `<!channel>` pings the room from inside a trusted approval card
+	 * and `<https://evil|Review in Lobu>` renders a link that spoofs the real
+	 * review link sitting right next to it.
+	 */
+	const injected = (value: string) =>
+		fields(
+			buildKindCard({
+				metadataSchema: { type: "object", properties: { a: { type: "string", title: "A" } } },
+				data: { a: value },
+			}),
+		)[0] ?? "";
+
+	it("neutralises a channel-wide ping", () => {
+		expect(injected("ping <!channel> now")).toBe("A=ping &lt;!channel&gt; now");
+	});
+
+	it("neutralises a spoofed review link", () => {
+		expect(injected("<https://evil.example|Review in Lobu>")).toBe(
+			"A=&lt;https://evil.example|Review in Lobu&gt;",
+		);
+	});
+
+	it("escapes ampersands before angle brackets, not after", () => {
+		// `&` first, else `<` → `&lt;` would be re-escaped into `&amp;lt;`.
+		expect(injected("a & <b>")).toBe("A=a &amp; &lt;b&gt;");
+	});
+
+	it("escapes the label too", () => {
+		const card = buildKindCard({
+			metadataSchema: { type: "object", properties: { a: { type: "string", title: "<!here>" } } },
+			data: { a: "v" },
+		});
+		expect(fields(card)[0]).toBe("&lt;!here&gt;=v");
+	});
+});
+
+describe("the field budget is shared, not per-part", () => {
+	/**
+	 * Slack's 2000-char cap applies to the RENDERED field (`*label*\nvalue`).
+	 * Clamping label and value independently is how a long label plus a long
+	 * value produced a 3600-char field and lost the entire message.
+	 */
+	const rendered = (labelChars: number, valueChars: number) => {
+		const card = buildKindCard({
+			metadataSchema: { type: "object", properties: { a: { type: "string", title: "L".repeat(labelChars) } } },
+			data: { a: "v".repeat(valueChars) },
+		});
+		const f = fields(card)[0] ?? "";
+		// `label=value` in the helper; Slack renders `*label*\nvalue` — same budget.
+		return f.length;
+	};
+
+	it("keeps a long label AND long value inside one field budget", () => {
+		expect(rendered(2000, 4000)).toBeLessThanOrEqual(2000);
+	});
+
+	it("still gives a short label the full remaining budget", () => {
+		expect(rendered(5, 4000)).toBeGreaterThan(1500);
+	});
+
+	it("renders a whitespace-only value as unset", () => {
+		const card = buildKindCard({
+			metadataSchema: { type: "object", properties: { a: { type: "string", title: "A" } } },
+			data: { a: "   \t " },
+		});
+		expect(fields(card)).toEqual(["A=—"]);
 	});
 });

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsa3zv6go</task-id>
+<tool-use-id>toolu_01KsC7uZsyLTkfKHCZWpkHwK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bsa3zv6go.output</output-file>
+<status>completed</status>
+<summary>Background command "Run semantic review on corrected HEAD" completed (exit code 0)</summary>
+</task-notification>

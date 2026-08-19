@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b23qymyeq</task-id>
+<tool-use-id>toolu_01V1Ab9GHPzkvrhYY9ckx4Y1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/8845e28f-1968-4265-b03d-2ffd9778591f/tasks/b23qymyeq.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for dev server to be ready" was stopped</summary>
+</task-notification>

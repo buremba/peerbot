@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8ib3yrxe</task-id>
+<tool-use-id>toolu_015bDPPmyFQxQnw2t1MQkT3k</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/b8ib3yrxe.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix on the settled diff" completed (exit code 0)</summary>
+</task-notification>

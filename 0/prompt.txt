@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmkj9l84j</task-id>
+<tool-use-id>toolu_01JDnDUbg2NcozckXqT1EHPH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9/tasks/bmkj9l84j.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the full vitest integration set" completed (exit code 0)</summary>
+</task-notification>

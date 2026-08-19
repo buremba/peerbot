@@ -1,0 +1,1 @@
+why swift needs to know the whatsapp etc? wasn't connector sdk capable of doing the same

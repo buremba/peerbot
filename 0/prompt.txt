@@ -1,0 +1,1 @@
+if we would get rid of chat sdk, would we save complexity? or what are the things we can simplify and consolidate

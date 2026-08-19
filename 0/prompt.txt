@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxjbbvesi</task-id>
+<tool-use-id>toolu_01WpSimuEnSwK9uCzcNgmjCm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/bxjbbvesi.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on the settled HEAD of 2590" completed (exit code 0)</summary>
+</task-notification>

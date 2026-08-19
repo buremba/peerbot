@@ -1,0 +1,53 @@
+<task-notification>
+<task-id>ab3daceeeb2611310</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/ab3daceeeb2611310.output</output-file>
+<status>completed</status>
+<summary>Agent "Wire gapless numbering" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Committed as `4afde3b61` on `feat/erp-gapless-numbering`. Not pushed, no PR.
+
+## What landed
+
+**Migration** — `/Users/burakemre/Code/lobu/.claude/worktrees/erp-gapless-numbering/db/migrations/20260814120000_document_number_counters.sql`. dbmate style (`-- migrate:up` / `-- migrate:down`), matching the convention of the recent migrations. I verified the referenced columns against the baseline before writing: `organization.id` is `text NOT NULL` PK (baseline:1742/3043), `entity_types.id` is `integer NOT NULL` PK (baseline:1275/2840) — your transcription was correct. Added `COMMENT ON TABLE/COLUMN` and a `squawk-ignore prefer-bigint-over-int` on `entity_type_id` (squawk flags the int, but it must match the integer PK it references). `squawk-cli@2.58.0` with CI's exact exclude flags: 0 issues.
+
+**Wiring** — `packages/server/src/utils/entity-management.ts`. `createEntity` now selects `et.metadata_schema`, parses `x-numbering`, and allocates inside the existing `sql.begin` immediately before `INSERT INTO entities`. `DocumentNumberingError` is mapped to a 400 in the existing catch. One incidental fix: `data.organization_id` is re-checked after the `beforeCreate` hook (the hook can replace `data`, so the earlier guard doesn't narrow — and a hook returning data without an org id would have slipped through).
+
+**Caller-supplied rejection** — 400 `ToolUserError` naming the field and the received value. `null`/`""` are treated as "not supplied" and filled in normally.
+
+**Task 4 — deferred creates.** The approval path *does* reach `createEntity`, but only at apply time: `handleCreate`'s defer branch returns after `deferred.queue(...)` without calling it, and `applyEntityChangeProposal` (`entity-field-approval.ts:1249`) is the only door in. So apply-time allocation is free; the new suite asserts it rather than trusting it (propose → counter unchanged → apply → number `n+1`, not `n+2`).
+
+## Evidence
+
+New suite `document-numbering-create-path.test.ts` drives `client.entities.create(...)` through `manage_entity`, never the allocator: 6/6 pass. Existing concurrency suite 9/9. Full entity + tools + entity-schema + mcp sweeps: 93, 204, 178 tests, all green. `tsc --noEmit` clean.
+
+**Mutation test** (the load-bearing bit): changing `allocateDocumentNumber(tx, …)` to `allocateDocumentNumber(sql, …)` — i.e. the pool-client seam you rejected — turns exactly one test red, `does not burn a number when the create rolls back`: `expected 15 to be 14`. The concurrency test stays green under that mutation, which is the point: contiguity alone can't see the gap. File restored from a `cp` backup afterward.
+
+## Things that contradict the brief / prior work
+
+1. **The allocator's doc comment cited two things that don't exist.** It claimed `x-numbering` works "exactly like `x-transitions`" and that `upsertEntityType`'s `schemaExtras` carries `x-` keys. `git grep x-transitions origin/main` (after `git fetch`) returns nothing, and `schemaExtras` appears nowhere but that comment. The mechanism is real but different: `manage_entity_schema` stores `metadata_schema` verbatim and the AJV singleton runs `strict: false`, so unknown `x-` keys round-trip and are ignored by validation. I corrected the comment and the new suite proves the round-trip through the real `createType`.
+
+2. **`entity-link-upsert.ts` is a genuine bypass.** `createEntityWithIdentities` has its own `INSERT INTO entities`, retried across up to three slug variants, and never allocates — a numbered type auto-created from a connector-extracted link lands unnumbered. I did *not* wire it: the retry loop would need restructuring into one transaction, and it's a different concern. Recorded in the module doc.
+
+3. **`createType` rewrites `_` to `-` in slugs** (`args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')`). Cost me one red run; worth knowing before you write ERP type slugs.
+
+4. **A numbered field must not be in the schema's `required` array**, or `validateEntityMetadata` rejects every create before the allocator is reached. Noted in the fixture comment. This is a real footgun for whoever authors the invoice type.
+
+5. **The old suite dropped the counter table in `afterAll`.** Harmless while the table was test-owned; now it would have silently broken every later suite in the shared DB. Removed — cleanup is now the `entity_types` delete cascading the counter rows.
+
+## Confidence
+
+- **Migration — 92.** Applied by the real harness migration runner on every test run, and squawk-clean with CI's flags. Basis for the deduction: I did not exercise `migrate:down`, and I didn't run CI's separate dbmate-vs-`scripts/migrate-up.mjs` parity job.
+- **Create-path wiring — 90.** Not a typecheck claim: real Postgres, real tool surface, and the pool-client mutation is caught. Deduction: 12-way concurrency on an embedded single-node PG through one pool is weaker than prod's multi-replica contention, and I never booted the app.
+- **Caller-supplied rejection — 95.** Asserted through `entities.create`, both the rejection and the `""` passthrough, plus a no-spec control proving unnumbered types are untouched.
+- **Deferred/approval path — 80.** I drove `proposeEntityCreate` → `applyEntityChangeProposal` directly with a synthetic agent context; I did **not** get a real `runMutationGate` defer decision to fire end to end, so the claim "the defer branch never calls `createEntity`" is read off the code at `manage_entity.ts:342-357`, not executed.
+- **No regressions — 88.** 475 tests across entity/tools/entity-schema/mcp suites. I did not run `make pre-pr-remote` (would dispatch Depot) or the full repo suite.
+
+## Suggested next actions
+
+1. Run `make review-fix` on the settled diff, then `make pre-pr-remote` — check `pgrep -f "make pre-pr-remote"` for a peer session first.
+2. Decide whether the caller-supplied rejection should also fire at *proposal* time. Today an agent that supplies `invoice_no` gets its proposal queued and only fails at approval, which wastes a reviewer. The chokepoint rule argues for leaving it; the UX argues for a mirror check in `handleCreate`.
+3. Decide on `entity-link-upsert.ts`: either allocate there (needs the 3-attempt slug loop folded into one transaction) or explicitly declare numbered types out of scope for link auto-create.
+4. Throughput check before an ERP pilot: every concurrent create for one (org, type, series, period) serializes from `pg_advisory_xact_lock` to COMMIT. Worth measuring the per-series ceiling against expected invoice rates.</result>
+<usage><subagent_tokens>158238</subagent_tokens><tool_uses>110</tool_uses><duration_ms>851919</duration_ms></usage>
+</task-notification>

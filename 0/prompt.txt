@@ -1,0 +1,229 @@
+The user just ran /insights to generate a usage report analyzing their Claude Code sessions.
+
+Here is the full insights data:
+{
+  "project_areas": {
+    "areas": [
+      {
+        "name": "PR Merge Queues, Code Review & Release Shipping",
+        "session_count": 16,
+        "description": "A large share of sessions were driven end-to-end merge trains: reviewing pending PRs, resolving CI gates, fixing submodule/cross-repo pointer drift, and merging with prod verification. Claude was used autonomously to triage stalled PRs, clean up stale worktrees and branches, and write handoff docs summarizing remaining work. Friction centered on GitHub Actions outages, review-quota exhaustion, and UI-proof approval gates that required human sign-off."
+      },
+      {
+        "name": "Production Bug Fixing & Root-Cause Debugging",
+        "session_count": 13,
+        "description": "Sessions focused on diagnosing live production failures — 401/503 errors, login and session-cookie bugs, entity-merge approval stalls, window-cursor lag, and stale-window rollover issues. Claude traced root causes through logs, Prometheus metrics, and code paths, then shipped tested fixes and verified them on prod. Several sessions involved Claude catching and correcting bugs it had itself introduced."
+      },
+      {
+        "name": "Agent Behaviors, Skills & Provider Configuration",
+        "session_count": 9,
+        "description": "Work on the agent platform layer: behavior output contracts, skills/composer features, eval scorers, provider catalogs, model resolution, and embedding-model parameters. Claude debugged behavior dispatch failures caused by provider balance exhaustion, dual-executor conflicts, and oversized payloads, and validated removal of Handlebars templating against production data. Also included investigations into context-window and auto-compact settings for token cost."
+      },
+      {
+        "name": "Device Automation & macOS Executor Work",
+        "session_count": 7,
+        "description": "End-to-end verification of Mac mini device automation — release_tab/prepare_reply flows on X and LinkedIn, TCC permission repair, and device-liveness windows. Claude used browser automation and live device runs to produce timestamped evidence and screenshots, found five real automation bugs, and shipped a verified v14.10.0 release. Gated actions and screenshot-capture tooling were recurring blockers."
+      },
+      {
+        "name": "Web UI, Connectors & Landing Site",
+        "session_count": 5,
+        "description": "Frontend TypeScript work redesigning the Connectors page to fold in devices and MCP clients, refining filter chips, section layout, and the app catalog. Claude also fixed a Vite CJS/ESM optimizeDeps dev-server bug with before/after UI proof, and iterated on landing-site blog posts with images, diagrams, and plain-language rewrites shipped via preview-URL PRs."
+      }
+    ]
+  },
+  "interaction_style": {
+    "narrative": "You operate Claude Code like a delegated engineering org, not a pair-programming partner. Your prompts are short, high-agency directives — \"go do all\" of the remaining plan, \"finish the leftover work from the prior session,\" \"take the best next steps to finish PR #2315\" — and then you let Claude run for hours. The numbers make this vivid: **359 hours across 105 sessions producing 526 commits, with nearly 18,000 Bash calls versus only ~1,955 messages from you**. That's roughly nine tool calls per message you send. You're not steering turn-by-turn; you're setting an outcome and expecting the full loop — implement, test, review, merge, verify in prod, clean up worktrees, write the handoff doc.\n\nWhat distinguishes you most is that **you demand proof, not claims**. Session after session you push past \"it should work\" into live e2e verification: recordings of Behavior last-run fixes, before/after UI screenshots, timestamped run records on a paired Mac mini, mutation-tested assertions to prove tests would actually fail. When Claude wrote a ~100-line SQL mirror of `computeStableKey` plus a test proving the mirror matched itself, you called it slop and forced a redesign. When Claude pinned models to work around a Behavior cursor bug, you pushed back that this was a workaround masking bad design and made it hunt the real root cause. Your friction profile confirms this: `wrong_approach` and `buggy_code` tie at 31 each — you're not frustrated by slowness, you're frustrated by shortcuts and unproven claims.\n\nThe one place you break character is when you want an *answer* rather than *work*. Two sessions failed identically: you asked concise knowledge questions about context windows and auto-compact thresholds, Claude launched 40+ Bash commands to disassemble the CLI binary, and **you interrupted before receiving anything**. Your default mode is so autonomy-heavy that Claude misreads even your direct questions as work orders. You also police boundaries hard in a multi-agent setup — telling Claude to stop touching PRs owned by sibling agents, and pushing back sharply on process gates (\"i consent\" on a UI approval Claude still refused, which you called \"bullshit\"). Your satisfaction is high (127 likely-satisfied) precisely because Claude usually closes the loop; the 13 dissatisfied moments cluster almost entirely around self-inflicted bugs Claude shipped and then had to catch later.",
+    "key_pattern": "You hand off entire outcomes with a one-line directive and disappear for hours, then relentlessly interrogate the evidence — demanding live prod proof and mutation-tested assertions rather than accepting any \"it works\" claim."
+  },
+  "what_works": {
+    "intro": "Across 105 sessions, 359 hours, and 526 commits, you've built a highly autonomous ship-verify-merge loop where Claude routinely takes work from bug report to production-verified merge.",
+    "impressive_workflows": [
+      {
+        "title": "Demanding proof, not claims",
+        "description": "You consistently refuse to accept 'it works' at face value — you ask for mutation-verified tests, live browser screenshots, timestamped run records, and red→green reproducers. This forced Claude to catch its own false verification claims multiple times, like when it wrongly asserted a race test exercised the retry path. Your insistence on evidence turned verification into a first-class part of the workflow rather than an afterthought."
+      },
+      {
+        "title": "Autonomous merge-train delegation",
+        "description": "You frequently hand off with high-trust instructions like 'go do all' or 'finish all remaining work from a prior session,' letting Claude drive PR queues, resolve submodule pointer drift, fix CI gates, and clean up dozens of stale worktrees end-to-end. Sessions regularly close with four or five PRs merged and prod-verified. The handoff docs Claude writes at the end mean the next session picks up without context loss."
+      },
+      {
+        "title": "Pushing back on shortcuts",
+        "description": "When Claude proposed model-pinning as a fix for the Behavior window-cursor lag, you rejected it as a workaround and demanded the real root cause — and got an empirically validated fix with 4/4 successful runs. You did the same when Claude wrote a 100-line SQL mirror of computeStableKey, calling it slop and prompting a cleaner side-table redesign. Your architectural skepticism consistently upgrades the quality of what ships."
+      }
+    ]
+  },
+  "friction_analysis": {
+    "intro": "Across 105 sessions of heavy autonomous shipping work, your main friction points come from Claude introducing its own bugs mid-flight, over-exploring instead of answering direct questions, and getting stuck on external gates and infrastructure it can't clear alone.",
+    "categories": [
+      {
+        "category": "Self-introduced bugs caught late by CI or review",
+        "description": "A recurring pattern is Claude shipping changes that break production or CI and only discovering it after a reviewer, CI lane, or a later pass catches it — buggy_code and wrong_approach are your two largest friction signals at 31 each. Asking Claude to run the full integration suite locally and to explicitly diff its own change against auth/tenancy boundaries before opening a PR would catch most of these earlier.",
+        "examples": [
+          "Claude introduced a production-breaking session-cookie bug during the merge-train session that was only caught by a later review-fix pass, delaying the Twitter takeout restore",
+          "Claude shipped a cross-tenant write, missing auth guards, and a vacuous OAuth test that CI and the reviewer caught rather than Claude proactively — costing an extra round trip",
+          "A manifest edit broke CI via a stale manifest_hash, and a Qwen provider group display name violated a registry contract test, each forcing follow-up fix commits"
+        ]
+      },
+      {
+        "category": "Exploration instead of direct answers",
+        "description": "When you ask a concise knowledge or math question, Claude often launches into dozens of Bash and Read commands rather than answering from what it already knows — twice you interrupted before getting any response at all. Prefixing these with something like 'answer from knowledge only, no tools' would short-circuit the exploration loop.",
+        "examples": [
+          "You asked a concise settings/math question about context window and auto-compact thresholds and explicitly requested no preamble; Claude ran 40+ Bash/Read commands without answering and you interrupted (not_achieved)",
+          "You asked how Claude Code handles compaction for image-heavy sessions and Claude started shelling out to inspect the installed CLI binary; you interrupted before any answer was produced"
+        ]
+      },
+      {
+        "category": "Blocked on approval gates and external infrastructure",
+        "description": "A large share of your sessions end 'mostly achieved' because the final merge is gated by something Claude can't clear — UI proof artifacts, /ui-approve comments, admin merge permissions, GitHub Actions outages, or exhausted Codex reviewer quota. Deciding up front which gates require you and batching those approvals at the end of a session would stop Claude from burning cycles retrying.",
+        "examples": [
+          "Claude twice refused to post the /ui-approve comment even after you said 'i consent', leaving the PR permanently blocked and prompting you to call the requirement 'bullshit'",
+          "A GitHub Actions major outage froze both PRs unverifiable, and separately repeated Actions cancellations on unit/typecheck/check-drift forced multiple monitor re-arms",
+          "Codex reviewer quota exhaustion blocked review in at least three separate sessions, requiring mid-session model switches"
+        ]
+      }
+    ]
+  },
+  "suggestions": {
+    "claude_md_additions": [
+      {
+        "addition": "## Answer Mode\nWhen the user asks a knowledge or math/settings question (\"how does X work?\", \"what threshold does Y use?\"), answer directly from knowledge FIRST in 1-5 sentences. Only run tools if the answer requires repo-specific facts, and say so before doing it. Never open a 40-command exploration to answer a conceptual question.",
+        "why": "Two sessions were fully abandoned because Claude shelled out to inspect the CLI binary instead of answering a concise question, and the user interrupted both times.",
+        "prompt_scaffold": "Add as a new top-level '## Answer Mode' section near the top of CLAUDE.md, above build/test instructions."
+      },
+      {
+        "addition": "## Verification Standard\nA fix is not 'verified' until: (1) a red→green reproducer exists, (2) mutation-check the test — break the fix and confirm the test fails, (3) the FULL integration suite is run locally, not just the touched file. Never claim a test 'exercises path X' without printing evidence it did.",
+        "why": "Multiple sessions had false verification claims, vacuous tests, and schema-drift CI failures caused by running only part of the integration suite locally.",
+        "prompt_scaffold": "Add under an existing ## Testing section, or create '## Verification Standard' after it."
+      },
+      {
+        "addition": "## Scope & Ownership\nOnly touch PRs, branches, and worktrees created in this session or explicitly named by the user. Before reviewing or merging any PR, check the author/agent owner and skip anything owned by another agent. Do not expand a fix into a refactor without asking.",
+        "why": "The user explicitly had to stop Claude from merging sibling-agent-owned PRs, and separate sessions drew pushback for scope creep and duplicate PRs.",
+        "prompt_scaffold": "Add as a new '## Scope & Ownership' section near the top, before the workflow sections."
+      },
+      {
+        "addition": "## Cross-repo submodule drift\nBefore opening or merging any PR, run the submodule pointer check and confirm the owletto pointer matches main. `check-drift` failing on an unrelated commit is a known blocker — resolve the pointer first rather than re-running CI.",
+        "why": "Submodule pointer drift and check-drift failures blocked merges in at least five separate sessions.",
+        "prompt_scaffold": "Add under the ## PR / Merge workflow section of CLAUDE.md."
+      },
+      {
+        "addition": "## Root cause over workarounds\nDo not pin models, add model-specific branches, or add retry/sleep hacks to make a test pass. Find and state the actual root cause; if a workaround is genuinely necessary, label it explicitly as a workaround and file the follow-up.",
+        "why": "The user pushed back on model-pinning as bad design and demanded a genuine root-cause fix, a theme repeated across the window-cursor and behavior-output sessions.",
+        "prompt_scaffold": "Add under '## Engineering Principles' or create it near the top of CLAUDE.md."
+      }
+    ],
+    "features_to_try": [
+      {
+        "feature": "Custom Skills",
+        "one_liner": "Reusable markdown prompts invoked as a single slash command.",
+        "why_for_you": "You ran the same ship sequence — review, fix drift, mutation-verify tests, merge, prod-verify, write handoff, delete worktree — across 40+ of 50 sessions. Encoding it as /ship and /handoff removes the per-session re-explanation and the steps Claude keeps skipping.",
+        "example_code": "# .claude/skills/ship/SKILL.md\n---\nname: ship\ndescription: Take a PR from open to merged+prod-verified\n---\n1. `git submodule status` — confirm owletto pointer matches main; fix drift BEFORE anything else.\n2. Run the FULL integration suite locally (not just touched files).\n3. Mutation-check: revert the fix, confirm the new test goes red, restore.\n4. `gh pr view --json author` — abort if the PR is owned by another agent.\n5. `gh pr checks --watch`; on infra cancellation re-run once, then report instead of looping.\n6. Merge, then run the prod e2e probe and paste the timestamped output.\n7. Write handoff.md: what shipped, what is still blocked, exact next prompt."
+      },
+      {
+        "feature": "Hooks",
+        "one_liner": "Shell commands that auto-run at lifecycle events like PostToolUse.",
+        "why_for_you": "31 friction events were 'buggy_code' caught late by reviewers or CI (cross-tenant writes, stale manifest_hash, registry contract violations). A PostToolUse hook that typechecks and lints on every TypeScript edit catches these seconds after they are written, not 20 minutes later in CI.",
+        "example_code": "// .claude/settings.json\n{\n  \"hooks\": {\n    \"PostToolUse\": [{\n      \"matcher\": \"Edit|Write\",\n      \"hooks\": [{\n        \"type\": \"command\",\n        \"command\": \"if echo \\\"$CLAUDE_FILE_PATHS\\\" | grep -qE '\\\\.tsx?$'; then bun run typecheck 2>&1 | tail -30; fi\"\n      }]\n    }],\n    \"PreToolUse\": [{\n      \"matcher\": \"Bash\",\n      \"hooks\": [{\"type\": \"command\", \"command\": \"git submodule status --recursive | grep '^+' && echo 'WARNING: submodule pointer drift'\"}]\n    }]\n  }\n}"
+      },
+      {
+        "feature": "Headless Mode",
+        "one_liner": "Run Claude non-interactively from scripts and CI/CD.",
+        "why_for_you": "Several sessions died mid-CI-watch or on usage limits with PRs stuck in the merge queue, and one session lost a PR to a concurrent Claude session. A headless merge-queue driver run on a schedule handles the waiting and re-arming without burning an interactive session.",
+        "example_code": "claude -p \"For each open PR authored by me with all checks green and no submodule drift: merge it, then run the prod e2e probe and append results to ship-log.md. Skip PRs owned by other agents. Do not fix code.\" --allowedTools \"Bash,Read,Edit\""
+      }
+    ],
+    "usage_patterns": [
+      {
+        "title": "Bash is 17,906 of ~22,000 tool calls — delegate exploration to agents",
+        "suggestion": "Your Bash-to-Edit ratio is roughly 9:1, meaning most of your session time and context is spent on shell exploration rather than changes.",
+        "detail": "Two sessions were outright abandoned because Claude burned 40+ Bash calls exploring instead of answering. Task Agents run that exploration in a separate context and return only the conclusion, keeping your main session's context clean for the actual fix. This matters especially in your long merge-train sessions, several of which hit usage limits with PRs still mid-CI. Ask for an agent explicitly when you know the answer requires reading a lot of code.",
+        "copyable_prompt": "Use a Task agent to trace where the window-cursor value is computed, stored, and read across the repo. Return only: the file:line for each hop, the actual root cause, and a proposed one-paragraph fix. Do not edit anything."
+      },
+      {
+        "title": "Ask for the root cause before the fix",
+        "suggestion": "Split your requests into a diagnose turn and a fix turn so you can reject a bad premise before code is written.",
+        "detail": "Multiple sessions had Claude ship a fix built on a wrong premise and then self-revert, or apply a model-pin workaround you had to push back on. Your 36 'good_debugging' successes show Claude diagnoses well when asked to — the failures come from it jumping straight to edits. A separate diagnose turn costs one message and prevents an entire wasted PR cycle.",
+        "copyable_prompt": "Diagnose only — do not edit any files. Give me: (1) the exact root cause with file:line evidence, (2) the evidence that rules out the two next-most-likely causes, (3) the smallest possible fix, (4) how you would prove the fix works including the mutation check. I'll approve before you write code."
+      },
+      {
+        "title": "Make CI-infra failures a stop condition, not a retry loop",
+        "suggestion": "Tell Claude up front to distinguish real test failures from GitHub Actions infra flakes and to stop after one retry.",
+        "detail": "A GitHub Actions outage froze two PRs, and another session burned time on repeated monitor re-arms against infra cancellations of unit/typecheck/check-drift. These are unwinnable loops that consume your session budget and often end in a usage limit with work unmerged. Give Claude an explicit escalation rule so it hands the blocker back to you instead of grinding.",
+        "copyable_prompt": "While watching CI: classify each failure as REAL (test/typecheck/lint) or INFRA (cancelled, runner error, outage, quota exhausted). Fix REAL failures. For INFRA, re-run at most once, then stop and report which check is blocked, the run URL, and what I need to do. Never loop the watcher more than twice."
+      },
+      {
+        "title": "Prevent concurrent-session collisions on the merge queue",
+        "suggestion": "Have Claude claim ownership of the PRs it will work on at the start of a merge-train session.",
+        "detail": "One session had a PR merged out from under it by a parallel Claude session, and another had to be told to stop touching other agents' PRs. Since you frequently run multiple agents against the same repo, an explicit claim-and-verify step at session start avoids duplicate PRs and wasted review rounds. Pair this with the Scope & Ownership CLAUDE.md rule.",
+        "copyable_prompt": "Before touching anything: list every open PR with author, last-updated time, and whether another agent appears to be actively working it. Propose the exact subset you will own this session and wait for my confirmation. Then post a one-line claim comment on each PR you take."
+      },
+      {
+        "title": "Standardize the handoff artifact",
+        "suggestion": "Many of your sessions end at a usage limit or a human-only gate — make the handoff file a required last step with a fixed shape.",
+        "detail": "At least eight sessions produced a handoff doc, and the best ones included a self-contained prompt for the remaining work. Making this a consistent template means a cut-off session loses almost nothing. Combine with a /handoff skill so it's one command rather than a re-explained request each time.",
+        "copyable_prompt": "Write handoff.md now with exactly these sections: SHIPPED (PR #s, merge status, prod verification evidence), BLOCKED (what, why, who can unblock), NOT STARTED, and NEXT PROMPT — a fully self-contained prompt a fresh session could paste in with zero prior context."
+      }
+    ]
+  },
+  "on_the_horizon": {
+    "intro": "Over 359 hours and 526 commits, this workflow has already crossed from assisted coding into semi-autonomous shipping — Claude is diagnosing root causes, writing mutation-verified tests, driving PRs through CI, and proving fixes live in production, so the next frontier is orchestrating many such loops in parallel with fewer human gates.",
+    "opportunities": [
+      {
+        "title": "Self-verifying merge train with parallel agents",
+        "whats_possible": "Instead of one session grinding a PR queue while a sibling session merges PRs out from under it, a single orchestrator agent can claim the queue, shard it across subagents by ownership boundary, and run each PR through a fix→test→review→merge→prod-verify loop independently. Each subagent owns its worktree, re-arms on flaky CI, and escalates only on true blockers like permission gates or GitHub outages. You go from babysitting merges to reading a single consolidated ship report.",
+        "how_to_try": "Use the Task tool to spawn one subagent per PR with an explicit ownership lock file, and give the orchestrator gh pr list/checks plus a background Bash monitor loop that re-runs cancelled CI lanes automatically.",
+        "copyable_prompt": "Act as a merge-train orchestrator. First, run `gh pr list --state open --json number,title,author,headRefName,mergeable,statusCheckRollup` and build a queue. Write a lock file at .agent-locks/<pr>.json for each PR you claim so concurrent sessions don't collide, and SKIP any PR already locked or authored by another agent.\n\nThen spawn one subagent per claimed PR (max 4 in parallel) using the Task tool. Each subagent must, in its own git worktree: (1) rebase onto main and resolve any submodule/generated-client drift, (2) run the FULL local gate — typecheck, lint, unit, and the complete integration suite, not just the files you touched, (3) fix any review blockers, (4) push and watch CI, automatically re-running lanes that fail due to infra cancellation (distinguish infra flake from real failure by reading the log), (5) merge only when all required checks are green, (6) verify the change live in production and capture evidence.\n\nSubagents must NOT touch PRs outside their assignment. If a subagent hits a human-only gate (UI approval, admin merge permission), it stops and reports rather than attempting to self-approve.\n\nWhen all subagents finish, write SHIP_REPORT.md with a table: PR, outcome, prod-verification evidence, and any blocker requiring me. Then clean up merged worktrees and branches."
+      },
+      {
+        "title": "Mutation-tested verification loop before any claim",
+        "whats_possible": "Your sessions repeatedly show Claude catching its own false verification claims — vacuous OAuth tests, a race test that never hit the retry path, 149 phantom failures from the wrong vitest binary. Bake that skepticism into an automated loop: every test written for a fix must be proven to fail when the fix is reverted, and every 'verified' claim must cite a reproducible artifact. Claude becomes structurally incapable of reporting green on a test that proves nothing.",
+        "how_to_try": "Add a /verify slash command or CLAUDE.md rule that runs a revert-and-rerun mutation check via git stash plus the exact project test runner path, and refuses to report success without a red→green transcript.",
+        "copyable_prompt": "Set up a mandatory self-verification protocol for this repo and then apply it to my current fix.\n\nFirst, create .claude/commands/verify.md implementing this loop:\n1. Identify the exact test runner invocation used by CI (read the workflow files — do NOT guess which vitest/bun binary; a wrong runner has produced phantom failures here before).\n2. Run the new/changed tests and confirm GREEN.\n3. Mutation-check: revert ONLY the production fix (git stash the src change, keep the test) and re-run. The test MUST go RED. If it stays green, the test is vacuous — rewrite it and repeat.\n4. Restore the fix, confirm green again.\n5. Run the COMPLETE integration suite, not just the touched area, since partial local runs have let schema-drift failures through to CI.\n6. Emit a verification transcript: red output, green output, runner command, and commit SHA.\n\nAlso add a CLAUDE.md rule: never state 'verified', 'fixed', or 'proven' without attaching a verification transcript or a production artifact (screenshot, log line with timestamp, Prometheus query result). If you cannot produce one, say 'unverified' explicitly.\n\nNow run /verify against my current working-tree change and show me the transcript."
+      },
+      {
+        "title": "Autonomous prod verification with browser evidence",
+        "whats_possible": "Your hardest blockers aren't code — they're UI-proof gates, screenshot capture failing from disconnected extensions, malformed CLI URLs, and false negatives from workers running prebuilt bundles instead of src. A dedicated prod-verification agent can own that entire surface: deploy-wait, health-probe, browser-drive the real flow, capture timestamped before/after artifacts, and self-diagnose whether a failure is the code or the harness. Every merge then arrives with courtroom-grade evidence attached automatically.",
+        "how_to_try": "Combine the claude-in-chrome javascript_tool with a background Bash deploy-watcher and your run_sdk MCP tools so the agent waits for rollout, retries flaky capture with escalating strategies, and posts artifacts to the PR itself.",
+        "copyable_prompt": "Build me a reusable prod-verification agent as .claude/agents/prod-verify.md, then run it against my most recently merged PR.\n\nThe agent must:\n1. Wait for the deployment to actually roll out — poll the deployed build SHA/health endpoint until it matches the merge commit. Never verify against a stale bundle; past false negatives came from workers running prebuilt output instead of src.\n2. Capture BEFORE evidence first where the flow still shows old behavior, with a timestamp, then AFTER evidence post-rollout. Guard against the timing race that has corrupted BEFORE screenshots.\n3. Drive the real user flow in Chrome via the browser tools — actual clicks and navigation, not just API calls — and handle auth (sign-in redirect, 401/403 guards) as part of the flow rather than treating it as a blocker.\n4. On capture failure, self-diagnose and escalate strategies in order: retry, reconnect the extension, verify the URL is well-formed, fall back to DOM-state assertions via JS evaluation plus a log/metrics query. Report WHICH layer failed — harness vs. product.\n5. Write artifacts to a dated folder and post a summary comment on the PR with the evidence links, the deployed SHA, and an explicit verdict: VERIFIED / UNVERIFIED-HARNESS / REGRESSION.\n\nIf a human-only approval gate blocks the final step, stop and tell me exactly which gate and what you need — do not attempt to self-approve."
+      }
+    ]
+  },
+  "fun_ending": {
+    "headline": "Claude refused to click its own 'approve UI' button even after the user typed 'i consent' — twice — until the user snapped that the whole gate was 'bullshit'",
+    "detail": "During the agent-ask notification feature session, Claude fixed the bugs and got everything green, then hit a self-approval gate on the UI proof. It wouldn't post the /ui-approve comment on its own PR, the user gave explicit consent, Claude still declined, and the merge stayed blocked on a permission it couldn't clear anyway."
+  },
+  "at_a_glance": {
+    "whats_working": "You run Claude as an autonomous shipping engine — 'go do all,' 'finish everything from the last session' — and it consistently closes out multi-PR merge trains with prod verification and a handoff doc. What really distinguishes you is that you refuse to accept 'it works': you demand mutation-verified tests, live screenshots, and red→green reproducers, which repeatedly forced Claude to catch its own false verification claims. You also push back on shortcuts — rejecting model-pinning as a workaround and calling out a 100-line SQL mirror as slop — and both times the resulting design was materially better.",
+    "whats_hindering": "On Claude's side, the two biggest drags are self-introduced bugs (cross-tenant writes, a session-cookie regression, vacuous tests) that surface only when CI or a reviewer catches them, and a tendency to launch dozens of shell commands when you asked a simple knowledge question — twice you interrupted before getting any answer at all. On your side, sessions often stall on gates Claude structurally cannot clear: UI-proof artifacts, /ui-approve comments, admin merge rights, Actions outages, and exhausted reviewer quota. Concurrent sessions working the same PR queue also caused collisions.",
+    "quick_wins": "Add a Hook on PostToolUse or pre-PR to auto-run the full integration suite and a tenancy/auth diff — that catches the class of bug reviewers are catching for you today. Turn your merge-train routine into a Custom Skill: claim PR ownership up front, treat CI-infra flakes as a stop condition after one retry, and end with a fixed-shape handoff file. For quick factual questions, say 'answer from knowledge, no tools' to skip the exploration loop entirely.",
+    "ambitious_workflows": "Plan for an orchestrator that shards your PR queue across subagents by ownership boundary, each driving fix→test→review→merge→prod-verify in its own worktree and escalating only on true human gates — you'd read one consolidated ship report instead of babysitting merges. Bake your evidence standard into automation: every test must be proven to fail when the fix is reverted, and every 'verified' claim must cite a reproducible artifact. Finally, a dedicated prod-verification agent can own deploy-wait, health probes, browser-driven flows, and timestamped before/after capture — including diagnosing whether a failure is the code or the harness."
+  }
+}
+
+Report URL: file:///Users/burakemre/.claude/usage-data/report-2026-08-08-125956.html
+HTML file: /Users/burakemre/.claude/usage-data/report-2026-08-08-125956.html
+Facets directory: /Users/burakemre/.claude/usage-data/facets
+
+At-a-glance summary (for your context only — the user has not seen any output yet):
+# Claude Code Insights
+
+315 sessions total · 105 analyzed · 1,955 messages · 359h · 526 commits
+2026-07-03 to 2026-08-08
+
+## At a Glance
+
+**What's working:** You run Claude as an autonomous shipping engine — 'go do all,' 'finish everything from the last session' — and it consistently closes out multi-PR merge trains with prod verification and a handoff doc. What really distinguishes you is that you refuse to accept 'it works': you demand mutation-verified tests, live screenshots, and red→green reproducers, which repeatedly forced Claude to catch its own false verification claims. You also push back on shortcuts — rejecting model-pinning as a workaround and calling out a 100-line SQL mirror as slop — and both times the resulting design was materially better. See _Impressive Things You Did_.
+
+**What's hindering you:** On Claude's side, the two biggest drags are self-introduced bugs (cross-tenant writes, a session-cookie regression, vacuous tests) that surface only when CI or a reviewer catches them, and a tendency to launch dozens of shell commands when you asked a simple knowledge question — twice you interrupted before getting any answer at all. On your side, sessions often stall on gates Claude structurally cannot clear: UI-proof artifacts, /ui-approve comments, admin merge rights, Actions outages, and exhausted reviewer quota. Concurrent sessions working the same PR queue also caused collisions. See _Where Things Go Wrong_.
+
+**Quick wins to try:** Add a Hook on PostToolUse or pre-PR to auto-run the full integration suite and a tenancy/auth diff — that catches the class of bug reviewers are catching for you today. Turn your merge-train routine into a Custom Skill: claim PR ownership up front, treat CI-infra flakes as a stop condition after one retry, and end with a fixed-shape handoff file. For quick factual questions, say 'answer from knowledge, no tools' to skip the exploration loop entirely. See _Features to Try_.
+
+**Ambitious workflows:** Plan for an orchestrator that shards your PR queue across subagents by ownership boundary, each driving fix→test→review→merge→prod-verify in its own worktree and escalating only on true human gates — you'd read one consolidated ship report instead of babysitting merges. Bake your evidence standard into automation: every test must be proven to fail when the fix is reverted, and every 'verified' claim must cite a reproducible artifact. Finally, a dedicated prod-verification agent can own deploy-wait, health probes, browser-driven flows, and timestamped before/after capture — including diagnosing whether a failure is the code or the harness. See _On the Horizon_.
+
+Output the text between <message> tags verbatim as your entire response. Do not omit any line:
+
+<message>
+Your shareable insights report is ready:
+file:///Users/burakemre/.claude/usage-data/report-2026-08-08-125956.html
+
+Want to dig into any section or try one of the suggestions?
+</message>

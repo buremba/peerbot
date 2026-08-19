@@ -1,0 +1,1 @@
+that on write the user can define another function and can reuse if they want. let's think through if this is the best model, if we need to do some more work or can we get this working with your all prs adopting this approach

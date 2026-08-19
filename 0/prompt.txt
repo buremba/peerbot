@@ -1,0 +1,1 @@
+there is another claude session running but i feel like i'm lost with it. many different surface of errors and i don't know what we're trying to archive. we wanted to build an erp and either bad architecture caught us or there were gaps we need to address. be honest

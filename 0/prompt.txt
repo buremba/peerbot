@@ -1,0 +1,1 @@
+shortcuts stuff we don't need to show, just show alwats under the chat stuff if any notification exists

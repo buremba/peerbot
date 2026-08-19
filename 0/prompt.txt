@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bmcvzx9m6</task-id>
+<summary>Monitor event: "required checks on PR 2292 after rework"</summary>
+<event>integration: pass
+ALL REQUIRED SETTLED</event>
+</task-notification>

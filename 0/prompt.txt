@@ -1,0 +1,1 @@
+ok as long as public sdk api mcp cli everything don't reference to watcher it's fine

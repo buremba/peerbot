@@ -1,0 +1,1 @@
+admin merge that it's fine. let's do the design proposal use html arifact let me understand go through use-cases the gaps and complexity and confidence on the solution. also save the memory the things we need we will compact

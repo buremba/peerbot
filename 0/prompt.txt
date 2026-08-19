@@ -1,0 +1,1 @@
+i'm trying to think through. when somebody installs owletto do we automatically enable that computeruse, how does the permissions work

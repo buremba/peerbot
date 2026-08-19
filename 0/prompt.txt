@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsrljaa86</task-id>
+<tool-use-id>toolu_01L1vN9mqhChjgqbtSH1HP22</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/bsrljaa86.output</output-file>
+<status>killed</status>
+<summary>Background command "Final pre-pr and review on 2294" was stopped</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhvb06mu5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bhvb06mu5.output</output-file>
+<status>completed</status>
+<summary>Background command "Auto-fix formatting, re-test, re-run pre-pr" completed (exit code 0)</summary>
+</task-notification>

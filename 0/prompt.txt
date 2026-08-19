@@ -1,0 +1,1 @@
+yes delete merged worktrees, no need for 2 just cleanup.

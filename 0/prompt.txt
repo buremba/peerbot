@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bd9qa9p6e</task-id>
+<tool-use-id>toolu_01HnYQ1SwacahZPao5c9zMdw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bd9qa9p6e.output</output-file>
+<status>completed</status>
+<summary>Background command "Run remote gate for piece 2" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+yes udnerstand it better. maybe we can have the runtime merging devices and sandbox. and have a third tab saying external agents or something like that for cli and mcp sessions

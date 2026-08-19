@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b40ia3a0v</task-id>
+<tool-use-id>toolu_01QtxrmSAyCvCVoEaJ9dVp9z</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/b40ia3a0v.output</output-file>
+<status>completed</status>
+<summary>Background command "Final review on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+is this solution event sourced native enough or are we diverging. we keep hitting bugs how can we make it more resillient and consistent

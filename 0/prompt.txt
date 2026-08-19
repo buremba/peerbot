@@ -1,0 +1,1 @@
+continue this session yourself understand the code. grok --resume 019fb033-32e3-7703-a0ba-c427b5d88012 the connector page changes we didn't like and we want to brainstorm and see what the best ux is, without actually trying to expose everything int he api as it is. can you guide me.

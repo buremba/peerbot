@@ -1,0 +1,3 @@
+the left arrow is stuck on the most left, it should be left side of the title. same with other pages under agent. it's a common problem http://127.0.0.1:9208/local-install/agents/lobu-builder/behaviors/new
+
+also the guardrail cards should be similar to the ones we have in the skills

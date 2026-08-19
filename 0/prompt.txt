@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4drizn0m</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/b4drizn0m.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on settled HEAD (background)" completed (exit code 0)</summary>
+</task-notification>

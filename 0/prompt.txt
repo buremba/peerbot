@@ -1,0 +1,4 @@
+1. how a about agent scraping on the fly to do it? or should we automatically scrape? what's the best approach here? ideally we have identity resolution and all, and when the agent is in a place, we can scrape all the data created shared member identity acl can refer to. you say we do acl but doesn't acl relations relate to member entitites?
+2. if mentioned something like @lobu remember this etc maybe we don't even need to post, just using reaction message is fine. we need the bot to me interactive not bombarding channels
+3. could you use sonnet to try it out after we list use-cases.
+4. yes

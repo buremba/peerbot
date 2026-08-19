@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw86uyqzx</task-id>
+<tool-use-id>toolu_01KaihzRyDq1FRJobKBVzLN2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bw86uyqzx.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch for prod rollout of the squash" completed (exit code 0)</summary>
+</task-notification>

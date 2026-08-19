@@ -1,0 +1,1 @@
+can you check lobu-team plugs in postgresql and all the users, also does it connect to the prod logs somehow? we want to get notification when a new client connected, when a new user logged in or signed up all these operations. hourly, sendin the message on slack like digests

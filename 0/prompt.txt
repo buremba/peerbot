@@ -1,0 +1,1 @@
+3 background agents were stopped by the user: "Slack bindings by workspace identity #2148", "Connector-detail UI tests #2206", "Fix egress bypass #2244 (fresh)".

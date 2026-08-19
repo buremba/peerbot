@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b81dujz5u</task-id>
+<tool-use-id>toolu_01LYiJWA8Kkv3KQoz8tvEq5d</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/b81dujz5u.output</output-file>
+<status>completed</status>
+<summary>Background command "Review the corrected feature PR" completed (exit code 0)</summary>
+</task-notification>

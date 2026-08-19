@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:13:32.082Z","content":[{"text":"New message in #sales:\n\ndave: 😂😂 that deck though"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:13:35.841Z","id":"0a7bea26","input_tokens":188,"output_tokens":293,"content":[{"type":"text","text":"This is a casual team message that doesn't require any action from me. Staying out of it."}]}

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b92u23mmr</task-id>
+<tool-use-id>toolu_01HPR9uDo3zhcnKvP8zkHPBp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/b92u23mmr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix pass" completed (exit code 0)</summary>
+</task-notification>

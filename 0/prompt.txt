@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bi0yhgmlk</task-id>
+<summary>Monitor event: "required checks on submodule bump PR 2346"</summary>
+<event>2346 frontend: pass
+2346 unit: pass</event>
+</task-notification>

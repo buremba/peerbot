@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4kvq48qf</task-id>
+<tool-use-id>toolu_0131Ls9CrGSrqufYjsVVPSFH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/b4kvq48qf.output</output-file>
+<status>completed</status>
+<summary>Background command "Final gate run" completed (exit code 0)</summary>
+</task-notification>

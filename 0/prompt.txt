@@ -1,0 +1,1 @@
+hmm, i don't get why the request body can't be in the event itself. why redacting

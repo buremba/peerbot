@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpeog56jn</task-id>
+<tool-use-id>toolu_01YQ9rtrhh7omMDvrtzFZvA4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bpeog56jn.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after bun install and clean build" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+should we instead use sandbox sdk instead of vercel sdk? and this connector becomes the way people create sandboxes

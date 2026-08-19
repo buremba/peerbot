@@ -1,0 +1,1 @@
+the question is that why the ai searches for watcher? we can finish the rename but we don't expose it to api surface so the external agents don't know it already no?

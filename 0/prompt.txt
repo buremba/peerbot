@@ -1,0 +1,21 @@
+Review commit HEAD (branch feat/acl-purpose-classification) in this repo. READ ONLY — do not edit any file.
+
+CONTEXT. `member_of` is both an ACL primitive the authz gates read AND ordinary domain vocabulary any caller can create. `ensureMemberOfType` upserts on (organization_id, slug), so it ADOPTS a pre-existing org-authored row. `source` cannot carry the boundary: the ACL syncs write source='feed' and 'feed' is also caller-settable, so a caller-minted edge is byte-identical to a sync-minted one.
+
+THE DESIGN under review:
+1. New `entity_relationship_types.purpose` column + CHECK (NULL or 'authorization').
+2. A BEFORE INSERT/UPDATE/DELETE row trigger on `entity_relationships` that refuses any write touching a type with purpose='authorization' unless the transaction set `lobu.acl_write='on'` via set_config(...,true).
+3. `withAclEdgeWrite` (opens its own tx) and `withAclPrivilege` (scoped inside a caller's tx, resets to 'off' in a finally) wrap the legitimate ACL writers.
+4. Call-site guards refusing caller mutation of a classified type: link/unlink/update_link, schema create/update/delete/add_rule/remove_rule, and the inverse_type_slug path.
+5. D8=C: merge DROPS the loser's authorization edges rather than repointing them; force_delete_tree hard-deletes them under the flag; authorization edges are EXCLUDED from the merge undo ledger so unmerge neither restores a revoked grant nor hits the trigger.
+6. ROLLOUT SPLIT: this deploy ships everything INERT — the migration does NOT backfill, and `ensureMemberOfType` deliberately does NOT stamp purpose. So no type is classified and the trigger never fires. A SECOND deploy adds the stamp + backfill, once every live pod already sets the flag.
+
+ANSWER THESE, citing file:line:
+A. Is the rollout split actually safe? Is there ANY path in THIS commit that could classify a type in production and thereby arm the trigger while old pods are live? Check every writer of `purpose`, including `lobu apply` / config-driven schema paths and the connectors.
+B. Can a caller still mint or revoke an access-granting edge once A2 classifies member_of? Enumerate every remaining write path to `entity_relationships` and say which are guarded by the trigger vs. only by a call-site check.
+C. Does `withAclPrivilege`'s reset actually restore enforcement mid-transaction, given Postgres SET LOCAL semantics and savepoints/subtransactions?
+D. Is excluding authorization edges from the merge undo ledger correct, or does it corrupt the ledger's exactness invariant / break unmerge for mixed edge sets?
+E. Any deadlock, lock-ordering, or `FOR UPDATE OF r` correctness problem introduced by the JOIN added to the relationshipsBefore query?
+F. What is NOT covered by tests that should be, for a security boundary?
+
+Be adversarial and concrete. If a claim in this description is FALSE, say so and cite the code. End with a verdict: SAFE TO MERGE / NOT SAFE, and your confidence 0-100.

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bblvwusd7</task-id>
+<tool-use-id>toolu_01Ss7uCR4z24rovZTXQMrmLS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bblvwusd7.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for main CI rerun on current HEAD" completed (exit code 0)</summary>
+</task-notification>

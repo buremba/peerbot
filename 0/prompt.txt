@@ -1,0 +1,1 @@
+make sure we're not doing ai slop

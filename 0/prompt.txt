@@ -1,0 +1,1 @@
+do you think this is the best approach? i was thinking under agents section we also show the chatgpt claude etc based on mcp client name and when clicked show notifications and the events in that page in their mcp client page. does it make sense

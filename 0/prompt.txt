@@ -1,0 +1,63 @@
+<task-notification>
+<task-id>a105790feb31cb22a</task-id>
+<tool-use-id>toolu_01Gxma593VfTLsL9cSyf7Hfa</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/a105790feb31cb22a.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix query_sql silent empty results" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>`review-fix` is still running at ~13 minutes. The monitor `bn1jsqulm` is armed and will notify me the moment it exits. Rather than continuing to poll, let me report the current state and wait.
+
+**Status: `make review-fix` still running (~13 min).** Here's where things stand — the bug is reproduced, root-caused, and fixed, with the fixer pass currently converging on the settled diff.
+
+## Root cause (confirmed, not speculative)
+
+Both paths *already* share `validateAndScopeQuery`, which correctly **throws** for an unknown table. The divergence is entirely at the MCP rendering boundary:
+
+- `client.query` (query_sdk) lets the throw propagate → honest error.
+- `query_sql` catches it into a deliberate soft-error result `{ rows: [], error }` (the #2042/#2051 convention)… and then **`formatQuerySqlResult` in `packages/server/src/formatting/markdown-formatter.ts:968` destructured only `{ rows, total_count, execution_time_ms }`**, dropping `error` entirely.
+
+`query_sql` declares **no `outputSchema`** (`packages/server/src/tools/registry.ts:212`), so that markdown is the *only* thing an MCP caller sees. Hence `Rows: 0` with no error. The REST surface (`rest-api.ts`) returns raw JSON and *did* show the error — that asymmetry confirmed the formatter as the culprit.
+
+## Red evidence
+
+```
+error: expect(received).toContain(expected)
+Expected to contain: "conversations"
+Received: "# 💾 SQL Query Results (CSV)\n\n**Rows**: 0 • **Time**: 3ms\n\n```csv\n```..."
+ 2 pass  2 fail
+```
+
+## Green evidence
+
+`8 pass, 0 fail` on the new unit suite; `make test-unit` exits 0 (2725+ tests across all packages); `make pre-pr` exits 0.
+
+## Exact before/after a caller sees
+
+Before: `# 💾 SQL Query Results (CSV)` / `**Rows**: 0 • **Time**: 3ms` — empty CSV block.
+
+After:
+```
+# ❌ Error (VALIDATION)
+
+Unknown table 'conversations' — not in the queryable allowlist, so the query did
+not run. This is an error, not an empty result. Queryable tables are:
+canvas_windows, channel_messages, connections, connector_definitions, entities,
+entity_relationship_types, entity_relationships, event_classifications, events,
+feeds, oauth_clients, oauth_tokens, user, watcher_versions, watchers.
+
+Retrying the identical call will not help unless the query or arguments change.
+```
+Plus `isError: true` on the MCP result.
+
+## Two corrections `review-fix` made that I want to flag
+
+1. It moved `isSoftErrorResult` from the formatter into `tools/execute.ts` and taught it the **`query_sdk` shape** (`success: false` + structured error object) — so `run_sdk`/`query_sdk` script failures now get `isError` too. Wider than my version.
+2. It **reverted my class-wide formatter guard**, and correctly so: routing every tool's error result through one renderer would have *dropped fields* like `manage_connections`' `setup_url`. It pinned that with a regression test. I'd have shipped that bug.
+
+It also added an end-to-end integration test issuing a real JSON-RPC `tools/call` over `/mcp/{slug}` asserting `isError: true` — stronger proof than my unit test.
+
+**Remaining, blocked on the fixer finishing:** verify its final diff, re-run tests, commit by explicit path, push, open the PR, then `make review` once. I have not committed anything yet, and per your instruction I will not merge.
+
+One thing worth your judgment when I report back: the fix makes `query_sql` return `isError: true` for *all* soft errors, not just unknown tables. That's the correct consistency fix, but it does change the MCP-visible outcome for existing soft-error paths (timeouts, read-only violations, bad `org_slug`) from "success" to "error" — a behavior change for any client keying off `isError`, which I'd call a bug fix rather than a regression, but it is broader than the reported symptom.</result>
+<usage><subagent_tokens>156055</subagent_tokens><tool_uses>104</tool_uses><duration_ms>1360212</duration_ms></usage>
+</task-notification>

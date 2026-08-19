@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzmbbk7b4</task-id>
+<tool-use-id>toolu_016ad5p3JBPGhLzdCcuvd1Bo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bzmbbk7b4.output</output-file>
+<status>failed</status>
+<summary>Background command "Depot gate on repinned tree eaa0e4de" failed with exit code 2</summary>
+</task-notification>

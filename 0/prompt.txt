@@ -1,0 +1,1 @@
+just to understand, could that be like an ambient mode. if the bot is tagged it should respond but if the bot is not tagged and there is a confidence interval it answers etc. think of it like the bot

@@ -1,0 +1,1 @@
+hmm, how about save_content has a notification flag, or would this make things more complicated?

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bk3dqsp8l</task-id>
+<summary>Monitor event: "prod rollout of PR #2325 (merge fingerprint refresh)"</summary>
+<event>DEPLOYED: #2325 (7c27a1377f4432465f0d12c04b3f70b63610e122) is live in prod (revision 7c27a1377f4432465f0d12c04b3f70b63610e122)</event>
+</task-notification>

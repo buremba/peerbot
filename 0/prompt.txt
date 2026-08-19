@@ -1,0 +1,1 @@
+i wanted chatgpt to be able to create sandbox but not in vercel my local macmini. it can do run_sdk mcp calls and create a conversation but we require vercel sandbox

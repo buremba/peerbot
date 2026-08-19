@@ -1,0 +1,1 @@
+hmm, is skills can be referenced from prompt, do we even need skills seperate under behaivor

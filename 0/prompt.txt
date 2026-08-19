@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The primary flows pass their focused tests and bundle build, but two uncovered combinations still lose snapshot identity or user-edited view state during reload. These defects undermine the capability-only restoration path introduced by the patch.
+
+Full review comments:
+
+- [P2] Read preloaded capabilities from every compatibility target — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:546-547
+  When a same-origin sandbox splits ChatGPT globals—for example, `window.openai` contains cached `widgetState` while `window.parent.openai` already contains only `toolResponseMetadata`—`currentOpenAiGlobals()` selects the widget-state candidate and this reads the capability from only that object. If no later `openai:set_globals` event fires and host `toolInfo` is absent, restoration has neither an ID nor capability, so pagination/disclosure state cannot restore or save. Combine preloaded data and metadata across all compatibility targets.
+
+- [P2] Persist edits after late identity restoration — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:604-607
+  When a card is initially loaded only from cached `widgetState`, `hasLiveToolOutput` remains false. If the user changes view state before late capability metadata arrives, the original save timer runs without an identity and is dropped; restoration then correctly merges the edit, but this guard suppresses persistence and no later trigger saves it, so the edit is lost on reload. Persist successful restores when local view-state revisions exist, and apply the same correction to the equivalent host-context/connect guards.
+  </results>
+  </user_action>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcf2woino</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/bcf2woino.output</output-file>
+<status>completed</status>
+<summary>Monitor "make review-fix on UI tests branch" stream ended</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>brxu3yvlh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e39f49c0-cd35-4e6e-a982-109426394d02/tasks/brxu3yvlh.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-review 2018 on new HEAD" completed (exit code 0)</summary>
+</task-notification>

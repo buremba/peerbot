@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkbcia1e6</task-id>
+<tool-use-id>toolu_01AMLLRVP165rops4Vrqk3np</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/bkbcia1e6.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review once on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

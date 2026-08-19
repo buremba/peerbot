@@ -1,0 +1,1 @@
+Skill /artifact-design was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation — follow those instructions now, including any setup steps. Arguments: Relationship/graph capability gap register for Lobu across ERP, social, identity-graph and personal-assistant use cases — a technical reference document for the product owner

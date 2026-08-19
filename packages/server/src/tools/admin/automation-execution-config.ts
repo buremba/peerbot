@@ -93,7 +93,7 @@ export function assertValidExecutionConfig(value: unknown, caller: ExecutionConf
 export async function assertServerLaneModelResolves(params: {
   executionConfig: unknown;
   organizationId: string;
-  /** Effective pin AFTER the patch — either field set means the device lane. */
+  /** Effective pin AFTER the patch — a set device_worker_id means the device lane. */
   isDevicePinned: boolean;
   /** `ctx.applyId` — non-null only for a `lobu apply` run. */
   applyId?: string | null;
@@ -113,7 +113,7 @@ export async function assertServerLaneModelResolves(params: {
   throw new ToolUserError(
     `execution_config.model '${model}' names inference provider '${slug}', which this organization has not registered. ` +
       `Register it first, use a model from a provider you have, or pass 'auto'. ` +
-      `Note: a device-pinned Automation (agent_kind + device_worker_id) instead resolves this ref against the local CLI's own providers, which are not interchangeable with these.`,
+      `Note: a device-pinned Automation (device_worker_id set) instead resolves this ref against the local CLI's own providers, which are not interchangeable with these.`,
     400
   );
 }

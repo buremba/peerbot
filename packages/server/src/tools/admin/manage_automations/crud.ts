@@ -124,7 +124,7 @@ export async function handleCreate(
   await assertServerLaneModelResolves({
     executionConfig: args.execution_config,
     organizationId: ctx.organizationId,
-    isDevicePinned: args.device_worker_id != null || args.agent_kind != null,
+    isDevicePinned: args.device_worker_id != null,
     applyId: ctx.applyId,
   });
 
@@ -536,16 +536,19 @@ export async function handleUpdate(
   // Judge the model against the lane the Automation will be on AFTER this
   // patch, not the one it is on now: clearing a device pin in the same call
   // moves the ref onto the server lane, where it has to resolve.
+  //
+  // Only an incoming `execution_config` is judged. Clearing the pin WITHOUT
+  // re-sending one leaves an already-stored CLI-namespace ref on the now-server
+  // lane, and it fails at dispatch rather than here. That is deliberate:
+  // re-validating the stored model would make unrelated updates start failing
+  // on legacy rows nobody is touching.
   await assertServerLaneModelResolves({
     executionConfig: args.execution_config,
     organizationId: currentRow.organization_id,
     isDevicePinned:
-      (args.device_worker_id !== undefined
+      args.device_worker_id !== undefined
         ? args.device_worker_id != null
-        : currentRow.device_worker_id != null) ||
-      (args.agent_kind !== undefined
-        ? args.agent_kind != null
-        : currentRow.agent_kind != null),
+        : currentRow.device_worker_id != null,
     applyId: ctx.applyId,
   });
   const triggerWrite = resolveAutomationTriggerWrite({

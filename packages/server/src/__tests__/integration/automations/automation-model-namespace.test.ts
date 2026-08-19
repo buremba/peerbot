@@ -79,6 +79,23 @@ describe('execution_config.model namespace guard', () => {
     ).rejects.toThrow(/opencode-go/);
   });
 
+  it('still rejects on the server lane when agent_kind is set without a device pin', async () => {
+    // agent_kind alone selects a local CLI runtime on the DEVICE lane and is
+    // otherwise inert; it must not be read as a device pin that exempts the
+    // server lane from the model guard.
+    await expect(
+      owner.automations.create({
+        slug: 'server-lane-agent-kind-only',
+        name: 'Server Lane Agent Kind Only',
+        prompt: 'Do a thing.',
+        triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
+        agent_id: agentId,
+        agent_kind: 'opencode',
+        execution_config: { model: 'opencode-go/deepseek-v4-flash' },
+      })
+    ).rejects.toThrow(/opencode-go/);
+  });
+
   it('accepts a model naming a registered provider', async () => {
     const created = (await owner.automations.create({
       slug: 'server-lane-good-model',

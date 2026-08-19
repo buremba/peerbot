@@ -375,7 +375,7 @@ export type SaveMemoryResponse = SaveMemoryResponses[keyof SaveMemoryResponses];
 export type SearchSdkData = {
   body: {
     /**
-     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'automations'), one or more dotted paths separated by whitespace (e.g. 'automations.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, automations, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates.
+     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'automations'), one or more dotted paths separated by whitespace (e.g. 'automations.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, automations, catalog, classifiers, connections, conversations, ctx, devices, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates.
      */
     query: string;
     /**
@@ -1455,6 +1455,10 @@ export type ManageEntitySchemaData = {
       [key: string]: unknown;
     };
     /**
+     * [entity_type: create/update] TypeScript write rules for this type, as source. The default export receives one row per write — `{ committed, patch, next, op, changed(field), deny(reason), escalate(fields, reason) }` — and may only NARROW what is allowed: there is no `allow`. Compiled server-side on save and executed at the entity write seam, so an illegal state is rejected no matter which caller proposed it. Note `patch` is the fully MERGED value set, not a delta, so compare against `committed` rather than testing for a key's presence. `null` clears the rules; omit to leave unchanged.
+     */
+    rules_source?: null | string;
+    /**
      * [relationship_type: create] Whether the relationship is symmetric (A↔B = B↔A). Default false. Create-only: affects relationship canonicalization/dedup for existing rows, so an update carrying is_symmetric is rejected (not silently dropped). To change it, create a new type and migrate.
      */
     is_symmetric?: boolean;
@@ -1537,6 +1541,7 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          rules_source?: string | null;
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1583,6 +1588,7 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          rules_source?: string | null;
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1627,6 +1633,7 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          rules_source?: string | null;
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1671,6 +1678,7 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          rules_source?: string | null;
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -4472,7 +4480,7 @@ export type ManageAutomationsData = {
        */
       max_budget_usd?: number;
       /**
-       * Model alias/id passed to the CLI (--model).
+       * Model override for this Automation. ONE field, two namespaces, resolved by where the Automation runs: a device-pinned Automation (device_worker_id set) passes this verbatim to the local CLI as --model, so it must name a provider that CLI has registered (e.g. 'opencode-go/deepseek-v4-flash'); a server-dispatched Automation resolves it against the org's inference providers (e.g. 'deepseek/deepseek-v4-flash'), or 'auto'. The two are NOT interchangeable — a CLI ref on the server lane fails at the provider, and a server ref on a device lane fails at the CLI.
        */
       model?: string;
       /**

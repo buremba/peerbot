@@ -320,7 +320,7 @@ export const AutomationExecutionConfigSchema = Type.Object(
     model: Type.Optional(
       Type.String({
         description:
-          "Model override for this Automation. ONE field, two namespaces, resolved by where the Automation runs: a device-pinned Automation (agent_kind + device_worker_id) passes this verbatim to the local CLI as --model, so it must name a provider that CLI has registered (e.g. 'opencode-go/deepseek-v4-flash'); a server-dispatched Automation resolves it against the org's inference providers (e.g. 'deepseek/deepseek-v4-flash'), or 'auto'. The two are NOT interchangeable — a CLI ref on the server lane fails at the provider, and a server ref on a device lane fails at the CLI.",
+          "Model override for this Automation. ONE field, two namespaces, resolved by where the Automation runs: a device-pinned Automation (device_worker_id set) passes this verbatim to the local CLI as --model, so it must name a provider that CLI has registered (e.g. 'opencode-go/deepseek-v4-flash'); a server-dispatched Automation resolves it against the org's inference providers (e.g. 'deepseek/deepseek-v4-flash'), or 'auto'. The two are NOT interchangeable — a CLI ref on the server lane fails at the provider, and a server ref on a device lane fails at the CLI.",
       })
     ),
     permission_mode: Type.Optional(

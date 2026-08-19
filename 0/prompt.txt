@@ -1,0 +1,1 @@
+ok do all, you can use opencode as cli to offload the work, use it as subagent

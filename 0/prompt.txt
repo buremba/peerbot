@@ -1,0 +1,195 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The session began with "dig into this conversation and continue the work, run dev server so i can confirm" — no prior context was available, so I reconstructed state from the repo. The work centres on the **`feat/sidebar-nav` worktree** at `/Users/burakemre/Code/lobu/.claude/worktrees/sidebar-nav/`, which contains the "sandboxes as first-class connectors" fold plus sidebar/nav consolidation.
+
+   Successive explicit user requests, in order:
+   - Run the dev server so the user can confirm visually
+   - Fix the Vercel connector page design inconsistency ("not same as the other connectors")
+   - Evaluate whether to swap `@vercel/sandbox` for a generic sandbox SDK (user supplied https://docs.computesdk.com/providers)
+   - Confirm whether each provider gets a connector "from the same code"
+   - Fix Activity page top margin; move search after the first combobox; make it consistent with the Models/Entities page
+   - Rename the "Models" sidebar row (collides with model *providers*) → settled on **Context** (user rejected Catalog)
+   - Move **Connect above** Entities/Context in the sidebar
+   - Consider a collapsible accordion for sidebar sections like agents have
+   - Remove the tabs under agents and put items in the sidebar; user later refined: "maybe a single settings and it can show tabs but not the chat one?"
+   - "rebase from main some code is merged"
+   - Fix: "permissions page fail. identity page not needed, skills did we remove them?"
+   - "why tabs guardrail, cant it be in the sidebar? and why do we need skills didn't we make them system entity?"
+   - Consider whether guardrails/skills/identity only apply to model-configured agents ("that's like managed agents?")
+   - Take screenshots myself rather than asking the user ("you take screenshot to understand")
+
+2. **Key Technical Concepts:**
+   - Bun workspace monorepo; `packages/owletto` is a **git submodule** (private frontend)
+   - TanStack Router (file-based routes, `routeTree.gen.ts`, `validateSearch`, `beforeLoad` redirects)
+   - Vite dev server in middleware mode, in-process HMR on the same port as the Lobu server
+   - **Read-layer union pattern**: model providers (`inference-provider:` prefix) and sandboxes (`sandbox:` / `sandbox-provider:` prefixes) synthesized into the connectors list from separate tables; prefixed key IS the routable connector key
+   - `GatewayRuntimeProvider` interface (`id`, `credentialFields`, `exec`) — the vendor-neutral runtime abstraction; `@vercel/sandbox` imported in exactly ONE file
+   - Vault-backed sandbox credentials: `sandbox:<sandboxId>:<field>` keys in `agent_secrets` (encrypted); non-secret fields surfaced as `details`
+   - System entity types = slugs starting with `
+
+ (`$member`, `$resource`, `$canvas`); `isSystemEntityType()`
+   - better-auth forged session cookie for authenticated browser testing (`docs/BROWSER_TESTING.md`); local plain-http uses unprefixed `better-auth.session_token`
+   - `agent-browser` CLI for browser automation (Chrome extension's temp profile cannot reach localhost)
+   - Submodule-pointer branches must use `git merge`, never rebase
+
+3. **Files and Code Sections:**
+
+   - **`packages/owletto/src/lib/connectors/sandbox-rows.ts`** (new, pre-existing uncommitted work; I extended it)
+     - Core of the sandboxes-as-connectors fold. Two key shapes: `sandbox:{id}` (instance) and `sandbox-provider:{kind}` (catalog entry).
+     - I added:
+     ```ts
+     /**
+      * Domain to pull the provider's favicon from, so a runtime row carries its
+      * real logo like every other connector instead of a letter-mark. Unknown kinds
+      * return null and `ConnectorMark` degrades to the monogram on its own.
+      */
+     export function sandboxProviderFaviconDomain(kind: string): string | null {
+         if (kind === "vercel") return "vercel.com";
+         return null;
+     }
+     ```
+     - Added `favicon_domain: sandboxProviderFaviconDomain(kind),` to `buildSandboxProviderCatalogEntries`
+     - **Known remaining hardcodes blocking provider #2**: `SANDBOX_PROVIDER_FIELDS` (line ~47, hardcodes Vercel's token/teamId/projectId) and `sandboxProviderLabel` (special-cases `"vercel"`, else capitalizes so `e2b` → "E2b")
+
+   - **`packages/owletto/src/components/entity-tabs/connections-tab/connection-form.tsx`**
+     - Fixed "Add device" link (was `/$owner/environments`, now `/$owner/connectors/runtime` with `search: { provider: undefined }`)
+     - Changed the Vercel catalog card from a navigating `<Link>` to in-place selection:
+     ```tsx
+     const [selectedSandboxKind, setSelectedSandboxKind] = useState<string | null>(
+       // Deep link (/connectors/create/sandbox-provider:vercel, and the forwarded
+       // old detail-route link) opens straight on the credential form.
+       () => parseSandboxProviderKey(initialConnectorKey ?? "")
+     );
+     ```
+     - Added `SandboxKindCreatePanel` component (appended at EOF) reusing the same `← Back` + `ConnectorDisplay` header as the connector branch
+
+   - **`packages/owletto/src/app/$owner/connectors/$connectorKey.index.tsx`**
+     - `SandboxProviderConnectBody` replaced entirely with a redirect to `/$owner/connectors/create/$connectorKey`
+     - `SandboxConnectorBody` uses `ConnectorPageShell` with tabs (Feeds/Actions disabled, Settings enabled), `ConnectorMark` with `faviconDomain={sandboxProviderFaviconDomain(sandbox.providerKind)}`
+
+   - **`packages/owletto/src/components/sandboxes/sandbox-detail.tsx`** (new)
+     - Split into `SandboxOverview` (summary card) and `SandboxDetail` (delete-only, Settings tab) so the summary isn't rendered twice
+
+   - **`packages/owletto/src/app/$owner/environments/index.tsx`** — reduced to a pure redirect; deleted dead `resolvePrefillProvider` + its test file
+
+   - **`packages/owletto/src/lib/owner-sections.ts`** — reordered and renamed:
+     ```ts
+     export const OWNER_SECTIONS = {
+         activity: { icon: Activity, label: "Activity", to: "/$owner/memory", ... },
+         connectors: { icon: Plug, label: "Connect", to: "/$owner/connectors", ... },
+         context: { icon: Boxes, label: "Context", to: "/$owner/memory",
+                    search: { view: "entities" }, segment: "memory",
+                    memoryView: "entities" as const },
+     }
+     ```
+     (key renamed `models:` → `context:`; label Models → Entities → Context)
+
+   - **`packages/owletto/src/components/entity-tabs/events-tab/events-filter-bar.tsx`**
+     - Deleted the `hideSourceFilter` centred-banner layout branch; now one left-aligned wrap row on every surface
+     - `searchField` wrapper: `<div className="relative w-52 shrink-0">` (was `hideSourceFilter ? "w-full" : "w-40"`)
+     - `{searchField}` moved to render right after the All/Alerts/Saved-notes bucket group
+
+   - **`packages/owletto/src/components/entity-tabs/events-tab/index.tsx`**
+     - `sticky top-12` → `sticky top-0` (stale offset reserving space for a tab strip this branch deleted) — this was the Activity top-margin bug
+
+   - **`packages/owletto/src/components/sidebar/app-sidebar.tsx`** — final `AGENT_CHILD_ROWS`:
+     ```ts
+     const AGENT_CHILD_ROWS = [
+         { key: "behaviors", label: "Behaviors", icon: ListChecks, subpath: "behaviors" },
+         { key: "skills", label: "Skills", icon: Sparkles, subpath: "skills" },
+         { key: "guardrails", label: "Guardrails", icon: Shield, subpath: "guardrails" },
+         { key: "settings", label: "Settings", icon: Settings, subpath: "settings" },
+     ] as const;
+     ```
+
+   - **`packages/owletto/src/components/agents/agents-workbench.tsx`** — tab strip **entirely removed**. Deleted: `AgentHeaderTabs`, `TAB_META`, `TabLink`, the `activeTab` derivation block, unused imports (`Link`, `ComponentType`, `SettingsIcon`, `Shield`, `Fingerprint`, `agentTabLink`, `isAgentSkillsSubPage`/`isAgentSkillsTab`, `AgentWorkbenchHeaderSkeleton`). `isChat` retained (drives overflow class). `AGENT_TABS` + `parseAgentTab` retained (used by routes).
+
+   - **`packages/owletto/src/lib/agent-tab-links.ts`** + `.test.ts` — **deleted** (orphaned once the strip was removed)
+
+   - **`packages/core/src/reserved.ts`** — `SANDBOX_ROW_KEY_PREFIX = "sandbox:"`, `SANDBOX_PROVIDER_KEY_PREFIX = "sandbox-provider:"` (uncommitted at session start; added trailing newline)
+
+   - **`packages/server/src/gateway/runtime/providers/vercel.ts`** (read only) — the sole `@vercel/sandbox` import; contains `networkPolicyFromDomains` with deny-by-subtraction (`overlapsDeny`), `stableSandboxName` (sha256 of org:agent:conversation), `Sandbox.getOrCreate`, snapshot retention, `canSelfAuth()` via `VERCEL_OIDC_TOKEN`
+
+4. **Errors and fixes:**
+
+   - **Blank page / `ERR_CONNECTION_REFUSED`**: I first diagnosed IPv4-only binding (`dev-native.sh:127` `HOST=127.0.0.1`) and restarted with `HOST=::`. **This was wrong** — proved by a bare Node probe on port 9099 also being refused in the same tab. Real cause: the Chrome extension drives a disposable `agent-browser-chrome-*` temp profile that blocks localhost. I corrected this explicitly.
+   - **Actual blank page cause** (user supplied the console error): `SyntaxError: ... does not provide an export named 'SANDBOX_PROVIDER_KEY_PREFIX'` — stale Vite dep cache serving an old pre-bundle. Fixed with `rm -rf packages/owletto/node_modules/.vite` + `tsc --build --force packages/core` + restart.
+   - **Stale Vite transforms recurred ~5 times** — the bare URL (`/src/lib/owner-sections.ts`) served old content while `?v=timestamp` served new. Only a full restart + cache clear reliably fixed it. This caused false "the fix didn't work" readings repeatedly.
+   - **Wrong design fix for Vercel page**: I matched it to `ProviderConnectorBody` (detail page) when it should have matched the "Add a connection" flow. User's screenshots corrected me. Real bug was `connection-form.tsx:1167` navigating away instead of selecting in place.
+   - **Claimed ComputeSDK didn't exist**: I asserted "there is no neutral sandbox SDK standard to adopt." User supplied the docs URL. **I was wrong and said so**, then did the real comparison.
+   - **Merge resolution kept deletions upstream had made — twice**: (a) kept a Permissions tab that owletto#612 removed (folded into Guardrails); (b) added an Identity tab when `agent-editor-form.tsx:274-277` explicitly states identity "no longer has its own visible tab." User caught both: "permissions page fail. identity page not needed". I noted the pattern: on a conflict in a file someone else just changed, their deletions are intent, not noise.
+   - **Blind `python3` replace broke a test**: replacing `{ name: "Models" }` hit two occurrences with opposite meanings, creating `getByRole("Entities")` + `queryByRole("Entities").toBeNull()` in the same test. Fixed by making the negative assertion name the OLD labels.
+   - **`OWNER_SECTIONS` ordering test failed** after the reorder — correctly caught by the test; updated expected order and renamed the `models` key to `context` (typecheck then caught 4 more usages).
+   - **Server crash after merge**: `SyntaxError: The requested module '@lobu/core' does not provide an export named 'sanitizeSuggestionPrompts'` — merged server code needed a rebuilt core dist. Fixed with `tsc --build --force packages/core`.
+   - **`make dev` with `&` inside the tool** exited immediately (exit 0); must use the tool's own `run_in_background`.
+   - **Flaky test**: `provider-detail-route.test.tsx` first-`renderRoute` pays one-time router bootstrap (~3s), failing against the 5s default under full-suite load. Gave it an explicit `20_000` timeout with reasoning.
+   - **User feedback on process**: "you take screenshot to understand" — I had been asking the user to describe pages instead of using `agent-browser` with a forged cookie, which the repo documents.
+
+5. **Problem Solving:**
+   - Established `agent-browser --session <name>` + forged better-auth cookie as the working path for authenticated visual verification (the Chrome extension cannot reach localhost).
+   - Verified the sandbox create path end-to-end via API: POST created `sbx-22f3a337-6f17-4933-9b7a-7b895a540e83`, `connected: true`, `details: {teamId, projectId}` (token correctly withheld), 3 encrypted rows in `agent_secrets` under `sandbox:<id>:<field>`. `validateCredential` is shape-only (no live Vercel call), so placeholder credentials work for UI testing.
+   - ComputeSDK verdict: **do not adopt as a replacement**. Their core `Sandbox` interface lacks per-sandbox network policy (only Declaw lists it as a provider feature), `getOrCreate`-by-name, `persistent`, and snapshot retention. Adopting would silently drop the egress enforcement from #1973. Possible future use as a *second provider implementation* under the existing `GatewayRuntimeProvider` for the long tail.
+   - Confirmed skills are NOT a system entity (`$member`/`$resource`/`$canvas` are the system types; skills live in `packages/server/src/catalog/`).
+   - Confirmed via memory `project_mcp_binding_is_attribution_not_authz` that `x-lobu-agent-id` over MCP is attribution only — guardrails/skills are not applied — supporting the user's "managed agents" framing. **Unverified**: whether an agent can exist with no resolvable model (org defaults / `hasSystemKey()` may always supply one).
+
+6. **All user messages:**
+   - "dig into this conversation and continue the work, run dev server so i can confirm grok --resume 019fa5c1-fe4e-7920-8fbb-3caed4f28671"
+   - "continue the session" / "continue"
+   - "not loading"
+   - "you check it i don't see it"
+   - "Uncaught SyntaxError: The requested module '/node_modules/.vite/deps/@lobu_core_reserved.js?v=d27071a7' does not provide an export named 'SANDBOX_PROVIDER_KEY_PREFIX'"
+   - "when i click vercel the page design is not same as the other connectors?"
+   - "should we instead use sandbox sdk instead of vercel sdk? and this connector becomes the way people create sandboxes"
+   - "so in connectors it will show up as a single item called sandbox?"
+   - "so for each provider we will have a connector from the same code?"
+   - "ok did we merge our code? what's left?"
+   - "in activity there is still margin, also move the search after the first combobox. make it consistent with models. also is models a good name? people might be confused no? maybe entities or graph or ontology?"
+   - "yes let's see. also this looks we bit hard to follow here. also why don't we system entities do we see it? [screenshot of entities graph]"
+   - "you take screenshot to understand. entities are fine"
+   - "maybe connect should be above entities? and we can have collapsible accordion similar to agents like agents? also seeing the events like this, there is still empty margin top here [screenshot]"
+   - "ok how about we call it context not entitites?"
+   - "could we also get rif of the tabs under agents and put the items in the sidebar for following? also refreshed still same"
+   - "how about catalog instead of context?"
+   - "ok good. do you still have the tabs? why? maybe a single settings and it can show tabs but not the chat one?"
+   - "rebase from main some code is merged"
+   - "permissions page fail. identity page not needed, skills did we remove them?"
+   - "also think about this. guardrails, skills, identity, etc all only available when model settings are defined no? so that's like managed agents?"
+   - "do those but why tabs guardrail, cant it be in the sidebar? and why do we need skills didn't we make them system entity?"
+
+7. **Pending Tasks:**
+   - **`make pre-pr` has never been run** — build, typecheck, knip, lint, exposed-surface naming. Only `tsc` + vitest inside `packages/owletto` have run.
+   - **Nothing pushed, no PR.** Current commits: 2 WIP + 2 merge commits across both repos, plus uncommitted post-merge work.
+   - **Squash WIP commits and split the branch** — user confirmed "we can also use stacked branches." Proposed split: PR1 `feat/inference-facet` (3 commits), PR2 `feat/sidebar-nav`, PR3 sandboxes-as-connectors.
+   - **Clean up test sandbox** `sbx-22f3a337-6f17-4933-9b7a-7b895a540e83` in local DB `lobu_feat_sidebar_nav`.
+   - **Untested path**: `provider.exec()` has never run — no real Vercel round trip, no network policy or persistent-naming verification. Needs a real Vercel token (user's to supply).
+   - Open (proposed, not approved): surface `credentialFields` from `/sandboxes` API to delete the two frontend Vercel hardcodes; drop the unused `@vercel/sandbox` dep from `packages/cli/package.json` (zero imports).
+   - Open question deferred: whether an agent can exist with no resolvable model (the "managed agents" distinction).
+   - Accordion for workspace sidebar sections — I recommended against (leaf rows have no children); user has not decided.
+
+8. **Current Work:**
+
+   Immediately before this summary I completed the user's request: "why tabs guardrail, cant it be in the sidebar? and why do we need skills didn't we make them system entity?"
+
+   - Verified skills are **not** a system entity — no `$skill` type, no skills table; they live in `packages/server/src/catalog/`. Skills was moved to the sidebar (not removed) and has a real per-agent editor at `src/app/$owner/agents/$agentId/skills.tsx` with `AgentSkillEditorProvider`.
+   - Added Guardrails to `AGENT_CHILD_ROWS` in `app-sidebar.tsx` (with `Shield` import).
+   - **Deleted the agent tab strip entirely** from `agents-workbench.tsx`, replacing the header block with:
+     ```tsx
+     {/* No tab strip: Chat, Behaviors, Skills, Guardrails and Settings are all
+         sidebar rows under the agent, so a strip here would be a second copy
+         of the same navigation. */}
+     ```
+   - Pruned all resulting dead code and deleted orphaned `src/lib/agent-tab-links.ts` + its test.
+   - **Tests: 963/963 passing across 115 files. Typecheck clean.**
+   - Restarted the dev server with a cleared Vite cache and verified via `agent-browser` DOM read that the sidebar now renders: `["Activity", "Connect", "Context", "BBuilder", "Behaviors", "Skills", "Guardrails", "Settings", "OOwletto Personal"]` — confirming the change works end to end.
+
+9. **Optional Next Step:**
+
+   Report the verified result of the just-completed nav change (963/963 tests, DOM-confirmed sidebar with Guardrails row and no tab strip), then run `make pre-pr` — the gate the user already greenlit with "do those" in their most recent message, and which has never been run on this branch.
+
+   The user's most recent explicit instruction was: *"do those but why tabs guardrail, cant it be in the sidebar? and why do we need skills didn't we make them system entity?"* — where "do those" referred to my stated next steps: *"Next I'd suggest `make pre-pr`, then squashing the WIPs and splitting the branch."* The guardrails/skills portion is now complete and verified; `make pre-pr` and the WIP squash/branch split remain.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

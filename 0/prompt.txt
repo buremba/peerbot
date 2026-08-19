@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byxuyil70</task-id>
+<summary>Monitor event: "2336 pointer bump checks"</summary>
+<event>integration: pass
+pi-review: fail
+2336-ALL-REPORTED</event>
+</task-notification>

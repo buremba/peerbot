@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bexik82vt</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bexik82vt.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on the loader PR" completed (exit code 0)</summary>
+</task-notification>

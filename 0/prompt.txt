@@ -1,0 +1,1 @@
+ok it should check prod logs etc as well, like the kubernetes logs. make it every 20 minutes, if no activity it should not post

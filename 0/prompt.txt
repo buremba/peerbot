@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3dzdbnan</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/b3dzdbnan.output</output-file>
+<status>killed</status>
+<summary>Background command "Block until pre-pr finishes" was stopped</summary>
+</task-notification>

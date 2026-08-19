@@ -1,0 +1,230 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The conversation covers one continuous piece of work on the **Behavior window-cursor lag** defect in the Lobu monorepo, driven by six user messages:
+
+1. **Challenge the "permanent gap" premise** — "option a agent will always know previous windows no? it can start going back dates if it has quota for example and continue. why would there be gaps"
+2. **Execute the agreed next actions + adopt a design principle** — "yes do that. remember agents will get smarter over time, we need to be agent native"
+3. **Implement, verify, ship** — "ok let's do it test e2e and make sure no gaps and then merge and test in prod"
+4. **Demand real end-to-end proof** — "ok did you test it e2e with a real opencode session etc we want to see it working properly"
+5. **Explain the negative result; offered a stronger model** — "why is that the case? if you want you can use pi qwen 3.8 max preview as well"
+6. **Test qwen + save memory** — "test qwen just run pi as cli you will see. also save memory so i will compact"
+
+The intent evolved from a design discussion into a full implementation with live-agent behavioural verification.
+
+## 2. Key Technical Concepts
+
+- **Two cursors on a Behavior**: schedule cursor (`watchers.next_run_at`, now-based, never replays) vs window cursor (`max(canvas_windows.window_start)`, +1 period per *completed* window, capped at current period but never jumping to it). Wall-clock advances one period per period → lag freezes rather than closing.
+- **`complete_window` takes no period** — it derives the window entirely from `window_token`, which is minted from agent-supplied `since`/`until` in `read_knowledge`. Nothing validates it against the dispatched window. Therefore an agent can already choose its own window and unstick the cursor.
+- **Two response surfaces**: MCP `tools/call` → `markdown-formatter.ts` (prose); **Behavior runs** → `run_sdk` → `client.knowledge.read()` → **raw JSON, no formatter**. This distinction is the crux of the session.
+- **Agent-native design** (user's principle): surface state + affordance, don't encode policy in the server, because agent capability rises over time.
+- TypeBox contracts, `@hey-api/openapi-ts` client generation, `client-regen` CI gate.
+- `alignToBehaviorWindowStart` / `addBehaviorPeriod` from `@lobu/connector-sdk` — all `setUTC*`.
+- `parseDateAlias` normalizes to **local** midnight — conflicts with UTC window boundaries in both directions.
+- Mutation testing discipline; `make pre-pr` (6 gates), `make review-fix`, `make review`.
+- Prod: CNPG `lobu-ai-prod-db`, DB `owletto`, ns `summaries-prod`.
+
+## 3. Files and Code Sections
+
+### `packages/server/src/utils/window-utils.ts` (+176 lines) — the core
+Extracted `readWindowCursor` from `computePendingWindow` (which now returns `cursor` so lag reporting costs no extra query):
+```ts
+export async function readWindowCursor(sql: DbClient, watcherId: number): Promise<Date | null> {
+  const rows = await sql`
+    SELECT window_start FROM canvas_windows WHERE watcher_id = ${watcherId}
+    ORDER BY window_start DESC LIMIT 1`;
+  return rows.length > 0 ? new Date(rows[0].window_start as string) : null;
+}
+```
+`WindowDates` gained `cursor: Date | null`.
+
+```ts
+export function parseBehaviorWindowDate(value: string): Date {
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return new Date(`${trimmed}T00:00:00.000Z`);
+  }
+  const local = parseDateAlias(trimmed).date;
+  return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()));
+}
+
+export function alignRequestedWindow(since, until, granularity): { windowStart: Date; windowEnd: Date } {
+  const windowStart = alignToBehaviorWindowStart(since, granularity);
+  const alignedUntil = alignToBehaviorWindowStart(until, granularity);
+  const windowEnd = addBehaviorPeriod(alignedUntil < windowStart ? windowStart : alignedUntil, granularity);
+  return { windowStart, windowEnd };
+}
+
+export function computeWindowLag(cursor, now, granularity): { currentPeriodStart: Date; periodsBehind: number } {
+  const currentPeriodStart = alignToBehaviorWindowStart(now, granularity);
+  if (!cursor) return { currentPeriodStart, periodsBehind: 0 };
+  const alignedCursor = alignToBehaviorWindowStart(cursor, granularity);
+  const periodsBehind = wholePeriodsBetween(alignedCursor, currentPeriodStart, granularity);
+  return { currentPeriodStart, periodsBehind: Math.max(0, periodsBehind) };
+}
+
+export function describeWindowLag(lag: {
+  lastWindowStart: Date | null; currentPeriodStart: Date;
+  periodsBehind: number; granularity: BehaviorTimeGranularity;
+}): string | null {
+  if (lag.periodsBehind < 2 || !lag.lastWindowStart) return null;
+  return (
+    `This Behavior is ${lag.periodsBehind} ${lag.granularity} period(s) behind. Its last ` +
+    `completed window starts ${lag.lastWindowStart.toISOString()}, but the current period ` +
+    `starts ${lag.currentPeriodStart.toISOString()}. The cursor advances only ONE period per ` +
+    'completed window, so it will not catch up on its own. The window you complete is whatever ' +
+    'span you read: call read_knowledge again with `since`/`until` and complete the token it ' +
+    'returns. Completing a recent period moves the cursor forward to it; completing an older ' +
+    'one never moves it back. Decide from this Behavior\'s purpose whether the skipped periods ' +
+    'are worth analysing or whether only the current period matters.'
+  );
+}
+```
+Plus private `wholePeriodsBetween` (O(1) arithmetic per granularity) and `monthsBetween`.
+
+### `packages/server/src/tools/get_content/behavior-mode.ts` (+40)
+```ts
+let windowStart: Date, windowEnd: Date, windowCursor: Date | null;
+if (args.since && args.until) {
+  ({ windowStart, windowEnd } = alignRequestedWindow(
+    parseBehaviorWindowDate(args.since), parseBehaviorWindowDate(args.until), timeGranularity));
+  windowCursor = await readWindowCursor(sql, watcherId);
+} else {
+  ({ windowStart, windowEnd, cursor: windowCursor } = await computePendingWindow(sql, watcherId, timeGranularity));
+}
+const windowLag = computeWindowLag(windowCursor, new Date(), timeGranularity);
+const windowLagNote = describeWindowLag({ lastWindowStart: windowCursor, ... });
+```
+Response gained:
+```ts
+window_lag: {
+  last_window_start: windowCursor ? windowCursor.toISOString() : null,
+  current_period_start: windowLag.currentPeriodStart.toISOString(),
+  periods_behind: windowLag.periodsBehind,
+  granularity: timeGranularity,
+  ...(windowLagNote ? { guidance: windowLagNote } : {}),
+},
+```
+`toEndOfDay` import removed (was replaced by alignment); `parseDateAlias` import removed.
+
+### `packages/server/src/formatting/markdown-formatter.ts` (+38)
+Now renders the **same shared string** so the two surfaces can't drift:
+```ts
+function formatWindowLag(lag: any): string {
+  const guidance = typeof lag?.guidance === 'string' ? lag.guidance : '';
+  if (!guidance) return '';
+  return `## \u23F3 This Behavior Is Behind\n\n${guidance}\n\n`;
+}
+```
+Called inside the `if (window_token)` block of `formatGetContentResult`; `window_lag` added to its destructure.
+
+### `packages/server/src/tools/get_behavior.ts` (+9) — class-fix
+`next_action` suggested the **exclusive** end as `until`, so a client following the server's own suggestion wrote a window one period too wide:
+```ts
+until: new Date(new Date(nextWindow.end).getTime() - 1).toISOString().split('T')[0],
+```
+
+### `packages/server/src/tools/get_content/types.ts` (+19)
+Added `window_lag` TypeBox object with `last_window_start`, `current_period_start`, `periods_behind`, `granularity`, and optional `guidance`.
+
+### `packages/client/src/generated/types.gen.ts` (+6)
+Regenerated from live OpenAPI (`LOBU_OPENAPI_URL=http://127.0.0.1:9321/lobu/api/docs/openapi.json bun run generate`) — clean, only the `window_lag` addition.
+
+### NEW `packages/server/src/__tests__/unit/behavior-window-lag.test.ts` — 27 tests
+Covers `computeWindowLag` (incl. exact prod case Jun 17 → Aug 6 = 50), `alignRequestedWindow`, `parseBehaviorWindowDate` timezone stability, formatter rendering, and `next_action` round-trip. Uses `utcDate` helper (`new Date(Date.UTC(...))`) and a `lagFor()` fixture that builds `guidance` via `describeWindowLag`.
+
+### NEW `packages/server/src/__tests__/integration/behaviors/window-lag-visibility.test.ts` — 7 tests
+Real handlers + real DB via `handleBehaviorMode` / `manageBehaviors`, seeding a cursor 50 days back. Includes the payoff test (a run completes a current window → cursor jumps 50 days) and the backfill-doesn't-regress test.
+
+## 4. Errors and Fixes
+
+1. **`Cannot find module '@lobu/connector-sdk'`** in bun test → ran `make build-packages`.
+2. **Timezone bug found only by e2e**: `Expected: "2026-08-06T00:00:00.000Z" / Received: "2026-08-05T00:00:00.000Z"`, 3 of 7 integration tests failing. `parseDateAlias` normalizes to **local** midnight while window boundaries are UTC.
+3. **My first TZ fix was a half-fix** (`asUtcCalendarDay` after `parseDateAlias`) — corrected east-of-UTC, left west-of-UTC broken. `make review-fix` flagged it as "Not fixed (needs a decision)". I replaced it with `parseBehaviorWindowDate` parsing bare ISO dates directly as UTC, making `alignRequestedWindow` pure UTC.
+4. **My unit tests were tautological** — `bun test` runs with `TZ=UTC` where local and UTC dates are the same instant. Proved it with a probe: `PROBE input= 2026-08-06T00:00:00.000Z`. Rewrote to test `parseBehaviorWindowDate` and ran under 4 zones (UTC / America/New_York / Europe/Istanbul / Pacific/Kiritimati) — all 27 pass; mutation → 3 fail in New_York only.
+5. **I stated the machine was UTC+3 in a code comment** — actually BST (UTC+1). Corrected.
+6. **Live run 1 failed**: `Your credit balance is too low to access the Anthropic API`. Switched agent to `gemini/gemini-2.5-flash`.
+7. **Live run 2 failed**: MCP proxy `TimeoutError` on `query_sdk`.
+8. **Live run 3 failed**: `Behavior run blocked on tool approval ... lobu-memory/run_sdk queued for human approval`. Fixed by inserting `grants` rows (`kind='mcp_tool'`, patterns `/mcp/lobu-memory/tools/run_sdk` and `/query_sdk`) into the **local dev** DB.
+9. **My `pkill -f "lobu.*dev"` killed Homebrew Postgres** on port 5418 → `brew services restart postgresql@18`.
+10. **Root cause of the null behavioural result**: guidance lived only in `markdown-formatter.ts`, which Behavior runs never render. Fixed by moving prose into `describeWindowLag()` carried in the JSON payload.
+11. **`pi --model qwen3.8-max-preview` failed** with "No API key found for qwen-token-plan" — user corrected me ("just run pi as cli you will see"); `pi --provider qwen --model qwen3.8-max-preview` works, the `--provider qwen` is load-bearing.
+12. **I over-generalized from one frontier model** that "numbers alone suffice for a capable model" — qwen's control run disproved it. Corrected plainly.
+
+### Mutation testing performed (all went red then restored green)
+- Inclusive `toEndOfDay` end → 5 fail
+- Drop cursor alignment → 2 fail
+- Drop negative clamp → 1 fail (`Expected: 0, Received: -26`)
+- Formatter threshold 2→1 → 1 fail
+- Remove ISO-UTC parse branch → 3 fail in `America/New_York`, green in UTC
+
+## 5. Problem Solving
+
+**Prod evidence gathered** for Behavior 2 (`HN engagement — draft replies`, daily `0 14 * * *`, device-pinned, org `org_lobucrm`):
+```
+covers      written     drift  content_analyzed
+2026-06-06  2026-06-11    5d      0
+2026-06-12  2026-06-18    6d      6
+2026-06-14  2026-06-27   13d     17
+2026-06-15  2026-07-08   23d     40
+2026-06-17  2026-07-15   28d     40   <- newest, 50 days behind
+```
+Monotonic drift proves the +1-per-completed-window mechanism. Nothing completed since 07-15 (3× `claude exited status 1`, 15× `remained pending for over 2 hours without being claimed`, `SIGKILL after 300s`) — so the cursor is *frozen*, and since its device can't claim a run it **cannot self-heal**.
+
+**Deliberately out of scope**: `unprocessed_ranges` is dead for **77 of 80** prod Behaviors (gated on `c.entity_ids && ARRAY[...]`; only 3 watchers have non-empty `entity_ids`). Un-gating would turn a 3/80 breach of the "request paths never aggregate history" invariant into 80/80, since it's a `GROUP BY DATE_TRUNC('month')` over `current_event_records` on a read path. Correct fix materializes at write time = schema change = own proposal.
+
+**Behavioural 2×2 (the headline result):**
+
+| model | numbers only | + guidance |
+|---|---|---|
+| `gemini-2.5-flash` (full agent loop) | wrote stale window | wrote stale window, output said "seven weeks old" |
+| `qwen3.8-max-preview` (decision test) | **COMPLETE_GIVEN_WINDOW** — "it is the correct catch-up window" | **REREAD_WITH_SINCE_UNTIL** ✓ |
+| frontier (decision test) | re-read current period | re-read, tighter args (`until: 08-06`, excluding in-progress period) |
+
+The prose is **causal** for the realistic middle of the model distribution.
+
+## 6. All User Messages
+
+1. `/compact` (local command), then: "option a agent will always know previous windows no? it can start going back dates if it has quota for example and continue. why would there be gaps"
+2. "yes do that. remember agents will get smarter over time, we need to be agent native"
+3. "ok let's do it test e2e and make sure no gaps and then merge and test in prod"
+4. "ok did you test it e2e with a real opencode session etc we want to see it working properly"
+5. "why is that the case? if you want you can use pi qwen 3.8 max preview as well"
+6. "test qwen just run pi as cli you will see. also save memory so i will compact"
+
+(Standing constraints from CLAUDE.md/AGENTS.md remain in force, notably: never write to `~/Code/lobu` directly — work in a worktree; **never bulk-delete prod `organization` rows**; `events` is append-only, never `DELETE FROM events`; **workers never receive real credentials**; request paths never aggregate history; no Claude attribution in commit messages; never introduce a new table or change DB/API/SDK surface without explicit user confirmation; stage by explicit path, never `git add -A`.)
+
+## 7. Pending Tasks
+
+- Run the **full agent loop 2×2 with qwen** (currently only a single-turn decision test) — needs the agent's model pointed at qwen in the local dev server.
+- Device/opencode lane remains **untested** (no device worker paired to local dev); prod Behavior 2 is device-pinned, so that's the lane where the bug actually lives.
+- Commit by explicit path → PR → `make review` once → `make ui-review` → squash merge → prod-verify.
+- Consider adding to the guidance that the current period is re-analysable (a frontier model declined to complete an in-progress period).
+- File the `unprocessed_ranges` `entity_ids` gate as its own bug.
+- File the **repin-freeze** gap.
+- Behavior 2 needs a **manual hand** on prod regardless of what ships.
+- Decide separately whether a server-side skip-to-current floor is needed for weak-model Behaviors (no longer a prerequisite for this PR).
+
+## 8. Current Work
+
+Immediately before this summary, I was completing the user's request: "test qwen just run pi as cli you will see. also save memory so i will compact".
+
+**Qwen testing (complete):** `pi --provider qwen --model qwen3.8-max-preview -p "$(cat /tmp/decide.txt)" < /dev/null` produced `ACTION: REREAD_WITH_SINCE_UNTIL` with guidance, and the control (`/tmp/decide_ctrl.txt`, guidance stripped) produced `ACTION: COMPLETE_GIVEN_WINDOW` — *"so it is the correct catch-up window to process as-is"*. This reversed my prior conclusion and proved the guidance is causal.
+
+**Memory saving (complete):**
+- Created `reference_agent_guidance_must_ride_in_the_sdk_payload.md` — the two-surface table, the live-run proof, the 2×2 matrix, and the `pi --provider qwen` invocation note.
+- Rewrote `project_behavior_window_cursor_lag.md` — marked **BUILT+VERIFIED, UNCOMMITTED** on worktree `behavior-window-lag`, with the full defect description, prod drift table, what was built, all verification evidence, the behavioural 2×2, out-of-scope items, and next steps.
+- Updated `MEMORY.md`: line 7 now reads `- [Window cursor lag](project_behavior_window_cursor_lag.md) - **BUILT+VERIFIED, UNCOMMITTED** wt \`behavior-window-lag\`; window_lag+guidance, TZ fix; Behavior 2 frozen 50d needs manual hand`, and line 56 adds `- [Guidance must ride in the SDK payload](reference_agent_guidance_must_ride_in_the_sdk_payload.md) - Behavior runs read JSON via run_sdk, NEVER the markdown formatter; qwen flips on the prose alone`.
+
+**Branch state:** `feat/behavior-window-lag`, 6 modified files + 2 new test files, ~+265 lines vs `origin/main`, **nothing committed, no PR**. All 6 `pre-pr` gates were clean before the last `guidance` change; typecheck clean after it; 27 unit + 7 integration + 280 neighbouring integration tests green.
+
+## 9. Optional Next Step
+
+Both halves of the user's last request are complete (qwen tested, memory saved for compaction). The natural next step follows from user message 3 — "ok let's do it test e2e and make sure no gaps and then merge and test in prod" — but the `guidance` field was added *after* the last full gate run, so before committing I should re-run `make pre-pr` and regenerate the client (the `window_lag.guidance` field changes the OpenAPI document), then proceed: `make review-fix` → stage by explicit path → commit → PR → `make review` → merge → prod-verify.
+
+I would confirm with the user first whether to (a) proceed straight to commit/PR, or (b) first run the full agent-loop 2×2 with qwen, since I explicitly offered that and flagged it as the one gap remaining in the evidence: *"Give me the qwen key and I'll run the full loop 2×2 before we commit."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

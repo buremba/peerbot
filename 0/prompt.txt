@@ -1,0 +1,1 @@
+also is the entity mutations in a way events? i was thinking an agent can trigger this entity mutration or creation etc event, and it could be gated with human approavl or if automted it can update the entity properly etc.

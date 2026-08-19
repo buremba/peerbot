@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bten1gynh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bten1gynh.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on prod-smoke" completed (exit code 0)</summary>
+</task-notification>

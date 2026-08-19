@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw80ypnf7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/bw80ypnf7.output</output-file>
+<status>completed</status>
+<summary>Background command "Update PR body and run review round 9" completed (exit code 0)</summary>
+</task-notification>

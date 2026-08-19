@@ -1,0 +1,1 @@
+no need for create agent on http://localhost:9283/sidebar-agents-empty/ we can redirect to activity no?

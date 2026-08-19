@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>beohcnmkz</task-id>
+<tool-use-id>toolu_01NkDVvTjqANGvmGoSMaByST</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/beohcnmkz.output</output-file>
+<status>completed</status>
+<summary>Background command "Boot gateway again with env in place" completed (exit code 0)</summary>
+</task-notification>

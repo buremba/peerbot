@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0qelz0tx</task-id>
+<tool-use-id>toolu_015cUPwy5mkkrDJW8iUYe5GP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b0qelz0tx.output</output-file>
+<status>failed</status>
+<summary>Background command "Wait for 2687 pi-review, reporting death or timeout" failed with exit code 1</summary>
+</task-notification>

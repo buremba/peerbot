@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bklal5fcz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bklal5fcz.output</output-file>
+<status>completed</status>
+<summary>Background command "Retry 2687 review after freeing memory" completed (exit code 0)</summary>
+</task-notification>

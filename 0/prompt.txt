@@ -1,0 +1,107 @@
+an agent said this. i was actually thinking of removing skills as a seperate page, only keep behavior, and allow the user to implement skills as entity and reference in the prompt. does it make sense? Implement a small product-cleanup PR for the Lobu agent configuration UI.
+
+## Product decisions
+
+Do not merge Skills and Behaviors.
+
+- Skill = a reusable capability that teaches the agent how to do something. It owns instructions, packages, tools, MCP dependencies, and other resources.
+- Behavior = versioned autonomous work that defines what the agent should pursue, when and where it runs, which sources it reads, its runtime settings, maintained output/state, reactions, and run history.
+- Do not introduce Activation, Deployment, Automation, Channels, or Live Skill as new product objects.
+- Permissions and Guardrails remain separate enforcement mechanisms internally, but should be presented in one user-facing Guardrails control surface.
+
+## Scope
+
+### 1. Clarify the Behavior form
+
+In the “New Behavior” and Behavior editing UI:
+
+- Rename the visible “Instructions” label to “Goal”.
+- Do not rename the underlying database/API field unless required.
+- Use helper copy similar to:
+  “Describe what the agent should monitor, maintain, or accomplish.”
+- Add page-level explanatory copy:
+  “Behaviors define when and where the agent acts autonomously.”
+- Keep all existing trigger, source, runtime, persistence, notification, versioning, and run functionality unchanged.
+
+### 2. Clarify the Skills surface
+
+Add explanatory copy to the Skills page and creation form:
+
+“Skills teach the agent reusable ways of working. They can be used in chat or by Behaviors.”
+
+Do not move packages, MCP servers, dependencies, or skill instructions into Behaviors.
+
+### 3. Fold Permissions into the Guardrails UI
+
+Change the agent navigation from:
+
+Chat | Behaviors | Skills | Guardrails | Permissions | Settings
+
+to:
+
+Chat | Behaviors | Skills | Guardrails | Settings
+
+Inside Guardrails, add clear sections or tabs:
+
+- Access
+- Approvals and Safety
+
+Move or reuse the current Permissions UI under “Guardrails → Access”.
+
+Important:
+
+- This is a UI/navigation consolidation only.
+- Do not merge permission and guardrail storage or enforcement.
+- Do not weaken deterministic permission checks.
+- Preserve the existing Permissions route through a redirect or backward-compatible route so existing links do not break.
+- Existing guardrails such as PII scanning, secret scanning, and forbidden tools should remain under Approvals and Safety, or a similarly clear policy section.
+
+### 4. Optional Behavior-to-Skill references
+
+First inspect the current data model.
+
+If Behaviors already support restricting or referencing Skills, expose that cleanly in the Behavior UI.
+
+If they do not, do not add a new schema or backend relationship in this PR. Add only a small informational section such as:
+
+“Behaviors can use the Skills enabled for this agent.”
+
+with a link to manage Skills.
+
+## Non-goals
+
+Do not:
+
+- Merge Skills and Behaviors.
+- Rename the Behavior resource in the API.
+- Add an Activation entity.
+- Add a separate Channels concept.
+- Change Behavior execution semantics.
+- Change skill dependency resolution.
+- Perform database migrations.
+- Redesign unrelated parts of the agent page.
+- Update the marketing site in this PR.
+
+## Quality requirements
+
+- Follow the existing component and design patterns.
+- Keep the change small and easy to review.
+- Add or update tests for navigation, labels, and backward-compatible routing.
+- Run formatting, type-checking, and relevant tests.
+- Verify the layouts at desktop width and narrow/mobile width.
+- Ensure there are no dead links or duplicated permission controls.
+
+## Deliverable
+
+Create a PR containing:
+
+1. The implementation.
+2. Before/after screenshots of:
+   - New Behavior
+   - Skills
+   - Guardrails → Access
+   - Guardrails → Approvals and Safety
+3. A concise PR description explaining:
+   - Skills and Behaviors remain separate.
+   - Permissions are only consolidated into the Guardrails UI.
+   - No schema, API, or execution-model changes were made.

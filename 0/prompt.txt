@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bombr415w</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bombr415w.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and re-review 2250" completed (exit code 0)</summary>
+</task-notification>

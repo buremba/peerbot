@@ -1,0 +1,1 @@
+i was thinking we can get rid of this agent_id in connections and the behaviors can optionally listen all messages if we want an agent to take in all messages from a connection etc

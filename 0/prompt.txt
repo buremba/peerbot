@@ -1,0 +1,1 @@
+ok good. another thing. should we encourage the users agent to build end to end demostrating features, maybe ask the user about their company, get domain and research the company and offer relevant entity types behavior etc. we want the agent to learn how to use it properly?

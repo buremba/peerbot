@@ -1,0 +1,205 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Overarching project (inherited from prior compaction): a **gap analysis — explicitly NOT a migration** — of whether **Prodma**, a Turkish manufacturing ERP at `/Users/burakemre/Downloads/emre_project` (.NET Framework 4.6.1, WinForms + DevExpress, SQL Server, EF EDMX, **422 tables / 453 screens / 503 DbSets**), could be rebuilt on **Lobu** (the user's agent platform monorepo at `/Users/burakemre/Code/lobu`). The point is "to see where lobu lacks." Audience is Prodma's owner, a domain expert who will catch hand-waving. Scale <20 concurrent users, so correctness and domain completeness matter, not throughput. Four deliverables wanted: written gap report, working slice on Lobu, Lobu roadmap, pitch for the owner.
+
+   Intents in this segment, in order:
+   - **Message 1** — challenge that the 20 entity types were invented: "we just need to match what the erp has in there."
+   - **Message 2** — "make sure you have the full coverage, you ahve the relationships working properly and base everything from the source code."
+   - **Message 3 (most recent)** — "what are these bugs, could you fix them properly. tell me so i can also confirm. also edge generation i believe connectors should be able to import, what's the best way to make it work" → three asks: (a) explain the bugs so the user can independently confirm, (b) fix them properly, (c) recommend how connectors could import edges.
+
+2. **Key Technical Concepts:**
+   - **Prodma domain discriminators (the central finding):** `CariTipEn` (`CariTip.cs`) discriminates ONE `CARI` table — `CARI_HESAP=1, MUSTERI=2, SATICI=3, BANKA=4, KASA=5, PERSONEL=6, ITHALAT=7, VERGI_DAIRESI=8, DEVIR_HESABI=9, DIGER=10, ITHALAT_DEVIR=11, KREDI_KARTI=12, DEPO=13, GEMI=14, ALT_FIRMA=15`. `AlisSatisEn` = `ALIS=1, SATIS=2` (purchase vs sales on the SAME SIPARIS document). `FATURA_IRSALIYE_TIP` is a setting, not a document table.
+   - **Document shape:** every Prodma document is `X_FIS_SIFIRLI` (header) + `X_FIS_SATIR` (lines) — SIPARIS, FATURA, STOK, CEK, MUHASEBE, TEKLIF, MAHSUP.
+   - **Real chain (proven by FK):** `TEKLIF_FIS_SIFIRLI → SIPARIS_FIS_SIFIRLI → STOK_FIS_SIFIRLI → FATURA_FIS_SIFIRLI → MUHASEBE_FIS_SIFIRLI`.
+   - **`PrdomaModel.csdl`** (1.7MB, dated 2020, the live one; other csdl files are older) — 422 `EntityType`s, **1,175 `Association`s all with `ReferentialConstraint`**.
+   - **Lobu:** `entities` + `entity_types.metadata_schema` (JSON Schema Draft-7, AJV `strict:false`), `entity_relationships` + `entity_relationship_types`, Behaviors, connectors, sandbox ClientSDK, MCP, Owletto frontend submodule.
+   - **`x-` extension keywords:** `x-link-entity-type` (READ-TIME DISPLAY HINT only — creates no edge), `x-link-lookup-field`, `x-transitions`, `x-table-label`, `x-table-column`, `x-measure`, `x-dimension`.
+   - **`schemaExtras`** (`packages/cli/src/commands/_lib/apply/client.ts:93`, `:714`) carries undeclared top-level `metadata_schema` extension keys across an apply rebuild — this is why the `x-transitions` freeze survives.
+   - **Connector event→entity attribution surface** (`connector-types.ts:540-625`): `eventKinds[kind].attributions?: EventAttributionRule[]`; `EventAttributionRole = 'authored_by' | 'about' | 'mentions' | 'belongs_to'`; `EventAttributionTargetSpec {entityType?, identities?, titlePath?, createWhen?}`; `EntityIdentitySpec {namespace, eventPath, matchOnly?, primary?}`; plus `autoCreate` and `traits`.
+   - **`entity_relationships` live-triple unique index:** `(from_entity_id, to_entity_id, relationship_type_id) WHERE deleted_at IS NULL`; `source` column already accepts `'feed'`.
+   - **SPA routing:** entity pages are `/local-install/memory?entity=<slug>` and require an `Accept: text/html` header; curl's default `Accept: */*` returns 404 for routes that work in a browser.
+   - **zsh does NOT word-split unquoted variables** — `LOBU="node /path"; $LOBU --version` fails.
+   - **`npx @lobu/cli@latest` runs the PUBLISHED CLI**, not the local build; local CLI is `node <worktree>/packages/cli/bin/lobu.js`.
+
+3. **Files and Code Sections:**
+
+   **THE FIX (worktree `/Users/burakemre/Code/lobu/.claude/worktrees/entity-slug-roundtrip`, branch `feat/entity-slug-roundtrip`, PORT=9466). Final diff: 88 insertions, 10 deletions across 5 files.**
+
+   - **`packages/core/src/reserved.ts`** (+18, −0) — new canonical helper placed directly after `isReservedEntityTypeSlug`. File is **2-space indented, double quotes**:
+     ```ts
+     /**
+      * Canonical stored form of an entity-type slug.
+      *
+      * Entity-type create has always rewritten anything outside `[a-z0-9-]` to `-`,
+      * so a `snake_case` key from `lobu.config.ts` is STORED hyphenated. Every other
+      * verb must resolve through this same function or it looks up a spelling that
+      * was never written: `lobu apply` upserts by probing create and retrying as
+      * update on the 409, so a one-sided normalization turned that retry into a 404
+      * and halted apply for every snake_case entity key.
+      *
+      * Deliberately NOT `slugify()` from ./utils/slug — that one also strips
+      * diacritics and trims edge hyphens, which would retarget slugs that existing
+      * rows are already stored under.
+      */
+     export function normalizeEntityTypeSlug(slug: string): string {
+       return slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+     }
+     ```
+
+   - **`packages/server/src/utils/reserved.ts`** (+1) — this module is a re-export shim; the server imports from HERE, not from `@lobu/core` directly (this caused a TS error when I first missed it):
+     ```ts
+     export {
+       isReservedConnectorKey,
+       isReservedEntityTypeSlug,
+       normalizeEntityTypeSlug,   // <- added
+       RESERVED_ENTITY_TYPE_SLUGS,
+       RESERVED_PATHS_SET,
+     } from "@lobu/core";
+     ```
+
+   - **`packages/server/src/tools/admin/manage_entity_schema.ts`** (+13, −7) — **THE SERVER BUG**. File is **2-space indented, single quotes**, NOT biome-clean on main. Five edits: added `normalizeEntityTypeSlug` to the import block; create (`:460`) now `const slug = normalizeEntityTypeSlug(args.slug);` replacing the inline regex; `etHandleGet` gained `const normalizedSlug = normalizeEntityTypeSlug(slug);` with the query param changed to `[normalizedSlug, ctx.organizationId]`; `etHandleUpdate` gained `const slug = normalizeEntityTypeSlug(args.slug);` with `WHERE slug = ${slug}`; `etHandleDelete` and `etHandleAudit` had their params renamed `slug` → `rawSlug` with `const slug = normalizeEntityTypeSlug(rawSlug);` after the guard.
+
+   - **`packages/cli/src/commands/_lib/apply/map-config.ts`** (+20, −3) — **THE CLI BUG (separate from the server bug)**:
+     ```ts
+     import {
+       type AgentSettings,
+       isHostedChatPlatform,
+       normalizeEntityTypeSlug,
+     } from "@lobu/core";
+     ```
+     ```ts
+     /**
+      * The STORED slug for an entity-type reference.
+      *
+      * The server normalizes an entity-type slug on create (`_`, and every other
+      * character outside `[a-z0-9-]`, becomes `-`), so a snake_case config key is
+      * stored hyphenated. Desired state has to use that same spelling or the diff
+      * never matches its own row: apply re-plans a create on every run and reports
+      * the stored row as undeclared drift. Relationship-type keys are NOT
+      * normalized server-side, so `rel.key` stays verbatim.
+      */
+     function entitySlug(ref: EntityType | string): string {
+       return normalizeEntityTypeSlug(typeof ref === "string" ? ref : ref.key);
+     }
+     ```
+     and `slug: entity.key` → `slug: normalizeEntityTypeSlug(entity.key)` (line ~485). **`rel.key` at `:531` deliberately left verbatim.**
+
+   - **`packages/server/src/__tests__/integration/entity-schema/entity-types.test.ts`** (+39) — regression test `'round-trips a slug that needs normalizing (snake_case entity key)'` inserted before the `event_kinds` test. Creates `stock_movement`, asserts `getType('stock_movement')` returns it with stored slug `stock-movement`, asserts `getType('stock-movement')` resolves to the SAME row, updates via `stock_movement`, reads back via `stock-movement`, deletes via `stock_movement`, asserts tombstone. **Note: every pre-existing test in this file uses hyphenated slugs, which is exactly why the bug was never caught.**
+
+   **DEMO CONFIG — `/Users/burakemre/Code/prodma-demo/lobu.config.ts` (871 lines).** Final state: **14 entity types** (`customer, product, stock-movement, quote, order, invoice, payment, journal-entry, ledger-account, cheque, warehouse, price-list, bom, work-order`) and **32 relationship types**, all FK-backed with FK counts in each description. Entity-type keys are hyphenated (workaround for the bug, still needed until the fix ships). `customer` carries `cari_type` (CariTipEn verbatim, required); `invoice` carries `document_type` (fatura/irsaliye/irsaliyeli_fatura) and `direction`; `order` carries `direction` (alis/satis).
+
+   **ANALYSIS SCRIPTS** in `/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/scratchpad/`: `parse_csdl.py` (XML → `schema.json`), `cluster.py`, `rel.py`, `audit.py`, `final.py`, `probe.py`, `probe2.py`, `gen_rel.py`, `splice.py`; backups in `fixbak/` and `lobu.config.ts.bak`; E2E repro project in `slugrepro/`.
+
+   **SOURCES READ FOR THE CONNECTOR QUESTION:**
+   - `packages/connector-sdk/src/connector-types.ts:870` — `SyncResult` has ONLY `events`, `checkpoint`, `auth_update?`, `metadata?`. `grep -ci relationship` on the whole file = **0**.
+   - `packages/connector-sdk/src/connector-types.ts:540-625` — the declarative `attributions` / `EventAttributionRule` / `EntityIdentitySpec` surface (event→entity only).
+   - `packages/server/src/utils/entity-link-upsert.ts` — ingestion engine: `INSERT INTO entities` (:493), `INSERT INTO entity_identities` (:551), `loadAttributionRuleByType` (:152), `applyEventAttributions` (:638), `resolveEventAttributionsForItems` (:687), `resolveSenderIdentity` (:978). **`grep -c entity_relationships` = 0.**
+   - `packages/server/src/gateway/routes/public/github-team-graph.ts:312` — hand-written `INSERT INTO entity_relationships (organization_id, from_entity_id, to_entity_id, relationship_type_id, confidence, source, created_by, updated_by, created_at, updated_at) VALUES (..., 1.0, 'feed', ...)`. Header comment documents reuse of "the SAME entity-identity machinery" and dedupe on the live-triple unique index.
+
+   **MEMORY FILES WRITTEN** to `/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/`: `reference_apply_breaks_on_underscore_entity_type_keys.md`, `reference_apply_never_deletes_removed_entity_types.md` (later extended with the "re-declaring a removed key does NOT re-adopt it" section), `reference_prodma_models_subtypes_as_in_table_discriminators.md`; MEMORY.md index updated.
+
+4. **Errors and fixes:**
+   - **Sloppy grep patterns produced false coverage.** "IRSALIYE 4" matched only config tables; "ALIS 10" matched `CALISMA` as a substring. Fixed by reading the actual table lists and enums.
+   - **Deletes looked like no-ops.** `SELECT slug FROM entity_types` still returned them. They are **soft-deleted** (`deleted_at`); must filter `WHERE deleted_at IS NULL`. Corrected.
+   - **`manage_entity_schema` delete rejected** with `/schema_type: Expected one of: "entity_type", "relationship_type"` — `schema_type` is required.
+   - **Route verification was worthless.** `curl` returned 404 for `/local-install/invoice` and `?entity=` routes while the browser got 200. Cause: SPA needs `Accept: text/html`. My earlier claim "new routes all 200" was invalid; retested properly, all serve 200.
+   - **`lobu apply --url` refused** with "Refusing to send stored context credentials for draft-attn" — fixed by adding a matching context (`lobu context add slugfix --url http://localhost:9466`).
+   - **`make dev` in the wrong checkout.** A bare `pwd && make dev` was **correctly blocked by the auto-mode classifier** because cwd resets to the main checkout. Fixed with `make -C <worktree> dev`. I also ran `make build-packages` once in the main checkout by omitting `-C` (build output only; main checkout verified clean afterwards via `git status`).
+   - **TS error 1:** `Module '"../../utils/reserved"' has no exported member 'normalizeEntityTypeSlug'` — the server imports from its own re-export shim, not `@lobu/core`. Added the re-export.
+   - **TS error 2:** `Type 'string | undefined' is not assignable to type 'string | number'` — I had reassigned the `slug` parameter, which **resets TS narrowing to the declared type**. Fixed by renaming params to `rawSlug` and introducing `const slug`.
+   - **`normalizeEntityTypeSlug is not a function` at runtime** — `@lobu/core` resolves to built `dist`, not `src`. Fixed by `make build-packages` (must rebuild after every core change).
+   - **Fixing only the server was not enough.** With published CLI + fixed server, apply #2 stopped halting but still showed `2 create, 0 update, 2 noop, 3 drift`. This revealed the CLI as a **second, independent bug**; fixed in `map-config.ts`.
+   - **zsh word-splitting:** `LOBU="node /path/lobu.js"; $LOBU --version` → "no such file or directory". zsh doesn't split unquoted params. Called node directly.
+   - **BIOME REFORMATTED WHOLE FILES.** `bunx biome check --write` on the 5 changed files exploded the diff to **2,331 insertions / 2,079 deletions** for a ~15-line fix, because those files are space-indented/single-quoted and **not biome-clean on `origin/main`** (verified by restoring pristine files and running `biome check` without `--write` — it still wanted to reformat). Fixed by backing up to `scratchpad/fixbak/`, `git checkout --` restoring all 5, and re-applying every edit by hand in the original style. Final diff: **88 insertions, 10 deletions**.
+   - **Relative paths after a `cd`.** A python heredoc using `packages/cli/...` failed with `FileNotFoundError` because cwd was still `packages/server`. Switched to absolute paths.
+   - **Splice assert too broad** — asserted `serviceRequest` absent from a region that legitimately still contained the old relationship block being replaced in the next step.
+
+5. **Problem Solving:**
+
+   **Entity-type audit (message 1).** 5 of 20 types were invented, all because Prodma uses in-table discriminators: `supplier`/`bank_account`/`employee` are `CariTipEn` values on one CARI table; `purchase_order` is `AlisSatisEn.ALIS` on the same SIPARIS document; `dispatch` is not a FATURA subtype. Rebuilt as discriminator fields.
+
+   **Relationship audit (message 2) — mechanical, from 1,175 parsed FKs.** 9 of 22 declared types had **no FK backing**; 37 of 53 real edges were undeclared. `invoice_from_quote` — the link the entire 40-chain demo was built on — **does not exist**; the real link is `SIPARIS_FIS_SIFIRLI.TEKLIF_FIS_SIFIRLI_ID`. `price_list → customer` carries 29 FKs, the heaviest cluster, and was entirely missing. `SERVISLER` is a job scheduler, not customer service (deleted). `ISLEM_*` is 7 lookup tables; the real payment document is `MAHSUP_FIS` (remapping made `payment_customer` FK-backed for the first time). Coverage measured honestly: 264 domain / 100 lookup / 58 platform; 165 of 264 domain tables covered = **62%**.
+
+   **The two apply bugs, now fixed and A/B proven end-to-end:**
+   - *Before any fix:* apply #2 **HALTS** — `error: POST .../manage_entity_schema failed: Entity type 'stock_movement' not found`.
+   - *Server fix only (published CLI):* no halt, but still `2 create, 0 update, 2 noop, 3 drift` — proving a second bug.
+   - *Both fixes (local CLI):* `0 create, 0 update, 5 noop, 1 drift` (the 1 is the system `$member` type). Relationship rules with snake_case endpoints verified resolving: `"source_entity_type_slug": "stock-movement"`, `"target_entity_type_slug": "work-order"`.
+   - Tests: entity-schema suites **42/42 pass** (6 files), CLI apply suite **329 pass / 0 fail**, `tsc --noEmit` clean on both packages.
+
+   **Third apply limitation (not yet fixed):** re-declaring a previously removed key does not re-adopt it — apply blocks on `<key> · definition` and refuses to overwrite a description it doesn't own. With edges on the row, deleting is data loss, so the only non-destructive fix was to **edit the config to match the database**, inverting config-as-source-of-truth.
+
+   **Connector edge import — research complete, proposal NOT yet delivered.** Corrected my own earlier overstatement: connectors **can** create entities and resolve identities declaratively via `eventKinds[kind].attributions` (with `EntityIdentitySpec` namespaces, `primary` immutable ids, `autoCreate`, `traits`), executed by `entity-link-upsert.ts`. What they **cannot** do is declare **entity→entity relationships** — that engine has zero `entity_relationships` references, and the only ingestion-side edge writer is the bespoke `github-team-graph.ts` route, which hand-writes SQL with `source: 'feed'`. That route is the precedent proving the need exists and was solved ad hoc. The recommended shape (to be surfaced for confirmation, since AGENTS.md forbids changing SDK surface without it): add a `relationships?: EntityRelationshipRule[]` sibling to `attributions` on an eventKind, declaring `{ relationshipType, target: {entityType, identities} }`, resolved through the existing identity resolver and writing `entity_relationships` — symmetric with what exists, declarative (no code execution in the connector), and inheriting identity resolution, `autoCreate`, and the live-triple dedupe semantics.
+
+6. **All user messages:**
+   - "i hope you just didn't create 20 entity types randomly, we just need to match what the erp has in there"
+   - "make sure you have the full coverage, you ahve the relationships working properly and base everything from the source code"
+   - "what are these bugs, could you fix them properly. tell me so i can also confirm. also edge generation i believe connectors should be able to import, what's the best way to make it work"
+
+   **Security-relevant constraints in effect (preserved verbatim from CLAUDE.md / AGENTS.md / the lobu skill):**
+   - "**Never write to `~/Code/lobu` directly.** Run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout — other sessions share it."
+   - "**Stage by explicit path** (`git add -- <paths>`, never `-A`). A commit is a snapshot, so a stale file copy left by earlier work in the same worktree silently reverts merged PRs. After commit/rebase, `git diff --name-only origin/main...HEAD` must equal your intended file list; extras = stop."
+   - "**`events` is append-only.** Never `DELETE FROM events`; tombstone or supersede instead."
+   - "**Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are usually real signups. Surface them one at a time for confirmation."
+   - "**Never resolve merge conflicts in the GitHub web UI** — it has silently dropped 1000+ lines of feature work."
+   - "**Two writing agents must never share a worktree** — they overwrite each other's uncommitted work."
+   - "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+   - "**Never auto-submit an interactive browser draft, in any package.**"
+   - "**Workers never receive real credentials** — placeholders or proxied access only."
+   - "**Request paths never aggregate history.**"
+   - "Do NOT include 'Co-Authored-By' or any Claude attribution in commit messages" and no "Generated with Claude Code" line.
+   - "**Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`. A working-tree grep proves nothing, and the fetch is load-bearing."
+   - "Prefer `bun`, never npm/yarn/pnpm." (enforced by an `enforce-bun.sh` PreToolUse hook)
+   - From the lobu skill: "Never open or request permission to read `.env`"; "Never read, print, invent, or paste a real secret into source or chat."
+   - "Do not call the AgentTool unless the user requested it" / "Do not use workflows or deep-research unless the user requested it."
+   - "**Depot serializes org-wide.**" — check `pgrep -f "make pre-pr-remote"` before dispatching.
+   - "Block only on irreversible or destructive actions and decisions genuinely the user's."
+
+7. **Pending Tasks:**
+   - **Write the user-facing answer for message 3** — explain both bugs reproducibly so the user can confirm, present the fix and its evidence, and give the connector-edge recommendation. (Not yet written.)
+   - **Surface the connector `relationships` proposal for confirmation** before implementing (SDK surface change).
+   - **Decide the fate of 700 unbacked edges** — `document_product` (678) and `invoice_from_quote` (22), 70% of the demo graph. Explicitly left for the user.
+   - **Ship the fix**: `make review-fix`, stage by explicit path, `make pre-pr-remote`, commit, push, `gh pr create`, `make review` once, `make ui-review`, merge.
+   - **Revert prodma-demo config keys to snake_case** once the fix ships (they were hyphenated purely as a workaround).
+   - **Retire the 171 old 2026 documents** — still blocked, still awaiting the user's go-ahead.
+   - **Seed the corrected chain** (quote → order → stock-movement → invoice → journal); 10 of 14 types hold zero rows.
+   - **Consider entity types for uncovered real domains** — KESIN_MALIYET (actual costing) and SABIT_KIYMET (fixed assets) are the two that look like genuine gaps rather than long tail.
+   - **`auto-linker.ts:126`** still writes `mentions` edges ungated — flagged, not fixed.
+   - **Uncommitted from earlier work:** the `manage_entity.ts` `$links` mutation-gate change and the Owletto form spike, both in the `prodma-writepath` worktree.
+   - **Refresh the gap-report artifact** at https://claude.ai/code/artifact/b65a24ee-a91d-4a7e-a364-e881ed9c7cd0 — predates every finding.
+   - **Cleanup owed:** worktrees `prodma-gap-audit`, `prodma-form`, `prodma-writepath`, `prodma-balance`, `owletto-enum-fix`, `entity-slug-roundtrip`; scratchpad `slugrepro`/`fixbak`; `_analysis/` in `~/Downloads/emre_project`; the `slugfix` CLI context; dev servers on 9455 and 9466.
+
+8. **Current Work:**
+
+   Immediately before the summary request I had finished re-verifying the slug fix after undoing the biome reformatting disaster. The final tool call returned:
+   ```
+    329 pass
+    0 fail
+    9 snapshots, 727 expect() calls
+   Ran 329 tests across 13 files. [1114.00ms]
+   === E2E: snake_case config, applied twice, against the fixed stack ===
+     entity-types:
+     = entity-type stock-movement
+     = entity-type work-order
+     ? entity-type $member (drift — ignored, not deleted)
+     relationship-types:
+     = relationship-type movement_for_order
+   Summary: 0 create, 0 update, 5 noop, 1 drift
+   ```
+   So the state is: **fix complete and fully verified** — 88 insertions / 10 deletions across 5 files in worktree `entity-slug-roundtrip`, `tsc` clean, 42/42 entity-schema tests, 329/0 CLI tests, and a three-point A/B (halt → partial → clean) proving both the server and CLI halves are load-bearing. The connector research is also complete but its recommendation has not been delivered. **I had not yet written any user-facing response for message 3.**
+
+9. **Optional Next Step:**
+
+   Write the answer to message 3, which asked: *"what are these bugs, could you fix them properly. tell me so i can also confirm. also edge generation i believe connectors should be able to import, what's the best way to make it work"*.
+
+   It needs three parts:
+   - **The bugs, stated so the user can confirm them independently.** Bug 1 (server, `manage_entity_schema.ts`): create normalized `_`→`-` at `:460` while get/update/delete/audit queried the raw slug — so `lobu apply` halted with the misleading `Entity type 'stock_movement' not found` when its create→409→update retry hit a slug that was never written. Bug 2 (CLI, `map-config.ts`): desired state sent `slug: entity.key` verbatim and diffed against the stored slug, so apply re-planned a create every run and reported the stored row as drift. Confirmation recipe: any `lobu.config.ts` with an underscore in an entity-type key, applied twice.
+   - **The fix and its evidence** — the reproduction sequence (halt → `2 create/3 drift` → `0 create, 0 update, 5 noop, 1 drift`), test counts, and the note that every pre-existing test used hyphenated slugs which is why this was never caught. Also flag the third, still-unfixed limitation (re-declaring a removed key can't be re-adopted, forcing config to be edited to match the DB).
+   - **The connector recommendation**, leading with the correction that connectors *can already* materialize entities declaratively via `eventKinds[kind].attributions`, and that the actual gap is entity→entity edges — with `github-team-graph.ts:312` (`source: 'feed'`, hand-written SQL) as proof the need exists and was solved ad hoc. Propose a `relationships?: EntityRelationshipRule[]` sibling to `attributions`, and **ask for confirmation before implementing**, since AGENTS.md states: "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+
+   Per the user's standing instruction, end with per-surface confidence scores plus their one-line basis, and 2–4 concrete next actions.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

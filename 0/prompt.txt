@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blouh9vqv</task-id>
+<tool-use-id>toolu_01UZaxrS6thtMWYhVABvbrt6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/blouh9vqv.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for queue to clear" was stopped</summary>
+</task-notification>

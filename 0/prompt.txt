@@ -1,0 +1,3 @@
+1. why do you need, we can seed some data
+2. do those using opencode
+3. 4. we need the full analysis. identify all the gap and tell me if there are workarounds, small lifts we can implement, big lifts we need to discuss. also ideally we want to make lobu extensible, for custom ui etc we want to enable mapping custom components in json_renderer etc in the future

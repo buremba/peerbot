@@ -1,0 +1,1 @@
+how is the code defined, and that that runs on hooks can run on isolate vm similar to connectors

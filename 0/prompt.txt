@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs8p92uzx</task-id>
+<tool-use-id>toolu_01JE4aDo6zRK72pkCpJptkpd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bs8p92uzx.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix" completed (exit code 0)</summary>
+</task-notification>

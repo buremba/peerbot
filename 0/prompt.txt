@@ -1,0 +1,12 @@
+should these be merged? ci(prod-smoke): wait for rollout on manual runs with expect_sha 
+#2385 opened 2 days ago by buremba Member
+ 2
+
+feat(personal-agent): voice profiles + social interest radar 
+#2357 opened 2 days ago by buremba Member
+1 of 3 tasks
+ 2
+
+feat(connectors): min_scrolls jitter for X/LinkedIn home feeds 
+#2356 opened 2 days ago by buremba Member
+1 of 3 tasks https://github.com/lobu-ai/lobu/pulls

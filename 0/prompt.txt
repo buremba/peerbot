@@ -1,0 +1,1 @@
+you can use prod logs using kube

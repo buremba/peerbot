@@ -1,0 +1,1 @@
+yes we should use inline components for our notification section. when clicked we can show it dedicated and focused etc so the inline struff can just be a summary

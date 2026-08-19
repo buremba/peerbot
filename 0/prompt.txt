@@ -1,0 +1,196 @@
+<task-notification>
+<task-id>a64bac4fb9e30469c</task-id>
+<tool-use-id>toolu_017LN2Vxod84fZMFnXuoX1zN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9423cecc-fd80-4d65-849a-4ac8a447f5b7/tasks/a64bac4fb9e30469c.output</output-file>
+<status>completed</status>
+<summary>Agent "Map watcher versioning server-side" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Behavior / watcher versioning + prompt pipeline — current state map
+
+## 1. Tables &amp; versioning
+
+**`watchers`** (the Behavior row) — `/Users/burakemre/Code/lobu/packages/cli/dist/db/migrations/00000000000000_baseline.sql:2366-2401` plus additive migrations:
+- Core: `id, organization_id, agent_id, name, slug, description, status, version, current_version_id, watcher_group_id, entity_ids bigint[], sources jsonb DEFAULT '[]'`
+- Scheduling projection: `schedule, timezone, next_run_at` (`timezone` added `/Users/burakemre/Code/lobu/db/migrations/20260712100000_watchers_feeds_timezone.sql`)
+- `triggers jsonb NOT NULL DEFAULT '[]'` + CHECK `jsonb_typeof = 'array'` — `/Users/burakemre/Code/lobu/db/migrations/20260717121000_behavior_triggers.sql:1-40`. That migration explicitly states `schedule/timezone` are **derived indexed projections** of the schedule trigger.
+- Reaction (group-shared, **unversioned**): `reaction_script, reaction_script_compiled, reaction_input_schema` (`/Users/burakemre/Code/lobu/db/migrations/20260624020000_watcher_reaction_input_schema.sql`)
+- Runtime knobs: `model_config, execution_config, device_worker_id, agent_kind, notification_channel, notification_priority, min_cooldown_seconds, last_fired_at, scheduler_client_id, tags`
+
+**`watcher_versions`** — baseline `…/00000000000000_baseline.sql:2146-2166`, after drops:
+`id, watcher_id, version, name, description, change_notes, created_by, created_at, keying_config jsonb, prompt text NOT NULL, classifiers jsonb, required_source_types text[], recommended_source_types text[], reactions_guidance text, version_sources jsonb`
+- `extraction_schema` + `json_template` dropped: `/Users/burakemre/Code/lobu/db/migrations/20260624030000_drop_watcher_inline_render_columns.sql`
+- `condensation_prompt`/`condensation_window_count` dropped: `/Users/burakemre/Code/lobu/db/migrations/20260626000000_drop_watcher_condensation_columns.sql`
+- `prompt` column comment: *"Handlebars prompt template used for insight extraction."*
+- `required_source_types` / `recommended_source_types` are **dead columns** — only referenced in the query_sql allowlist (`/Users/burakemre/Code/lobu/packages/server/src/utils/table-schema.ts:506-507`); no writer anywhere in server/cli/core.
+
+**Versioning model:** version rows live on the **group root** (`watcher_id = watchers.watcher_group_id`), not per-assignment. Every watcher in the group points at the same `current_version_id`.
+
+**`create_version` implementation:** `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/version-actions.ts:33-334` (`handleCreateVersion`).
+- Reads group root + prev version (`:58-88`)
+- Advisory lock `pg_advisory_xact_lock(hashtext('watcher_create_version'), groupId)` then re-resolves `MAX(version)+1` (`:184-193`)
+- INSERT into `watcher_versions` (`:204-219`); group-wide cascade of `current_version_id/version/name` (`:244-252`); per-assignment write of `sources/schedule/timezone/triggers/next_run_at/scheduler_client_id` (`:255-265`) — **only when `set_as_current !== false`**.
+
+**What triggers a new version vs a scalar update:** enforced at `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors.ts:514` and `:539-561`.
+```ts
+const VERSION_OWNED_WATCHER_FIELDS = ['name', 'description', 'prompt', 'sources'] as const;
+```
+`update` **hard-rejects** any of those four (422-ish `ToolUserError`) and requires ≥1 of `WATCHER_PATCHABLE_FIELDS` (`:516-530`: model_config, execution_config, triggers, agent_id, scheduler_client_id, tags, device_worker_id, agent_kind, notification_*, min_cooldown_seconds). Note `keying_config`, `classifiers`, `reactions_guidance`, `triggers` are accepted by `create_version` too but are **not** in the version-owned reject list — so `triggers` can go through either path.
+
+CLI mirror of the same split: `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/diff.ts:531-563` (`versionBound = prompt | sources | reactions_guidance | keying_config | classifiers`), routed in `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/apply-cmd.ts:880-940`.
+
+---
+
+## 2. Handlebars rendering — literal-safety is NOT there
+
+**Render sites (2):**
+| Path | File:line | Guarded? |
+|---|---|---|
+| Runtime (worker `read_knowledge`) | `/Users/burakemre/Code/lobu/packages/server/src/tools/get_content/behavior-mode.ts:469-479` (`renderPromptTemplate`) | **No try/catch** |
+| Preview (`get_behavior.rendered_prompt`) | `/Users/burakemre/Code/lobu/packages/server/src/tools/get_behavior.ts:865` (`renderPromptPreview`) | **No try/catch** (the only try in that region is `:663-706`) |
+
+**Implementation:** `/Users/burakemre/Code/lobu/packages/server/src/watchers/template-renderer.ts`
+- Isolated instance `const hbs = Handlebars.create()` (`:79`), compiled with `{ noEscape: true }` (`:120`, `:133`). **Not** `strict: true`.
+- **Only one helper registered: `json`** (`:81`).
+- Tokens available at runtime (`buildContext`, `:83-117`): `{{entities}}` (stringifiable array → also `{{#each entities}}`), `{{content}}`, `{{sources.&lt;name&gt;}}` (object with `.name/.content/.count` + `toString`), `{{data.&lt;key&gt;}}`. Preview mode (`:128-145`) swaps `sources`/`data` for Proxies returning `[sources.foo]` / `[data.foo]` and `content` → `'[content]'`.
+- `{{entityId}}` and `{{query.*}}` are a **different** substitution layer — SQL source templating in `/Users/burakemre/Code/lobu/packages/server/src/utils/execute-data-sources.ts`, not Handlebars.
+
+**Save-time validation:** `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/shared.ts:154-166` → `validateTemplate` at `/Users/burakemre/Code/lobu/packages/server/src/watchers/renderer.ts:12-28`, which is **only `Handlebars.precompile()` — a syntax check on the global Handlebars instance (no `json` helper registered there)**. Thrown as 422 via `assertWatcherVersionConfigValid` (`shared.ts:233-246`).
+
+**Empirically verified behavior (handlebars 4.7.9, in-repo):**
+
+| Prompt content | Save (`create`/`create_version`) | Render |
+|---|---|---|
+| `{{unknown}}` | passes | **silently empty** |
+| `{{{unknown}}}` | passes | silently empty |
+| `{{sources.nope}}` | passes | silently empty |
+| `{{#each nope}}…{{/each}}` | passes | silently empty |
+| `{{#nope}}x{{/nope}}` | passes | silently empty |
+| unclosed `{{#each nope}}` | **422** `prompt: Invalid template: Parse error…` | — |
+| bare `{{` in prose (e.g. `Use {{ notation`) | **422** Parse error | — |
+| `{{myHelper 1}}` / any `{{word arg}}` | **passes save** | **THROWS at render: `Missing helper: "myHelper"`** |
+
+So the answer to the issue's question is *both, badly*: unknown **variables** silently empty-render (no 422), unbalanced/unparseable braces 422 at save, and **any `{{token with args}}` passes save then throws an unhandled 500 at run time** (`behavior-mode.ts:475`) and on every `get_behavior` read (`get_behavior.ts:865`). Pasting arbitrary skill markdown containing `{{`, `{{#if x}}`-style fragments, or Jinja/mustache examples is a live hazard on all three axes. There is **no escaping/literal-fencing helper and no `strict` mode** anywhere.
+
+---
+
+## 3. Source-chip extraction from prompt tokens
+
+**Codec:** `/Users/burakemre/Code/lobu/packages/server/src/watchers/source-refs.ts:165-166`
+```ts
+const PROMPT_REF_TOKEN = /@\[([a-z]+):([^:\]]*):([^\]]*)\]\(([^)\s]*)\)/g;
+const SQL_PATH_PREFIX = '#sql=';
+```
+`extractSourcesFromPromptTokens(prompt)` — `source-refs.ts:201-242`. Kinds → `@mode:` mapping at `:171-177` (`feed, connection, connector, channel, metric`); `sql` tokens carry a URL-encoded query in `#sql=…`; `entity` and `watcher/member/event` never become sources. Malformed tokens are skipped silently. `mergePromptSources` at `:249-269` (explicit wins, dedupe by query, name uniquification).
+
+**Call sites (exactly 2 writers):**
+
+*create* — `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/crud.ts:124-135`: always merge prompt chips + explicit; if empty → `[{ name: 'content', query: DEFAULT_BEHAVIOR_SOURCE_QUERY }]` (`source-refs.ts:103-104`).
+
+*create_version* — `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/version-actions.ts:107-124`. This is the exact code path the issue's must-fix #2 targets:
+```ts
+const promptEdited = args.prompt !== undefined;
+const promptSources = extractSourcesFromPromptTokens(prompt);
+const previousPromptHadSourceTokens =
+  promptEdited &amp;&amp; extractSourcesFromPromptTokens(prev.prompt ?? '').length &gt; 0;
+const shouldDerivePromptSources =
+  promptEdited &amp;&amp; (promptSources.length &gt; 0 || previousPromptHadSourceTokens);
+const sources = shouldDerivePromptSources
+  ? mergePromptSources(explicitSources, promptSources)   // FRESH derive — discards stored
+  : sourcesProvided ? explicitSources : storedSources;
+```
+Contract text documenting the three-way precedence: `/Users/burakemre/Code/lobu/packages/core/src/contracts/tools/manage-behaviors.ts:338`.
+
+**Concrete failure the issue describes:** appending skill text to a prompt that *already contains chips* sets `shouldDerivePromptSources = true`, and the result is `merge([], promptSources)` — i.e. the version's source set collapses to exactly the chips. Any non-chip source stored on `watchers.sources` (including the `content` default from create, and any explicitly-authored SQL source) is **dropped**, reported only via `removed_sources` in the response (`version-actions.ts:320-332`). Note `promptEdited` is `args.prompt !== undefined` — passing a **byte-identical** prompt still counts as edited.
+
+---
+
+## 4. `version_sources` — confirmed null on every version ≥ 2
+
+- **Written on create only:** `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/crud.ts:298,303` → `${toJsonParam(tx, sources)}`.
+- **Hard-coded NULL on create_version:** `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/version-actions.ts:198-214`, with an explicit rationale comment ("sources are per-assignment now… get_content falls through to watchers.sources when version_sources is empty").
+- Also written by default provisioning (`/Users/burakemre/Code/lobu/packages/server/src/auth/default-provisioning.ts:507`) and the channel-subscription service (`/Users/burakemre/Code/lobu/packages/server/src/gateway/channels/behavior-subscription-service.ts:524`).
+- **Readers all use "version_sources if non-empty, else watchers.sources":** `behavior-mode.ts:273-276` (fingerprint / `skip_if_unchanged`) and `behavior-mode.ts:362-364` (runtime read); `crud.ts:760` (`create_from_version`, falls back to `w.sources` from the JOIN at `:710`).
+- **Broken reader:** `handleGetVersionDetails` — `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/version-actions.ts:419,430,456-459` returns `sources` straight from `version_sources`, so **`get_version_details` reports `sources: []` for every version ≥ 2**. `get_behavior` avoids this by reading `watcherRow.sources` instead (`get_behavior.ts:834,858`), which is why CLI apply drift detection still works (`diff.ts:540-545` diffs against `remote.sources`).
+- One-off backfill touches both columns: `/Users/burakemre/Code/lobu/db/migrations/20260728100010_behavior_default_source_excludes_bookkeeping.sql`.
+
+---
+
+## 5. Trigger kinds &amp; validation
+
+**Only two kinds exist.** `/Users/burakemre/Code/lobu/packages/core/src/contracts/tools/manage-behaviors.ts:15-96`:
+- `kind: "event"` (`:15-68`) — `connector_key`, optional `connection_id`, `event_types[1..32]`, `match`, `execution: "turn" | "window"` (default `turn`), `active_run: "queue" | "coalesce" | "steer"` (default `queue`), `output: "silent" | "reply_to_source"` (default `silent`), `skip_if_unchanged` (default true).
+- `kind: "schedule"` (`:71-90`) — `cron`, `timezone`, `execution` pinned to `"window"`, `active_run` pinned to `"coalesce"`, `skip_if_unchanged`.
+
+**"manual" and "window" are NOT trigger kinds.**
+- `window` is the `execution` mode on a trigger.
+- `manual` is a **dispatch source**, not a trigger: `handleTrigger` → `queueAndDispatchWatcherRun(id, "manual", sql)` at `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/trigger.ts:45-49`. Enum is `scheduled | manual | event` (`/Users/burakemre/Code/lobu/packages/server/src/watchers/automation.ts:141-143`; manual runs bypass coalescing at `:638`). A Behavior with `triggers: []` is effectively manual-only.
+
+**Validation seams** — `/Users/burakemre/Code/lobu/packages/server/src/behaviors/triggers.ts`:
+- `normalizeBehaviorTriggers` (`:143-159`) — pure, sync. Enforces ≤1 schedule trigger; delegates to `normalizedScheduleTrigger` (`:124-141`, cron + IANA-tz validation) and `normalizedEventTrigger` (`:77-122`, execution/active_run/output compatibility + sparse `match` cleanup).
+- `resolveBehaviorTriggerWrite` (`:177-196`) — normalizes and derives the `schedule`/`timezone` projection.
+- `assertBehaviorTriggerConnections` (`:199-269`) — **async, org-scoped**: connection ownership, connector-key match, event-key presence in the connector's `behavior_events` catalog, steering/reply capability checks.
+
+Invoked from:
+| Path | File:line |
+|---|---|
+| `create` | `crud.ts:213-216` |
+| `update` | `crud.ts:455-463` (async assert only when triggers changed) |
+| `create_version` | `version-actions.ts:158-172` (async assert gated on `triggersChanged`) |
+| default provisioning | `default-provisioning.ts:470` (normalize only, no async assert) |
+| approval-proposal preview | `lobu/agent-routes.ts:1564` |
+
+**Where a "schedule/manual/window require ≥1 skill" rule slots in:** `normalizeBehaviorTriggers` is the wrong home (pure/sync, no DB, called on *read* paths via `behaviorTriggersEqual` — adding a throw there would break diffing of legacy rows). The correct seam is `assertBehaviorTriggerConnections` (or a sibling `assertBehaviorTriggerRequirements`) called from the same three write sites — it already has `sql` + `organizationId` and already throws `ToolUserError`. Caveat: at `create` the assert runs at `crud.ts:216` *after* source resolution but *before* the INSERT; at `create_version` the assert is **gated on `triggersChanged`** (`version-actions.ts:166`), so a skill-count rule placed there would not fire when skills change but triggers don't — it would need an ungated call. Note also the CLI update path sends `triggers` via `update` and prompt/sources via `create_version` as **two separate calls** (`apply-cmd.ts:886-940`), so a cross-field invariant spanning triggers+skills is not atomic under `lobu apply`.
+
+---
+
+## 6. Where `prompt` is accepted today
+
+| Surface | Location |
+|---|---|
+| MCP tool `manage_behaviors` (actions `create`, `create_version`) | contract `/Users/burakemre/Code/lobu/packages/core/src/contracts/tools/manage-behaviors.ts:328-334`; registered `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/index.ts:228`; dispatch `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors.ts:965` |
+| HTTP | generic tool endpoint `POST /api/:orgSlug/:toolName` — `/Users/burakemre/Code/lobu/packages/server/src/rest-api.ts:269-290`. **There is no dedicated `POST /api/behaviors`**; only `GET /api/behaviors` (`rest-api.ts:148`) |
+| Sandbox SDK | `behaviors.create` / `behaviors.createVersion` — `/Users/burakemre/Code/lobu/packages/server/src/sandbox/namespaces/behaviors.ts:35,78,162,164`; docs `/Users/burakemre/Code/lobu/packages/server/src/sandbox/method-metadata.ts:537-564` |
+| CLI config-as-code | `defineBehavior({ prompt })` — `/Users/burakemre/Code/lobu/packages/cli/src/config/define.ts:398-451` (`prompt: string`, required); mapped `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/map-config.ts:607`; sent `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/client.ts:919,1026` |
+| Generated OpenAPI client | `/Users/burakemre/Code/lobu/packages/client/src/generated/types.gen.ts:3860` |
+
+`update` never accepts `prompt` (rejected at `manage_behaviors.ts:545-550`).
+
+---
+
+## Seams and surprises
+
+1. **Literal-safety is worse than "422 vs empty-render" — there is a third, silent-until-runtime mode.** `{{anything with args}}` passes `Handlebars.precompile` at save and throws `Missing helper` at render, unguarded, in both `behavior-mode.ts:475` and `get_behavior.ts:865`. A prompt that saves fine can make `get_behavior` 500 forever.
+
+2. **Save-time and render-time use different Handlebars instances.** `renderer.ts:22` uses the **global** `Handlebars` (no `json` helper); `template-renderer.ts:79-81` uses a private `hbs` with `json`. Any future helper registered on `hbs` is invisible to validation, and vice-versa.
+
+3. **`{{` in prose is a hard 422.** `Use {{ notation` fails `precompile`. Any skill markdown containing a lone `{{` cannot be saved at all — the issue's "literal-safety must-fix" is not hypothetical.
+
+4. **The `version_sources`-NULL decision has a documented rationale but leaves `get_version_details` lying.** `version-actions.ts:198-203` is a deliberate choice; the collateral is `get_version_details` returning `sources: []` for all v≥2 (`version-actions.ts:456-459`). Contradicts any assumption that a version row is self-describing.
+
+5. **`create_version` with `set_as_current: false` loses sources entirely.** The computed `sources` are only persisted inside the `if (setAsCurrent)` block (`version-actions.ts:225-266`) and `version_sources` is NULL — so the new version row records a prompt but no sources anywhere. There is also **no rollback/activate-version action** in the contract (`manage-behaviors.ts:237` action union: create/list/update/create_version/complete_window/trigger/delete/set_reaction_script/get_versions/get_version_details/get_component_reference/submit_feedback/get_feedback/list_promoted/create_from_version), so such rows are unreachable dead weight.
+
+6. **Chip re-derivation also fires when the prompt is unchanged.** `promptEdited = args.prompt !== undefined` (`version-actions.ts:90`) — the CLI always resends `prompt` when any version-bound field changed (`apply-cmd.ts:926`), so a pure `reactions_guidance` edit on a chip-bearing Behavior silently re-derives (and can prune) sources.
+
+7. **The default `content` source is silently destroyed by the first chip.** Created chip-less → `sources = [{content, DEFAULT_BEHAVIOR_SOURCE_QUERY}]`; a later `create_version` adding one chip → `sources = [thatChip]`. `behavior-mode.ts:378-382` re-injects the default only when the list is *empty*, so this is a real data-scope change, not a no-op.
+
+8. **Skills do not exist on Behaviors today at all.** `SkillConfig`/`SkillsConfig` live only on the **agent** (`/Users/burakemre/Code/lobu/packages/core/src/contracts/agent-settings.ts:119-136`, persisted as `agents.skills_config`, `/Users/burakemre/Code/lobu/packages/server/src/lobu/stores/postgres-stores.ts:89`, write-validated at `/Users/burakemre/Code/lobu/packages/server/src/lobu/agent-routes.ts:1753-1812`). There is no `watchers.skills`, no `watcher_versions.skills`, and no skill field in `defineBehavior`. `/Users/burakemre/Code/lobu/packages/server/src/skills/` is unrelated (a generated MCP skill resource).
+
+9. **Trigger kind vocabulary mismatch with the issue.** The issue's "manual" and "window" are not kinds; only `event` and `schedule` exist. A validation rule phrased over "schedule/manual/window" must be re-expressed as: schedule triggers, `execution === 'window'` event triggers, and the empty-`triggers` (manual-dispatch-only) case.
+
+10. **`watcher_versions` has two live dead columns** (`required_source_types`, `recommended_source_types`) still projected into `query_sql` via `table-schema.ts:506-507` but never written — free real estate, or a trap for anyone reading the schema as intent.
+
+11. `watcher_versions` has **no `organization_id`**; org scoping is derived exclusively through the `watchers` JOIN. Any new version-level table (e.g. behavior↔skill) inherits that constraint.
+
+---
+
+**Confidence: 88/100.**
+
+**Not verified:**
+- Any migration applied to a live DB beyond `20260728120000` — I read migration files, not a live `\d watcher_versions`. The `packages/cli/dist/db/migrations/` baseline may lag `/db/migrations/` sources.
+- The owletto frontend/submodule (composer chip serialization, edit-sheet behavior) — referenced in `source-refs.ts:159-164` but outside this repo tree.
+- The agent-worker side (`packages/agent-worker`, `lobu-refs.ts`) — I did not trace how the rendered prompt is consumed or whether it re-parses chips.
+- Whether any test asserts the missing-helper runtime throw (I found no such test; I verified the Handlebars semantics by direct evaluation, not by running the repo's suite).
+- `complete-window.ts` (1000+ lines) and `automation.ts` dispatch internals beyond the `dispatch_source` enum.
+- Whether `assertWatcherSourcesResolve`'s `LIMIT 0` planning would reject a skill-derived source — I read the mechanism but did not execute it.</result>
+<usage><subagent_tokens>137554</subagent_tokens><tool_uses>65</tool_uses><duration_ms>841770</duration_ms></usage>
+</task-notification>

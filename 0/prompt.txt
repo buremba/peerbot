@@ -1,0 +1,252 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+**Overarching (inherited, pre-compaction):** A **gap analysis — explicitly NOT a migration** — of whether **Prodma**, a Turkish manufacturing ERP (.NET 4.6.1, WinForms/DevExpress, SQL Server, EF EDMX, **422 tables / 453 screens / 503 DbSets**, source at `/Users/burakemre/Downloads/emre_project`), could be rebuilt on **Lobu** (`/Users/burakemre/Code/lobu`). Purpose: "to see where lobu lacks." Audience is Prodma's owner, a domain expert. Scale <20 concurrent users, so correctness/domain-completeness matter, not throughput.
+
+**Intents in this session, in order:**
+1. Answer "why does this need a new table" — challenge the premise that a separate internal-only authz table is required for the `$links` gate.
+2. "yes" — rewrite brief 02 to the chokepoint-gate scope and record the merge-repointing surface in memory.
+3. "go ahead next stpes" — proceed autonomously through the remaining work.
+4. Repeated "go" / "ok go ahead" — keep executing the PR chain without check-ins.
+5. Answer an AskUserQuestion on how to fix the entity picker (chose "Revert picker to local filtering").
+6. "go ahead why the fuck are you stuck" — frustration at the length of the owletto round-trip loop; move faster, less narration.
+7. "why are we constrantly rebasing? are there other prs we're competing or what" — diagnose the cause of repeated rebasing.
+
+## 2. Key Technical Concepts
+
+- **`git grep <pat> <rev> -- 'packages/*/src'` matches NOTHING** and exits 0 — a wildcard directory pathspec silently defeats the mandated absence check. Sanity-check any pathspec against a pattern that must match.
+- **`make review` mechanically requires a full Depot preflight** for the current committed tree, regardless of the attestation being semantically vacuous for a pointer PR.
+- **Depot CLI exits 0 on failure** (`Depot run X failed (CLI exit 0)`), and piping `make` through `tail` masks its real exit code — double false-green.
+- **vitest in `packages/server` EXCLUDES** `src/gateway/**/__tests__/**` and ~10 other dirs; those run under `bun test ./<path>` (leading `./` required or bun treats it as a name filter).
+- **owletto has no `tsc` lane in its PR checks** (CodeRabbit only). `vitest` + `biome lint` pass on type errors; only the lobu pin gate catches them.
+- **check-drift** turns red on **every** open lobu PR when an owletto pointer bump lands; rerunning replays the stale merge ref, so the fix is rebasing.
+- **AJV singleton runs with `coerceTypes`** — `null` becomes `""`/`0` for typed fields, so an unfiltered clear sentinel silently corrupts.
+- **`manage_entity.list` search predicate** is `({e}.name ILIKE $N OR {e}.metadata->>'domain' ILIKE $N)`; limit is `Math.min(Math.max(filters.limit || 100, 1), 500)` — so `limit: 2000` is clamped to 500.
+- **cmdk `shouldFilter`** defaults true; a server-searched Combobox must disable it or results get scored a second time against the item `value`.
+- **Artifact publishing** produces a hosted HTTPS URL accepted by `ARTIFACT=<url> make ui-review`.
+- **Playwright `timezoneId: "America/Los_Angeles"`** for date-only proof; the defect is invisible at or east of UTC.
+
+## 3. Files and Code Sections
+
+**`/tmp/lobu-tasks/02-gate-links.md`** — fully rewritten. Retitled "Gate authz edges at the relationship-write chokepoint", marked DECIDED, scoped to FIVE agent-reachable surfaces with the full 14-site/8-file inventory:
+
+```
+AGENT-REACHABLE:
+1. manage_entity.ts:1545 INSERT — link (ungated)
+2. manage_entity.ts:1599 UPDATE — unlink; ungated and TYPE-BLIND (can delete a deny_read edge)
+3. manage_entity.ts:1642 UPDATE — update_link
+4. entity-merge.ts:291/320/666 — repointing, org-scoped only, NO type awareness
+5. entity-management.ts:1029 DELETE — force-delete-tree (already gated)
+INTERNAL: access-graph.ts:417/445 · channel-about.ts:268/373/439 · github-team-graph.ts:312 · auto-linker.ts:126
+```
+Constraints added: "Do NOT add a table. Do NOT add a column." Resolve type from the DB, never caller-supplied `source`.
+
+**`packages/server/src/tools/admin/manage_entity.ts`** (worktree `metadata-null-clear`, commit `77999a589`, rebased to `2efb9590d`) — the #2770 fix:
+
+```ts
+	// Validate metadata against entity type's JSON schema (if being updated)
+	if (args.metadata !== undefined && Object.keys(args.metadata).length > 0) {
+		/*
+		 * A top-level null is the update contract's explicit clear sentinel, not a
+		 * value, so it must not reach the validator as one. Passing it through had
+		 * two failure modes, both silent from the caller's side: on an optional
+		 * typed property the clear was REJECTED ("status: must be one of ..."),
+		 * and on a required property AJV's coercion turned null into "" and wrote
+		 * the empty string, so a clear that should have been refused corrupted the
+		 * row instead. Filtering nulls out makes a clear read as an absent
+		 * property, which is exactly what it means: optional clears validate,
+		 * required clears fail as a missing required property.
+		 *
+		 * Validating a filtered COPY rather than `args.metadata` itself is
+		 * deliberate: the field merge below still needs the nulls to know which
+		 * keys to clear. But AJV coerces its input in place, so every non-null
+		 * coercion has to be copied back afterwards or the write silently stores
+		 * the uncoerced value.
+		 */
+		const metadataForValidation = Object.fromEntries(
+			Object.entries(args.metadata).filter(([, value]) => value !== null),
+		);
+		const validation = await validateEntityMetadata(
+			before.entity_type as string,
+			metadataForValidation,
+			ctx,
+		);
+		if (!validation.valid) { ... throw new ToolUserError(...); }
+		Object.assign(args.metadata, metadataForValidation);
+	}
+```
+
+**`packages/server/src/utils/schema-validation.ts:104`** — the deliberately-NOT-changed short-circuit:
+```ts
+  if (!metadata || isEmptyObject(metadata)) {
+    return { valid: true };
+  }
+```
+This is why `{action: null}` alone filters to `{}` and lands unvalidated. review-fix proposed changing it (`if (!metadata)`) — I rejected it as a shared-contract change affecting the create path.
+
+**`packages/server/src/__tests__/integration/entity-schema/metadata-provenance-keys.test.ts`** — added `required: ['action']` to the shared schema plus two tests, including the documented KNOWN GAP comment.
+
+**`packages/owletto/src/components/ui/combobox.tsx`** — owletto#853:
+```tsx
+				{/*
+				 * A server-searching caller has ALREADY filtered: its options are the
+				 * response to `query`. Letting cmdk score them a second time drops
+				 * every result the server matched on a field the item's `value` does
+				 * not repeat — an entity found by `external_id` 4021 scores 0 against
+				 * the value "Acme GmbH acme company" and vanishes...
+				 */}
+				<Command shouldFilter={!onQueryChange}>
+```
+
+**`packages/owletto/src/components/dynamic-schema-form.tsx`** — owletto#850 fixes:
+```tsx
+function parseSchemaDate(value: string): Date {
+	if (DATE_ONLY.test(value)) {
+		const [year, month, day] = value.split("-").map(Number);
+		const parsed = new Date(0);
+		parsed.setHours(0, 0, 0, 0);
+		parsed.setFullYear(year, month - 1, day);   // multi-arg ctor remaps years 0-99 → 1900-1999
+		return parsed;
+	}
+	return new Date(value);
+}
+function getEntityLookupValue(entity: Entity, lookupField: string): string {
+	const raw = lookupField === "slug" ? entity.slug : entity.metadata?.[lookupField];
+	return raw == null ? "" : String(raw);
+}
+// fallback input now routes through emit() and renders type="number"
+onChange(Number.isFinite(asNumber) ? asNumber : next);
+```
+
+**`packages/owletto/src/components/entity-form-lookup-search.test.tsx`** — NEW (owletto#855, typed in #857). The mock emulates the REAL predicate:
+```ts
+const CANDIDATES: Array<{ id: string; name: string; slug: string; entity_type: string;
+	metadata: Record<string, unknown>; }> = [ { id:"e1", name:"Acme GmbH", slug:"acme",
+	entity_type:"company", metadata: { external_id: 4021, domain: null } } ];
+// Mirrors the server: name and the hardcoded `domain` key only. Notably NOT metadata.external_id
+const entities = q ? CANDIDATES.filter((e) =>
+	e.name.toLowerCase().includes(q) ||
+	String(e.metadata.domain ?? "").toLowerCase().includes(q)) : CANDIDATES;
+```
+
+**Memory files written/updated:**
+- `project_links_gate_vs_edge_provenance_open_decision.md` — OPEN → **DECIDED**, records why provenance and separate-table were rejected
+- `reference_git_grep_glob_pathspec_matches_nothing.md` — NEW
+- `reference_vitest_excludes_gateway_and_several_test_dirs.md` — NEW
+- `reference_metadata_null_is_a_clear_sentinel_not_a_value.md` — NEW
+- `MEMORY.md` — compacted 19.7KB → 17.2KB (dropped 10 shipped/closed entries, all links verified resolving)
+
+**Scratchpad:** `capture.mjs` (Playwright, timezoneId pinned), `pin-proof-template.html`, `pin-proof.html` (351,459 bytes), `reviewfix-server.patch`, `reviewfix-owletto.patch`, `reviewfix2-owletto.patch`.
+
+## 4. Errors and fixes
+
+- **Broken pathspec invalidated an absence check.** `git grep ... -- 'packages/*/src'` matched nothing; I told the user no hard DELETE existed, contradicting a correct memory. Fixed by re-running without the pathspec (found `entity-management.ts:1029`) and recording the trap in memory. I corrected myself to the user explicitly.
+- **Claimed the Depot attestation was vacuous so `make review` wouldn't need it.** It failed closed: `make review requires a full Depot preflight for the current committed tree.` Fixed by running `make pre-pr-remote` first.
+- **Task notification reported `exit code 0` while `make` exited `Error 2`** — because I piped through `tail`. Noted and corrected; the notification reports the pipeline's code.
+- **`tail -12` on gate output discarded the Depot pass/fail line** I then went looking for.
+- **My own type error merged into owletto main** (`error TS2339: Property 'domain' does not exist on type '{ external_id: number; }'`), failing 5 Depot lanes. Root cause: I ran `vitest` + `biome lint` but never owletto's `tsc`, and owletto has no tsc lane. Fixed in owletto#857 by widening to `Record<string, unknown>`. Nearly misdiagnosed as the known unpinned-bun correlated-failure pattern.
+- **My test mocked `useEntitiesByType` unconditionally**, so it proved the client doesn't drop a row the server would never send — which is how the picker regression survived two review rounds. Fixed by writing a mock that emulates the real SQL predicate.
+- **review-fix run #2 proposed reverting `buildMetadataPatch` to omit cleared keys**, claiming "updates replace metadata wholesale." Disproved by direct probe: `OMIT-KEY RESULT => {"action":"keep","status":"backlog"}` — the server **merges**. Rejected along with its deletion of the contract test.
+- **Rebase conflicts (4 rounds)** from the peer session advancing owletto/main. Each resolved by enumerating main's commits on the file and verifying both sides survived by grep, never taking a side wholesale.
+- **User feedback "go ahead why the fuck are you stuck"** — frustration at the round-trip loop; I reduced narration and chained commands.
+
+## 5. Problem Solving
+
+**Merged this session:** lobu#2769 (squash `2a87dea4`); owletto #848 (`3b657a76`… → `5d6cac1f`), #850, #853 (`0c65d6a0`), #855, #857 (`b72e39de`).
+
+**The `$links` answer:** no new table. `assertion_key` (already approved, a column) solves multi-assertion; a write chokepoint solves isolation. The separate table only buys blast-radius protection, and every dangerous writer (merge repointing, force-delete-tree) would need identical handling against a new table anyway.
+
+**#2769 final gates:** review verdict `bug_free 88, simplicity 86, slop 2, bugs 0, 0 blockers, tests_adequate: true`. All 10 required contexts verified green against the branch-protection API list (not `gh pr checks`). UI proof published at `https://claude.ai/code/artifact/3f2ff3c2-a01a-4c79-9a02-8f0bbfc5a48c`, recorded at owletto#857 comment 5302420786.
+
+**UI proof DOM assertions** (America/Los_Angeles):
+| | before `958e5481` | after `b72e39de` |
+|---|---|---|
+| hasGridTable | false | true |
+| headerCells | [] | SKU* · Qty* · Unit Price |
+| customerTag/type | input / number | button / combobox |
+| dateButtons | [] | Aug 01, 2026 |
+| showsAug01/showsJul31 | false / false | true / false |
+
+**Parallel-session collision diagnosed:** of 12 recent owletto merges, **7 are not mine** (#849, #851, #852, #854, #856, #858, #859) — all on the same files. Three different `buildMetadataPatch` designs were produced between the two sessions (null → omit → re-send baseline).
+
+**Correction issued:** #2770 is **no longer a UI prerequisite**. #858 makes the client re-send the baseline value for cleared keys, so it never sends `null`. #2770 still fixes silent `null → ""` corruption for agent/SDK/MCP callers.
+
+**Known non-blocking issue:** `limit: 2000` in the picker (from #854) is clamped to 500 by `entity-management.ts:1229`, so #854's comment claiming "bumping the slice well past the old 500" describes a no-op.
+
+## 6. All user messages
+
+- "why does this need a new table"
+- "yes"
+- "go ahead next stpes"
+- "ok go ahead"
+- "go"
+- "go"
+- "go ahead why the fuck are you stuck"
+- "why are we constrantly rebasing? are there other prs we're competing or what"
+- (AskUserQuestion selection) "Revert picker to local filtering (Recommended)"
+
+**Security-relevant constraints in effect (verbatim from CLAUDE.md / AGENTS.md / the lobu skill — system-provided, still binding):**
+- "**Never write to `~/Code/lobu` directly.** Run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout — other sessions share it."
+- "**Stage by explicit path** (`git add -- <paths>`, never `-A`). A commit is a snapshot, so a stale file copy left by earlier work in the same worktree silently reverts merged PRs. After commit/rebase, `git diff --name-only origin/main...HEAD` must equal your intended file list; extras = stop."
+- "**`events` is append-only.** Never `DELETE FROM events`; tombstone or supersede instead."
+- "**Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are usually real signups. Surface them one at a time for confirmation."
+- "**Never resolve merge conflicts in the GitHub web UI** — it has silently dropped 1000+ lines of feature work. Rebase locally against `origin/main`; submodule-pointer branches `git merge` instead."
+- "**Two writing agents must never share a worktree** — they overwrite each other's uncommitted work."
+- "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+- "**Never auto-submit an interactive browser draft, in any package.**"
+- "**Workers never receive real credentials** — placeholders or proxied access only."
+- "**Request paths never aggregate history.**"
+- "Do NOT include 'Co-Authored-By' or any Claude attribution in commit messages" and no "Generated with Claude Code" line.
+- "**Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`. A working-tree grep proves nothing, and the fetch is load-bearing."
+- "Prefer `bun`, never npm/yarn/pnpm."
+- From the lobu skill: "Never open or request permission to read `.env`"; "Never read, print, invent, or paste a real secret into source or chat."
+- "One branch = one concern. Never `git stash`; use WIP commits."
+- "never `--admin` past a check that has not reported."
+- "Do not call the AgentTool unless the user requested it" / "Do not use workflows or deep-research unless the user requested it."
+- User's global: "When I push back on an approach or call a finding a false positive, STOP and re-investigate the real root cause — do not start wiring a workaround."
+
+## 7. Pending Tasks
+
+- **Evaluate review-fix's edits on #2770** — it modified 4 files including two I must not accept as-is (`packages/owletto` pointer, `schema-validation.ts`).
+- **#2770**: after settling review-fix output → `make pre-pr-remote` → push → `make review` → merge.
+- **#2771** (Slack): still owes `review-fix` + `pre-pr-remote` + `review` + merge. Its production effect requires the hosted Slack manifest to be applied (`SLACK_CONFIG_TOKEN` unavailable).
+- **Post-merge prod verify for #2769**, gated on the squash commit: `git merge-base --is-ancestor 2a87dea4 "$DEPLOYED_SHA"` (saved at `/tmp/merge_2769.sha`).
+- **Follow-up (non-blocking)**: `limit: 2000` → 500 in the picker plus its misleading comment.
+- **Follow-up (declined for now)**: extend `manage_entity.list` to accept a caller-specified search field — the proper picker fix; an API surface change needing sign-off. Relevant to the Prodma ERP shape (large entity types with custom lookup fields).
+- **Longer term**: ERP programs — relationship write path (briefs 02–05), entity write path (06–10), cleanup (brief 12).
+
+## 8. Current Work
+
+Immediately before the summary request, `make review-fix` on **#2770** (worktree `/Users/burakemre/Code/lobu/.claude/worktrees/metadata-null-clear`, branch `feat/metadata-null-clear`, rebased head `2efb9590d`) completed and **did make edits**:
+
+```
+ M packages/owletto
+ M packages/server/src/__tests__/integration/entity-schema/metadata-provenance-keys.test.ts
+ M packages/server/src/tools/admin/manage_entity.ts
+ M packages/server/src/utils/schema-validation.ts
+---
+ packages/owletto                                   |  2 +-
+ .../entity-schema/metadata-provenance-keys.test.ts | 33 ++++++----------------
+ packages/server/src/tools/admin/manage_entity.ts   | 17 ++---------
+ packages/server/src/utils/schema-validation.ts     | 11 ++++----
+ 4 files changed, 17 insertions(+), 46 deletions(-)
+```
+
+Two of these are immediately suspect and must not be accepted blindly:
+- **`packages/owletto`** — a submodule pointer change has no business in #2770 (one branch = one concern); #2769 already landed the pin.
+- **`schema-validation.ts`** — this is the exact shared-contract change (removing the `isEmptyObject` short-circuit) I deliberately scoped out of #2770 because it alters create-path behavior for every caller.
+
+The `manage_entity.ts` stat (17 lines changed, mostly deletions against my ~23 additions) suggests it may be substantially reverting the null-filter fix. Full fixer output is persisted at `/tmp/lobu-review-fix.3rnOFh`.
+
+I had just answered the user's question about rebasing, establishing that 7 of 12 recent owletto merges came from a parallel session on the same files, and that #2770/#2771's rebase was structural (check-drift after a pointer bump), not competition.
+
+## 9. Optional Next Step
+
+Inspect review-fix's diff on #2770 file-by-file before accepting anything — specifically `git diff -- packages/server/src/tools/admin/manage_entity.ts` and `git diff -- packages/server/src/utils/schema-validation.ts` — then discard the `packages/owletto` pointer change and the `schema-validation.ts` change, and re-run the null-clear tests plus the mutation test to confirm the fix still holds.
+
+This follows the pattern established twice already this session, which I stated verbatim: *"I'll cherry-pick from it the same way I did last time, not take it wholesale. A deleted test needs to justify itself."* And the user's standing instruction: **"go ahead why the fuck are you stuck"** — i.e. proceed through the remaining gates on #2770 and #2771 without further check-ins unless there is a merge or a blocker.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

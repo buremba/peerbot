@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxi6zgaue</task-id>
+<tool-use-id>toolu_011GB4n4SA9mM9uvMMGL9EFM</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/tasks/bxi6zgaue.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch integration check for 2316" completed (exit code 0)</summary>
+</task-notification>

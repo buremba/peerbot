@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bh7rqssab</task-id>
+<tool-use-id>toolu_01WDPoMLMvPTHGpcZAE7Y1BY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/bh7rqssab.output</output-file>
+<status>completed</status>
+<summary>Monitor "2332 checks after adding test" stream ended</summary>
+</task-notification>

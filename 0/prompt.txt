@@ -1,0 +1,43 @@
+Adversarial design review. Verify everything against the code and docs yourself; I have been wrong twice already.
+
+READ FIRST (authoritative, on origin/main): docs/plans/authz-acl-permission-program.md — a FINALIZED authz architecture locked 2026-06-28. Also docs/plans/connector-authz-model.md.
+
+CONTEXT
+Lobu stores a graph in `entity_relationships` (unique index: from_entity_id,to_entity_id,relationship_type_id WHERE deleted_at IS NULL). The locked design says: reuse the entity graph for EVERYTHING — principals=entities, memberships=member_of edges, ACLs=can_read/deny_read edges, one SQL gate. 'No new principal/edge/identity tables.' can_read/deny_read are NOT built (zero occurrences in packages/ on origin/main). member_of, access-graph.ts, resource-visibility.ts ARE built.
+
+Six current writers of entity_relationships: authz/access-graph.ts (member_of, full re-sync reconcile, no source filter), authz/channel-about.ts (about; config/manual; DO UPDATE overwrites source), gateway/routes/public/github-team-graph.ts (member_of person->company, DO NOTHING), utils/auto-linker.ts (mentions, confidence 0.4, SELECT-then-INSERT race), tools/admin/manage_entity.ts $links (arbitrary type slug, no ACL denylist), plus slack/github-acl-sync feeding access-graph.
+
+Connectors CANNOT emit any relationship: 'relationship' does not appear in connector-sdk/src/connector-types.ts. SyncResult carries only events. Locked design §8 says connectors will emit event|acl|principal|membership|identity records, with 'per-connector ACL compiler = the trusted security boundary'.
+
+MY CURRENT (3rd) RECOMMENDATION — attack it:
+1. DROP the claims table I earlier proposed (conflicts with 'no new tables' + the doc's '1 column add + 2 small tables' budget).
+2. DROP reserved-relationship-type tiers (superseded by the ACL-compiler boundary).
+3. Fix channel-about's source overwrite (live data loss).
+4. Build ONE relationship-store primitive; migrate all six writers.
+5. Add connector DOMAIN/KNOWLEDGE edge rules only (invoice belongs_to order), with a literal denylist on member_of|can_read|deny_read. Run in insertEvent afterPersist.
+6. Let the locked authz program proceed separately for can_read/deny_read.
+
+I also claim: edges are inherently OR, so intersectional rules (A AND B) must compile to effective principals or they leak; row-level fits the edge model; column-level does NOT (wants a projection mask after the gate, not edges).
+
+STRESS-TEST AGAINST THESE USE CASES. For each: does the design hold, break, or need something it lacks?
+1. ERP import: invoice belongs_to order, 5-hop chain quote->order->stock->invoice->journal, ~400 entity types
+2. Slack private channel membership -> read access, plus fast revocation on member_left
+3. Jira 'browse AND issue-security' intersectional ACL
+4. Row-level: sales rep sees only their region's customers
+5. Column-level: only finance sees invoice.total_amount
+6. Agent creates a link via $links
+7. auto-linker infers a 0.4-confidence mentions edge
+8. Derived artifact (a summary over 3 events) inheriting ACLs
+9. Cross-org reference to a public-catalog entity
+10. Entity merge collapsing two entities that both had edges
+11. Two different connectors asserting the SAME edge
+12. Okta/SCIM emitting principals+groups with no feeds
+
+QUESTIONS
+A. Is the 3rd recommendation right, or am I still wrong? Where?
+B. Which use cases does it fail outright?
+C. Is 'edges are OR, compile intersections' correct, and is my column-level judgment right?
+D. Is dropping the claims table correct given use case 11?
+E. What is the SIMPLEST design that covers all 12? Am I overbuilding or underbuilding?
+
+Be blunt. Cite file:line and doc sections. If my recommendation is wrong say so plainly.

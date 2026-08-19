@@ -1,0 +1,23 @@
+You are the architecture lead for Lobu. Read /tmp/lobu-plan-review/interview-decisions.md and inspect:
+packages/server/src/authz/{sources,acl-sync,access-graph,acl-state,slack-acl-sync,github-acl-sync}.ts
+packages/connector-sdk/src/acl-source.ts
+packages/connectors/src/slack-identity.ts
+packages/server/src/gateway/connections/sender-identity.ts
+packages/server/AGENTS.md (credential/worker rules if present)
+
+Human wants the BEST long-term design for plug-in ACL + chat identity so:
+- Adding Linear ACL = change only in connectors package (or sdk+connectors), ideally zero packages/server edits
+- Chat sender identity for Telegram plugs the same module surface
+- Fail-closed, no silent ungating, no secret leakage to workers
+
+Return a design recommendation (not full PR plan yet):
+1. Recommended end-state architecture (components + data flow)
+2. Exactly what a connector MUST define (types/fields)
+3. Exactly what the server owns forever
+4. How registration works to achieve zero-server-edit for new connectors
+5. How chat-only vs ACL-capable modules differ
+6. How Slack/GitHub migrate without behavior change
+7. Risks and non-goals
+8. Confidence 0-100 this is the right long-term cut
+
+Be concrete. Cite paths. Prefer long-term cleanliness over short-term convenience. Reject side-effect fail-open registries. Reject putting durable secret stores in connectors.

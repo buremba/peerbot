@@ -1,0 +1,1 @@
+ok this sounds like a better approach no? for entity hooks, we can have ctx, like creating a new one, updating, deleting etc which allows the users to do things. we can use isolate vm as we're using. does this solve all the problems?

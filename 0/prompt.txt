@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>bgawls4cx</task-id>
+<summary>Monitor event: "PR #2829 required checks landing"</summary>
+<event>format-lint: pass
+integration-vitest (3/3): pass
+typecheck: fail
+unit: pass</event>
+</task-notification>

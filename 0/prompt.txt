@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new restoration state machine can lose a valid host-card binding and can carry a prior capability and view state into a different result. Both failures undermine exact-card restoration in the host configurations this patch targets.
+
+Full review comments:
+
+- [P1] Preserve the host ID until the first result can bind it — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:723-726
+  When a portable host supplies `toolInfo` during initialization, restoring by that ID can legitimately return `found:false` because the fresh snapshot is still keyed by the capability and the `toolresult` notification has not arrived yet. This predicate treats the later capability as another card, drops the host ID via `resetCurrentResult()`, and saves capability-only; hosts without OpenAI widget state then cannot restore the card by host ID after reload. Preserve the unresolved identity long enough to bind the same result.
+
+- [P1] End capability continuation when live data differs — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:737-742
+  After card A is restored from a capability-only standard event, `hasLiveToolOutput` remains false even though restored data exists. If a reused iframe then receives card B as a non-empty standard result without `_meta`, this condition classifies B as A's delayed payload without comparing fingerprints, so B retains A's view state and snapshot identity and reloads/saves against A. Only continue the capability when the incoming display-safe fingerprint matches the restored result.
+  </results>
+  </user_action>

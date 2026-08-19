@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0xc6pj9d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3d24866b-b631-44fd-a5da-05ad63d65961/tasks/b0xc6pj9d.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot dev server on port 9360" was stopped</summary>
+</task-notification>

@@ -1,0 +1,4 @@
+<bash-stdout></bash-stdout><bash-stderr>(eval):2: command not found: DATABASE_URL
+Error from server (NotFound): pods "lobu-ai-prod-db-1" not found
+(eval):3: command not found: summaries
+</bash-stderr>

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bq5sm6yr0</task-id>
+<summary>Monitor event: "CI required checks on PR 2558"</summary>
+<event>format-lint: pass</event>
+</task-notification>

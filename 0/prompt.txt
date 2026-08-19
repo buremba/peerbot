@@ -1,0 +1,1 @@
+also in textare why don't we see the recommended action there, inside we can show it as a placeholder, we have all the api and everything no

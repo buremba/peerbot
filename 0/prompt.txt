@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvnl4pbq9</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/bvnl4pbq9.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR #2286 pi-review verdict" stream ended</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+ah i thought saveMemory actually have a field to say this is going through somebodies notification etc

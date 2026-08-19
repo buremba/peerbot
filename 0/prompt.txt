@@ -1,0 +1,1 @@
+explain the polixy thing, fo query_sql stuff as a teammate seperately and it needs to be strong concistency and our exposed error messages need to be clear enough

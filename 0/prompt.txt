@@ -1,0 +1,1 @@
+ok what's next for us, what should we do? did we merge all? also get rid of the skills entity consolidation stuff? i thought simplifing the knobs can help us scale better

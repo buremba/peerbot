@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcmoqs7kp</task-id>
+<summary>Monitor event: "lease mint probe result"</summary>
+<event>packages: ["gh"]
+domains : ["api.github.com","github.com"]
+env keys: []</event>
+</task-notification>

@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b2ciypeh4</task-id>
+<summary>Monitor event: "PRs #2299/#2300 required checks"</summary>
+<event>PR2299 FAILING: pi-review
+device-pin PR watch ended</event>
+</task-notification>

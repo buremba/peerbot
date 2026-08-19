@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bm4yr9f2b</task-id>
+<tool-use-id>toolu_01MKoL7vTPcoGgZT82p9jwu9</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8/tasks/bm4yr9f2b.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2527 required checks" completed (exit code 0)</summary>
+</task-notification>

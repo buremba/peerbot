@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b1eukiatn</task-id>
+<summary>Monitor event: "CI checks on lobu#2204"</summary>
+<event>frontend: pass
+unit: pass</event>
+</task-notification>

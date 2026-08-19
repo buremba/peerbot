@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc1k3kumg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bc1k3kumg.output</output-file>
+<status>failed</status>
+<summary>Background command "Wait for Depot slot then gate merged tree" failed with exit code 1</summary>
+</task-notification>

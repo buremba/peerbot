@@ -1,0 +1,1 @@
+this is actually good. add relationship and create entity type, instead of seperate page or dialog, could we use the side panel for it?

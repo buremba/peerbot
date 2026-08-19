@@ -38,13 +38,23 @@ EOF
 #!/usr/bin/env bash
 shift; exec "$@"
 EOF
-  chmod +x "$work/bin/sudo" "$work/bin/timeout"
+  # A test must never flip a real kernel sysctl. On Linux the apparmor flag
+  # EXISTS, so the script takes that branch and `sudo sysctl` would run for
+  # real — stub it, and point the script at a fake flag file so the branch is
+  # exercised identically on macOS and Linux.
+  cat > "$work/bin/sysctl" <<'EOF'
+#!/usr/bin/env bash
+echo "sysctl(stub) $*"
+EOF
+  chmod +x "$work/bin/sudo" "$work/bin/timeout" "$work/bin/sysctl"
+  : > "$work/apparmor_flag"
 }
 
 run_script() {
   set +e
   out="$(PATH="$work/bin:/usr/bin:/bin" BWRAP_DEB_CACHE="$work/cache" \
-    APT_ARCHIVES_DIR="$work/archives" bash "$script" probe 2>&1)"
+    APT_ARCHIVES_DIR="$work/archives" APPARMOR_USERNS_FLAG="$work/apparmor_flag" \
+    bash "$script" probe 2>&1)"
   rc=$?
   set -e
 }
@@ -61,6 +71,9 @@ run_script
 [ "$rc" -eq 0 ] || fail "preinstalled: expected pass, got $rc: $out"
 case "$out" in *"already present"*) ;; *) fail "preinstalled: no skip message: $out";; esac
 case "$out" in *REACHED_APT*) fail "preinstalled: apt was invoked anyway: $out";; esac
+# The apparmor branch is Linux-only in production; assert it ran here so the
+# seam cannot rot into an untested path again.
+case "$out" in *"sysctl(stub)"*) ;; *) fail "preinstalled: apparmor branch never ran: $out";; esac
 echo "ok: a preinstalled bwrap skips the install"
 
 # --- 2. cached .deb: dpkg installs it and apt is never reached --------------

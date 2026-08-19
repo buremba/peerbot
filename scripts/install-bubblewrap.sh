@@ -22,6 +22,9 @@ CACHE_DIR="${BWRAP_DEB_CACHE:-$HOME/.cache/lobu-bwrap}"
 # Overridable so the stash path is reachable from the test suite; apt itself
 # always writes here.
 APT_ARCHIVES="${APT_ARCHIVES_DIR:-/var/cache/apt/archives}"
+# Overridable for the same reason: the sysctl branch only exists on Linux, so
+# without a seam it is unreachable from a macOS dev run and first executes in CI.
+APPARMOR_FLAG="${APPARMOR_USERNS_FLAG:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
 mkdir -p "$CACHE_DIR"
 
 have_bwrap() { command -v bwrap >/dev/null 2>&1; }
@@ -86,7 +89,7 @@ fi
 # to close.
 
 # Only flip the AppArmor userns restriction when the runner kernel exposes it.
-if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+if [ -e "$APPARMOR_FLAG" ]; then
   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 fi
 

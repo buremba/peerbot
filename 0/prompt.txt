@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bywd1hjyr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bywd1hjyr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review with fable (preferred reviewer)" completed (exit code 0)</summary>
+</task-notification>

@@ -7,9 +7,8 @@
 import type { ContentItem } from '@lobu/connector-sdk';
 import { parseJsonObject } from '@lobu/core';
 import { type DbClient, parsePgNumberArray, pgBigintArray, pgTextArray } from '../../db/client';
-import { resolveEntityRender } from '../../utils/default-entity-template';
-import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
 import logger from '../../utils/logger';
+import { resolveRenderTemplate } from '../../utils/resolve-render-template';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { isAdminOrOwnerRole } from '../access-control';
 import { AUDIT_SEMANTIC_TYPE } from '../constants';
@@ -371,19 +370,17 @@ export async function buildContentItems(opts: {
     contentItems.map(async (item) => {
       if (item.payload_template || item.payload_type !== 'empty') return;
       const isNotification = typeof item.metadata?.notification_type === 'string';
-      const renderData = isNotification ? (item.payload_data ?? {}) : item.metadata;
-      if (!isNotification && (!renderData || Object.keys(renderData).length === 0)) return;
-      const kind = await resolveEventKindDefinition(
-        item.semantic_type,
+      const resolved = await resolveRenderTemplate({
+        semanticType: item.semantic_type,
         organizationId,
-        isNotification ? undefined : item.entity_ids
-      );
-      if (!kind) return;
-      const root = resolveEntityRender(kind.jsonTemplate, kind.metadataSchema);
-      if (!root) return;
-      item.payload_template = { root };
+        isNotification,
+        renderData: isNotification ? item.payload_data : item.metadata,
+        entityIds: item.entity_ids,
+      });
+      if (!resolved) return;
+      item.payload_template = { root: resolved.root };
       item.payload_type = 'json_template';
-      item.payload_data = renderData;
+      item.payload_data = resolved.data;
     })
   );
 

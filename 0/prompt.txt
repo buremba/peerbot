@@ -1,0 +1,1 @@
+for agents there is no text on the header. also if no chips present we can just say the cta, let people to create connectors or agents etc. check all 3 pages and make sure the empty state and prefilled state all is consistent

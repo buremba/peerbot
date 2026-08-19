@@ -307,7 +307,7 @@ export async function validateEntityRowPatchGrantingApprovedFields(params: {
 				// this reads exactly as before.
 				const granted =
 					approvedFields.length > 0
-						? ` — approved ${approvedFields.join(", ")}; rule asked for ${verdict.fields.join(", ")}`
+						? ` — approved ${approvedFields.join(", ")}`
 						: "";
 				throw new EntityRowValidationError(
 					`entity ${entityId}: ${verdict.reason} ` +
@@ -461,7 +461,7 @@ export async function validateEntityRowInsertGrantingApprovedFields(params: {
 		// transaction leaves nothing behind and the whole proposal is the card.
 		const granted =
 			approvedFields.length > 0
-				? ` — approved ${approvedFields.join(", ")}; rule asked for ${verdict.fields.join(", ")}`
+				? ` — approved ${approvedFields.join(", ")}`
 				: "";
 		throw new EntityRowValidationError(
 			`new ${row.slug}: ${verdict.reason} ` +

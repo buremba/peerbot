@@ -15,6 +15,11 @@
 #   - The loose Nix charset regex `[A-Za-z0-9._-]+` re-introduced inside
 #     packages/server/src/gateway/orchestration/. WS3 hardening replaced this
 #     with a strict attribute-ref validator; the loose form must stay out.
+#   - Imports of the GRANTING entity-row validators
+#     (`validateEntityRow{Patch,Insert}GrantingApprovedFields`) outside the
+#     approval apply path (entity-field-approval.ts) and the write kernel
+#     (entity-management.ts) — the only importers allowed to waive a rule
+#     escalation.
 #
 # Out of scope: the postgres.js `.unsafe(query, params)` form is the SAFE
 # parameterized API — flagging it would be noise. We rely on the
@@ -119,9 +124,9 @@ HITS=$(
     'packages/' \
     2>/dev/null \
     | grep -E '\.tsx?:' \
-    | grep -v '/entity-field-approval.ts' \
-    | grep -v '/entity-management.ts' \
-    | grep -v '/entity-row-validation.ts' \
+    | grep -v '^packages/server/src/tools/admin/entity-field-approval.ts:' \
+    | grep -v '^packages/server/src/utils/entity-management.ts:' \
+    | grep -v '^packages/server/src/authz/entity-row-validation.ts:' \
     | grep -v '/__tests__/' \
     | filter_allowlist
 )

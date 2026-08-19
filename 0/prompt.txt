@@ -1,0 +1,1 @@
+what do you mean? why the fuck we need the location stuff in the setconversation? also what's that client.context do we already have it?

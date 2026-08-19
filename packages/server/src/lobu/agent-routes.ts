@@ -213,6 +213,37 @@ export function requireSessionOrAdminPat(c: any): Response | null {
 }
 
 /**
+ * Gate agent management mutations (update/delete/config) to org
+ * owner/admin. `requireSessionOrAdminPat` alone only proves an
+ * authenticated caller — any org MEMBER passes it, so a member could
+ * rewrite or delete another member's agent (or change its soulMd,
+ * guardrails or tool surface) via PATCH/DELETE. On top of that
+ * session-or-admin-scope check, the caller's member role must be
+ * owner/admin for EVERY auth source — mirroring index.ts
+ * `requireOrganizationSettingsAdmin` and the manage_agents tool's admin
+ * tier, both of which treat the role check as non-authorizable: an
+ * `mcp:admin` scope alone never elevates a plain member, and a demoted
+ * owner's stale admin token stays denied.
+ */
+function requireManageAgentAccess(c: any): Response | null {
+	const denied = requireSessionOrAdminPat(c);
+	if (denied) return denied;
+
+	const memberRole = c.get("memberRole") as string | null | undefined;
+	if (memberRole !== "owner" && memberRole !== "admin") {
+		return c.json(
+			{
+				error: "forbidden",
+				error_description:
+					"Agent management requires owner or admin access.",
+			},
+			403
+		);
+	}
+	return null;
+}
+
+/**
  * Emit a config-audit event for a mutation handled in this file. Thin wrapper
  * binding `recordConfigChangeEvent` (fire-and-forget, redacts internally) to
  * the request's apply/actor context.
@@ -1466,7 +1497,7 @@ routes.get("/:agentId", async (c) => {
 // ── Update agent metadata ────────────────────────────────────────────────────
 
 routes.patch("/:agentId", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const { agentId } = c.req.param();
 	const body = await c.req.json<{ name?: string; description?: string }>();
@@ -1492,7 +1523,7 @@ routes.patch("/:agentId", async (c) => {
 // ── Delete agent ─────────────────────────────────────────────────────────────
 
 routes.delete("/:agentId", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const { agentId } = c.req.param();
 
@@ -1922,7 +1953,7 @@ export function validateSkillsConfig(value: unknown): string | null {
 }
 
 routes.patch("/:agentId/config", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const { agentId } = c.req.param();
 	const updates = await c.req.json();

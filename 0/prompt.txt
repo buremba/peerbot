@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3yt8y7un</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3c1aa6f1-c607-4eb1-9112-65ea2a8588c2/tasks/b3yt8y7un.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run unit suite locally at PR HEAD, timed" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+all mcp clients should show up in the recent as well. slack also be shown. can you plan the work. but before any prior stuff do we need to or fan out as teammate to do?

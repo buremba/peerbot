@@ -1,0 +1,1 @@
+just to understand, would it better if the connectors use sync and emit these things like system events

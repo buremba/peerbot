@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzkk4osrr</task-id>
+<tool-use-id>toolu_01TzXucvNALuCwPZW1FJ4rv4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/279de3ab-0acd-4e7e-8c0b-0774e773be4a/tasks/bzkk4osrr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on spread fix" completed (exit code 0)</summary>
+</task-notification>

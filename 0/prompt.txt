@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgxuujpb3</task-id>
+<tool-use-id>toolu_01Bf3rr9RHk1nYU3smAnsJXH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bgxuujpb3.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the transaction merge" completed (exit code 0)</summary>
+</task-notification>

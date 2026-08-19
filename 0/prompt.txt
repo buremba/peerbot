@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bl87yqqbk</task-id>
+<tool-use-id>toolu_01UFKkzg7uySZSkQ7pAWcohp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/bl87yqqbk.output</output-file>
+<status>completed</status>
+<summary>Monitor "make pre-pr on UI tests branch" stream ended</summary>
+</task-notification>

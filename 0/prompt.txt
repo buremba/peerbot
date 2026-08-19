@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bkzabdlqe</task-id>
+<summary>Monitor event: "PR 2374 checks on final HEAD"</summary>
+<event>base-branch-guard: pass</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9z6qresn</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e5d3e591-b895-4f46-92bd-8ceb1300593c/tasks/b9z6qresn.output</output-file>
+<status>killed</status>
+<summary>Background command "Restart dev server" was stopped</summary>
+</task-notification>

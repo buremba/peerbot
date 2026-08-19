@@ -1,0 +1,1 @@
+i want to be able to see the full session doing ssh into there, so i can make sure opencode was able to run lobu end to end

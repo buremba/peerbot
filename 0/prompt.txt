@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The focused tests and production build pass, but two untested compatibility-result boundary sequences can carry state or cached data across cards. These regressions affect the reused-iframe and stripped-metadata scenarios the patch is intended to support.
+
+Full review comments:
+
+- [P2] Clear cached data when the result capability changes — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:602-605
+  When ChatGPT reuses an iframe and publishes a different snapshot capability without `toolOutput`, `resetCurrentResult()` clears only React state, leaving the previous result in `lobuViewSnapshot`. If the new restore fails or the page reloads before it completes, initialization combines the new metadata with that stale cache and displays the previous card; persist a null compatibility snapshot at this hard result boundary.
+
+- [P2] Reset state for metadata-less compatibility results — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:631-635
+  When a reused ChatGPT iframe receives a later, different non-empty `toolOutput` without snapshot metadata, `capabilityChanged` remains false and this path marks the output current without resetting the prior result. The new card consequently inherits the old pagination/disclosure state and retains the old snapshot capability, so subsequent restore/save calls can address the previous card's snapshot; treat a differing live output as a new result boundary even when its capability was stripped.
+  </results>
+  </user_action>

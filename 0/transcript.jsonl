@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:18:19.121Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:18:24.191Z","id":"18e605fd","input_tokens":171,"output_tokens":222,"content":[{"type":"tool_use","id":"call_392fb3f31a704cba85a9a962","name":"skip_reply","input":{},"result":{"output":"","status":"success"}}]}

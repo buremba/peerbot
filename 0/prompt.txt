@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5x8jaddg</task-id>
+<tool-use-id>toolu_01JwUvfVjvCipCQ5CVNLVHkL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/fc2de4d8-db6d-4d4c-8398-88fe7691ce6b/tasks/b5x8jaddg.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot worktree dev server on port 9090 (background)" was stopped</summary>
+</task-notification>

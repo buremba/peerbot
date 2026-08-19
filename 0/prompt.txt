@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b32s5rxm0</task-id>
+<summary>Monitor event: "required checks on PR 2286 after lock fix"</summary>
+<event>typecheck: pass</event>
+</task-notification>

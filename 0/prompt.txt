@@ -1,0 +1,1 @@
+we can't assume people will always use managed or always use connected agents

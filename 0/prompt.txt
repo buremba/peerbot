@@ -1,0 +1,1 @@
+for our r2 backup is that incremental so we don't duplicate everything? as we're getting into the new server, if we can do upgrades on pg or things we use we might do that

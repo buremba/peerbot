@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bobuupvyb</task-id>
+<tool-use-id>toolu_019GyjrrnuNWx6hRyzCo7qnA</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/bobuupvyb.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr gate on docs-only diff" completed (exit code 0)</summary>
+</task-notification>

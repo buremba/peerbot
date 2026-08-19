@@ -1,0 +1,6 @@
+is the lobu cli working in prod prpoperly the last released version is ok etc? recently somebody said both docker and cli was broken, telegram was not working in github issues, we fixed them and merged all of them. can we make sure it won't break again? you can use this tool to create asndboxes to try lobu in there both in docker and cli and our prompt in the landing page end to end to test it out # 1. Install the MCP server (one-time)
+uv tool install --with mcp isorun
+
+# 2. Wire it into Claude Code
+claude mcp add isorun isorun-mcp \
+  -e REDACTED

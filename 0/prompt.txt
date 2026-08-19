@@ -1,0 +1,1 @@
+i mean number of tool calls etc. or if it's currently running. i don't see any slack example under buremba maybe initiate one and we can test that as well

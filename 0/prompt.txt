@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqkhpbv1l</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bqkhpbv1l.output</output-file>
+<status>completed</status>
+<summary>Background command "Review the deterministic test" completed (exit code 0)</summary>
+</task-notification>

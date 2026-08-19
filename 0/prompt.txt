@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3ftmamyl</task-id>
+<tool-use-id>toolu_011VTGE4QnyKjP1ZoFV2EtPe</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/b3ftmamyl.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr-remote gate" completed (exit code 0)</summary>
+</task-notification>

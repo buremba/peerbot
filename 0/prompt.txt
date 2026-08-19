@@ -1,0 +1,1 @@
+you ask me to login but doesn't lobu cli enable the agent to pass the user email and it sends email to the user?

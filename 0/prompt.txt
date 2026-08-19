@@ -1,0 +1,1 @@
+the last images you check and use. also the ETL for Agents concept explain was it medallion architecutre etc?

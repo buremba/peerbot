@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buhgmnhib</task-id>
+<tool-use-id>toolu_0181D15JJKg37h3EQoCUUpfk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/34004f74-20ed-439c-908b-fd1a4b248251/tasks/buhgmnhib.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the ask lifecycle test" completed (exit code 0)</summary>
+</task-notification>

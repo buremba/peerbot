@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5bc187r8</task-id>
+<tool-use-id>toolu_013quYnE3nvrSqkS9yYHeNxQ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/b5bc187r8.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on integrated head" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcqywwvhh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bcqywwvhh.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for boot + auto-apply" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,12 @@
+<task-notification>
+<task-id>b50fuly6u</task-id>
+<summary>Monitor event: "PR 2396 required checks reporting"</summary>
+<event>2396 base-branch-guard: pass
+2396 check-drift: pass
+2396 format-lint: pass
+2396 frontend: pass
+2396 integration: pass
+2396 migrations: pass
+2396 typecheck: pass
+2396 unit: pass</event>
+</task-notification>

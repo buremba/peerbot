@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgxpl9d1b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/25855ca6-1129-4b4d-ba7a-9d72acb13600/tasks/bgxpl9d1b.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI green on the repinned head" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b72bfe02z</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/b72bfe02z.output</output-file>
+<status>completed</status>
+<summary>Background command "Launch all three gpt-5.6 variants in parallel" completed (exit code 0)</summary>
+</task-notification>

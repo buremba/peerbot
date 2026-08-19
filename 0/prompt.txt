@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzm0u7e6x</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/bzm0u7e6x.output</output-file>
+<status>completed</status>
+<summary>Monitor "release PR regeneration onto main" stream ended</summary>
+</task-notification>

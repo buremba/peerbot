@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu34er1c2</task-id>
+<tool-use-id>toolu_01E3dvDL9dhchdA16GCdCjnw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bu34er1c2.output</output-file>
+<status>completed</status>
+<summary>Background command "Launch Lobu extensibility agents" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+i see we do hacks to changer system prompt, why, is there a better way? replaceBasePromptIdentity

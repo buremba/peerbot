@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfh91d4ae</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/bfh91d4ae.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2417 CI to settle" completed (exit code 0)</summary>
+</task-notification>

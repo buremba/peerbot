@@ -1,0 +1,1 @@
+seeing like this. maybe [Image #1] i was thinking adding a connection directly in this case doesn't make sense no? we need to show the oauth apps the user can select the oauth app to create the connection for? also we don't show the feeds and actions for the connectors anymore?

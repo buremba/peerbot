@@ -1,0 +1,1 @@
+how hard it is to swap these embeddings, do we store them somehow in one embedding

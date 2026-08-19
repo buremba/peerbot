@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b99ryprjz</task-id>
+<tool-use-id>toolu_01LNeKk7kcPxkQF7Pkb7WTJR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/b99ryprjz.output</output-file>
+<status>completed</status>
+<summary>Background command "Run CI gate on consolidation" completed (exit code 0)</summary>
+</task-notification>

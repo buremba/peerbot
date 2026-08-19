@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-08-17T01:28:37.163Z","content":[{"text":"What is 2+2? Think step by step."}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-08-17T01:28:39.458Z","id":"017a9f53","input_tokens":15594,"output_tokens":130,"content":[{"type":"text","text":"2 + 2 = 4.\n\nSteps:\n1. Start with 2.\n2. Add 2 more.\n3. 2 + 2 = 4."}]}

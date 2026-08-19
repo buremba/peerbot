@@ -1,0 +1,28 @@
+You are reviewing a refactor proposal for THIS repository (you have full read access — verify claims, do not take them on trust).
+
+The proposal is at:
+/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/scratchpad/chat-substrate-plan.md
+
+Read it, then verify it against the actual code. I want an adversarial second opinion, not agreement.
+
+Answer these, concretely, citing file:line where you can:
+
+1. FACT CHECK. Section 1 makes specific claims about the code (SessionManager backed by the
+   Chat SDK's StateAdapter; recordChannelMessages default-off gating the transcript;
+   channel_messages.connection_id being text while connections.id is bigint;
+   requireRunningInstance gating outbound; the four SDK reach-ins). Which are WRONG or
+   overstated? Be specific.
+
+2. DOES THE REFACTOR MAKE SENSE? Is "persist-then-process on the inbound edge" (P2) the right
+   fix for the incident class described in section 0, or is it a large change motivated by
+   one unreproduced bug? What would you do instead?
+
+3. SEQUENCING. Step 1 is "move sessions out of the SDK KV into the conversations table, no
+   backfill because the KV is TTL'd at 24h". Is that actually safe? What breaks?
+
+4. WHAT'S MISSING. What does this plan not consider that it should — failure modes, coupling,
+   migration hazards, ordering constraints, anything in the codebase it has not accounted for?
+
+5. VERDICT. Should they do this, do a subset, or not do it? If a subset, which steps and why.
+
+Be blunt. If a step is not worth the risk, say so plainly.

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>br8l34wns</task-id>
+<tool-use-id>toolu_015YkfiGJ18yTipDmmfYUvw1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/br8l34wns.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on #2340 settled HEAD" completed (exit code 0)</summary>
+</task-notification>

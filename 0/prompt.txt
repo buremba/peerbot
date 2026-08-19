@@ -1,0 +1,1 @@
+explain how those things work. we don't want them in the core codebase if we really need them they must be in the project itself, via a hook or plugin system or something like that. use html artifact

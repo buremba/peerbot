@@ -1,0 +1,15 @@
+<task-notification>
+<task-id>blp294jia</task-id>
+<summary>Monitor event: "PR 2683 required checks"</summary>
+<event>base-branch-guard: pass
+check-drift: pass
+format-lint: pass
+frontend: pass
+integration: pass
+migrations: pass
+pi-review: pass
+typecheck: pass
+ui-review: pass
+unit: pass
+ALL REQUIRED CHECKS REPORTED</event>
+</task-notification>

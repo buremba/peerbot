@@ -1,0 +1,1 @@
+when people do lobu run locally the agent will get those url right?

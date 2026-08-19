@@ -1,0 +1,1 @@
+if the agent has access to all agent settings etc isn't it better if it sees everything

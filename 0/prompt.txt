@@ -1,0 +1,2 @@
+ok  ok what's the remaining work btw, could you create files under /tmp so i can run another agent on them and aparallize. confirm with me, don't overcomplicate.
+  i can run at most 2-3 agents and i will kill this session when all these reports are ready

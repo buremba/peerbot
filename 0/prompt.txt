@@ -1,0 +1,1 @@
+Read /private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/scratchpad/brief-6-funnel-consolidation.md in full and follow it. It is Phase A: DESIGN ONLY, do not write production code. Verify the bypass-site inventory yourself against origin/main, then stop and interview me with the plan and a confidence score per section.

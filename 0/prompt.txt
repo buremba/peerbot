@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu73em6dj</task-id>
+<tool-use-id>toolu_01XVN2upQtHmqy4amopkdVEL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e8ae611f-3800-43ed-836d-8de4d4fb9fe5/tasks/bu73em6dj.output</output-file>
+<status>completed</status>
+<summary>Monitor "CodeRabbit status on owletto PR 650" stream ended</summary>
+</task-notification>

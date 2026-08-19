@@ -1,0 +1,1 @@
+how doe sit work end to end, geneate and html and open it for me that explains the data flow and how it works end to end

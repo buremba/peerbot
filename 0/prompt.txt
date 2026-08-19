@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9s2gi4mt</task-id>
+<tool-use-id>toolu_01N2pMXNrxB1uXmpuvSy4NFt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/b9s2gi4mt.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for review-fix and read its output" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+do you think this fits in event sourcing? should this be an event instead?

@@ -62,11 +62,15 @@ export interface EntityRowValidationVerdict {
  * them a rule that asked for review must stop the write — which is exactly what
  * an uncaught throw does.
  *
- * Soft-delete (`deleteEntity`) DOES have somewhere to route one: the mutation
- * gate queues a delete card, and applying it grants `$deleted` — the one field a
- * delete card can be said to have approved. So an escalate on `$deleted` stops
- * an ordinary delete and is waived for the approved one, while a `deny` stops
- * both. A hard delete never reaches this seam at all.
+ * Soft-delete (`deleteEntity`) is the in-between case, and the distinction is
+ * WHO asked for the review. The POLICY gate can queue a delete card, and
+ * applying that card grants `$deleted` — the one field a delete card can be said
+ * to have approved — so a rule escalating on `$deleted` no longer dead-ends an
+ * approval a human already gave. But a rule escalate does not itself mint a
+ * card: `manage_entity`'s delete path has no `EntityRowValidationError` catch
+ * (only its CREATE path does), so an escalate with no policy card behind it
+ * fails closed like merge and link auto-create. A `deny` stops the delete either
+ * way, and a hard delete never reaches this seam at all.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;

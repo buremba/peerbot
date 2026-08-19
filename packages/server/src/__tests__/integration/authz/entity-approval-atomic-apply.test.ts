@@ -363,7 +363,7 @@ describe("an approved DELETE card is honoured despite the rule that escalated it
 			sql,
 		);
 
-		const [row] = await sql<{ deleted_at: Date | null }>`
+		const [row] = await sql<{ deleted_at: Date | null }[]>`
       SELECT deleted_at FROM entities WHERE id = ${invoice.id}
     `;
 		expect(row.deleted_at).not.toBeNull();

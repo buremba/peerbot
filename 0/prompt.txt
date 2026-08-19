@@ -1,0 +1,8 @@
+check these prs, review them make sure they're legit and merge them if all good. also make sure main is green fully fix(server): prod-health fixes — z.ai removal, MCP refresh-on-401, member-claim healing, reaction retry, 4xx tool errors 
+#2744 opened 11 hours ago by buremba Member
+4 tasks done
+ 9
+
+docs: reposition Lobu around shared agent context 
+#2735 opened 13 hours ago by buremba Member
+3 of 5 tasks

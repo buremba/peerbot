@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b23j77r4o</task-id>
+<summary>Monitor event: "Final CI settle on lobu#2204 after repoint"</summary>
+<event>FAIL pi-review</event>
+</task-notification>

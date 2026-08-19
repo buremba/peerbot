@@ -1,0 +1,1 @@
+remove this this workspace section as we list member under entities. also create organization should be there all the time fixed footer no matter how many orgs are there. /Users/burakemre/Library/Application\ Support/CleanShot/media/media_fkU7ypEhyy/CleanShot\ 2026-07-31\ at\ 04.15.30@2x.png

@@ -1,0 +1,1 @@
+ok go ahead but next steps we don't need a seperate page no? under connectors we can have mcp clients and connection is a client type chatgpt etc and feeds are the tool calls or mcp maybe?

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>boq4i5b81</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/boq4i5b81.output</output-file>
+<status>killed</status>
+<summary>Monitor "prod ancestry gate for #2374 (waits until the merge SHA is actually deployed)" stopped</summary>
+</task-notification>

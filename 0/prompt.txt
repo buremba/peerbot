@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b65bwu9mr</task-id>
+<tool-use-id>toolu_01SBL9s6hUh49EQ9XEr7dJhQ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b65bwu9mr.output</output-file>
+<status>failed</status>
+<summary>Background command "Run full Depot gate on #2687 with the slot free" failed with exit code 2</summary>
+</task-notification>

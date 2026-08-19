@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsh79swlw</task-id>
+<tool-use-id>toolu_01MQRbutaU9Vdac4JBwuLdkF</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/bsh79swlw.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on consolidated branch" completed (exit code 0)</summary>
+</task-notification>

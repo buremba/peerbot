@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqq6l9w5f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bqq6l9w5f.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot after-worktree dev server" was stopped</summary>
+</task-notification>

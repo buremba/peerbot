@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>boyob7p09</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/boyob7p09.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after core rebuild" completed (exit code 0)</summary>
+</task-notification>

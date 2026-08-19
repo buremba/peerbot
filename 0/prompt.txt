@@ -1,0 +1,108 @@
+<task-notification>
+<task-id>af5835dae3826f8e9</task-id>
+<tool-use-id>toolu_01FT7At9J7MhuAsmnK4tdkCg</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/af5835dae3826f8e9.output</output-file>
+<status>completed</status>
+<summary>Agent "Diagnose org-scoping root cause" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Confirmed. Here is the diagnosis.
+
+---
+
+## ROOT CAUSE
+
+**Not a missing parameter — a store layer that treats "no org" as "no filter."** `packages/core/src/agent-store.ts:109-128` defines `AgentConfigStore` with **every method taking only `agentId`** — there is no org parameter in the contract at all. Org is supplied out-of-band via an AsyncLocalStorage ambient (`packages/server/src/lobu/stores/org-context.ts:8-19`). The Postgres implementation then splits on whether that ambient happens to be set, and **the write methods and read methods make opposite choices**:
+
+- Writes call `getOrgId()`, which **throws** when unset: `postgres-stores.ts:164, 197, 236, 288, 317, 335, 343, 416`.
+- Reads call `tryGetOrgId()`, which returns null and drops the `organization_id` predicate entirely: `postgres-stores.ts:135-158` (`getSettings`), `217-230` (`getMetadata`), `361-377` (`getConnection`), `535-538` (`deleteConnection`).
+
+The load-bearing bug is the comment at **`postgres-stores.ts:131-134`**, still on `origin/main` today:
+
+```
+// Workers/gateway-internal callers run without org context — agent IDs
+// are globally unique and the worker token already proves authenticity,
+// so falling back to id-only lookup is safe.
+```
+
+"agent IDs are globally unique" is **false** — `agents_pkey PRIMARY KEY (organization_id, id)` (`db/migrations/00000000000000_baseline.sql:2692`). That single stale invariant is the generator of all 8 PRs. `SELECT ... FROM agents WHERE id = ${agentId}` (`postgres-stores.ts:157`, `229`) returns an **arbitrary** row among ~20 for `lobu-builder`, silently, with no error and no log.
+
+The same silent-degrade shape is templated into a reusable helper: `orgScope()` at `org-context.ts:52-54` returns `sql\`\`` (empty fragment) when orgId is null, and is used unguarded at `grant-store.ts:144, 189, 215, 249` — including on a `DELETE` (`revoke`, line 244-250). `user-agents-store.ts:48-53, 71-75` hand-rolls the identical org-less branch.
+
+**Why it recurs one sibling at a time:** because the org isn't in the type, a caller cannot be checked. The compiler is satisfied by `getSettings(agentId)`. The only signal that a call site is wrong is a human tracing whether an ambient happens to be established on that specific dispatch path — which is why the fix has landed 53 times as `orgContext.run({organizationId}, …)` wrappers scattered across 26 files, each one a manual re-establishment of the ambient at a call site rather than a fix at the store.
+
+**A second, distinct root cause** accounts for #2176 and #2181 only: `verifyOwnedAgentAccess` in `routes/shared/agent-ownership.ts:94-203` is an authorization function that also *emits* `organizationId` (`AgentOwnershipResult.organizationId`, line 22). For a per-org **system** agent, "which org authorizes you" ≠ "which org are you viewing" — `resolveAuthorizedOrgId` (line 78-92) returns the caller's *ownership* org from `agent_users`, which for the Builder is their personal org, not the `x-lobu-org` workspace. #2176 and #2181 fixed this by inverting the precedence to ambient-first (`agent-history.ts:429, 446-459` and `506-507, 522-528`). This is a **tenant-selection** bug, not an unfiltered-query bug.
+
+---
+
+## IS THE PROPOSED FIX RIGHT?
+
+**Partially — and as literally stated, unimplementable.** Three problems:
+
+1. **There is no single "resolver seam."** The audit's phrasing assumes one. There are at least four independent id→row resolvers with no common chokepoint:
+   - `createPostgresAgentConfigStore` (`postgres-stores.ts:127-355`) — `agents`
+   - `GrantStore` (`gateway/permissions/grant-store.ts:122-252`) — `grants`
+   - `UserAgentsStore` (`gateway/auth/user-agents-store.ts:34-120`) — `agent_users`
+   - `PostgresSecretStore` (`lobu/stores/postgres-secret-store.ts:87-197`) — `agent_secrets`
+   
+   They share the `org-context.ts` *helpers* but not a function. A "make organizationId required at the resolver seam" PR has no single file to land in.
+
+2. **It does not cover #2176/#2181 at all.** Those two callers already *had* an org — they passed the **wrong one**. A required parameter would have been satisfied by `result.organizationId` and the bug would still ship. Since #2181's body literally names itself a sibling of #2176, and the audit was meant to explain the recurrence, missing the pair that motivated the audit is a material gap.
+
+3. **`resolveOrgId` / `orgScope` would survive it.** Making the parameter required at `AgentConfigStore` still leaves `resolveOrgId(explicit) → explicit ?? tryGetOrgId()` (`org-context.ts:29-31`) and `orgScope(sql, null) → sql\`\`` (`org-context.ts:52-54`) intact. A required-but-`string | undefined`-satisfiable parameter that flows into `orgScope` reproduces the exact same unfiltered query with a green typecheck.
+
+**What is right about it:** putting org in the type is directionally correct and is the only thing that makes call sites *checkable*. It's necessary. It is not sufficient, and it's not the smallest first move.
+
+---
+
+## REMAINING SITES
+
+**Tier 1 — unfiltered query on a composite-PK table (real cross-tenant read):**
+- `packages/server/src/lobu/stores/postgres-stores.ts:148-158` — `getSettings` org-less branch, `WHERE id = $1`
+- `packages/server/src/lobu/stores/postgres-stores.ts:225-230` — `getMetadata` org-less branch, `WHERE id = $1`
+- `packages/server/src/gateway/permissions/grant-store.ts:129,144` — `hasGrant`, `orgScope` empty ⇒ cross-org grant satisfies a check
+- `packages/server/src/gateway/permissions/grant-store.ts:177,189` — `isDenied`
+- `packages/server/src/gateway/permissions/grant-store.ts:208,215` — `listGrants`
+- `packages/server/src/gateway/permissions/grant-store.ts:242,249` — `revoke` — **`DELETE` with no org predicate**; same cross-tenant wipe primitive #1848 closed for bindings
+- `packages/server/src/gateway/auth/user-agents-store.ts:48-53` — `removeAgent` org-less `DELETE FROM agent_users`
+- `packages/server/src/gateway/auth/user-agents-store.ts:71-75` — `listAgents` org-less branch
+
+**Tier 2 — callers with a reachable org that don't pass one:**
+- `packages/server/src/gateway/cli/gateway.ts:392-396` — `ownsAgent(platform, userId, agentId)`, 4th arg omitted; #1848 added it to the history routes (`agent-history.ts:448-453, 523-528`) but not here
+- `packages/server/src/gateway/cli/gateway.ts:401` — `getMetadata(agentId)` in the same auth path
+- `packages/server/src/gateway/routes/public/agent.ts:858` — `ownershipMetadataStore.getMetadata(agentId)` feeding `tokenOrganizationId`; ambient here is the caller's **default** org, while `workspaceScopedOrgId` (line 830-832) is already computed 26 lines above and not used for this read
+- `packages/server/src/gateway/routes/public/agent.ts:807` — `getMetadata(DEFAULT_AGENT_ID)`; mitigated by the `!== callerOrgId` check on line 810, so read-only leak is contained
+- `packages/server/src/gateway/auth/mcp/proxy.ts:477` — `getMetadata(agentId)` on the guardrail-trip audit path, explicitly reached when `tokenData.organizationId` is absent (line 475); mislabels the security audit record
+- `packages/server/src/catalog/installed.ts:131` — `configStore.getSettings(agentId)`; relies on `runWithWorkerOrgContext` per #1784's audit — correct *today*, fragile, no assertion
+- `packages/server/src/lobu/agent-routes.ts:545, 1242, 1245, 1288, 1327, 1572, 2012` — request-path, ambient set by `api-auth-middleware.ts:70`; correct today, unasserted
+
+Tier-1 count: **8**. Tier-2 count: **~13**.
+
+**Explicitly NOT a site:** `postgres-secret-store.ts:87-197` degrades to a *sentinel* (`GLOBAL_ORG_ID`), never to an unfiltered query, and logs loudly on the write paths (lines 131-141, 160-165). That is the correct pattern already present in the codebase.
+
+---
+
+## RECOMMENDED PLAN
+
+**PR 1 — smallest safe first move (start here).** Kill the silent degrade in the shared helper, not the signatures. In `org-context.ts`: make `orgScope(sql, null)` **throw** rather than return an empty fragment, and add `orgScopeOrGlobal()` for the deliberate all-tenant callers. Then fix the 8 Tier-1 sites to either pass an org or opt in explicitly. Zero signature changes, zero call-site churn, and it converts every future instance of this bug from a silent cross-tenant read into a startup/test failure. `grant-store.ts:242-250` (`revoke` DELETE) is the highest-severity single line and lands in this PR.
+
+**PR 2 — same treatment at the store.** Replace the org-less branches at `postgres-stores.ts:148-158` and `225-230` with the `listConnections` guard already in the same file (`postgres-stores.ts:393-399`: log + return empty). That pattern is prod-proven, and it deletes the false comment at lines 131-134. Still no signature change.
+
+**PR 3 — the type change, via the overload sequencing you proposed.** Add `getSettingsScoped(agentId, organizationId)` / `getMetadataScoped(...)` to `AgentConfigStore` (`core/src/agent-store.ts:109-128`), migrate the ~21 Tier-1+Tier-2 call sites, then delete the unscoped originals. Do this *after* PR 1-2 so migration mistakes fail loudly instead of silently. Blast radius is modest — 21 direct call sites plus 3 implementations (`postgres-stores.ts`, `in-memory-agent-store.ts`, `base-agent-store.ts`) — but the 53 `orgContext.run` wrappers become deletable, which is the real payoff.
+
+**PR 4 — the second root cause, independent of 1-3.** Split `AgentOwnershipResult.organizationId` (`agent-ownership.ts:22`) into two fields: `authorizingOrganizationId` (which org vouches for you) and drop the implicit "and this is also the org to query." Force callers to name the target tenant. This is what #2176/#2181 did by hand in one file; generalizing it prevents the third sibling.
+
+**Do not** attempt PR 3 as the first PR. It is the change the prior audit proposed, and landing it first gives you the largest diff with the weakest safety net — a mis-migrated call site passing `undefined` into `resolveOrgId` is indistinguishable from a correct one until PR 1 exists.
+
+---
+
+## CONFIDENCE
+
+**86.**
+
+Read directly on `origin/main`: all 8 PR bodies and file lists; `org-context.ts` in full; `postgres-stores.ts:1-400, 525-541`; `grant-store.ts:95-268`; `user-agents-store.ts:1-121`; `agent-store.ts:90-181`; `agent-ownership.ts` in full; `agent-settings-store.ts:60-171`; `agent-history.ts:395-570`; `agents.ts:40-215`; `agent.ts:795-880`; `postgres-secret-store.ts:80-200`; `mcp/proxy.ts:440-490`; the baseline PK constraints; and ripgrep enumerations of `orgScope`/`resolveOrgId`/`tryGetOrgId`/`orgContext.run`/`getSettings(`/`getMetadata(`/`ownsAgent(`.
+
+High confidence (95+) on: the root cause and the `postgres-stores.ts:131-134` false invariant; the non-existence of a single resolver seam; #2176/#2181 being a separate root cause the proposal doesn't address; the Tier-1 list.
+
+**Weaker, labeled:** Tier-2 reachability is **inferred** — I confirmed the ambient is set at `api-auth-middleware.ts:70` and `proxy-shared.ts:141`, and relied on #1784's stated sweep for the tool path, but did not trace every dispatch path myself. Some Tier-2 entries may be provably safe. The blast-radius count (~21) is grep-derived and excludes the `packages/owletto` submodule, which several PRs touched and I did not enter.</result>
+<usage><subagent_tokens>85559</subagent_tokens><tool_uses>39</tool_uses><duration_ms>159094</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmbd9j23h</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bmbd9j23h.output</output-file>
+<status>completed</status>
+<summary>Background command "Build all workspace packages" completed (exit code 0)</summary>
+</task-notification>

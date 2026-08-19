@@ -113,7 +113,8 @@ export const PollRequestSchema = Type.Object({
    * persists it on `device_workers.agent_kinds` and withholds device-pinned
    * runs whose `agent_kind` the device did not advertise. Omit the field
    * entirely when the client runs no CLIs and should stay unrestricted; send
-   * `[]` to claim no Automation runs at all.
+   * `[]` to claim no Automation runs at all — including runs that name no
+   * `agent_kind`, since a device that runs nothing has no default either.
    */
   agent_kinds: Type.Optional(Type.Array(Type.String())),
 });

@@ -643,9 +643,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             --     it queued until a device that can run it polls.
             --     A device that advertised nothing (agentKinds IS NULL: the Mac
             --     app and Chrome bridge today, or an older daemon) is deliberately
-            --     unrestricted, and
-            --     so is a run that names no agent_kind — the device resolves that
-            --     one against its own default.
+            --     unrestricted. A run that names no agent_kind is claimable too —
+            --     the device resolves it against its own default — but only by a
+            --     device that advertised at least one kind: a device that told us
+            --     it can run nothing has no default to resolve against either.
             OR (
               ${isUserScopedWorker}
               AND r.run_type = 'automation'
@@ -655,8 +656,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
               AND (
                 ${agentKindsParam}::text[] IS NULL
-                OR NULLIF(r.approved_input->>'agent_kind', '') IS NULL
-                OR r.approved_input->>'agent_kind' = ANY(${agentKindsParam}::text[])
+                OR CASE
+                  WHEN NULLIF(r.approved_input->>'agent_kind', '') IS NULL
+                    THEN cardinality(${agentKindsParam}::text[]) > 0
+                  ELSE r.approved_input->>'agent_kind' = ANY(${agentKindsParam}::text[])
+                END
               )
               AND NOT EXISTS (
                 SELECT 1

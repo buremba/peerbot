@@ -16,7 +16,8 @@
  *     the same device claims it once it advertises the kind.
  *   - advertising nothing at all (a client that does not send the field)
  *     stays unrestricted; advertising `[]` claims nothing.
- *   - a run naming no agent_kind is claimable by an advertising device.
+ *   - a run naming no agent_kind is claimable by an advertising device, but not
+ *     by one advertising `[]`.
  *   - GET /api/me/devices reports the advertised kinds, keeping null distinct
  *     from [].
  */
@@ -257,6 +258,17 @@ describe('device agent_kinds advertisement + automation claim gate', () => {
     const byWorker = new Map(listed.map((d) => [d.worker_id, d.agent_kinds]));
     expect(byWorker.get('mac-kinds-listed')).toEqual(['claude-code']);
     expect(byWorker.get('mac-kinds-silent')).toBeNull();
+  });
+
+  it('withholds an unnamed-agent_kind run from a device that advertises nothing runnable', async () => {
+    // The empty set is the one case where "no agent_kind" is not permissive:
+    // the device would resolve it against its own default, and it has none.
+    const ctx = await setup({ workerId: 'mac-kinds-empty-unnamed', agentKind: null });
+    const runId = await trigger(ctx);
+
+    const job = await poll(ctx, []);
+    expect(job.run_id).toBeUndefined();
+    expect(await runStatus(ctx, runId)).toBe('pending');
   });
 
   it('claims a run that names no agent_kind even when the device advertises kinds', async () => {

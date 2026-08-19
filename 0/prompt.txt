@@ -1,0 +1,30 @@
+You are working in an isolated git worktree at /Users/burakemre/Code/lobu/.claude/worktrees/slack-revocation on branch feat/slack-revocation. Read AGENTS.md at the repo root FIRST and obey it exactly.
+
+TASK: Close the Slack membership-revocation gap.
+
+THE FINDING (from a previous session — VERIFY IT BEFORE FIXING ANYTHING):
+The locked authz design cites `member_left_channel` as an "already-subscribed" Slack event backing high-priority membership invalidation. It appears NOT to be subscribed: `SLACK_BOT_EVENTS` reportedly contains `member_joined_channel` and zero occurrences of `member_left_channel`. If true, removing someone from a Slack channel does not promptly revoke their read access — it waits for the next full ACL reconcile, so the bounded-revocation SLA rests on a mechanism that does not exist.
+
+VERIFY FIRST (mandatory, this exact form — a working-tree grep proves nothing):
+  git fetch -q origin && git grep -n "member_left_channel\|SLACK_BOT_EVENTS" origin/main -- 'packages/*/src'
+Paste the output in your report. If the finding turns out to be WRONG — if the event is already subscribed and wired — then STOP, change nothing, and report the dead end. Do not invent work.
+
+DO (only if the gap is real), whichever you judge correct:
+(a) subscribe `member_left_channel` and wire it to membership invalidation, following exactly how `member_joined_channel` is already handled; OR
+(b) if (a) is not safely achievable, correct the design doc to state the REAL revocation SLA.
+Silently leaving the gap is not acceptable. Say clearly which you chose and why.
+
+CONSTRAINTS (hard):
+- Do NOT add a DB table, migration, or change any SDK/API surface. If you think one is needed, STOP and say so instead.
+- Follow the existing event-handling pattern; do not invent a parallel mechanism.
+- Stage by explicit path (`git add -- <paths>`), never `git add -A`.
+
+VERIFY:
+1. Write a RED test first covering the revocation path (a member leaving must invalidate membership). Paste the failing output.
+2. Implement. Paste the passing output.
+3. Mutation-test: revert your change, confirm RED, restore. Paste both.
+4. Run the focused suites you touched.
+
+DO NOT: run `make review`, `make pre-pr-remote`, open a PR, push, or merge. Commit locally on the branch only. I will review and run the gates myself.
+
+FINAL REPORT must include: the origin/main grep output, which option you chose and why, exact files+lines changed, red and green output, the mutation-test result, a confidence score 0-100 with its one-line basis, and anything you were unsure about.

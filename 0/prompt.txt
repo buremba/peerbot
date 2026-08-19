@@ -1,0 +1,1 @@
+why do we need those tests if we're getting rid of watchers everywhere?

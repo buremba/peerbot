@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxc6k1rrt</task-id>
+<tool-use-id>toolu_01X3ZnJkC3LtzpAgpmooxPSc</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bxc6k1rrt.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on the bump PR" completed (exit code 0)</summary>
+</task-notification>

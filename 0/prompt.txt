@@ -1,0 +1,88 @@
+# Design review request: project-supplied write-time rules
+
+Repo: Lobu, an agent platform (Bun/TS monorepo, Postgres). Entities are rows in
+`entities` with fixed columns plus `metadata jsonb`, AJV-validated.
+
+## The problem
+
+Three ERP rules were implemented directly in `packages/server` and are now being
+DISCARDED as wrongly layered:
+- period close ("no writes dated before 30 June")
+- gapless per-year invoice numbering
+- transition freeze (a "posted" document becomes immutable)
+
+These are DOMAIN rules of one project. They should live in the project, not the
+platform. But a project currently has no way to supply a write-time rule.
+
+## Verified facts (each proven by a test or by reading enforcement code)
+
+1. `runMutationGate` (the entity write gate) receives `sql: getDb()` — a POOL
+   client — at all 4 call sites. `createEntity` opens its OWN `sql.begin`. So the
+   gate runs in a DIFFERENT transaction from the INSERT. Proven by mutation test:
+   allocating a number at the gate seam and rolling back burns the number.
+2. Therefore gapless numbering MUST allocate inside `createEntity`'s transaction.
+   Gaplessness requires serializing concurrent creates for a series from
+   allocation to COMMIT. There is no non-blocking gapless allocator.
+3. Behaviors are post-commit. They can observe/reverse a write, never refuse it.
+4. The sandbox (org-authored code) exposes per-call methods (`entities.create`,
+   `.link`, `.search`) — NO transaction handle. 60s default / 180s max wall clock.
+5. Entity writes have NO single chokepoint. Confirmed bypassers of the gate:
+   `entity-merge.ts` (proven by red test: tombstones a closed invoice, rewrites a
+   closed winner's metadata), `entity-link-upsert.ts` (own INSERT INTO entities),
+   `classifier-extraction.ts`, `member-entity.ts`.
+6. `runMutationGate` folds APPROVAL policy and DATA rules into one undifferentiated
+   interceptor list. Gating merge as a `delete` makes the approval interceptor
+   demand approval for every agent auto-merge (delete defaults to "approval"),
+   which regressed the suite. There is no "run data rules only" mode.
+
+## The proposed design
+
+Split by CONTRACT, not by feature:
+
+**Gate seam — project CODE.** A hook running BEFORE the write, outside the write
+transaction, as a pure predicate: sees current+proposed, returns allow/deny.
+Rationale: because the gate is already outside the transaction, a slow or bad
+project rule delays ONE request; it cannot pin a connection or block concurrent
+writers. Covers period close + transition freeze.
+
+```ts
+defineWriteRule({
+  entityType: "invoice",
+  seam: "gate",
+  on: ["create", "update", "delete"],
+  run: ({ current, proposed, deny }) => {
+    if (proposed.posting_date <= closedThrough) return deny("period closed");
+  },
+});
+```
+
+**Transaction seam — NO project code.** A declarative platform primitive the
+project CONFIGURES. Numbering becomes: "this field is a monotonic counter scoped
+by (year, series)". The platform runs its own tested allocator inside the write
+transaction. No untrusted code ever enters a transaction.
+
+## What I want from you
+
+Be adversarial. Specifically:
+
+1. Is the gate/transaction split by CONTRACT (refuse vs mutate) actually correct,
+   or is it a false dichotomy? Are there real rules that need to refuse based on
+   state they can only read INSIDE the transaction (i.e. refusal that is unsafe
+   outside it)? A concrete example matters more than a principle.
+2. TOCTOU: the gate reads state outside the write transaction, then the write
+   happens in another. What rules break under that race, and does that
+   invalidate the "gate seam is safe for project code" claim?
+3. Is "declarative primitive" for numbering a cop-out that will fail the second
+   a project needs a slightly different allocation policy (per-branch, per-user,
+   conditional prefixes)? Where is the line between config and code, and does it
+   hold?
+4. Designing an extension point from ONE example (period close) — what does this
+   API get wrong that a second/third rule would expose? Sketch a rule that breaks it.
+5. Should the chokepoint problem (fact 5) be fixed FIRST? Is a hook without a
+   single write funnel actively harmful — does it create a false sense of
+   enforcement?
+6. Anything simpler I am missing. Is there an existing mechanism (approval policy,
+   AJV validation, DB constraints, generated columns) that covers a useful subset
+   of this without a new extension point at all?
+
+Answer concretely, cite tradeoffs, and say plainly if the design is wrong.

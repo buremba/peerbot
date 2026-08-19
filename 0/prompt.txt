@@ -1,0 +1,1 @@
+are you sure? you have access to mac mini from here via ssh as well, owletto must be running there

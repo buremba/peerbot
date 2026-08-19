@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9tbvc8rk</task-id>
+<tool-use-id>toolu_01Hki1w5u1UWcMF6uWJoBxYC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/b9tbvc8rk.output</output-file>
+<status>completed</status>
+<summary>Background command "Merge release PR when its current head is green" completed (exit code 0)</summary>
+</task-notification>

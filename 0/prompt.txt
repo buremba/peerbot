@@ -1,0 +1,1 @@
+we want to consolidate and simplify the pages, remove dead code, do dry

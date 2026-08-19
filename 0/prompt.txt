@@ -1,0 +1,1 @@
+but as a person that logs in to lobu and joins multiple workspaces, if i connect mcp it sees all right. if i use a slack bot it's already in a workspace and answers accordingly based ont he org data if it's accessed from a public channel. private dm can still see all my orgs if i logged in or linked etc

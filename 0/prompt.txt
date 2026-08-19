@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1voune07</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/b1voune07.output</output-file>
+<status>completed</status>
+<summary>Monitor "required CI checks on lobu PR 2387" stream ended</summary>
+</task-notification>

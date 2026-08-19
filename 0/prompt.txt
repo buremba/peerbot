@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bjhgrqo9u</task-id>
+<tool-use-id>toolu_01SjdN7sWN8CeT5GMtT4udZo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bjhgrqo9u.output</output-file>
+<status>killed</status>
+<summary>Background command "Run full Depot CI gate for PR A" was stopped</summary>
+</task-notification>

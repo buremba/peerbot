@@ -1,0 +1,166 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+   - **"go do those"** — execute the four next actions I had listed: (1) merge PR #2526 once green, (2) do the owed #2525 live verification (exhaust a provider, confirm `inference_providers.status` flips to `error`, then confirm a successful turn clears it), (3) scope the ordered-`agents.models` fallback as a PR, (4) address #2515's `DIRTY` state.
+   - **"plug in qwen for our orgs btw, zai is replaced with qwen in prod. also why doing thse regex hacks, can't we rely on the status codes"** — two intents: connect qwen as a provider for the user's orgs replacing z.ai, and a challenge to the regex-based error classification approach.
+   - **"i have the qoder plan"** — the user's qwen access is via a Qoder/Token Plan subscription.
+   - **"it's in pi"** — the API key is stored in the local `pi` config.
+   - **"why are you parsing man, what's the point"** — a second, stronger push-back rejecting regex/string parsing of provider errors. This is the pivotal feedback of the session.
+
+   Via AskUserQuestion the user also chose: z-ai rows → **soft-delete** after repointing; qwen model → **"use the qwen 3.8 max preview"** (typed as a note, no listed option selected); classification → **"Yes — proxy owns it"** (retire the worker-response mark path); qwen connection → **"Yes, all three orgs"**.
+
+2. Key Technical Concepts:
+
+   - Lobu monorepo (Bun workspace, `packages/*`): `core`, `server`, `agent-worker`, `cli`, `connector-sdk`, `owletto` (submodule)
+   - `AgentErrorCode` catalog (`PROVIDER_QUOTA_EXHAUSTED`, `PROVIDER_AUTH`, …) in `packages/core/src/errors.ts`
+   - `classifyError` in agent-worker — documented as "THE classifier … Single source of truth"
+   - `inference_providers` table: `status` ∈ (`active`|`disabled`|`error`), `error_message`, `has_custom_upstream`, `is_default`, `api_key_ref = secret://<org>/<slug>-<id>`; credentials encrypted via `encrypt()` into `agent_secrets`
+   - `secret-proxy.ts` — the gateway proxy through which ALL provider inference traffic flows with real credentials (workers never hold credentials)
+   - `@mariozechner/pi-ai` — the third-party agent runtime that flattens provider errors
+   - `agents.models` — a top-level jsonb ordered array column (NOT `settings.models`); only position `[0]` effectively routes today
+   - Gates: `make pre-pr`, `make review-fix`, `make review`, `make ui-review`, `make task-setup`
+   - Squash-merge ancestry trap; worktree stale-dist / cross-worktree module resolution traps
+   - Prod access: `kubectl exec -n summaries-prod lobu-ai-prod-db-1 -c postgres -- psql -U postgres -d owletto`
+
+3. Files and Code Sections:
+
+   - **`packages/core/src/errors.ts`** (PR #2527, MERGED) — added the shared literal that both packages now import:
+     ```ts
+     export const PROVIDER_BALANCE_EXHAUSTED =
+       /credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|no resource package|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|no credits remaining/i;
+     ```
+     Doc comment explains it lives in core because two packages must agree and previously drifted.
+
+   - **`packages/agent-worker/src/core/error-handler.ts`** (PR #2527) — replaced the inline literal:
+     ```ts
+     if (PROVIDER_BALANCE_EXHAUSTED.test(message))
+       return AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED;
+     ```
+     Import became `{ AgentErrorCode, createLogger, getSentry, PROVIDER_BALANCE_EXHAUSTED, type WorkerTransport }`.
+
+   - **`packages/server/src/watchers/schedule-cursor.ts`** (PR #2527) — deleted its local copy, imports from core; `review-fix` also removed the now-redundant `insufficient quota\b` alternate from `deviceProviderQuotaResetNotBefore`'s evidence regex. The gating line that made the drift fatal:
+     ```ts
+     if (errorCode !== AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED) return null;
+     ```
+
+   - **`packages/server/src/gateway/proxy/secret-proxy.ts`** (worktree `proxy-provider-health`, IN PROGRESS) — the new approach. After the fetch at ~line 1030:
+     ```ts
+     const response = await fetch(upstream, { method, headers, body });
+     if (!response.ok) { logger.warn(`Upstream returned ${response.status} for ${method} ${upstream}`); }
+     // Provider health is decided HERE, on the HTTP status, because this is the
+     // only place that still HAS one. ...
+     await this.recordProviderHealth(expectedOrganizationId, resolvedSlug, response);
+     ```
+     New private method appended at end of class:
+     ```ts
+     private async recordProviderHealth(
+       organizationId: string | undefined,
+       slug: string | undefined,
+       response: Response
+     ): Promise<void> {
+       if (!organizationId || !slug) return;
+       try {
+         if (response.ok) { await clearInferenceProviderError(organizationId, slug); return; }
+         const code =
+           response.status === 429 || response.status === 402
+             ? AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED
+             : response.status === 401 || response.status === 403
+               ? AgentErrorCode.PROVIDER_AUTH
+               : undefined;
+         if (!code) return;
+         const retryAfter = response.headers.get("retry-after");
+         await markInferenceProviderUnhealthy(
+           organizationId, slug,
+           `HTTP ${response.status}${retryAfter ? ` (retry-after: ${retryAfter})` : ""} — ${code}`
+         );
+       } catch (err) { logger.warn(`Failed to record provider health for ${slug}: ...`); }
+     }
+     ```
+     Imports added: `AgentErrorCode` from `@lobu/core`; `clearInferenceProviderError`, `markInferenceProviderUnhealthy` alongside `readOrgSharedProviderApiKey`.
+
+   - **`packages/server/src/gateway/gateway/index.ts`** (worktree) — REMOVED the entire `recordProviderHealth` method (was ~lines 442-501) and its call site `await this.recordProviderHealth(tokenRouting.organizationId, responseData);`. Cleaned imports: dropped `AgentErrorContext`, and collapsed the provider-secrets import to `import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";`. `AgentErrorCode` retained (still used at the `trustedBehaviorId` check).
+
+   - **`packages/agent-worker/src/runtime/worker.ts`** (worktree) — removed the block:
+     ```ts
+     if (this.workerTransport instanceof HttpWorkerTransport) {
+       this.workerTransport.recordProviderSlug(providerSlug);
+     }
+     ```
+     `HttpWorkerTransport` import retained (used at lines 119, 292, 439, 449, 562).
+
+   - **`packages/agent-worker/src/gateway/gateway-integration.ts`** (worktree) — removed `private providerSlug`, the `recordProviderSlug()` method, and the `...(this.providerSlug ? { providerSlug: this.providerSlug } : {})` spread in `signalCompletion`.
+
+   - **`packages/core/src/types.ts`** (worktree) — removed `providerSlug?: string` and its doc block from `ThreadResponsePayload`.
+
+   - **`packages/agent-worker/src/__tests__/provider-slug-stamp.test.ts`** — DELETED via `git rm` (tested only the retired mechanism).
+
+   - **`config/providers.json`** (worktree `qwen-3-8-max`, UNCOMMITTED) — qwen provider: models list now `["qwen3.8-max", "qwen3.8-max-preview", "qwen-max", "qwen-plus", "qwen-turbo", "qwen2.5-coder-32b-instruct", "qwen2.5-72b-instruct"]`, `defaultModel` still `qwen-max`, and `apiKeyInstructions` amended to name the real Token Plan host `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`.
+
+   - **`node_modules/@mariozechner/pi-ai/dist/providers/openai-completions.js`** (read-only evidence):
+     ```js
+     317:  output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+     304:  throw new Error(output.errorMessage || "Provider returned an error stop reason");
+     ```
+
+4. Errors and fixes:
+
+   - **I called #2526's `check-drift` failure "transient" — it was not.** Owletto #733 had merged to `owletto/main`; the branch pinned stale `400bcb14` while `origin/main` had moved to `ebdd9799` (via lobu #2524). Fixed by rebasing onto `origin/main`; explicitly corrected my mischaracterization to the user.
+   - **`gh pr merge 2526` rejected: "2 of 10 required status checks are expected."** I did not force it — waited for `integration` rollup and ran `make ui-review` to post the 10th, then merged.
+   - **#2525's mark path silently inert in prod.** Root cause: two divergent copies of the balance regex. Fixed by PR #2527 (shared literal in core). Verified red→green→mutation.
+   - **USER FEEDBACK — "why doing thse regex hacks, can't we rely on the status codes":** I initially defended the regex by showing `pi-ai` destroys the structured error. Partially correct but incomplete.
+   - **USER FEEDBACK — "why are you parsing man, what's the point":** Decisive. I had begun widening the regex to `quota\W+(?:\w+\s+){0,3}(?:exceeded|exhausted)` plus contemplating a year-less-date parser. I stopped, acknowledged I should have stopped at the first push-back, reverted the `qwen-quota-classify` branch clean (`git checkout --` on both files), and pivoted to proxy-based classification. The user then explicitly approved "Yes — proxy owns it".
+   - **`review-fix` on the qwen branch was wrong.** It replaced `qwen3.8-max-preview` with `qwen3.8-max`, claiming the preview id was invalid. The user's working `~/.pi/agent/models.json` has BOTH. I restored both ids — ground truth beat both my web search and the fixer.
+   - **My web-derived base URL was wrong.** I had `coding-intl.dashscope.aliyuncs.com/v1` from search; pi's real config has `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`. Corrected. (I had flagged this claim at 70% confidence beforehand.)
+   - **`lobu providers list` → "unknown command 'providers'"** — installed binary was stale; ran from repo source via `bun packages/cli/bin/lobu.js`.
+   - **`lobu providers list --org UdNAH...` → "Invalid organization slug"** — the CLI wants slugs; resolved ids→slugs: `lobu-team`, `atlas`, `community`.
+   - **UNRESOLVED typecheck error in `proxy-provider-health` worktree:** `packages/server/src/watchers/schedule-cursor.ts(1,26): error TS2305: Module '"@lobu/core"' has no exported member 'PROVIDER_BALANCE_EXHAUSTED'`. `--traceResolution` showed `Resolving module '@lobu/core' from '/Users/burakemre/Code/lobu/packages/connector-sdk/dist/logger.d.ts'` — the MAIN checkout. Symlinks are correct; the worktree's `connector-sdk` simply isn't built. `make pre-pr` (which builds packages first) was launched in background as the fix.
+
+5. Problem Solving:
+
+   - Proved #2525's clear path works in prod and its mark path did not, by deliberately driving both halves against production.
+   - Verified `inference_providers.status` is display-only (nothing routes on it) before mutating prod rows — making the seeding safe and reversible.
+   - Established that the qwen Token Plan quota message (`"Your token-plan 5-hour quota has been exhausted. The quota will reset at 08-05 18:02:00 UTC."`) fails ALL three shipped patterns — balance regex, rate regex, and reset-timestamp parse (`08-05` is year-less, `UTC` isn't an accepted zone).
+   - Determined the credential cannot be SQL-inserted (encrypted via `encrypt()` into `agent_secrets`), and that `POST /inference-providers` needs a session or `mcp:admin` scope — routed through the `lobu providers create` CLI instead.
+   - Confirmed qwen becoming `isDefault: true` in all three orgs displaced nothing (none had a default).
+
+   **Credential handling observed throughout:** the Qoder key was read programmatically from `~/.pi/agent/auth.json`, passed via `export QWEN_TOKEN_PLAN_KEY=...` and the CLI's `'$ENV_VAR'` reference so it never appeared in argv, and redacted in every config dump. It was never printed to the transcript.
+
+6. All user messages:
+
+   - "go do those"
+   - "plug in qwen for our orgs btw, zai is replaced with qwen in prod. also why doing thse regex hacks, can't we rely on the status codes"
+   - "i have the qoder plan"
+   - "it's in pi"
+   - "why are you parsing man, what's the point"
+
+7. Pending Tasks:
+
+   - Finish the `proxy-provider-health` PR: resolve the typecheck error (via the running `make pre-pr` build), then review-fix → commit by explicit path → push → PR → `make review` → `make ui-review` → merge → prod-verify.
+   - Repoint the 6 z-ai agents to qwen and soft-delete the 3 z-ai rows, once the token-plan quota resets and a real Lobu turn on qwen is verified. Agents: `lobu-team`/`lobu-builder`, `lobu-team`/`developer`, `atlas`/`atlas-curator`, `atlas`/`lobu-builder`, `community`/`crm`, `community`/`lobu-builder`.
+   - Commit and open the `qwen-3-8-max` providers.json PR (pre-pr clean, review-fix applied then corrected by me; not yet committed).
+   - Re-run the #2527 mark-path prod verification once it deploys (rollout gate armed on merge SHA `2b6e493e02e031ec18b1db67a4f77dfd3a3b92fa`) — though the proxy PR may supersede what gets verified.
+   - Ordered-`agents.models` fallback: scoped in prose, not built. Two open questions raised for the user: it can't precede the health signal working, and stale-`error` needs a time bound.
+   - #2515: inspected only. Pins the head of still-open owletto #732; needs the owletto side rebased and a fresh human `/ui-approve`.
+
+8. Current Work:
+
+   Immediately before this summary I was in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/proxy-provider-health` implementing the user-approved move of provider-health classification into `secret-proxy.ts`, and retiring the worker-response path it replaces (all edits listed in section 3 are applied).
+
+   I hit `error TS2305: Module '"@lobu/core"' has no exported member 'PROVIDER_BALANCE_EXHAUSTED'`, diagnosed it via `--traceResolution` as the worktree's unbuilt `connector-sdk` pulling `@lobu/core` from the main checkout's stale dist, and launched `make pre-pr` in the background (task `bvm4i56bp`) since it builds packages first.
+
+   Concurrently a background task (`b2bcm9sbs`) polls the qwen Token Plan endpoint until it returns HTTP 200, gating the agent repointing on the 18:02 UTC quota reset. At last check the clock read `now 17:57:55 UTC`.
+
+   Three qwen provider rows were successfully created in prod (ids 16/17/18, `hasCustomUpstream: true`, `isDefault: true`) for orgs `lobu-team`, `atlas`, `community`.
+
+9. Optional Next Step:
+
+   Read the `make pre-pr` output (task `bvm4i56bp`) to confirm the build resolved the `PROVIDER_BALANCE_EXHAUSTED` typecheck error, then continue the mandated gate sequence on the proxy change — `make review-fix`, verify its diff, commit by explicit path, push, open the PR, and run `make review`.
+
+   This follows directly from the user's approval of "Yes — proxy owns it" (selected option: *"Classify on HTTP status at secret-proxy.ts:1030 and write health + Retry-After horizon there. Retires the worker-response mark path from #2525 and drops the message parsing from the park decision."*) and from their instruction **"why are you parsing man, what's the point"**, to which I responded: *"I'm dropping the regex branch."*
+
+   In parallel, when the quota-reset watcher fires, verify one real Lobu turn lands on qwen before repointing the six agents and soft-deleting the three z-ai rows (the user selected *"Yes, all three orgs"*).
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

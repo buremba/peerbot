@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new lifecycle logic still permits stale snapshot metadata or an in-flight restore to cross result boundaries under reproducible host event orderings. This can replace a current card or leak the previous card's view state.
+
+Full review comments:
+
+- [P1] Correlate metadata after standard tool results — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:954-958
+  When the current card arrives through `toolresult` before any compatibility `toolOutput`, `latestOutputTarget` remains null, so metadata-only `openai:set_globals` from the other same-origin target is not treated as cross-target. A stale outer capability can consequently restore and replace the current standard card with unrelated historical data and view state; treat standard output as authoritative or apply the same fingerprint correlation when no compatibility output target is known.
+
+- [P2] Invalidate restores across same-identity result boundaries — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:599-602
+  When an ID-only restore is in flight and a second standard result with byte-identical data starts a new card, a subsequent host-context event that republishes the same ID and tool makes the identity checks pass. This fingerprint condition then accepts the old restore and reapplies the previous card's disclosure or pagination state; use a result-generation guard that changes on every proven result reset rather than allowing stale restores solely because the data matches.
+  </results>
+  </user_action>

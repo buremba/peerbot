@@ -181,8 +181,12 @@ async function resolveSlackActionReviewer(params: {
  *
  * A run outside both families reports `not_found`, so its card falls back to
  * the "Review in Lobu" link rather than acting on something unrecognised.
+ *
+ * Exported for testing: this query IS the authorization boundary for deciding
+ * a run from chat, so it is tested directly against a real DB rather than
+ * inferred from the click handler.
  */
-async function resolveEntityApprovalRun(
+export async function resolveEntityApprovalRun(
 	runId: number,
 	organizationId: string,
 ): Promise<{

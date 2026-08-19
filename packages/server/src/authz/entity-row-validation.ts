@@ -61,6 +61,12 @@ export interface EntityRowValidationVerdict {
  * link auto-create and eval scaffolding have nowhere to queue a card, so for
  * them a rule that asked for review must stop the write — which is exactly what
  * an uncaught throw does.
+ *
+ * Soft-delete (`deleteEntity`) DOES have somewhere to route one: the mutation
+ * gate queues a delete card, and applying it grants `$deleted` — the one field a
+ * delete card can be said to have approved. So an escalate on `$deleted` stops
+ * an ordinary delete and is waived for the approved one, while a `deny` stops
+ * both. A hard delete never reaches this seam at all.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;
@@ -80,9 +86,9 @@ export class EntityRowValidationError extends Error {
  *
  * The complement (`metadata`, `name`, `slug`, `parentId`, `content`,
  * `softDelete`) IS governed: freezing a document has to stop a rename, not
- * merely a metadata edit. `softDelete` is governed by this seam but no
- * soft-delete caller routes through it yet — see the KNOWN GAP in
- * `deleteEntity`.
+ * merely a metadata edit, and it has to stop the row being tombstoned out from
+ * under the rule that froze it. (A hard delete removes the row without a patch,
+ * so it never passes through here — see `deleteEntity`.)
  */
 const UNGOVERNED_COLUMNS: ReadonlySet<string> = new Set([
 	"currentViewTemplateVersionId",

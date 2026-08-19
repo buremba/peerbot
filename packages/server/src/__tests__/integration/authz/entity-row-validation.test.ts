@@ -4,16 +4,21 @@
  *
  * These run the REAL path: an author's rule source is compiled exactly as the
  * apply path would store it, written to `entity_types.rules_compiled`, and then
- * exercised through `updateEntity` — not through the validator in isolation. A
- * rule that is never reached would pass a unit test of the evaluator and fail
- * here, which is the failure mode worth catching.
+ * exercised through the real CRUD entry points (`createEntity`, `updateEntity`,
+ * `deleteEntity`) — not through the validator in isolation. A rule that is never
+ * reached would pass a unit test of the evaluator and fail here, which is the
+ * failure mode worth catching.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
-import { createEntity, updateEntity } from "../../../utils/entity-management";
+import {
+	createEntity,
+	deleteEntity,
+	updateEntity,
+} from "../../../utils/entity-management";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
@@ -61,11 +66,21 @@ export default (row) => {
 };
 `;
 
+/** PROBE: a rule that asks for review of the delete itself. */
+const ESCALATE_DELETE_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.changed("$deleted") && row.next.$deleted) {
+    row.escalate(["$deleted"], "a delete needs a second pair of eyes");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 
 // esbuild costs ~100ms per call, so compile each rule once for the whole file.
 let invoiceCompiled: string;
 let ticketCompiled: string;
+let escalateDeleteCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -109,6 +124,14 @@ async function readMetadata(id: number): Promise<Record<string, unknown>> {
 		string,
 		unknown
 	>;
+}
+
+async function readDeletedAt(id: number): Promise<Date | null> {
+	const sql = getTestDb();
+	const rows = await sql<{ deleted_at: Date | null }[]>`
+    SELECT deleted_at FROM entities WHERE id = ${id}
+  `;
+	return rows[0].deleted_at;
 }
 
 async function seedOrg(name: string) {
@@ -159,11 +182,26 @@ async function seedInvoice(
 	return { org, user, agent, invoice };
 }
 
+/** A doc whose type asks for review of any delete. */
+async function seedEscalatingDoc() {
+	const { org, user } = await seedOrg("Escalating delete");
+	await seedType(org.id, "doc", escalateDeleteCompiled);
+	const doc = await createEntity({
+		entity_type: "doc",
+		name: "DOC-1",
+		organization_id: org.id,
+		created_by: user.id,
+		metadata: {},
+	} as Parameters<typeof createEntity>[0]);
+	return { org, user, doc };
+}
+
 describe("entity row validation at the physical writer", () => {
 	beforeAll(async () => {
-		[invoiceCompiled, ticketCompiled] = await Promise.all([
+		[invoiceCompiled, ticketCompiled, escalateDeleteCompiled] = await Promise.all([
 			compileEntityRule(INVOICE_RULE),
 			compileEntityRule(TICKET_RULE),
+			compileEntityRule(ESCALATE_DELETE_RULE),
 		]);
 	}, 60_000);
 
@@ -314,4 +352,116 @@ describe("entity row validation at the physical writer", () => {
 			updateEntity(ticket.id, { metadata: { state: "open" } }, TEST_ENV, ctx),
 		).rejects.toThrow(/closed ticket cannot be reopened/);
 	}, 60_000);
+
+	describe("soft delete", () => {
+		/**
+		 * A rule sees a soft delete as `$deleted: false -> true`, so the SAME
+		 * frozen-field clause that stops an edit stops the delete. That is the point
+		 * of routing it through the seam: freezing a row has to mean the row cannot
+		 * be tombstoned out from under the rule, not merely that its fields resist
+		 * editing.
+		 */
+		it("denies deleting a frozen row, and the row stays live", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			await expect(
+				deleteEntity(invoice.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id })),
+			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
+
+			// The verdict has to have stopped the WRITE, not merely produced an error
+			// after it. Read the tombstone column itself rather than trusting the throw.
+			expect(await readDeletedAt(invoice.id)).toBeNull();
+		}, 60_000);
+
+		it("denies an AGENT the same delete — validation has no principal in it", async () => {
+			const { org, agent, invoice } = await seedInvoice("posted");
+
+			await expect(
+				deleteEntity(invoice.id, false, TEST_ENV, ctxFor(org.id, { agentId: agent.agentId })),
+			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
+
+			expect(await readDeletedAt(invoice.id)).toBeNull();
+		}, 60_000);
+
+		/**
+		 * The complement, and the reason the test above is not vacuous: the seam has
+		 * to stop the delete the rule objects to WITHOUT stopping delete generally.
+		 */
+		it("allows deleting a row the rule does not freeze", async () => {
+			const { org, user, invoice } = await seedInvoice("draft");
+
+			await deleteEntity(invoice.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id }));
+
+			expect(await readDeletedAt(invoice.id)).not.toBeNull();
+		}, 60_000);
+
+		/**
+		 * Deleting twice is a no-op, not an error: the lock finds no live row, so
+		 * there is nothing for a rule to judge and nothing to write.
+		 */
+		it("is a no-op on an already-tombstoned row", async () => {
+			const { org, user, invoice } = await seedInvoice("draft");
+			const ctx = ctxFor(org.id, { userId: user.id });
+
+			await deleteEntity(invoice.id, false, TEST_ENV, ctx);
+			const first = await readDeletedAt(invoice.id);
+
+			await deleteEntity(invoice.id, false, TEST_ENV, ctx);
+			expect(await readDeletedAt(invoice.id)).toEqual(first);
+		}, 60_000);
+
+		/** A type with no rule at all must not pay for the seam existing. */
+		it("allows deleting a row whose type declares no rule", async () => {
+			const { org, user, invoice } = await seedInvoice("posted", null);
+
+			await deleteEntity(invoice.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id }));
+
+			expect(await readDeletedAt(invoice.id)).not.toBeNull();
+		}, 60_000);
+
+		/**
+		 * An escalate on the delete stops an ORDINARY delete: there is no grant, so
+		 * the write kernel refuses exactly as it does for a field edit nobody
+		 * approved.
+		 */
+		it("stops an unapproved delete when the rule escalates", async () => {
+			const { org, user, doc } = await seedEscalatingDoc();
+
+			await expect(
+				deleteEntity(doc.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id })),
+			).rejects.toThrow(/second pair of eyes \(approval required for \$deleted\)/);
+
+			expect(await readDeletedAt(doc.id)).toBeNull();
+		}, 60_000);
+
+		/**
+		 * ...and the SAME rule must not block the delete a human then approved.
+		 * Without the grant the card is a dead end: applying it re-runs the rule,
+		 * escalates again, and throws — the approval could never be honoured.
+		 */
+		it("honours an approved delete the rule escalated", async () => {
+			const { org, user, doc } = await seedEscalatingDoc();
+
+			await deleteEntity(doc.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id }), {
+				approvedFields: ["$deleted"],
+			});
+
+			expect(await readDeletedAt(doc.id)).not.toBeNull();
+		}, 60_000);
+
+		/** The grant is SCOPED: it covers `$deleted` and nothing else. */
+		it("does not let a delete grant waive an escalate on another field", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			// The invoice rule DENIES this delete. A grant may not launder a deny —
+			// only an escalate — so the delete still fails with the grant present.
+			await expect(
+				deleteEntity(invoice.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id }), {
+					approvedFields: ["$deleted"],
+				}),
+			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
+
+			expect(await readDeletedAt(invoice.id)).toBeNull();
+		}, 60_000);
+	});
 });

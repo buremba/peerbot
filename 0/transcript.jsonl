@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:31:48.407Z","content":[{"text":"New message in #sales:\n\nsarah: @lobu what's our pipeline total this month?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:31:50.137Z","id":"244fefb3","input_tokens":3441,"output_tokens":18,"content":[{"type":"text","text":"I don’t have access to your sales pipeline data in this chat."}]}

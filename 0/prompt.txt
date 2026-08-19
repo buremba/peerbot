@@ -1,0 +1,1 @@
+before publishing did you do all the mcp cli ui tests and the smoke test to use it from slack etc

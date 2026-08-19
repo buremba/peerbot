@@ -1,0 +1,49 @@
+<task-notification>
+<task-id>a9a2102279849057d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/a9a2102279849057d.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify visibility DM/group semantics" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Verification complete. I read only — no files were created or modified in the checkout. Here is the ground truth.
+
+## Fact base
+
+**1. `connections.visibility` — values and defaults**
+- Allowed values: `'org' | 'private'` (application-level type, `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/helpers/connection-helpers.ts:577-591`). No DB CHECK constraint on the column; the raw column DEFAULT is `'org'` (`/Users/burakemre/Code/lobu/db/migrations/00000000000000_baseline.sql:723`). The `'public'` value you'll see in grep hits belongs to the `organization` table, not connections.
+- **Exact default on the personal-OAuth (oauth_account) path: `private`, unconditionally.** The historical "org-default exposes personal creds" issue IS fixed on main, at four layers:
+  1. Create: `resolveConnectionVisibility` returns `'private'` for `profile_kind === 'oauth_account'` *before* the role check — an admin attaching their own Gmail still defaults private (`connection-helpers.ts:577-591`). Non-personal kinds keep the role default: admins/owners → `'org'`, members → `'private'`.
+  2. OAuth callback attach: downgrade-only `forcePrivate` when the attached profile turns out personal (`/Users/burakemre/Code/lobu/packages/server/src/connect/routes.ts:871-877`).
+  3. Update/rebind: re-pointing a connection onto a personal credential floors visibility to private (`/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_connections/handlers/crud.ts:1604-1611,1829`).
+  4. DB backstop: migration `/Users/burakemre/Code/lobu/db/migrations/20260703200000_connection_personal_cred_private_guard.sql` — backfills any pre-existing org-visible oauth_account connection to private, and a `BEFORE INSERT OR UPDATE` trigger **rejects** any write leaving an oauth_account connection at `visibility='org'`, so no code path can re-widen one.
+
+**2. Who can use a connection — the one predicate**
+- `/Users/burakemre/Code/lobu/packages/server/src/authz/connection-visibility.ts:41-79`: a connection is visible iff `visibility='org' OR created_by = principal`. Null principal (headless — watchers, schedules) → org-visible only, fail-closed. The admin flag only exposes legacy `created_by IS NULL` rows and "deliberately does NOT expose another member's private connection."
+- Enforced at every read seam (query_sql, recall search/list, get_content, feeds, execute-data-sources, connector-pushdown) and at **operation execution**: `handleExecute` re-checks the predicate and refuses with "Connection not found or not visible" (`/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_operations.ts:990-1012`).
+
+**3. Ownership and the acting identity — the decisive nuance**
+- Ownership = `connections.created_by` (a Lobu user id), stamped from `ctx.userId` at insert (`.../manage_connections/handlers/connect.ts:459-469`).
+- The DM key `{platform}-{userId}` (`gateway/spaces/space-resolver.ts`) is a **routing/space key only**. The platform→user link is `chat_user_identities` (`/Users/burakemre/Code/lobu/packages/server/src/lobu/stores/chat-identity.ts`), but it is consumed only for the builder admin-tool grant and Slack approval reviewer resolution — **not** for per-turn connection authz.
+- For chat-triggered agent runs (DM *and* group), tool calls flow: worker JWT → gateway MCP proxy → `X-Lobu-Memory-Direct-Auth: 1` (`gateway/auth/mcp/proxy-shared.ts:171-173`) → `ctx.userId = agents.owner_user_id` (`/Users/burakemre/Code/lobu/packages/server/src/workspace/multi-tenant.ts:284-321`). **The principal is the agent's owner, space-independent. There is no group-vs-DM narrowing anywhere in the connection-visibility path.**
+
+## Verdicts
+
+**(a) PARTIAL — safe core, one attribution caveat.** TRUE: the Gmail/Calendar connection is forced private (4 layers) and other members cannot see it, query data through it, or execute operations on it. Caveat: "attach to *them*" — `created_by` is stamped from the run principal. When you connect from the web UI (your session) or you own the agent (personal org, the default), that's you and the claim holds. When a non-owner member DMs a *shared* agent and the agent initiates the connect, `created_by` lands on the agent owner, not the DM sender.
+
+**(b) PARTIAL, false as worded.** TRUE half: a group chat can never reach *other members'* private connections. FALSE half: the run principal in a group chat is the agent owner, so the **agent owner's** private connections satisfy `created_by = principal` and are usable there — "never anyone's personal ones" is not mechanically guaranteed.
+
+**(c) PARTIAL.** Holds exactly when you own the agent you're DMing (the standard single-user/personal-org experience) or on your own authenticated surfaces (web session, your MCP client token). A member DMing a shared agent owned by someone else gets the *owner's* private + org-shared set, not their own — DM-ness itself does not switch the principal.
+
+## Corrected public-safe phrasing
+
+- (a) "When you connect your own Gmail/Calendar, it's stored as a private connection — the system forces personal OAuth credentials to private at creation, on every update, and with a database trigger as a backstop. No other member can read through it or execute actions on it; even org admins can't reach another member's private connection."
+- (b) "Agents acting in shared spaces can only use org-visible connections plus the private connections of the user the run acts as — never other members' personal connections. Background/scheduled runs are stricter: org-visible only."
+- (c) "Chatting with your own agent, it can use your private connections plus anything shared org-wide. What's usable is scoped per user, not per channel — visibility follows who the agent acts as, which is the agent's owner."
+
+**Confidence: 85 (high on mechanics, medium on product-flow edge cases).** Basis: I read the actual predicate compiler, all four private-floor layers including the shipped migration + trigger, the execute-time gate, and traced the full worker-auth chain end to end (token mint → proxy header → principal attribution) — this is static code reading on main, nothing executed. Residual risk: a run-auth path I didn't find that re-attributes `ctx.userId` to the chat sender (I checked all consumers of `resolveChatUserIdentity` and `sourceContext`; none feed connection authz).
+
+Next actions you could pick from: (1) e2e-verify the multi-member caveat on a staging org — non-owner DMs a shared agent, connect Gmail, inspect `created_by`; (2) decide whether chat-initiated connects *should* attribute `created_by` via `chat_user_identities` (that would make claims (a)/(c) unconditionally true); (3) confirm prod has migration `20260703200000` applied before publishing the reply.
+
+result: Personal-OAuth connections default private on main (4 enforcement layers incl. DB trigger); claims a/b/c are PARTIAL — visibility is per-principal (agent owner), not per-space, so group chats can reach the agent owner's private connections and a shared agent's DM doesn't act as the sender.</result>
+<usage><subagent_tokens>135324</subagent_tokens><tool_uses>75</tool_uses><duration_ms>715066</duration_ms></usage>
+</task-notification>

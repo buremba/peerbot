@@ -1,0 +1,1 @@
+do we use elicitations btw? is this supported in chatgpt claude and most complete mcp clients

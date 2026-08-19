@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwvyjx3mz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bwvyjx3mz.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and re-run the gate on the new HEAD" completed (exit code 0)</summary>
+</task-notification>

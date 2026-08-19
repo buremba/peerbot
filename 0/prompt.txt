@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bywqphe7v</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/566d20f5-4798-4f06-b013-4c6e6809e5f7/tasks/bywqphe7v.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait longer for review-fix" completed (exit code 0)</summary>
+</task-notification>

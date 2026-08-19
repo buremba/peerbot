@@ -1,0 +1,1 @@
+we have r2 backups which we can restore from maybe? we can afford to lose like 2 3 hours of data as long as the schema is matching fully

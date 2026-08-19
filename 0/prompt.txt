@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buavyn6zq</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/05838765-35fd-4133-b449-2ea6731efb06/tasks/buavyn6zq.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for new image pods" completed (exit code 0)</summary>
+</task-notification>

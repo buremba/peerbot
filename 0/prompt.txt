@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf3q86lmk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/279de3ab-0acd-4e7e-8c0b-0774e773be4a/tasks/bf3q86lmk.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for HelmChart to repackage at 14.15.0" completed (exit code 0)</summary>
+</task-notification>

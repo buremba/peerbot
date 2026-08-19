@@ -1,0 +1,1 @@
+so the provider adding is fully in the connectors? can we do the same for the runtime ones and maybe get rid of tabs? we can even replace memory sidebar with activity that shows and models that shows entities. would that be better ux?

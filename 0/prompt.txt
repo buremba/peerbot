@@ -1,0 +1,1 @@
+should the primary button be aligned with the text, same in agents. [Image #2] make the text in both section complementary and concise

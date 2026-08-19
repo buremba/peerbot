@@ -1,0 +1,79 @@
+<task-notification>
+<task-id>a298938f6d31efcd7</task-id>
+<tool-use-id>toolu_01Rnj4PruWtqxuYUwszJqo8m</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/a298938f6d31efcd7.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement connector-agent-env M1–M4" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>M1–M4 are complete, committed, and pushed. M5 is blocked on missing credentials.
+
+## What was done
+
+**M1** — `agentTooling` on `ConnectorDefinition` (`packages/connector-sdk/src/connector-types.ts`), exported from the SDK index, declared on the GitHub connector (`gh` + `GH_TOKEN` lease + `api.github.com`/`github.com`, version 1.2.0→1.3.0). Persisted via a new `connector_definitions.agent_tooling` jsonb column (migration `20260728120000`, squawk-clean) plumbed through `ConnectorMetadata`, the metadata extractor, and all 5 SQL sites in `connector-definition-install.ts`.
+
+**M2** — `CredentialLeaseProvider` / `CredentialLeaseRegistry` + `GitHubCredentialLeaseProvider` in `packages/server/src/gateway/agent-tooling/credential-lease.ts`, delegating to the existing `getInstallationTokenRegistry()`. Ports all four guards from the connector credential resolver (cross-tenant org, provider/instance shape, non-active install, mint failure), each returning null rather than throwing. Per-pod stateless minting — no cross-replica lease state. No new DB table.
+
+**M3** — `resolveAgentTooling` (`agent-tooling/resolver.ts`) + wiring in `deployment-manager.ts`. Two placement details matter: resolution runs **before** `buildDeploymentWorkerToken` so contributed domains land in the *signed* token claim (remote runtimes trust the claim, not the body), and before `syncNetworkConfigGrants`, whose PG reconcile would otherwise revoke them on the next message. Lease vars are exempt from `injectSecretPlaceholders` by **name+value** match, so an operator override of the same env name is still swapped as a durable secret.
+
+**M4** — 31 bun tests + 2 vitest integration tests, all green.
+
+## Evidence
+
+Red→green on the declaration validator: **7 fail / 5 pass** with validation stubbed → **12 pass / 0 fail** restored.
+
+Three mutation checks, all confirmed to bite:
+- Leak the stored credential in the resolver → `INVARIANT` test fails on `REDACTED` (1 fail).
+- Remove the lease exemption → `GH_TOKEN` becomes `lobu_secret_&lt;uuid&gt;` (3 fail).
+- Return the durable value instead of a placeholder in Tier 2 → caught (1 fail).
+
+Final runs: `agent-tooling-*` **31 pass / 0 fail**; connector integration suite **307 pass / 45 files**; `make test-unit` **2715 pass / 0 fail**; neighbouring gateway suites (base-deployment-grants 24, orchestration-harden 58, embedded-deployment 31, app-installation-e2e 11, message-handler-bridge 55, unified-thread-consumer 27) all 0 fail. `make pre-pr` clean; `make typecheck` clean after `make build-packages` (the 2 biome infos are pre-existing in `packages/cli`, untouched).
+
+`make review-fix` ran and made four substantive improvements I verified and kept: the signed-token ordering fix, the name+value exemption, routing Tier-2 credential reads through `resolveExecutionAuth` instead of raw `credentials` jsonb, and hardening `parseAgentTooling` (nix names validated through `nixPackageAttrRef`, env names restricted to `^[A-Za-z_][A-Za-z0-9_]*$` with `__proto__` excluded).
+
+Rebased onto the new `origin/main` (#2229 landed mid-task) and re-verified. `git diff --name-only origin/main...HEAD` is exactly the 15 intended files — no stale-tree extras. PLAN file not committed (review-fix deleted it from the working tree; I restored it).
+
+```
+On branch feat/connector-agent-env
+Your branch is up to date with 'origin/feat/connector-agent-env'.
+nothing to commit, working tree clean
+
+ ...8120000_connector_definitions_agent_tooling.sql |  17 +
+ packages/connector-sdk/src/connector-types.ts      |  55 ++
+ packages/connector-sdk/src/index.ts                |   2 +
+ packages/connectors/src/github.ts                  |  12 +-
+ .../connector-agent-tooling-persistence.test.ts    | 110 ++++
+ .../__tests__/agent-tooling-declaration.test.ts    |  89 +++
+ .../__tests__/agent-tooling-resolver.test.ts       | 697 +++++++++++++++++++++
+ .../src/gateway/agent-tooling/credential-lease.ts  | 273 ++++++++
+ .../server/src/gateway/agent-tooling/registry.ts   |  26 +
+ .../server/src/gateway/agent-tooling/resolver.ts   | 298 +++++++++
+ .../gateway/orchestration/deployment-manager.ts    | 196 +++++-
+ packages/server/src/gateway/orchestration/index.ts |   7 +
+ .../src/gateway/orchestration/message-consumer.ts  |  29 +
+ packages/server/src/utils/connector-compiler.ts    |   9 +
+ .../src/utils/connector-definition-install.ts      |   7 +-
+ 15 files changed, 1819 insertions(+), 8 deletions(-)
+```
+
+## M5 state: NOT reached — blocked on credentials
+
+I did not boot the dev server, because the acceptance test cannot pass without a live mint. `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_WEBHOOK_SECRET` are **all absent** from the worktree `.env`, `.env.local`, and the main checkout's `.env`. `resolveAppConfig` throws `missing_app_config` without the first two.
+
+The `env_keys` GITHUB_TOKEN fallback is **not a substitute**: that's a durable PAT, so by design it mints no lease and the sandbox would get `gh` with no credential. Worktree ports if you resume: `PORT=9064`, `WORKER_PROXY_PORT=8307`.
+
+## Confidence
+
+- **Schema + persistence (M1): 92.** Round-trip proven through the real install path over Postgres, including the drop-on-upgrade case.
+- **Lease provider (M2): 85.** Every guard and the mint exercised against a real DB with the HTTP exchange mocked at `fetchImpl` (real App-JWT signing runs). Never verified against live GitHub.
+- **Resolver + deployment wiring (M3): 82.** Env/nix/domains/grants asserted through the real `generateEnvironmentVariables`, and the leak invariant is mutation-proven. Not exercised in a booted server, and the `message-consumer` domain path has no dedicated test — it's covered only by typecheck plus the existing consumer suites.
+- **Tier-2 placeholder path: 70.** One integration test through `resolveExecutionAuth`; no real connector stores a `placeholder`-tier credential today, so the shape assumption ("exactly one value, or one under the env var's name") is untested against a real connector.
+- **E2E: 0.** Nothing booted.
+
+## Next actions
+
+1. **Supply GitHub App creds and run M5** — put `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` in the worktree `.env`, boot on `PORT=9064`, install the App on a test org, then have the agent run `gh api user` and `env | grep -i token` (expect only `GH_TOKEN`, no durable secret).
+2. **Open the PR and run `make review` once** — branch is pushed and settled; the commit message body has the red→green and mutation evidence to paste into the template.
+3. **Decide the v1 attachment semantics before merge** — org-level connections currently contribute to *every* agent in the org. That's the flagged v1 choice from the plan, not an oversight; worth an explicit sign-off since it widens which agents get an authenticated `gh`.
+4. **Consider a `message-consumer` test for the signed-domain claim** — the highest-value gap, since a regression there silently fails only on remote runtimes where the token claim is authoritative.</result>
+<usage><subagent_tokens>258326</subagent_tokens><tool_uses>168</tool_uses><duration_ms>2892437</duration_ms></usage>
+</task-notification>

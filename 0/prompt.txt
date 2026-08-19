@@ -1,0 +1,1 @@
+also how does the connectors define these 3 different edges, should they be reusing what we have for the events

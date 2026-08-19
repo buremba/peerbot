@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkdq06bt8</task-id>
+<tool-use-id>toolu_01Pvo2pynK7nqWW5WAiZRjpz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bkdq06bt8.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and re-run review on 2771" completed (exit code 0)</summary>
+</task-notification>

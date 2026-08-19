@@ -1,0 +1,5 @@
+1. we need to make it reliable.
+2. yes talk to it we can even kill it if you think it's not relevant anymore
+3. sounds cool.
+4. yes let's update.
+also do some spikes understand it. for behaviors i was thinking if they're the one updating mutating entities we can technically enforce no? i don't get you

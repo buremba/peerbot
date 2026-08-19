@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b82ai8rpm</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/b82ai8rpm.output</output-file>
+<status>completed</status>
+<summary>Background command "Monitor lobu PR checks until all report" completed (exit code 0)</summary>
+</task-notification>

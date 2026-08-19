@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buo8yglno</task-id>
+<tool-use-id>toolu_01LinCkCGg9gJCLHJTeHEqoB</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/buo8yglno.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review to post pi-review" completed (exit code 0)</summary>
+</task-notification>

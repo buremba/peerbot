@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:34:01.767Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:34:03.439Z","id":"29c33182","input_tokens":3416,"output_tokens":28,"content":[{"type":"tool_use","id":"call_akitbGI168hPu0O1yi0BMjtr|fc_016829672a84c1aa006a6cce7afc24819eb0528c461de774fa","name":"send_message","input":{"text":"I’m up for lunch at 12:30!"},"result":{"output":"Message sent.","status":"success"}}]}

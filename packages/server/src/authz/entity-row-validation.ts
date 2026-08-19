@@ -154,6 +154,12 @@ function committedState(row: CommittedRow): Record<string, unknown> {
 	};
 }
 
+function grantSuffix(approvedFields: readonly string[]): string {
+	return approvedFields.length > 0
+		? ` — approved ${approvedFields.join(", ")}`
+		: "";
+}
+
 /**
  * Validate an effective patch against every target row's declared write rules,
  * returning the patch branded for {@link patchEntityRows}.
@@ -211,10 +217,8 @@ export async function validateEntityRowPatch(params: {
  * has no module-private, so lint is the strongest available enforcement and
  * lint can be disabled.
  *
- * Queries only the caller's handle — never `getDb()`. A pooled query from
- * inside an entity write transaction is the #2818 deadlock (every pool session
- * parked `idle in transaction` on the same statement), and it would also read a
- * different snapshot than the one being written.
+ * Same handle/#2818 contract as {@link validateEntityRowPatch}: only the
+ * caller's transaction handle, never `getDb()`.
  *
  * Rows are grouped by their type's compiled rule so each distinct rule runs in
  * ONE isolate over its whole group. Per-row isolates do not scale — measured at
@@ -305,14 +309,10 @@ export async function validateEntityRowPatchGrantingApprovedFields(params: {
 				// Not covered: spell out the gap so a partial approval cannot pass
 				// in silence. With an empty grant (the waives-nothing entry point)
 				// this reads exactly as before.
-				const granted =
-					approvedFields.length > 0
-						? ` — approved ${approvedFields.join(", ")}`
-						: "";
 				throw new EntityRowValidationError(
 					`entity ${entityId}: ${verdict.reason} ` +
 						`(approval required for ${verdict.fields.join(", ")})` +
-						granted,
+						grantSuffix(approvedFields),
 					{
 						outcome: "escalate",
 						reason: verdict.reason,
@@ -459,14 +459,10 @@ export async function validateEntityRowInsertGrantingApprovedFields(params: {
 		// Otherwise stop the create and let the caller route it. A create needs no
 		// held-field bookkeeping — the row does not exist, so an aborted
 		// transaction leaves nothing behind and the whole proposal is the card.
-		const granted =
-			approvedFields.length > 0
-				? ` — approved ${approvedFields.join(", ")}`
-				: "";
 		throw new EntityRowValidationError(
 			`new ${row.slug}: ${verdict.reason} ` +
 				`(approval required for ${verdict.fields.join(", ")})` +
-				granted,
+				grantSuffix(approvedFields),
 			{
 				outcome: "escalate",
 				reason: verdict.reason,

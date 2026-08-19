@@ -139,7 +139,7 @@ describe("granting validator split — only the apply path may waive", () => {
 	});
 
 	it("ordinary validator waives nothing: an escalate throws without any approval list", async () => {
-		const { org, user, invoice } = await seedInvoice("issued");
+		const { invoice } = await seedInvoice("issued");
 
 		const sql = getTestDb();
 		await expect(
@@ -156,7 +156,7 @@ describe("granting validator split — only the apply path may waive", () => {
 	}, 60_000);
 
 	it("covered grant waives exactly the fields on the card", async () => {
-		const { org, user, invoice } = await seedInvoice("issued");
+		const { invoice } = await seedInvoice("issued");
 
 		const sql = getTestDb();
 		await sql.begin(async (tx) => {
@@ -173,7 +173,7 @@ describe("granting validator split — only the apply path may waive", () => {
 	}, 60_000);
 
 	it("uncovered grant throws naming what was approved", async () => {
-		const { org, user, invoice } = await seedInvoice("issued");
+		const { invoice } = await seedInvoice("issued");
 
 		const sql = getTestDb();
 		await expect(
@@ -191,7 +191,7 @@ describe("granting validator split — only the apply path may waive", () => {
 	}, 60_000);
 
 	it("the apply seam (mergeEntityFields) forwards a covered grant and lands the write", async () => {
-		const { org, user, invoice } = await seedInvoice("draft");
+		const { user, invoice } = await seedInvoice("draft");
 
 		const sql = getTestDb();
 		await sql.begin(async (tx) => {
@@ -210,7 +210,7 @@ describe("granting validator split — only the apply path may waive", () => {
 	}, 60_000);
 
 	it("the apply seam refuses a grant for a field the rule escalated, with the gap named", async () => {
-		const { org, user, invoice } = await seedInvoice("issued");
+		const { user, invoice } = await seedInvoice("issued");
 
 		const sql = getTestDb();
 		await expect(
@@ -251,7 +251,6 @@ describe("granting validator split — only the apply path may waive", () => {
 		);
 
 		const created = await createEntity(base, { approvedFields: ["amount"] });
-		// 1/2: the escalated create landed with the covered grant.
 		expect((await readMetadata(created.id)).amount).toBe(75_000);
 	}, 60_000);
 });

@@ -1,0 +1,1 @@
+is that widgetState chatgpt specific or in the mcp apps? also render lobu view can't do json template etc no? i thought save_memory in a way can render things already so we can advertise it so it becomes part of the memory

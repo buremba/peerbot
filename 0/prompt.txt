@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmoycz5wg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bmoycz5wg.output</output-file>
+<status>completed</status>
+<summary>Background command "Build packages in before worktree" completed (exit code 0)</summary>
+</task-notification>

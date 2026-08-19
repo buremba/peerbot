@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0pa5ff3i</task-id>
+<tool-use-id>toolu_01Gw36SKNoSgMkbTb7NEtAid</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/b0pa5ff3i.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for review-fix to settle in background" was stopped</summary>
+</task-notification>

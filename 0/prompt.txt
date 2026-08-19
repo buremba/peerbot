@@ -1,0 +1,1 @@
+remove the office bot seperate, use examples/lobu-team instead which maps to lobu tem and consolidate simplify

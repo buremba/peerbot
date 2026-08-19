@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bizu3hy82</task-id>
+<tool-use-id>toolu_011rXYit9x2AXSgsb3NXmdjN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/bizu3hy82.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for rollout of both merges" completed (exit code 0)</summary>
+</task-notification>

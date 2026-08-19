@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_fAzvD2SyLQ/CleanShot 2026-08-03 at 05.31.52@2x.png">
+
+</image>
+
+wtf is this, do you not show a single value for each mcp client session, they all seem clicked there are duplicates [Image #1]

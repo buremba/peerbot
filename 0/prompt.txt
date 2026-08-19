@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>ba30obf0h</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f33cc6c8-268a-4dc1-9605-e2ffb3bfbbbc/tasks/ba30obf0h.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot SPA vite server" was stopped</summary>
+</task-notification>

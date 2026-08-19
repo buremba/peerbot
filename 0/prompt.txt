@@ -1,0 +1,1 @@
+ok good. in the future through our sdk or if people use our inference proxy we can just populate the relevant transcripts so we can fill the bridge.

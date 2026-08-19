@@ -1,0 +1,1 @@
+Read /tmp/lobu-ctx-brief.md, then follow it: analyze the findings, verify against the two transcripts, and propose+prove a concrete token-reduction fix. Do not use -p; work in this session.

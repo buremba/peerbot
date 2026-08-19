@@ -2301,6 +2301,8 @@ export async function handleDelete(
   recordChangeEvent({
     entityIds: entityIds.map(Number),
     organizationId,
+    subject: 'connection',
+    op: 'deleted',
     title: `Connection deleted: ${connName}`,
     content: `Connection "${connName}" (id: ${args.connection_id}, connector: ${conn.connector_key}) was deleted.`,
     metadata: {

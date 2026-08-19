@@ -40,8 +40,8 @@ describe('insertConnectionlessAuditEvent idempotency', () => {
       },
     };
 
-    const first = await insertConnectionlessAuditEvent(params);
-    const second = await insertConnectionlessAuditEvent(params);
+    const first = await insertConnectionlessAuditEvent(params, { subject: 'member', op: 'created' });
+    const second = await insertConnectionlessAuditEvent(params, { subject: 'member', op: 'created' });
 
     expect(second.change).toBe('unchanged');
     expect(second.id).toBe(first.id);
@@ -76,9 +76,9 @@ describe('insertConnectionlessAuditEvent idempotency', () => {
     };
 
     const results = await Promise.all([
-      insertConnectionlessAuditEvent(params),
-      insertConnectionlessAuditEvent(params),
-      insertConnectionlessAuditEvent(params),
+      insertConnectionlessAuditEvent(params, { subject: 'member', op: 'created' }),
+      insertConnectionlessAuditEvent(params, { subject: 'member', op: 'created' }),
+      insertConnectionlessAuditEvent(params, { subject: 'member', op: 'created' }),
     ]);
     const ids = new Set(results.map((r) => r.id));
     expect(ids.size).toBe(1);

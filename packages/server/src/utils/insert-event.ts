@@ -676,11 +676,51 @@ export async function insertEvent(
 interface ChangeEventParams {
   entityIds: number[];
   organizationId: string;
+  /**
+   * What changed, as the shared `<subject>.<op>` vocabulary. Explicit here
+   * because this writer's `metadata` is caller-shaped free-form jsonb — unlike
+   * its siblings it carries no structured field the funnel could classify from.
+   */
+  subject: string;
+  op: string;
   title: string;
   content: string;
   metadata: Record<string, unknown>;
   createdBy?: string | null;
   clientId?: string | null;
+}
+
+/**
+ * What happened, as one `<subject>.<op>` pair — the single vocabulary every
+ * audit writer speaks.
+ *
+ * Required by the funnel rather than optional so a new writer cannot introduce
+ * an untyped audit row by omission: leaving it out is a compile error, not a
+ * silently unclassifiable event. The four `record*` helpers below each supply
+ * it from data they already hold, so adding a new event type costs no code
+ * here — pass a new `subject`.
+ *
+ * Dotted and past-tense to match the event-type vocabulary already in use
+ * (`feed.auto_paused`, `message.created`), NOT the underscored `origin_type`
+ * audit tag, which stays an internal provenance field.
+ */
+export interface AuditEventType {
+  /**
+   * The domain object: `device`, `connection`, `entity`, `relationship`, …
+   *
+   * Free-form so a new subject costs no code here. State-change writers pass
+   * their existing `AuditResourceKind` slugs, which are hyphenated and
+   * sometimes compound (`agent-settings`, `auth-profile`) — kept as-is rather
+   * than renamed, since those slugs are already the dashboard's pivot.
+   */
+  subject: string;
+  /** Past-tense transition: `created`, `updated`, `deleted`, `linked`, … */
+  op: string;
+}
+
+/** `{subject:'device', op:'created'}` -> `'device.created'`. */
+export function formatAuditEventType(type: AuditEventType): string {
+  return `${type.subject}.${type.op}`;
 }
 
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
@@ -696,12 +736,14 @@ const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
  * winner instead of appending a duplicate.
  */
 export async function insertConnectionlessAuditEvent(
-  params: InsertEventParams
+  params: InsertEventParams,
+  eventType: AuditEventType
 ): Promise<InsertedEvent> {
   const idempotencyKey = `audit:${params.originId}`;
   const metadata: Record<string, unknown> = {
     ...(params.metadata ?? {}),
     _lobu_idempotency_key: idempotencyKey,
+    _lobu_event_type: formatAuditEventType(eventType),
   };
 
   try {
@@ -770,7 +812,8 @@ export function recordChangeEvent(params: ChangeEventParams): void {
         metadata: params.metadata,
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
-      }),
+      },
+      { subject: params.subject, op: params.op }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -854,7 +897,10 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
         },
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
-      }),
+      },
+      // `verb` not `op`: the stored op is imperative (link/unlink/update_link)
+      // while the shared vocabulary is past-tense.
+      { subject: 'relationship', op: verb }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -990,7 +1036,8 @@ function recordStateChangeEvent(
         },
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
-      }),
+      },
+      { subject: params.resourceKind, op: params.op }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -1042,7 +1089,8 @@ export function recordLifecycleEvent(params: LifecycleEventParams): void {
           ...(params.extra ? { extra: params.extra } : {}),
         },
         createdBy: params.createdBy ?? null,
-      }),
+      },
+      { subject: params.entityType, op: params.op }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(

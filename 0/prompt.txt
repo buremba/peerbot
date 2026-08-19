@@ -1,0 +1,1 @@
+are notifications always attached to the agents? when an external mcp client connects where do we show the notifications for it

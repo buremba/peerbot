@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Although the focused tests and production bundle build pass, compatibility state is merged from independent targets without correlating result identity. Out-of-sync targets can display stale card data and attach an old approval capability to current output.
+
+Full review comments:
+
+- [P2] Replace stale widget data after capability restore — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:463-469
+  When ChatGPT's widget cache and snapshot metadata are from different card revisions (for example, stale inner `widgetState` plus a current outer capability), `restore_lobu_app_result` returns the current card but this guard refuses to install it because cached data already set `hasData.current`. The UI then keeps the old card while applying the new card's restored view state; distinguish live tool output from widget-only cache and let a capability-backed restore replace the latter.
+
+- [P2] Clear unpaired approval metadata before applying output — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:783-789
+  During preloading, when one same-origin target contains current `toolOutput` without metadata while another still contains the previous card's `toolResponseMetadata`, the first pass loads the old approval capability and this output pass never clears it because `approvalCapability` is `undefined`. A current approval action then sends the stale token from `callTool` and is rejected by the server; clear capabilities at an unpaired output boundary or correlate metadata and output by result identity.
+  </results>
+  </user_action>

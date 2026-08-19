@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:11:39.186Z","content":[{"text":"New message in #sales:\n\nsarah: ok cool, sounds good 👍"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:11:45.029Z","id":"8c9950a5","input_tokens":226,"output_tokens":521,"content":[{"type":"text","text":"Got it. Want me to reply in #sales? I can post something like:\n- Great—thanks! We’ll proceed as discussed.\n- Awesome, I’ll share the proposal by EOD.\n- Perfect—next step: schedule the demo?"}]}

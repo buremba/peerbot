@@ -1,0 +1,49 @@
+<task-notification>
+<task-id>a298938f6d31efcd7</task-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/a298938f6d31efcd7.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement connector-agent-env M1–M4" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>M1–M4 are complete and pushed. My earlier report was accurate at the time, but **the branch changed after it** — I need to correct the record.
+
+## Correction: two commits landed after my report
+
+A `Codesmith` bot pushed two follow-up commits to `feat/connector-agent-env` (03:43Z and 03:53Z, after my 04:23 local commit). I did not author these. I verified both independently rather than trusting them, and both fix **real defects I shipped**:
+
+1. **`9052fa9af`** — registers `agent_tooling` in `QUERYABLE_SCHEMA` (`table-schema.ts`). I added the column but missed this; `buildScopedQuery` emits explicit column lists, so the column was invisible to queries. A genuine miss on my part.
+
+2. **`29fedf52a`** — two fixes plus AGENTS.md docs:
+   - **Security gap I introduced**: my `parseAgentTooling` accepted any non-empty string as a domain, so a declaration could put `*`, `*.com`, or `https://evil.com/x` straight onto the worker's deny-by-default egress allowlist. Now validated via a new shared `isValidDomainPattern` in `packages/core/src/utils/network-domains.ts`, matching what the operator-facing settings API applies. **This is the most serious thing found in my work** — I wrote the resolver treating domains as declaration-only and never validated their shape.
+   - An unset `leaseRegistry` dropped packages and domains too, contradicting my own documented graceful degradation. Now uses an empty registry so only lease vars are omitted.
+   - Documents the Tier-1 lease carve-out in both AGENTS.md files.
+
+## Independent verification of the updated branch
+
+Not trusting the bot's self-report, I re-ran everything: `make build-packages` + `make typecheck` clean; agent-tooling suites **32 pass / 0 fail**; nine neighbouring gateway suites all 0 fail (base-deployment-grants 24, orchestration-harden 58, embedded-deployment 31, app-installation-e2e 11, message-handler-bridge 55, unified-thread-consumer 27, others); `make test-unit` **2715 pass / 0 fail**; connector integration **307 pass / 45 files**; `make pre-pr` clean.
+
+I also mutation-checked the bot's new domain validation — weakening `isValidDomainPattern` back to a non-empty-string filter makes `drops domains that would widen egress beyond a hostname` fail (7 bad patterns accepted). The new test bites.
+
+Final state: 19 files, +1894/−10, working tree clean (only the untracked PLAN file, correctly uncommitted).
+
+## Revised confidence
+
+- **Schema + persistence: 92** — unchanged, round-trip proven over Postgres.
+- **Lease provider: 85** — unchanged; mocked at `fetchImpl`, never hit live GitHub.
+- **Resolver + deployment wiring: 78** *(down from 82)* — the suite is green and mutation-proven, but I shipped an egress-validation hole that my own tests did not catch. That's a coverage blind spot, not just a fixed bug.
+- **Tier-2 placeholder path: 70** — unchanged, untested against a real connector.
+- **E2E: 0** — nothing booted.
+
+**Process caveat worth flagging:** an automated agent is pushing to this branch. Anything I report is a snapshot; re-check `git log origin/feat/connector-agent-env` before acting on it.
+
+## M5 still blocked
+
+`GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are absent from the worktree `.env`, `.env.local`, and the main checkout — `resolveAppConfig` throws `missing_app_config` without them. The `GITHUB_TOKEN` fallback is a durable PAT and by design mints no lease, so it cannot substitute. Worktree ports: `PORT=9064`, `WORKER_PROXY_PORT=8307`.
+
+## Next actions
+
+1. **Supply GitHub App creds and run M5** — the only remaining gate on the acceptance test.
+2. **Open the PR and run `make review` once** — settle the HEAD first given the bot's activity.
+3. **Decide v1 attachment semantics** — org-level connections contribute to *every* agent in the org; flagged in the plan as a v1 choice, worth explicit sign-off since it widens which agents get an authenticated `gh`.
+4. **Audit other connector-declared values that reach security-relevant surfaces** — the domain hole suggests a class: nix package names got validated, domains did not. Worth grepping for any other declaration field that lands on an allowlist or command line unvalidated.</result>
+<usage><subagent_tokens>248732</subagent_tokens><tool_uses>182</tool_uses><duration_ms>5688378</duration_ms></usage>
+</task-notification>

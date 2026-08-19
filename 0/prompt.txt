@@ -1,0 +1,1 @@
+we know the use can use nix packages only in the sandbox, in most cases agents will just do get nix shell and do whatever they want

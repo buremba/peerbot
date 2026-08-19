@@ -1,0 +1,2 @@
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-08-18T16:55:35.110Z","content":[{"id":"55212c4e-fc6c-461a-9eb4-58436d4bfa97","text":"say ok"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-08-18T16:59:00.282Z","id":"e57bbf7c-6096-482e-abb8-00674a8828f8","content":[{"text":"API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.","type":"text"}]}

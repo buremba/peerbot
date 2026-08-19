@@ -1,0 +1,1 @@
+ok do it properly and make sure it works. we can ignore turkish but i didn't know classifiers are language specific, what's the best solution here? we don't know which language is it gonna be

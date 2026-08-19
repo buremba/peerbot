@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bohmkx6rl</task-id>
+<tool-use-id>toolu_013Rwd5sLdRMYTqBYDfbY6wE</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bohmkx6rl.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the condensed comment" completed (exit code 0)</summary>
+</task-notification>

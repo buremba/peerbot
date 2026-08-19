@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bb2v6mb68</task-id>
+<tool-use-id>toolu_01DnY97HNDdoFe48Ya7rdiaL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bb2v6mb68.output</output-file>
+<status>completed</status>
+<summary>Background command "Commit blocker fix and re-run preflight" completed (exit code 0)</summary>
+</task-notification>

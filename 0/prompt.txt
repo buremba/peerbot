@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bq74b9pjs</task-id>
+<summary>Monitor event: "full vitest integration suite result"</summary>
+<event>Test Files  332 passed (332)
+Tests  2910 passed | 2 skipped (2912)</event>
+</task-notification>

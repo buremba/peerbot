@@ -1,0 +1,184 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+   - **Initial request:** "check the remaining work and finish up this session pi --session 019fd266-5bb7-70ae-8080-8bd9e678201e" — inspect a dead `pi` CLI session transcript, determine what work remained, and complete it.
+   - **Follow-up 1:** "did we ship the current branch behaviors-executors in this context? also explain 3 to me we don't need hacky stuff" — verify whether `feat/behavior-executors` shipped during this session, and explain the provider-failover next-action (item 3) without hacky solutions.
+   - **Follow-up 2:** "explain i don't fully understand the decisions" — explain the two product decisions blocking failover more concretely.
+   - **Follow-up 3:** "that silent model change is not reliable" — pushback rejecting automatic/silent model reroute.
+   - **Follow-up 4 (UNANSWERED in prose):** "maybe under the agent settings we can fallback but what's the system keys are you referring to? the admin needs to set the models that can fallback to each other no" — asks (a) what "system keys" means, and (b) proposes that fallback be configured under agent settings with the admin declaring which models fall back to each other.
+
+2. Key Technical Concepts:
+
+   - Lobu monorepo (Bun workspace, `packages/*`): `core`, `server`, `agent-worker`, `owletto` (submodule)
+   - Behavior scheduling: `watchers` table, `next_run_at` cron cursor, `advanceScheduleAfterTerminalFailure`
+   - Provider quota classification: `AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED` / `PROVIDER_AUTH`
+   - `inference_providers` table: `status` ∈ (`active`|`disabled`|`error`), `error_message`, `updated_at`
+   - Worker transport: `HttpWorkerTransport`, `signalCompletion`, `signalError`, `errorContext.provider`, `repliedInBand` latch precedent (`instanceof` narrowing rather than widening core `WorkerTransport`)
+   - `POST /worker/response` → `handleWorkerResponse` in `packages/server/src/gateway/gateway/index.ts` — the single chokepoint for all terminal worker rows
+   - Pre-dispatch model walk in `provider-catalog.ts` — two modes: restricted (`settings.models` non-empty → exactly those refs, no tail, fails closed) vs allow-all (org default → org rows → `hasSystemKey()` deployment modules)
+   - System keys = deployment-wide env vars declared as `envVarName` in `config/providers.json`; `hasSystemKey()` is `!!resolveEnv(envVar)` — the operator's (Lobu's) own credentials, last tier of user profile → org row → deployment env
+   - Gates: `make pre-pr`, `make review-fix`, `make review`, `make ui-review`, `make task-setup`, `make clean-merged`
+   - Squash-merge ancestry trap: squash writes a new commit with no ancestry link to the branch
+
+3. Files and Code Sections:
+
+   - **`packages/server/src/watchers/schedule-cursor.ts`** (PR #2521, MERGED)
+     - The chokepoint all three terminal paths route through. Added reset-less balance parking.
+     ```ts
+     const PROVIDER_BALANCE_EXHAUSTED =
+       /credit balance is too low|insufficient (?:credits?|balance|funds)\b|no resource package|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|no credits remaining/i;
+
+     const PROVIDER_BALANCE_PARK_MS = 24 * 60 * 60 * 1000;
+
+     function balanceExhaustedNotBefore(message: string, now: Date): Date | null {
+       // A provider-named retry horizon ("Please retry in 26s", `retryDelay`, a
+       // quoted `Retry-After:` header) means the limit is windowed, not a balance
+       if (/\bretry[-_ ]?(?:in|after|delay)\b/i.test(message)) return null;
+       return PROVIDER_BALANCE_EXHAUSTED.test(message)
+         ? new Date(now.getTime() + PROVIDER_BALANCE_PARK_MS)
+         : null;
+     }
+     ```
+     - Both public helpers now do `parseProviderQuotaResetAt(message, now) ?? balanceExhaustedNotBefore(message, now)`. `deviceProviderQuotaResetNotBefore`'s evidence check became `PROVIDER_BALANCE_EXHAUSTED.test(message) || /insufficient quota\b|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(message)`
+
+   - **`packages/server/src/__tests__/integration/watchers/failed-run-advances-schedule.test.ts`** — +101 lines: unit cases for balance park, named-reset precedence, self-healing rate limits (incl. `Retry-After:` / `retryDelay` forms), classification requirement, plus an end-to-end test `parks an hourly Behavior for a day when the provider balance is empty`
+
+   - **`packages/server/src/lobu/stores/provider-secrets.ts`** (PR #2525, MERGED)
+     ```ts
+     const PROVIDER_ERROR_MESSAGE_LIMIT = 500;
+
+     export async function markInferenceProviderUnhealthy(
+       organizationId: string, slug: string, errorMessage: string,
+     ): Promise<void> {
+       const sql = getDb();
+       await sql`
+         UPDATE inference_providers
+         SET status = 'error',
+             error_message = ${errorMessage.slice(0, PROVIDER_ERROR_MESSAGE_LIMIT)},
+             updated_at = now()
+         WHERE organization_id = ${organizationId} AND slug = ${slug}
+           AND deleted_at IS NULL AND status <> 'disabled'`;
+     }
+
+     export async function clearInferenceProviderError(
+       organizationId: string, slug: string,
+     ): Promise<void> {
+       const sql = getDb();
+       await sql`
+         UPDATE inference_providers
+         SET status = 'active', error_message = NULL, updated_at = now()
+         WHERE organization_id = ${organizationId} AND slug = ${slug}
+           AND deleted_at IS NULL AND status = 'error'`;
+     }
+     ```
+     - `listInferenceProviders` SELECT gained `error_message, updated_at`; `InferenceProviderListItem` gained `errorMessage: string | null` and `updatedAt: string`
+
+   - **`packages/server/src/gateway/gateway/index.ts`** (PR #2525) — new `recordProviderHealth`, called as `await this.recordProviderHealth(tokenRouting.organizationId, responseData);` right after `enrichedResponse` is built
+     ```ts
+     private async recordProviderHealth(
+       organizationId: string | undefined,
+       responseData: { error?: string; errorCode?: string;
+                       errorContext?: AgentErrorContext; providerSlug?: string }
+     ): Promise<void> {
+       if (!organizationId) return;
+       try {
+         const failingSlug = responseData.errorContext?.provider;
+         if (failingSlug &&
+             (responseData.errorCode === AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED ||
+              responseData.errorCode === AgentErrorCode.PROVIDER_AUTH)) {
+           await markInferenceProviderUnhealthy(organizationId, failingSlug,
+             responseData.error || responseData.errorCode);
+           return;
+         }
+         if (responseData.providerSlug && !responseData.error) {
+           await clearInferenceProviderError(organizationId, responseData.providerSlug);
+         }
+       } catch (err) { logger.warn(...); }
+     }
+     ```
+
+   - **`packages/core/src/types.ts`** — added `providerSlug?: string` to `ThreadResponsePayload` (completion row only; absent = "no health signal", never "healthy")
+
+   - **`packages/agent-worker/src/gateway/gateway-integration.ts`** — `private providerSlug: string | undefined`, `recordProviderSlug(slug)`, and in `signalCompletion`: `...(this.providerSlug ? { providerSlug: this.providerSlug } : {})`
+
+   - **`packages/agent-worker/src/runtime/worker.ts`** — in `onModelResolved`:
+     ```ts
+     if (this.workerTransport instanceof HttpWorkerTransport) {
+       this.workerTransport.recordProviderSlug(providerSlug);
+     }
+     ```
+
+   - **`packages/agent-worker/src/__tests__/provider-slug-stamp.test.ts`** (NEW) — 4 tests proving the slug reaches the completion body, is absent when resolution never ran, takes the last value, and is never on an error row
+
+   - **`packages/server/src/gateway/__tests__/worker-response-liveness.test.ts`** — +147 lines, 7 tests driving the real Hono `/response` handler against real Postgres
+
+   - **`packages/server/src/lobu/stores/__tests__/inference-provider-store.test.ts`** — +117 lines, 6 tests (mark, truncate, clear, disabled-both-directions, org/slug scoping, soft-delete no-op)
+
+   - **`config/biome.config.json`** (PR #2526, OPEN) — added `"!**/.pi/**"`, `"!**/.pi-subagents/**"`, `"!**/.codex/**"` after the `.claude/worktrees` entry. Necessary because the file sets `"useIgnoreFile": false`
+
+   - **`packages/server/src/gateway/auth/provider-catalog.ts:380-445`** (read only) — the two-mode candidate walk; allow-all branch ends with `for (const module of allModules) { if (module.hasSystemKey()) pushSlug(module.providerId); }`
+
+   - **`packages/server/src/gateway/auth/base-provider-module.ts:208`** (read only) — `hasSystemKey()` implementation
+
+4. Errors and fixes:
+
+   - **`make review-fix` failed — codex quota exhausted until Aug 10.** Tried `REVIEWER_CLI=pi PI_REVIEW_PROVIDER=openai-codex-2` and `-3` → both "OAuth refresh failed" (need human re-login). Fixed by using `REVIEWER_CLI=claude`, which worked all session.
+   - **`make pre-pr` failed on `.pi/background-processes.json`** (biome formatter). Fixed short-term with `rm -rf .pi`; then shipped PR #2526 as the class fix after verifying `vcs.useIgnoreFile: false`.
+   - **My retry-horizon regex first broke `retryDelay`** — I wrote `/retry[-_ ](?:in|after|delay)\b/i` requiring a separator. Fixed to `/\bretry[-_ ]?(?:in|after|delay)\b/i`.
+   - **`git rebase` failed with "cannot rebase: You have unstaged changes"** twice — resolved by committing first, then rebasing.
+   - **`index.lock: File exists`** during commit — fixed with `rm -f /Users/burakemre/Code/lobu/.git/worktrees/provider-health-writeback/index.lock`.
+   - **Two background tasks were killed rather than completing** — re-ran them directly.
+   - **I incorrectly told the user #2523 had already fixed the `.pi/` papercut.** It only touched `.gitignore`. I corrected this explicitly and shipped the real fix.
+   - **USER FEEDBACK — "that silent model change is not reliable":** I had recommended making `providerIsRoutable()` consult provider health so the existing walk fails over automatically. The user rejected this. I conceded and withdrew the recommendation, citing: Behaviors are tuned to a model (the 367 `completeWindow` failures were tool-calling failures, the sharpest model difference); `runs` has `model_used` and `run_metadata` but **no provider column**, so a silent swap would be invisible — rebuilding the exact `model_used`-is-a-default trap that already cost a debugging session; non-reproducibility breaks `skip_if_unchanged`/classifiers/embeddings; and routing on a stale observational label. I proposed alerting on the health signal instead.
+
+5. Problem Solving:
+
+   - Determined the pi session died on a 429 with zero code written for the #2350 work.
+   - Split the 3-part plan into two PRs (parking = bleeding-stopper, independently shippable; health writeback = 3 packages).
+   - Rejected a "clear via secret-proxy" design because the proxy and `gateway-completion.ts` are separate resolution paths, needing two clear-points.
+   - Verified no migration needed by reading `db/migrations/20260702170000_inference_providers.sql`.
+   - Verified nothing routes on `status` via `git grep status origin/main -- provider-secrets.ts`, making best-effort writeback safe and not a fail-closed violation.
+   - Changed `void` → `await` on `recordProviderHealth` for determinism at zero hot-path cost.
+   - Proved `feat/behavior-executors` shipped pre-session via content diff, not ancestry.
+   - Established the two-mode walk explains where the product decisions actually bite.
+   - Established buremba's live config makes failover inert today: providers `gemini` (default) + `openai` (out of credit); `personal-agent.settings.models = ["gemini/gemini-2.5-pro"]` (one element).
+
+6. All user messages:
+
+   - "check the remaining work and finish up this session pi --session 019fd266-5bb7-70ae-8080-8bd9e678201e"
+   - "did we ship the current branch behaviors-executors in this context? also explain 3 to me we don't need hacky stuff"
+   - "explain i don't fully understand the decisions"
+   - "that silent model change is not reliable"
+   - "maybe under the agent settings we can fallback but what's the system keys are you referring to? the admin needs to set the models that can fallback to each other no"
+
+7. Pending Tasks:
+
+   - **Answer the user's last question in prose** (what system keys are; confirm their agent-settings fallback proposal).
+   - Merge PR #2526 once `check-drift` re-run passes.
+   - Confirm PR #2525's prod rollout gate (`EXPECT_SHA=65b2b3a871584b6269fddc6c9f79ae6afbb09042`) — background task `b4fbrki0j` still running.
+   - **Owed verification:** after #2525 deploys, exhaust a provider, confirm the settings row flips to `error`, then confirm a successful turn clears it. No test covers this seam.
+   - Failover design remains undecided pending the user's direction.
+
+8. Current Work:
+
+   Immediately before this summary I was answering the user's most recent message: "maybe under the agent settings we can fallback but what's the system keys are you referring to? the admin needs to set the models that can fallback to each other no"
+
+   I gathered the answer but had **not yet written the prose response**. Findings ready to deliver:
+   - `hasSystemKey()` = `!!resolveEnv(this.providerConfig.systemEnvVarName || this.providerConfig.credentialEnvVarName)` — deployment-wide env vars declared per provider in `config/providers.json` as `envVarName` (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, Z_AI_API_KEY, OPENROUTER_API_KEY, and ~12 more). These are the **operator's/Lobu's own keys**, the last tier of user profile → org row → deployment env. That is why walking into that tier means Lobu pays.
+   - The user's instinct is correct and better than what I proposed: `agents.settings.models` is **already an ordered list under agent settings** and is already both the allow-list gate AND the selector — but today only position `[0]` effectively routes; positions 1..n act only as an allow-list. Making the existing ordered list mean what it looks like it means (`["gemini/gemini-2.5-pro", "openai/gpt-4.1"]` = try gemini, fall back to gpt-4.1 when gemini is marked unhealthy) is admin-declared, explicit, per-agent, and structurally never reaches the system-key tier — so both product decisions (whose money, vendor consent) disappear.
+   - The remaining requirement from the user's "not reliable" objection still stands: the run row must record which provider/model actually served it, since `runs` currently has no provider column.
+
+   Also in flight: I ran `gh run rerun 31027610232 --failed` for PR #2526's transient `check-drift` failure (8s fail; identical owletto pin `400bcb14c0541c2cadae51e21160ef6c4dbb07a9` to main; the same check passed on #2521 and #2525).
+
+9. Optional Next Step:
+
+   Answer the user's question directly in prose — explain what system keys are (deployment env vars = Lobu's own keys, the last credential tier), and confirm their proposal, noting that `agents.settings.models` is already an ordered per-agent list that only routes `[0]` today, so admin-declared fallback is mostly making the existing list mean what it appears to mean — plus the still-required run-level provenance so a fallback run is visible.
+
+   Direct quote of the user's request being answered: *"maybe under the agent settings we can fallback but what's the system keys are you referring to? the admin needs to set the models that can fallback to each other no"*
+
+   After that, check the `check-drift` re-run for #2526 and merge it if green, and check background task `b4fbrki0j` for #2525's rollout gate result.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

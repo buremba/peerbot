@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>be8hgbjo5</task-id>
+<tool-use-id>toolu_01NpeqrKg7575mdne97ePALK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/be8hgbjo5.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on rebased 2294" completed (exit code 0)</summary>
+</task-notification>

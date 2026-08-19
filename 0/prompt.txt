@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bu70irgym</task-id>
+<summary>Monitor event: "2332 required checks reporting"</summary>
+<event>integration: pass</event>
+</task-notification>

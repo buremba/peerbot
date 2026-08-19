@@ -1,0 +1,243 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+**Overarching (inherited):** A gap analysis — explicitly **NOT a migration** — of whether **Prodma**, a Turkish injection-moulding/manufacturing ERP (.NET 4.6.1, WinForms/DevExpress, SQL Server, EF EDMX, 422 tables / 453 screens, source at `/Users/burakemre/Downloads/emre_project`), could be rebuilt on **Lobu**. Purpose: "to see where lobu lacks." Audience is Prodma's owner, a domain expert.
+
+**Intents this session, in order:**
+1. (Resumed, no new message) Complete the four pending items: answer "what's human post?", answer "does all ERPs require this?", do the `URETIM`/`PARTI`/`KESIN_MALIYET` modelling pass + HTML artifact, and run a real two-output Behavior.
+2. Mid-turn: evaluate whether Behaviors listening to entity changes removes the need for project-level hooks.
+3. Confirm no hook implementation needed; check whether the funnel agent is working properly and should be merged; **raise confidence with spikes**.
+4. Restate the work goal and report whether everything was implemented.
+5. Run codex in a herdr agent to investigate the connector→entity edge proposal; clarify whether an agent is on the funnel and whether to wait for it; do next-step #3 (seed `bom`, wire `journal-entry`); re-check whether an agent is on #4.
+6. Correct me: the codex agent isn't visible in herdr, and the funnel agent IS working, visible as `funnel-consolidation`.
+7. Challenge the proposal's new table — "why new table, do we really need it? is it actually tested e2e and make sure it works".
+8. "yes make sure it will work end to end" — build the e2e proof.
+9. **Most recent:** "how will the connectors to ot? also do next steps and be more sure if you need to do spikes do it" — show the connector-facing declaration surface, do the next steps, raise confidence with more spikes.
+
+## 2. Key Technical Concepts
+
+- **Behavior-as-writer vs Behavior-as-reaction.** A Behavior that *performs* a write can enforce (atomic, in-tx). A *reaction* cannot — post-commit, read-only sandbox (`manage_entity.ts` comment at `queue()`; `sandbox/client-sdk.ts:263` forces `SET TRANSACTION READ ONLY`). A reaction can compensate, never refuse.
+- **Cross-output atomicity — PROVEN.** `complete-window.ts:841` promotes every declared output in ONE loop against ONE `tx` inside `sql.begin` (`handleCompleteWindow` at `:601`). A throw in output B rolls back output A.
+- **`runMutationGate` runs inside `sql.begin`** with `sql: tx`, holding the row's `FOR UPDATE` lock (`entity-management.ts:696`).
+- **`entity-hooks.ts` has only `beforeCreate`/`afterCreate`/`beforeDelete`** — no update hook, no tx in context.
+- **Three write-path gaps proven in prod:** a declared `default` does NOT satisfy `required` on create; `entities.update` validates the PATCH not the merged result; a soft-deleted entity still holds its name.
+- **NEW: entity name uniqueness is ORG-WIDE, not per `entity_type`.** Proved by probe.
+- **NEW: writing `null` into an `integer` property stores `0`**, not null.
+- **NEW: unattended Behavior runs die on a tool-approval card** — `complete_window` never runs, declared outputs never land. A prompt instruction is not a tool restriction.
+- **NEW: `ListAgents` is blind to codex agents.** `herdr agent list` / `herdr agent read <name> --source recent` is the source of truth. File mtimes and pgrep cwd both mislead.
+- **`entity_relationships` schema facts (verified on origin/main):**
+  - Columns: `id, organization_id, from_entity_id, to_entity_id, relationship_type_id, metadata jsonb, confidence, source, created_by, updated_by, deleted_at, created_at, updated_at`. **NO `connection_id`, NO `origin_id`.**
+  - `idx_entity_relationships_live_triple` UNIQUE on `(from_entity_id, to_entity_id, relationship_type_id) WHERE deleted_at IS NULL` (baseline `:3726`).
+  - `idx_entity_relationships_derived_from_event` on `(metadata->'derivedFrom'->>'sourceEventId') WHERE metadata ? 'derivedFrom'` (baseline `:3708`).
+  - `idx_entity_relationships_derived_from_rule` on `((metadata->'derivedFrom'->>'relationshipTypeId'), (metadata->'derivedFrom'->>'ruleVersion')) WHERE metadata ? 'derivedFrom'` (baseline `:3714`).
+  - **`derivedFrom` appears NOWHERE else in the repo** — no writer, no reader. Dead indexes from an unbuilt design.
+- **`RELATIONSHIP_SOURCES = ['ui', 'llm', 'feed', 'api']`** — `relationship-validation.ts:14`. But `feed` is NOT dormant: `auto-linker`, `github-team-graph`, `access-graph` write edges bypassing `validateSource`.
+- **`channel-about.ts:25-26`** exports `ABOUT_EDGE_SOURCE_CONFIG = "config"` / `ABOUT_EDGE_SOURCE_MANUAL = "manual"` — neither is in `RELATIONSHIP_SOURCES`, that writer bypasses `validateSource`, and the column has **no DB CHECK constraint**. Pre-existing defect.
+- **`entity-link-upsert.ts` has `autoCreate`** (`:10`, `:44`) — "Links to the matched entity, creates on miss." Runs on the caller's tx (`:649`).
+- **`idx_entity_identities_live_unique` is `(organization_id, namespace, identifier)`** — EXCLUDES `connection_id`. Two connections sharing a namespace collapse onto one entity (reproduced).
+- **`access-graph.ts` pattern:** resolve resources → resolve members → skip unresolved (`if (memberEntityId === undefined) continue;`) → write edges `ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id) WHERE deleted_at IS NULL DO NOTHING` → reconcile departures from a full snapshot. No pending-state table.
+- **`entity_types` and `information_schema.columns` are NOT in the SDK sandbox query allowlist.** Allowed: `behavior_versions, behaviors, canvas_windows, channel_messages, connections, connector_definitions, entities, entity_relationship_types, entity_relationships, event_classifications, events, feeds, oauth_clients, oauth_tokens, user`.
+- **`client.entities.link({ from_entity_id, to_entity_id, relationship_type_slug })`** — not `source_`/`target_`.
+- **`client.query` returns rows directly**, use `r?.rows ?? r ?? []`.
+- **Prodma is a plastics/injection shop:** `KALIP` moulds, `GOZ_ADET` cavity counts, `URETIM_ENJEKSIYON_KALITE`.
+- **`KESIN_MALIYET_SURE`** (33 cols) = monthly absorption costing per product × cost centre with 14 price buckets and `ASAMA_SIRA` (cascading allocation stage). **`KESIN_MALIYET_DAGITIM_TABLOSU`** = cost-centre→cost-centre % with `SIRA_NO` (order is load-bearing).
+- **`PARTI`** lot key is two-part: `PARTI_NO_1` (string) + `PARTI_NO_2` (int).
+- **`URETIM_ROTA_SATIR`** holds machine and labour setup/run times separately.
+
+## 3. Files and Code Sections
+
+**`/Users/burakemre/Code/prodma-demo/lobu.config.ts`** — +562 lines. Added 9 entity types (`work-center`, `resource`, `operation`, `routing`, `shift`, `lot`, `cost-element`, `cost-allocation`, `actual-cost`), `invoice-posting`, 17 relationship types, and a two-output Behavior. Now **27 entity types, 51 relationship types**.
+
+```ts
+const postInvoiceRun = defineBehavior({
+	slug: "post-invoice-with-journal",
+	agent: agent,
+	name: "Fatura Muhasebelestirme",
+	sources: {
+		drafts: "SELECT id, metadata->>'document_no' AS document_no, ... WHERE entity_type='invoice' ... AND metadata->>'status'='draft' ORDER BY id LIMIT 3",
+		// The first run FAILED because the prompt named accounts by TDHP code but
+		// gave no ids, so the agent reached for run_sdk to look them up — and a
+		// headless Behavior run cannot answer the approval card that raised.
+		accounts: { query: "SELECT id, metadata->>'code' AS code, name FROM entities WHERE entity_type='ledger-account' ... IN ('120','600','391') ORDER BY 2", context: true },
+	},
+	outputs: {
+		posted: { entity: "invoice-posting", key: ["invoice_no"] },
+		journal: { entity: journalEntry, key: ["document_no"] },
+	},
+});
+```
+
+**Seed scripts created in `/Users/burakemre/Code/prodma-demo/scripts/`:** `seed-production.ts` (235 lines), `seed-costing-lots.ts` (179), `seed-work-orders.ts` (129), `fix-routing-steps.ts` (74), `relink-production.ts` (107), `seed-bom-journal.ts` (147).
+
+`seed-bom-journal.ts` key comment on VAT:
+```ts
+  // Turkish domestic sale, 20% KDV:
+  //   120 Alicilar          DEBIT  grand_total
+  //   600 Yurtici Satislar  CREDIT grand_total / 1.20
+  //   391 Hesaplanan KDV    CREDIT the remainder
+  // The VAT line is the REMAINDER, never a second rounded division — rounding
+  // both legs independently is how a one-kurus imbalance gets into the books.
+```
+
+**`.claude/worktrees/spike-output-atomicity/packages/server/src/__tests__/integration/watchers/promote-keyed-entities.test.ts`** — +115 lines, commit `ac645c81d`. Two tests:
+- `'promotes both outputs when neither fails'` (control) — asserts 4 rows land: `['issue/Billing · Double Charge', 'issue/Billing · Missing Refund', 'topic/Performance · Slow Loading', 'topic/Stability · App Crashes']`
+- `'rolls back an EARLIER output when a LATER output fails'` — `expect(promoted).toEqual([])` and 0 `watcher_key` identities.
+
+**`.claude/worktrees/spike-derived-edges/packages/server/src/utils/__tests__/derived-edges-spike.test.ts`** — 389 lines, commit `a8e26a5e6`. Three tests, all mutation-verified:
+- `'handles out-of-order sync, idempotency, provenance and retraction with no new table'`
+- `'the retraction sweep actually USES idx_entity_relationships_derived_from_rule'`
+- `'two connections sharing an identity namespace COLLIDE onto one entity'`
+
+**`.claude/worktrees/spike-derived-edges/packages/server/src/utils/declared-edges-spike.ts`** — **JUST CREATED, NOT YET TESTED.** The connector-facing half. Proposed manifest shape mirroring `EventAttributionRule`:
+
+```ts
+export type DeclaredEdgeEndpoint = { entityType: string; identities: EntityIdentitySpec[]; };
+export type DeclaredEdgeRule = {
+  /** Relationship type slug. Resolved against the DB, never trusted from the caller. */
+  type: string;
+  from: DeclaredEdgeEndpoint;
+  to: DeclaredEdgeEndpoint;
+};
+export async function materializeDeclaredEdges(params: {
+  orgId: string; connectionId: number; ruleVersion: string;
+  rules: DeclaredEdgeRule[]; items: Array<Record<string, unknown>>;
+  createdBy: string; sql?: DbClient;
+}): Promise<MaterializeResult>   // { created, duplicate, unresolved, unknownType }
+export async function retractDeclaredEdges(params: {
+  orgId: string; relationshipTypeId: number; ruleVersion: string; sql?: DbClient;
+}): Promise<number>
+```
+Helpers: `valueAtPath`, `resolveEndpoint` (reads `entity_identities` by namespace+identifier), `resolveRelationshipTypeId` (DB lookup, honouring the `$links` gate rule).
+
+**`.claude/worktrees/connector-edge-proposal/_proposal/connector-declared-edges.md`** — 406 lines from codex. Sections 1-8 + Verdict + Recommendation. Asks for new table `connector_declared_edge_state`, migration, and SDK manifest change.
+
+**Memory files written:** `reference_entity_name_uniqueness_is_org_wide_not_per_type.md`, `reference_unattended_behavior_dies_on_tool_approval_card.md`, `reference_list_agents_is_blind_to_codex_use_herdr.md`; updated `project_erp_gap_branches_status.md` (twice) and `MEMORY.md`.
+
+**Artifact:** https://claude.ai/code/artifact/07922ad5-07b9-429a-9f7d-1cdce6a9ab48 — "Prodma Data Model", favicon 🏭, 5 sections.
+
+## 4. Errors and Fixes
+
+- **`client.entities.link` wrong args** (`source_entity_id`/`target_entity_id`) → correct is `from_entity_id`/`to_entity_id`, found via `search_sdk`.
+- **`Entity already exists with this name/domain` on 4 operations + 1 ledger account** → root cause: **name uniqueness is org-wide, not per type**. Proved with a probe, worked around by prefixing "OP ". A blunt python replace also hit work-center/resource rows; I reverted those four specifically.
+- **`operation_id: 0`** → `null` coerced to `0` by the integer schema, so `st.operation_id ?? fallback` never fired. Fixed by treating `0` as absent.
+- **`?.rows ?? []` returned empty** → `client.query` returns the array directly; needed `r?.rows ?? r ?? []`. A `sed` fix mangled the file; I rewrote it cleanly with `Write`.
+- **Unknown table `entity_types` / `information_schema.columns`** in the sandbox → derived the populated set from `entities` and diffed against a hardcoded declared list.
+- **Behavior apply rejected `journal_no`** → output keys must be declared properties; changed to `document_no`.
+- **Behavior runs 988230 & 988303 both failed** on `run_sdk` tool approval. First fix (adding a `context: true` accounts source) did not stop it. I declined to grant standing MCP access — that's a settings change and the user's call.
+- **Test suite wouldn't run** — `Failed to resolve entry for package "@lobu/core"` etc. Fixed by building workspace deps: `core, connector-sdk, client, plugin-api, plugin-host, embeddings, plugin-memory, plugin-toolkit, plugin-mcp, plugin-media, plugin-conversations, connector-worker, pgvector-embedded`.
+- **A `cd` in one Bash call didn't persist** → cwd resets between calls; must use `git -C` or absolute paths.
+- **USER CORRECTION — I claimed no agent was working on the funnel, three times.** Wrong. `ListAgents` only enumerates Claude sessions; the funnel agent is **codex**, named `funnel-consolidation`, pane `wFD:p1`. My backup checks also failed: file mtimes were stale because the agent commits into a *different* worktree, and codex panes report `cwd` as the main checkout. The only reliable signal was the branch HEAD moving. Consequence: I made a WIP commit inside a worktree an active agent owned — a violation of "two writing agents must never share a worktree." Verified no damage via reflog (`bfd05822e` → amend `57d8b7621` → rebase → `0329919a4`, identical 198+/40− stats). Recorded the lesson in memory.
+- **USER PUSHBACK on the new table** — I re-investigated rather than defending, per the standing rule, and found three of the four justifications dissolve.
+
+## 5. Problem Solving
+
+- **Cross-output atomicity PROVEN** with a control + rollback test, raising confidence 35→95 and removing the hook framework's main justification.
+- **`derivedFrom` discovery:** two partial indexes exist in the baseline with zero writers repo-wide — the provenance convention the proposal wanted a new table for is already reserved.
+- **e2e proof the new table is unnecessary:** ordering solved by `autoCreate`, idempotency by `idx_entity_relationships_live_triple`, provenance/retraction by `metadata->'derivedFrom'` + its rule index (EXPLAIN confirms index use, not Seq Scan). All three mutation-tested.
+- **Cross-connection identity collision reproduced** — a real multi-tenant bug, fixable by namespacing on connection, not by new storage.
+- **PR #2796** (funnel, `feat/entity-keyed-output-funnel`, +198/−40, 3 files) is OPEN with all CI green; its agent is running `make review`.
+- Prod ERP demo now: **415 entities, 900 edges, 27 declared types**; still-empty types are `cheque`, `price-list`, `invoice-posting`.
+
+## 6. All User Messages
+
+- "i'm actually thinking the behaviors can listen entity changes no? they can even say get the reactions doing their stuff, maybe no need for project level hooks etc what do you say?"
+- "ok no need to implement hook stuff right? also the funnel agent is it working properly? is this doing it the right way, should we merge it as well? your confidence needs to be better if you need to do spikes do it"
+- "that agent is working go check. our work let's not distract what's the work goal and did we implement all"
+- "yes for 2 run codex in herdr agent so investigate it. do you say no agent is working on it? or should we wait the funnel think to be merged. do 3 and isn't agent working on 4 check it"
+- "i don't see that in herdr that codex agent? the funnel agent is codex and i see it as funnel-consolidation?"
+- "why new table, do we really need it? is it actually tested e2e and make sure it works"
+- "yes make sure it will work end to end"
+- "how will the connectors to ot? also do next steps and be more sure if you need to do spikes do it"
+
+**Security-relevant constraints still in effect (verbatim from CLAUDE.md / AGENTS.md / the lobu skill):**
+- "**Never write to `~/Code/lobu` directly.** Run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout — other sessions share it."
+- "**Stage by explicit path** (`git add -- <paths>`, never `-A`). A commit is a snapshot, so a stale file copy left by earlier work in the same worktree silently reverts merged PRs."
+- "**`events` is append-only.** Never `DELETE FROM events`; tombstone or supersede instead."
+- "**Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are usually real signups. Surface them one at a time for confirmation."
+- "**Never resolve merge conflicts in the GitHub web UI** — it has silently dropped 1000+ lines of feature work."
+- "**Two writing agents must never share a worktree** — they overwrite each other's uncommitted work."
+- "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+- "**Never auto-submit an interactive browser draft, in any package.**"
+- "**Workers never receive real credentials** — placeholders or proxied access only."
+- "**Request paths never aggregate history.**"
+- "Do NOT include 'Co-Authored-By' or any Claude attribution in commit messages" / no "Generated with Claude Code" line.
+- "**Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`."
+- "Prefer `bun`, never npm/yarn/pnpm."
+- "One branch = one concern. Never `git stash`; use WIP commits."
+- "never `--admin` past a check that has not reported."
+- "Do not call the AgentTool unless the user requested it" / "Do not use workflows or deep-research unless the user requested it."
+- From the lobu skill: "Never open or request permission to read `.env`"; "Never read, print, invent, or paste a real secret into source or chat."
+- "When I push back on an approach or call a finding a false positive, STOP and re-investigate the real root cause — do not start wiring a workaround."
+- **Prohibited regardless of user authorization:** modifying system or security settings; creating accounts; entering credentials.
+
+## 7. Pending Tasks
+
+From the most recent user message ("how will the connectors to ot? also do next steps and be more sure if you need to do spikes do it"):
+1. **Show how connectors declare entity→entity edges** — `declared-edges-spike.ts` is written but **NOT yet tested**. Needs a test proving a connector manifest declaration produces the edge end to end.
+2. **Do the next steps** I listed:
+   - Send the proposal back with the reduced ask (SDK manifest surface only, no table).
+   - File the cross-connection identity collision bug separately.
+   - Decide on the two dead `derivedFrom` indexes.
+   - File the `channel-about` source-enum defect.
+   - Check on PR #2796.
+3. **Raise remaining confidence with spikes** — my stated weak points were: "no new table at all" at 80 (materializer retraction *policy* unproven) and the query-plan result at 75 (only 400 rows, cost 19; unverified at production scale).
+
+## 8. Current Work
+
+I had just written `/Users/burakemre/Code/lobu/.claude/worktrees/spike-derived-edges/packages/server/src/utils/declared-edges-spike.ts` — the connector-facing half that answers "how will the connectors do it?"
+
+Immediately before that I read `packages/connector-sdk/src/connector-types.ts:540-625` to mirror the existing `attributions` surface exactly. The existing shape is:
+
+```ts
+eventKinds?: Record<string, {
+    description?: string;
+    metadataSchema?: Record<string, unknown>;
+    attributions?: EventAttributionRule[];
+}>;
+export type EventAttributionRole = 'authored_by' | 'about' | 'mentions' | 'belongs_to';
+export interface EventAttributionRule {
+  role: EventAttributionRole;
+  target: EventAttributionTargetSpec;   // { entityType?, identities?, titlePath?, createWhen? }
+  autoCreate?: boolean;
+  traits?: Record<string, EntityTraitSpec>;
+}
+```
+
+The proposed additive shape documented in the new spike file:
+```ts
+ * eventKinds: {
+ *   invoice: {
+ *     attributions: [ ... ],            // event -> entity, unchanged
+ *     relationships: [                  // entity -> entity, new
+ *       {
+ *         type: 'invoice_customer',
+ *         from: { entityType: 'invoice',  identities: [{ namespace: 'erp_invoice',  eventPath: 'metadata.origin_id' }] },
+ *         to:   { entityType: 'customer', identities: [{ namespace: 'erp_customer', eventPath: 'metadata.customer_origin_id' }] },
+ *       },
+ *     ],
+ *   },
+ * }
+```
+
+The file's core argument, stated in its header: *"Both endpoints of an entity->entity edge resolve through the SAME identity machinery that `attributions` already uses today. So the materializer is a thin layer over resolution that already happens on every sync — resolve twice instead of once, then write one row."*
+
+**Nothing in `declared-edges-spike.ts` has been executed or tested yet.**
+
+## 9. Optional Next Step
+
+Write and run a test for `declared-edges-spike.ts` that drives the full connector path end to end — install a connector definition whose `eventKinds.invoice` carries both `attributions` (for endpoint resolution via `autoCreate`) and the new `relationships` declaration, emit an invoice event through `applyEventAttributions`, then call `materializeDeclaredEdges` and assert the typed `invoice_customer` edge appears with `derivedFrom` provenance; then assert idempotency on replay and that `retractDeclaredEdges` withdraws it. Mutation-test it as with the previous spikes.
+
+This is directly in line with the user's most recent request: **"how will the connectors to ot? also do next steps and be more sure if you need to do spikes do it"**, and with my own stated open confidence gap, quoted verbatim from my last report:
+
+> "'No new table is needed at all', **80** — I proved the storage suffices. I did *not* build the materializer, so its retraction *policy* (what to withdraw when an invoice's customer changes) is still unwritten. Storage supports it; the logic is unproven."
+
+and
+
+> "The query-plan result, **75** — the index wins at 400 rows, cost 19. I haven't checked it holds at production scale."
+
+After that, work the next-steps list I gave: send the proposal back with the reduced ask, file the cross-connection identity collision bug, file the `channel-about` source-enum defect, and check PR #2796.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

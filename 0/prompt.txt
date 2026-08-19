@@ -1,0 +1,1 @@
+i mean in the add connector etc first showing the device type etc and when clicked show the connectors that can run on that device

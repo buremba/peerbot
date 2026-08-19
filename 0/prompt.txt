@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwk1k1atv</task-id>
+<tool-use-id>toolu_01EnDSvqE2YSupvFLdS5DSa8</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bwk1k1atv.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the required review gate" completed (exit code 0)</summary>
+</task-notification>

@@ -782,8 +782,8 @@ export function buildScopedQuery(
       // `deleted_at`; the CONNECTION's soft-delete is not the feed's, and
       // query_sql is an audit surface. Same structural-visibility class as the
       // Automations defect: the SDK and the SQL view must agree on what exists.
-      // The row form also honors the legacy-unowned (`created_by IS NULL`)
-      // admin arm, which is the other half of the SDK/SQL disagreement.
+      // The row form matches the FK form on visibility (`'org'` or the
+      // principal's own), with no soft-delete coupling to the connection.
       // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd ` +

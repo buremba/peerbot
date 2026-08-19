@@ -166,15 +166,18 @@ describe('search_memory connection visibility', () => {
 
     expect(ids).toContain(ownerPrivateConnectionId);
     expect(ids).toContain(orgConnectionId);
-    expect(ids).toContain(legacyUnownedConnectionId);
+    expect(ids).not.toContain(legacyUnownedConnectionId);
     expect(ids).not.toContain(memberPrivateConnectionId);
   });
 
-  it('returns legacy-unowned but not user-owned private connections to an admin', async () => {
+  it('shows an admin org-visible connections only — legacy-unowned rows are no longer a separate admin tier', async () => {
     const ids = await connectionIdsFor(ctxFor(orgId, adminUserId, 'admin'));
 
     expect(ids).toContain(orgConnectionId);
-    expect(ids).toContain(legacyUnownedConnectionId);
+    // No admin arm: a private connection with no creator is invisible to
+    // everyone, including admins — matching the FK/events surfaces so there is
+    // no split-brain where connections.list shows a row the content paths hide.
+    expect(ids).not.toContain(legacyUnownedConnectionId);
     expect(ids).not.toContain(ownerPrivateConnectionId);
     expect(ids).not.toContain(memberPrivateConnectionId);
   });

@@ -40,20 +40,28 @@ describe('connection-visibility compiler (M1 one-compiler)', () => {
     ).toBe("AND (cn.visibility = 'org' OR cn.created_by = 'us''er')");
   });
 
-  it('row form: admin-tier additionally sees legacy-unowned rows, never other creators', () => {
-    expect(compileConnectionRowVisibility({ ...scope, principalIsAdmin: true }, 'cn')).toBe(
-      "AND (cn.visibility = 'org' OR cn.created_by = 'user_a' OR cn.created_by IS NULL)"
-    );
-    // Non-admin members never see created_by IS NULL rows.
-    expect(compileConnectionRowVisibility(scope, 'cn')).not.toContain('IS NULL');
-  });
-
   it('a null principal (headless) is fail-closed to org-only', () => {
     const fk = compileConnectionFkVisibility(headlessScope('org_test'), 1, 'ev');
     expect(fk.params).toEqual(['org_test', null]);
     expect(compileConnectionRowVisibility(headlessScope('org_test'), 'cn')).toBe(
       "AND (cn.visibility = 'org')"
     );
+  });
+
+  it('row and FK forms encode the same rule — no admin arm, no legacy IS NULL widening', () => {
+    // After the legacy backfill (every connection has a creator), the two forms
+    // gate on the same predicate: org-visible or the principal's own. Neither
+    // form may widen for admins via `created_by IS NULL`.
+    expect(compileConnectionRowVisibility(scope, 'cn')).toBe(
+      "AND (cn.visibility = 'org' OR cn.created_by = 'user_a')"
+    );
+    const { sql, params } = compileConnectionFkVisibility(scope, 1, 'ev');
+    expect(sql).toContain("vc.visibility = 'org'");
+    expect(sql).toContain('vc.created_by = $2::text');
+    // The only `IS NULL` left in the FK form is the system-row pass-through
+    // (`connection_id IS NULL`), never a `created_by` widening.
+    expect(sql).not.toContain('created_by IS NULL');
+    expect(params).toEqual(['org_test', 'user_a']);
   });
 
   it('authzScopeFromToolContext maps ctx.userId → principal', () => {

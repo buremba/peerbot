@@ -126,9 +126,9 @@ describe('smaller fixes in the same class', () => {
   });
 
   it('shows feeds the SDK shows — gate on the feed row org + connection row visibility', () => {
-    // The feeds CTE used the FK (events) form, which drops soft-deleted and
-    // legacy-unowned connections. manage_feeds gates on the ROW form, so the
-    // SDK returned feeds SQL could not see. Same structural class as Defect 2.
+    // The feeds CTE used the FK (events) form, which drops soft-deleted
+    // connections. manage_feeds gates on the ROW form, so the SDK returned
+    // feeds SQL could not see. Same structural class as Defect 2.
     const { sql } = scope('SELECT id FROM feeds');
     expect(sql).toMatch(/public\.feeds fd WHERE fd\.organization_id = \$1/);
     // FK form's tell: an IN-subquery over connections keyed on connection_id.

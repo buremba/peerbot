@@ -14,7 +14,6 @@ import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
-import { callerIsAdmin } from './admin/helpers/db-helpers';
 import type { Env } from '../index';
 import type { ContentItem } from '@lobu/connector-sdk';
 import type { FeedReader, SourceKind } from '../lib/feed-reader';
@@ -1039,7 +1038,6 @@ async function searchImpl(
       userId: ctx.userId,
       agentId: ctx.agentId,
     }),
-    principalIsAdmin: await callerIsAdmin(getDb(), ctx),
   };
 
   // ========================================

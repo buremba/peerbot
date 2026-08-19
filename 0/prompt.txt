@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b50uun8y0</task-id>
+<summary>Monitor event: "prod rollout of docs PR 2282 (bff73e8a4)"</summary>
+<event>ROLLED OUT: deployed=bff73e8a452579057810e74907110c37897cedc6 contains bff73e8a4 (docs PR 2282)</event>
+</task-notification>

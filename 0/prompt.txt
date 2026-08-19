@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b9vd7lqom</task-id>
+<summary>Monitor event: "published-artifact smoke on 14.8.0"</summary>
+<event>PUBLISHED-ARTIFACT SMOKE: completed|success</event>
+</task-notification>

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bh7rqssab</task-id>
+<summary>Monitor event: "2332 checks after adding test"</summary>
+<event>pi-review: pass</event>
+</task-notification>

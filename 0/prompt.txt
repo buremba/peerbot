@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>by7sd3r4n</task-id>
+<tool-use-id>toolu_01MyYWRmGcMz9FrGopEoVZ8M</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4190390-4d69-47d1-976f-a861540d8fe9/tasks/by7sd3r4n.output</output-file>
+<status>completed</status>
+<summary>Background command "Launch 4 Lobu capability agents" completed (exit code 0)</summary>
+</task-notification>

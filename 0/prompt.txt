@@ -1,0 +1,1 @@
+yes go ahead try all, think through all usecases and settle on an approach

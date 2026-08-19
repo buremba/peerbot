@@ -1,0 +1,1 @@
+you need to test the prod, the render_lobu_view is deleted right?

@@ -1,0 +1,11 @@
+Read /tmp/lobu-plan-review/connector-authz-plugin-plan.md.
+Spot-check: packages/server/src/authz/sources.ts, acl-sync.ts, sender-identity.ts, channel-transcript.ts, packages/connector-sdk/src/acl-source.ts.
+
+Return ONLY:
+1. Verdict
+2. Confidence 0-100
+3. Blockers (bullets)
+4. PR order advice
+5. Telegram L1 correct? yes/no + why
+6. Top 5 risks
+Cite paths. Be harsh. Do not implement.

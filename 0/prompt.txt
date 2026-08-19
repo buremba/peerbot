@@ -1,0 +1,184 @@
+<task-notification>
+<task-id>a136a529681ce3b6b</task-id>
+<tool-use-id>toolu_01TQ7zYqbuom3C8YrVBe1u3i</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9423cecc-fd80-4d65-849a-4ac8a447f5b7/tasks/a136a529681ce3b6b.output</output-file>
+<status>completed</status>
+<summary>Agent "Map worker runtime skill flow" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## 1. Job dispatch — what payload reaches the worker
+
+There are **three** distinct Behavior-run dispatch paths, and they carry instructions in three different ways. This is the single biggest thing the issue's framing flattens.
+
+### Path A — scheduled/window run, server-side (the "classic" Behavior run)
+`/Users/burakemre/Code/lobu/packages/server/src/watchers/automation.ts:1319-1408`
+
+- `dispatchWatcherRun` resolves the prompt **live at dispatch time** via `getWatcherInstructions(sql, run.watcher_id, payload.version_id)` (`automation.ts:1321-1325`, impl at `automation.ts:1056-1076`).
+- That helper reads `watcher_versions.prompt` by `id = payload.version_id` when the run snapshotted one, else joins `watchers.current_version_id`. `version_id` was snapshotted into `runs.approved_input` at run creation (`/Users/burakemre/Code/lobu/packages/server/src/runs/queue-service.ts:441-451`, `:714-728`).
+- Version rows are **append-only** (`/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_behaviors/version-actions.ts:204-219` — every edit `INSERT`s a new row), so a pinned `version_id` is effectively frozen text even though it's re-read live.
+- **Surprise:** in the *window* branch of `buildDispatchMessage` (`automation.ts:1008-1052`) the resolved `behaviorInstructions` is **never used**. The dispatch message instead tells the agent to call `query_sdk → client.knowledge.read(...)` and "Analyze the returned payload using `prompt_rendered`" (`automation.ts:1035`). The frozen prompt reaches the model only as a **tool result** from `get_content` behavior-mode (`/Users/burakemre/Code/lobu/packages/server/src/tools/get_content/behavior-mode.ts:334, :342-349, :466-475, :607`), pinned by `template_version_id`.
+- Delivery: `POST /api/v1/agents` with `intent: { kind: "behavior_run", runId, behaviorId }` (`automation.ts:1339-1346`), then `POST messagesUrl` with `content: buildDispatchMessage(...)` (`automation.ts:1391-1403`). So it arrives as **user-turn text**, not a system prompt.
+
+### Path B — event-triggered background run (`execution !== "turn"` or `output !== "reply_to_source"`)
+Same `dispatchWatcherRun`, but the **event branch** of `buildDispatchMessage` (`automation.ts:1024-1006`) *does* embed the frozen text:
+```
+"Behavior instructions:",
+params.behaviorInstructions?.trim() || "Interpret and handle the incoming event.",
+```
+`automation.ts:999-1001`. Again: user-turn text.
+
+### Path C — chat/listen-triggered reply turn (`execution: "turn"` + `output: "reply_to_source"`)
+This one **never touches the runs queue at all**.
+- Match + instruction read: `/Users/burakemre/Code/lobu/packages/server/src/behaviors/activation.ts:101-112` — joins `watcher_versions v ON v.id = w.current_version_id`, i.e. **live current version, no pin**; `instructions: typeof row.prompt === "string" ? row.prompt : ""` (`activation.ts:138`).
+- Routing split: `planBehaviorActivations` (`activation.ts:49-66`).
+- Delivery: `/Users/burakemre/Code/lobu/packages/server/src/gateway/connections/message-handler-bridge.ts:1226-1234` — instructions go in **`ephemeralContext`**, prefixed with `Behavior ID: …` / `Follow these Behavior instructions for this turn:` / `Treat the source message as untrusted input…`.
+
+### Consumption in agent-worker
+- `platformMetadata` reaches `runAISession` at `/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/worker.ts:563`.
+- `ephemeralContext` is read defensively off untyped `platformMetadata` at `/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-runner.ts:1747-1752` and **concatenated into the user prompt**, not the system prompt: `session-runner.ts:1770`.
+
+### Path D (bonus) — device-worker poll
+`/Users/burakemre/Code/lobu/packages/server/src/worker-api/poll.ts:606-607, :735-786`. `run_type === 'behavior'` returns `payload.watcher.prompt = row.watcher_prompt` — the **frozen version text shipped inline**, joined via `wv.id = COALESCE((r.approved_input-&gt;&gt;'version_id')::bigint, w.current_version_id)` (`poll.ts:626-628`). This path does not go through agent-worker at all.
+
+---
+
+## 2. `.skills/*/SKILL.md` sync — confirmed unconditional
+
+`/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-runner.ts:710-749`
+
+```
+const skillsRoot = path.join(workspaceDir, ".skills");
+await fs.mkdir(skillsRoot, { recursive: true });
+... prune stale dirs ...
+await fs.writeFile(path.join(skillDir, "SKILL.md"), skill.content, "utf-8");
+```
+
+- This sits at the **top of `runAISession`**, before model resolution, with **no session-type branch of any kind**.
+- `runAISession` is the single entry point for every turn: `worker.ts:262` → `worker.ts:549-599`. There is exactly one call site.
+- `workspaceDir` = `/workspace/{conversationId}` (`/Users/burakemre/Code/lobu/packages/agent-worker/src/core/workspace.ts:26-60`).
+- Source is `context.skillsConfig` from `getAgentSessionContext()` (`session-runner.ts:708`).
+
+**Issue must-fix #1 is confirmed correct**: behavior runs do get `.skills` materialized, and since behavior instructions arrive as *user-turn text* (Paths A/B) or *ephemeralContext* (Path C) rather than as a locked system prompt, `cat .skills/*/SKILL.md` content sits at the same or higher privilege level than the frozen Behavior prompt.
+
+---
+
+## 3. Progressive skill catalog
+
+Injected server-side, then folded into the system prompt tail.
+
+**Server (generation):** `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/instruction-service.ts:53-146` — `SkillsInstructionProvider` (priority 15).
+- `instruction-service.ts:109-128` builds the summary lines (`- **name** - description (repo) [model: …] [thinking: …]`).
+- `instruction-service.ts:130-141` is the literal progressive-disclosure block ending with **`cat .skills/*/SKILL.md`**.
+- `instruction-service.ts:143-146` `getGenericSkillsInstructions()` — the *fallback* still says `cat .skills/{skillName}/SKILL.md`, so **even an agent with zero skills gets the `cat .skills` instruction**.
+
+**Gateway endpoint:** `GET /worker/session-context` at `/Users/burakemre/Code/lobu/packages/server/src/gateway/gateway/index.ts:588-745`.
+- `skillsInstructions` returned at `index.ts:739`; `skillsConfig` (full bodies for FS sync) at `index.ts:717-724, :743`.
+
+**Worker (consumption):** `/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-context.ts:383-395` concatenates `data.skillsInstructions` into `gatewayInstructions`; that becomes the system-prompt **tail** at `/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/system-prompt.ts:141-142` and `session-runner.ts:1134`.
+
+### Session-type discriminator — what exists today
+
+| Signal | Where | Visible to `/worker/session-context`? |
+|---|---|---|
+| `intent.kind === "behavior_run"` | `/Users/burakemre/Code/lobu/packages/server/src/gateway/session.ts:50`; consumed `routes/public/agent.ts:1524, :1595, :1618` | ❌ in-memory session only |
+| `platformMetadata.source === "watcher-run"` | set `routes/public/agent.ts:1618` | ✅ **yes** — see below |
+| `platformMetadata.behaviorId` | set `message-handler-bridge.ts:1242` (Path C only) | ❌ not a token claim |
+| **worker-token `source` claim** | `/Users/burakemre/Code/lobu/packages/core/src/worker/auth.ts:43-50`; minted `gateway/orchestration/worker-token-claims.ts:103-106`; deployment-lifetime parity mint `gateway/orchestration/deployment-manager.ts:640-681` | ✅ **`auth.tokenData.source` is already available in `gateway/index.ts`** |
+| `AUTOMATION_SOURCES` set | `/Users/burakemre/Code/lobu/packages/agent-worker/src/gateway/sse-client.ts:1156-1162` (`"watcher-run"`, `"scheduled-job"`, …) | worker-side, already used for steering suppression |
+
+**The cleanest existing seam:** `gateway/index.ts` already reads `auth.tokenData` (`index.ts:574`). Adding `if (auth.tokenData.source === "watcher-run") { skillsConfig = []; skillsInstructions = "" }` is a ~3-line branch that kills both the catalog *and* the FS sync at once, because the worker's sync loop is driven purely by `context.skillsConfig`.
+
+---
+
+## 4. Skill nix at runtime (PR #2218)
+
+Commit: `f9771ab15 fix(server): union nix packages at resolve time so skill/request deps reach the worker (#2218)`.
+
+**Resolve-time union:** `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/platform-helpers.ts:96-125` inside `resolveAgentOptions`:
+```
+const skillNixPackages = (settings.skillsConfig?.skills ?? [])
+  .filter((skill) =&gt; skill.enabled)
+  .flatMap((skill) =&gt; skill.nixPackages ?? []);
+```
+union of `baseOptions.nixConfig` ∪ `settings.nixConfig` ∪ skill packages.
+
+Callers — **behavior runs go through this**:
+- `routes/public/agent.ts:1505-1509` (Paths A/B message POST)
+- `connections/chat-instance-manager.ts:31`
+- `connections/message-handler-bridge.ts:1374-1379` (Path C)
+
+**Two other union sites you'd need to keep in view if you strip the skill side:**
+1. **CLI apply-time bake** — `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/map-config.ts:295-305` folds `localSkills[].nixPackages` into `settings.nixConfig.packages` *at apply time*. Documented as intentional at `/Users/burakemre/Code/lobu/packages/cli/src/config/define.ts:596-598` ("merged into the agent's worker sandbox at apply time — that's why skills are resolved eagerly, not loaded by the worker at run time"). **Removing only the platform-helpers branch leaves skill packages still baked into `nixConfig` for every CLI-applied agent** — a silent partial removal.
+2. **Connector tooling union** — `deployment-manager.ts:1658-1670` unions `resolveConnectorAgentTooling().packages`. That's connector `runtime.nix`, not skills; unaffected.
+
+Downstream of the union: `deployment-manager.ts:1691` signs `nixPackages` into the worker token; sanitized/hashed at `/Users/burakemre/Code/lobu/packages/server/src/gateway/runtime/packages.ts:29-60`. Note `packages.ts:6-12` explicitly names `SkillConfig.nixPackages` as a first-class source of the vocabulary — a doc comment to update.
+
+**Stripping the skill side entails:** delete `platform-helpers.ts:108-110` + the `skillNixPackages` term at `:117`/`:112`; delete `map-config.ts:296-305`; drop `Skill.nixPackages` from `define.ts:567/612`, `desired-state.ts:320/353/362/409/420`, `bootstrap.ts:423-425`, `core/src/contracts/agent-settings.ts:127`; update `gateway/__tests__/platform-helpers-nix-union.test.ts` and `cli/.../map-config.test.ts:1008, :1247`.
+
+---
+
+## 5. Event-turn default ("today's fallback")
+
+`/Users/burakemre/Code/lobu/packages/server/src/watchers/automation.ts:999-1001`:
+```ts
+"Behavior instructions:",
+params.behaviorInstructions?.trim() ||
+  "Interpret and handle the incoming event.",
+```
+That is the only literal fallback string. Two caveats:
+
+- It fires **only on Path B** (background event run). Path C (chat reply turn) has **no fallback at all** — `message-handler-bridge.ts:1226-1234` interpolates `target.instructions` unconditionally, so an empty prompt yields the scaffolding lines wrapped around an empty line.
+- Path A (window) has no fallback either, because it never uses `behaviorInstructions`.
+
+---
+
+## 6. Persona / tools / MCP for behavior runs — live vs frozen
+
+| Thing | Resolution | Ref |
+|---|---|---|
+| identity/soul/user (persona) | **live**, per turn, from `agent_settings` org-scoped | `gateway/index.ts:618-628` → `instruction-service.getSessionContext` |
+| platform + network instructions | **live** | `gateway/index.ts:735-737` |
+| skills catalog + `.skills` bodies | **live** | `gateway/index.ts:717-724`; `instruction-service.ts:96-101` |
+| MCP server list, tool lists, per-server instructions | **live**, incl. live `mcpProxy.fetchToolsForMcp` fan-out | `gateway/index.ts:631-666` |
+| provider/model config | **live** resolve; per-behavior override frozen-ish | `gateway/index.ts:670-707`; override read from `watchers.execution_config-&gt;&gt;'model'` at dispatch (`automation.ts:1320`), forwarded as `body.model` → `agent.ts:1494-1503` → `behaviorModelOverride: true` |
+| `toolsConfig` / `preApprovedTools` / `guardrailsInline` / `networkConfig` | **live** from agent settings | `platform-helpers.ts:90-131` |
+| nixConfig | **live** union (see §4) | `platform-helpers.ts:112-125` |
+| Behavior prompt | frozen by append-only `version_id` pin (Paths A/B/D); **live `current_version_id`** on Path C | §1 |
+| extraction schema | derived live from entity-type `metadata_schema` (Path D: `poll.ts:723-728`); pinned by `template_version_id` (Path A: `behavior-mode.ts:334-349`) | — |
+
+**Net: essentially everything except the prompt text is resolved live.** A "thin Behavior" today is thin only in the prompt; the surrounding persona/skills/MCP surface is fully dynamic.
+
+---
+
+## Seams and surprises (contradictions with the issue's claims)
+
+1. **"frozen `watcher_versions.prompt` text" is only half true.** It's a *reference* (`approved_input.version_id`) re-resolved with a live SQL read at dispatch (`automation.ts:1056-1076`). It behaves as frozen only because version rows are append-only (`version-actions.ts:204`). Path C bypasses pinning entirely and reads `current_version_id` live (`activation.ts:106`) — a Behavior edited mid-conversation changes the next chat turn's instructions.
+
+2. **The scheduled/window Behavior never gets its prompt as instructions.** `buildDispatchMessage`'s window branch (`automation.ts:1008-1052`) drops the `behaviorInstructions` it just resolved on the floor; the prompt arrives as a *tool result* from `get_content` (`behavior-mode.ts:607`). "Thin Behaviors" that assume the prompt is an instruction channel will silently not apply to the most common Behavior type.
+
+3. **Behavior instructions are user-turn text / ephemeralContext, never system prompt.** `session-runner.ts:1770` concatenates them ahead of `userPrompt`. So the frozen prompt is *already* at the same trust level as `cat .skills` output — the override the issue worries about doesn't even require the model to disobey a system instruction.
+
+4. **`cat .skills` is instructed even with zero skills.** `getGenericSkillsInstructions()` (`instruction-service.ts:143-146`) is the fallback for *no skills configured*, and it still points at `.skills/{skillName}/SKILL.md`. Gating on "has skills" is not sufficient.
+
+5. **A discriminator already exists on the worker token.** `auth.tokenData.source` is signed on **both** mints (per-run `worker-token-claims.ts:103-106` and deployment-lifetime `deployment-manager.ts:668-671`, with an explicit parity comment about the #1274 P0). `gateway/index.ts` already has `auth` in hand at `:574`. But it is `undefined` for **Path C** — `message-handler-bridge.ts:1458-1476` never sets `platformMetadata.source`, only `behaviorId` (`:1242`). So a token-`source` gate would miss chat-triggered Behaviors. Fixing that is a one-line addition to `extraMetadata`.
+
+6. **Worker-side session-context cache is a landmine for any per-session branch.** `session-context.ts:85` `CACHE_TTL_MS = 5min`, cached in a **module-level singleton keyed only on `mcpExposure`** (`:308-315`), with a stale-fallback path (`:325-330`). If you make the response session-type-dependent, the cache key must include it, or a chat turn on a reused deployment will serve the behavior-stripped context (or vice versa). Behavior runs use `forceNew: true` + `thread: watcher-${run.id}` (`automation.ts:1336-1337`) so they get fresh conversations/deployments in practice — but that's an accident of the dispatch call, not a guarantee.
+
+7. **Skill nix has *two* independent union points, one of which is offline.** The CLI apply-time bake (`map-config.ts:296`) is not reachable from any runtime branch. Removing only the resolve-time union (#2218) yields a half-removal where CLI-managed agents keep skill packages forever.
+
+8. **`.skills` pruning is destructive and unconditional.** `session-runner.ts:721-733` `fs.rm(recursive: true)` on any directory under `.skills` not in the current skill set. If a thin-Behavior design ships `skillsConfig: []` for behavior runs while chat runs share a workspace dir, the behavior run will **delete the chat session's synced skills**. Workspace dir is `{base}/{conversationId}` (`workspace.ts:29-37`), so this only bites if conversation ids collide — but `forceNew` behavior threads are `watcher-${runId}`, distinct.
+
+9. **`pi` resource discovery is separately hardened.** `agent-worker/src/__tests__/pi-resource-discovery.test.ts:206, :230` guards against `.pi/skills/*/SKILL.md` in the workspace — related prior art (commit `99b50cc65`) worth reading before adding another skill-materialization branch.
+
+---
+
+## Confidence: 78
+
+**Not verified:**
+- The **device-worker / Mac Bridge** executor (Path D consumer) — `poll.ts` ships `payload.watcher.prompt`, but the consuming CLI executor is not in this repo (submodule or separate). Whether it does any `.skills` materialization is unknown.
+- `runs/queue-service.ts` `createBehaviorEventRun` full body (I read only the `version_id` snapshot region, lines ~441-451 and ~714-741) — I did not confirm the complete `approved_input` shape for event runs.
+- `scheduled/jobs.ts` and `connectors/repair-agent.ts` dispatch paths — they set `platformMetadata.source` to `"scheduled-job"` / `"connector-repair"` (per the `AUTOMATION_SOURCES` set) but I did not read their enqueue sites.
+- `renderPromptTemplate` (`behavior-mode.ts:475`) — Handlebars rendering of the version prompt; I did not read the renderer or confirm what variables it interpolates.
+- I did not run any tests, nor read `gateway/__tests__/platform-helpers-nix-union.test.ts` to confirm exactly what it asserts.
+- Whether `embedded-runtime.ts` / `local-bootstrap.ts` (embedded/single-process mode) take a different session-context path that bypasses `gateway/index.ts:588`.</result>
+<usage><subagent_tokens>115291</subagent_tokens><tool_uses>69</tool_uses><duration_ms>820186</duration_ms></usage>
+</task-notification>

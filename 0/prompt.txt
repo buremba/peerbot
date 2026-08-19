@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsy8wlvdr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f33cc6c8-268a-4dc1-9605-e2ffb3bfbbbc/tasks/bsy8wlvdr.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for all nine required checks" completed (exit code 0)</summary>
+</task-notification>

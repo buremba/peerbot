@@ -1,0 +1,1 @@
+test qwen just run pi as cli you will see. also save memory so i will compact

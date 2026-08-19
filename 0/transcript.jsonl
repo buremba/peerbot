@@ -1,0 +1,3 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:30:38.108Z","content":[{"text":"New message in #sales:\n\nsarah: ok cool, sounds good 👍"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:30:39.533Z","id":"21851ab0","input_tokens":3412,"output_tokens":23,"content":[{"type":"tool_use","id":"call_rykPjx697tTE9WB7wqWucR1y|fc_0ba99992b8eafd7c006a6ccdaf1188819ea5ef081d0cbccb77","name":"send_message","input":{"text":"Great, thanks Sarah! 👍"},"result":{"output":"Message sent.","status":"success"}}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:30:42.918Z","id":"c575a708","input_tokens":51,"output_tokens":12,"content":[{"type":"text","text":"Replied to Sarah in #sales."}]}

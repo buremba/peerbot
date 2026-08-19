@@ -1,0 +1,1 @@
+1 and for 2 try to do it in a single pr. 3. maybe we have mcp clients under connectors and when clicked we will show?

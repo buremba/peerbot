@@ -1,0 +1,1 @@
+we can link the client id page in the filters section so the user can navigate to the specific client page

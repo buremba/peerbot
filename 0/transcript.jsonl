@@ -1,0 +1,8 @@
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:35:52.462Z","content":[{"id":"d3989415-33ff-450e-a61b-8068490dad8c","text":"triage prs that doesn't have running session, issues for the last one week etc and guide me what to do"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-07-29T03:35:54.252Z","id":"msg_011CdVeaMXJ7xSQJohN6Dpmw","input_tokens":2,"output_tokens":1,"content":[{"text":"I'll gather the PR and issue state first.","type":"text"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:35:54.966Z","content":[{"id":"d3989415-33ff-450e-a61b-8068490dad8c","text":"[Request interrupted by user]"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:35:58.793Z","content":[{"id":"6a567244-ff05-409b-9a82-37e9e7734749","text":""}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:35:58.792Z","content":[{"id":"6a567244-ff05-409b-9a82-37e9e7734749","text":""}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:35:58.792Z","content":[{"id":"6a567244-ff05-409b-9a82-37e9e7734749","text":""}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:36:00.299Z","content":[{"id":"b060fa27-6459-4625-a1bf-ca16e87a9820","text":"go"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-07-29T03:36:01.152Z","id":"f0cd74fe-d84e-470b-8879-43bcb130046a","content":[{"text":"API Error: 400 output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.","type":"text"}]}

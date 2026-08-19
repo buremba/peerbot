@@ -1,0 +1,186 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The conversation evolved through seven distinct user requests:
+
+   a. **Issue triage:** "check these open issues, see and confirm if we need them, interview me if needed." — for issues #2359, #2350, #2349, #2339, #2338, #2244.
+
+   b. **Device execution idea:** "could we set the device for these things to my local and let lobu orchestrate my local opencode" — asking whether the failing Behaviors could run on the user's local machine via opencode instead of the dead cloud provider.
+
+   c. **Pushback on framing:** "wtf we have opencode integration no? do you really need to have classes in there or could this be loaded from ~/.owletto .lobu agents.json file somewhere" — challenging the claim that opencode wasn't integrated, and proposing a data-driven (manifest) design instead of Swift classes.
+
+   d. **Design validation:** "would this approach work you say? any agent relevant code we do in these implemmentations" — asking whether the manifest approach holds and whether the executors contain agent-specific logic resistant to being turned into data.
+
+   e. **Execute:** "let's do those" — do the contract test, build the manifest, file the auto-pick bug.
+
+   f. **Gemini removal + pi:** "remove gemini we don't use it. agy replaces gemini. add pi agent as well and test it"
+
+   g. **Final three tasks:** "changed my mind, keep opencode and for 1 replace with opencode my device runner. fix 2 3" — keep opencode as an agent kind; re-pin the failing Behaviors to the device runner with opencode (item 1); narrow opencode's `--auto` permission breadth (item 2); fix the 1MB `knowledge.read` cap (item 3).
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo (Bun workspace, `packages/*`), with `packages/owletto` as a git submodule containing both the web frontend and the Owletto Mac menubar app (Swift/SwiftUI)
+   - Device execution lane: `watchers.device_worker_id` + `watchers.agent_kind` columns; the Mac app polls, claims runs, spawns a local CLI subprocess, posts results back
+   - `AgentKind` enum / `LocalAgentDetector` PATH scan vs `BehaviorDispatcher.executorsByKind` execution registry
+   - Manifest/spec-driven executor design: `AgentSpec`, `PromptDelivery`, `McpDelivery`, `SpecExecutor`, `ExecutorSupport`
+   - Device completion contract (`DeviceBehaviorPrompt.completionContract`) — the prompt-embedded instruction telling a CLI how to finalize a Behavior run
+   - Lobu sandbox: `isolated-vm` module compilation requiring `export default async (ctx, client) => {...}`; `outputBytes` cap accumulating across every SDK dispatch crossing the isolate boundary
+   - `get_content` behavior mode: `queryContentData`, `executeDataSources`, `wrapQuery`, keyset pagination via `before_occurred_at`/`before_id`
+   - Repo gates: `make pre-pr`, `make review-fix`, `make review` (posts required `pi-review` status), `make ui-review` (requires human `/ui-approve`), `REVIEWER_CLI=auto|codex|claude|pi`
+   - Submodule merge order: merge owletto PR first, then bump parent pointer to the merged main SHA
+   - Mutation testing: assert the mutation landed, confirm the test fails on the assertion (not a compile error), restore and re-verify green
+
+3. **Files and Code Sections:**
+
+   - **`packages/owletto/apps/mac/Owletto/BehaviorDispatcher.swift`** (1096 → ~1103 lines)
+     - The core file. Originally contained `ClaudeCodeExecutor` (lines 229-607) and `AgyPrintExecutor` (614-748), the latter a ~95% copy calling the former's statics (`buildPrompt`, `drainPipe`, `waitWithTimeout`, `awaitDrain`).
+     - **Fixed the completion contract dialect** (issue #2503):
+       ```swift
+       Prefer the local `lobu` CLI (same login as the Owletto menubar — \
+       credentials in ~/.config/lobu; no extra auth setup). The script is compiled \
+       as a module, so it must `export default` an async function — a top-level \
+       `return` or `await` is a compile error, not a runtime one:
+         lobu memory exec 'export default async (ctx, client) => { const r = await client.knowledge.read({ behavior_id: \(behaviorIdLiteral) }); return r; };'
+         # use window_token + content from that result, then:
+         lobu memory exec 'export default async (ctx, client) => { await client.behaviors.completeWindow({ behavior_run_id: \(runId), window_token, extracted_data, replace_existing: true }); return { ok: true }; };'
+       ```
+     - **Replaced both executors** with declarative specs. Final registry after gemini removal:
+       ```swift
+       static let all: [AgentSpec] = [claudeCode, agy, opencode, codex, pi]
+       ```
+     - **pi spec** (added in the final round):
+       ```swift
+       /// pi. `-p` is a boolean "print and exit" switch, NOT a prompt-carrying
+       /// flag — the prompt is positional (`pi [options] [messages...]`), so it
+       /// goes last like opencode's and codex's.
+       static let pi = AgentSpec(
+           kind: .pi,
+           promptDelivery: .positional(subcommand: []),
+           headlessArgs: ["-p", "--no-session", "--tools", "read,bash,edit,write"],
+           modelFlag: "--model",
+           effortFlag: "--thinking"
+       )
+       ```
+     - **opencode spec** (retained per user's "keep opencode"):
+       ```swift
+       static let opencode = AgentSpec(
+           kind: .opencode,
+           promptDelivery: .positional(subcommand: ["run"]),
+           mcpDelivery: .opencodeConfigEnv(variable: "OPENCODE_CONFIG_CONTENT"),
+           headlessArgs: ["--auto"],
+           modelFlag: "-m",
+           effortFlag: "--variant"
+       )
+       ```
+     - Dispatcher registry changed from two hardcoded executors to `AgentSpec.all.map { SpecExecutor(spec: $0) }`
+     - `make review-fix` removed a `TimeoutFlagFormat` enum whose `.bareSeconds` case was never constructed; `timeoutFlag` became `(flag: String, suffix: String)?`
+
+   - **`packages/owletto/apps/mac/Owletto/LocalAgentDetector.swift`**
+     - Removed `case geminiCli = "gemini-cli"`, added `case pi = "pi"` with binaryName `"pi"`, displayName `"pi"`, installURL `https://github.com/badlogic/pi-mono`, icon `circle.grid.cross`
+     - Repointed agy's installURL from the Gemini CLI repo to `https://antigravity.google`
+
+   - **`packages/owletto/apps/mac/Owletto/AppState.swift`**
+     - Fixed the auto-pick bug (issue #2504) — now intersects with the executor registry:
+       ```swift
+       if defaultAgent == nil, !next.isEmpty {
+           let runnable = Set(AgentSpec.all.map(\.kind))
+           let preference: [AgentKind] = [.claudeCode, .agy, .codex, .opencode, .pi]
+           if let pick = preference.first(where: { next[$0] != nil && runnable.contains($0) }) {
+               defaultAgent = pick
+           }
+       }
+       ```
+
+   - **`packages/owletto/apps/mac/Tests/AgentSpecTests.swift`** (new, ~191 lines) — pins that every `AgentKind` has a spec, positional prompts land last, per-CLI flag names, budget dropped where unsupported, pi's `--tools`/`--thinking`, and the vendor-specific MCP config schemas.
+
+   - **`packages/owletto/src/components/entity-tabs/behaviors-tab/from-scratch-panel.tsx`** — `DEVICE_AGENT_KINDS` now `claude-code, codex, opencode, pi, agy`
+
+   - **`packages/owletto/docs/owletto-plan.md`** — both agent-kind lists updated
+
+   - **`packages/server/src/tools/get_content/behavior-mode.ts`** (uncommitted, on branch `fix/behavior-window-source-limit`) — the #3 fix:
+     ```typescript
+     // Bound EVERY event source, not just the cursor-bearing one.
+     // ... [long comment explaining the bug] ...
+     if (!eventSourceNames.has(sourceName)) return scopedQuery;
+     const isCursorSource = sourceName === page.sourceName;
+     ```
+     Cursor predicate gated: `if (isCursorSource && page.beforeOccurredAt && page.beforeId) {`
+     Added `sourcesPage` map trimming the `+1` sentinel on secondary sources and recording `{ returned, limit, has_more }`; exposed as `sources_page` on the response.
+
+   - **`packages/server/src/tools/get_content/types.ts`** (uncommitted) — added the `sources_page` TypeBox field (required to fix a TS2353 error)
+
+4. **Errors and fixes:**
+
+   - **Self-correction on "lobu CLI works":** I initially reported the CLI probe succeeded, having read only the tail of its output and missed `"success": false`. I corrected this explicitly: "I said 'lobu CLI works' off that earlier probe — I read only the tail of its output and missed that it had `"success": false`. It didn't work."
+
+   - **Wrong framing on opencode integration:** After user pushback ("wtf we have opencode integration no?"), I re-investigated and found integration in four places. I acknowledged: "You're right, and my framing was wrong. It's not 'missing integration' — it's worse than that."
+
+   - **Mutation test false positive (M2):** A mutation adding `budgetFlag` before `modelFlag` failed to *compile* (`error: argument 'modelFlag' must precede argument 'budgetFlag'`), not on the assertion. I flagged this and redid it with valid argument order, producing a real failure.
+
+   - **`make review-fix` failed:** codex reviewer hit "You've hit your usage limit... try again at Aug 10th, 2026". Fixed by `REVIEWER_CLI=claude`. Note this REVERSES what memory records (claude blocked, codex working).
+
+   - **review-fix made a false claim:** It reported a "push blocker" saying the owletto commit was on no remote branch. I verified — it was on `origin/feat/device-executor-manifest` with PR #722 open at that exact SHA — and rejected the claim.
+
+   - **Shell quoting broke the commit:** A heredoc commit message containing double quotes leaked into `git add` (`error: pathspec 'client' did not match`). Fixed with `git reset -q` then writing the message to a file and using `git commit -F`.
+
+   - **check-drift blocker:** `make review` caught that owletto main had advanced two commits (#725, #726) past my pin. Advanced pointer to `ef0ffc1e` and re-ran gates.
+
+   - **Stale git index.lock:** `fatal: Unable to create '.../index.lock': File exists` from an earlier interrupted rebase. Removed manually.
+
+   - **TS2353 on `sources_page`:** Fixed by adding the field to the TypeBox schema in `types.ts`.
+
+   - **opencode permission narrowing failed twice:** `{"bash":{"lobu *":"allow","*":"deny"}}` caused opencode to drop the bash tool entirely ("Model tried to call unavailable tool 'bash'. Available tools: glob, grep, invalid, read, skill, task, todowrite"). `{"lobu *":"allow","*":"ask"}` produced zero output and no marker (hangs headless). Third variant still running at cutoff.
+
+5. **Problem Solving:**
+
+   - **Diagnosed the z-ai outage:** `buremba`'s default provider is `z-ai` with `status='active'` and empty `error_message` after 2 days of 429s — `inference_providers` health fields are never written back from actual inference failures. `gemini` and `openai` are active and non-default on the same org.
+   - **Found a shipped contract bug** (#2503) by running the code: the device completion contract's `lobu memory exec` examples use top-level `return`/`await`, which the sandbox never accepted. This is the only finalize path for CLIs without MCP wiring.
+   - **Found the real #3 root cause:** not a missing API, but a bug — `wrapQuery` limited only the source literally named `'content'`; all other event sources returned unbounded and landed in the returned `sources` blob. This means the existing `limit` never worked for multi-source Behaviors. Verified empirically that `limit: 1` and `limit: 5` both still failed.
+   - **Established verification status:** opencode and pi both verified e2e against the contract (pi on the first attempt, opencode after self-correcting); codex launch-validated only (account out of ChatGPT credits until Aug 10); gemini removed.
+   - **Ongoing:** third opencode permission variant test; #3 needs red→green evidence and gates.
+
+6. **All user messages:**
+   - "check these open issues, see and confirm if we need them, interview me if needed. Status: Open. #2359 In lobu-ai/lobu;· buremba opened 1w ago A quota-exhausted inference provider takes Behaviors to zero, and the terminal 429 is retried ~2000 times [...] #2350 [...] Imports and agents cannot write identity claims, so the workspace mints duplicate people [...] #2349 [...] Merge-evidence card: verify the server→card evidence_change path is actually live [...] #2339 [...] Progressive multi-channel identity: person-first mint, /link Behaviors, B2B chat without login [...] #2338 [...] Spawned binaries can bypass the egress allowlist (allowNet: true) [...] #2244"
+   - "hmm interesting. could we set the device for these things to my local and let lobu orchestrate my local opencode"
+   - "wtf we have opencode integration no? do you really need to have classes in there or could this be loaded from ~/.owletto .lobu agents.json file somewhere"
+   - "would this approach work you say? any agent relevant code we do in these implemmentations"
+   - "let's do those"
+   - "remove gemini we don't use it. agy replaces gemini. add pi agent as well and test it"
+   - "1. replace it with pi maybe" [interrupted by user] then "changed my mind, keep opencode andfor 1 replace with opencode my device runner. fix 2 3"
+   - (Via AskUserQuestion) Device choice: **Mac mini**. #3 API shape: **Paginate behavior mode**.
+
+7. **Pending Tasks:**
+   - **#2 (opencode permission narrowing):** third variant test still running. Two shapes already proven unworkable headless. Likely outcome: report that opencode cannot be meaningfully narrowed the way Claude Code can, and either keep `--auto` with honest documentation or ship the per-tool deny variant if it passes.
+   - **#3:** needs red→green reproducer evidence per AGENTS.md, then `make pre-pr`, `make review-fix`, commit, push, PR, `make review`.
+   - **lobu #2508** is blocked awaiting the human `/ui-approve ef0ffc1e8945fbdcd6fb7a551ae578e45056a06e` comment on owletto#726.
+   - Verify the re-pinned Behaviors 5/71 at their next tick (14:00 and 14:25) — they will fail with "no executor" until a Sparkle release ships the opencode executor to the Mac mini, and it's unconfirmed whether opencode is even installed on the mini.
+
+8. **Current Work:**
+
+   Immediately before the summary request I was working on the user's final three-part request. State at cutoff:
+
+   - **#1 DONE:** Re-pinned both Behaviors in prod:
+     ```sql
+     UPDATE watchers SET device_worker_id='e7806c72-9485-4a8c-a619-7e6bdcb14eaf', agent_kind='opencode'
+     WHERE id IN (5,71);
+     -- UPDATE 2
+     ```
+     Both now show `device_worker_id` = Mac mini, `agent_kind` = opencode, next_run_at 14:00:00 and 14:25:00.
+
+   - **#2 IN PROGRESS:** Third permission variant running in background (task `bp7ldncuq`) with config `{"permission":{"bash":"allow","read":"allow","edit":"deny","webfetch":"deny","websearch":"deny","task":"deny"}}`. Last check: "(opencode still running)", marker absent, denied.txt absent.
+
+   - **#3 IMPLEMENTED, NOT COMMITTED:** Edits to `behavior-mode.ts` and `types.ts` are on branch `fix/behavior-window-source-limit` (created off `origin/main`, submodule reset to `2741388c` so scope stays clean). `git status --short` shows exactly the two server files. Server typecheck passes clean.
+
+   My last actions were checking whether the opencode permission test had finished and listing candidate integration test files to extend for #3's red→green evidence — the search returned `channel-feed-source.test.ts` and `source-id-and-cross-org.test.ts` in `packages/server/src/__tests__/integration/watchers/`.
+
+   Important correction I owe the user: they signed off on "Paginate behavior mode" expecting an API surface change, but the fix turned out to need **no new API** — it was a bug where the existing `limit` was only applied to one source. The only additive field is `sources_page` for truncation visibility.
+
+9. **Optional Next Step:**
+
+   Finish #2 and #3. Specifically: read the result of the pending opencode permission test (background task `bp7ldncuq`) and decide whether to ship that config or keep `--auto` with documented rationale; then write a red→green reproducer for the #3 fix — an integration test asserting that a Behavior with more than one event source respects `limit` across all sources (red against the old `sourceName !== page.sourceName` predicate, green after) — followed by `make pre-pr`, `make review-fix`, commit by explicit path, push, and PR.
+
+   This follows directly from the user's most recent instruction: "changed my mind, keep opencode andfor 1 replace with opencode my device runner. fix 2 3", and from my own last stated position: "Found the exact leak. `wrapQuery` applies the LIMIT only when `sourceName === page.sourceName` (hardcoded `'content'`) — **every other event source runs unbounded** and all of them land in the returned `sources` blob. That's why `limit: 1` changed nothing."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/07e7c33a-4508-4f40-803f-08696f5f646a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

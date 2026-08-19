@@ -1,0 +1,1 @@
+do you you can start implementing test e2e on prodma erp make sure all works and then merge

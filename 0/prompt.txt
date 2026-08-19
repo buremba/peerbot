@@ -1,0 +1,1 @@
+why don't we show the mac app chrome extension etc under connectors?

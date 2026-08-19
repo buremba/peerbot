@@ -1,0 +1,1 @@
+ok good, when the memory in the sidebar accordion is open, the memory text should be a bit grayed out so it doesn't look like an entity type

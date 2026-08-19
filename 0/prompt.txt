@@ -1,0 +1,1 @@
+i mean 1 is fine and also we need to only show the connections that have subscribles. also do we still need multiple triggers in this case? for cron we can later support more advanced scheduling

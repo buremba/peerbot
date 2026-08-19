@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btt7sky3b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/btt7sky3b.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for scheduled behavior run then scan prod logs" completed (exit code 0)</summary>
+</task-notification>

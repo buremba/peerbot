@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7v1oyfot</task-id>
+<tool-use-id>toolu_01R7vbq543Rocequ8Dv7NPR4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/b7v1oyfot.output</output-file>
+<status>failed</status>
+<summary>Background command "Re-run review on the new HEAD" failed with exit code 144</summary>
+</task-notification>

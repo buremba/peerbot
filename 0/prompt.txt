@@ -1,0 +1,1 @@
+like helicone etc can we enable the tool request body to be encrypted?

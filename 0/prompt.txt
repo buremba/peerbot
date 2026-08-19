@@ -1,0 +1,1 @@
+these values display name link to entities  assign member can be shown under the selected box no? that way the layout doesn't change for that selector [Image #6]

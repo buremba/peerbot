@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bp4cf3qwn</task-id>
+<tool-use-id>toolu_01Ws9JhsjkwbsYQvXmx6GYJj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bp4cf3qwn.output</output-file>
+<status>completed</status>
+<summary>Background command "Retry gate for flake fix" completed (exit code 0)</summary>
+</task-notification>

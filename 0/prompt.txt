@@ -1,0 +1,7 @@
+we wantto move our prod to a dedicated hetzner and get rid of existing k8s. can you plan it through what's actually the best way to make this work. IPv4 Address:	116.202.118.138
+IPv6 Address:	2a01:4f8:231:4658::2
+Username:	root
+Password:	e75D?6hG%W3juT
+Host key:	REDACTED (ECDSA 256)
+REDACTED (ED25519 256)
+1W8gIsaDV3vKC/REDACTED (RSA 3072)

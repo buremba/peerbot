@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bk39cfq9z</task-id>
+<tool-use-id>toolu_016Z1AfCwxdt6z63MJoJQMYY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f4e4deab-cb97-4427-8120-e77084d6508a/tasks/bk39cfq9z.output</output-file>
+<status>killed</status>
+<summary>Background command "DATABASE_URL="postgres://$USER@127.0.0.1:5418/lobu_test" PGSSLMODE=disable make dev &gt; /tmp/dev-audit-peek.log 2&gt;&amp;1" was stopped</summary>
+</task-notification>

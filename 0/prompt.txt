@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bj0pnxxeq</task-id>
+<tool-use-id>toolu_013wunJFjpjSJHAg23idea2J</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bj0pnxxeq.output</output-file>
+<status>failed</status>
+<summary>Background command "Restart vite at the new pointer" failed with exit code 137</summary>
+</task-notification>

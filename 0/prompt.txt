@@ -1,0 +1,1 @@
+we don't want to commit the gap analysis and design doc only for prodma. we wanted to identify the gap, and implement all these things. tell me all the gaps, our status and next steps. we were working on row/column level access, connectors generating relationships etc

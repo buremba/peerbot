@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgynupqd9</task-id>
+<tool-use-id>toolu_016cd7jR5hxxSn3nQ74v5uda</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bgynupqd9.output</output-file>
+<status>completed</status>
+<summary>Background command "Build all packages so the CLI dist exists" completed (exit code 0)</summary>
+</task-notification>

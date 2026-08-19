@@ -1,0 +1,49 @@
+<task-notification>
+<task-id>ad584bc867c4b1809</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/ad584bc867c4b1809.output</output-file>
+<status>completed</status>
+<summary>Agent "Rework connect-tabs-cta branch" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All done — final sanity checks passed: clean tree on both repos, exact-scope file lists, all gates green. Report follows.
+
+## What landed
+
+**Owletto** (`packages/owletto`, branch `feat/connect-tabs-cta`, rewritten from 444560de into 2 clean commits on 56046ad0):
+- `3da6f2ae fix(web): deep-link model-error CTAs to the agent settings #models section` — the superseded provider-management repoint is fully reverted: `src/lib/agent-error-cta.ts`'s provider-connect and provider-management branches are byte-identical to origin/main (verified: `git diff 56046ad0` shows only the agent-settings hunk, which appends `#models`, no ?provider/?model). `lobu-chat-store.test.tsx` reverted to origin/main and dropped out of the diff. `agent-editor-form.tsx` keeps `id="models"` and gains a mount-time effect that re-issues `scrollIntoView` when `location.hash === "#models"` (SPA renders after the browser's native fragment scroll). `index.css` flash kept, comment retargeted. `models-anchor.test.ts` now derives the fragment from `NO_MODEL_CONFIGURED` (agent-settings kind).
+- `6c712379 feat(web): chained provider→model picker in the models allow-list editor` — `models-list-editor.tsx` replaces the flat Combobox with step-1 provider Select (org providers + `systemAvailable` catalog entries, slug-deduped, terminal "Connect a provider…" item navigating to `/$owner/connectors`) and step-2 model Select (org-pinned model first, then catalog default, then curated list) that appends `provider/model` to the END; freeform Input+Add fallback when the provider has no offerable catalog models; move/remove/duplicate-refusal untouched. `inference-providers.ts` gains `InferenceModelDetail` + `modelDetails`/`modelsDevId` on `InferenceCatalogItem`, mirroring `ModelsDevSnapshotModel` from the models-dev-snapshot branch; rows render hints like `200K ctx · $3/$15 per M`.
+
+**Lobu** (`4e047d35f`, single commit): `buildAgentSettingsUrl` gains opt-in `opts.modelsAnchor` appending `#models` after any `?run_id` query. Call-site grep found 3 callers: the two model-related CTAs (chat-response-bridge agent-settings resolver, message-handler-bridge preflight "Choose a model") now pass `{ modelsAnchor: true }`; the manage_agents run-review CTA is untouched — that's why the fragment is per-call, not unconditional.
+
+## Diffs (ground truth)
+
+git status: clean on both; lobu 1 commit ahead of origin/main, unpushed.
+
+Lobu `origin/main...HEAD` — exactly: `packages/owletto` (gitlink → 6c712379), `chat-response-bridge.ts` (+6/-2), `message-handler-bridge.ts` (+4/-1), `url-builder.test.ts` (+19), `url-builder.ts` (+15/-4). Owletto `56046ad0..HEAD` — exactly the 8 scope files (+669/-116; picker rework +394 in the editor, +253 tests). One incident handled: `git reset --soft origin/main` exposed 11 stale fork-point file copies (get_content/#2214 area) in the working tree — never staged (explicit-path adds), restored to HEAD content, verified clean.
+
+## Mutation-test evidence
+
+1. **Append order**: flipped `appendModelRef` to `return [ref, ...value]` → 3 failed | 15 passed: `appendModelRef &gt; appends to the END`, `chained add picker &gt; provider pick then model pick appends the ref to the END`, `falls back to a freeform model id…` — both the pure helper and both component paths bite. Restored → 18/18.
+2. **Provider resolution**: dropped the `catalogBySlug.get(provider.kind) ??` fallback → 1 failed | 17 passed: `buildProviderChoices &gt; resolves a BYO provider's catalog entry via its kind (the catalog id)`. Restored → 18/18.
+
+## Gates run
+
+Owletto: 4 touched test files → 54/54 pass (includes 6 new Radix-Select-driven component tests using the in-repo pointer-capture polyfill recipe); `bunx tsc -b` exit 0. Lobu: `url-builder.test.ts` 36/36; `make typecheck` clean (server + owletto strict). Not pushed; no `make review`/`review-fix`; no .md files created.
+
+## Confidence
+
+- **agent-error-cta / anchor scope: 95** — unit + contract tests ran; provider branches diff-verified byte-identical to origin/main.
+- **Chained picker: 85** — component behavior driven through real Radix Select interactions in jsdom + mutation-tested; not exercised in a live browser, and `modelDetails` has no server producer until the models-dev-snapshot branch lands.
+- **Hash-scroll on the settings page: 60** — effect + `:target` CSS + contract test only; I did NOT boot the app and click a CTA, so the actual scroll/flash in a browser is assumed, not proven.
+- **Lobu url-builder + bridges: 90** — url-builder path unit-tested (36/36) incl. `?run_id=42#models` ordering; the two bridge call sites are typecheck-verified only (no live Slack/preflight e2e).
+
+## Next actions
+
+1. Live-verify the deep link: boot `make dev`, trigger a `NO_MODEL_CONFIGURED` error (or open `/$owner/agents/&lt;id&gt;/settings#models` directly), confirm scroll + flash — the one owed e2e before PR.
+2. Merge-compose check with the inference-facet branch (`git merge` per submodule rules) — its provider hunks in `agent-error-cta.ts`/`url-builder.ts` should now compose cleanly against my minimal hunks.
+3. When models-dev-snapshot lands server-side, confirm the catalog endpoint actually emits `modelDetails` keyed as this UI expects (record by wire model id).
+4. Before PR: run `make pre-pr` + `make review-fix` (deliberately not run here per instructions), and push owletto first so the gitlink SHA is reachable.
+
+result: connect-tabs-cta rebuilt to final scope — #models CTA anchor (provider CTAs reverted to main) + chained provider→model picker with mutation-tested tests; all gates green, committed unpushed with exact-scope file lists</result>
+<usage><subagent_tokens>212340</subagent_tokens><tool_uses>70</tool_uses><duration_ms>1072097</duration_ms></usage>
+</task-notification>

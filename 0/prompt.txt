@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_V0UftTkRtn/CleanShot 2026-08-03 at 16.26.25@2x.png">
+
+</image>
+
+the dropdown connector data range  is not habing same padding, also the backgorund is black for these selectbox, the design needs to be consistent. reviewer approval's border radius and background is our design guideline. [Image #1]

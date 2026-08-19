@@ -1,0 +1,1 @@
+you start local dev and test. confirm the final state. i was talking about new behavior create/edit etc

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3ilrem36</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/b3ilrem36.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review with the claude/fable reviewer" completed (exit code 0)</summary>
+</task-notification>

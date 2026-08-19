@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blp294jia</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/blp294jia.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 2683 required checks" stream ended</summary>
+</task-notification>

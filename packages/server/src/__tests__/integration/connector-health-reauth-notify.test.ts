@@ -11,6 +11,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runConnectorHealthCheck } from '../../connectors/connector-health';
+import { BROWSER_SESSION_EXPIRED_KIND } from '../../utils/platform-event-kinds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { addUserToOrganization, createTestOrganization, createTestUser } from '../setup/test-fixtures';
 
@@ -56,19 +57,26 @@ async function seedFailingFeed(
   `;
 }
 
+/**
+ * Notification identity is row presence in `notification_targets`, never
+ * `semantic_type` — a kind-backed notification stores its event kind there
+ * instead (see `utils/content-search/params.ts`). This one carries
+ * `browser_session_expired` so the same kind drives the Memory-view render and
+ * the chat card.
+ */
 async function authNotifsFor(
   orgId: string,
   connectionId: number
-): Promise<Array<{ id: number; title: string; payload_text: string | null }>> {
+): Promise<Array<{ id: number; title: string; semantic_type: string }>> {
   const sql = getTestDb();
   return (await sql`
-    SELECT id, title, payload_text
-    FROM events
-    WHERE organization_id = ${orgId}
-      AND semantic_type = 'notification'
-      AND metadata->>'notification_type' = 'browser_auth_expired'
-      AND metadata->>'resource_id' = ${String(connectionId)}
-  `) as unknown as Array<{ id: number; title: string; payload_text: string | null }>;
+    SELECT e.id, e.title, e.semantic_type
+    FROM events e
+    WHERE e.organization_id = ${orgId}
+      AND EXISTS (SELECT 1 FROM notification_targets nt WHERE nt.event_id = e.id)
+      AND e.metadata->>'notification_type' = 'browser_auth_expired'
+      AND e.metadata->>'resource_id' = ${String(connectionId)}
+  `) as unknown as Array<{ id: number; title: string; semantic_type: string }>;
 }
 
 describe('connector-health → browser-auth-expired notification', () => {
@@ -122,6 +130,9 @@ describe('connector-health → browser-auth-expired notification', () => {
     const authNotifs = await authNotifsFor(orgId, authConnId);
     expect(authNotifs).toHaveLength(1);
     expect(authNotifs[0].title.toLowerCase()).toContain('needs sign-in');
+    // Kind-backed: the event carries its content kind, and the chat card is
+    // built from that kind's template rather than a hand-rolled body.
+    expect(authNotifs[0].semantic_type).toBe(BROWSER_SESSION_EXPIRED_KIND);
 
     // The owner is a target of that notification.
     const sql = getTestDb();

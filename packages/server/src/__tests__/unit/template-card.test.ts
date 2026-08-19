@@ -383,6 +383,18 @@ describe("template-declared controls", () => {
 		expect(texts(card).at(-1)).toBe("_*Approve Acme (12)* is only available in Lobu._");
 	});
 
+	it("interpolates a label that both starts and ends with a binding", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [bound({ label: "{{customer.name}} · {{items[0].qty}}", onClick: "@retry" })],
+			},
+			data: { customer: { name: "Acme" }, items: [{ qty: 12 }] },
+		});
+		// Two bindings, so this is interpolation — not one path named `name}} · {{items[0].qty`.
+		expect(texts(card).at(-1)).toBe("_*Acme · 12* is only available in Lobu._");
+	});
+
 	it("clamps the actions row to what Slack accepts", () => {
 		const card = buildKindCard({
 			jsonTemplate: {

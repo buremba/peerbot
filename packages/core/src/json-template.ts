@@ -252,12 +252,11 @@ function resolveBinding(
   data: Record<string, unknown>
 ): unknown {
   if (typeof value !== "string") return value;
-  if (
-    value.startsWith("{{") &&
-    value.endsWith("}}") &&
-    value.indexOf("}}") === value.length - 2
-  ) {
-    return getValueByPath(data, value.slice(2, -2).trim());
+  if (value.startsWith("{{") && value.endsWith("}}")) {
+    const inner = value.slice(2, -2);
+    // A second `}}` inside means this is interpolation (`{{a}}/{{b}}`), not a
+    // single binding, so fall through to the replace below.
+    if (!inner.includes("}}")) return getValueByPath(data, inner.trim());
   }
   if (value.includes("{{")) {
     return value.replace(/\{\{(.+?)\}\}/g, (_, path: string) => {

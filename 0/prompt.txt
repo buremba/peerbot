@@ -1,0 +1,1 @@
+should we actually build our homepages mock app component? make the activity page look like same as ours. same with context and renmae it memory. so we acn reuse the same component there no? we can even link the users to a public workspace for them to see live

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9v9guiej</task-id>
+<tool-use-id>toolu_014w4Umg8NwdPR38YwWPuRdy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/b9v9guiej.output</output-file>
+<status>completed</status>
+<summary>Background command "Long fallback while agent completes PR" completed (exit code 0)</summary>
+</task-notification>

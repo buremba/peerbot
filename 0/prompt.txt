@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bue7jnnws</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/bue7jnnws.output</output-file>
+<status>completed</status>
+<summary>Background command "Adversarial design review via codex" completed (exit code 0)</summary>
+</task-notification>

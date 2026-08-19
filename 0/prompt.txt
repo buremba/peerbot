@@ -1,0 +1,1 @@
+can people run this thing fully locally and then they can just to lobu apply and get all deployed and their agent just shares the urls and things easily?

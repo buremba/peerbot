@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1o83wqvt</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/aa52d1c4-1070-4c3d-af01-90cc3f1b58c6/tasks/b1o83wqvt.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for second production deploy" completed (exit code 0)</summary>
+</task-notification>

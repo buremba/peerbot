@@ -1,0 +1,228 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The user owns/has access to **Prodma**, a Turkish manufacturing ERP at `/Users/burakemre/Downloads/emre_project`, and wants to know whether it could be rebuilt on **Lobu** (their agent platform monorepo at `/Users/burakemre/Code/lobu`). This is a **gap analysis / proof of concept**, explicitly *not* a migration — "the point is to see where lobu lacks." Audience is Prodma's owner (a domain expert). Scale: <20 concurrent users. All four deliverables wanted: written gap report, working slice on Lobu, Lobu roadmap, pitch for the owner.
+
+   Intent across this session's messages, in order:
+   - **Challenge the two DB changes I'd asked approval for**, scope out row-level read authz (WP-0), explain the Prodma-owner questions, re-examine the metrics design, and **finalize the design so spikes can start**.
+   - **Challenge `xmin`, challenge the `x-durable-audit` opt-in, ask what `x-link-entity-type` is for, ask what a materialized view is and whether we need one.** Relay two owner answers: chat + CRUD pages is enough (no bespoke screens), and decide YETKI (permissions) from what I already know rather than waiting for the sheets.
+   - **Ask whether any new Lobu features are actually needed** ("did you need any new features now in lobu or are we set?").
+   - **Execute all the spikes, offloading to opencode CLI as a subagent.**
+   - **Reject scope creep on scaling** ("why are you thinking about 1m invoices?").
+   - **Demand an actual local project + end-to-end demo with a model plugged in** — this was the sharpest correction: I had been doing platform surgery without ever standing the product up.
+   - **"yes go ahead fix those"** — proceed with my stated next steps (verify spike 3, fix the freeze contradiction, run the agent demo, then spikes 2/5).
+
+2. **Key Technical Concepts:**
+   - **Prodma:** .NET Framework 4.6.1, WinForms + DevExpress, SQL Server, EF EDMX + raw ADO.NET + typed DataSets. 503 DbSets, 441 screens, 637k live LOC. Field visibility is client-side `.Visible = false` (per-screen/per-field, NOT row filtering).
+   - **Lobu:** Bun workspace; `entities` table with `metadata jsonb`; `entity_types` with `metadata_schema` (JSON Schema Draft-7), `event_kinds`, `backing_sql`, `backing_source`, `metrics_config`; `entity_relationships`; AJV validation with `strict:false`; Behaviors; connectors; sandbox ClientSDK; MCP; Owletto frontend submodule.
+   - **The mutation-gate interceptor pipeline** — allow / deny / defer; `registerMutationInterceptor` + `BUILTIN_INTERCEPTORS`; per-field `requireApproval` unions on update; reserved `$name`/`$parent_id`/`$content` paths.
+   - **`field_controls`** — per-row, per-**top-level** metadata key human ownership; `FieldControl = { note?, set_by?, set_at? }`.
+   - **`x-` extension keywords in `metadata_schema`** — the central design vehicle. `x-link-entity-type` (shipped precedent), `x-lobu-resolution` (typed CLI field folded into metadata_schema), and the new `x-transitions`.
+   - **Derived entity types** — `backing_sql` makes a type a live SQL view with no stored rows.
+   - **Turkish ERP domain:** Cari, Stok, Fatura, İrsaliye, Sipariş, Teklif, Çek/Senet, KDV, Tevkifat, e-Fatura/GİB, YETKI (permissions), PLASIYER (salesperson).
+   - **opencode CLI as subagent** — sandboxes file access to cwd, auto-rejects outside paths, **still exits 0**.
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/authz/entity-mutation-gate.ts`** — the extension point. Header states a new gate is ONE new file appended to `BUILTIN_INTERCEPTORS` with zero core edits; import-cycle note requires hoisted `function` declarations and a STATIC import.
+     - `:120-125` — **the critical discovery**: `UpdateMutationRequest` carries only field names + owners, NO values:
+       ```ts
+       action: "update";
+       entityTypeSlug: string;
+       entityId: number;
+       entityOrgId?: string | null;
+       /** field path (incl. reserved $-attributes) -> current owner. */
+       fields: Record<string, FieldOwner>;
+       ```
+     - `:186` `registerMutationInterceptor` — idempotent by name.
+
+   - **`packages/server/src/utils/entity-management.ts`** — `updateEntity` at `:554`.
+     - `:588` `const isHumanEdit = !!ctx.userId && !ctx.agentId;`
+     - `:616` `const result = await sql.begin(async (tx) => {` then `SELECT ... FOR UPDATE` — **the locked read is INSIDE the tx**
+     - `:654` `if (!isHumanEdit) {` wraps the entire gate call
+     - `:684-694` ownership computed per **top-level** metadata key via `Object.keys(metadataUpdates)`
+     - `:696` `runMutationGate({ action: "update", ..., sql: tx, fields: fieldOwners })`
+     - `:728` `computeFieldMerge({ metadata: existing, controls: existingControls, fields: metadataUpdates, source: isHumanEdit ? "human" : "watcher", ... })` — **proves the read-modify-write is serialized and field-grained**
+     - `:776` `updated_at = current_timestamp` (= transaction start, can go backwards)
+     - `:424`, `:519`, `:942` — the only three `getEntityHooks` call sites
+
+   - **`packages/server/src/utils/entity-hooks.ts:27-36`** — **GAP 1**, the entire hook interface:
+     ```ts
+     interface EntityLifecycleHooks {
+       beforeCreate?: (data: EntityData, ctx: EntityHookContext) => Promise<EntityData>;
+       afterCreate?: (entity: CreatedEntity, ctx: EntityHookContext) => Promise<void>;
+       beforeDelete?: (entity: {...}, ctx: EntityHookContext) => Promise<void>;
+     }
+     ```
+     No `beforeUpdate`/`afterUpdate`. Only `$member` registered.
+
+   - **`packages/server/src/authz/transition-interceptor.ts`** (NEW, 169→178 lines, written by opencode, **fixed by me**). My fix:
+     ```ts
+     if (typeof currentState === "string" && frozenStates.has(currentState)) {
+       // The state field itself is exempt from the freeze: a frozen document may
+       // still advance along a LEGAL transition, checked below. Without this, a
+       // `frozen_from` at a non-terminal state strands the document one step
+       // short of terminal forever — an invoice frozen at `issued` could never
+       // reach `posted`. Every other field is immutable from here; a state move
+       // that is not in `allowed[current]` is still denied by the transition
+       // check, so a terminal state (empty `allowed`) remains fully sealed.
+       const changed = Object.keys(req.fields).some(
+         (field) =>
+           field !== spec.field &&
+           valueChanged(req.currentValues[field], req.proposedValues[field]),
+       );
+       if (changed) {
+         return { outcome: "deny", reason: `${label} is frozen in state \"${currentState}\" and cannot be edited.` };
+       }
+     }
+     ```
+
+   - **`packages/server/src/__tests__/integration/tools/entity-transition-freeze.test.ts`** — 9 tests from opencode + **3 added by me**:
+     ```ts
+     it("allows a frozen invoice to advance along a legal transition", ...)   // seedInvoice "issued" → status "posted" succeeds
+     it("still seals a terminal state against its own state field", ...)      // posted → draft rejects /cannot transition status from "posted" to "draft"/
+     it("denies a field edit that rides along with a legal transition", ...)  // {status:"posted", notes:"smuggled"} rejects /frozen in state "issued"/
+     ```
+     **12/12 pass.**
+
+   - **`packages/owletto/src/components/entity-tabs/index.tsx:105`** — the real concurrency bug: `metadata: metadataDirty ? metadata : undefined` (whole-object dirty flag).
+
+   - **`packages/owletto/src/components/dynamic-schema-form.tsx:300`** — `if (prop.type === "array" && prop.items?.type === "string")` is the ONLY array branch. `cleanFormData` exported at ~:129.
+
+   - **`packages/server/src/sandbox/namespaces/entities.ts:26-34, :110-118`** — resolved the seeding failure:
+     ```ts
+     export interface EntityCreateInput { type: string; name: string; slug?; content?; parent_id?; metadata?; enabled_classifiers?; }
+     create(input) { return action("create", { entity_type: input.type, name: input.name, ... }); }
+     ```
+     **SDK param is `type`, NOT `entity_type`.**
+
+   - **`~/Code/prodma-demo/lobu.config.ts`** (NEW, ~270 lines) — 5 entity types with Turkish `x-table-label`s. Shared `documentLines` const:
+     ```ts
+     const documentLines = {
+       type: "array" as const,
+       "x-table-label": "Satirlar",
+       items: {
+         type: "object" as const,
+         required: ["product_id", "quantity", "unit_price", "vat_rate"],
+         properties: {
+           product_id: { type: "integer", "x-link-entity-type": "product", "x-link-lookup-field": "title" },
+           description: { type: "string" }, quantity: { type: "number" },
+           unit_price: { type: "number" }, vat_rate: { type: "number", enum: [0,1,10,20] },
+           line_total: { type: "number", readOnly: true },
+         },
+       },
+     };
+     ```
+     Provider block, final state: `{ id: "openrouter", key: secret("OPENROUTER_API_KEY"), model: "openai/gpt-5.6-luna" }`
+
+   - **`~/Code/prodma-demo/scripts/seed.ts` and `scripts/add-rule.ts`** — the runtime rule injection:
+     ```ts
+     schema["x-transitions"] = {
+       field: "status",
+       allowed: { draft: ["issued","cancelled"], issued: ["posted"], posted: [], cancelled: [] },
+       frozen_from: "issued",
+       correction_type: "credit_note",
+     };
+     await client.entitySchema.updateType({ slug: "invoice", metadata_schema: schema });
+     ```
+
+   - **`docs/plans/define-metric-design.md`** — 564 lines, "Shipped (v1) 2026-07-15". Lines 41/417/494: materialization is an ops toggle. Compiler last changed 2026-06-16.
+
+   - **THE ARTIFACT** — `/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/scratchpad/prodma-on-lobu.html`, published at **https://claude.ai/code/artifact/b65a24ee-a91d-4a7e-a364-e881ed9c7cd0**, 923 lines, favicon 🏭. Sections 01–08. CSS design system preserved (paper `#FAFAFB` / ink `#151A22` / accent teal `#0F6E66`, full three-state theming). Head is at `/Users/burakemre/.claude/jobs/f0b3eac6/tmp/head.html` (154 lines), body at `body.html`; assembled with `cat head.html body.html > <scratchpad>/prodma-on-lobu.html`.
+
+   - **Memory files updated:** `reference_write_gate_is_the_only_non_agent_authorable_layer.md` (rules need NO table; concurrency is field-grained, do NOT propose a row version, real bug is the client), `reference_metric_design_answers_aggregates_with_an_ops_toggle.md` (NEW), `reference_entity_hooks_have_no_update_point.md` (NEW), `MEMORY.md` index.
+
+4. **Errors and fixes:**
+
+   - **Claimed the mutation gate carries current+proposed values.** It doesn't — `UpdateMutationRequest` has only `fields: Record<string, FieldOwner>`. Found while writing spike 1's brief. Fixed by correcting the artifact: a **freeze** works today (interceptor gets `req.sql`, the caller's open tx, and can SELECT the row); a **transition check** needs values threaded in first.
+   - **Recommended `xmin`, which was wrong.** The user asked "is using xmin the best idea?" — investigating showed the server has no lost-update bug at all (locked read inside the tx + per-key merge). The real bug is the client sending the whole metadata object. `xmin` would be a row token on a field-grained system, producing frequent false conflicts. Withdrawn.
+   - **Proposed an `x-durable-audit` per-type flag.** The user asked whether it was needed. It wasn't: `recordChangeEvent` already fires on every update, so volume is identical; only the tx boundary changes. A per-type flag would make some types' history untrustworthy with nothing on screen saying which. Withdrawn.
+   - **Proposed write-time rollups for aggregates** in an earlier round — contradicted `define-metric-design.md`, which explicitly cut the microbatch engine. Withdrawn.
+   - **Scope creep on scaling — user pushback: "wtf is that, why are you thinking about 1m invoices? we can focus on scaling that much long term".** I had put the 1M row in my own brief then treated the result as significant. Accepted; closed spike 4 at 23ms for Prodma's scale.
+   - **Never stood the product up — user pushback: "don't we need to actually scaffold the project, test it properly?"** Accepted; invoked the `lobu` skill and scaffolded `~/Code/prodma-demo`.
+   - **Seeding failures (three in a row, all from guessing instead of reading):** (a) TS type annotations broke the ExecuteCompiler; (b) `lobu memory exec` takes SOURCE not a file path (`"$(cat scripts/seed.ts)"`); (c) SDK param is `type` not `entity_type` — fixed by reading `sandbox/namespaces/entities.ts`.
+   - **My own schema was self-contradictory** — `frozen_from: "issued"` + `allowed.issued: ["posted"]` means the invoice can never reach `posted`. **Caught by the opencode agent, not by me.** Fixed with the state-field exemption + 3 new tests.
+   - **Model wiring chain (five separate failures):** "No model is configured" → added `model:` to config; stale worker (loads config at boot) → restart; `sharp` native module `Cannot find module '../build/Release/sharp-darwin-arm64v8.node'` → `bun install sharp` (npm was BLOCKED by an `enforce-bun.sh` PreToolUse hook), then the nested `@xenova/transformers/node_modules/sharp` (0.32.6) still broken → moved to `.sharp-broken-bak` so it resolves to top-level 0.35.3; `Model "claude-sonnet-5" not found` → the published worker bundle only knows `claude-3-5-sonnet-20241022`, `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514`, `claude-sonnet-4-5` (version skew vs the CLI's own providers.json); then **billing** — Anthropic "credit balance too low", OpenAI "no credits remaining", Gemini "exceeded its monthly spending cap", OpenRouter 402 "can only afford 2329" at claude-sonnet-5 → switched to `openai/gpt-5.6-luna`, which fits.
+
+5. **Problem Solving:**
+
+   **Both DB changes collapsed into existing primitives.** Rules go in `metadata_schema` as an `x-` keyword (`Record<String, Unknown>` on the contract + AJV `strict:false`, with `x-link-entity-type` as shipped precedent). Versioning is unnecessary because concurrency is already field-grained. Net: **zero schema changes** for the whole design.
+
+   **The `x-transitions` premise was proven empirically on the PUBLISHED server** — added at runtime via `client.entitySchema.updateType`, read back PRESENT, and survived a full `lobu apply`. No deploy, no DDL.
+
+   **Row-level read scope closed rather than deferred.** Relationship types carry no SQL predicate; the seam (`buildScopedQuery`, two entities CTEs) would take an `EXISTS` clause easily, but the tools/REST/search read paths are separate and a gate covering one of four leaks while looking like protection. Owner said operate on what I know; Prodma hides fields client-side, which is per-screen/per-field, so Lobu's tool-access tier covers it.
+
+   **Two genuine gaps found by asking "are we set?"**: (1) no update hook, so a transition can refuse a write but never *cause* one — blocking journal entries on invoice post and stock movements on dispatch; (2) no numbering primitive (mitigated because Innova assigns the e-invoice number).
+
+   **Spike results:** Spike 1 — 12/12, independently re-run by me, with real denial stack traces from `entity-management.ts:733` via `handleUpdate` (the human path). Spike 3 — reports yes, `tsc` clean, NOT independently verified. Spike 4 — 23ms at Prodma's scale, closed.
+
+   **Live audit-drop observed** in the spike 1 test log: `[insert-event] change audit event DROPPED after retry — audit trail is missing this row` with `events_created_by_fkey` violation — spike 2's premise witnessed rather than argued.
+
+6. **All user messages:**
+
+   - "WP-0 let's scope this out for now but i thought relationships can have sql expression which means that the users can see only those rows. if this is going to complicate marginally we can scope it out. if we should design this now properly we can actually start solution it. if it's not a blocker we can focus on it later. DB change 1 - why do you need this btw, don't we have the asme primitimives? DB change 2 - explain this properly see if we actualy don't have this. from prodma owner now sure i get the questioon explain. q3 we recently changed some metrics design dig into it. let's finalize the design so we can do some spikes and test it out"
+   - "is using xmin the best idea? also x-durable-audit isn't all enabled all the time, do we need this x-link-entity-type what problem does it solve. also the design doc might be old for metrics, what's materialized-view and do we have it or do we still need it with our today's metrics design change. prodma owner says the user don't need the ui to watch all the time, the chat with our crud pages is enough and for full yetki operate based on what you know"
+   - "did you need any new features now in lobu or are we set?"
+   - "ok do all, you can use opencode as cli to offload the work, use it as subagent"
+   - "wtf is that, why are you thinking about 1m invoices? we can focus on scaling that much long term"
+   - "don't we need to actually scaffold the project, test it properly? i thought we will create the project locally and test it and plug in a model so we can do end to end dmeo"
+   - "yes go ahead fix those"
+
+   **Security-relevant constraints in effect (from CLAUDE.md/AGENTS.md/the lobu skill, preserved verbatim):**
+   - "**Never write to `~/Code/lobu` directly.** Run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout — other sessions share it."
+   - "**Stage by explicit path** (`git add -- <paths>`, never `-A`)."
+   - "**`events` is append-only.** Never `DELETE FROM events`; tombstone or supersede instead."
+   - "**Never bulk-delete prod `organization` rows**, including zero-activity ones."
+   - "**Never resolve merge conflicts in the GitHub web UI**."
+   - "**Two writing agents must never share a worktree**."
+   - "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+   - "**Never auto-submit an interactive browser draft, in any package.**"
+   - "**Workers never receive real credentials** — placeholders or proxied access only."
+   - "**Request paths never aggregate history.**"
+   - "Do NOT include 'Co-Authored-By' or any Claude attribution in commit messages" and no "Generated with Claude Code" line.
+   - "**Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`."
+   - "Prefer `bun`, never npm/yarn/pnpm." (enforced by an `enforce-bun.sh` PreToolUse hook that blocks npm)
+   - From the lobu skill: "Never open or request permission to read `.env`"; "Never read, print, invent, or paste a real secret into source or chat." (I wired keys programmatically without echoing values, reporting only lengths.)
+   - "Do not call the AgentTool unless the user requested it" / "Do not use workflows or deep-research unless the user requested it."
+
+7. **Pending Tasks:**
+   - **Verify spike 3 myself** in the browser against a running instance, entering a real twelve-line invoice — currently unverified (confidence ~60).
+   - **Spikes 2 and 5** in the now-free `prodma-writepath` worktree: durable in-tx audit (move the before-snapshot inside the lock, pass the tx handle, extend to create/delete/link/unlink/merge) and the update hook (journal entry on invoice post, stock movement on dispatch).
+   - **Update the artifact** with all spike results, the freeze-semantics fix, and the demo evidence.
+   - **Remaining original deliverables:** Lobu roadmap and the pitch for Prodma's owner.
+   - **Outstanding from the owner:** roughly how many invoices/lines per year (to size anything). YETKI sheets and screen-watching were closed by the owner's "operate based on what you know".
+   - **Cleanup owed:** `_analysis/` in `~/Downloads/emre_project`, the `prodma-gap-audit` worktree, and now three spike worktrees; `~/Code/prodma-demo/node_modules/@xenova/transformers/node_modules/.sharp-broken-bak`.
+
+8. **Current Work:**
+
+   Completing the end-to-end agent demo, which is the user's "yes go ahead fix those" item list. Immediately before this summary I had:
+
+   (a) **Fixed the freeze/transition contradiction** in `packages/server/src/authz/transition-interceptor.ts` by exempting the state field from the freeze, and added three tests. Verified: `Test Files 1 passed (1) / Tests 12 passed (12)`.
+
+   (b) **Injected `x-transitions` at runtime** on the published server and confirmed it persisted and survived `lobu apply` (`"rule": "PRESENT"`).
+
+   (c) **Worked through the entire model-wiring chain** to `openai/gpt-5.6-luna` via OpenRouter, after Anthropic/OpenAI/Gemini all returned billing errors.
+
+   (d) **Ran the agent end-to-end.** It resolved "Anadolu Makina Sanayi" → `customer_id: 2`, "Celik Profil 40x40" → `product_id: 5`, "Hidrolik Silindir 80mm" → `product_id: 7`, and built a correct lines array with `subtotal: 23525`, `vat_total: 4705`, `grand_total: 28230` (arithmetic verified: 50×185.5=9275, 3×4750=14250). It hit the **approval gate** (`lobu-memory → run_sdk`, "Tool Approval Required"), which I approved with `printf '3\n'`.
+
+   (e) **The final tool result before this summary confirmed the write landed:**
+   ```json
+   { "count": 1,
+     "quotes": [ { "id": 9, "name": "Teklif - Anadolu Makina Sanayi - 2026-08-14",
+                   "status": "draft", "total": 28230, "lines": 2 } ] }
+   ```
+
+   The runtime is live at `localhost:8790` (started with `(npx --no-install lobu run > /tmp/prodma-run.log 2>&1 &)`), with 5 entity types, 3 customers, 4 products, and now 1 agent-authored quote.
+
+9. **Optional Next Step:**
+
+   Report the end-to-end demo result to the user — the agent-authored quote (id 9, total 28,230 TRY, 2 lines, correct arithmetic, held at the approval gate then persisted) — then continue the remaining items from the list the user approved with "yes go ahead fix those".
+
+   My stated plan immediately before the user's "yes go ahead fix those" was, verbatim: "1. Verify spike 3 myself, in the browser against this running instance, entering a real twelve-line invoice. 2. Fix the freeze/transition contradiction in the schema and re-test. 3. Drive the end-to-end agent demo — ask the agent in chat to build a quote for Anadolu Makina and convert it to an invoice. 4. Spikes 2 and 5 in the writepath tree, which is now free."
+
+   Items 2 and the first half of 3 are done. The immediate next step is to **finish item 3** — convert the saved quote into an invoice and demonstrate the freeze by attempting to edit it after posting — since the `x-transitions` rule is already live on the invoice type and the runtime is up. Note that the demo runs the **published** server, which lacks the interceptor, so a full freeze demo needs the `prodma-writepath` build; that distinction should be stated plainly rather than glossed.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

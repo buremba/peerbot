@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxprhu271</task-id>
+<tool-use-id>toolu_011qxjYzCGh6cEF7tonYeDf6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bxprhu271.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on complete_window change" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>biol8swhq</task-id>
+<summary>Monitor event: "CI failures on lobu PR #2210"</summary>
+<event>check-drift: fail</event>
+</task-notification>

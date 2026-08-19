@@ -1,0 +1,2 @@
+troubleshoot this [18/08/2026, 18:40:39] Umut Unal: https://umit-unal.lobu.ai/connectors/inference-provider%3Adeepseek
+[18/08/2026, 18:40:48] Umut Unal: abi benim deepseek connector neden calismiyor yav

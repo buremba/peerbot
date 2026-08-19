@@ -1,0 +1,1 @@
+let's step back and think. does it make more sense to dump the run_sdk calls in there? it feels a bit hard to follow so guide me interview me for the best ux as mcp app

@@ -1,0 +1,74 @@
+<task-notification>
+<task-id>a105790feb31cb22a</task-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/a105790feb31cb22a.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix query_sql silent empty results" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I'm polling too frequently. Let me report the current state and let the monitor deliver the final verdict.
+
+The critical result is already in: **the vitest step completed successfully**, which is where `auth.test.ts` lives — the exact test that failed. Here's the full report.
+
+## Decision: option (b), narrow `isSoftErrorResult`
+
+Your read was right, and the evidence is stronger than intuition.
+
+**`SdkScriptResultSchema` settles it.** It makes `success` a **required** field and documents `error` as *"the thrown error, with script position"* — carrying `name`, `message`, `line`, `column`. That is a schema whose entire purpose is expressing failure **as data**. `run_sdk`/`query_sdk` execute arbitrary caller code; when the script throws, the tool did its job perfectly — it ran the code and returned a faithful report. "The sandbox failed to run your code" and "your code ran and threw" are different conditions, and callers must distinguish them.
+
+The clean asymmetry: `query_sql` has **no `outputSchema`**, so `isError` is its only channel for reporting failure. `run_sdk` has one, with `success` built in. That — not soft-vs-hard — is the real line.
+
+**What tipped it beyond the test:** `interaction-bridge.ts:1006` prefixes output with `"Tool error: "` when `isError` is set. Option (a) would have relabelled every legitimate script throw that way in **real agent-visible output**. The failing test was the messenger, not the problem.
+
+The red payload also self-diagnosed: `"code":"INTERNAL"` — a user's typo classified as an internal tool fault.
+
+## On the concurrent commit
+
+While I worked, `0118e9b88` landed implementing option (a) — an `allowToolError` opt-out. I **reverted** it, keeping the unrelated `f9f2bcc5b` cleanup. Reasoning, also posted to the PR: it only touches test infra (leaving the `interaction-bridge` relabelling live), and the opt-out must be threaded through every future failure-path assertion — it already needed two call sites.
+
+**Proof it was the wrong layer:** both call sites that needed `allowToolError` now pass on the **pristine, unmodified helper** — 59 tests green. Removing the root cause made the escape hatch unnecessary.
+
+## Diff
+
+```
+ .../tools/query-sql-error-taxonomy.test.ts         |  71 +++++++--
+ .../unit/query-sql-unknown-table-error.test.ts     | 159 +++++++++++++++++++++
+ .../server/src/formatting/markdown-formatter.ts    |  18 ++-
+ packages/server/src/mcp-handler.ts                 |  19 ++-
+ packages/server/src/tools/execute.ts               |  29 +++-
+ packages/server/src/utils/execute-data-sources.ts  |   6 +-
+ packages/server/src/utils/table-schema.ts          |  28 +++-
+ 7 files changed, 311 insertions(+), 19 deletions(-)
+```
+
+The revert removed all test-helper churn, so the branch is back to its original 7-file scope.
+
+## Local verification (I did get a DATABASE_URL)
+
+The harness spawns embedded Postgres, so I reproduced CI properly:
+
+- **RED**: reinstating the broad version reproduces the *exact* CI error — same `mcpToolsCall` at `test-helpers.ts:298`, same `installConnector is not a function`.
+- **GREEN**: `59 passed` across `auth.test.ts`, `connect-setup-continuation.test.ts`, `query-sql-error-taxonomy.test.ts`; plus 20 more across `query-tool`, `run-script-runtime`, `member-write-access`.
+- `make test-unit` exit 0, `make pre-pr` exit 0.
+
+## CI on `57b5f25a3`
+
+`unit`, `typecheck`, `frontend`, `sdk-e2e`, `cli-smoke`, `format-lint`, `migrations`, CodeQL, Trivy, security suites — **all pass**. The `integration` job's **vitest step completed success** (that's where the failing test lives); its remaining bun:test steps were still running at handoff with zero failures.
+
+**`check-drift` fails, and it is not mine.** My branch pins owletto `44ea2032` — byte-identical to `origin/main`. `owletto/main` has advanced to `bc2856fe`, and #2204 is the bump PR carrying that pointer. PRs #2205/#2202 pin the *same* SHA as mine and pass only because they ran before owletto moved. It clears when #2204 merges. I deliberately did **not** bump the pointer — that would violate the invariant against pinning ahead of a merged parent bump.
+
+## Confidence
+
+- **`isSoftErrorResult` narrowing — 96.** Reproduced red and green locally against real Postgres; CI's vitest step confirms.
+- **Unknown-table fix intact — 95.** Its integration test still asserts `isError: true` and passes; that's the case where `isError` genuinely belongs.
+- **Revert correctness — 88.** Verified both ex-`allowToolError` call sites pass unaided. Residual risk is social, not technical: another contributor may prefer their approach, which is why I explained it on the PR rather than silently reverting.
+- **`check-drift` attribution — 93.** Based on comparing pinned SHAs across four PRs, not assumption.
+
+## Next actions
+
+1. **Confirm `integration` goes fully green** — the vitest step (the one that mattered) already did; the trailing bun:test steps were clean when I stopped.
+2. **Merge #2204** to clear `check-drift` on this and every other open PR.
+3. **Get a human read on the (a)-vs-(b) call** before merging — I reverted someone's commit, and that deserves a second opinion even though I believe the reasoning holds.
+4. **Consider an `outputSchema` for `query_sql`** so clients read `error_code`/`retryable` structurally instead of parsing markdown — the absence of one is why this bug had nowhere to surface.
+
+Not merged, per your instruction.</result>
+<usage><subagent_tokens>209710</subagent_tokens><tool_uses>77</tool_uses><duration_ms>836889</duration_ms></usage>
+</task-notification>

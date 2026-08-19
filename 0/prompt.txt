@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>by82c404f</task-id>
+<summary>Monitor event: "CI checks on PR 2218 after test commit"</summary>
+<event>check-drift: fail</event>
+</task-notification>

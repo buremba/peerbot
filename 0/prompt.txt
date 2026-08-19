@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bu73em6dj</task-id>
+<summary>Monitor event: "CodeRabbit status on owletto PR 650"</summary>
+<event>combined status: success</event>
+</task-notification>

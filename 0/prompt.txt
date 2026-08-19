@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgjqttn5s</task-id>
+<tool-use-id>toolu_017iWNtcCwGYDg8sSDWLY2WD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bgjqttn5s.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2384 integration" completed (exit code 0)</summary>
+</task-notification>

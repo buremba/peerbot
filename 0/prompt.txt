@@ -1,0 +1,14 @@
+<bash-stdout>== authz_source_acl_state (app=summaries-app-lobu-app-5ff447d87f-m742z db=lobu-db-prod-1) ==
+Defaulted container "postgres" out of: postgres, bootstrap-controller (init)
+ acl_support | freshness_state | connections |          newest_sync          
+-------------+-----------------+-------------+-------------------------------
+ full        | fresh           |           7 | 2026-08-15 14:45:01.67311+00
+ full        | failed          |           3 | 2026-08-12 02:15:00.897738+00
+(2 rows)
+
+== active slack connections (denominator) ==
+Defaulted container "postgres" out of: postgres, bootstrap-controller (init)
+ active_slack_connections 
+--------------------------
+                        2
+(1 row)</bash-stdout><bash-stderr></bash-stderr>

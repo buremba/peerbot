@@ -1,0 +1,5 @@
+<environment_context>
+  <current_date>2026-08-03</current_date>
+  <timezone>Europe/London</timezone>
+  <filesystem><workspace_roots><root>/Users/burakemre/Code/lobu</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+</environment_context>

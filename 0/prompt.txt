@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Capability-only replay restoration omits the persistence step needed to bind restored snapshots and save preceding UI edits. This can make successfully restored historical cards or their interaction state disappear again on the next reload.
+
+Review comment:
+
+- [P2] Persist restored capability-only replays — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:599-605
+  When a standard host replays empty `structuredContent` with a snapshot capability, this call—and the analogous late-host-identity branch below—ignores successful completion instead of invoking `persistSnapshotState`. If `toolInfo` is available, the snapshot therefore remains under the capability rather than being bound to the host card ID, so a later reload that supplies only `toolInfo` cannot restore it; an edit made to cached pagination or disclosure state before the capability arrived is likewise never saved.
+  </results>
+  </user_action>

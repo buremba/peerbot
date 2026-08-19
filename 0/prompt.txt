@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdyrw0c60</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bdyrw0c60.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for review-fix completion" was stopped</summary>
+</task-notification>

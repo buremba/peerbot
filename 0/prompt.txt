@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>ba1y4rz3c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/ba1y4rz3c.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-review 2396 on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

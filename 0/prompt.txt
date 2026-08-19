@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf3nxgpnq</task-id>
+<tool-use-id>toolu_01BYtYsjMusYrjZEiEKcMszh</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bf3nxgpnq.output</output-file>
+<status>completed</status>
+<summary>Background command "Build workspace packages in the new worktree" completed (exit code 0)</summary>
+</task-notification>

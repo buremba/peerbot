@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b32lx91kq</task-id>
+<tool-use-id>toolu_01Xsqfqso1muMFs9Bmwrv4W9</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/b32lx91kq.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on f87ba65c3" completed (exit code 0)</summary>
+</task-notification>

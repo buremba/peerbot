@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4ymvk5xz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/b4ymvk5xz.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for review verdict" completed (exit code 0)</summary>
+</task-notification>

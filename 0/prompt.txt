@@ -1,0 +1,1 @@
+ok you removed the scheduler_client_id but how does it work end to end? we can't pin a watcher to chatgpt/claude any mcp client now?

@@ -1,0 +1,1 @@
+i mean we can only whitelist the nix proper repo for depts but not all github repos

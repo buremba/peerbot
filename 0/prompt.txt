@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b38pdb13o</task-id>
+<tool-use-id>toolu_012iuMBjBVsDXjCJa8FpBeEF</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f761fcb1-819c-4034-b4d4-de9eb52a011b/tasks/b38pdb13o.output</output-file>
+<status>completed</status>
+<summary>Background command "Finish removing remaining superseded worktrees" completed (exit code 0)</summary>
+</task-notification>

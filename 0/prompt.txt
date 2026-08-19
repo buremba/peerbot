@@ -1,0 +1,1 @@
+make html artifact itneractive instead of all different pages. i also don't see the install connector button when a connector is clicked and not installed

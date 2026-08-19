@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>biepoxcp0</task-id>
+<summary>Monitor event: "pre-pr re-run result"</summary>
+<event>PRE_PR_EXIT=0</event>
+</task-notification>

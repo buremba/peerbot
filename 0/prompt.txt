@@ -1,0 +1,1 @@
+let's plan it properly, i will compact and you will run opus subagent to do the work and we will test all with vercel e2e with github connector to see the auth working

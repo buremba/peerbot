@@ -1,0 +1,164 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Across this session the user drove a launch-readiness verification programme ("we're launching tomorrow", "we need full coverage", "i don't want any gaps"). Explicit requests in order:
+   - "do we need isorun in this case in CI or no? let's do the next steps."
+   - "before publishing did you do all the mcp cli ui tests and the smoke test to use it from slack etc" + mid-turn "how did you test the slack, you had to login no"
+   - "docker path also needs to be smoke tested. so we need full coverage and we can run this only when a pr is merged to main, in parallel. not blocking prod deployment but fails the main in that case so we can't release a new version."
+   - "can you use isorun to do all these docker etc checks? also smoke runs docker in ci no"
+   - "should we do the check on lobu ai after prod is deployed maybe, that's more of a real test no?"
+   - "yes i think prod smoke can be the best approach, we can do the cli test after a version is released for example. same with mac app and chrome extension as well"
+   - "in the prod when main is merged we actually do a real z.ai based test with opencode in a sandbox right? or pi agent is better no need for opencode"
+   - "we can maybe do the runs every 1 hour only once, only when there is any new deployments. that way z.ai usage wont hurt us."
+   - "when bubblewrap is not available it works right? also when is bubblewrap used, not in the sandboxes like vercel right? bubblewrap is only used locally if the user allowed some local commands mapped to theirs i believe"
+   - "2 and for 3 it can be on github actions as well right. you can mint it you have cli. wtf, don't we sign the dmg"
+   - "we want to do the full check but what's the cost"
+   - "why don't you want to do the work, because it will be throwaway or what?"
+   - "go do those one by one"
+   - "why did you have to change the code, i need to unsertand" ← **the current, unanswered question**
+
+2. **Key Technical Concepts:**
+   - **Three verification layers**, non-overlapping: npm artifact smoke (tests the *previous* release), app-image smoke (the release gate), prod smoke (post-rollout detector).
+   - **Release-gate circularity**: gating publish on the npm smoke would deadlock, because that smoke installs `@lobu/cli@latest` — red exactly when a fix awaits publishing.
+   - **Docker-in-CI**: GH runners run docker natively; only jobs setting `container:` lack a daemon.
+   - **Worker entrypoint selection**: `gateway/config/index.ts` probes for `packages/agent-worker/src/index.ts`; `buildWorkerInvocation` spawns `.ts` under bun, `.mjs` under node. The prod app image ships `src/` + bun → takes the bun path → **never hit the `__filename` bug**.
+   - **Credential invariant** (`packages/server/AGENTS.md:28-31`): workers never see real credentials; only device-pinned connectors and short-lived provider-derived leases; "Never widen this to a durable stored credential." This is *why* `lobu connector run` supports only `browser_session`.
+   - **bubblewrap / exec sandbox**: `registerSpawnedBinaries = sandboxStrategy.kind !== "none" || allowUnsandboxedExec`. On the prod cluster `probeSandboxStrategy()` returns `none` and contributed CLIs exit 127 **by design** — `charts/lobu/values.yaml:84-125` measures that bwrap cannot be enabled by any securityContext change (uid_map is runtime-restricted).
+   - **`runs.dry_run`**: connector executes for real, server persists nothing. Flag read from the run row (not the request) for multi-replica correctness.
+   - **Squash merges break ancestry** — rollout gates must use the squash commit, merge commit first.
+
+3. **Files and Code Sections:**
+
+   - **`.github/workflows/ci.yml`** (merged in #2379) — added `pgvector-glibc-floor` job:
+     ```yaml
+     pgvector-glibc-floor:
+       runs-on: blacksmith-4vcpu-ubuntu-2404
+       timeout-minutes: 5
+       steps:
+         - uses: actions/checkout@v7
+         - name: Assert glibc floor on committed prebuilts
+           run: |
+             for arch in linux-x64 linux-arm64; do
+               packages/pgvector-embedded/scripts/assert-glibc-floor.sh \
+                 "packages/pgvector-embedded/prebuilt/${arch}"
+             done
+         - name: Resolve the x64 prebuilt on the oldest supported glibc
+           run: |
+             out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye \
+               ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1)
+             if echo "$out" | grep -qi "not found"; then exit 1; fi
+     ```
+
+   - **`scripts/app-image-smoke.sh`** (merged, #2382 + #2383) — boots the pushed app image. Six checks. Key boot block after #2383:
+     ```bash
+     CID=$(docker run -d --network host \
+       -e "DATABASE_URL=${DATABASE_URL}" \
+       -e "JWT_SECRET=app-image-smoke-not-a-real-secret" \
+       -e "ENCRYPTION_KEY=$(openssl rand -base64 32)" \
+       -e "ALLOW_DB_CREATE=1" -e "PORT=${APP_PORT}" "$IMAGE")
+     for _ in $(seq 1 150); do ... done   # 300s; blank-DB migrations measured ~113s
+     ```
+
+   - **`.github/workflows/build-images.yml`** — `app-image-smoke` job, `needs: [generate-tag, build-app]`, pgvector service, runs after the push so it can't block Flux but reddens main. Also added to `notify-failure`'s `needs`.
+
+   - **`.github/workflows/publish-packages.yml`** — release preflight querying `build-images.yml/runs?head_sha=${sha}`, failing closed on missing/incomplete/non-success.
+
+   - **`scripts/prod-smoke.sh` + `.github/workflows/prod-smoke.yml`** (merged, #2384) — 7 checks; read-only; `workflow_run` after Build and Push Images + 30-min cron. Fixer added:
+     ```yaml
+     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+     ```
+
+   - **`db/migrations/20260731020000_runs_dry_run.sql`** (NEW, uncommitted):
+     ```sql
+     ALTER TABLE public.runs
+       ADD COLUMN dry_run boolean DEFAULT false NOT NULL,
+       ADD COLUMN dry_run_preview jsonb;
+     ```
+     Comments (fixer-extended) name `worker-api/run-lifecycle.ts` and `scheduled/check-stalled-executions.ts` as enforcement sites.
+
+   - **`packages/core/src/contracts/tools/manage-feeds.ts`** (modified) — `dry_run` added to `TriggerFeedAction` and to the trigger_feed result variant.
+
+   - **`packages/server/src/runs/queue-service.ts`** (modified) — `createSyncRunWithClient(sql, feedId, dryRun = false)`; `createSyncRun(feedId, _env, db?, opts?: { dryRun?: boolean })`. Dry path inserts the run row ONLY; non-dry keeps the CTE that also `UPDATE feeds SET last_sync_status='pending', last_error=NULL, next_run_at=...`.
+
+   - **`packages/server/src/worker-api/run-lifecycle.ts`** (modified, the bulk) — `DRY_RUN_PREVIEW_LIMIT = 50`, `DRY_RUN_CONTENT_CHARS = 500`; `r.dry_run` added to the run lookup; `const isDry = run.dry_run === true;`. Guards on `materializeInlineAttachments` (ArtifactStore orphan-blob trap), `applyEventAttributions` (creates entity rows), the `insertEvent` block (dry branch pushes to `dryPreview` then `continue`, after validation), `triggerAudioTranscriptions`, and both checkpoint UPDATEs. Preview accumulates across batches via `jsonb_build_object` with honest `total` and `truncated`.
+
+   - **`packages/server/src/__tests__/integration/feed-dry-run-persists-nothing.test.ts`** (NEW) — 2 tests: the negative assertion (no events, checkpoint byte-identical, `next_run_at`/`last_sync_status` unmoved) plus a **CONTROL** proving the same batch on a non-dry run does persist.
+
+   - **`packages/server/src/scheduled/check-stalled-executions.ts`** (+12 lines, **by the fixer — not yet reviewed by me**).
+
+4. **Errors and fixes:**
+   - **`make review` on #2379 failed on `tests_adequate: false`** — reviewer noted no CI gate loads the prebuilt on old glibc. Fixed by adding `pgvector-glibc-floor` in the same PR; re-review passed.
+   - **app-image-smoke first run RED** — container log showed migrations fine then "Lobu needs an encryption key to store secrets". My bug, not the product's. Fixed in #2383 with a generated `ENCRYPTION_KEY` (deliberately not `LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY`, which takes a different startup branch) and a 300s boot window.
+   - **Typecheck errors in unrelated files** — stale `@lobu/core` dist in a fresh worktree; fixed with `make build-packages`.
+   - **Prod-smoke re-test looked like a regression (exit 0)** — prod had rolled forward to `5cdb5552` so `#2382` genuinely was deployed; retested with an actually-undeployed SHA → exit 1.
+   - **`gh run view --json jobs --jq --arg`** → "accepts at most 1 arg(s)"; fixed by inlining the name.
+   - **`sleep 45 && tail`** blocked by the harness; must use background tasks.
+   - **My false alarm: "an unsigned DMG can ship today"** — WRONG. All five Apple secrets set since May; last run logged "Building a SIGNED + notarized DMG" with "Developer ID Application: Burak Emre Kabakci". I read the warn-and-continue branch without checking configuration.
+   - **My wrong claim that missing bubblewrap is "a silent regression"** — WRONG. It's the measured, documented, intended prod state (`values.yaml:84-125`), and a memory `reference_contributed_clis_exit_127_by_design` says "Do not re-open this as a bug."
+   - **My over-generalisation that "containers can't do docker"** — the user caught it; only `container:` jobs lack a daemon.
+   - **Lobu MCP failures** — 'lobu-crm' org not found; `runs` not in queryable allowlist; `behaviors.listRuns` is not a function. The Z_AI quota question was never answered.
+
+5. **Problem Solving:**
+   - Established the three verification layers and why the release gate must key on the image smoke, not the npm smoke.
+   - Proved every matrix axis load-bearing: on the first main run, each cell caught a different shipped bug (trixie→`__filename`, bookworm-root→uid-0, bookworm/jammy→GLIBC_2.38).
+   - Scoped `__filename` correctly: CLI/self-hoster only; prod takes the bun path.
+   - Diagnosed the connector dry-run "gap" as a deliberate security boundary, not an oversight; correct fix is server-side `dry_run`.
+   - Discovered persistence is entirely server-side → the worker needs no changes, making the feature ~190 lines rather than a day.
+   - Found side effects that reading only `insertEvent` would have missed: ArtifactStore materialization (orphaned blobs), entity attribution, the `UPDATE feeds` inside the insert CTE (schedule drift), and — via the fixer — `check-stalled-executions.ts`.
+
+6. **All user messages:**
+   - "do we need isorun in this case in CI or no? let's do the next steps."
+   - "before publishing did you do all the mcp cli ui tests and the smoke test to use it from slack etc"
+   - "how did you test the slack, you had to login no"
+   - "docker path also needs to be smoke tested. so we need full coverage and we can run this only when a pr is merged to main, in parallel. not blocking prod deployment but fails the main in that case so we can't release a new version."
+   - "can you use isorun to do all these docker etc checks? also smoke runs docker in ci no"
+   - "should we do the check on lobu ai after prod is deployed maybe, that's more of a real test no?"
+   - "yes i think prod smoke can be the best approach, we can do the cli test after a version is released for example. same with mac app and chrome extension as well"
+   - "in the prod when main is merged we actually do a real z.ai based test with opencode in a sandbox right? or pi agent is better no need for opencode"
+   - "we can maybe do the runs every 1 hour only once, only when there is any new deployments. that way z.ai usage wont hurt us."
+   - "when bubblewrap is not available it works right? also when is bubblewrap used, not in the sandboxes like vercel right? bubblewrap is only used locally if the user allowed some local commands mapped to theirs i believe"
+   - "2 and for 3 it can be on github actions as well right. you can mint it you have cli. wtf, don't we sign the dmg"
+   - "we want to do the full check but what's the cost"
+   - "why don't you want to do the work, because it will be throwaway or what?"
+   - "go do those one by one"
+   - "why did you have to change the code, i need to unsertand"
+
+   **Standing constraints (from CLAUDE.md/AGENTS.md, still in force):** never write to `~/Code/lobu` directly — use `make task-setup NAME=<slug>` and work in `.claude/worktrees/<slug>/`; never `git switch` in the main checkout. No "Co-Authored-By" or "Generated with Claude Code" in commit messages. Prefer `bun`; never npm/yarn/pnpm for repo work. **Workers never receive real credentials** — only placeholders/proxied access; exceptions only for device-pinned connectors and short-lived provider-derived credential leases; never widen to a durable stored credential. **`events` is append-only** — never `DELETE FROM events`. Never bulk-delete prod `organization` rows. Absence must be proven with `git fetch -q origin && git grep <pattern> origin/main`. Stage by explicit path (`git add -- <paths>`, never `-A`). Show the diff, not a summary. End work with a confidence score and 2-4 concrete next actions. Do not use the Agent tool or Workflows unless requested.
+
+7. **Pending Tasks:**
+   - **Answer the user's current question**: why the code change was necessary.
+   - **Item 1 (in flight)**: finish the dry_run PR — verify the fixer's diff (including the unreviewed `check-stalled-executions.ts` change), commit by explicit path, push, `make review`, merge, then exercise against a real oauth connector in prod.
+   - **Item 2**: wire `dry_run` into `lobu connector run` — only the `--from-feed <id>` half is possible; ad-hoc `--config` has no server-side equivalent.
+   - **Item 3**: cut the release (`@lobu/cli@latest` is still broken 14.7.1).
+   - **Item 4**: task #10 — report (not assert) exec-sandbox state; probe `systemd-run --user` in CI.
+   - Task #3 (open): run project-variant matrix through the CLI.
+   - Real-provider turn job: use the existing `LOBU_TOKEN` secret; gate on prod `/health.revision` changing + 1h floor; still needs the user's decision on which org absorbs permanent `events` rows.
+
+8. **Current Work:**
+
+   Working through "go do those one by one", item 1: shipping the `dry_run` feature from worktree `/Users/burakemre/Code/lobu/.claude/worktrees/feed-dry-run`.
+
+   Completed: implementation, local integration test green (2 passed against Postgres on port 5418, DB `lobu_dryrun_test`), mutation-tested both critical guards, `make pre-pr` clean.
+
+   `make review-fix` then completed and modified **5 files** — including one I had not touched:
+   ```
+   packages/core/src/contracts/tools/manage-feeds.ts  |  11 ++
+   packages/server/src/runs/queue-service.ts          |  40 ++++-
+   .../src/scheduled/check-stalled-executions.ts      |  12 +-
+   packages/server/src/tools/admin/manage_feeds.ts    |  17 ++-
+   packages/server/src/worker-api/run-lifecycle.ts    | 166 ++++++++++++++++++---
+   ```
+   The fixer also extended the migration comment to name a site I missed: *"scheduled/check-stalled-executions.ts (a reaped dry run is never retried as a real sync and never stamps feed failure state)"*. **I have not yet read or verified that change** — AGENTS requires re-reading files after the fixer touches them.
+
+   Also confirmed this turn: prod-smoke's `workflow_run` trigger fired for the first time and **passed 8/8**, including `ok — 34a84a5763b4 is live (deployed 34a84a5763b4)`, closing the last confidence-75 item.
+
+9. **Optional Next Step:**
+
+   Answer the user's question — "why did you have to change the code, i need to unsertand" — explaining the causal chain: `lobu connector run` rejects oauth/env profiles because durable stored credentials must never leave the gateway (`packages/server/AGENTS.md:28-31`), so those connectors can only be exercised server-side; but server-side the only execution path was `trigger_feed`, which always persists (events into an append-only table, entities, artifacts, and an advanced checkpoint). Hence there was no way to test an oauth/api-key connector without permanently mutating the workspace, and the change adds a mode where the connector runs for real but the server declines every write. The flag lives on the `runs` row rather than in memory because it must survive the worker round-trip and any replica may handle the callback.
+
+   Then resume item 1 by reviewing the fixer's diff — particularly the unverified `packages/server/src/scheduled/check-stalled-executions.ts` change — before committing by explicit path, per the rule: "re-read the files before trusting them."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

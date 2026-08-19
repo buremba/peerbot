@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzdd4ie50</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bzdd4ie50.output</output-file>
+<status>completed</status>
+<summary>Background command "Worktree for scheduler_client_id removal" completed (exit code 0)</summary>
+</task-notification>

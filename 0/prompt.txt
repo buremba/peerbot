@@ -1,0 +1,6 @@
+WP-0 let's scope this out for now but i thought relationships can have sql expression which means that the users can see only those rows. if this is going to complicate marginally we can scope it out. if we should design this now properly we can actually start solution it. if it's not a blocker we can focus on it later.
+DB change 1 - why do you need this btw, don't we have the asme primitimives?
+DB change 2 - explain this properly see if we actualy don't have this
+from prodma owner now sure i get the questioon explain. 
+q3 we recently changed some metrics design dig into it
+let's finalize the design so we can do some spikes and test it out

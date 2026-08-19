@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwbdan5t0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bwbdan5t0.output</output-file>
+<status>killed</status>
+<summary>Background command "Run remote pre-PR gate on settled tree" was stopped</summary>
+</task-notification>

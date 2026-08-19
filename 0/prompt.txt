@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqpin0y08</task-id>
+<tool-use-id>toolu_01GH4tiP1AWgoLH8gtRapEqX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/bqpin0y08.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for integration check" completed (exit code 0)</summary>
+</task-notification>

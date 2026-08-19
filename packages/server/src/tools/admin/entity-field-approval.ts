@@ -14,6 +14,7 @@ import {
 	type ApprovalAttribution as ApprovalAttributionType,
 } from "@lobu/core/contracts/interaction-envelope";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
+import { resolveApprovalChatOrigin } from "./approval-delivery";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
 import {
 	type EntityResolutionAssessment,
@@ -1014,7 +1015,14 @@ export async function proposeEntityChange(
 		fieldPath:
 			updateProposal && fieldKeys.length === 1 ? (fieldKeys[0] ?? null) : null,
 	});
-	const deliveryTarget = approvalPolicy.deliveryTarget;
+	// The policy's configured channel wins; otherwise the conversation that asked.
+	// Either way this is a targeted delivery — the trigger never falls back to the
+	// org-wide fan-out.
+	const deliveryTarget =
+		approvalPolicy.deliveryTarget.connectionId ||
+		approvalPolicy.deliveryTarget.channelId
+			? approvalPolicy.deliveryTarget
+			: await resolveApprovalChatOrigin(ctx);
 
 	notifyActionApprovalNeeded({
 		orgId: ctx.organizationId,
@@ -1027,6 +1035,7 @@ export async function proposeEntityChange(
 		channelId: deliveryTarget.channelId,
 		teamId: deliveryTarget.teamId,
 		ownerUserId: updateProposal?.owner_user_id ?? null,
+		requesterUserId: ctx.userId ?? null,
 		mcpActivity: currentMcpActivityAttribution(ctx),
 		details:
 			operation === "update"

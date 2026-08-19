@@ -493,6 +493,30 @@ async function notifyOrgAdmins(
 	await sendNotification(orgId, adminIds, build(orgSlug));
 }
 
+/**
+ * Which user, if any, should get the approval as a Slack DM.
+ *
+ * `deliverToBotConnections` tries the DM tier BEFORE the channel tier and
+ * returns on success, so this is a real precedence decision and not a
+ * preference: hand it the requester while a chat origin is also set and an
+ * approval asked for in a channel silently lands in the asker's DM instead,
+ * inverting the documented conversation → DM → inbox order.
+ *
+ * A field owner always wins — they own the change under review, and routing it
+ * to them is the point of the tier. The requester is the fallback that gives an
+ * MCP-initiated approval (no chat coordinates at all) somewhere to go.
+ */
+export function resolveApprovalDmTarget(params: {
+	ownerUserId?: string | null;
+	requesterUserId?: string | null;
+	connectionId?: string | null;
+	channelId?: string | null;
+}): string | null {
+	if (params.ownerUserId) return params.ownerUserId;
+	if (params.connectionId || params.channelId) return null;
+	return params.requesterUserId ?? null;
+}
+
 export async function notifyActionApprovalNeeded(params: {
 	orgId: string;
 	runId: number;
@@ -505,6 +529,13 @@ export async function notifyActionApprovalNeeded(params: {
 	teamId?: string | null;
 	/** Field owner — routes the Slack card to their DM before the channel tier. */
 	ownerUserId?: string | null;
+	/**
+	 * The human whose turn queued this approval. Used as the DM tier when there
+	 * is no field owner AND no chat origin — an MCP-initiated approval (Claude
+	 * Code, claude.ai) carries no chat coordinates at all, so without this it
+	 * would have no chat destination and land in the inbox alone.
+	 */
+	requesterUserId?: string | null;
 	mcpActivity?: McpActivityAttribution | null;
 	details?: ActionApprovalDetails;
 }): Promise<void> {
@@ -539,7 +570,11 @@ export async function notifyActionApprovalNeeded(params: {
 			connectionId: params.connectionId,
 			channelId: params.channelId,
 			teamId: params.teamId,
-			ownerUserId: params.ownerUserId,
+			// Never org-wide. An approval with no resolved chat target reaches its
+			// admins through the inbox + approval URL; broadcasting it into every
+			// bound channel is noise, not reach. See CreateNotificationParams.
+			deliveryScope: "targeted",
+			ownerUserId: resolveApprovalDmTarget(params),
 			mcpActivity: params.mcpActivity,
 		};
 	});

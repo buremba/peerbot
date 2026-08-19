@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkqp3d7qo</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/bkqp3d7qo.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch required checks on 2558" completed (exit code 0)</summary>
+</task-notification>

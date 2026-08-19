@@ -1,0 +1,1 @@
+why /memory page? maybe activity can be home and the context can be entities etc in url route? also is context the best term, maybe graph?

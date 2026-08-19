@@ -8,8 +8,8 @@ import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversat
 import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
 import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
-import { isUniqueViolation } from "../utils/pg-errors";
 import { resolveEventKindDefinition } from "../utils/event-kind-validation";
+import { isUniqueViolation } from "../utils/pg-errors";
 import { buildKindCard } from "./template-card";
 
 interface CreateNotificationParams {
@@ -512,13 +512,8 @@ async function deliverToBotConnections(
 	//      authoring its content twice (`payloadData` for web, a hand-built card
 	//      for chat) and drifting between them;
 	//   3. the markdown body.
-	const templateCard = params.card
-		? null
-		: await resolveNotificationKindCard(params);
-	const content =
-		params.card || templateCard
-			? { card: (params.card ?? templateCard) as CardElement }
-			: { markdown: text };
+	const card = params.card ?? (await resolveNotificationKindCard(params));
+	const content = card ? { card } : { markdown: text };
 	const deliveryPlan = await resolveNotificationDeliveryPlan({
 		organizationId: params.organizationId,
 		automationId: params.automationId,

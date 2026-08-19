@@ -191,7 +191,12 @@ export async function resolveEntityApprovalRun(
 	organizationId: string,
 ): Promise<{
 	state: "pending" | "approved" | "rejected" | "not_found";
-	/** action_input.owner_user_id — the field owner allowed to decide this run. */
+	/**
+	 * action_input.owner_user_id — the field owner allowed to decide an entity
+	 * change. Always null for a connector operation: there `action_input` is the
+	 * agent-authored operation input, so reading an owner out of it would let
+	 * the agent nominate its own approver.
+	 */
 	ownerUserId: string | null;
 }> {
 	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
@@ -200,7 +205,10 @@ export async function resolveEntityApprovalRun(
 		approval_status: string | null;
 		owner_user_id: string | null;
 	}>`
-    SELECT id, approval_status, action_input->>'owner_user_id' AS owner_user_id
+    SELECT id, approval_status,
+      CASE WHEN run_type = 'internal'
+        THEN action_input->>'owner_user_id'
+      END AS owner_user_id
     FROM runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}

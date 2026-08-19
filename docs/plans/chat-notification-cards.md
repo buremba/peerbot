@@ -41,26 +41,32 @@ the platform cap, an over-long value: **show what fits and link to the event.**
 
 ## What was built
 
-- **`@lobu/core/json-template`** — `formatValue`, `getValueByPath`,
-  `VALUE_FORMATS`. Owletto has an identical copy at
+- **`@lobu/core/json-template`** — `formatValue` and the `VALUE_FORMATS`
+  directive set (the server's `validate-json-template` now imports it instead
+  of keeping its own copy). Owletto has an identical copy at
   `src/lib/json-renderer/format-value.ts`; a follow-up PR in that repo deletes
-  it and imports this, so scalar formatting is one implementation for all three
-  surfaces.
+  it and imports this (plus the vite alias a new core subpath needs), so scalar
+  formatting is one implementation for all three surfaces.
 - **`orderedSchemaFields`** — extracted from `buildDefaultEntityTemplate` and
   exported. Ordering (`x-table-column`), hiding (`x-hidden`) and labelling
   (`x-table-label` / `title`) are now shared by the web default template and the
   chat card, so they agree by construction rather than by convention.
 - **`notifications/template-card.ts`** — `buildKindCard`: schema fields →
-  `Fields`, capped at 10 and clamped to 1800 chars, plus an "Open in Lobu"
-  `CardLink`. Declines (returns null → markdown body) when the kind authored a
-  `jsonTemplate` or the schema has no usable fields.
+  `Fields`, Slack-escaped, capped at 10 fields and one shared 1900-char
+  label+value budget per field, plus an Actions row: Approve/Reject when the
+  notification names a `decisionRunId`, and an "Open in Lobu" / "Review in
+  Lobu" `LinkButton`. Declines (returns null → markdown body) when the kind
+  authored a `jsonTemplate` or the schema has no usable fields.
 - **`utils/platform-event-kinds.ts`** — kinds the platform emits, consulted as
   the LAST resort in `resolveEventKindDefinition` so an org declaring the same
   slug still wins. Holds `connector_operation_approval` (operation, connection,
   input) as a `metadataSchema` only.
 - **Wiring** — `service.ts` builds the card from the kind when the caller passed
   no explicit `card`; `triggers.ts` gives connector-operation approvals that
-  semantic type + payload; `execute.ts` passes the operation name and input.
+  semantic type + payload + `decisionRunId`, keyed on the explicit `operation`
+  argument (builder runs such as `manage_automations` also arrive without
+  `details` but are not chat-decidable, so absence of `details` is not the
+  signal); `execute.ts` passes the operation name and input.
 
 Because the kind is resolved the normal way, the Memory view and MCP apps pick
 up the same approval rendering with no extra work.
@@ -91,14 +97,16 @@ Operation    Run shell command
 Connection   Mac Shell
 Input        Command: git status --porcelain; Cwd: /Users/burakemre/Code/lobu
 
-Open in Lobu
+[Approve] [Reject] [Review in Lobu]
 ```
 
-## Not done
+## Deciding from chat
 
-Decision buttons. They are a separate concern from rendering: Slack buttons need
-`inputSchema: null` from `notifyActionApprovalNeeded` plus widening the
-`ENTITY_CHANGE_ACTION_KEYS` filter at `interaction-bridge.ts:176`, whose comment
-says connector approval "needs a separate env-safe execution path". One-click
-approve for `os.shell run` from Slack is a security decision, not a formatting
-one, and must not ride this change.
+`resolveEntityApprovalRun` in `interaction-bridge.ts` is the allowlist of runs a
+chat click may decide; it now admits `run_type = 'action'` alongside the
+entity-change family. The click still resolves the Slack identity to an org
+admin/owner and executes through `manage_operations approve|reject` with the
+real process env, exactly as the web review does; `action_input.owner_user_id`
+is only read for entity-change runs, never for a connector operation whose
+input the agent authored. `approval-decision-scope.test.ts` pins the boundary
+against a real DB.

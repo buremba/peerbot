@@ -16,20 +16,11 @@
  * owletto while still catching the mistakes that matter.
  *
  * Mirrors owletto's `jsonTemplateSchema` node shape (json-renderer/types.ts) —
- * keep the node kinds + VALUE_FORMATS in sync if the DSL grows.
+ * keep the node kinds in sync if the DSL grows. The `format` directives are
+ * shared with the renderers via `@lobu/core/json-template`.
  */
 
-/** Display-format directives a `data` node may request (see format-value.ts). */
-const VALUE_FORMATS = new Set([
-	"currency",
-	"date",
-	"url",
-	"enum",
-	"boolean",
-	"number",
-	"auto",
-	"text",
-]);
+import { isValueFormat, VALUE_FORMATS } from "@lobu/core/json-template";
 
 class TemplateValidationError extends Error {}
 
@@ -95,7 +86,7 @@ function validateNode(node: unknown, path: string): void {
 			}
 			if (
 				node.format !== undefined &&
-				(typeof node.format !== "string" || !VALUE_FORMATS.has(node.format))
+				!isValueFormat(node.format)
 			) {
 				fail(
 					`${path}.format`,
@@ -205,5 +196,3 @@ function walkHandlers(node: unknown, path: string): void {
 		});
 	}
 }
-
-export { VALUE_FORMATS };

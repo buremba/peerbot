@@ -65,7 +65,7 @@ export function isHttpUrl(value: string): boolean {
 }
 
 /** `pull_request_opened` → `Pull Request Opened`. */
-export function titleCaseWords(value: string): string {
+function titleCaseWords(value: string): string {
   return value
     .replace(/[-_]/g, " ")
     .replace(/\s+/g, " ")
@@ -184,18 +184,4 @@ export function formatValue(value: unknown, format?: ValueFormat): string {
       // undefined | "text" → raw passthrough (no silent reformatting).
       return value;
   }
-}
-
-/** Resolve a dotted/indexed binding path (`user.name`, `items[0].title`). */
-export function getValueByPath(
-  data: Record<string, unknown>,
-  path: string
-): unknown {
-  const parts = path.replace(/\[(\d+)\]/g, ".$1").split(".");
-  let current: unknown = data;
-  for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
 }

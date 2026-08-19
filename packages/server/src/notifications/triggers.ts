@@ -522,14 +522,21 @@ export async function notifyActionApprovalNeeded(params: {
 	requesterUserId?: string | null;
 	mcpActivity?: McpActivityAttribution | null;
 	details?: ActionApprovalDetails;
-	/** Human-readable operation name, when this is a connector operation. */
-	operationName?: string | null;
-	/** The operation's input, rendered so the decision can be made from chat. */
-	operationInput?: Record<string, unknown> | null;
+	/**
+	 * Set ONLY for a connector operation (`run_type = 'action'`). Its presence
+	 * is what routes the notification through the platform event kind and puts
+	 * Approve/Reject on the chat card — builder runs (`manage_automations`,
+	 * `manage_agents`) also arrive without `details`, but the chat click handler
+	 * cannot decide them, so they must not be inferred into this family.
+	 */
+	operation?: {
+		/** Human-readable operation name. */
+		name: string;
+		/** The operation's input, rendered so the decision can be made from chat. */
+		input: Record<string, unknown>;
+	} | null;
 }): Promise<void> {
-	// `details` is set only by the entity-approval families; a connector
-	// operation has none, which is exactly why its card was empty before.
-	const isConnectorOperation = params.details == null;
+	const operation = params.operation ?? null;
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
 		// Run-scoped, via the shared permalink resolver — same reasoning as the
 		// approval_url: the pending event is superseded on approve→complete, but the
@@ -560,13 +567,13 @@ export async function notifyActionApprovalNeeded(params: {
 			// connection / input table from one declaration. Entity approvals keep
 			// their hand-built card (it carries the field diff and the buttons)
 			// until they have a kind of their own.
-			...(isConnectorOperation
+			...(operation
 				? {
 						semanticType: CONNECTOR_OPERATION_APPROVAL_KIND,
 						payloadData: {
-							operation: params.operationName ?? params.actionKey,
+							operation: operation.name,
 							connection: params.connectionName ?? null,
-							input: params.operationInput ?? null,
+							input: operation.input,
 						},
 						decisionRunId: params.runId,
 					}

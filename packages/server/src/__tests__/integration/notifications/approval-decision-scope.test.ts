@@ -60,6 +60,22 @@ describe("runs decidable from a chat card", () => {
 		});
 	});
 
+	it("never reads an approver out of a connector operation's input", async () => {
+		// For an action run, action_input IS the agent-authored operation input.
+		// An `owner_user_id` planted there must not become a decision grant.
+		const org = await createTestOrganization();
+		const runId = await seedRun({
+			organizationId: org.id,
+			runType: "action",
+			actionKey: "os.shell.run",
+			ownerUserId: "user_planted_by_agent",
+		});
+		expect(await resolveEntityApprovalRun(runId, org.id)).toEqual({
+			state: "pending",
+			ownerUserId: null,
+		});
+	});
+
 	it("still admits an entity-change run", async () => {
 		const org = await createTestOrganization();
 		const runId = await seedRun({

@@ -114,9 +114,7 @@ export function buildKindCard(params: {
 				label: safeLabel,
 				value: clamp(raw, MAX_FIELD_CHARS - safeLabel.length) || "—",
 			});
-		})
-		.filter((field) => field.label);
-	if (fields.length === 0) return null;
+		});
 
 	const children: CardChild[] = [Fields(fields.slice(0, MAX_FIELDS))];
 

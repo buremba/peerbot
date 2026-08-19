@@ -1,0 +1,1 @@
+connect your agnet looks like a seperate page. instead the chips in connectors we can add agents there and stick the values in the query parmaeter when clicked. also if there is no agent. no need for seperate agents section in the sidebar no?

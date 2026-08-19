@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbv1fwsqy</task-id>
+<tool-use-id>toolu_01SgsKXYoiqrA3ozQaqKW2dA</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/bbv1fwsqy.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR #2290 checks + pi-review" stream ended</summary>
+</task-notification>

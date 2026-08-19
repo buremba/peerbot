@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"6218d310-9af7-45e4-8e58-a755548fea77","timestamp":"2026-07-31T16:30:21.237Z","cwd":"/Users/burakemre/Code/lobu"}
+{"type":"model_change","id":"9d4ccee5","parentId":null,"timestamp":"2026-07-31T16:30:21.843Z","provider":"openai","modelId":"gpt-5.6-sol"}
+{"type":"thinking_level_change","id":"d0e9e61c","parentId":"9d4ccee5","timestamp":"2026-07-31T16:30:21.843Z","thinkingLevel":"off"}
+{"type":"message","id":"6ed8d23f","parentId":"d0e9e61c","timestamp":"2026-07-31T16:30:21.844Z","message":{"role":"user","content":[{"type":"text","text":"New message in #sales:\n\ndave: 😂😂 that deck though"}],"timestamp":1785515421843}}
+{"type":"message","id":"4e080f15","parentId":"6ed8d23f","timestamp":"2026-07-31T16:30:22.902Z","message":{"role":"assistant","content":[{"type":"text","text":"No action needed.","textSignature":"msg_0d753e2ece895aa8006a6ccd9e997c81929ce362827ad5fe06"}],"api":"openai-responses","provider":"openai","model":"gpt-5.6-sol","usage":{"input":3411,"output":8,"cacheRead":0,"cacheWrite":0,"totalTokens":3419,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1785515421843}}

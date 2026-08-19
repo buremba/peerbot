@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buccpsuqi</task-id>
+<tool-use-id>toolu_011VwaMBwAwXDGMoFFvtcJXf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/buccpsuqi.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-review the sweep" completed (exit code 0)</summary>
+</task-notification>

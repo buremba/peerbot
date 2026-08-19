@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9bxac0a6</task-id>
+<tool-use-id>toolu_01XnEh1eKGSs9DxrYetmu1tr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/b9bxac0a6.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on the fixed HEAD" completed (exit code 0)</summary>
+</task-notification>

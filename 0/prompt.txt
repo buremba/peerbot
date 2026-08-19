@@ -1,0 +1,1 @@
+hmm interesting. event type member is fine make it work this way and we can discuss about future once we see behavior generating cool stuff

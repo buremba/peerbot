@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bg9i1j5pa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bg9i1j5pa.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 624 CI" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,10 @@
+<task-notification>
+<task-id>a9cfbb6d2b9cf3515</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/a9cfbb6d2b9cf3515.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix google.calendar event kind" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I'll wait for that notification.</result>
+<usage><subagent_tokens>141987</subagent_tokens><tool_uses>99</tool_uses><duration_ms>604160</duration_ms></usage>
+</task-notification>

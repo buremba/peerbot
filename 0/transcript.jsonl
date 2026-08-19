@@ -1,0 +1,5 @@
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:34:50.689Z","content":[{"id":"1033beec-945c-47c3-bedb-90c092a3b349","text":""}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:34:50.689Z","content":[{"id":"1033beec-945c-47c3-bedb-90c092a3b349","text":""}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:34:50.689Z","content":[{"id":"1033beec-945c-47c3-bedb-90c092a3b349","text":""}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-07-29T03:35:23.858Z","content":[{"id":"fdf71c93-dee4-4154-bc3e-a98c1169532d","text":"we have been suffering from so many bugs, the agents say it's fixed and it's still going on. what should we do, check all prs issues and past transcriptions"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-07-29T03:35:25.119Z","id":"2734b817-a8f5-4c2a-9d08-d968b518ed18","content":[{"text":"API Error: 400 output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.","type":"text"}]}

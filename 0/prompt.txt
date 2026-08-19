@@ -1,0 +1,7 @@
+maybe remove this Desk
+What needs attention and what this agent has been working on.
+
+View activity
+Needs attention
+19
+ and make configure say desk, and it becomes a value in the dropdown. do we need activity page to have needs attention in this case

@@ -1,0 +1,1 @@
+generic mcp and we can recognize some clients for showing the icon etc no?

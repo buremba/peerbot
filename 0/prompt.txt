@@ -1,0 +1,1 @@
+pin all to qwen 3.8 pro preview

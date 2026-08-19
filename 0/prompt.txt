@@ -1,0 +1,1 @@
+think of best products in the space. should we actually merge behavior and skill? behavior has runs on already so nix etc doesn't make sense. and when bringing sandbox provider we can dynamically so we move nix settings from skills to behavior and deprecate behavior in favor of "live skills"?

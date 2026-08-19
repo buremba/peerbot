@@ -1,8 +1,44 @@
-# Lobu — Shared company context for every AI agent
+# Lobu — Give every agent a live model of your world
 
-**Lobu is an open-source shared context layer for AI agents.** Giving every agent direct access to company tools does not give the company shared memory. Each agent still reconstructs what happened inside one model session, then loses what it learned when that session ends.
+**Lobu is an open-source, event-sourced context layer for AI agents.** Every tool call, data
+change, device signal, API event, and conversation becomes an event, linked to the entities and
+identities it belongs to — a person, a project, a customer, a home, a company. That gives agents
+a live, queryable model of your world instead of a transcript they forget when the session ends.
 
-Connect your company stack once. Claude Code, Codex, ChatGPT, and your own agents get one permission-aware memory of the company while keeping their existing interface, model, and runtime. When a responsibility should persist beyond the current chat, they can discover and hand work to a Lobu specialist over MCP.
+ChatGPT, Claude, Codex, and your own agents read and write that same permission-aware history and
+current context, whether you're wiring up your own accounts or an entire company's stack. When a
+responsibility should outlive one chat, any agent can discover and hand it to a persistent Lobu
+specialist over MCP.
+
+Connect your tools once. Every agent resumes from the same live context.
+
+```text
+WITHOUT LOBU                         WITH LOBU
+
+Agent A -> Slack / GitHub / CRM      Slack  GitHub  CRM  DBs  Devices
+Agent B -> Slack / GitHub / CRM         \      |     |    |     /
+Agent C -> Slack / GitHub / CRM          +-----+-----+----+----+
+                                                     |
+Each agent re-fetches.                               v
+Each session forgets.                       +-------------------+
+                                             |       LOBU        |
+                                             | events + entities |
+                                             | history + policy  |
+                                             +---------+---------+
+                                                       |
+                                                shared context
+                                     +-----------------+-----------------+
+                                     |                 |                 |
+                                  ChatGPT         Claude / Codex      Your agents
+```
+
+## See it in ChatGPT
+
+The 86-second narrated demo shows ChatGPT using Lobu over MCP to pull connected context and call
+governed tools without leaving the conversation. The same shared context remains available to
+Claude, Codex, and custom agents.
+
+https://github.com/user-attachments/assets/c07e7c23-a29b-4b05-895e-51dcb935bac4
 
 ## Start with the agent you already use
 
@@ -16,7 +52,8 @@ claude mcp add --transport http lobu https://lobu.ai/mcp
 codex mcp add lobu --url https://lobu.ai/mcp
 ```
 
-Complete OAuth when prompted, connect the company sources you want to share, and ask your agent to use Lobu when it needs organizational context.
+Complete OAuth when prompted, connect the sources you want to share, and ask your agent to use
+Lobu when it needs shared context.
 
 The same MCP endpoint works with **ChatGPT, Claude Desktop, Gemini CLI, Cursor**, and custom MCP clients. `lobu memory init` detects Claude Code, Codex, Gemini CLI, and Cursor, and prints manual setup steps for Claude Desktop and ChatGPT.
 
@@ -42,7 +79,7 @@ To the user this stays one conversation in their primary agent. The specialist i
 
 ## Why Lobu
 
-Instead of every agent rebuilding company state through per-session tool calls, Lobu runs a shared data layer:
+Instead of every agent rebuilding the same state through per-session tool calls, Lobu runs a shared data layer:
 
 - **Connect once.** Polls, webhooks, APIs, and agent-written connectors feed one append-only event log.
 - **Know once.** Events can be indexed as searchable knowledge and linked to typed entities such as companies, projects, incidents, and customers.
@@ -51,19 +88,40 @@ Instead of every agent rebuilding company state through per-session tool calls, 
 - **Keep control.** Identity, source permissions, approvals, credential brokering, provenance, and audit stay server-side.
 
 ```mermaid
-flowchart LR
-  Tools[Company tools] --> L[Lobu shared context]
-  APIs[APIs and webhooks] --> L
-  Custom[Custom connectors] --> L
+flowchart TD
+    Sources["Connectors / webhooks / devices / APIs"] --> Log[("append-only log")]
+    Log -->|"resolve identities<br/>attach provenance"| Graph["context graph<br/>entities + links<br/>current + history"]
+    Graph -->|"query"| Agents["agents + specialists"]
+    Graph -->|"watch / subscribe"| Agents
+    Agents -->|"sandbox + scoped tools / MCP<br/>policy + approvals"| Actions["actions on systems"]
+    Actions -->|"action events"| Log
+```
 
-  L <--> MCP[MCP]
-  MCP <--> Claude[Claude Code]
-  MCP <--> Codex[Codex]
-  MCP <--> ChatGPT[ChatGPT]
-  MCP <--> Own[Your agents]
+**MCP is for doing. Lobu's event graph is for knowing.**
 
-  L <--> Specialists[Persistent Lobu specialists]
-  Specialists <--> Channels[Slack and web chat]
+## One context layer, personal or company
+
+The primitives don't change between a single person's accounts and an entire company's stack —
+only what's connected does. Identities, entities, events, history, and policy work the same way
+at either scope.
+
+```text
+PERSONAL                               COMPANY
+
+WhatsApp  Gmail  Calendar  Mac        Slack  GitHub  CRM  DB
+    \       |       |      /              \      |     |   /
+     +------+-------+-----+                +------+-----+---+
+                    \                      /
+                     +------- LOBU -------+
+                     | identities         |
+                     | entities + events  |
+                     | history + policy   |
+                     +---------+----------+
+                               |
+                      shared agent context
+                  +------------+------------+
+                  |                         |
+       "When is Alice home?"      "Why is Acme at risk?"
 ```
 
 ## Three ways to use Lobu
@@ -124,9 +182,9 @@ Mint a token with `lobu token create`. The MCP tools and typed SDK operations sh
 
 ### Shared context
 
-[Connectors](https://lobu.ai/getting-started/author-a-connector/) collect company activity on a schedule or through webhooks. Discussions, project changes, customer records, API events, and saved agent knowledge land in the same append-only history.
+[Connectors](https://lobu.ai/getting-started/author-a-connector/) collect activity on a schedule or through webhooks. Discussions, project changes, customer records, API events, and saved agent knowledge land in the same append-only history.
 
-Typed entities connect that history to the things the company cares about: `Company`, `Project`, `Customer`, `Incident`, or schemas you define. Corrections supersede old facts rather than erasing their provenance.
+Typed entities connect that history to the things you care about: `Company`, `Project`, `Customer`, `Incident`, or schemas you define. Corrections supersede old facts rather than erasing their provenance.
 
 Connectors are extensible. You can build them in TypeScript, and coding agents can use Lobu's connector contract and validation flow to create integrations for sources Lobu does not ship with.
 

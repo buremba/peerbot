@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhg7hjkva</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e8ae611f-3800-43ed-836d-8de4d4fb9fe5/tasks/bhg7hjkva.output</output-file>
+<status>completed</status>
+<summary>Monitor "owletto PR 655 checks" stream ended</summary>
+</task-notification>

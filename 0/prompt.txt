@@ -1,0 +1,1 @@
+think of all usecases like acl etc and tell me the api design you suggest me. explain all things and tradeoffs in an html artifact

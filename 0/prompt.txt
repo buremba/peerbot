@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bixvl1ocp</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20859076-1eb6-464c-9b1c-dae2360fe186/tasks/bixvl1ocp.output</output-file>
+<status>killed</status>
+<summary>Monitor "prod rollout gate for PR #2554 (squash 1c31e06e8)" stopped</summary>
+</task-notification>

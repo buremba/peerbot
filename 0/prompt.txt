@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bp4xp6zv0</task-id>
+<summary>Monitor event: "final dev boot"</summary>
+<event>HEALTHY pgport=52578</event>
+</task-notification>

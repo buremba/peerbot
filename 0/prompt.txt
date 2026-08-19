@@ -1,0 +1,6 @@
+can you add this mcp to both codex and claude code # 1. Install the MCP server (one-time)
+uv tool install --with mcp isorun
+
+# 2. Wire it into Claude Code
+claude mcp add isorun isorun-mcp \
+  -e REDACTED

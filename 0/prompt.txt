@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>ac60e4d38df7d7765</task-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/ac60e4d38df7d7765.output</output-file>
+<status>failed</status>
+<summary>Agent "Fix Telegram silent drop #2230" failed: Agent terminated early due to an API error: You've hit your session limit · resets 5pm (Europe/London)</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+</task-notification>

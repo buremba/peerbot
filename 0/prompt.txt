@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf18370q8</task-id>
+<tool-use-id>toolu_013S8tAu3gZataVxBWFSyjgy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/bf18370q8.output</output-file>
+<status>completed</status>
+<summary>Background command "Review plan with pi gpt-5.6-terra xhigh" completed (exit code 0)</summary>
+</task-notification>

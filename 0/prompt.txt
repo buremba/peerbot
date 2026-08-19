@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>brakjhffj</task-id>
+<tool-use-id>toolu_01VmGvivGdVcSFQdPdXPRPm1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f4e4deab-cb97-4427-8120-e77084d6508a/tasks/brakjhffj.output</output-file>
+<status>killed</status>
+<summary>Background command "until curl -sf -o /dev/null http://127.0.0.1:9293/ 2&gt;/dev/null; do sleep 3; done; echo "dev server up"; curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9293/" was stopped</summary>
+</task-notification>

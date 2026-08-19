@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bi40t9vps</task-id>
+<summary>Monitor event: "required checks on PR 2292 (orgScope fail closed)"</summary>
+<event>migrations: pass</event>
+</task-notification>

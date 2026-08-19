@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The restoration flow can associate stale snapshot state with a newer result under a supported event-ordering race. It also leaves definitively missing historical snapshots in a permanent loading state.
+
+Full review comments:
+
+- [P2] Reject stale capabilities after a data mismatch — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:566-573
+  When a capability-only result starts hydration and a different metadata-less result arrives before that RPC resolves, this check rejects the first response only because `dataRevision` changed; the waiter then retries the same capability, passes this check, and applies the old snapshot's view state to the new card. Subsequent persistence can therefore write new-card edits through the previous card's capability. Clear the mismatched capability instead of retrying it, per the fail-closed state rule in `../../AGENTS.md:28`.
+
+- [P2] Stop treating missing snapshots as still loading — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:536-542
+  For a no-`toolInfo` historical card with an empty replay, `found: false` is a normal terminal response when its snapshot is missing or expired. This branch records completion but leaves `data` null; `InteractionApp` renders `Loading…` for null data, so the card spins forever and cannot initiate another restore. Surface an unavailable terminal state instead, consistent with `../../AGENTS.md:28`.
+  </results>
+  </user_action>

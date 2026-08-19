@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:32:57.367Z","content":[{"text":"New message in #sales:\n\nsarah: @lobu what's our pipeline total this month?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:32:58.229Z","id":"0c6ccee2","input_tokens":3416,"output_tokens":18,"content":[{"type":"text","text":"I’ll look up the pipeline total for this month and report back."}]}

@@ -1,0 +1,2 @@
+can you review this issue and let's triage identify best way and the gaps and how we can do it proeprly simplifying the syste,? think of ui, mcp cli lobu apply
+  all cases, the worker runtime etc alll. https://github.com/lobu-ai/lobu/issues/2320 pull main to base on the main code

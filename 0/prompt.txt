@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The changed host state machine drops authoritative compatibility output during restoration and can revive capabilities already proven missing. Both regressions cause blank, unavailable, or stale cards under supported event orderings.
+
+Full review comments:
+
+- [P1] Apply live compatibility output during an in-flight restore — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:1188-1193
+  When ChatGPT sends non-empty `toolOutput` while `restore_lobu_app_result` is pending, `restorePending` makes this branch skip the explicit output even though `includesToolOutput` is true. The data is never replayed later, so a slow restore leaves the card blank and a `found:false` response marks it unavailable despite receiving a live result; only widgetState-only cache updates should be suppressed during restoration.
+
+- [P1] Keep terminally missing capabilities retired — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:1093-1098
+  After capability X restores with `found:false`, its displayed identity is cleared but X is not remembered as rejected. A delayed ChatGPT event containing X's old widget snapshot and metadata therefore satisfies this condition as `X !== null`, briefly repaints the expired card, and issues the terminal restore again; retain a rejected-capability tombstone while still permitting later authoritative live data.
+  </results>
+  </user_action>

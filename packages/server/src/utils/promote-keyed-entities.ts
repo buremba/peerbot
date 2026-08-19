@@ -105,10 +105,20 @@ export interface PromoteKeyedEntitiesParams {
 export interface PromotedEntityChange {
   entityId: number;
   name: string;
-  /** `created` = brand-new entity; `updated` = existing entity whose fields changed. */
-  kind: 'created' | 'updated';
-  /** For `updated`, the fields written inline (old→new). Empty for `created`. */
+  /**
+   * `created` = brand-new entity; `updated` = existing entity whose fields
+   * changed; `denied` = the write was REFUSED and nothing was written.
+   *
+   * A denial belongs in the run's change set for the same reason a write does:
+   * containing a per-row refusal keeps the window alive, so this event is the
+   * only durable record that the row was seen and turned down. Without it a
+   * refusal is indistinguishable from a row the automation never emitted.
+   */
+  kind: 'created' | 'updated' | 'denied';
+  /** For `updated`, the fields written inline (old→new). Empty otherwise. */
   applied: Record<string, AppliedChange>;
+  /** Why the write was refused, and by which decider. Set only for `denied`. */
+  denied?: { source: 'policy' | 'rule'; reason: string };
 }
 
 export interface PromoteKeyedEntitiesResult {
@@ -299,7 +309,15 @@ async function upsertKeyedEntity(params: {
   /** Fields the automation actually wrote inline (auto-applied), old→new. */
   applied: Record<string, AppliedChange>;
   blockedCreate: boolean;
-  deniedUpdate?: true;
+  /**
+   * Set when the write was REFUSED here: every rule deny, plus a policy deny on
+   * an UPDATE. A policy deny on a CREATE is decided by the type-wide gate before
+   * this runs, so it returns as a plain `blockedCreate` and the caller derives
+   * that one. Carries the reason so the run's change set can record WHY, not
+   * just that a row was skipped: containment means the window survives, so
+   * nothing else marks it.
+   */
+  denied?: { source: 'policy' | 'rule'; reason: string };
   /**
    * Set when a write RULE escalates the write the card will replay. The card
    * must carry that verdict's field list verbatim: the replay checks
@@ -360,7 +378,7 @@ async function upsertKeyedEntity(params: {
         blocked: {},
         applied: {},
         blockedCreate: false,
-        deniedUpdate: true,
+        denied: { source: 'policy', reason: decision.reason },
       };
     }
     const requireApproval = [...decision.requireApproval];
@@ -396,7 +414,7 @@ async function upsertKeyedEntity(params: {
           blocked: {},
           applied: {},
           blockedCreate: false,
-          deniedUpdate: true,
+          denied: { source: 'rule', reason: err.verdict.reason },
         };
       }
       // Hold the row WHOLE, and ask the rule about that same whole write.
@@ -437,7 +455,7 @@ async function upsertKeyedEntity(params: {
           blocked: {},
           applied: {},
           blockedCreate: false,
-          deniedUpdate: true,
+          denied: { source: 'rule', reason: whole.verdict.reason },
         };
       }
       // A whole write the rule finds legal still needs the card — those fields
@@ -492,21 +510,15 @@ async function upsertKeyedEntity(params: {
     // Validation runs INSIDE the savepoint and throws before `insertEntityRow`,
     // so the savepoint has already unwound — there is no partial row to undo.
     if (err.verdict.outcome !== 'escalate') {
-      logger.warn(
-        {
-          automationId: params.automationId,
-          organizationId,
-          identifier,
-          reason: err.verdict.reason,
-        },
-        '[promote-keyed-entities] a write rule denied this create — row skipped'
-      );
+      // The refusal is logged and recorded by the caller, which knows the op and
+      // the window this row came from.
       return {
         entityId: 0,
         created: false,
         blocked: {},
         applied: {},
         blockedCreate: true,
+        denied: { source: 'rule', reason: err.verdict.reason },
       };
     }
     // Unlike the update path, this verdict needs no second ask. A create has no
@@ -735,7 +747,7 @@ export async function promoteAutomationEntityOutput(
         applied,
         entityId,
         blockedCreate,
-        deniedUpdate,
+        denied,
         escalated,
       } = await tx.savepoint((sp) =>
         upsertKeyedEntity({
@@ -756,20 +768,42 @@ export async function promoteAutomationEntityOutput(
           createNeedsApproval,
         })
       );
-      if (deniedUpdate) {
+      // A refusal, on either op and from either decider. Every rule deny — and a
+      // policy deny on an UPDATE — arrives as `denied`. A policy deny on a CREATE
+      // carries no such marker: it returns early as a plain blocked create, so
+      // read it off the type-wide gate decision instead. The two can never
+      // disagree, because that early return happens before the insert the rule
+      // runs inside.
+      const refusal =
+        denied ??
+        (blockedCreate && createGate.outcome === 'deny'
+          ? ({ source: 'policy', reason: createGate.reason } as const)
+          : null);
+      if (refusal) {
         logger.warn(
-          { automationId, organizationId, windowId, stableKey, entityId },
-          '[promote-keyed-entities] update denied by the mutation gate or a write rule — row skipped'
+          {
+            automationId,
+            organizationId,
+            windowId,
+            stableKey,
+            entityId,
+            op: blockedCreate ? 'create' : 'update',
+            deniedBy: refusal.source,
+            reason: refusal.reason,
+          },
+          '[promote-keyed-entities] write denied — row skipped'
         );
+        // A log line is not an audit record. Put the refusal in the run's change
+        // set so it is queryable next to the writes that DID land. A refused
+        // CREATE has no id, so it is recorded under the name the automation
+        // proposed — the only handle a reader has on a row never written.
+        result.changes.push({ entityId, name, kind: 'denied', applied: {}, denied: refusal });
         continue;
       }
       if (blockedCreate) {
         // A create is carded when POLICY defers it or when a write RULE
-        // escalated it. A 'deny' from either is fail-closed — the row is skipped
-        // entirely (no create, no approval card), because approval cannot
-        // launder a refusal into a write. A rule deny needs no separate signal:
-        // it can only be reached once policy already said 'allow', because a
-        // policy defer returns before the insert the rule runs inside.
+        // escalated it. A deny from either was already recorded and skipped
+        // above, because approval cannot launder a refusal into a write.
         if (createGate.outcome === 'defer' || escalated) {
           const createProposal = {
             entity_type: entityTypeSlug,

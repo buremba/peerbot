@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>budn0bz7r</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/budn0bz7r.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run e2e with correct credentials shape" completed (exit code 0)</summary>
+</task-notification>

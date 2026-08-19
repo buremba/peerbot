@@ -129,9 +129,15 @@ jobs:
 
           # Read the label here rather than from the event payload so a
           # workflow_dispatch redeploy of a locked PR sees the lock too.
+          #
+          # The gh call gets its own line on purpose. Piped straight into grep
+          # the step would take grep's status, and this shell has no pipefail:
+          # a rate limit or 5xx would read as "not labelled" and redeploy with
+          # passwordless bootstrap enabled while the staging ingress still
+          # points the public host at this pod. As an assignment, `-e` aborts.
+          PR_LABELS="$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name')"
           LOCK_ENV='- { name: LOBU_LOCAL_INIT_ALLOW_PROXY, value: "1" }'
-          if gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' \
-            | grep -qx staging; then
+          if printf '%s\n' "$PR_LABELS" | grep -qx staging; then
             # Drop the passwordless bootstrap (see above) and pin the public
             # origin. resolvePublicOrigin falls back to the request URL, which
             # behind the ingress reads as http://<host> — OAuth metadata and the

@@ -1,6 +1,6 @@
 name: Staging lock
 
-# The 'staging' label pins the rolling staging URL (staging.<tailnet>) to one PR.
+# The 'staging' label pins the rolling staging URL (STAGING_HOST, public) to one PR.
 # Adding the label acquires the lock (strips it from other open PRs, moves the
 # staging ingress to this PR's namespace); removing it releases the lock.
 # Also dispatchable manually (workflow_dispatch) for manual lock control.

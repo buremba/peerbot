@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b604ghzxi</task-id>
+<tool-use-id>toolu_01Xn78VV88GQ7xxb4kFFxRu1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b604ghzxi.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait then check gate progress" completed (exit code 0)</summary>
+</task-notification>

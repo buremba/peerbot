@@ -1,0 +1,217 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Continuation of work on lobu GitHub issue #2519 ("notifications.send: cards never render in-app and the tool returns no event id/url"). Explicit user requests in chronological order:
+
+   - **Answer the four open design questions** (posed in the prior session): the user answered `1. the addressed recipient no?` / `2. explain` / `3. ok` / `34. sounds good` — i.e. G6 = addressed recipient may answer; G18 = wants an explanation of ask privacy; G16 = ok to add `'expired'` status via migration; delivery record = `metadata.delivery`.
+   - **"ok tell me if any api or db changes needed"** — a full inventory of API-surface and DB changes (required by AGENTS.md, which forbids changing DB design/API/SDK surface without explicit confirmation).
+   - **"don't we have origin id etc already in the events"** — challenge to my framing of the idempotency problem.
+   - **"2. latter is good / 1. ok but you need to test e2e connecting opencode runnning it and seeing it being generated in the ui etc"** — approve `origin_id` = fresh uuid; approve building slice 1; **require an end-to-end test driving opencode and seeing the result in the UI**.
+   - **[screenshot] "i don't see it, you need to confirm it work"** — the notification rendered as title+body only, no buttons. A correction that my "it works" claim was based on the wrong evidence.
+   - **[screenshot] "now in the peek panel?"** — inbox now renders Review/Approve/Reject correctly; peek panel still shows only title+body.
+   - **"also how about different kinda buttons more advanced"** — richer button types beyond Approve/Reject.
+   - **"are you actually complicating? i thought ask tool allow multiple choice many questions already"** — pushback that multiple choice already exists.
+   - **"do it best long term way, reuse where possible"** — final architectural direction.
+   - **"where is the url? also i will compact so save memory"** — the URL to view the UI, and save memory before compaction.
+
+   Standing constraint from the prior session, still in force: **"ok no reuse as much as possible"** (reuse existing mechanisms maximally rather than building new ones).
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo (Bun workspace, `packages/*`), worktree-per-task workflow via `make task-setup`
+   - Durable interaction rail: `events.interaction_{type,status,input_schema,input,output,error}` + pending `runs` row + `runs.approval_status`
+   - `BuilderApprovalHandler` registry — the shared claim/approve/reject path for "builder gate" approval families
+   - Notification = event + `notification_targets` rows (targets scope inbox/read-state, **not** read access)
+   - `insertEvent` app-level dedupe (`onConflictUpdate` read-then-supersede), **no `ON CONFLICT` anywhere**
+   - `_lobu_idempotency_key` in `events.metadata` + partial unique index `idx_events_org_idempotency_key`
+   - JSON Schema as the ask contract; affordance (binary / choice / form) **derived** from schema, never declared
+   - Safety policy (`INLINE_DECIDABLE_ACTION_KEYS`) vs. shape (`resolveAskAffordance`) as two independent ANDed questions
+   - Circular-import TDZ trap in the `manage_operations` module graph
+   - MCP streamable-HTTP handshake (`initialize` → `mcp-session-id` header → `notifications/initialized` → `tools/call`)
+   - `chat` SDK `CardElement`, `Card`/`Actions`/`Button`/`LinkButton`
+   - Red→green + mutation-check evidence requirements from AGENTS.md
+
+3. **Files and Code Sections:**
+
+   **NEW: `packages/server/src/notifications/ask.ts`** — the ask primitive. Contains `AGENT_ASK_ACTION_KEY = "agent_ask"`, `AgentAskProposal`, `isAgentAskProposal`, `AskChoice`, `AskAffordance`, `MAX_BUTTON_CHOICES = 5` (exported as a **presentation** limit), `readEnumOptions`, `resolveAskAffordance`, `queueAgentAsk`.
+   ```ts
+   export type AskAffordance =
+     | { kind: "binary" }
+     | { kind: "choice"; field: string; choices: AskChoice[] }
+     | { kind: "form" };
+
+   export function resolveAskAffordance(
+     schema: Record<string, unknown> | null | undefined,
+   ): AskAffordance {
+     if (!schema) return { kind: "binary" };
+     const properties = schema.properties && typeof schema.properties === "object"
+       ? (schema.properties as Record<string, unknown>) : {};
+     const names = Object.keys(properties);
+     const required = Array.isArray(schema.required) ? schema.required : [];
+     if (names.length === 0) {
+       return required.length === 0 ? { kind: "binary" } : { kind: "form" };
+     }
+     if (names.length === 1) {
+       const field = names[0] as string;
+       if (required.length === 0 || (required.length === 1 && required[0] === field)) {
+         const choices = readEnumOptions(properties[field]);
+         if (choices) return { kind: "choice", field, choices };
+       }
+     }
+     return { kind: "form" };
+   }
+   ```
+   `queueAgentAsk` INSERTs the pending `runs` row (`run_type='internal'`, `action_key='agent_ask'`, `approval_status='pending'`, `status='pending'`) using `resolveRunInitiator(ctx)` from `../tools/initiator`, then calls `insertEvent` with `originId: \`run_${runId}_pending\``, `semanticType: "operation"`, `interactionType: "approval"`, `interactionStatus: "pending"`, `interactionInputSchema`. **Deliberately passes no `connectionId`** (G17 — the ACL exemption premise).
+
+   **`packages/server/src/notifications/service.ts`** (heavily modified, +287 lines). New imports: `randomUUID` from `node:crypto`, `insertEvent`, `isUniqueViolation` from `../utils/pg-errors`. Added exported `getOrgSlug` (moved out of triggers.ts), `findNotificationByIdempotencyKey`, `NotificationDeliveryRecord` interface, `recordDelivery`. `deliverToBotConnections(params, eventId)` now collects `{connectionId, channelKey, messageId, threadId}` from both the owner-DM and channel paths. `createNotificationForUsers` now returns `{created: boolean; eventId: number | null}`:
+   ```ts
+   if (params.idempotencyKey) {
+     const prior = await findNotificationByIdempotencyKey(params.organizationId, params.idempotencyKey);
+     if (prior !== null) return { created: false, eventId: prior };
+   }
+   let eventId: number;
+   try {
+     eventId = (await sql.begin(async (tx) => {
+       const event = await insertEvent({ ..., originId: randomUUID(), semanticType: "notification", metadata, clientId: ... }, { sql: tx });
+       await tx`INSERT INTO notification_targets (event_id, user_id) SELECT ${event.id}, uid FROM unnest(${pgTextArray(userIds)}::text[]) AS u(uid) ON CONFLICT DO NOTHING`;
+       return event.id;
+     })) as number;
+   } catch (error) {
+     if (params.idempotencyKey && isUniqueViolation(error, "idx_events_org_idempotency_key")) { ... }
+     throw error;
+   }
+   ```
+   `metadata` now includes `...(params.card ? { card: params.card } : {})`. `listNotifications` SQL gained `pe.interaction_input_schema AS interaction_input_schema`.
+
+   **`packages/server/src/tools/admin/notify.ts`** — added `input_schema` to `SendAction` typebox schema; imports `queueAgentAsk` and `buildActionApprovalCard`. Handler return type is now `{notified_count, event_id, url, run_id?}`. Key logic:
+   ```ts
+   const ask = args.input_schema
+     ? await queueAgentAsk({ ctx, question: args.title, body, inputSchema: args.input_schema as Record<string, unknown> })
+     : null;
+   const orgSlug = await getOrgSlug(ctx.organizationId);
+   const askReviewUrl = ask ? buildResourcePermalink(orgSlug, { kind: 'run', runId: ask.runId }) : undefined;
+   const notification = await createNotificationForUsers(userIds, {
+     type: ask ? 'action_approval_needed' : 'agent_message',
+     resourceType: ask ? 'event' : null,
+     resourceId: ask ? String(ask.interactionEventId) : null,
+     resourceUrl: args.resource_url ?? askReviewUrl ?? null,
+     card: (args.card as CardElement | undefined) ?? (ask ? (buildActionApprovalCard({ runId: ask.runId, approvalUrl: askReviewUrl, summary: body ?? args.title, inputSchema: args.input_schema as Record<string, unknown> }) ?? null) : null),
+     ...
+   });
+   ```
+
+   **`packages/server/src/tools/admin/manage_operations.ts`** — `BuilderApprovalHandler.apply()` signature gained a 5th param `input: Record<string, unknown> | null`. `tryApproveBuilderRun` now passes `(args.input as Record<string, unknown> | undefined) ?? null`. Third handler registered:
+   ```ts
+   {
+     actionKey: AGENT_ASK_ACTION_KEY,
+     nounLabel: "Question",
+     isValidProposal: isAgentAskProposal,
+     apply: async (_proposal, _ctx, _env, _owner, input) => ({ answer: input ?? {} }),
+     describe: (p) => isAgentAskProposal(p) ? p.question : AGENT_ASK_ACTION_KEY,
+   },
+   ```
+
+   **`packages/server/src/tools/admin/manage_operations/activity-feed.ts`** — `ActivityCard` type gained `interaction_choice_field?: string` and `interaction_choices?: Array<{value: string; label: string}>`. **The final safety+shape rule** (after the regression fix):
+   ```ts
+   const familyAllowsInline = getInlineDecidableActionKeys().includes(String(n.approval_action_key ?? ""));
+   const affordance = interactionType === "approval" && interactionStatus != null
+     ? resolveAskAffordance(n.interaction_input_schema as Record<string, unknown> | null)
+     : null;
+   const interactionInline = familyAllowsInline && affordance != null && affordance.kind !== "form";
+   ```
+   And the **lazy TDZ-safe accessor** (final fix of the session):
+   ```ts
+   let inlineDecidableActionKeys: readonly string[] | null = null;
+   function getInlineDecidableActionKeys(): readonly string[] {
+     if (!inlineDecidableActionKeys) {
+       inlineDecidableActionKeys = [...ENTITY_CHANGE_ACTION_KEYS, AGENT_ASK_ACTION_KEY];
+     }
+     return inlineDecidableActionKeys;
+   }
+   ```
+
+   **`packages/server/src/notifications/triggers.ts`** — `getOrgSlug` removed (moved to service.ts); imports `resolveAskAffordance` and `getOrgSlug` from `./service`. `buildActionApprovalCard` rewritten: accepts `summary?: string | null` and `inputSchema?: Record<string, unknown> | null`; the entity-kind early-return gate removed (G7 fix). Critical semantics:
+   ```ts
+   const decisionOnly = isEntityDetail
+     ? true
+     : params.inputSchema !== undefined && resolveAskAffordance(params.inputSchema).kind === "binary";
+   ```
+   `inputSchema` **omitted ≠ null**: omitted means "caller doesn't know" → link only, no decision buttons.
+
+   **`packages/server/src/gateway/connections/chat-instance-manager.ts`** — `postMessageToChannel` now `Promise<{messageId: string; threadId: string}>` and `return await this.postToConversation(...)`. `postDirectMessage` likewise, normalizing `sent.id`/`sent.threadId`.
+
+   **`packages/owletto/src/components/activity/attention-inbox.tsx`** (submodule) — `TimelineItem` gained `interactionChoiceField` / `interactionChoices`; mapping from feed card added; `ApprovalActions` gained `choiceField`/`choices` props and a new early-return rendering one `Button` per choice calling `approveRun.mutate({ run_id: runId, input: { [choiceField]: choice.value } })` plus a "Dismiss" button.
+
+   **`packages/owletto/src/lib/api/activity.ts`** (submodule) — `ActivityCard` type gained `interaction_choice_field` / `interaction_choices`.
+
+   **NEW: `packages/server/src/__tests__/integration/notifications/agent-ask-e2e.test.ts`** — 5 tests: bare `{}` is inline; single enum → `interaction_choice_field: "play"` + 3 choices; field schema NOT inline; approving with input records `{answer: {plan: "legacy-pro"}}`; agent cannot answer its own question. Uses `executeTool` with `humanCtx` (agentId null) vs `agentCtx`. **No `cleanupTestDatabase()`** in `beforeAll` (exceeds 60s hookTimeout).
+
+   **`packages/server/src/__tests__/integration/notifications/bot-delivery.test.ts`** — extended: retry returns same `event_id`; new test asserting card round-trips into metadata and `origin_id` matches a uuid regex. Imports `{ Actions, Button, Card } from "chat"`.
+
+   **Memory files written:** `/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/project_interactive_notifications_2519.md` (fully rewritten) and the `MEMORY.md` index line updated to `**BUILT+LIVE-VERIFIED, UNCOMMITTED** wt notification-ask; inbox buttons render w/ ZERO owletto change; no PR yet`.
+
+4. **Errors and fixes:**
+
+   - **Ran `make build-packages` in the main checkout instead of the worktree (twice).** Fixed by `TaskStop` on both and switching to `make -C "$WT"`. AGENTS.md forbids writing to `~/Code/lobu` directly.
+   - **My prior claim that `bind-channel-notify.ts:11` would break was WRONG.** TypeScript allows a value-returning function where `Promise<void>` is expected. Typecheck passed with that file untouched. Corrected in memory.
+   - **My prior claim that `insertEvent` "upserts on (connection_id, origin_id)" was WRONG.** It has zero `ON CONFLICT`; dedupe is app-level read-then-supersede. Corrected after the user's "don't we have origin id" pushback, which led to finding the `save_content.ts:506` template.
+   - **`beforeAll` hook timeout (60s)** in `agent-ask-e2e.test.ts` from `cleanupTestDatabase()`. Removed it; the test scopes to a fresh org.
+   - **Postgres on :5418 restarted mid-session**, wiping `lobu_test` (0 tables) and returning `FATAL: the database system is starting up`. This was the **root cause** of every exit-144, the dev server wedged in `U` state holding port 9322, and a killed vitest run. I had initially misdiagnosed it as memory pressure. Fixed by waiting for recovery, `kill -9` on stale PIDs, and restarting. Dev DB `lobu_feat_notification_ask` survived.
+   - **User feedback: "[screenshot] i don't see it, you need to confirm it work"** — I had claimed slice 1 worked based on JSON from the API, but the UI showed no buttons. I acknowledged confirming the wrong thing; slice 1 only persisted the card, and nothing in the web UI renders `metadata.card`.
+   - **User feedback: "are you actually complicating?"** — I stopped and investigated `postQuestion` before defending. Found it does take `options: string[]` but is chat-only/in-memory/no-run-row. Admitted over-building a second vocabulary and offered to revert.
+   - **REGRESSION I introduced, caught by an existing test:** replacing the `ENTITY_CHANGE_ACTION_KEYS` allowlist with a pure schema rule made `manage_behaviors` approvals inline-approvable. `approval-live-state.test.ts` failed with `interaction_inline: true` vs expected `undefined`. The original comment ("the action_key has a known-safe one-click web executor") was a **safety policy**, not a rendering hint. Fixed by ANDing `familyAllowsInline && affordance.kind !== "form"`.
+   - **Two `toEqual({created: true})` / `toEqual({created: false})` assertions** in `mcp-activity-notifications.test.ts` broke on the new `{created, eventId}` return shape. Changed to `toMatchObject`.
+   - **`ReferenceError: Cannot access 'ENTITY_CHANGE_ACTION_KEYS' before initialization` at activity-feed.ts:28** — circular-import TDZ, the exact trap documented at `manage_operations.ts:1870`. **Typecheck and all 25 integration tests stayed green; only booting the server caught it.** Fixed with the lazy `getInlineDecidableActionKeys()` accessor.
+
+5. **Problem Solving:**
+
+   Established that #2519's root cause is a missing **contract**, not a missing renderer: `notifications.send` accepted presentation (a `card`) where it should accept intent (a schema), and a button's `actionId` is its routing key so only the server can build a working one.
+
+   Proved the fix works live: opencode drove `client.notifications.send` via `run_sdk` and got `{notified_count:1, event_id:5, url:"/local-install/memory?content_ids=5"}`; the DB showed a real `origin_id` uuid and a persisted card; the inbox rendered **Review / Approve / Reject with zero owletto change** (confirmed by user screenshot), validating the design's "binary asks work natively on web" claim.
+
+   Resolved the peek-panel gap without new UI: the ask notification simply lacked a `resource_url`. With the run permalink (`?run_ids=`), `memory-events-peek.tsx` resolves to `EventCard`, which already renders the approval schema form.
+
+   Settled the "more advanced buttons" question by deriving a three-tier affordance ladder from the schema itself rather than adding API fields, and kept the resolver server-side because `buildActionApprovalCard` renders the Slack card server-side too (client-side resolution would fork the rule).
+
+6. **All user messages:**
+   - `1. the addressed recipient no?` / `2. explain` / `3. ok` / `34. sounds good`
+   - "ok tell me if any api or db changes needed"
+   - "don't we have origin id etc already in the events"
+   - `2. latter is good` / `1. ok but you need to test e2e connecting opencode runnning it and seeing it being generated in the ui etc`
+   - "[Image #3] i don't see it, you need to confirm it work"
+   - "now in the peek panel? [Image #4]"
+   - "also how about different kinda buttons more advanced"
+   - "are you actually complicating? i thought ask tool allow multiple choice many questions already"
+   - "do it best long term way, reuse where possible"
+   - "where is the url? also i will compact so save memory"
+
+7. **Pending Tasks:**
+   - **Give the user the URL** — asked in the most recent message, not yet clearly answered. SPA is at **http://127.0.0.1:5199** (API at 127.0.0.1:9322). Pending asks to view: run 126 (binary), run 455 (choice, 3 buttons), run 456 (form).
+   - **Delete the ephemeral `opencode.json`** in the worktree — it contains the dev PAT `REDACTED`. Must not be committed.
+   - Run `make pre-pr` and `make review-fix`, stage by explicit path, open the PR.
+   - Owletto submodule needs its own PR + `make ui-review` with before/after screenshots and human `/ui-approve`.
+   - Slack path is typechecked but never exercised (no Slack connection on the dev instance).
+   - Untouched gaps: G9 (`interaction.answered` platform event), G15/G16 (expiry signal + `'expired'` status migration), G20 (Slack choice handling in the `run-approval:` bridge branch), G18 (doc line).
+
+8. **Current Work:**
+
+   Immediately before the summary request, I had just fixed the circular-import TDZ crash and verified the server boots correctly. The final verification output was:
+   ```
+   API UP
+   Ship the pricing change to all customers? | inline: True | choices: []
+   The Acme renewal is at risk — how do we play it? | inline: True | choices: ['Discount 15%', 'Exec sponsor call', 'Let it churn']
+   What should the enterprise tier cost? | inline: None | choices: []
+   ```
+   Memory had already been saved (both `project_interactive_notifications_2519.md` rewritten and the `MEMORY.md` index line updated) in response to "i will compact so save memory". The diff at that point was `9 files, +534/-108` versus `origin/main`, plus new files `notifications/ask.ts` and `agent-ask-e2e.test.ts`, with one WIP commit `fd130487f` and everything else uncommitted.
+
+   Note: the memory file was written **before** the TDZ fix, so it does not yet record that error or its lazy-accessor fix.
+
+9. **Optional Next Step:**
+
+   Answer the user's outstanding question — "where is the url?" — by giving them **http://127.0.0.1:5199** and naming the three pending asks to look at (run 126 binary, run 455 choice with three named buttons, run 456 form for the peek pane). Then append the TDZ error and its fix to the memory file, since it was discovered after memory was saved and is exactly the kind of trap the memory exists to capture: *"Typecheck and the integration suite both stayed green through it — only booting caught it."*
+
+   The user's exact words were: **"where is the url? also i will compact so save memory"** — memory is saved; the URL has not yet been delivered.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/34004f74-20ed-439c-908b-fd1a4b248251.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

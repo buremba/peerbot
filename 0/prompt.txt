@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bduazfd0a</task-id>
+<tool-use-id>toolu_01JigBm4xm3VmznaSiRrYyg3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/07e7c33a-4508-4f40-803f-08696f5f646a/tasks/bduazfd0a.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make pre-pr" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+if it will complicate we will rather use the iceberg approach in the future and let the users read events seperately

@@ -1,0 +1,1 @@
+do you think behaviors should move out of agents?

@@ -2752,7 +2752,8 @@ app.get("/mcp-apps/:app/assets/:asset", async (c) => {
 	// build than the one that served the caller's index.html; caching those
 	// bytes under the *requested* digest would pin the mismatch in the host's
 	// browser cache until the next deploy. Cache hard only on an exact match.
-	c.header("ETag", `"${asset.version}"`);
+	// No ETag: neither branch can revalidate (no-store forbids it, and the
+	// immutable branch never expires), so it would be an inert header.
 	c.header(
 		"Cache-Control",
 		c.req.query("v") === asset.version

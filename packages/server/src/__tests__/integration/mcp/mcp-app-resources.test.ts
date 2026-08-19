@@ -241,7 +241,6 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(assetBody).toContain('mcpAppAsset');
 
     const assetVersion = mcpAppAssetVersion(new TextEncoder().encode(assetBody));
-    expect(assetResponse.headers.get('etag')).toBe(`"${assetVersion}"`);
     const stale = await get('/mcp-apps/interaction/assets/app.js?v=someotherbuild');
     expect(stale.headers.get('cache-control')).toBe('no-store');
     const fresh = await get(`/mcp-apps/interaction/assets/app.js?v=${assetVersion}`);

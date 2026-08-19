@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b61kk3ppy</task-id>
+<summary>Monitor event: "final CI round on lobu PR #2210"</summary>
+<event>ALL REPORTED. failures: pi-review</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi0yhgmlk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bi0yhgmlk.output</output-file>
+<status>completed</status>
+<summary>Monitor "required checks on submodule bump PR 2346" stream ended</summary>
+</task-notification>

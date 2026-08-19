@@ -1,0 +1,18 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The patch can continue trusting capabilities after authoritative rejection, allowing stale state to rebind across reused cards. It also recursively removes legitimate nested result data, so the change is not behaviorally correct despite passing its current tests.
+
+Full review comments:
+
+- [P2] Retire capabilities when restore reports missing — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:550-552
+  When a capability-backed restore returns `found:false` for an expired or evicted snapshot, this branch marks the lookup complete but leaves `snapshotCapability`, `resultCapabilityIdentity`, and `freshRestoreCapability` active. If the reused iframe then receives an unpaired non-empty output, the new card inherits the expired token, so disclosure and pagination edits are saved against the missing row; in capability-first compatibility delivery, the stale `freshRestoreCapability` can also keep live output hidden. Retire the failed capability while preserving any needed non-authorizing tombstone (`../../AGENTS.md:28`).
+
+- [P2] Clear rejected tokens from the display identity — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:463-470
+  When a capability restore is overtaken by newer unkeyed data, this helper clears the active capability refs but leaves `displayedResultIdentity` equal to the rejected token. A later metadata-only echo of that token therefore passes the correlation check, starts another restore, and merges stale disclosure state and tool name into the current card. Clear this identity too, or retain it only as a non-authorizing tombstone, so a rejected restore remains failed closed (`../../AGENTS.md:28`).
+
+- [P2] Limit approval filtering to actual card actions — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/openai-compat.ts:126-134
+  For generic `query_sdk`, `query_sql`, or memory results, nested objects may legitimately contain an `actions` field whose records have `tool: "resolve_lobu_approval"` as ordinary data. Because this function recursively visits every object, such records are deleted from live compatibility output, persisted widget data, and result fingerprints even though only a validated top-level LobuView action list is executable. Restrict the filter to actual card actions so arbitrary nested result data remains intact.
+  </results>
+  </user_action>

@@ -1,0 +1,1 @@
+change configure icon. also connector page should be on the left not fully centered. dig in all pages and make sure no gaps . no double creat buttons etc [Image #1]

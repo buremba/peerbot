@@ -1,0 +1,240 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The multi-PR program (established pre-compaction): stop hacking pi's system prompt with regexes; have Lobu own the agent system prompt properly while preserving per-agent identity. Agreed 3-PR plan:
+   - **PR1** — stop pi discovering resources from the agent-writable workspace (security). MERGED as #2313, squash `99b50cc65`, deployed and prod-verified via `/health` revision.
+   - **PR2** — gateway sends `identityMd`/`soulMd`/`userMd`/`unconfiguredNotice` separately instead of a welded blob. MERGED this session as #2317, squash `ed807f82b5f7ad89a54f3b06213e599dab91a325`.
+   - **PR3** — worker owns the system prompt document; delete `replaceBasePromptIdentity` and `PI_CODING_AGENT_OPENER_RE`. IN PROGRESS, uncommitted.
+
+   Explicit user messages this session:
+   - "do these fixes properly" — authorizing the listed next actions (merge #2317, then PR3).
+   - "how confident are you, we want to move fast can we admin merge if we're fully sure it's goo?" — asking for a confidence assessment and whether an admin merge is justified. **NOT YET ANSWERED.**
+
+2. **Key Technical Concepts:**
+   - `@mariozechner/pi-coding-agent` v0.73.1 — `AgentSession`, `createAgentSession`, `ResourceLoader`, `LoadExtensionsResult`, `Extension`, `ExtensionHandler`, `createSyntheticSourceInfo`, `createExtensionRuntime`, `BuildSystemPromptOptions`, `BeforeAgentStartEvent`, `BeforeAgentStartEventResult`
+   - pi's `_rebuildSystemPrompt()` passes `resourceLoader.getSystemPrompt()` as `customPrompt`; when set, `buildSystemPrompt()` skips the harness opener, tools list, guidelines and pi-docs block entirely, appending only `appendSystemPrompt`, contextFiles, skills, `\nCurrent date:` and `\nCurrent working directory:`
+   - **pi's per-turn system-prompt reset**: `AgentSession.prompt()` reassigns `agent.state.systemPrompt` on EVERY call — to a `before_agent_start` handler's return value, or back to `_baseSystemPrompt`. A prompt assigned once after construction never survives.
+   - `ToolDefinition.promptSnippet` / `.promptGuidelines` — per-tool prompt metadata pi owns; reachable from outside only via `BeforeAgentStartEvent.systemPromptOptions`
+   - Extension handler errors are caught by the runner and swallowed (fail-open), motivating a loader-level fail-safe
+   - Mutation testing as proof a test bites; provider-request interception as the only faithful assertion target for "what the model received"
+   - Squash-merge breaks ancestry — gate prod rollout on `gh pr view --json mergeCommit`, argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`
+
+3. **Files and Code Sections:**
+
+   **Worktree: `/Users/burakemre/Code/lobu/.claude/worktrees/worker-owns-system-prompt/`, branch `feat/worker-owns-system-prompt`, based on `ed807f82b`**
+
+   - **NEW `packages/agent-worker/src/runtime/system-prompt.ts`** — the Lobu-owned prompt document builder. Header comment explains pi's default opener and docs block don't describe a Lobu agent and don't exist in the worker image; pi still owns tool snippets/guidelines which are read live rather than copied. Document order: identity → tool section → gateway tail → date + cwd.
+     ```ts
+     export type ToolPromptContext = Pick<
+       BuildSystemPromptOptions,
+       "selectedTools" | "toolSnippets" | "promptGuidelines"
+     >;
+
+     const LOBU_CONDUCT_GUIDELINE = "Be concise in your responses";
+     const FILE_TOOLS = ["read", "write", "edit", "grep", "find", "ls"];
+     const FILE_PATH_GUIDELINE = "Show file paths clearly when working with files";
+
+     function fileExplorationGuideline(selectedTools: string[]): string | undefined {
+       if (!selectedTools.includes("bash")) return undefined;
+       const hasSearchTool = ["grep", "find", "ls"].some((name) =>
+         selectedTools.includes(name)
+       );
+       return hasSearchTool
+         ? "Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)"
+         : "Use bash for file operations like ls, rg, find";
+     }
+     ```
+     `renderToolSection()` lists only tools carrying a snippet (pi's own rule), adds the "You may also have other tools — memory, connectors, skills and MCP servers…" line, then de-duplicated guidelines: exploration rule → pi's `promptGuidelines` → `LOBU_CONDUCT_GUIDELINE` → `FILE_PATH_GUIDELINE` (gated on `FILE_TOOLS.some(...)`).
+
+     **As modified by the in-flight `make review-fix`** (lines 140-178):
+     ```ts
+       const head = sections.filter(Boolean).join("\n\n");
+       const tail = input.gatewayInstructions.trim();
+       return tail ? `${head}\n\n---\n\n${tail}` : head;
+     }
+
+     export function buildLobuSystemPrompt(input: LobuSystemPromptInput): string {
+       const body = buildLobuSystemPromptBody(input);
+       // Trailing facts, last so they are the freshest thing the model reads. The
+       // date is rendered per turn, not baked in at session construction — a session
+       // that outlives midnight would otherwise keep asserting yesterday.
+       return `${body}\n\nCurrent date: ${formatDate(input.now)}\nCurrent working directory: ${input.cwd.replace(/\\/g, "/")}`;
+     }
+
+     export type LobuSystemPromptRenderer = (
+       toolContext?: ToolPromptContext
+     ) => string;
+
+     export function createLobuSystemPromptRenderer(base: {
+       identity: string;
+       gatewayInstructions: string;
+       cwd: string;
+     }): LobuSystemPromptRenderer {
+       return (toolContext) => {
+         const input = { ...base, toolContext, now: new Date() };
+         // The resource loader calls without tool context to obtain pi's
+         // `customPrompt` input. Pi appends date and cwd while building that base
+         // prompt, so return only Lobu's body there. The per-turn extension passes
+         // the live context and replaces pi's assembled string, so it needs the
+         // complete document including those facts.
+         return toolContext
+           ? buildLobuSystemPrompt(input)
+           : buildLobuSystemPromptBody(input);
+       };
+     }
+     ```
+     This fixer change fixes a real defect I introduced: my version always appended date+cwd, so on the loader/customPrompt path pi appended a SECOND copy.
+
+   - **MODIFIED `packages/agent-worker/src/runtime/pi-resources.ts`** — added the synthetic extension and the system-prompt seam:
+     ```ts
+     const SYSTEM_PROMPT_EXTENSION_PATH = "<lobu:system-prompt>";
+
+     function createSystemPromptExtension(
+       renderSystemPrompt: LobuSystemPromptRenderer
+     ): Extension {
+       const handler: ExtensionHandler<
+         BeforeAgentStartEvent,
+         BeforeAgentStartEventResult
+       > = (event) => ({
+         systemPrompt: renderSystemPrompt(event.systemPromptOptions),
+       });
+
+       return {
+         path: SYSTEM_PROMPT_EXTENSION_PATH,
+         resolvedPath: SYSTEM_PROMPT_EXTENSION_PATH,
+         sourceInfo: createSyntheticSourceInfo(SYSTEM_PROMPT_EXTENSION_PATH, {
+           source: "lobu",
+         }),
+         handlers: new Map([["before_agent_start", [handler as never]]]),
+         tools: new Map(),
+         messageRenderers: new Map(),
+         commands: new Map(),
+         flags: new Map(),
+         shortcuts: new Map(),
+       };
+     }
+
+     export function createLobuResourceLoader(
+       renderSystemPrompt?: LobuSystemPromptRenderer
+     ): ResourceLoader {
+       const extensions: LoadExtensionsResult = {
+         extensions: renderSystemPrompt
+           ? [createSystemPromptExtension(renderSystemPrompt)]
+           : [],
+         errors: [],
+         runtime: createExtensionRuntime(),
+       };
+       return {
+         getExtensions: () => extensions,
+         ...
+         getSystemPrompt: () => renderSystemPrompt?.(),
+         getAppendSystemPrompt: () => [],
+         ...
+       };
+     }
+     ```
+     Doc comment on `createSystemPromptExtension` explains it is "not decoration over the loader's `getSystemPrompt()` — it is the only seam that survives", and the loader's `getSystemPrompt` comment explains it is also the fallback if the handler throws.
+
+   - **MODIFIED `packages/agent-worker/src/runtime/session-runner.ts`**:
+     - Added import: `import { createLobuSystemPromptRenderer, type LobuSystemPromptRenderer } from "./system-prompt";`
+     - Added to `BuildAgentSessionOptions`: `renderSystemPrompt?: LobuSystemPromptRenderer;` with a comment explaining pi offers no system-prompt option and resets on every `prompt()` call
+     - `const resourceLoader = createLobuResourceLoader(renderSystemPrompt);`
+     - DELETED `PI_CODING_AGENT_OPENER_RE` and `replaceBasePromptIdentity` entirely (section header changed from "System-prompt identity replacement" to "Agent identity")
+     - Rewrote `LOBU_DEFAULT_IDENTITY` doc comment and `resolveAgentIdentity` doc comment to drop pi-opener references
+     - New call site before `try {`:
+       ```ts
+       // The Lobu system prompt for this run. Handed to the session so pi installs
+       // it as the base prompt AND reinstalls it before every turn; nothing here
+       // reads or rewrites pi's own prompt text.
+       const renderSystemPrompt = createLobuSystemPromptRenderer({
+         identity: resolveAgentIdentity(context.agentLayers),
+         gatewayInstructions: finalInstructionsUpdated,
+         cwd: workspaceDir,
+       });
+       ```
+       and `renderSystemPrompt,` passed to `buildAgentSession({...})`
+     - DELETED the assign-once block (`const basePrompt = session.systemPrompt; … session.agent.state.systemPrompt = finalSystemPrompt;`)
+
+   - **MODIFIED `packages/agent-worker/src/runtime/worker.ts`** — removed `replaceBasePromptIdentity,` from the re-export list.
+
+   - **RENAMED `replace-base-prompt-identity.test.ts` → `agent-identity.test.ts`** — dropped the `replaceBasePromptIdentity` describe block and the "default identity replaces the pi opener end-to-end" test; kept all `resolveAgentIdentity` composition/fallback/notice tests and the "Lobu default never leaks the pi harness framing" test.
+
+   - **RENAMED `prompt-assembly-smoke.test.ts` → `system-prompt-builder.test.ts`** — rewritten as pure builder unit tests: exact-string document order, separator omission when gateway tail blank, Windows path normalization, snippet-gated tool list, pi guidelines then Lobu conduct rules, de-duplication, the three file-exploration branches, no-tools case, file-path rule gating. The fixer rewrote the renderer describe to "renders a base fragment for pi and a complete per-turn document", asserting `render()` without toolContext does NOT contain "Current date:"/"Current working directory:" and `render({...})` does.
+
+   - **NEW `packages/agent-worker/src/__tests__/system-prompt-delivery.test.ts`** — the regression test. Header explains earlier tests asserted the *composed* string, which hid the live defect. Stubs `globalThis.fetch` for `http://127.0.0.1:1/v1`, returns a canned OpenAI SSE stream, boots a real session via `buildAgentSession` with `buildDynamicOpenAIModel`, runs `session.prompt("who are you")`, and asserts on `body.messages.find(m => m.role === "system")`. Six tests: identity+gateway reach the model; no pi opener/docs/node_modules; base prompt is Lobu's too (fixer added `expect(basePrompt.split("Current date:").length - 1).toBe(1)` and the same for "Current working directory:"); pi's per-tool guidelines survive; ordering identity → tools → gateway → cwd; no-tools session still delivers identity and gateway.
+
+   - **MODIFIED `packages/agent-worker/src/__tests__/pi-resource-discovery.test.ts`** — added:
+     ```ts
+     test("the only extension it ever loads is Lobu's own, built in memory", () => {
+       const loader = createLobuResourceLoader(() => "LOBU PROMPT");
+       const { extensions } = loader.getExtensions();
+       expect(extensions).toHaveLength(1);
+       expect(extensions[0].path).toBe("<lobu:system-prompt>");
+       expect(extensions[0].tools.size).toBe(0);
+       expect(extensions[0].commands.size).toBe(0);
+       expect(extensions[0].handlers.get("before_agent_start")).toHaveLength(1);
+       expect(loader.getSystemPrompt()).toBe("LOBU PROMPT");
+     });
+     ```
+
+4. **Errors and fixes:**
+
+   - **`git checkout -- src/runtime/session-runner.ts` during mutation cleanup reverted ALL my PR3 edits to that file** (grep for `renderSystemPrompt` returned 0). Fixed by re-applying all 7 edits via a Python script with `assert` guards on each anchor, then re-running the full suite (807 pass, 0 fail) to confirm restoration.
+   - **Test "an empty tool context renders no tools section at all" failed** — the Lobu conduct guidelines still rendered with zero tools. Redesigned rather than weakening the test: `LOBU_CONDUCT_GUIDELINE` stays unconditional, `FILE_PATH_GUIDELINE` gated on any of `FILE_TOOLS` being active. Renamed the test and added a companion.
+   - **`make pre-pr` failed on biome format (2 errors)** in `agent-identity.test.ts` and `system-prompt.ts`. Fixed with `bun run check:fix` (per the standing "biome via check:fix only" rule), then all 6 gates clean.
+   - **Duplicated trailing facts on the loader path** — my `getSystemPrompt()` returned a document already ending in "Current date/cwd", and pi's customPrompt path appends its own copy. Caught and fixed by the in-flight `make review-fix`, which split `buildLobuSystemPromptBody()` out and made the renderer return body-only when called without tool context.
+   - **`repro-probe.ts` initially failed with "Cannot find module './src/runtime/session-runner'"** because it was run from the worktree root instead of `packages/agent-worker`. Moved the file and re-ran.
+
+5. **Problem Solving:**
+
+   The central discovery: **PR3 is not a cleanup, it is a P0 production bug fix.** `AgentSession.prompt()` resets `agent.state.systemPrompt` on every call, and Lobu had no `before_agent_start` handler, so the worker's composed prompt — agent identity, `identityMd`/`soulMd`/`userMd`, platform instructions, MCP server instructions, memory instructions, network access, skills, runtime shell — was discarded before the first request. Production agents ran on pi's stock "expert coding assistant operating inside pi, a coding agent harness" prompt plus a pi documentation block pointing at node_modules paths that don't exist in the worker image. This is the root cause of the user's original question "why does the agent get pi docs?".
+
+   Red→green evidence captured: RED `contains MARKER: false / contains pi opener: true / contains pi docs block: true`; GREEN `contains MARKER: true / contains pi opener: false / contains pi docs block: false / contains gateway tail: true`.
+
+   Mutation testing confirmed every new test bites, and M1 additionally proved the two seams are independent (removing the extension still leaves identity+gateway delivered via the loader fail-safe; only the tool-section tests fail).
+
+   Verification totals: agent-worker 807 pass / 13 skip / 0 fail across 55 files; `make test-unit` 2873 pass / 0 fail; `make pre-pr` all 6 gates clean.
+
+6. **All user messages:**
+   - "do these fixes properly"
+   - "how confident are you, we want to move fast can we admin merge if we're fully sure it's goo?"
+
+   Standing constraints from CLAUDE.md/AGENTS.md that remain in force: never write to `~/Code/lobu` directly (work in a worktree via `make task-setup`); stage by explicit path (`git add -- <paths>`), never `-A`; never `git stash` (use WIP commits); no "Co-Authored-By" or "Generated with Claude Code" in commit messages; no backwards-compat shims, deprecated annotations, or fallback aliases — delete the old thing entirely; `make review` runs ONCE on settled HEAD, never as a find-fix loop; never `--admin` past a check that has not reported; workers never receive real credentials (placeholders/proxied access only); `events` is append-only; never bulk-delete prod `organization` rows; show the diff not a summary; bug fixes require red→fix→green evidence pasted into the PR body; absence proven only via `git fetch -q origin && git grep <pattern> origin/main`; never resolve merge conflicts in the GitHub web UI; end every completion report with a confidence score and 2–4 concrete next actions.
+
+7. **Pending Tasks:**
+   - **Answer the user's confidence/admin-merge question** (unanswered).
+   - Let `make review-fix` (background task `b6ox7fwma`) finish, re-read every file it touched, and re-run the full verification battery (`make pre-pr`, agent-worker suite, `make test-unit`) since it changed `system-prompt.ts` and two test files after my last green run.
+   - Commit PR3 by explicit path, confirm `git diff --name-only origin/main...HEAD` equals exactly the 8 intended paths, push, open the PR with red→green evidence in the body.
+   - `make review` once on settled HEAD; merge when required checks report green.
+   - Post-merge prod verification for #2317 and for PR3 (prompt content is not externally observable, so plan an in-worker or transcript-based check).
+
+8. **Current Work:**
+
+   Immediately before the summary request I was verifying the state of the `make review-fix` pass on PR3. The background task `b6ox7fwma` was still running with an empty output file, but it had already modified the working tree:
+   - `system-prompt-delivery.test.ts` — added `expect(basePrompt.split("Current date:").length - 1).toBe(1);` and the same assertion for `"Current working directory:"` to the "the base prompt is Lobu's too" test
+   - `system-prompt-builder.test.ts` — renderer describe rewritten to "renders a base fragment for pi and a complete per-turn document", asserting `render()` (no toolContext) does NOT contain "Current date:"/"Current working directory:"
+   - `system-prompt.ts` — split `buildLobuSystemPromptBody()` out of `buildLobuSystemPrompt()` and made `createLobuSystemPromptRenderer` return the body-only fragment when no tool context is supplied
+
+   I had just read `system-prompt.ts` lines 140-178 confirming that change, and had confirmed `bun test src/__tests__/system-prompt-delivery.test.ts` gives 6 pass / 0 fail against the fixer's version. I had NOT yet re-run `system-prompt-builder.test.ts` or the full suite against the fixer's edits.
+
+   `git status --short` at that moment:
+   ```
+   RM packages/agent-worker/src/__tests__/replace-base-prompt-identity.test.ts -> packages/agent-worker/src/__tests__/agent-identity.test.ts
+    M packages/agent-worker/src/__tests__/pi-resource-discovery.test.ts
+   RM packages/agent-worker/src/__tests__/prompt-assembly-smoke.test.ts -> packages/agent-worker/src/__tests__/system-prompt-builder.test.ts
+    M packages/agent-worker/src/runtime/pi-resources.ts
+    M packages/agent-worker/src/runtime/session-runner.ts
+    M packages/agent-worker/src/runtime/worker.ts
+   ?? packages/agent-worker/src/__tests__/system-prompt-delivery.test.ts
+   ?? packages/agent-worker/src/runtime/system-prompt.ts
+   ```
+   Nothing is committed, pushed, or opened as a PR for PR3.
+
+9. **Optional Next Step:**
+
+   Answer the user's question — "how confident are you, we want to move fast can we admin merge if we're fully sure it's goo?" — with an honest assessment: PR3 is not yet committed, pushed, or opened, and `make review-fix` was still in flight and has already changed three files since the last green verification run, so nothing is mergeable right now. State the confidence basis explicitly (red→green reproducer against a real provider request, 4 mutations all caught, 807 agent-worker tests and 2873 unit tests green, all 6 pre-pr gates clean — but all of that predates the fixer's edits and must be re-run), and note that `--admin` must never bypass a check that has not reported. Then: wait for `make review-fix` to complete, re-read its diff, re-run `make pre-pr` + the agent-worker suite + `make test-unit`, and only then commit by explicit path, push, open the PR with the red/green reproducer output in the body, and run `make review` once.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

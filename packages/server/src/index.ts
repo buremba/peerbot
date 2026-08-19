@@ -2747,10 +2747,22 @@ app.get("/mcp-apps/:app/assets/:asset", async (c) => {
 			? "text/javascript; charset=utf-8"
 			: "text/css; charset=utf-8",
 	);
-	c.header("Cache-Control", "no-cache");
+	// The template pins every asset URL to a content digest, so honour it here.
+	// A rolling deploy can land this request on a replica running a different
+	// build than the one that served the caller's index.html; caching those
+	// bytes under the *requested* digest would pin the mismatch in the host's
+	// browser cache until the next deploy. Cache hard only on an exact match.
+	// No ETag: neither branch can revalidate (no-store forbids it, and the
+	// immutable branch never expires), so it would be an inert header.
+	c.header(
+		"Cache-Control",
+		c.req.query("v") === asset.version
+			? "public, max-age=31536000, immutable"
+			: "no-store",
+	);
 	c.header("Access-Control-Allow-Origin", "*");
 	c.header("Cross-Origin-Resource-Policy", "cross-origin");
-	return c.body(Uint8Array.from(asset).buffer);
+	return c.body(Uint8Array.from(asset.bytes).buffer);
 });
 
 /**

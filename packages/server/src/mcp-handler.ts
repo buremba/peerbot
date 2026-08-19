@@ -41,6 +41,10 @@ import {
   touchAgentLastUsed,
 } from './lobu/stores/postgres-stores';
 import {
+  LOBU_INTERACTION_RESOURCE_URI,
+  MCP_APP_RESOURCE_ALIASES,
+} from './mcp-app-resource-uris';
+import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
   mcpSessionMap,
 } from './mcp-session-state';
@@ -52,7 +56,6 @@ import {
   extractAuthContext,
   isSoftErrorResult,
 } from './tools/execute';
-import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
@@ -68,157 +71,6 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
-const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
-  string,
-  { canonicalUri: string; template: 'embedded' | 'external' }
-> = new Map([
-  [
-    'ui://lobu/interaction/v1',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v2',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v3.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v4.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v5.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v6.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v7.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v8.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v9.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v10.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v11.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v12.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v13.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v14.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v15.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v20.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v21.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v22.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v23.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v24.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v25.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v26.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v27.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v28.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v29.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
-  ],
-  [
-    'ui://lobu/interaction/v30.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v31.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v32.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v33.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v34.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v35.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  // v36-v40 were issued to live ChatGPT preview apps while this reload fix
-  // was iterated. ChatGPT caches these immutable URIs, so keep them readable.
-  [
-    'ui://lobu/interaction/v36.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v37.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v38.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v39.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-  [
-    'ui://lobu/interaction/v40.html',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
-  ],
-]);
 // ---------------------------------------------------------------------------
 // Session store
 // ---------------------------------------------------------------------------

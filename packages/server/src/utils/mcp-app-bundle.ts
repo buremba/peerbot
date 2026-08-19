@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +39,49 @@ function bundleFileCandidates(appDir: string, filename: string): string[] {
 // instead of serving 404 until the pod restarts. Every interactive interaction
 // now depends on this one bundle, so a sticky miss would break all of them.
 const bundleCache = new Map<string, string>();
-const assetCache = new Map<string, Uint8Array>();
+const assetCache = new Map<string, McpAppAsset>();
+
+const HEAD_OPEN = /<head(?:\s[^>]*)?>/i;
+const HEAD_CLOSE = /<\/head\s*>/i;
+const HEAD_DECLARES_BASE = /<base(?:\s|\/?>)/i;
+
+/** One built asset plus the content digest its template URL pins it by. */
+export interface McpAppAsset {
+  bytes: Uint8Array;
+  version: string;
+}
+
+/**
+ * The `?v=` owletto stamps onto each asset URL: the first 16 hex characters of
+ * the content's SHA-256 (`scripts/version-mcp-app-assets.mjs`). Recomputing it
+ * here is what lets the asset route tell "the build this caller was served" from
+ * "whatever build this replica happens to be running".
+ */
+export function mcpAppAssetVersion(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+}
+
+/**
+ * Give the bundle an absolute asset base, unless its own `<head>` already sets
+ * one.
+ *
+ * Both halves are scoped to the head element on purpose. A substring test over
+ * the whole document also matches a `<base ` written inside an inline script or
+ * a comment, and skipping the injection on that evidence leaves every relative
+ * asset URL resolving against the MCP host's origin (claude.ai) rather than
+ * ours — the widget renders blank and no request ever reaches us to explain why.
+ */
+export function withAssetBase(html: string, assetBase: string): string {
+  const headOpen = HEAD_OPEN.exec(html);
+  if (!headOpen) return html;
+  const headStart = headOpen.index + headOpen[0].length;
+  const rest = html.slice(headStart);
+  const headClose = HEAD_CLOSE.exec(rest);
+  const head = headClose ? rest.slice(0, headClose.index) : rest;
+  if (HEAD_DECLARES_BASE.test(head)) return html;
+  const href = assetBase.replaceAll('"', '%22');
+  return `${html.slice(0, headStart)}\n\t\t<base href="${href}" />${rest}`;
+}
 
 /** Read a built MCP App bundle's HTML. Returns null when no build is present. */
 export async function readMcpAppBundle(
@@ -75,17 +118,20 @@ export async function renderMcpAppTemplate(
   if (html == null) return null;
 
   const assetBase = `${publicOrigin}/mcp-apps/${encodeURIComponent(appDir)}/`;
-  const withBase = html.includes('<base ')
-    ? html
-    : html.replace('<head>', `<head>\n\t\t<base href="${assetBase}" />`);
-  return withBase.replaceAll(ORIGIN_PLACEHOLDER, publicOrigin);
+  return withAssetBase(html, assetBase).replaceAll(
+    ORIGIN_PLACEHOLDER,
+    publicOrigin
+  );
 }
 
-/** Read one stable JS/CSS asset staged for the second rollout phase. */
+/**
+ * Read one stable JS/CSS asset staged for the second rollout phase, together
+ * with the content digest its template URL pins it by.
+ */
 export async function readMcpAppAsset(
   appDir: string,
   assetPath: string
-): Promise<Uint8Array | null> {
+): Promise<McpAppAsset | null> {
   if (!SAFE_ASSET_PATH.test(assetPath)) return null;
   const cacheKey = `${appDir}/${assetPath}`;
   const cached = assetCache.get(cacheKey);
@@ -93,7 +139,11 @@ export async function readMcpAppAsset(
   for (const candidate of bundleFileCandidates(appDir, assetPath)) {
     try {
       await stat(candidate);
-      const asset = await readFile(candidate);
+      const bytes = await readFile(candidate);
+      const asset: McpAppAsset = {
+        bytes,
+        version: mcpAppAssetVersion(bytes),
+      };
       assetCache.set(cacheKey, asset);
       return asset;
     } catch {

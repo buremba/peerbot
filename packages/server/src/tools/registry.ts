@@ -19,6 +19,7 @@
 
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';
 import type { Env } from '../index';
+import { LOBU_INTERACTION_RESOURCE_URI } from '../mcp-app-resource-uris';
 import { ADMIN_TOOLS } from './admin';
 import { ListMetricsSchema, listMetrics } from './admin/list_metrics';
 import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
@@ -26,7 +27,6 @@ import { QueryMetricSchema, queryMetric } from './admin/query_metric';
 import { QuerySqlResultSchema, QuerySqlSchema, querySql } from './admin/query_sql';
 import {
   GetApprovalSchema,
-  LOBU_INTERACTION_RESOURCE_URI,
   LobuViewSchema,
   ResolveApprovalSchema,
   getApproval,

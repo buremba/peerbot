@@ -5,11 +5,12 @@ import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
+import { LOBU_INTERACTION_RESOURCE_URI } from '../../../mcp-app-resource-uris';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { buildClientSDK } from '../../../sandbox/client-sdk';
-import { LOBU_INTERACTION_RESOURCE_URI } from '../../../tools/mcp_app';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
+import { mcpAppAssetVersion } from '../../../utils/mcp-app-bundle';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
@@ -226,21 +227,42 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(html).toContain('/mcp-apps/interaction/');
     expect(html).not.toContain('__LOBU_MCP_APP_ORIGIN__');
 
+    // A request that does not name this replica's build must not be cacheable:
+    // during a rolling deploy it can be an index.html from the *other* build
+    // asking for bytes we do not have, and caching them under that build's URL
+    // would pin the mismatch in the host's browser until the next deploy.
     const assetResponse = await get('/mcp-apps/interaction/assets/app.js');
     expect(assetResponse.status).toBe(200);
     expect(assetResponse.headers.get('content-type')).toContain('text/javascript');
-    expect(assetResponse.headers.get('cache-control')).toBe('no-cache');
+    expect(assetResponse.headers.get('cache-control')).toBe('no-store');
     expect(assetResponse.headers.get('access-control-allow-origin')).toBe('*');
     expect(assetResponse.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
-    expect(await assetResponse.text()).toContain('mcpAppAsset');
+    const assetBody = await assetResponse.text();
+    expect(assetBody).toContain('mcpAppAsset');
+
+    const assetVersion = mcpAppAssetVersion(new TextEncoder().encode(assetBody));
+    const stale = await get('/mcp-apps/interaction/assets/app.js?v=someotherbuild');
+    expect(stale.headers.get('cache-control')).toBe('no-store');
+    const fresh = await get(`/mcp-apps/interaction/assets/app.js?v=${assetVersion}`);
+    expect(fresh.status).toBe(200);
+    expect(fresh.headers.get('cache-control')).toBe(
+      'public, max-age=31536000, immutable'
+    );
 
     const styleResponse = await get('/mcp-apps/interaction/assets/app.css');
     expect(styleResponse.status).toBe(200);
     expect(styleResponse.headers.get('content-type')).toContain('text/css');
-    expect(styleResponse.headers.get('cache-control')).toBe('no-cache');
+    expect(styleResponse.headers.get('cache-control')).toBe('no-store');
     expect(styleResponse.headers.get('access-control-allow-origin')).toBe('*');
     expect(styleResponse.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
-    expect(await styleResponse.text()).toContain('[data-mcp-app]');
+    const styleBody = await styleResponse.text();
+    expect(styleBody).toContain('[data-mcp-app]');
+    const styleVersion = mcpAppAssetVersion(new TextEncoder().encode(styleBody));
+    expect(
+      (
+        await get(`/mcp-apps/interaction/assets/app.css?v=${styleVersion}`)
+      ).headers.get('cache-control')
+    ).toBe('public, max-age=31536000, immutable');
 
     expect((await get('/mcp-apps/interaction/assets/app.txt')).status).toBe(404);
     expect((await get('/mcp-apps/unknown/assets/app.js')).status).toBe(404);

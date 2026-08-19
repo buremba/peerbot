@@ -741,6 +741,31 @@ export const QUERYABLE_SCHEMA = {
         'updated_at'
       ),
     },
+    // device_workers — the caller's OWN registered devices.
+    //
+    // Excludes `user_id` (always the caller under the CTE's owner filter, so it
+    // only invites correlation) and `connector_manifests` (free-form jsonb the
+    // device writes verbatim, the same "written by the write path, not curated
+    // for secrecy" risk class that forced redactedConfigColumn onto
+    // connections.config; nothing needs it to pin an Automation).
+    //
+    // `id` is the point of the entry: it is the UUID that
+    // `automations.device_worker_id` / `connections.device_worker_id` take, and
+    // without it an agent had to reconstruct it from a device lifecycle event.
+    {
+      name: 'device_workers',
+      columns: cols(
+        'id',
+        'worker_id',
+        'platform',
+        'app_version',
+        'capabilities',
+        'label',
+        'last_seen_at',
+        'organization_id',
+        'agent_kinds'
+      ),
+    },
     // entity_relationship_types — local and public-catalog edge definitions.
     {
       name: 'entity_relationship_types',

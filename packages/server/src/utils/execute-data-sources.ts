@@ -464,6 +464,20 @@ export function buildScopedQuery(
   };
   if (tableRefs.length > 0) bindOrganization();
 
+  // Requesting user, bound lazily like the org. Cast because a null principal
+  // (headless/service caller) gives postgres no type to infer — and `user_id =
+  // NULL` is never true, so those callers see zero owner-scoped rows, which is
+  // the fail-closed direction.
+  let principalP: string | undefined;
+  const bindPrincipal = (): string => {
+    if (!principalP) {
+      idx++;
+      params.push(context.userId ?? null);
+      principalP = `$${idx}::text`;
+    }
+    return principalP;
+  };
+
   // Run every query through the same context-placeholder compiler. Parameter
   // allocation stays lazy so tableless SELECTs bind only values they reference.
   let processedQuery = userQuery;
@@ -768,6 +782,35 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table, 'u')} FROM public."user" u ` +
           `JOIN public.member m ON m."userId" = u.id ` +
           `WHERE m."organizationId" = ${orgP})`
+      );
+    } else if (table === 'device_workers') {
+      // NOT an org-scoped table. The PK is (user_id, worker_id) and
+      // `organization_id` is nullable — it records where a device is ATTACHED,
+      // not who owns it. Scoping on the org alone would let any member of a
+      // shared org enumerate every colleague's machines: `label` is typically a
+      // personal name, and `last_seen_at` is a presence feed. That is the leak
+      // class that keeps `user` in ADMIN_ONLY_QUERYABLE_TABLES, so the owner
+      // filter — not the org — is what makes this member-safe.
+      //
+      // The owner predicate is the one `listDeviceWorkers`
+      // (worker-api/device-management.ts) already uses for the typed device
+      // list. The org arm still admits devices with NO org, because
+      // `evaluateDeviceWorkerAccess` already lets an owner pin a device they own
+      // regardless of attachment; hiding those would leave a device you can pin
+      // but cannot find, which is the gap this entry exists to close. It cannot
+      // widen exposure: the owner predicate is ANDed first.
+      //
+      // Deliberately narrower than the pin policy in two places: an owner's
+      // device attached to ANOTHER org is not this org's data, and the
+      // owner/admin arm of `evaluateDeviceWorkerAccess` is not mirrored because
+      // DataSourceContext carries no member role. Both still resolve through
+      // the typed device list, which is owner-scoped and cross-org.
+      const principalP = bindPrincipal();
+      // security-allowed: see block comment above the for-loop
+      ctes.push(
+        `"${safeName}" AS (SELECT ${sel(table, 'dw')} FROM public.device_workers dw ` +
+          `WHERE dw.user_id = ${principalP} ` +
+          `AND (dw.organization_id = ${orgP} OR dw.organization_id IS NULL))`
       );
     } else if (table === 'feeds') {
       // Every feed derives from a connection (`connection_id` NOT NULL), so a

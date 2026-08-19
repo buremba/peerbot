@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>be63tebbf</task-id>
+<tool-use-id>toolu_01DSzBJ1UdDbL5fwzAXBMkDy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/be63tebbf.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on #2715" completed (exit code 0)</summary>
+</task-notification>

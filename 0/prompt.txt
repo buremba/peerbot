@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bn5q3m76j</task-id>
+<tool-use-id>toolu_01GGeE3tsgq6fGYBhJZFPhuS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bn5q3m76j.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review and ui-review gates on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

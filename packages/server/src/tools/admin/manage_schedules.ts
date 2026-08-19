@@ -33,7 +33,6 @@ import {
   type DeliveryAuthzDenyReason,
   deleteScheduledJob,
   getScheduledJob,
-  isDeliverableChatPlatform,
   listScheduledJobs,
   pauseScheduledJob,
   type ScheduledDeliveryContext,
@@ -41,7 +40,8 @@ import {
   updateScheduledJob,
   validateDeliveryAuthorization,
 } from '../../scheduled/scheduled-jobs-service';
-import type { ToolContext, ToolSourceContext } from '../registry';
+import type { ToolContext } from '../registry';
+import { sourceToDeliveryContext } from './approval-delivery';
 import logger from '../../utils/logger';
 import { nextRunAt as nextCronTickAt, validateTimezone } from '../../utils/cron';
 import { getErrorMessage } from "@lobu/core";
@@ -260,24 +260,6 @@ function actionArgsForPayload(
     ...(payload.body !== undefined ? { body: payload.body } : {}),
     ...(payload.recipients !== undefined ? { recipients: payload.recipients } : {}),
     ...(payload.resource_url !== undefined ? { resource_url: payload.resource_url } : {}),
-  };
-}
-
-function sourceToDeliveryContext(
-  source: ToolSourceContext | null | undefined
-): ScheduledDeliveryContext | null {
-  // Only platforms the fire-time dispatch can actually deliver into; an
-  // unsupported source platform stores no delivery_context (api fallback)
-  // rather than a dead one that silently never posts.
-  if (!source?.platform || !isDeliverableChatPlatform(source.platform)) return null;
-  if (!source.connectionId || !source.channelId || !source.conversationId) return null;
-  return {
-    platform: source.platform,
-    conversationId: source.conversationId,
-    channelId: source.channelId,
-    teamId: source.teamId ?? null,
-    connectionId: source.connectionId,
-    userId: source.userId ?? null,
   };
 }
 

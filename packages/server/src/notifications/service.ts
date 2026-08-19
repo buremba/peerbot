@@ -46,8 +46,26 @@ interface CreateNotificationParams {
 	/** Optional workspace/team guard for channel-scoped delivery. */
 	teamId?: string | null;
 	/**
-	 * Lobu user who owns the change under review (field-change approvals).
-	 * When set, bot delivery tries the owner's Slack DM FIRST — resolved via
+	 * Who the chat fan-out may reach when no explicit target resolves.
+	 *
+	 * `"org"` (the default) keeps the org-wide broadcast every informational
+	 * notification relies on: with no target, post into every channel any of the
+	 * org's agents is bound to. `"targeted"` fails CLOSED — an unresolved target
+	 * delivers to NO channel rather than everywhere.
+	 *
+	 * Approvals are `"targeted"`. An approval is a decision exactly one human
+	 * makes, and `notification_targets` already addresses precisely the org's
+	 * admins, so the durable inbox loses nothing when chat delivery is skipped —
+	 * the run stays pending behind its approval URL either way. Broadcasting the
+	 * operation name and a review link into every bound channel is pure noise
+	 * plus needless disclosure.
+	 */
+	deliveryScope?: "targeted" | "org";
+	/**
+	 * Lobu user whose Slack DM is the first chat destination — the owner of the
+	 * change under review (field-change approvals), or the requester of an
+	 * approval that has no chat origin. When set, bot delivery tries their DM
+	 * FIRST — resolved via
 	 * the owner's workspace-scoped Slack identity — and only falls back
 	 * to the configured-target/org-wide channel chain when the owner has no
 	 * Slack identity or the DM fails. In-app inbox targeting is unaffected.
@@ -198,6 +216,8 @@ export async function resolveNotificationDeliveryPlan(params: {
 	connectionId?: string | null;
 	channelId?: string | null;
 	teamId?: string | null;
+	/** See `CreateNotificationParams.deliveryScope`. Defaults to `"org"`. */
+	deliveryScope?: "targeted" | "org";
 }): Promise<{ strictAutomationTarget: boolean; targets: BotDeliveryTarget[] }> {
 	const configuredAutomationTarget =
 		params.automationId == null
@@ -221,15 +241,38 @@ export async function resolveNotificationDeliveryPlan(params: {
 		};
 	}
 
+	const targeted = params.deliveryScope === "targeted";
+	const hasExplicitTarget = Boolean(
+		params.connectionId || params.channelId || params.teamId,
+	);
+	// Targeted with nothing to target: skip the resolve entirely. Calling the
+	// org-wide resolver here and discarding the rows would read as an oversight
+	// the next time someone edits this branch.
+	if (targeted && !hasExplicitTarget) {
+		return { strictAutomationTarget: false, targets: [] };
+	}
+
 	let targets = await resolveBotDeliveryTargets(params.organizationId, {
 		connectionId: params.connectionId,
 		channelId: params.channelId,
 		teamId: params.teamId,
 	});
-	if (
-		targets.length === 0 &&
-		(params.connectionId || params.channelId || params.teamId)
-	) {
+	if (targets.length === 0 && hasExplicitTarget) {
+		if (targeted) {
+			// A stale/unbound target on a targeted notification means "nobody",
+			// never "everybody" — the org-wide fallback below would turn a
+			// deleted channel into an org-wide broadcast of an approval.
+			logger.warn(
+				{
+					organizationId: params.organizationId,
+					connectionId: params.connectionId,
+					channelId: params.channelId,
+					teamId: params.teamId,
+				},
+				"[Notifications] Targeted delivery resolved to no bound channels — skipping chat delivery",
+			);
+			return { strictAutomationTarget: false, targets: [] };
+		}
 		logger.warn(
 			{
 				organizationId: params.organizationId,
@@ -420,6 +463,7 @@ async function deliverToBotConnections(
 		connectionId: params.connectionId,
 		channelId: params.channelId,
 		teamId: params.teamId,
+		deliveryScope: params.deliveryScope,
 	});
 	if (deliveryPlan.strictAutomationTarget && deliveryPlan.targets.length === 0) {
 		logger.error(

@@ -666,3 +666,111 @@ describe("resolveBotDeliveryTargets", () => {
     ]);
   });
 });
+
+/**
+ * Approvals must never ride the org-wide fan-out.
+ *
+ * An approval is a decision exactly one human makes; `notification_targets`
+ * already addresses the org's admins and the run parks behind its approval URL,
+ * so an unresolved chat target must deliver to NO channel rather than to every
+ * channel any agent in the org is bound to. Before `deliveryScope: "targeted"`,
+ * a Mac Shell `run` approval initiated over MCP (no chat coordinates at all)
+ * posted once into each of the org's bound channels — three per approval in
+ * prod.
+ */
+describe("resolveNotificationDeliveryPlan — targeted scope", () => {
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+	});
+	afterAll(async () => {
+		await cleanupTestDatabase();
+	});
+
+	async function seedTwoBoundChannels() {
+		const org = await createTestOrganization();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			agentId: "crm",
+		});
+		await seedSlackConnection({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "conn-1",
+		});
+		await seedBinding({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "conn-1",
+			channelId: "slack:C0LEADS",
+		});
+		await seedBinding({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "conn-1",
+			channelId: "slack:C0OPS",
+		});
+		return org;
+	}
+
+	it("org scope still fans out to every bound channel with no target", async () => {
+		const org = await seedTwoBoundChannels();
+
+		const plan = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+		});
+
+		expect(plan.targets.map((t) => t.channelKey).sort()).toEqual([
+			"slack:C0LEADS",
+			"slack:C0OPS",
+		]);
+	});
+
+	it("targeted scope delivers to NO channel when no target is given", async () => {
+		const org = await seedTwoBoundChannels();
+
+		const plan = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+			deliveryScope: "targeted",
+		});
+
+		expect(plan.targets).toEqual([]);
+	});
+
+	it("targeted scope still honours an explicit channel", async () => {
+		const org = await seedTwoBoundChannels();
+
+		const plan = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+			channelId: "slack:C0OPS",
+			deliveryScope: "targeted",
+		});
+
+		expect(plan.targets.map((t) => t.channelKey)).toEqual(["slack:C0OPS"]);
+	});
+
+	it("targeted scope does not fall back org-wide when the target is unbound", async () => {
+		const org = await seedTwoBoundChannels();
+
+		const plan = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+			channelId: "slack:C0DELETED",
+			deliveryScope: "targeted",
+		});
+
+		expect(plan.targets).toEqual([]);
+	});
+
+	it("org scope DOES fall back org-wide when the target is unbound", async () => {
+		const org = await seedTwoBoundChannels();
+
+		const plan = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+			channelId: "slack:C0DELETED",
+		});
+
+		expect(plan.targets.map((t) => t.channelKey).sort()).toEqual([
+			"slack:C0LEADS",
+			"slack:C0OPS",
+		]);
+	});
+});

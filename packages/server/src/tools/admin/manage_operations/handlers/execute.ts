@@ -12,6 +12,7 @@ import type { Env } from "../../../../index";
 import { currentMcpActivityAttribution, currentMcpActivityEventMetadata } from "../../../../lobu/stores/mcp-client-conversations";
 import { callTool as callProxyTool } from "../../../../mcp-proxy/client";
 import { notifyActionApprovalNeeded } from "../../../../notifications/triggers";
+import { resolveApprovalChatOrigin } from "../../approval-delivery";
 import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { executeHttpOperation } from "../../../../operations/execute-http-operation";
@@ -747,6 +748,9 @@ export async function handleExecute(
 			baseUrl,
 		);
 
+		// One destination, never the org-wide fan-out: the conversation that asked
+		// when there is one, else the requesting human's DM, else the inbox alone.
+		const chatOrigin = await resolveApprovalChatOrigin(ctx);
 		notifyActionApprovalNeeded({
 			orgId: ctx.organizationId,
 			runId,
@@ -754,6 +758,10 @@ export async function handleExecute(
 			connectionName: connection.display_name ?? connection.connector_key,
 			eventId,
 			approvalUrl,
+			connectionId: chatOrigin.connectionId,
+			channelId: chatOrigin.channelId,
+			teamId: chatOrigin.teamId,
+			requesterUserId: visibilityUserId ?? ctx.userId ?? null,
 			mcpActivity: currentMcpActivityAttribution(ctx),
 		}).catch((error) =>
 			logger.error(error, "Failed to send operation approval notification"),

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvt2i6fyh</task-id>
+<tool-use-id>toolu_014uAYYsqfS1Yv4Y5iX3pTB4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/8845e28f-1968-4265-b03d-2ffd9778591f/tasks/bvt2i6fyh.output</output-file>
+<status>killed</status>
+<summary>Background command "Watch CI on final simplified HEAD" was stopped</summary>
+</task-notification>

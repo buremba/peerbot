@@ -1,0 +1,221 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+This session continued a long design conversation about write-time entity policy in Lobu. The user's requests chronologically:
+   - Deliver the owed use-case shortfall analysis (carried over from before compaction)
+   - "we need escalation as well. actually this can be the approach instead of the permissions, maybe it can be implemented as code so we consolidate as much as possible"
+   - "we can kill the bespoke permissioning system this way as well maybe?"
+   - "ultrathink what's the best way to make the api flexible and not very verbose or complex. we have guardrails permissions and now hooks. i thought we don't need to show the permission ui etc to the usres and these hooks can cover the permission logic possibly and make it flexible by moving it into code"
+   - "is there a reason you ahve human agents seperately, that can be just ctx maybe" (pushback on structural principal dispatch)
+   - "hmm, that check can also reject if agent maybe?"
+   - "ah ok, about which agent to be able to read or automation should that be declarative as well"
+   - "allowlist is better no? check 2 explain 3 and 4 and also pull from main to see if anything hcnages"
+   - "so you say this approach works? go thrugh some use-case"
+   - "are these limitations architectural"
+   - "yes go ahead do spikes and let us understand"
+   - **"wtf is pg_sleep why are we using it. don't we inline the code in a way where is the gap"** — major methodology pushback
+   - "so we don't use pg_sleep anymore right" / "or is that a best approach"
+   - "sounds good explain the way"
+   - "that escalate escalates to whom? how does that work? also show full spec"
+   - "ok show me the full example how will these transitions and all these things like definition work"
+   - "hmm if no db query it limits things or no"
+   - "what's read?"
+   - "for approval who gets it"
+   - "for use-cases like escelating a customer potential churn to the account execute (a member of the org but not admin) also works or no"
+   - "hmm, any way to consolidate and simplify this logic"
+   - "dig in the codebase and understand how it works end to end. also for autmations reaction scripts can send notifications right? it can either be dm or a channel etc"
+   - "yes dig in, explain how our hooks and atuomations cover what and if we suppport all use-cases"
+   - **"why would they delete the customer? should we do the full technical spec and plan this properly now. for concurrency etc we need to find solutions as well"**
+   - "what's lock how does it work"
+   - "what other solutions is doing let's see."
+   - "we also see all the history in audit logs when shit happens? what do you think is the best for our approach for new entity creation updates etc"
+   - "if we quarantee that for a single row there is only one isolate-vm works we can also do that no"
+   - **"ok let's finalize the spec, if you want to do spikes you can to save the memory so i can also compact"** (current)
+
+2. **Key Technical Concepts:**
+   - **Two-tier split**: queryable (declarative policy rows, answers "may I?" pre-flight) vs enforceable (per-type code at the write seam, answers "was this attempt legal?")
+   - **The split is forced, not stylistic**: three read paths gate on `action: 'read'`, and no write-seam hook can answer a read
+   - **Deny-only verbs**: `deny(reason)`, `escalate(fields, reason, opts?)`. **No `allow`** — this is what makes `actor` safe in ctx (a rule can scope a denial, never loosen the lattice)
+   - **Deploy-time vs write-time compilation**: code as configuration language (Terraform/CDK/Pulumi shape) — data → policy rows at apply; functions → compiled script
+   - **Per-row isolate serialization is already free**: the lock at `:958` precedes the rule position at `:1101`, so two isolates cannot run against one row
+   - **Write-skew**: two writes each read a stale aggregate, each passes, together violate
+   - **OCC vs pessimistic locking**: Convex uses OCC + deterministic retry; Postgres SSI uses non-blocking predicate locks; Salesforce uses `FOR UPDATE`
+   - **Max-restrictive fold vs most-specific ordering**: same policy rows, two different sorts (decision vs delivery target)
+   - **Event-loop starvation**: per-process, not per-row — the dominant isolate risk
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/authz/entity-mutation-gate.ts`** — the interceptor pipeline
+     ```ts
+     export type CreateOrDeleteDecision =
+       | { outcome: "allow" }
+       | { outcome: "deny"; reason: string }
+       | { outcome: "defer"; deferred: DeferredMutation };
+     export type UpdateDecision =
+       | { outcome: "deny"; reason: string }
+       | { outcome: "fields"; requireApproval: Set<string> };
+     ```
+     `registerMutationInterceptor` (:186) exists but production ships only `approvalInterceptor`. `deferEntityFieldChange` (:198) doc comment: *"Package a blocked field-change discovered LATE (after the row lock + merge, when the blocked values are finally known) as a POST-COMMIT deferred mutation."* Fold at :241-260 unions `requireApproval`, deny short-circuits. `MutationPrincipalKind` at :51.
+
+   - **`packages/server/src/utils/entity-management.ts`** — the write path
+     - `:615`, `:958` — `SELECT … FOR UPDATE`; comment at :948: *"Lock the entity row, merge metadata, and write in ONE transaction: concurrent updates to the same entity serialize on the row lock"*
+     - `:828` — `insertEntityRow` (creates bypass the branded seam)
+     - `:989` — `if (!isHumanEdit) {` … closes at `:1062`
+     - `:1031` — `runMutationGate` call
+     - `:1051-1060` — strip approval-held fields
+     - `:1067` — `computeFieldMerge({... nowIso: new Date().toISOString() ...})` (a clock — so the tx is not literally replayable)
+     - `:1101` — `rowPatch` assembly (the rule position)
+     - `:1118` — `patchEntityRows` with validation
+     - `:1134` returns from inside the tx; `:1142-1147` builds `deferEntityFieldChange` AFTER — so a throw skips the approval card
+
+   - **`packages/server/src/authz/entity-policy.ts`**
+     - `:32` `EntityPolicyPrincipalKind = "user" | "agent" | "automation"` (duplicate of `MutationPrincipalKind`)
+     - `:54` `PolicyPrincipalKind = "agent" | "automation"`
+     - `:328` `resolveAutomationOwner` — INNER JOINs `agents`; dangling agent → `resolved:false` → deny
+     - `:483` `scopeSpecificity` (entity_id 4, field_path 2, type/operation/target 1) — comment: *"decision fold is still max-restrictive"*
+     - `:703-705` — `${ownerAgentId}::text IS NOT NULL AND (principal_id IS NULL OR principal_id = ${ownerAgentId})`
+     - `:797`, `:884` — `if (args.ownerResolved === false) return "deny";`
+
+   - **`packages/server/src/authz/write-action-manifest.ts`** — `WriteAction = "read"|"create"|"update"|"delete"|"execute"`, `WriteEffect = "auto"|"approval"|"deny"|"disabled"`. `entity.delete` defaults `approval`; `agent_config.delete` defaults `deny`. Manifest says *"a per-target auto cannot open a blanket deny."*
+
+   - **`packages/server/src/tools/admin/manage_operations/handlers/approvals.ts`**
+     - `:721-723` — *"a member may decide a run ONLY when it is a pending entity-change proposal that records them as the field owner (action_input.owner_user_id, resolved at propose time from field_controls)"*
+     - `:740` — `AND action_input->>'owner_user_id' = ${userId}`
+     - `:790` — `if (isAdminOrOwnerRole(ctx.memberRole)) return;`
+
+   - **`packages/server/src/notifications/triggers.ts`**
+     - `:468` `sendNotification(orgId, userIds: string[], notification)` — takes an arbitrary list
+     - `:485` `notifyOrgAdmins` — six-line wrapper, `getOrgAdminUserIds` = `role IN ('admin','owner')`
+     - `:496` `notifyActionApprovalNeeded` → calls `notifyOrgAdmins`; `ownerUserId` comment: *"Field owner — routes the Slack card to their DM before the channel tier."*
+
+   - **`packages/server/src/tools/admin/notify.ts`** — `recipients: 'admins' | 'all' | string[]` (:40-50); validates ids against `member` (:168-176); zero matches → `{ notified_count: 0 }` silently
+
+   - **`packages/server/src/sandbox/run-script.ts`** — `:903` `new ivm.Isolate`, `:904` `createContext`, `:1141` `compileScript`, `:1145` `script.run(context, { timeout, promise: true, copy: true })`, `:1271` `dispose()`
+
+   - **`packages/server/src/sandbox/namespaces/entities.ts:9`** — `import { manageEntity } from "../../tools/admin/manage_entity";` — proves connector reactions reach the seam
+
+   - **`packages/server/src/sandbox/method-metadata.ts:495`** — `notifications.send(input: { title, body?, card?, recipients?: 'admins'|'all'|string[], ... })`
+
+   - **`packages/server/src/tools/admin/manage_entity.ts`** — `handleCreate` :271, `handleUpdate` :427, `recordChangeEvent` :585 (only here), `handleMerge` :675, `handleDelete` :1365, `handleUpdateLink` :1737; `updateEntity` call at :518 (the sole non-test caller)
+
+   - **`packages/server/src/utils/insert-event.ts`** — `recordChangeEvent(params): void` at :756 (fire-and-forget); `.catch` at :775 logs *"change audit event DROPPED after retry — audit trail is missing this row"*; idempotency via `_lobu_idempotency_key` handled at :713-725
+
+   - **`packages/server/src/authz/entity-row-validation.ts`**
+     ```ts
+     const RESERVED_COLUMN_NAMES = {
+       name: "$name", slug: "$slug", parentId: "$parent_id",
+       content: "$content", softDelete: "$deleted",
+     };
+     function committedState(row: CommittedRow): Record<string, unknown> {
+       return { ...metadata, $name, $slug, $parent_id, $content, $deleted };
+     }
+     ```
+
+   - **`packages/server/src/authz/entity-transition-rules.ts`** (206 lines) — the DSL to be deleted: `TransitionSpec { field, states: Record<string, {to, frozen, writableOnExit}> }`, `evaluateTransition({spec, committed, patch})`. Doc comment at :143-145 already anticipates the header/line approval-hold scenario.
+
+   - **CREATED: `packages/server/src/__tests__/integration/authz/spike-approval-hold-vs-invariant.test.ts`** (uncommitted) — CONTROL test passes (agent's legal exit succeeds with no human owner); BUG test passes (identical write denied once a human owns `status`, nothing lands, `runs` count unchanged). **Both tests pass = case 3 confirmed.**
+
+   - **DELETED (ephemeral)**: `spike-lock-hold.test.ts` (pg_sleep, wrong instrument), `spike-isolate-real.test.ts` (couldn't load ivm under node 26), `packages/server/spike-isolate-bench.mjs`, `packages/server/bridge-bench.mjs`
+
+   - **Scratchpad**: `isolate-bench.mjs`, `bridge-bench.mjs`, `entity-write-policy.html`
+
+   - **Artifact published**: https://claude.ai/code/artifact/9af4a098-8d23-4646-92fd-09f4b0d5cc99 (title "Lobu Entity Write Policy", favicon 🚦)
+
+   - **Memory written this session**: `reference_isolate_per_write_costs_4_5ms.md` (corrected), `reference_approval_hold_turns_legal_write_into_denial.md` (new), `reference_entity_approval_routing_and_authority.md` (new)
+
+4. **Errors and fixes:**
+   - **`pg_sleep` was the wrong instrument** — user: *"wtf is pg_sleep why are we using it. don't we inline the code in a way where is the gap"*. It blocks a Postgres backend while Node sits idle, so it was structurally incapable of observing event-loop starvation. Fixed by measuring the real isolate. **This was the highest-value correction of the session.**
+   - **The 4.5ms isolate figure was wrong by 7×.** Real bare isolate is 0.63ms; 4.5ms was the full `runScript` SDK harness (jail, 4 `ivm.Reference` bridges, manifest, `withTimeout`). Memory corrected.
+   - **Claimed "there is no approver identity on the run"** — wrong; `owner_user_id` exists and is enforced at `:740`.
+   - **Proposed structural principal dispatch** (`agents: { check }` / `humans: { check }`) — user pushed back; retracted. The real reason ctx is safe: the hook is deny-only so it cannot loosen the lattice.
+   - **Banned DB reads on three reasons, two of which were weak** — industry precedent actually means "keep it out of the cheap tier" (everyone has a second tier); #2818 forbids `getDb()`, not `tx`-scoped reads.
+   - **Invented a bad use case** — user: *"why would they delete the customer?"* In an ERP you deactivate, which is a same-row status change, already in scope.
+   - **`isolated-vm` won't load** under node 26 (abi147, no prebuild) or bun (JSC, missing V8 symbol). Fixed by using `/opt/homebrew/opt/node@22/bin/node` from inside the repo tree.
+   - **Empty heartbeat array crashed the benchmark** — that emptiness was itself the finding (the timer never fired). Guarded and re-ran.
+
+5. **Problem Solving:**
+
+   **Measurements (all node 22, the production runtime per `docker/ci/Dockerfile` and `docker/app/Dockerfile.preview`):**
+   ```
+   workers  ops/s   p50_ms  p95_ms  | heartbeat_ticks  hb_max
+         1  1549.4    0.63    0.75  |        388/387    0.53
+         2  2037.8    0.96    1.16  |        294/294    0.52
+         4  2276.4    1.74    2.49  |        227/264    0.94
+         8  2257.6    3.51    4.29  |         37/266   37.46
+        16  2214.1    7.15    8.09  |          0/271       —
+        32  2156.1   14.67   16.14  |          0/278       —
+   idle baseline: p50 0.15ms  max 0.69ms      cpus: 14
+   ```
+   ```
+   host_calls  p50_ms  delta_vs_0  per_call
+            0   0.675       0.000       —
+            1   0.754      +0.079    0.0792
+            3   0.759      +0.084    0.0281
+           10   0.868      +0.193    0.0193
+   ```
+   Conclusions: throughput plateaus ~2,250/s from 4 workers (does not scale with cores); event loop dies between 4 and 8 concurrent isolates; bridges are cheap (~0.013ms marginal).
+
+   **Concurrency research (primary sources):** Convex OCC — *"We know the transaction is deterministic…we can simply re-run the transaction"*; Postgres SSI — predicate locks *"do not cause any blocking and therefore can not play any part in causing a deadlock"* and *"Eliminate explicit locks, SELECT FOR UPDATE… where no longer needed"*; Odoo — SERIALIZATION_FAILURE retries, pain traced to locking the last journal entry for numbering (allocation, not validation); Salesforce — pessimistic `FOR UPDATE`, `UNABLE_TO_LOCK_ROW`.
+
+   **Final concurrency position:** per-row isolate serialization already holds free; same-row invariants (the large majority) need nothing new; cross-row aggregates need an opt-in (SERIALIZABLE+retry or declared `locks` with `(type,id)` ordering); uniqueness → unique index; allocation → sequence, out of the write transaction.
+
+   **Audit finding:** the trail is inverted — successful updates audited, creates/deletes/merges/links not, denials structurally invisible (rollback + post-commit placement), and `recordChangeEvent` explicitly drops rows on failure.
+
+6. **All user messages:**
+   - "we need escalation as well. actually this can be the approach instead of the permissions, maybe it can be implemented as code so we consolidate as much as possible"
+   - "we can kill the bespoke permissioning system this way as well maybe?"
+   - "ultrathink what's the best way to make the api flexible and not very verbose or complex. we have guardrails permissions and now hooks. i thought we don't need to show the permission ui etc to the usres and these hooks can cover the permission logic possibly and make it flexible by moving it into code"
+   - "hmm, is there a reason you ahve human agents seperately, that can be just ctx maybe"
+   - "hmm, that check can also reject if agent maybe?"
+   - "ah ok, about which agent to be able to read or automation should that be declarative as well"
+   - "allowlist is better no? check 2 explain 3 and 4 and also pull from main to see if anything hcnages"
+   - "so you say this approach works? go thrugh some use-case"
+   - "are these limitations architectural"
+   - "yes go ahead do spikes and let us understand"
+   - "wtf is pg_sleep why are we using it. don't we inline the code in a way where is the gap"
+   - "so we don't use pg_sleep anymore right"
+   - "or is that a best approach"
+   - "sounds good explain the way"
+   - "that escalate escalates to whom? how does that work? also show full spec"
+   - "ok show me the full example how will these transitions and all these things like definition work"
+   - "hmm if no db query it limits things or no"
+   - "what's read?"
+   - "for approval who gets it"
+   - "for use-cases like escelating a customer potential churn to the account execute (a member of the org but not admin) also works or no"
+   - "hmm, any way to consolidate and simplify this logic"
+   - "dig in the codebase and understand how it works end to end. also for autmations reaction scripts can send notifications right? it can either be dm or a channel etc"
+   - "yes dig in, explain how our hooks and atuomations cover what and if we suppport all use-cases"
+   - "why would they delete the customer? should we do the full technical spec and plan this properly now. for concurrency etc we need to find solutions as well"
+   - "what's lock how does it work"
+   - "what other solutions is doing let's see."
+   - "we also see all the history in audit logs when shit happens? what do you think is the best for our approach for new entity creation updates etc"
+   - "if we quarantee that for a single row there is only one isolate-vm works we can also do that no"
+   - "ok let's finalize the spec, if you want to do spikes you can to save the memory so i can also compact"
+
+7. **Pending Tasks:**
+   - **Finish memory writes before compaction** (in progress — two written, more needed)
+   - **Finalize the spec artifact** (republish to the same URL with: per-row serialization as the default/no-new-machinery framing, denial auditing as a Phase 2 prerequisite, the concurrency research)
+   - Open decisions the user still owns: strip the DSL / ship Phase 1 inert; case 3 fix (all-or-nothing hold vs `pending` in ctx); clock in ctx; declared approver; read budget + lock-key cap; deny-message disclosure posture; transforms; managed-by marker; merge semantics; permission UI hide-vs-delete
+
+8. **Current Work:**
+
+   Responding to *"ok let's finalize the spec, if you want to do spikes you can to save the memory so i can also compact"*. I decided memory takes priority over further spikes (the user is about to compact), and stated I'd do memory first then finalize the spec.
+
+   Two memory files written successfully:
+   - `reference_approval_hold_turns_legal_write_into_denial.md` — the reproduced case-3 bug, the sequence, why the card is lost (`:1134` returns from inside the tx, `:1142-1147` builds the deferral after), the "partial field commits and cross-field invariants are logically incompatible" principle, and that it's *introduced by the branch* so must be fixed before rules ship
+   - `reference_entity_approval_routing_and_authority.md` — authority = admin/owner ∪ field owner; `notifyOrgAdmins` audience; the null-`owner_user_id` gap; why the fix is small (`sendNotification` already takes a list); the silent-drop trap; three routing sources; two orderings
+
+   Still needed in memory: the **bridge measurement** (0.08ms setup / 0.013ms per call, which reverses the no-DB-reads decision), the **concurrency model** (per-row serialization free; cross-row opt-in; the Convex/SSI/Odoo/Salesforce research), the **audit trail inversion** (denials invisible), and **MEMORY.md index lines** for all new files.
+
+9. **Optional Next Step:**
+
+   Finish the remaining memory files — the bridge/read-cost finding, the concurrency model with the industry research, and the audit-trail inversion — then add MEMORY.md index lines, then republish the spec artifact to the same URL (https://claude.ai/code/artifact/9af4a098-8d23-4646-92fd-09f4b0d5cc99) restructured so the default path carries no new concurrency machinery.
+
+   This follows directly from the user's most recent message: *"ok let's finalize the spec, if you want to do spikes you can to save the memory so i can also compact"*, and from my stated plan in the immediately preceding turn: *"Memory first, since that's what survives compaction. Then I'll finalize the spec."*
+
+   Two restructures are already identified for the spec, from my last two responses: *"I'd restructure the spec's concurrency section around this: default is the existing lock, machinery is an opt-in escape hatch. Currently it reads too centrally"* and *"Denial auditing should join Phase 2's prerequisites alongside the case-3 fix."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

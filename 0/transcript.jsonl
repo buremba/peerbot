@@ -1,0 +1,1 @@
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"assistant","ts":"2026-08-10T09:40:51.830Z","content":[{"text":"The compatibility path correctly rehydrates structured content and metadata, handles partial updates and explicit clears, and preserves the standard MCP Apps flow. Focused tests pass, and no actionable correctness defects were found.","type":"text"}]}

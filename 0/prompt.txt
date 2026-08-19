@@ -1,0 +1,7 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The compatibility path correctly rehydrates structured content and metadata, handles partial updates and explicit clears, and preserves the standard MCP Apps flow. Focused tests pass, and no actionable correctness defects were found.
+  </results>
+  </user_action>

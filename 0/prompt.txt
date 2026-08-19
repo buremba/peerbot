@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>badbrpm7y</task-id>
+<tool-use-id>toolu_014ksAabadoFpYBV21u3tLXh</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/badbrpm7y.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on rebased 2263 head" completed (exit code 0)</summary>
+</task-notification>

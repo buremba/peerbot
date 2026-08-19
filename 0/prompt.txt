@@ -1,0 +1,1 @@
+ok good, do we use the latest mcp protocol as wlel? what does it take to implement this? don't make it two lines, we want single line. how does web ui converastions will look like

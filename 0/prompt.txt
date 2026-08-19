@@ -1,0 +1,18 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Several valid host event orderings can retain the previous card or discard the capability and restored interaction state. These defects affect the core reload/restoration path despite the existing focused suites and bundle build passing.
+
+Full review comments:
+
+- [P1] Replace stale data on capability-only transitions — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:470-472
+  When a reused iframe already displays a live unkeyed result and the next card arrives as an empty replay with its first snapshot capability, the restore returns the new card but this condition preserves the old data because it was marked authoritative. The UI therefore keeps showing the previous card and can merge and save its view state into the new snapshot; treat a restored-data mismatch as a result boundary before merging or persisting.
+
+- [P2] Keep same-result state when duplicate data races restoration — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:433-434
+  When an ID-only restore is in flight and the host delivers a duplicate non-empty `toolresult` for the same card, that delivery increments `dataRevision`; because there is no capability, this guard discards the restore even when the data fingerprints are identical. The card remains visible, but its stored pagination and disclosure state never hydrates and no retry is scheduled.
+
+- [P2] Preserve a pending capability across matching live data — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:565-568
+  After one capability-backed card, if the next card is announced through an empty capability-only replay and its metadata-less non-empty `toolresult` arrives before restoration finishes, this branch classifies that matching data as another new result because no fingerprint has been restored yet. `resetCurrentResult()` then clears the pending capability and invalidates the restore, so view state is lost and future edits cannot be saved when `toolInfo` is absent.
+  </results>
+  </user_action>

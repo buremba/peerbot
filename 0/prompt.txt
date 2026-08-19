@@ -1,0 +1,1 @@
+the border for the permission items are still there,

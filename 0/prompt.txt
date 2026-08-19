@@ -1,0 +1,1 @@
+actions don't need to be a chip for filter. also connected apps as a seperate section looks weird. CLI and MCP Clients connectors static should be there maybe and they can be shown un the connector like page. also in add page do we show the owletto mac app owletto chrome extension etc?

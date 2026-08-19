@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bez5b8zq0</task-id>
+<summary>Monitor event: "lobu PR 2228 CI checks until all report"</summary>
+<event>fails=[;] pending=9</event>
+</task-notification>

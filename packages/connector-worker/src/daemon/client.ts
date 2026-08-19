@@ -46,6 +46,17 @@ export interface ExecutorClient {
    * — multi-replica safe because the wait is Postgres-mediated.
    */
   dispatchChromeAction(req: DispatchChromeActionRequest): Promise<Record<string, unknown>>;
+  /**
+   * Post a device-side automation exit report and read the server's decision.
+   * `status: "resume"` means the run is still claimed and the caller should
+   * re-spawn with the returned nudge.
+   */
+  completeAutomation(
+    runId: number,
+    req: CompleteAutomationRequest
+  ): Promise<CompleteAutomationResponse>;
+  /** MCP endpoint + bearer the automation arm wires into the spawned CLI. */
+  readonly mcpWiring?: { url: string; bearer?: string };
 }
 
 // ============================================
@@ -61,6 +72,8 @@ export interface ExecutorClient {
 export type {
   CompleteActionRequest,
   CompleteAuthRequest,
+  CompleteAutomationRequest,
+  CompleteAutomationResponse,
   CompleteEmbeddingsRequest,
   CompleteRequest,
   ContentItem,
@@ -77,6 +90,8 @@ export type {
 import type {
   CompleteActionRequest,
   CompleteAuthRequest,
+  CompleteAutomationRequest,
+  CompleteAutomationResponse,
   CompleteEmbeddingsRequest,
   CompleteRequest,
   DispatchChromeActionRequest,
@@ -88,9 +103,33 @@ import type {
   PollResponse,
   StreamBatch,
 } from "@lobu/core/contracts/worker/protocol";
+import { AGENT_KINDS } from "@lobu/core/contracts/worker/device-automation";
 
 /** Capability strings the worker advertises, keyed by name (e.g. `browser.debugger`). */
 export type WorkerCapabilities = Record<string, boolean>;
+
+/** HTTP error carrying the status code, so delivery retries can classify it. */
+export class WorkerHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly path: string,
+    body: string
+  ) {
+    super(`${path} failed: ${status} ${body.slice(0, 500)}`);
+    this.name = "WorkerHttpError";
+  }
+}
+
+/**
+ * A 2xx body we could not read as a completion decision. The server answered,
+ * so re-sending would only mangle the same body — non-retriable.
+ */
+export class WorkerDecodeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkerDecodeError";
+  }
+}
 
 /**
  * Worker API Client
@@ -166,8 +205,15 @@ export class WorkerClient implements ExecutorClient {
       capabilities: this.capabilities,
       version: this.version,
       // app_version belongs to the device registration fields, so omit both for
-      // fleet workers rather than sending empty values.
-      ...(this.platform ? { platform: this.platform, app_version: this.version } : {}),
+      // fleet workers rather than sending empty values. A device worker also
+      // advertises the agent kinds its automation arm can run.
+      ...(this.platform
+        ? {
+            platform: this.platform,
+            app_version: this.version,
+            agent_kinds: AGENT_KINDS,
+          }
+        : {}),
       ...(this.label ? { label: this.label } : {}),
       ...(this.manifests.length > 0 ? { connector_manifests: this.manifests } : {}),
     });
@@ -295,7 +341,72 @@ export class WorkerClient implements ExecutorClient {
     }
   }
 
+  /**
+   * Device-side EXIT REPORT for an automation run. Posts the process exit
+   * metadata and returns the server's decision; see
+   * `interpretCompleteAutomationResponse` for how a 2xx body is read without
+   * inventing an outcome.
+   */
+  async completeAutomation(
+    runId: number,
+    req: CompleteAutomationRequest
+  ): Promise<CompleteAutomationResponse> {
+    const path = `/api/workers/me/runs/${runId}/complete-automation`;
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.authHeaders(),
+      },
+      body: JSON.stringify(req),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new WorkerHttpError(response.status, path, text);
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new WorkerDecodeError(
+        `complete-automation returned an unrecognised 2xx body`
+      );
+    }
+    return interpretCompleteAutomationResponse(body);
+  }
+
+  get mcpWiring(): { url: string; bearer?: string } | undefined {
+    if (!this.authToken) return undefined;
+    return { url: `${this.apiUrl}/mcp`, bearer: this.authToken };
+  }
+
   get id(): string {
     return this.workerId;
   }
+}
+
+/**
+ * A 2xx body from `complete-automation`, read without inventing an outcome.
+ * Anything not recognised throws `WorkerDecodeError` — the server answered, so
+ * the caller must not re-send and must not report a fabricated outcome.
+ */
+export function interpretCompleteAutomationResponse(
+  body: unknown
+): CompleteAutomationResponse {
+  if (
+    body != null &&
+    typeof body === 'object' &&
+    typeof (body as Record<string, unknown>).status === 'string'
+  ) {
+    return body as CompleteAutomationResponse;
+  }
+  // The one legitimate legacy shape: a minimal 2xx object with no `status`.
+  // Recognised explicitly — and still rejected if it signals failure.
+  const ack = body as { ok?: boolean | null; error?: string | null } | null;
+  if (ack != null && typeof ack === 'object' && ack.error == null && ack.ok !== false) {
+    return { ok: true, status: 'completed' };
+  }
+  throw new WorkerDecodeError(
+    'complete-automation returned an unrecognised 2xx body'
+  );
 }

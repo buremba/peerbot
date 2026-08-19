@@ -6,10 +6,12 @@
  */
 
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
+import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
 import { batchGenerateEmbeddings } from '../embeddings.js';
 import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
+import { executeAutomationRun } from './automation.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 
 /**
@@ -62,6 +64,12 @@ export interface ExecutorConfig {
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;
+  /**
+   * Explicit per-agent binary paths for the automation arm (else PATH lookup).
+   * Lets an operator point the daemon at a non-PATH CLI install, and is the
+   * injection seam the automation e2e test uses to drive a fake binary.
+   */
+  binaryOverrides?: Partial<Record<AgentKind, string>>;
 }
 
 const DEFAULT_CONFIG: ExecutorConfig = {
@@ -125,14 +133,13 @@ export async function executeRun(
     case 'action':
       return executeActionRun(client, job, env, cfg);
     case 'automation':
-      // Automation reactions execute inline in the API process (complete_window) and
-      // the poll endpoint's run_type allowlist should never hand an automation run to
-      // this daemon. If one slips through (deploy skew, regression), do NOT mark
-      // it success — that would stomp a live automation run and prevent any retry.
-      console.error(
-        `[executor] Refusing to handle automation run ${job.run_id} — automation runs must not reach the connector-worker daemon`
-      );
-      return { itemsCollected: 0, error: 'automation run not handled by daemon' };
+      // Device workers (user-scoped auth) may be handed an automation run when
+      // the automation is pinned to their device. Spawn the local agent CLI and
+      // report the process exit via /complete-automation. Trusted fleet workers
+      // never reach this arm — the poll endpoint's automation claim branch is
+      // unreachable for them — but if a run does slip through (deploy skew), the
+      // dispatcher reports the failure rather than stomping the run.
+      return executeAutomationRun(client, job, cfg);
     case 'embed_backfill':
       return executeEmbedBackfillRun(client, job, env, cfg);
     case 'auth':

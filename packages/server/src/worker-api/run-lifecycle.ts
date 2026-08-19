@@ -10,6 +10,7 @@
 import type {
 	CompleteActionRequest,
 	CompleteAuthRequest,
+	CompleteAutomationRequest,
 	CompleteEmbeddingsRequest,
 	CompleteRequest,
 	EmitAuthArtifactRequest,
@@ -1035,22 +1036,10 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		return c.json({ error: "Invalid runId" }, 400);
 	}
 
-	const body = await parseJsonBody<{
-		worker_id: string;
-		output?: string;
-		error?: string;
-		duration_ms?: number;
-		exit_code?: number | null;
-		exit_signal?: string | null;
-		exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
-		/**
-		 * Which finalize attempt this report covers: the run's
-		 * `finalize_nudge_count` at the time the reporting spawn started. 0 for
-		 * the first spawn. Makes the report replayable — see the replay guard
-		 * below.
-		 */
-		finalize_attempt?: number;
-	}>(c, "Invalid or missing JSON body");
+	const body = await parseJsonBody<CompleteAutomationRequest>(
+		c,
+		"Invalid or missing JSON body"
+	);
 	if (body instanceof Response) return body;
 
 	// allowTerminal: when the CLI agent already completed the run via MCP
@@ -1288,7 +1277,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 				idempotent: true,
 			});
 		}
-		emitCompletionEvent("failed", body.error);
+		emitCompletionEvent("failed", body.error ?? undefined);
 		return c.json({ ok: true, status: "failed" });
 	}
 

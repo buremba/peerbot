@@ -1,0 +1,1 @@
+could we get rid of the mcp clients and devices page. in the connectors we can put lobu cli, owletto chrome extension and owletto mac os app and just give them the instructions. and when they're connected chrome extension and mac shows up as a connector/connection no? let's ultrathink plan what's the best dx here

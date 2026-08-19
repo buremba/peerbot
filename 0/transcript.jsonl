@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:30:36.979Z","content":[{"text":"New message in #sales:\n\nsarah: ok cool, sounds good 👍"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:30:38.351Z","id":"61305678","input_tokens":3412,"output_tokens":15,"content":[{"type":"text","text":"Sarah said: “ok cool, sounds good 👍”"}]}

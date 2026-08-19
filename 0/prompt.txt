@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1a65iq8e</task-id>
+<tool-use-id>toolu_01CGtDAWZpWAdh32hK2mx4b4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b1a65iq8e.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for peer Depot gate to exit" completed (exit code 0)</summary>
+</task-notification>

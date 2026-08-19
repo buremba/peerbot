@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwx2stgb1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3c1aa6f1-c607-4eb1-9112-65ea2a8588c2/tasks/bwx2stgb1.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix pass" completed (exit code 0)</summary>
+</task-notification>

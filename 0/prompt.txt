@@ -1,0 +1,1 @@
+the channel binding is a behavior no? can't it be binded to multiple agents, how does it work

@@ -1,0 +1,1 @@
+docker path also needs to be smoke tested. so we need full coverage and we can run this only when a pr is merged to main, in parallel. not blocking prod deployment but fails the main in that case so we can't release a new version.

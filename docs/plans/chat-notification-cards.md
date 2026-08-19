@@ -65,6 +65,22 @@ the platform cap, an over-long value: **show what fits and link to the event.**
 Because the kind is resolved the normal way, the Memory view and MCP apps pick
 up the same approval rendering with no extra work.
 
+## Does the approval use `json_template`?
+
+Not in chat. The two surfaces build the same content two different ways:
+
+- **web / MCP** — the kind declares no `jsonTemplate`, so `resolveEntityRender`
+  synthesizes one from `metadataSchema` and the event ships as
+  `payload_type: 'json_template'`.
+- **chat** — `buildKindCard` reads `metadataSchema` straight into `Fields`; no
+  template is ever constructed.
+
+They agree because both go through `orderedSchemaFields` and format values with
+the shared `formatValue`, not by coincidence — `template-card.test.ts` pins it.
+
+The deliberate divergence: if a kind DOES author a `jsonTemplate`, web renders
+that design and chat declines to markdown + link.
+
 ## Slack output
 
 ```

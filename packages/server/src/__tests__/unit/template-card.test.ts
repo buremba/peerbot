@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { buildKindCard } from "../../notifications/template-card";
+import { resolveEntityRender } from "../../utils/default-entity-template";
 import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	PLATFORM_EVENT_KINDS,
@@ -291,5 +292,65 @@ describe("the field budget is shared, not per-part", () => {
 			data: { a: "   \t " },
 		});
 		expect(fields(card)).toEqual(["A=—"]);
+	});
+});
+
+describe("chat and web agree", () => {
+	/**
+	 * These are two DIFFERENT constructions of the same content: web synthesizes
+	 * a json_template from the schema (`resolveEntityRender` →
+	 * `buildDefaultEntityTemplate`) and renders that; chat reads the schema
+	 * straight into Fields. They agree only because both go through
+	 * `orderedSchemaFields`. If someone re-implements ordering, hiding or
+	 * labelling on either side, this is what catches it.
+	 */
+	const schema = {
+		type: "object",
+		properties: {
+			later: { type: "string", title: "Later", "x-table-column": 2 },
+			first: { type: "string", title: "First", "x-table-column": 1 },
+			renamed: { type: "string", title: "Ignored", "x-table-label": "Renamed", "x-table-column": 3 },
+			hidden: { type: "string", title: "Hidden", "x-hidden": true },
+		},
+	};
+
+	/** `label=boundKey` pairs from the web template's generated rows. */
+	function webFields(root: unknown): string[] {
+		const out: string[] = [];
+		const walk = (n: Record<string, unknown> | undefined) => {
+			if (!n) return;
+			if (n.type === "tr") {
+				const [th, td] = (n.children as Record<string, unknown>[]) ?? [];
+				const label = ((th?.children as Record<string, unknown>[]) ?? [])[0]?.content;
+				const key = ((td?.children as Record<string, unknown>[]) ?? [])[0]?.path;
+				out.push(`${label}=${key}`);
+			}
+			for (const c of (n.children as Record<string, unknown>[]) ?? []) walk(c);
+		};
+		walk(root as Record<string, unknown>);
+		return out;
+	}
+
+	it("renders the same fields, in the same order, with the same labels", () => {
+		const web = webFields(resolveEntityRender(undefined, schema));
+		const chat = fields(
+			buildKindCard({
+				metadataSchema: schema,
+				data: { first: "1", later: "2", renamed: "3", hidden: "secret" },
+			}),
+		);
+		// Web binds by key, chat by value — compare the label sequence, which is
+		// the part both must agree on, and confirm the hidden field is in neither.
+		expect(web.map((f) => f.split("=")[0])).toEqual(["First", "Later", "Renamed"]);
+		expect(chat.map((f) => f.split("=")[0])).toEqual(["First", "Later", "Renamed"]);
+		expect(chat.join()).not.toContain("secret");
+	});
+
+	it("diverges only when a kind authors its own template", () => {
+		// Web renders the authored design; chat declines and links out. This is
+		// the deliberate trade — pinned so it stays deliberate.
+		const authored = { type: "bar-chart" };
+		expect(resolveEntityRender(authored, schema)).toEqual(authored);
+		expect(buildKindCard({ metadataSchema: schema, jsonTemplate: authored, data: { first: "1" } })).toBeNull();
 	});
 });

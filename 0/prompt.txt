@@ -1,0 +1,7 @@
+<bash-stdout></bash-stdout><bash-stderr>(eval):2: no such file or directory: s|.*://[^:]+:([^@]+)@.*|\1|
+Defaulted container "postgres" out of: postgres, bootstrap-controller (init)
+/usr/lib/postgresql/18/bin/psql: option requires an argument -- 'c'
+psql: hint: Try "psql --help" for more information.
+command terminated with exit code 1
+(eval):3: command not found: SELECT acl_support, freshness_state, count(*) FROM authz_source_acl_state GROUP BY 1,2 ORDER BY 3 DESC;
+</bash-stderr>

@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The restoration state machine can retain stale widget data both when the server definitively reports no snapshot and when a new capability differs from the cached result identity. These cross-card stale-data paths make the patch incorrect despite its passing tests.
+
+Full review comments:
+
+- [P1] Clear preloaded cache when restore reports missing — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:529-534
+  When a historical ChatGPT card starts from cached `widgetState` data and the matching restore returns `{ found: false }`—for example after the database snapshot expires—`hasData.current` is already true, so this branch neither clears the cache nor sets `resultUnavailable`; the expired card remains rendered indefinitely. Only authoritative live data should suppress the terminal missing-result state, while display-only cached data should be discarded. This conflicts with the fail-closed requirement in `../../AGENTS.md:28`.
+
+- [P1] Treat a differing cached identity as a card boundary — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:633-636
+  When the iframe is preloaded from a widget snapshot whose `resultIdentity` is A, `resultCapabilityIdentity.current` is still null, so a capability-only replay for B is not considered changed here. Without `toolInfo` or a current-lifetime result, the old cached data and local view state remain while B restores—and remain indefinitely if restoration fails; compare against `displayedResultIdentity` as well and reset before hydration. This violates the result boundary and fail-closed requirement in `../../AGENTS.md:28`.
+  </results>
+  </user_action>

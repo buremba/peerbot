@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhawrpj4p</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/bhawrpj4p.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll prod until the merge commit is deployed" completed (exit code 0)</summary>
+</task-notification>

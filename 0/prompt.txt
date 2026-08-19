@@ -1,0 +1,1 @@
+inside connections why don't we do it like subpage of connector using the same design and get rid of the connections different layout page. activity is connections runs right?

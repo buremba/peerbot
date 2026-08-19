@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b73orlnfy</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9/tasks/b73orlnfy.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr gate" completed (exit code 0)</summary>
+</task-notification>

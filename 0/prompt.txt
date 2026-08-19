@@ -1,0 +1,1 @@
+how mcuh new code is being written, and what's the new code we need to write? you say relational bulk import but don't we have the connectors to cover this use-case?

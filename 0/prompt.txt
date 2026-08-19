@@ -1,0 +1,1 @@
+also why don't we explain the interaaction types for events for building ui, approval etc and each mcp tool call etc being part of the event logs. put a screenshot from our app from the landing page and explain at the end, a notification system on top of events so ai keeps you engaged based on the interactions etc

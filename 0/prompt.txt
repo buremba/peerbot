@@ -1,0 +1,1 @@
+why need daytona sdk? you will manually run daytona sandbox. also we have make dev remote stuff that already use daytona i thought?

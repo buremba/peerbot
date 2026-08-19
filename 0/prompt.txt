@@ -1,0 +1,1 @@
+why different renderer, don't we have the json_tempalte as the basis for them so we can dogfood and layer on top of each other

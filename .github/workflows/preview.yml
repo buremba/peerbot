@@ -241,8 +241,13 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          state=$(gh api "repos/$REPO/pulls/$PR_NUMBER" -q '.state')
-          labeled=$(gh api "repos/$REPO/pulls/$PR_NUMBER" -q '[.labels[].name] | index("preview") != null')
+          # ONE fetch, both answers read from it. Two calls can straddle a
+          # close landing between them and return state=open with the label
+          # still attached, which keeps a namespace cleanup already deleted —
+          # the exact permanent leak this step exists to prevent.
+          pr=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          state=$(jq -r '.state' <<<"$pr")
+          labeled=$(jq -r '[.labels[].name] | index("preview") != null' <<<"$pr")
           echo "PR state=$state preview-labeled=$labeled"
           # `.state` is only ever `open` or `closed` (a merged PR reads
           # `closed`, with `.merged` carrying that distinction), so any

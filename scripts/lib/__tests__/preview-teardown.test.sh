@@ -36,12 +36,12 @@ trap 'rm -rf "$STUBS"' EXIT
 
 cat >"$STUBS/gh" <<'STUB'
 #!/usr/bin/env bash
-# `gh api <path> -q <expr>` — answer from the fixture the case exported.
-case "$*" in
-  *".state"*) printf '%s\n' "$FAKE_PR_STATE" ;;
-  *"index(\"preview\")"*) printf '%s\n' "$FAKE_PR_LABELED" ;;
-  *) echo "unexpected gh invocation: $*" >&2; exit 64 ;;
-esac
+# One `gh api <path>` returning the whole PR; the step reads both answers out
+# of this single snapshot with jq. Serving one document is the point: the step
+# must not be able to observe a half-changed PR.
+labels='[]'
+[ "$FAKE_PR_LABELED" = "true" ] && labels='[{"name":"preview"}]'
+printf '{"state":"%s","labels":%s}\n' "$FAKE_PR_STATE" "$labels"
 STUB
 
 cat >"$STUBS/kubectl" <<'STUB'

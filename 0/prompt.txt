@@ -1,0 +1,48 @@
+You are reviewing a SPIKE, adversarially. Do NOT survey the repo broadly and do NOT
+write or modify any file. Read only the files named below plus anything they
+directly reference. Output a review to stdout.
+
+Branch: feat/spike-derived-edges (worktree you are in).
+Read these four files first, in this order:
+  packages/server/src/utils/declared-edges-spike.ts
+  packages/server/src/utils/__tests__/declared-edges-materializer.test.ts
+  packages/server/src/utils/__tests__/derived-edges-spike.test.ts
+  packages/server/src/utils/__tests__/declared-edges-scale.test.ts
+
+CONTEXT. A design proposal asked for a NEW TABLE (`connector_declared_edge_state`)
+plus a migration, to support connector-declared entity->entity edges (an ERP
+connector declaring "this invoice belongs to this customer" in its manifest).
+The spike argues the new table is UNNECESSARY, because the existing schema on
+origin/main already covers all four justifications:
+  - ordering / target not yet synced  -> `autoCreate` in entity-link-upsert.ts
+  - idempotency on resync             -> idx_entity_relationships_live_triple (UNIQUE)
+  - provenance                        -> metadata->'derivedFrom' (two baseline indexes)
+  - retraction                        -> policy implemented in the spike, not storage
+
+YOUR JOB: try to REFUTE that conclusion. Default to skepticism. Specifically:
+
+1. Find a realistic scenario the spike's approach handles INCORRECTLY that a
+   dedicated state table would handle correctly. Concurrency, partial failure,
+   multi-replica sync, entity merge/unmerge, soft-delete interactions, and
+   connection deletion are the places to look hardest. A concrete failing
+   sequence beats a general concern.
+2. Audit `materializeDeclaredEdges` and `retractDeclaredEdges` for correctness
+   bugs: the reconcile scoping, the ON CONFLICT clause, the unresolved-endpoint
+   handling, the relationship-type resolution, N+1 query behaviour on large
+   batches, and anything that breaks under a transaction handle.
+3. Audit the TESTS for false confidence: assertions that would still pass if the
+   implementation were wrong, missing cases, and any place the test sets up state
+   that the production sync path would not actually produce.
+4. The author already found one real defect by mutation testing (reconcile was
+   filtering on ruleVersion, which would strand edges written by a previous rule
+   version). Look for defects of the SAME CLASS that were missed.
+5. The author also found that `metadata->'derivedFrom'->>'sourceEventId'` has a
+   reserved baseline index (idx_entity_relationships_derived_from_event) that the
+   materializer never populates. Assess whether that matters and whether the
+   proposed fix (stamp sourceEventId, move the materializer to after the event
+   inserts in worker-api/run-lifecycle.ts) is right.
+
+Ground every claim in a file:line you actually read. If you cannot substantiate a
+concern, say so explicitly rather than listing it as a finding. End with:
+  - a VERDICT on "the new table is unnecessary": AGREE / DISAGREE / PARTIAL, with reasons
+  - your top 3 findings ranked by severity, each with a concrete failing sequence

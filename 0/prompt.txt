@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3si5bjcj</task-id>
+<tool-use-id>toolu_014i7TQUxE3ttJ7jen4zevRT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b003c9d5-e19c-4800-b0b6-8138e4cb7c2f/tasks/b3si5bjcj.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on the re-pinned HEAD" completed (exit code 0)</summary>
+</task-notification>

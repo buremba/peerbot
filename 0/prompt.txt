@@ -1,0 +1,1 @@
+hmm, don't we already have a way to install mcp servers in the connector?

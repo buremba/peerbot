@@ -1,0 +1,1 @@
+so did we do an approach that works properly for all models? no workarounds or bad design for bad models

@@ -1,0 +1,1 @@
+i have an erp project on /Users/burakemre/Downloads/emre_project it's very complex but i would like to understand if i can port it to lobu. look up the codebase a bit and interview me. you can use opencode cli with its default model to dig in the codebase so you don't spend too much claude tokens.

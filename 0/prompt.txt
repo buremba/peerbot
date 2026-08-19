@@ -1,0 +1,26 @@
+Context update from the main session — this changes what your work is FOR, and raises its priority. Keep going; do not restart.
+
+The owner has settled two things:
+
+1. BOUNDARY = ERP of record. Lobu replaces the ERP, it is not a workspace around it. So the funnel is mandatory, not optional, and four other gaps queue strictly behind it.
+
+2. The intended architecture is BEHAVIOR-AS-WRITER, not a big hook system. The owner wants business rules enforced in the write that Behaviors perform, with autonomous agent work defined in Behaviors — rather than a large interceptor framework.
+
+I verified the mechanics on origin/main and the design is sound, with one precondition that is exactly your job:
+
+- Behavior declared outputs commit ATOMICALLY with the window and hold a real DbClient tx (promote-keyed-entities.ts:21, :438, :667; savepoints at :214). So a Behavior that PERFORMS a mutation can check-then-write transactionally. It CAN enforce.
+- By contrast a Behavior REACTION cannot: reactions are post-commit (manage_entity.ts, the comment at the queue() call states "Post-commit: ... runs AFTER the entity tx"), and the sandbox forces SET TRANSACTION READ ONLY (sandbox/client-sdk.ts:263).
+- runMutationGate already runs INSIDE sql.begin holding the row FOR UPDATE (entity-management.ts:696, sql: tx).
+
+The consequence for you: "Behaviors enforce the rules" is only TRUE IF nothing else can write. Every bypass site you eliminate is what converts that architecture from aspiration into a guarantee. The funnel is not an alternative to the owner's design — it is the precondition for it. Please frame your plan that way.
+
+Two concrete asks:
+- When you report, state explicitly for each bypass category whether it would let a writer skip a Behavior-enforced rule. That is the property the owner actually cares about.
+- Flag any site where routing through the funnel would NOT be enough because the caller cannot supply a transaction.
+
+Also relevant, proven against PROD today while seeding the demo org (these constrain any transition design):
+- a declared JSON Schema `default` does NOT satisfy a `required` field on create
+- entities.update validates the PATCH, not the merged result — a status-only {status:"issued"} is rejected for missing customer_id that the stored row already has. This directly blocks a minimal-patch state machine.
+- a soft-deleted entity STILL holds its name; delete does not free the key.
+
+Reply with your current status and revised plan when you reach a natural checkpoint. If you have already produced the Phase A inventory, send it.

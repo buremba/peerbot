@@ -1,0 +1,2 @@
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-08-08T23:32:50.209Z","content":[{"id":"ba9c2261-dc0d-47d7-8d89-2075e8ef7ad7","text":"Say exactly: consolidation-ok"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-08-08T23:32:52.255Z","id":"msg_011Cdr9wVLssHJLThVEgnALw","input_tokens":2,"output_tokens":9,"content":[{"text":"consolidation-ok","type":"text"}]}

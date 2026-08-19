@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxrom60uk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/bxrom60uk.output</output-file>
+<status>completed</status>
+<summary>Background command "Review PR 2394" completed (exit code 0)</summary>
+</task-notification>

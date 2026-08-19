@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkqqamqob</task-id>
+<tool-use-id>toolu_01CiJypcST7o2BSKpsMHSXtd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bkqqamqob.output</output-file>
+<status>completed</status>
+<summary>Background command "Queue for slot then run Depot gate on repinned tree" completed (exit code 0)</summary>
+</task-notification>

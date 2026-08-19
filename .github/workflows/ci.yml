@@ -1003,7 +1003,7 @@ jobs:
     # green required check. Skipped shards are only legitimate when the paths
     # filter itself said no runtime paths changed.
     needs: [check-author, paths, server-integration-vitest, server-integration-bun]
-    # This compatibility context only evaluates two strings. Keep it on the
+    # This compatibility context only evaluates a handful of strings. Keep it on the
     # lightweight runner image while older open PRs still require the legacy
     # `integration` context; branch protection can move directly to the four
     # worker contexts once those PRs refresh.

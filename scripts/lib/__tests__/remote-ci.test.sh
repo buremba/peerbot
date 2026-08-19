@@ -25,6 +25,17 @@ workflow_job() {
   ' "$workflow"
 }
 
+# Pull the body of a job's `run: |` block out of the YAML the caller already
+# extracted, so the tests below execute the real gate script instead of
+# re-stating it. Both fan-ins are shaped the same way, so they share this.
+job_run_script() {
+  awk '
+    /^        run: \|$/ { capture = 1; next }
+    capture && /^          / { print; next }
+    capture && NF { exit }
+  ' <<<"$1"
+}
+
 run_id="$(printf 'Org: test\nRun: bj0453b334\nWaiting...\n' | remote_ci_extract_run_id)"
 assert_eq "$run_id" "bj0453b334"
 
@@ -148,11 +159,7 @@ grep -q '^    needs: \[check-author, paths, server-integration-vitest, server-in
 # be EXECUTED rather than pattern-matched. A grep only proves the text is
 # present; running the real script from the workflow proves the decision. The
 # result vocabulary is GitHub's: success | failure | cancelled | skipped.
-integration_gate_script="$(awk '
-  /^        run: \|$/ { capture = 1; next }
-  capture && /^          / { print; next }
-  capture && NF { exit }
-' <<<"$integration_gate")"
+integration_gate_script="$(job_run_script "$integration_gate")"
 [ -n "$integration_gate_script" ] || fail "could not extract the integration fan-in script"
 
 # author paths packages vitest bun -> pass|fail
@@ -203,11 +210,7 @@ assert_gate fail success success true failure failure
 # Same treatment for the SDK fan-in: execute it, don't pattern-match it. None of
 # these jobs has a paths filter, so `skipped` can only mean a broken upstream —
 # there is no unaffected-PR exemption to carve out here.
-sdk_gate_script="$(awk '
-  /^        run: \|$/ { capture = 1; next }
-  capture && /^          / { print; next }
-  capture && NF { exit }
-' <<<"$sdk_gate")"
+sdk_gate_script="$(job_run_script "$sdk_gate")"
 [ -n "$sdk_gate_script" ] || fail "could not extract the sdk-cli-e2e gate script"
 
 sdk_gate_verdict() {

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b413j4kf0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/b413j4kf0.output</output-file>
+<status>completed</status>
+<summary>Background command "Stage and run the gate" completed (exit code 0)</summary>
+</task-notification>

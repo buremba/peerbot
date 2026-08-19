@@ -1,0 +1,1 @@
+yes cleanup things we don't need. the erp close thing explain if we need something. depot is failing don't wait if it passed

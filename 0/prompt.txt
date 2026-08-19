@@ -1,0 +1,75 @@
+<task-notification>
+<task-id>ae4f0b2adb8c16c08</task-id>
+<tool-use-id>toolu_015UU4dJqsXFqtMkztS8kDv5</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/ae4f0b2adb8c16c08.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix Owletto Mac context auth bug" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Two PRs open, not merged.
+
+## Correcting the record first
+
+**The live status you verified is not evidence for this fix.** Feed 309 (`whatsapp.local`, connection 361) is pinned to device worker `e7806c72-…`. I probed it with `os.shell` on connection 464 (same worker): it returns `HOST=Buraks-Mac-mini`. And feed 309 completed in 10s **with Owletto fully quit on the MacBook** (`ps` confirmed no process). So "309 went timeout → success, 130 messages ingested" measures the Mac mini, not the machine I fixed. It gave me a false green too, before I caught it. Also surfaced: the Mac mini's own CLI context is `lobu`, and it has no Owletto process running — unexamined.
+
+The MacBook Pro's worker is `2c295bed-…`, serving connections 386/388/362/360 — **all four feeds are `paused`**.
+
+## Ground truth
+
+```
+PARENT (lobu#2572) — git status: clean
+ packages/owletto | 2 +-      →  file list: packages/owletto  (exactly)
+ pointer: fde9222b5714ce74a9fb9e4c25a7fbf4f56fb6e2
+
+OWLETTO (owletto#743) — git status: clean
+ apps/mac/Owletto.xcodeproj/project.pbxproj |   4 +
+ apps/mac/Owletto/AppState.swift            | 298 +++++++++----
+ apps/mac/Owletto/LobuCLISession.swift      |  32 +--
+ apps/mac/Owletto/LobuContextIdentity.swift | 273 ++++++++++++
+ apps/mac/Owletto/MenuBarContent.swift      |  15 +-
+ apps/mac/Tests/ContextIdentityTests.swift  | 355 ++++++++++++++
+ 6 files changed, 897 insertions(+), 80 deletions(-)
+```
+
+Merged `origin/main` (`d34cc8acd`) in — merge, not rebase, per GOTCHAS.
+
+## Evidence
+
+**Swift suite (whole):** `17 passed, 0 failed`. **Mutation:** disabling the guard arm reddens 5 checks; disabling the IPv6 re-bracket reddens 3. **`make pre-pr`:** `✅ pre-pr gates clean` (grepped for the marker, not the exit code).
+
+**RED** — 22h of log silence after `credentials invalid, dropping back to connection card`, with the app printing `context=lobu`, and a relaunch re-latching in 8 seconds while `currentContext` on disk was already `prod`.
+
+**GREEN** — one continuous log, same pid 84368, no relaunch, no popover:
+```
+00:56:19.950Z active lobu context changed on disk: 'prod' -&gt; 'lobu'
+00:56:19.951Z poll blocked: Wrong Lobu context — see details — …
+              Context 'lobu' targets workspace 'local-install', but this Mac last synced for 'buremba'.
+00:56:39.952Z active lobu context changed on disk: 'lobu' -&gt; 'prod'
+00:56:39.953Z auth block cleared — lobu identity moved on disk (context=prod)
+00:57:01.047Z [worker] executing local.directory
+```
+Zero 401s sent. Blocked → healed in 20s. Feed 343 run `873651` completed; feed restored to `paused` (verified).
+
+`review-fix` found a **real bug**: `URL.host` strips IPv6 brackets, so my `origin(of:)` emitted an unparseable `http://::1:8787` that read as remote — it would have spuriously blocked a healthy `[::1]` worker. Fixed and pinned. I also corrected its comment: the CLI's `isLoopbackUrl` compares WHATWG `hostname`, which returns `"[::1]"` *with* brackets, so its `=== "::1"` arm is dead code (verified in node).
+
+## Confidence
+
+- **Guard logic — 92.** Unit-tested, mutation-verified both ways, and exercised live against the real outage context.
+- **De-latch — 90.** Watched it block and self-heal on the running app, same pid.
+- **Not breaking healthy workers — 85.** Verified against all 21 real contexts and the `localWorkerToken` write sites; the IPv6 near-miss is why this isn't higher.
+- **Backoff ladder — 45.** Only the first rung ever executed; the 5/15/30-min rungs are unit-covered arithmetic, never observed live. Say so plainly.
+- **check-drift claim — 95.** Fetched the job log; `origin/main` already pins `3da851cf`, remaining drift is 4 exempt FluxCD commits.
+
+## Not finished
+
+- `make ui-review` **fails by design**: "not the squash commit of a merged owletto PR". It cannot pass until owletto#743 merges.
+- `make review` posted (`pi-review`), one blocker — the expected unmerged-pointer state. It scored `bug_free_confidence: 15` because it only saw the 2-line gitlink; the Swift code is invisible to it in the private submodule.
+- `review-fix` pass 2 hung &gt;35 min with no edits; I stopped it (tree clean). Pass 1's findings are landed.
+
+## Next actions
+
+1. Merge owletto#743, re-point lobu#2572 at the squash SHA, then `ARTIFACT=… make ui-review`.
+2. Replace `/Applications/Owletto.app` — it's currently my `99.0.0-dev` build, running healthy as `context=prod`.
+3. Look at the Mac mini: context `lobu`, no Owletto running, yet serving prod feeds.
+4. Decide whether those four paused MacBook feeds should be active.</result>
+<usage><subagent_tokens>341437</subagent_tokens><tool_uses>245</tool_uses><duration_ms>2430046</duration_ms></usage>
+</task-notification>

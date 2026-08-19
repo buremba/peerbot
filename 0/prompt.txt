@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b7nblsykw</task-id>
+<summary>Monitor event: "make review verdict for PR 2337"</summary>
+<event>verdict: bug_free 86, simplicity 91, slop 4, bugs 0, 0 blockers</event>
+</task-notification>

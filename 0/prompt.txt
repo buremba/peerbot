@@ -1,0 +1,184 @@
+<task-notification>
+<task-id>add6d98f0c7baf68d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/add6d98f0c7baf68d.output</output-file>
+<status>completed</status>
+<summary>Agent "Scope Slack email enrichment" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything I need. Here's the report.
+
+---
+
+# Slack member email/identity enrichment — scoping report
+
+## 1. Scope + manifest
+
+**Every place the scope list lives (exactly 2 code locations + 1 test):**
+
+- `packages/connectors/src/slack.ts:41-62` — `SLACK_BOT_SCOPES`, `"users:read"` at line 61. This is the *authoritative* list; the install route reads it via the connector declaration.
+- `config/slack-app-manifest.self-install.json:52` — the BYO/self-host manifest. Must stay **byte-identical and same-ordered**.
+- `packages/connectors/src/__tests__/slack.test.ts:32` — `expect(installMethod?.permissions).toEqual(manifest.oauth_config.scopes.bot)`. This is `toEqual` on an array, so **order matters**: insert `"users:read.email"` immediately after `"users:read"` in both files.
+
+`config/slack-app-manifest.qa-user.json` is irrelevant (user-token-only, `chat:write`, no bot scopes).
+
+**How the scope reaches the OAuth URL:** `packages/server/src/gateway/routes/public/app-install.ts:1884-1898` — `scopes = method.permissions`, joined with `,` onto the authorize URL. But `method` comes from `getOrgAppInstallationMethod` (`packages/server/src/gateway/installation/app-install-credentials.ts:53-68`), which reads **`connector_definitions.auth_schema` — a per-org DB snapshot**, not the TS constant.
+
+**This is the non-obvious bit:** bumping the TS constant does *not* immediately change existing orgs' install URLs. It converges via the hourly cron `refresh-connector-definitions` (`packages/server/src/scheduled/jobs.ts:279-289`, `cron: '0 * * * *'` → `packages/server/src/scheduled/refresh-connector-definitions.ts:29`), which re-upserts every active org definition from bundled source. So propagation is automatic but takes up to an hour after rollout. No version bump needed (the refresh is unconditional, not version-gated).
+
+The Owletto BYO manifest generator (`packages/owletto/src/components/entity-tabs/connections-tab/connection-settings-tab.tsx:266`) reads the same `connectorDef.auth_schema` row, so it inherits the new scope for free.
+
+**Re-install / scope-upgrade flow: none exists.** There is no missing-scope detection anywhere on the Slack path. Verified against `origin/main`:
+
+```
+git grep -n "missing_scope" origin/main -- '*.ts' '*.tsx'
+→ only packages/plugin-media/src/generation.ts (a different provider) and one agent-worker test
+```
+
+`slackPost` (`packages/server/src/gateway/connections/slack-web.ts:105-131`) throws a generic `Slack ${method} failed: ${json.error}` on any `ok:false` — `missing_scope` is indistinguishable from `invalid_auth` to callers. There is also nowhere that persists Slack's *granted* `scope` string from the OAuth response, so you cannot even detect a stale install without calling an API and reading the error. If you want a reinstall prompt, that capability has to be built (persist `scope` from `oauth.v2.access`, compare against declared `permissions`).
+
+## 2. Fetch strategy: `users.list` bulk, not `users.info` per-user
+
+`slack-web.ts` has **no** `usersList`. The existing `usersInfo` (line 195-206) is per-user and extracts only `is_admin`/`is_owner` — it is the wrong shape and would need extending anyway.
+
+Rate-limit tiers:
+
+| Method | Tier | Practical rate | Pagination |
+|---|---|---|---|
+| `users.list` | Tier 2 | ~20 req/min | cursor, `limit` up to 1000 (Slack recommends ≤200) |
+| `users.info` | Tier 4 | ~100 req/min | n/a |
+| `conversations.members` | Tier 4 | ~100 req/min | cursor (already implemented) |
+
+For a 500-member workspace: `users.list` = 3 calls (well inside Tier 2), `users.info` = 500 calls ≈ 5 minutes of wall clock and burns the Tier-4 budget the ACL sync already spends on `conversations.members`. **`users.list` wins decisively**, and critically it is **once per team**, not per channel — the sync already loops `for (const [teamId, channelIds] of byTeam)` (`packages/server/src/authz/slack-acl-sync.ts:173`), which is the natural place to hoist one profile fetch.
+
+Pagination helper to copy: `conversationMembers` at `slack-web.ts:158-179` — the exact `do/while` + `response_metadata.next_cursor` loop. `slackPost` already form-encodes correctly for `users.list`.
+
+`users.list` also gives you `profile.real_name` / `profile.display_name` (fixes the title defect) and `deleted` / `is_bot` flags (lets you drop deactivated users and *all* bots, superseding the single-bot-id filter at `slack-acl-sync.ts:218-220`).
+
+## 3. Email as an identity — this is where the design actually lives
+
+**The namespace is `'email'`** — `IDENTITY.EMAIL` in `packages/connector-sdk/src/identity-namespaces.ts:40`, registered at lines 48-54 with `subjectKind: 'person'`, `normalizer: 'email'`, `eventRecallIndexed: true`, `uniquePerOrg: true`.
+
+Precedent for a connector declaring it: `packages/connectors/src/google_gmail.ts:200` — `identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }]`. Also `packages/server/src/identity/connectors/google.ts:31,114` and `packages/server/src/auth/subject-identities.ts:221`.
+
+**Two changes are required, and they are in different files:**
+
+**(a) Declare it on the ACL source** — `packages/connectors/src/slack-identity.ts:139-143`:
+```ts
+export const slackAclSource: AclSourceDef = {
+  key: 'slack',
+  resourceNamespace: SLACK_IDENTITY.CHANNEL_ID,
+  memberIdentities: [{ namespace: SLACK_IDENTITY.USER_ID, primary: true }],
+};
+```
+Add `{ namespace: IDENTITY.EMAIL }` (non-primary). **Exact precedent already in the repo:** `packages/connectors/src/github-identity.ts:128-131` declares `[{ github_user_id, primary: true }, { github_login }]`. `packages/connectors/src/__tests__/slack-identity.test.ts:54` asserts this array with `toEqual` and will need updating.
+
+**(b) Emit the value per member** — `slackChannelsToResources` (`slack-identity.ts:146-170`) currently only receives `memberSlackUserIds: string[]`. `SlackChannelInput` (line 126-134) has to carry profiles, or the function needs a second `Map&lt;bareUserId, {email, displayName}&gt;` argument. Mirror `githubReposToResources` (`github-identity.ts:140-158`), which conditionally pushes each identity only when it normalizes.
+
+### The precedence trap — read this before writing code
+
+There are **two different matchers** and they disagree, which decides whether email collapses or forks:
+
+**Matcher 1 — `resolveMembers`** (`packages/server/src/authz/access-graph.ts:172-184`). Runs FIRST, for every member:
+```ts
+for (const id of m.identities) {
+  const found = existing.get(`${id.namespace}|${id.value}`);
+  if (found !== undefined) { hit = found; break; }   // ← first hit wins, array order
+}
+```
+Equal-weight, **ignores `primary` entirely**, breaks on the first hit in **`m.identities` array order**, and has **no ambiguity detection**.
+
+**Matcher 2 — `entity-link-upsert`** (`packages/server/src/utils/entity-link-upsert.ts:756-780`). Only sees members that MISSED matcher 1. Here `primary` *is* authoritative: because `slack_user_id` is primary and always present, **email is never consulted for matching** — `primaries.length &gt; 0` short-circuits the equal-weight union. Email would only ever be *accreted*, never *matched on*.
+
+**Consequence:** all the collapse behavior you want lives in matcher 1, and it is decided by **the order you push identities into the array**. Push `email` **first**:
+
+- New member, person already exists from Gmail/CRM → email hits → collapses onto the real person. ✅ This is the whole point of the work.
+- **Already-created hollow entity** (the July-8 rows): `existing` will contain *both* `email|x@y → realPerson` and `slack_user_id|T:U → hollowEntity`. If `slack_user_id` is first, the hollow entity wins **forever** and the duplicate is permanent. If `email` is first, the member re-points to the real person and the hollow entity is orphaned.
+
+So identity array order is load-bearing and deserves a comment at the call site. Also flag: matcher 1 silently picks a winner where matcher 2 would log `'entityLink merge candidate — multiple entities matched at the same identity tier'` (line 782-796). That divergence is a genuine latent bug, not introduced by this work, but this change is what makes it reachable.
+
+**Identity accretion on an existing match does work** — `entity-link-upsert.ts:802-820` explicitly accretes non-`matchOnly` identities onto a matched entity. But that path only runs for members that *missed* matcher 1. A member that hits in matcher 1 returns straight from `resolveMembers` at line 181 and **never touches entity-link-upsert at all** — so it gains no email identity. That is a real gap: `resolveMembers` needs its own `insertIdentities`-equivalent for matched members, or the hit path must be routed through the upsert.
+
+## 4. Backfill
+
+**The good news: you probably don't need a migration.** A SQL migration *cannot* do this anyway — the email isn't in the database, it only exists behind a Slack API call. The sync is already a 15-minute cron that re-visits every member, so the fix is to make the sync self-healing:
+
+**Title self-heal:** the exact precedent is already in the same file. `packages/server/src/authz/access-graph.ts:332-350` refreshes each **resource** entity's name after resolution, with this comment: *"`titlePath` only sets the name on auto-CREATE, so a name that wasn't available at first graph (or a later channel/repo RENAME) would otherwise stick to the stale value / the raw id."* It is idempotent via a `AND name &lt;&gt; ${name}` guard. **There is no equivalent loop for members** — add one. That is a ~15-line mirror of code that already exists 100 lines above.
+
+**Identity self-heal:** covered by `entity-link-upsert.ts:802-809` accretion, *except* for the matcher-1-hit gap noted in §3.
+
+**If you do need an out-of-band script**, the pattern is a `scripts/backfill-*.ts` one-off, not a migration. Concrete precedent: **`/Users/burakemre/Code/lobu/scripts/backfill-member-claims.ts`** — a one-time backfill of missing `$member` + `auth:signup` claims, with a guard test at `scripts/__tests__/backfill-member-claims-guard.test.ts`. Its header states the rule explicitly:
+
+&gt; *"It is NOT a migration (docs/MIGRATIONS.md: no scan inside the blocking Helm hook)."*
+
+Corroborated by `docs/MIGRATIONS.md:50`: *"backfill in a separate migration / script that runs in batches outside the Helm hook."* That script also calls the **same production write path** a real sign-up uses rather than bespoke SQL — the right model here too (call the real sync, don't hand-write UPDATEs).
+
+This is consistent with the AGENTS.md rule (request paths never aggregate history; one-time aggregation belongs in a migration): nothing here is a request path, and the "aggregation" is an external API fetch, so the cron/script split is correct.
+
+**Orphaned hollow entities:** if email-first matching re-points members to real people, the old hollow `person` rows are left dangling. The repo has a proper merge facility — `packages/server/src/utils/entity-merge.ts` (`applyMerge`, `merged_into` tombstone + recall redirect, migration `20260707160000_entity_merged_into.sql`). Whether to auto-merge or leave orphans is a product call; auto-merging from a sync tick is riskier than it looks and I'd default to leaving them and cleaning up manually given the volume (see §5).
+
+## 5. Is it live in production?
+
+**No feature flag, no env gate.** The chain is unconditional:
+
+`server-lifecycle.ts:364` → `bootTaskScheduler` (`scheduled/jobs.ts:69`) → `registerMaintenanceTasks` → `scheduler.register('authz-acl-sync', …, { cron: '*/15 * * * *' })` at `scheduled/jobs.ts:193-199` → `runAclSyncTick` (`authz/acl-sync.ts:21-33`) → `runSlackAclSyncTick` (`authz/slack-acl-sync.ts:418`).
+
+**Conditions that must ALL hold for a single member to be minted:**
+
+1. A `connections` row with `connector_key='slack' AND status='active' AND credential_mode IS NOT NULL AND deleted_at IS NULL` (`slack-acl-sync.ts:420-427`).
+2. That connection has ≥1 **channel binding** in `behavior_message_subscriptions` — i.e. someone ran `/lobu link`. `resolveBoundChannelRows` (`gateway/channels/bound-channels.ts:45`) is the source; no binding = no channels = `{ ok: true, teamsSynced: 0 }` early return at line 157-159.
+3. The binding carries a non-null `team_id` (line 151-156).
+4. If the connection's tenant id is a concrete workspace `T…`, the binding's team must match it (the BYO foreign-workspace guard, line 147/155).
+5. A bot token resolves via `resolveSlackBotIdentity` (line 273) — active OAuth install by connection id, or by team id, or BYO `config.botToken`. Otherwise it **throws and fail-closes the whole connection** (line 175-177).
+6. The org has a resolvable creator member, else `buildAccessGraph` bails at `access-graph.ts:241-248`.
+
+**Live evidence (prod, via `query_sql` on `entities` — `entity_identities` is not allowlisted, but `entities` is):**
+
+| entity_type | count | newest |
+|---|---|---|
+| `$resource` | **1** | 2026-07-06 |
+| `person` with name matching `^T[A-Z0-9]+:U` | **1** | 2026-07-08 |
+
+The two rows:
+- `id=3193`, `$resource`, name `D0BEQTB3WFN`, aliases `["T0BCYB6JV3L:D0BEQTB3WFN"]`
+- `id=26993`, `person`, name `T0BF8TKGW79:U0BCGSSBTKR`, aliases `["T0BF8TKGW79:U0BCGSSBTKR"]`
+
+So: **the path demonstrably executed in production** — it minted both a resource and a hollow-titled member, and the raw-ID title defect is confirmed live. Note the `$resource` is a **DM** (`D…`), and the two rows are from **different team ids** (`T0BCYB6JV3L` vs `T0BF8TKGW79`), i.e. leftovers from dev/test workspaces.
+
+**Important caveat on my evidence:** the org my MCP token is bound to currently has **zero Slack connections** (`connections` shows only telegram/google/apple/chrome/etc.; `channel_messages` has only `telegram`). So in *this* org the tick selects nothing today, and I **cannot see other orgs** — `query_sql` auto-scopes to the bound org. I can confirm the code ran in prod at least twice in July; I **cannot** confirm current per-org volume. Treat "how many hollow members exist fleet-wide" as an open question needing a direct prod-DB query.
+
+The practical read: current blast radius is tiny (1 hollow entity visible), which makes this a low-risk change to ship *now*, before Slack usage scales and the duplicate-person problem becomes expensive to unwind.
+
+## Recommended change-set
+
+1. `packages/connectors/src/slack.ts:61` + `config/slack-app-manifest.self-install.json:52` — add `"users:read.email"` after `"users:read"`, same index in both. Update `packages/connectors/src/__tests__/slack.test.ts` (passes automatically if order matches).
+2. `packages/server/src/gateway/connections/slack-web.ts` — add `usersList(botToken)` returning `{ id, email, displayName, isBot, isDeleted }[]`, cursor-paginated with `limit: 200`, copying the `conversationMembers` loop at lines 158-179.
+3. `packages/server/src/authz/slack-acl-sync.ts:173` — hoist one `usersList` call per team inside the `byTeam` loop; thread the profile map into `slackChannelsToResources`. Make it **best-effort** like `conversationInfo` (lines 226-235): a `missing_scope` failure on a not-yet-reinstalled workspace must NOT fail-close the ACL sync, or you break channel visibility for every org that hasn't reinstalled. This is the single highest-risk detail in the change.
+4. `packages/connectors/src/slack-identity.ts` — add `{ namespace: IDENTITY.EMAIL }` to `slackAclSource.memberIdentities` (mirroring `github-identity.ts:128-131`); push `email` **first** in the per-member identities array; set `name` to the real display name instead of `combined` (line 164).
+5. `packages/server/src/authz/access-graph.ts` — add a member display-name refresh loop mirroring the resource-name refresh at lines 332-350, and close the matcher-1-hit identity-accretion gap so matched members also gain their email identity.
+
+## Risks
+
+- **Fail-closed regression (highest).** `syncSlackConnectionAcl` is atomic per connection; any throw marks the connection `failed` and the gate drops all its channels (`slack-acl-sync.ts:16-22, 250-261`). A `missing_scope` from `users.list` on every not-yet-reinstalled workspace would silently kill Slack channel visibility fleet-wide until reinstall. Must be caught and swallowed.
+- **Identity-order silently decides collapse vs. fork**, with no ambiguity logging in matcher 1 (`access-graph.ts:175-179`). Getting this backwards makes hollow duplicates permanent and is not loud about it.
+- **Cross-person leak via a shared/aliased email.** `IDENTITY.EMAIL` is `uniquePerOrg: true`, and email-first matching means a Slack member whose profile email collides with an existing person inherits that person's `member_of` edges. Since these edges are a **read ACL**, a bad collapse is an access-control event, not just a data-quality one. Worth a test.
+- **Scope propagation lag** — up to 1 hour for `refresh-connector-definitions` to push the new scope into per-org `connector_definitions`. Installs started before that still mint tokens without `users:read.email`.
+- **Reinstall is manual and unprompted** — no detection exists, so workspaces will sit on old tokens indefinitely with no signal to anyone.
+
+## Confidence
+
+| Area | Score | Basis |
+|---|---|---|
+| Scope + manifest surface | **95** | Grepped repo-wide for `users:read`; exactly 2 code + 1 test hit. Read the install route and traced `permissions` → authorize URL. Absence of scope-upgrade flow verified against `origin/main`, not the working tree. |
+| Fetch strategy | **80** | Read all of `slack-web.ts`; confirmed no `usersList` and located the pagination helper. Rate-limit tiers are from my own knowledge of Slack's docs, **not verified against Slack's live tier table** — confirm Tier 2 / Tier 4 before committing to a cadence. |
+| Email-as-identity | **90** | Read both matchers end to end, plus `AclSourceDef`, `AccessMember`, the identity registry, and the GitHub two-namespace precedent. The order-dependence and the primary short-circuit are read directly off the code. Not executed — no test written to prove the collapse. |
+| Backfill | **85** | Enumerated all three repo patterns (SQL migration / drip cron / one-off script) and read the `backfill-member-claims.ts` header stating the migration rule. The "self-heal makes a backfill unnecessary" conclusion follows from the resource-name-refresh precedent but is reasoned, not demonstrated. |
+| Prod liveness | **60** | Job wiring traced with zero gates — high confidence. But my `query_sql` is **org-scoped to a Slack-free org**; the 1 `$resource` + 1 hollow person are historical leftovers. **I cannot see fleet-wide volume.** Do not treat "only 1 hollow entity" as a fleet-wide number. |
+
+## Suggested next actions
+
+1. **Get the real fleet-wide number** before sizing the backfill: query prod DB directly (not via org-scoped MCP) for `entities` where `entity_type='person'` and `name ~ '^T[A-Z0-9]+:U'`, plus a count of active Slack connections with ≥1 `behavior_message_subscriptions` row. That decides whether §4's self-heal suffices or you need `scripts/backfill-slack-member-profiles.ts`.
+2. **Confirm the Slack rate-limit tiers** for `users.list` / `users.info` against current Slack docs, and decide the profile-cache TTL — refetching every team's full roster every 15 minutes may be more Tier-2 traffic than you want.
+3. **Settle the identity-order + ambiguity question first** (it's a design call, not an implementation detail): email-first with the hollow entity orphaned, or add real ambiguity detection to `resolveMembers` mirroring `entity-link-upsert.ts:782-796`. This determines whether hollow duplicates are recoverable.
+4. **Write the fail-closed test before the feature** — assert that a `missing_scope` throw from `usersList` leaves `authz_source_acl_state` at `fresh` and the graph fully built minus emails. This is the regression that would actually hurt users.</result>
+<usage><subagent_tokens>129931</subagent_tokens><tool_uses>60</tool_uses><duration_ms>368016</duration_ms></usage>
+</task-notification>

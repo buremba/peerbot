@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Consecutive capability-only standard replays can retain and display data from the previous result. This directly affects the no-toolInfo restoration path introduced by the patch.
+
+Review comment:
+
+- [P1] Record the first capability-only replay as current — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:540-544
+  When a portable host omits `toolInfo` and reuses an iframe, the first empty standard replay restores successfully, but `capabilityChanged` is false while `resultCapabilityIdentity` is still null, so this branch never records the capability or marks a current-lifetime result. A second empty replay with another capability then makes `restoreSnapshot()` return early because `hasData` is already true, leaving the previous card visible; record the first capability-only standard replay as the current result too.
+  </results>
+  </user_action>

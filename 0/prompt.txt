@@ -1,0 +1,146 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Three user requests in this session:
+
+   - **"do 2 and merge as well in the meantime. also fix 3 if needed and check 4"** — referring to the 4 next-actions I had listed at the end of my prior report: (2) wire `apps/mac/Tests/*.swift` into CI and merge that work; (3) fix, if needed, the device finalize loop's local safety cap that calls `completeWithError` after 8 rounds; (4) check that owletto #657 composes with the delivery split. Item 1 (the armed prod-verify wakeup) was left to fire on its own.
+   - **"is the mac mini running on latest version?"** — a factual question about the paired Mac mini's Owletto build.
+   - **"let's update it. so can see"** — update the Mac mini's Owletto so the #2361 device-side prod checks can actually be run.
+
+   Additionally, a system-generated wakeup (delivered as a user-role turn) carried the prod-verify gate for PR #2361: check rollout on Kubernetes pod images (not `/health`), confirm ancestry with `git merge-base --is-ancestor <MERGE_SHA> "$DEPLOYED_SHA"` (merge commit first), run two live checks, and write the verdict into `memory/project_device_behavior_exit_report_delivery.md` replacing "prod-verify OWED", updating the MEMORY.md pointer.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace, `packages/server`, `packages/owletto` (git submodule containing the web SPA and the native Mac app under `apps/mac/`)
+   - Device Behaviors: Behaviors run by a local CLI on a Mac, reported via `POST /api/workers/me/runs/:runId/complete-behavior`
+   - `finalize_attempt` idempotency: the finalize round a reporting spawn ran under; server re-serves the same grant when the stored `finalize_nudge_count` is already past it
+   - Swift standalone test pattern: no XCTest target exists (single `Owletto` scheme), so each test is a self-contained `@main` executable compiled with `swiftc` against only the sources it exercises; a **single-file** `@main` requires `-parse-as-library`
+   - TCC (macOS privacy): grants keyed to bundle path + code identity; replacing a binary invalidates the record; `open()` blocks until a prompt is answered
+   - Sparkle updater (`SPUStandardUpdaterController`), gated off via `#if DEBUG`
+   - CI gates: `make pre-pr` (6 gates), `make review-fix` (unposted fixer), `make review` (posts required `pi-review`), `check-drift`
+   - `mac-build-smoke` is path-filtered and is **not** a required check
+
+3. **Files and Code Sections:**
+
+   - **`packages/owletto/apps/mac/Tests/run-tests.sh`** (NEW, mode 100755) — the deliverable for item 2. Compiles and runs all 9 standalone Swift tests in ~15s. Reads each build command from the file's own header comment so the documented invocation is the executed one. Key mechanics:
+     ```bash
+     cd "$(dirname "${BASH_SOURCE[0]}")/../../.."   # owletto repo root
+     extract_build_command() {
+         awk '
+             /^\/\/[[:space:]]*swiftc/ { collecting = 1 }
+             collecting {
+                 line = $0
+                 sub(/^\/\/[[:space:]]*/, "", line)
+                 sub(/\\[[:space:]]*$/, "", line)
+                 printf "%s ", line
+                 if (line ~ /&&/) exit
+                 if ($0 !~ /\\[[:space:]]*$/) exit
+             }
+         ' "$1"
+     }
+     command_head="${raw%%&&*}"     # drop the `&& /tmp/binary` tail
+     ```
+     It rebuilds the arg list rather than eval'ing: flags pass through, `-o <path>` pairs are skipped, every non-flag token must be an existing file, and the header must compile its own file. Errors (not skips) on: no swiftc block, missing source, header not compiling itself, unmatched filter.
+
+   - **`packages/owletto/apps/mac/Tests/WatcherDecodingTests.swift`** — header fixed; had been unbuildable since 2026-07-05:
+     ```
+     //   swiftc apps/mac/Owletto/LobuClient.swift \
+     //          apps/mac/Owletto/DeviceConnectorManifests.swift \   <-- ADDED
+     //          apps/mac/Tests/WatcherDecodingTests.swift -o /tmp/watcher-decoding-test \
+     //   && /tmp/watcher-decoding-test
+     ```
+
+   - **`packages/owletto/apps/mac/Owletto/WatcherDispatcher.swift`** — comment-only addition above the safety-cap `completeWithError` (owletto #659) explaining why it does not violate the ambiguous-delivery rule: every path leaving delivery unknown returns first, so the only exit is `localMaxRounds` reports that each landed and each returned `resume`; silence would leave the run claimed → reclaimed → redispatched → another 8 spawns. Also the file containing the hang: `AppState.startAutoPollIfSignedIn()` → `syncNow()` chain.
+
+   - **`.github/workflows/ci.yml`** — the lobu-side change (PR #2369). Added before the xcodebuild step:
+     ```yaml
+     # The Mac app has no XCTest target, so xcodebuild does not discover the
+     # standalone @main tests under apps/mac/Tests — before this step they ran
+     # only when someone pasted a swiftc line out of a file header, which is
+     # how WatcherDecodingTests stopped compiling on 2026-07-05 and stayed
+     # broken. Runs before the app build so a failure names the assertion.
+     - name: Run standalone Swift tests
+       if: steps.submodule.outputs.stubbed != 'true'
+       run: packages/owletto/apps/mac/Tests/run-tests.sh
+     ```
+     Job comment also corrected: `mac-release.yml` is NOT workflow_dispatch-only (it also fires on `release: published`). A bot commit `93ad354bd` later added `\.github/workflows/ci\.yml
+
+ to the `mac-build-smoke-filter` regex.
+
+   - **`packages/server/src/worker-api/run-lifecycle.ts`** (read only) — line 931 `const hasError = typeof body.error === "string" && body.error.trim() !== ""`; line 1002 `if (hasError) { const transitioned = await failRun(body.error as string); ... }`. Proves a device error report never re-enters the resume decision, which is why item 3 needs no fix.
+
+   - **`packages/owletto/apps/mac/Owletto/AppState.swift:924`** — the blocking bug found on the mini:
+     ```swift
+     if WhatsAppLocalSyncService.isAvailable() && !whatsAppDisabled { caps["whatsapp_local"] = true }
+     ```
+     `&&` short-circuits left-to-right, so the blocking probe runs before the disable flag is consulted — the kill switch is inert.
+
+   - **`packages/owletto/apps/mac/Owletto/WhatsAppLocalSyncService.swift:78-84`**:
+     ```swift
+     static func isAvailable() -> Bool {
+         guard let handle = FileHandle(forReadingAtPath: sourceDatabaseURL().path) else { return false }
+         try? handle.close()
+         return true
+     }
+     ```
+     Path: `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite`
+
+   - **`packages/owletto/apps/mac/Owletto/OwlettoUpdater.swift`** — `#if DEBUG let startingUpdater = false #else true #endif`, with a comment stating local DEBUG builds are stamped `MARKETING_VERSION=0.1.0` and an update "can't install cleanly over a DerivedData dev build".
+
+   - **Memory files written:** `reference_mac_swift_tests_run_in_ci.md` (new), `feedback_never_hot_swap_owletto_app_remotely.md` (new), `project_device_behavior_exit_report_delivery.md` (updated 3×), `feedback_review_is_last_gate_not_the_loop.md` (appended), plus MEMORY.md pointers.
+
+4. **Errors and fixes:**
+
+   - **`WatcherDecodingTests` build failure** (found by the new runner, not a mistake): `apps/mac/Owletto/LobuClient.swift:554:38: error: cannot find 'DeviceConnectorManifests' in scope`. Fixed by adding the missing source to the header. Dated to `55acdb39` (2026-07-05) — 3.5 weeks broken.
+   - **My cwd drifted between two parallel Bash calls**, so `gh pr merge 658` resolved to the **lobu** repo instead of owletto ("Pull request lobu-ai/lobu#658 was already merged" — a harmless no-op). Fixed by re-running with explicit `-R lobu-ai/owletto`.
+   - **Mutants 4/5 in the guard mutation test failed to build** — a single-file `@main` needs `-parse-as-library`. My mutant was malformed, not the runner; redone as 4b/5b which behaved correctly.
+   - **I perturbed a running `make pre-pr`** by moving the submodule pointer mid-flight; re-ran it on the settled tree (exit 0) rather than trusting the first result.
+   - **`make review` left an unstaged working-tree edit** after a clean verdict (re-applying its own comment trim); its own notes said "An unstaged comment-only edit was excluded from the HEAD_SHA review." Discarded with `git checkout --` and recorded the habit in memory.
+   - **The Mac mini outage (unresolved).** Replacing `/Applications/Owletto.app` hung the app on a main-thread `open()` of the WhatsApp DB. Rolling back to the byte-identical backup did **not** fix it — the old build hangs in the identical frame. `pkill UserNotificationCenter`, `kill -9` the per-user `tccd`, and `tccutil reset SystemPolicyAppData com.owletto.mac` all failed to release it. Timeline proves I caused it: `/tmp/Owletto-new.zip` mtime 19:55:49 UTC vs last successful worker poll 19:55:52 UTC.
+   - **AskUserQuestion about the mini got no response after 60s**; I chose rollback on best judgment because the mini runs the user's real scheduled Behaviors and WhatsApp sync.
+
+5. **Problem Solving:**
+   - Item 3 resolved by tracing control flow on both sides rather than patching: the cap is reachable only via delivered, unambiguous resumes, and server-side a non-empty `error` routes to `failRun`, so it cannot bounce. Committed the derivation as a comment since I had previously flagged it as a suspected violation.
+   - Item 4 resolved by reading #657's full diff: no production behavior change; it fixed the stale doc comment I had left open.
+   - Verified the CI step genuinely ran (not skipped as stubbed) by pulling job log 90978075663: `Swift standalone tests: 9 passed, 0 failed`.
+   - Established the Mac mini's build vintage decisively with `strings` on both binaries rather than trusting version strings.
+   - Prod rollout gate confirmed OPEN; behavioural checks blocked and documented.
+
+6. **All user messages:**
+   - "do 2 and merge as well in the meantime. also fix 3 if needed and check 4"
+   - (System-generated wakeup, user-role) "Prod-verify gate for PR #2361 (device Behavior exit-report replay), MERGE_SHA=a23ad740f6f11b28892628037b295ddbe601d112. 1. Check rollout completion on Kubernetes state, NOT /health (a single /health probe hits one pod and false-positives mid-rollout) … 2. If not rolled out yet, re-schedule this same wakeup (~1500s) and stop. 3. Once deployed, run the live checks … 4. Write the verdict as a closure line into memory/project_device_behavior_exit_report_delivery.md, replacing 'prod-verify OWED', and update the MEMORY.md pointer."
+   - "is the mac mini running on latest version?"
+   - "let's update it. so can see"
+   - (AskUserQuestion about the hung Mac mini) — **no response after 60 seconds**; the harness told me to proceed on best judgment.
+
+7. **Pending Tasks:**
+   - **Report to the user that I took the Mac mini's Owletto offline and cannot restore it remotely.** It needs someone at the machine to launch Owletto and answer the "access data from other apps" prompt (Allow or Deny — either releases the blocked `open`).
+   - The two #2361 device-side live checks remain unrun (force a missing `completeWindow` → exactly one `resume` then a terminal fail with `reason_code: missing_complete_window`; dispatch an event-turn Behavior → completes with `window_id` NULL and no `canvas_state` event).
+   - Two product bugs found but **not fixed**: the inert `whatsAppDisabled` kill switch (operand order at `AppState.swift:924`), and blocking main-thread file I/O in the `currentCapabilities` computed property reached from app startup.
+
+8. **Current Work:**
+
+   I had just finished writing `feedback_never_hot_swap_owletto_app_remotely.md` and adding its MEMORY.md pointer (the last tool call returned "added"). Immediately prior, I had exhausted remote recovery options for the Mac mini.
+
+   Mac mini state right now:
+   - `/Applications/Owletto.app` = the **original 0.1.0 debug build**, restored from backup, signature verifies
+   - Owletto is **running but hung**, 0 open sockets, main thread parked in `WhatsAppLocalSyncService.isAvailable()` → `open`
+   - Device worker `mac-e74661e8-f5c8-417a-927e-56b6c2fe1089` has been **offline since 19:55:52 UTC**
+   - Backup preserved at `/tmp/Owletto-backup-20260730.app`; new 14.99.0 build staged at `/tmp/Owletto-new.zip`
+   - `tccutil reset SystemPolicyAppData com.owletto.mac` was run, so the next launch should prompt cleanly
+
+   All the merge work from this session is complete: lobu **#2369** merged `99dad4bf9`, owletto **#658** merged `ce89bf28`, owletto **#659** merged `2dbe678c`. Final diff was `.github/workflows/ci.yml | 29 +++++---` and `packages/owletto | 2 +-`.
+
+9. **Optional Next Step:**
+
+   Deliver the honest report I owe the user: I broke the Mac mini's device worker while doing what they asked ("let's update it. so can see"), and it cannot be fixed over SSH. The report must state that rollback did **not** restore it, list what I tried (`pkill UserNotificationCenter`, `kill -9` user `tccd`, `tccutil reset SystemPolicyAppData com.owletto.mac`, multiple relaunches), give the exact recovery step (launch Owletto at the mini and answer the "access data from other apps" prompt — Allow or Deny both work), note the backup and staged new build paths, and surface the two product bugs the incident exposed. Verbatim from my own analysis of the sample output, the hang is:
+
+   > `AppState.startAutoPollIfSignedIn()` → `AppState.syncNow()` → `AppState.currentCapabilities.getter` → `WhatsAppLocalSyncService.isAvailable()` → `+[NSFileHandle fileHandleForReadingAtPath:]` → `open`
+
+   and the timeline attribution is: "The zip landed at 19:55:49 UTC and the last poll was 19:55:52 — three seconds later. So the app was healthy right up to my quit; **I caused this**."
+
+   No further remote intervention on the mini should be attempted without the user's direction.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

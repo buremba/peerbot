@@ -186,14 +186,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(await initSession(`/mcp/${org.slug}`)).toBeTruthy();
   });
 
-  it('serves the external v41 interaction bundle over resources/read', async () => {
+  it('serves the external v42 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v41.html' },
+        params: { uri: 'ui://lobu/interaction/v42.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -202,17 +202,22 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v41.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v42.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-external-stub');
     expect(content?.text).not.toContain('mcp-app-embedded-stub');
-    expect(content?.text).toContain('./assets/app.js?v=js123');
-    expect(content?.text).toContain('<base href="http://localhost/mcp-apps/interaction/" />');
+    // Absolute, not `./assets/…` behind a `<base>`: Claude serves the app
+    // sandbox with `base-uri 'self'`, drops the element, and then resolves
+    // every relative URL against its own origin — a blank widget.
+    expect(content?.text).toContain(
+      'src="http://localhost/mcp-apps/interaction/assets/app.js?v=js123"'
+    );
+    expect(content?.text).not.toContain('./assets/');
+    expect(content?.text).not.toContain('<base');
     expect(content?._meta?.ui?.csp).toEqual({
       connectDomains: [],
       resourceDomains: ['http://localhost'],
       frameDomains: [],
-      baseUriDomains: ['http://localhost'],
     });
     expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
@@ -330,14 +335,16 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       expect(content?.mimeType).toBe('text/html;profile=mcp-app');
       expect(content?.text).toContain('mcp-app-external-stub');
       expect(content?.text).not.toContain('mcp-app-embedded-stub');
-      expect(content?.text).toContain('./assets/app.js?v=js123');
-      const baseHref = content?.text?.match(/<base href="([^"]+)" \/>/)?.[1];
-      const resourceOrigin = new URL(baseHref!).origin;
+      const assetSrc = content?.text?.match(
+        /src="([^"]+\/mcp-apps\/interaction\/assets\/app\.js\?v=js123)"/
+      )?.[1];
+      expect(assetSrc).toBeTruthy();
+      expect(content?.text).not.toContain('./assets/');
+      const resourceOrigin = new URL(assetSrc!).origin;
       expect(content?._meta?.ui?.csp).toEqual({
         connectDomains: [],
         resourceDomains: [resourceOrigin],
         frameDomains: [],
-        baseUriDomains: [resourceOrigin],
       });
     }
   });
@@ -398,7 +405,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v41.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v42.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -416,7 +423,6 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       connectDomains: [],
       resourceDomains: ['http://localhost'],
       frameDomains: [],
-      baseUriDomains: ['http://localhost'],
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toBeUndefined();
@@ -447,10 +453,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v41.html',
+            resourceUri: 'ui://lobu/interaction/v42.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v41.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v42.html',
           'openai/widgetAccessible': true,
         }),
       })
@@ -465,10 +471,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v41.html',
+            resourceUri: 'ui://lobu/interaction/v42.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v41.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v42.html',
           'openai/widgetAccessible': true,
         }),
       })
@@ -554,7 +560,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v41.html',
+        resourceUri: 'ui://lobu/interaction/v42.html',
         visibility: ['model', 'app'],
       })
     );
@@ -617,7 +623,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).not.toContain('payload_data');
     expect(body.result?.content?.[0]?.text).not.toContain('payload_template');
     expect(body.result?._meta?.['openai/outputTemplate']).toBe(
-      'ui://lobu/interaction/v41.html'
+      'ui://lobu/interaction/v42.html'
     );
   });
 
@@ -1212,7 +1218,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(capability.length).toBeGreaterThan(40);
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(renderBody.result?._meta?.['openai/outputTemplate']).toBe(
-      'ui://lobu/interaction/v41.html'
+      'ui://lobu/interaction/v42.html'
     );
     expect(JSON.stringify(view)).not.toContain(capability);
     expect(renderBody.result?.content?.[0]?.text).not.toContain(capability);

@@ -8,7 +8,7 @@
  * apps keep fetching the URI they were built with, and an unmapped one fails
  * `resources/read` for the life of that chat.
  */
-export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v41.html';
+export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v42.html';
 
 /**
  * Retired interaction resource URIs, kept resolvable.
@@ -27,7 +27,7 @@ const EMBEDDED_ALIAS_VERSIONS = [
 ] as const;
 
 const EXTERNAL_ALIAS_VERSIONS = [
-  3, 4, 5, 6, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  3, 4, 5, 6, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
 ] as const;
 
 export interface McpAppResourceAlias {

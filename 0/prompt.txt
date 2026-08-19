@@ -1,0 +1,1 @@
+we need to fix those issues as well. also maybe should we install a github actions running and use it there? which path is more feasible for cheap stuff.

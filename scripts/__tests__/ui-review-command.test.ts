@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildProofBody, UNHOSTED_PREFIXES } from "../lib/ui-review-proof";
+import { buildProofBody } from "../lib/ui-review-proof";
 
 const UI_REVIEW_SCRIPT = resolve(import.meta.dir, "..", "ui-review.ts");
 const BASE_POINTER = "1".repeat(40);
@@ -194,6 +194,23 @@ await Bun.write(stateFile, JSON.stringify(state));
   return { repo, bin, stateFile, head };
 }
 
+/**
+ * A fake ui-review-agent.sh standing in for a real reviewer CLI: writes the
+ * given verdict straight to the out-file, ignoring the context it's handed.
+ * Command tests exercise the plumbing (does ui-review.ts call it, parse its
+ * output, and record the right proof kind) — not reviewer judgment quality,
+ * which the standalone script + real CLI cover separately.
+ */
+function createFakeAgentScript(root: string, verdict: object): string {
+  const path = join(root, "fake-agent.ts");
+  writeFileSync(
+    path,
+    `#!/usr/bin/env bun\nawait Bun.write(process.argv[3], ${JSON.stringify(JSON.stringify(verdict))});\n`
+  );
+  chmodSync(path, 0o755);
+  return path;
+}
+
 function runUiReview(
   fixture: ReturnType<typeof createFixture>,
   environment: Record<string, string> = {}
@@ -209,6 +226,11 @@ function runUiReview(
       MOCK_BASE_POINTER: BASE_POINTER,
       MOCK_HEAD_POINTER: HEAD_POINTER,
       MOCK_PRODUCT_POINTER: PRODUCT_POINTER,
+      // Every existing test exercises the ARTIFACT-required path, not the
+      // agent-classification one — default it off so a missing ARTIFACT
+      // falls straight to "proof missing" instead of spawning a real
+      // reviewer CLI mid test-run. Tests of the agent path override this.
+      UI_REVIEW_AGENT: "0",
       ...environment,
     },
     stdout: "pipe",
@@ -300,7 +322,7 @@ describe("ui-review command", () => {
     });
   });
 
-  it("passes a complete unhosted PR and clears stale parent proof copy", () => {
+  it("passes a complete deploy-only PR and clears stale parent proof copy", () => {
     const fixture = createFixture();
     const state = readState(fixture.stateFile);
     const parentEndpoint = "repos/lobu-ai/lobu/issues/2500/comments";
@@ -334,13 +356,13 @@ describe("ui-review command", () => {
       context: "ui-review",
       state: "success",
       description:
-        "Owletto 111111111...222222222 ships no hosted surface; no URL to prove",
+        "Owletto 111111111...222222222 is deploy-only; no UI to prove",
       target_url: "https://github.com/lobu-ai/owletto/pull/712",
     });
     // The exemption is judged over the whole pointer range, so the range is what
     // the human-readable note must name.
     expect(finalState.comments[parentEndpoint]?.[0]?.body).toContain(
-      `\`${"1".repeat(40)}...${"2".repeat(40)}\` touches no hosted surface (2 files under ${UNHOSTED_PREFIXES.join(", ")}, through Owletto #712).`
+      `\`${"1".repeat(40)}...${"2".repeat(40)}\` changes only \`deploy/\` (2 files, through Owletto #712).`
     );
     expect(finalState.opened).toBe(
       "https://github.com/lobu-ai/owletto/pull/712"
@@ -388,6 +410,130 @@ describe("ui-review command", () => {
       state: "error",
       description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
     });
+  });
+
+  it("records an agent no-ui-surface proof when no ARTIFACT is given and the reviewer agrees", () => {
+    const fixture = createFixture();
+    const agentScript = createFakeAgentScript(fixture.repo, {
+      has_ui_surface: false,
+      reasoning:
+        "Only tools.js (static import cleanup) and MacShellActionService.swift changed; neither renders anything.",
+      verification_summary:
+        "vitest 249/254 pass; Swift logic compiled and run, 9/9 assertions pass.",
+      reviewer: "claude",
+    });
+
+    const result = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: agentScript,
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "apps/chrome/tools.js" },
+      ]),
+    });
+
+    expectExit(result, 0);
+    const state = readState(fixture.stateFile);
+    const proofComments =
+      state.comments["repos/lobu-ai/owletto/issues/712/comments"];
+    expect(proofComments?.[0]?.body).toContain("no UI surface");
+    expect(proofComments?.[0]?.body).toContain("claude");
+    expect(proofComments?.[0]?.body).toContain("Only tools.js");
+
+    const status = state.calls
+      .filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "success",
+    });
+
+    const parentComment =
+      state.comments["repos/lobu-ai/lobu/issues/2500/comments"]?.[0];
+    expect(parentComment?.body).toContain("**UI review recorded**");
+  });
+
+  it("still requires ARTIFACT when the reviewer finds real UI surface", () => {
+    const fixture = createFixture();
+    const agentScript = createFakeAgentScript(fixture.repo, {
+      has_ui_surface: true,
+      reasoning: "sidepanel.html copy and new icon assets changed.",
+      verification_summary: "no screenshots in the source material.",
+      reviewer: "claude",
+    });
+
+    const result = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: agentScript,
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "apps/chrome/sidepanel.html" },
+      ]),
+    });
+
+    expectExit(result, 2);
+    const status = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "error",
+      description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
+    });
+  });
+
+  it("still requires ARTIFACT when the reviewer is unavailable (fails closed)", () => {
+    const fixture = createFixture();
+    const result = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: join(fixture.repo, "does-not-exist.sh"),
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "apps/chrome/sidepanel.html" },
+      ]),
+    });
+
+    expectExit(result, 2);
+    const status = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "error",
+      description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
+    });
+  });
+
+  it("prefers an explicit ARTIFACT over an existing agent no-ui-surface proof", () => {
+    const fixture = createFixture();
+    const agentScript = createFakeAgentScript(fixture.repo, {
+      has_ui_surface: false,
+      reasoning: "no surface",
+      verification_summary: "tests pass",
+      reviewer: "claude",
+    });
+    const first = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: agentScript,
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "apps/chrome/tools.js" },
+      ]),
+    });
+    expectExit(first, 0);
+
+    const second = runUiReview(fixture, {
+      ARTIFACT: "https://claude.ai/code/artifact/override",
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "apps/chrome/tools.js" },
+      ]),
+    });
+    expectExit(second, 0);
+
+    const state = readState(fixture.stateFile);
+    const proofComments =
+      state.comments["repos/lobu-ai/owletto/issues/712/comments"];
+    expect(proofComments).toHaveLength(1);
+    expect(proofComments?.[0]?.body).toContain(
+      "https://claude.ai/code/artifact/override"
+    );
+    expect(proofComments?.[0]?.body).not.toContain("no UI surface");
   });
 
   it("keeps its own proof when another Lobu PR pins the same Owletto commit", () => {

@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bgawls4cx</task-id>
+<summary>Monitor event: "PR #2829 required checks landing"</summary>
+<event>Analyze (javascript-typescript): pass
+sdk-cli-build: pass</event>
+</task-notification>

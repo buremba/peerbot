@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bazyrmtky</task-id>
+<tool-use-id>toolu_01TuuUkBHtnBUpN1jHb8G6eD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/bazyrmtky.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review gates on 2578" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+hexplain how this will work, i don't fully get. how come human bypass it. how will this mutation thing work, will people subscribe to event and run function

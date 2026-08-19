@@ -1,0 +1,1 @@
+why http://localhost:9283/local-install doesn't redirect to activity. remove that agent list component we don't need it.

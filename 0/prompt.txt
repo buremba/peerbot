@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bh2jk32vj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bh2jk32vj.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for server boot or failure" was stopped</summary>
+</task-notification>

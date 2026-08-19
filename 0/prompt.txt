@@ -1,0 +1,9 @@
+1. what's wrong with that? we actually quarantee that the data in db is proper no?
+2. don't we have parent/child entity type stuff
+3. can't relationships be used for this use-case
+4. what's wrong with this? in the entity type can't we support x-file kinda stuff?
+5. why do we need this? our primary interface is chat, ai can do it on demand no? so we store everything in english
+6. that's fine, that's a known limitation
+7.explain this
+
+and do next actions yes

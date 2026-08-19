@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bratsnnh6</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bratsnnh6.output</output-file>
+<status>killed</status>
+<summary>Background command "Reboot dev server with GitHub App creds (background)" was stopped</summary>
+</task-notification>

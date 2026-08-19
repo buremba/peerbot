@@ -1,0 +1,9 @@
+<task-notification>
+<task-id>bklbyxoec</task-id>
+<summary>Monitor event: "CI check results on PR 2218"</summary>
+<event>[code]smith: pass
+bun audit: pass
+CodeRabbit: pass
+Static security guards: pass
+Trivy (vuln + secret + misconfig): pass</event>
+</task-notification>

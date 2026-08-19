@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b52ig6lwb</task-id>
+<tool-use-id>toolu_01SPCGzG4a1pVsGufuV8zbZD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/872c1f9c-d1ae-4139-93a5-3ed7b02ede10/tasks/b52ig6lwb.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot the new UI against prod API" was stopped</summary>
+</task-notification>

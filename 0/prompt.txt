@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfb2whybe</task-id>
+<tool-use-id>toolu_01Wp9e9Bahjo9owzvZbBZAmp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/bfb2whybe.output</output-file>
+<status>failed</status>
+<summary>Background command "Boot API dev server in background" failed with exit code 144</summary>
+</task-notification>

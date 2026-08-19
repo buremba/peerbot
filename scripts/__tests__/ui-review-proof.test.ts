@@ -198,6 +198,19 @@ describe("UI review proof", () => {
     ).toBe(false);
     // Fail closed on an apps/ tree that is NOT on the allowlist.
     expect(isUnhostedRange([{ filename: "apps/web/index.tsx" }])).toBe(false);
+    // Build/post-build checks run in CI and are never served, so there is no
+    // URL to compare — the same reason deploy/ and the packaged apps qualify.
+    expect(
+      isUnhostedRange([{ filename: "scripts/check-mcp-app-bundle.mjs" }])
+    ).toBe(true);
+    // ...but the prefix must not swallow a hosted tree that merely contains
+    // a scripts/ directory, nor a sibling whose name it merely starts.
+    expect(isUnhostedRange([{ filename: "src/scripts/widget.tsx" }])).toBe(
+      false
+    );
+    expect(
+      isUnhostedRange([{ filename: "scripts-archive/old-widget.tsx" }])
+    ).toBe(false);
 
     // The unhosted prefixes are path prefixes, not substrings.
     expect(isUnhostedRange([{ filename: "src/deploy/widget.tsx" }])).toBe(

@@ -1,0 +1,30 @@
+You are working in an isolated git worktree at /Users/burakemre/Code/lobu/.claude/worktrees/gate-links on branch feat/gate-links. Read AGENTS.md at the repo root FIRST and obey it exactly.
+
+TASK: Gate `$links` in the entity write path. This closes a live privilege-escalation path.
+
+THE FINDING (traced in code by a previous session, NOT executed — verify each claim yourself before acting on it):
+- `entity-mutation-gate.ts` guards only `update` and contains NO reference to `link`.
+- The approval branches in `packages/server/src/tools/.../manage_entity.ts` all sit OUTSIDE the link handler.
+- `validateTypeRule` permits any pair when no rules are seeded.
+- The ACL read trusts any live `member_of` edge.
+Consequence: an agent holding `manage_entity` in an ACL-synced org can assert an access-granting edge (e.g. `member_of`, `can_read`) and grant itself read access.
+
+DO:
+Enforce protected relationship types in the write path, behind an internal capability that only audited internal callers hold. Protected = anything the ACL gate reads (`member_of`, `can_read`, `deny_read`) plus the `$resource` registry types.
+
+CONSTRAINTS (hard):
+- Fail closed. An unknown or unseeded type must NOT be assertable by an agent.
+- Put the check at the CHOKEPOINT, not at each call site. Grep for EVERY `$links` entry point before writing the guard, and list them in your final report.
+- Do NOT attempt to fix the "six independent writers of entity_relationships" problem. That is a separate task. This task covers the AGENT-FACING surface only.
+- Do NOT add a DB table, migration, or change any SDK/API surface. If you believe one is needed, STOP and say so in your report instead.
+- Stage by explicit path (`git add -- <paths>`), never `git add -A`.
+
+VERIFY (required, in this order):
+1. Write the RED test FIRST: an agent principal asserting `member_of` must be REFUSED, and the refusal must be visible in the tool result, not swallowed. Run it and paste the failing output.
+2. Implement the guard. Re-run and paste the passing output.
+3. Mutation-test: revert the guard, confirm the test goes RED again, restore. Paste both.
+4. Run the focused suites you touched.
+
+DO NOT: run `make review`, `make pre-pr-remote`, open a PR, push, or merge. Commit locally on the branch only. I will review your work and run the gates myself.
+
+FINAL REPORT must include: every `$links` entry point you found, the exact files+lines you changed, the red and green test output, the mutation-test result, a confidence score 0-100 with the one-line basis for it, and anything you were unsure about.

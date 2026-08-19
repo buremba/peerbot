@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2ppym6ln</task-id>
+<tool-use-id>toolu_01Ew99cu3ppiwztd1CoCWNm3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c0e19f5c-511d-4c2d-a8a3-0cb2c09c6784/tasks/b2ppym6ln.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch the staged tab survive the reaper" completed (exit code 0)</summary>
+</task-notification>

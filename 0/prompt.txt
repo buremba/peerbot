@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs32kz38f</task-id>
+<tool-use-id>toolu_0147qoEodmZ2dxaadqoqnpWk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bs32kz38f.output</output-file>
+<status>completed</status>
+<summary>Background command "Run affected suites sequentially with full output" completed (exit code 0)</summary>
+</task-notification>

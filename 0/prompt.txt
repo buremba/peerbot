@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bj2k3ino9</task-id>
+<tool-use-id>toolu_01S8313vdYWbRN9HJiwJCJSu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bj2k3ino9.output</output-file>
+<status>completed</status>
+<summary>Background command "Build the guard worktree" completed (exit code 0)</summary>
+</task-notification>

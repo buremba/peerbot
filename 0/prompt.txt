@@ -1,0 +1,1 @@
+cleanup fix and make sure it all works. i want the system to also let me now duplicate entiteies and let me merge etc

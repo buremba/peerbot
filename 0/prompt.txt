@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bzm0u7e6x</task-id>
+<summary>Monitor event: "release PR regeneration onto main"</summary>
+<event>release branch regenerated onto main (46970db4e) — ready for review
+release watch ended</event>
+</task-notification>

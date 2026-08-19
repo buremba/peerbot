@@ -1,0 +1,1 @@
+hmm, you still have add sql? should we infer from the prompt and not expose this to the end users?

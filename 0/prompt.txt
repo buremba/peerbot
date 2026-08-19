@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwgx2at6j</task-id>
+<summary>Monitor event: "CI checks on owletto#593"</summary>
+<event>[code]smith: pass
+CodeRabbit: pass
+CI_COMPLETE owletto#593</event>
+</task-notification>

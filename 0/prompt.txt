@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwnhmpcw7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/bwnhmpcw7.output</output-file>
+<status>completed</status>
+<summary>Background command "Final app build after refactor" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bnz02gqu0</task-id>
+<tool-use-id>toolu_01YcNpZYsqnv6vCNrvhk7wAZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bnz02gqu0.output</output-file>
+<status>completed</status>
+<summary>Background command "Stage and re-gate config branch" completed (exit code 0)</summary>
+</task-notification>

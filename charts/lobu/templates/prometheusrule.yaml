@@ -35,7 +35,7 @@ spec:
             service: lobu
           annotations:
             summary: "Lobu app had zero available replicas in the last 10m"
-            description: "{{ include "lobu.fullname" . }}-app dropped to 0 available replicas, so the ingress served 503 for that window. Deploy-related unless a node was lost: check whether the pre-upgrade migration hook quiesced (kubectl logs job/{{ include "lobu.fullname" . }}-migrate) and whether it should have — it only quiesces when a migration is actually pending."
+            description: "{{ include "lobu.fullname" . }}-app dropped to 0 available replicas, so the ingress served 503 for that window. Deploy-related unless a node was lost: check whether the pre-upgrade migration hook quiesced (kubectl logs job/{{ include "lobu.fullname" . }}-migrate) and whether it should have — it only quiesces when an incompatible migration is pending (or the check cannot answer)."
     - name: lobu-automations
       rules:
         # Heartbeat / dead-man's-switch. The 12-day outage (lobu#1046) was a

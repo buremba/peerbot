@@ -53,10 +53,12 @@ restore_on_failure() {
 }
 
 # Quiescing scales the app to zero for the length of a pod restart, which the
-# ingress answers with 503. Only a schema change needs that window, and most
-# deploys ship none, so ask the ledger first. Fail closed: only the check's
-# definitive "nothing pending" status (3) skips the quiesce -- an unset check
-# or any other status, including a crash, still quiesces.
+# ingress answers with 503. Only a schema change the old code cannot run
+# against needs that window, and most deploys ship none, so ask the ledger
+# first. Fail closed: only the check's two definitive "safe" statuses skip the
+# quiesce -- 3 (nothing pending) and 4 (everything pending is marked
+# backward-compatible). An unset check or any other status, including a crash,
+# still quiesces.
 migrations_pending() {
   if [ -z "$pending_check" ]; then
     echo 'no pending-migration check configured; quiescing'
@@ -67,9 +69,10 @@ migrations_pending() {
   $pending_check
   pending_status=$?
   set -e
-  # 3 is CHECK_PENDING_NONE_EXIT in scripts/migrate-up.mjs -- the one status
-  # that means "the ledger was read and it is complete".
-  if [ "$pending_status" -eq 3 ]; then
+  # 3 is CHECK_PENDING_NONE_EXIT and 4 is CHECK_PENDING_COMPATIBLE_EXIT in
+  # scripts/migrate-up.mjs -- the two statuses that mean "the ledger was read
+  # and no old replica needs to stop".
+  if [ "$pending_status" -eq 3 ] || [ "$pending_status" -eq 4 ]; then
     return 1
   fi
   if [ "$pending_status" -ne 0 ]; then
@@ -117,7 +120,7 @@ if migrations_pending; then
   fi
   echo 'all old database clients are quiesced; running migration'
 else
-  echo 'no pending migrations; skipping quiesce so Helm can roll without downtime'
+  echo 'no migration requires stopping the old replicas; skipping quiesce so Helm can roll without downtime'
 fi
 
 "$@"

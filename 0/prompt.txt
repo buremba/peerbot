@@ -1,0 +1,1 @@
+so you say for run_sdk how should it look like for complex script that reads and writes to memory

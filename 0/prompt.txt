@@ -1,0 +1,1 @@
+this About section looks weird. the source can be shown in a popover when the user clicks the version we can show it in the peek panel maybe?

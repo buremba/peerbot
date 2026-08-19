@@ -1,0 +1,1 @@
+the problem is that there are different tabs, layout changes when i click a connection

@@ -1,0 +1,177 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+The conversation began with the user asking to properly plan work described in `/tmp/mcp-app-collapse-generic-returns-handoff.md`, using an HTML artifact to show variations of how MCP tool results would look in ChatGPT/Claude. It evolved substantially through the user's follow-ups:
+
+- **Plan + artifact** showing rendering variations across hosts
+- **Question whether `search_sdk` should have a UI at all**, and whether `run_sdk` updates the UI live or only after completion; explicitly asking for "the best UX here rather than just trying to do best effort stuff"
+- **Execute the four next actions** (measure run_sdk durations in prod, remove search_sdk's template, fix the viewstate reset, ship B or B+C) plus "go through all uis and see if we can make it complete and better"
+- **Run the dev server** for end-to-end confirmation; challenge the ~1k line diff
+- **Verify search_sdk's UI removal** actually took effect
+- **"cleanup make sure no gap, explain why there is 1k more lines and ultrathink if there is a good path to consolidate simplify this architecture and make it user friendly as much as possible. for extension you can use owletto on mac mini"**
+- **Challenge that `generic-bare-object` "doesn't seem useful indeed"**
+- **"let's step back and think... guide me interview me for the best ux as mcp app"** — leading to a formal design interview
+- **Final:** update the harness with all cases so the five priority tools (query_sdk, query_sql, run_sdk, save_memory, search_memory) can be confirmed working, and guide the user through how these will be shown and what the options are
+
+2. **Key Technical Concepts:**
+   - MCP Apps / widgets embedded in ChatGPT (via `window.openai` skybridge globals) and Claude
+   - `openai/outputTemplate` + `ui.resourceUri` metadata binding a tool to a widget resource — **static per tool, declared at `tools/list`, so a widget cannot be conditionally suppressed**
+   - Versioned, host-cached resource URI (`ui://lobu/interaction/vN.html`) — ChatGPT caches successful *and failed* fetches
+   - Duck-typing shape dispatch vs. authoritative `toolName` dispatch
+   - Three coexisting presentation systems: json-template node language (charts/metrics/tables), LobuView blocks (`{title, tone, blocks[text|code|diff|form], actions}` — the only one with actions), and result-view heuristics
+   - Four-tier result model: 1=declared, 2=known shape, 3=generic-with-substance, 4=thin
+   - `@actionName` host-resolved action references (`json-template-view.tsx:53`) — a script can name an action but cannot inject a handler
+   - Red→green + mutation testing discipline; jsdom cannot observe CSS line-clamp
+   - Bun workspace, vitest, biome (owletto runs `biome lint`, **not** a format check)
+   - Prod audit events: `events` table, `origin_type = 'tool_invocation'`, `payload_data->>'duration_ms'`, `metadata->>'tool_name'`, `metadata->>'token_type'`
+
+3. **Files and Code Sections:**
+
+   - **`/tmp/mcp-app-collapse-generic-returns-handoff.md`** — the inherited handoff. Described uncommitted work, ship path, and design notes. Notably **omitted the v11 URI cache-bump requirement**.
+
+   - **`packages/server/src/tools/mcp_app.ts`** — contains:
+     ```ts
+     // The URI is the host cache key for the immutable template. Bump it whenever
+     // the shipped HTML changes; ChatGPT caches both successful and failed fetches.
+     export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v12.html';
+     ```
+     Bumped v11→v12. Also defines `LobuViewSchema` = `{title, tone, blocks[Text|Code|Diff|Form], actions}`.
+
+   - **`packages/server/src/tools/registry.ts`** — removed `mcpMeta: RICH_RESULT_MCP_META` from `search_sdk`, replaced with:
+     ```ts
+     // Deliberately no UI resource. This is a model-facing doc lookup on the way
+     // to query_sdk/run_sdk — the reader has nothing to verify, act on, or keep,
+     // and declaring a template makes the host instantiate a widget iframe for
+     // every lookup mid-reasoning. A UI belongs on results a human acts on.
+     ```
+
+   - **`packages/server/src/__tests__/integration/mcp/mcp-app-resources.test.ts`** — 9 v11→v12 refs updated, plus a new guard:
+     ```ts
+     const sdkSearchTool = body.result?.tools?.find((entry) => entry.name === 'search_sdk');
+     expect(sdkSearchTool).toBeDefined();
+     expect(sdkSearchTool?._meta?.ui).toBeUndefined();
+     expect(sdkSearchTool?._meta?.['openai/outputTemplate']).toBeUndefined();
+     ```
+     **Could not run locally** — needs `@lobu/pgvector-embedded` built; deferred to `make pre-pr-remote`.
+
+   - **`packages/owletto/src/mcp-apps/interaction/result-view.tsx`** — the only shipped file. Changes:
+     - Extracted `useDisclosure` (replacing a 3rd copy of the pattern):
+       ```ts
+       function useDisclosure(stateKey, viewState, onViewStateChange): [boolean, (next: boolean) => void] {
+         const restored = viewState?.[stateKey];
+         const [localOpen, setLocalOpen] = useState(restored === true);
+         useEffect(() => { setLocalOpen(restored === true); }, [restored]);
+         const open = typeof restored === "boolean" ? restored : localOpen;
+         return [open, (next) => { setLocalOpen(next); onViewStateChange?.(stateKey, next); }];
+       }
+       ```
+     - Deleted `SdkMethodDoc`, `parseSdkMethodDoc`, `SdkSearchResult`, `isSdkSearchResult` (~120 lines)
+     - Added `isSaveReceipt` + `RECEIPT_HEADER_KEYS` + `SaveReceiptView`
+     - Added `readsAsSentence`:
+       ```ts
+       const HEADLINE_MIN_LENGTH = 8;
+       function readsAsSentence(value: string): boolean {
+         const trimmed = value.trim();
+         return trimmed.length >= HEADLINE_MIN_LENGTH && /\s/.test(trimmed);
+       }
+       ```
+     - Added `isEmptyStructure`, `isInlineValue`, `inlineText`
+     - Added `PeekText`, `TopLevelValue` (summary-first at top level only)
+     - Added `declaredTemplate()` + `DeclaredView` (tier 1) — reuses `McpJsonTemplateView`; actions map is `{ open, openSource }` only
+     - Added `hasSubstance()` + `ThinResult` (tier 4):
+       ```ts
+       const SCALAR_LIST_SUBSTANCE_MAX = 5;
+       function hasSubstance(value: unknown): boolean {
+         if (typeof value === "string") return !isShortScalar(value);
+         if (Array.isArray(value)) {
+           return value.length > SCALAR_LIST_SUBSTANCE_MAX || value.some(hasSubstance);
+         }
+         if (!isRecord(value)) return false;
+         if (declaredTemplate(value)) return true;
+         if (looksLikeEvent(value) || looksLikeEntity(value)) return true;
+         if (isSaveReceipt(value) || isSqlResult(value)) return true;
+         if (value.error !== undefined && value.error !== null) return true;
+         for (const inner of Object.values(value)) { ... }
+         return false;
+       }
+       ```
+     - `SqlResult` zero-rows fix: `const emptyResult = rows.length === 0 && typeof value.error !== "string";` renders "No rows matched." inline instead of a disclosure
+     - **`toolName: _toolName` at line ~1749 is still discarded** — the identified root cause of the collision class
+
+   - **`packages/owletto/src/mcp-apps/interaction/result-view.collapse-matrix.test.tsx`** — added `expectPeek`, `openThinResult()`, changed `getAllByRole`→`queryAllByRole`
+
+   - **`packages/owletto/src/mcp-apps/review/main.tsx`** — added `ResultTier = 1|2|3|4`, `PRIORITY_TOOLS`, `TIER_LABEL`, `groupedCases`; tagged all 25 cases; added 6 new cases: `declared-run-sdk`, `declared-query-sdk`, `sql-error`, `sql-zero-rows`, `memory-no-match`, `thin-run-sdk`
+
+   - **Artifact** at https://claude.ai/code/artifact/04f3f8c7-4e1b-42c0-af83-5b7c26bf9d52 — interactive 4-variation comparison + prod data table + three-systems diagram + collision table + consolidation plan
+
+4. **Errors and fixes:**
+
+   - **Empty `@media` in a CSS selector list** in the artifact — removed before publishing.
+   - **`note: "short"` promoted to a headline** — tests caught it; added `readsAsSentence` requiring ≥8 chars and a word boundary. Fixed 2 of 6 failing tests without touching their expectations.
+   - **Biome `check:fix` reformatted 4 untouched files** (`host.tsx`, `openai-compat.ts/.test.ts`, `json-template-view.tsx`) plus 133 lines of import churn in `result-view.tsx`. Reverted the 4 via `git checkout --` and restored `result-view.tsx` from backup. Verified owletto CI runs `biome lint` (passes both ways), not a format check.
+   - **`getAllByRole("button")` throws on zero matches** once tier 4 removed all buttons — switched to `queryAllByRole`.
+   - **My Python removal script over-matched** because a comment line (`// ── Per-tool views…`) sat between cases, breaking the `(?=\n\t\{|\n\];)` lookahead — it silently deleted `save-memory-receipt` along with the two intended probes. **Caught by diffing (`git diff | grep -o 'id: "…"'`) rather than trusting the script**, then restored.
+   - **`cd` did not persist** between Bash calls (cwd resets to main checkout) — used absolute paths.
+   - **Server integration test cannot run locally** (`@lobu/pgvector-embedded` unresolved) — deferred to the remote gate, stated explicitly rather than claimed green.
+   - **User feedback that changed my approach:**
+     - *"i don't see why you have this many new lines"* → produced an honest breakdown and found/removed a 3rd duplicate of the disclosure pattern.
+     - *"still shows the sdk discovery"* → verified headlessly instead of assuming; found I'd left a stale label AND added a duplicate case.
+     - *"it doesn't seem like useful indeed"* → dumped real rendered text, found the empty-collection disclosure defect, and conceded that no renderer can make a semantically empty shape useful.
+     - *"it feels a bit hard to follow"* → stopped implementing and ran a structured design interview.
+   - **Self-corrections I made:** the artifact originally said merge the Owletto PR first — corrected after reading `feedback_merge_owletto_pr_last_not_first.md`; and I retracted my "variation D = new `present` envelope" recommendation as it would be a fourth card language.
+
+5. **Problem Solving:**
+
+   Solved: identified the v11→v12 cache-bump requirement the handoff missed; measured prod to ground every decision; found and fixed the `save_memory` "No event payload." bug; removed `search_sdk`'s needless widget; fixed disclosures that open on nothing (both empty collections and SQL zero-rows); extracted duplicated disclosure state; built and verified tiers 1 and 4; restructured the harness into a decision surface grouped by the 5 priority tools.
+
+   Identified but not fixed: the renderer discards `toolName` and duck-types instead (root cause of 5 latent collisions); `run_sdk`'s 29%-over-10s spinner (user chose to keep sync); `search_memory`'s 6.1s p50.
+
+6. **All user messages:**
+   - "can we plan this properly, you can use html artifact to show me differnt variations how will it look like on chatgpt/claude /tmp/mcp-app-collapse-generic-returns-handoff.md"
+   - "does it even make sense to have search_sdk to use the ui? what's the best ux here rather than just trying to do best effort stuff? when run_sdk is running is the ui being updated properly or for one call we have the ui rendered after the call is done?"
+   - "yes go ahead do those. also let's go through all uis and see if we can make it complete and better"
+   - "run dev server so i can confirm it working end to end as well. i don't see why you have this many new lines"
+   - "still shows the sdk discovery, didn't you get rid of the ui for search_sdk?"
+   - "cleanup make sure no gap, explain why there is 1k more lines and ultrathink if there is a good path to consolidate simplify this architecture and make it user friendly as much as possible. for extension you can use owletto on mac mini"
+   - "i check this for example and it doesn't seem like useful indeed? http://127.0.0.1:4181/mcp-app-harness.html?case=generic-bare-object"
+   - "let's step back and think. does it make more sense to dump the run_sdk calls in there? it feels a bit hard to follow so guide me interview me for the best ux as mcp app"
+   - AskUserQuestion answers: Q1 no selection with note "this and 1 seems intersting to me"; Q2 "The script declares it"; Q3 "Keep sync, perfect the final card"; Q4 "Hold until the above is decided"
+   - "update the http://127.0.0.1:4181/mcp-app-harness.html all cases and we need to confirm and see it working properly. query_sdk, query_sql, run_sdk, save_content, search_content are our proirities no? guide me though how we will show these and the options"
+
+7. **Pending Tasks:**
+   - **Guide the user through the harness** — how the 5 priority tools are shown and what the options are (the explicit, unfinished ask)
+   - Confirm the Q1 interpretation (substance threshold + lead with actions)
+   - Decide the tier-1 action vocabulary (links only vs. tool-calling buttons)
+   - Decide whether the peek rule survives in tier 2
+   - Decide the fate of PR #812 (hold vs. trim to bug fixes — I recommended trimming)
+   - UI proof capture via Owletto on the mac mini → artifact → `ARTIFACT=<url> make ui-review`
+   - Parent PR (pointer + search_sdk removal + v12) → `make pre-pr-remote`
+   - Tool-name dispatch consolidation (deletes the collision class)
+
+8. **Current Work:**
+
+   I had just completed building and verifying the four-tier model in the harness. The final verification dump confirmed all tiers render correctly:
+   ```
+   ### T1 declared-run-sdk
+   Completed4 SDK calls · 2410 msRenewal sweep completeAccounts REDACTED run in Lobu
+   ### T4 thin-run-sdk
+   Completed3 SDK calls · 640 ms▸3 fields
+   ### T2 sql-error
+   relation "informaton_schema.tables" does not exist — …▸Executed query · 0 rows · 3 ms
+   ### T2 memory-no-match
+   No entity found for this search.No saved memory matched "quarterly board deck"…
+   ```
+   The zero-rows fix verified as `No rows matched. 0 rows · 8 ms`. All 170 tests pass, tsc clean. Committed locally via `git commit --amend --no-edit`, **deliberately not pushed** because the user said PR #812 holds.
+
+   Vite harness is running at http://127.0.0.1:4181/mcp-app-harness.html (background task `bv78ad4ec`).
+
+9. **Optional Next Step:**
+
+   Deliver the guided walkthrough the user asked for — the unfinished half of *"update the http://127.0.0.1:4181/mcp-app-harness.html all cases and we need to confirm and see it working properly… guide me though how we will show these and the options"*.
+
+   Specifically: present the tool×tier matrix now live in the harness (run_sdk / query_sql / query_sdk / search_memory / save_memory, each with tier badges T1–T4 in the grouped nav), give the URLs for the 6 new cases (`declared-run-sdk`, `declared-query-sdk`, `sql-error`, `sql-zero-rows`, `memory-no-match`, `thin-run-sdk`), report the new zero-rows defect found and fixed, and put the remaining open decisions to the user — the tier-1 action vocabulary, whether the peek survives, and confirmation of the Q1 reading ("this and 1 seems intersting to me" → substance threshold + lead with actions). No further code changes should start until the user responds, since they said "Hold until the above is decided."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

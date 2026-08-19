@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bona2qix9</task-id>
+<tool-use-id>toolu_01YDJkj4LhSVk5khZ1f5kJgd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bona2qix9.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix via claude/fable" completed (exit code 0)</summary>
+</task-notification>

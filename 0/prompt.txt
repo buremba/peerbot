@@ -1,0 +1,1 @@
+is this gonna simplify the codebase etc? also are we gonna be able to show the charts in a single event that's being written in cases like the user asks for a report for them to see a dashboard and it's embedded in chatgpt

@@ -1,0 +1,1 @@
+ultrathink what's the best way to make the api flexible and not very verbose or complex. we have guardrails permissions and now hooks. i thought we don't need to show the permission ui etc to the usres and these hooks can cover the permission logic possibly and make it flexible by moving it into code

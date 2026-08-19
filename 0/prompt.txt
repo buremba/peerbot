@@ -1,0 +1,1 @@
+you have some ai slop in there, we can't change apis so make it work that way. also make the page interactive so when i click buttons you show the relevant page maybe even scrolling it's fine but i want to be able to follow easily in the ui you built.

@@ -1,0 +1,283 @@
+<task-notification>
+<task-id>afcc47fef02a63e69</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/afcc47fef02a63e69.output</output-file>
+<status>completed</status>
+<summary>Agent "Map skills writers and repo sync" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have the complete picture. Here are the findings.
+
+---
+
+# Skills writer/reader map
+
+## Headline answers
+
+- **There is no repo-sync writer today.** `contentFetchedAt` is a **dead field with zero writers and zero readers** in the live tree. It is a fossil of a removed ClawHub registry integration. Details in §1.3.
+- **There are exactly 3 live writers** (CLI apply, web skill editor, web agent editor form), all funnelling through **one** HTTP route and **one** SQL statement.
+- **`providers` on SkillConfig has zero readers anywhere.** Also dead.
+- **`guardrails` on SkillConfig is a real privilege-escalation surface** and is currently writable by any web-session user with no validation. Details in §2.4.
+
+---
+
+## 1. Every writer of skills_config / skill content
+
+### The single choke point
+
+All writes converge on:
+- **HTTP:** `PATCH /api/:org/agents/:agentId/config` — `/Users/burakemre/Code/lobu/packages/server/src/lobu/agent-routes.ts:1702`, persisting at `:1850` via `configStore.updateSettings(agentId, settingsUpdates)`.
+- **SQL:** `/Users/burakemre/Code/lobu/packages/server/src/lobu/stores/postgres-stores.ts:174` — `skills_config = ${sql.json(settings.skillsConfig ?? { skills: [] })}`, reached via `updateSettings` (`:186`) → `saveSettings` (`:162`).
+
+Note `updateSettings` is a **read-modify-write of the whole row** (`:187-192`), not a column-level patch. Whole-array replacement, no per-skill merge.
+
+**Critical:** `skillsConfig` is **not validated** on that route. The handler validates `guardrailsInline` (`:1714`) and `models` (`:1787`), and rejects legacy model fields (`:1770`). Everything else — including `skillsConfig` — is spread through as `...settingsUpdates` (`:1762`) and written verbatim. There is no `Value.Check(SkillsConfigSchema, ...)` anywhere on the write path.
+
+### 1.1 CLI apply path
+
+**Trigger:** `lobu apply` with `defineAgent({ skills: [...] })`.
+
+**Chain:**
+1. `resolveSkill` — `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/desired-state.ts:394`. Two sources: inline `defineSkill` (`:415`) or `skillFromFile` reading a local `SKILL.md` (`:367-390`), with YAML frontmatter parsed at `:323`.
+2. `skillToConfig` — `desired-state.ts:348-364`. **This is the only place the CLI mints a skill entry**, and it writes exactly five fields:
+   ```
+   repo: `${args.source}/${args.name}`   // "inline/foo" or "file/foo"
+   name, content, enabled: true, [description], [nixPackages]
+   ```
+   It sets **no** `contentFetchedAt`, **no** `providers`, **no** `modelPreference`, **no** `thinkingLevel`, **no** `guardrails`, **no** `system`.
+3. `resolveAgentSkills` — `desired-state.ts:428`, dedupes by name, throws on collision (`:436`).
+4. `mergeAgentDirArtifacts` — `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/map-config.ts:284-306`. Whole-array replace at `:292` (`settings.skillsConfig = { skills: localSkills }`), then unions skill `nixPackages` into `settings.nixConfig` at `:295-303`.
+5. Called from `desired-state.ts:1020-1024`.
+6. Diffed as an opaque `deepEqual` on the whole `skillsConfig` object — `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/diff.ts:331` in `SETTINGS_FIELDS`, compared at `:346`.
+7. PATCHed via `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/client.ts:457-463`.
+
+**Important asymmetry** (`map-config.ts:291`): the assignment is guarded by `if (localSkills.length &gt; 0)`. With **no** declared skills, `skillsConfig` is **absent** from the patch, and `diff.ts:345` skips absent keys (`if (!(field in desired)) continue`). So **`lobu apply` never prunes skills added via the web UI**. Config is not authoritative today.
+
+`skillsConfig` is declared `"post-load"` in the field-policy table at `map-config.ts:46`, meaning the pure mapper deliberately doesn't produce it — the loader does, after file IO.
+
+**Reverse direction (config generation, not a DB writer):** `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/init-from-org/bootstrap.ts:396-410` reads remote `skillsConfig` and emits `skills/&lt;name&gt;/SKILL.md` + `skillFromFile(...)` refs, skipping `system` skills (`:401`). `emitSkillFile` (`:418-429`) round-trips only `name`, `description`, `nixPackages`, `content` — **`guardrails`/`modelPreference`/`thinkingLevel` are silently dropped on `lobu init --from-org`.**
+
+### 1.2 Web app path
+
+Two independent writers.
+
+**(a) Skill editor** — the primary one.
+- `/Users/burakemre/Code/lobu/packages/owletto/src/lib/agent-skill-save.ts:7-13` → `skillRowsToSkillsConfig` at `/Users/burakemre/Code/lobu/packages/owletto/src/components/agents/skill-editor.tsx:41-58`.
+- Driven by `/Users/burakemre/Code/lobu/packages/owletto/src/components/agents/agent-skill-context.tsx`. **Five distinct triggers**, three of which auto-save with no explicit user "Save":
+  - `addSkillFromCatalog` (`:97`) — draft only
+  - `addCustomSkill` (`:110`) — draft only; mints `repo: \`custom/${slug}\`` at `:114`
+  - `reorderSkills` (`:150`) — **auto-saves** at `:160`
+  - `removeSkillAndSave` (`:167`) — auto-saves
+  - `setSkillEnabledAndSave` (`:176`) — auto-saves (the enable/disable toggle)
+  - `saveSkills` (`:190`) — explicit
+- **The field-preservation hazard:** `skill-editor.tsx:46` spreads `...row._original` first, where `_original` is the full server `SkillConfig` captured at `:36`. So the web editor **round-trips and re-persists every field it doesn't model** — including `guardrails`, `modelPreference`, `thinkingLevel`, `providers`, `contentFetchedAt`. It re-writes them but never lets a user *see* or *edit* them in this component.
+- `content` is force-derived at `skill-editor.tsx:44`: `row.content || row.instructions || row.name`. A catalog skill with no content gets its **name** as content. Same at `agent-skill-context.tsx:127`.
+- `system` is derived purely from a **string prefix** on `repo`: `skill-catalog.ts:65` — `system: item.repo.startsWith("system/")`. It's a client-computed, client-submitted boolean; the server never derives or verifies it.
+
+**(b) Agent editor form** — `/Users/burakemre/Code/lobu/packages/owletto/src/components/agents/agent-editor-form.tsx:207`. Sends `skillsConfig: agentConfig.skillsConfig` on **every agent save** (name/identity/soul/models edit). It's a pass-through echo of whatever the GET returned, but it *is* a write, and it's a lost-update risk: it re-persists a stale snapshot from `useAgentConfig` (30s `staleTime`, `agents.ts:579`).
+
+**The web GET/PATCH asymmetry is a silent data-loss bug for the gateway-served view.** `/Users/burakemre/Code/lobu/packages/server/src/gateway/routes/public/agent-config.ts:400-414` strips `integrations`, `modelPreference`, and `thinkingLevel` from every skill in `sanitizeSettingsForResponse`. If a client read from *that* route and echoed it back (as `agent-editor-form.tsx:207` does with its own source), those fields get zeroed. Today owletto reads the un-sanitized `agent-routes.ts:1325` GET (`agents.ts:570`), which returns `{...settings}` raw — so the loss doesn't currently bite, but the two GET routes disagree about the contract.
+
+### 1.3 Repo-sync / fetch path — **does not exist**
+
+`contentFetchedAt` has exactly **three** occurrences in the live tree, all type declarations:
+- `/Users/burakemre/Code/lobu/packages/core/src/contracts/agent-settings.ts:138`
+- `/Users/burakemre/Code/lobu/packages/core/src/api-types.ts:35`
+- a comment at `/Users/burakemre/Code/lobu/packages/owletto/src/lib/api/agents.ts:104`
+
+**Zero writers, zero readers.**
+
+**What `repo` actually is.** It has had three meanings, and all three coexist in production data:
+
+| Prefix | Minted by | Meaning |
+|---|---|---|
+| `inline/&lt;name&gt;`, `file/&lt;name&gt;` | CLI, `desired-state.ts:356` | local `SKILL.md` / inline literal |
+| `bundled/&lt;name&gt;` | server catalog, `/Users/burakemre/Code/lobu/packages/server/src/catalog/generate-defaults.ts:113` | repo's own `skills/*/SKILL.md`, baked at build time |
+| `custom/&lt;slug&gt;` | web, `agent-skill-context.tsx:114` | user-typed in the browser |
+| `system/&lt;name&gt;` | *(legacy data only)* | no live minter; only consumed by `skill-catalog.ts:16,65` and `skill-editor.tsx:28` |
+
+It is **not** a GitHub repo. Today it is a synthetic, source-tagged opaque ID used as the **primary key** for skills across the whole stack (dedupe in `agent-skill-context.tsx:103`, React keys, catalog join key at `skill-editor.tsx:22,25`, URL slug via `/Users/burakemre/Code/lobu/packages/owletto/src/lib/skill-route-key.ts`). There is no uniqueness constraint enforcing that.
+
+**Historical proof of what it was.** Git history shows a real third writer that was removed:
+- `git show 02b3160d2` — a `POST /skills/fetch` OpenAPI route, originally summarised *"Fetch skill metadata from ClawHub"*, taking `repo` (*"ClawHub skill slug (e.g., 'pdf')"*) plus a `refresh` flag, returning `{ repo, name, description, content, fetchedAt }`. The client wrote that response straight into the skill array including `contentFetchedAt: fetched.fetchedAt`.
+- Final removal of the last stub: `b528c160c` ("dead-code removal + helper dedup"), which deleted `fetchSkillContent`.
+- `grep -rn "clawhub\|skills/fetch\|skillFetchRoute" packages/` → **no matches** in the live tree.
+
+**The nearest thing to a repo-sync today** is the bundled catalog, and it is read-only w.r.t. the DB:
+- `generateSkillsManifest` — `generate-defaults.ts:90-125` walks the repo's `skills/` dir, parses `SKILL.md` frontmatter, emits `detail.instructions = body`. **Build time only.**
+- Loaded from `file://` URIs only — `/Users/burakemre/Code/lobu/packages/server/src/catalog/uris.ts:20` explicitly rejects any non-`file:` protocol (`if (parsed.protocol !== "file:") return null`). **No network fetch is possible**, even via `LOBU_CATALOG_URIS`.
+- Surfaced to the browser at `/Users/burakemre/Code/lobu/packages/owletto/src/lib/api/agents.ts:780` (`GET /installed?kinds=skills&amp;include=catalog`), and the **browser** copies `instructions` into `content` (`skill-catalog.ts:56-63`) and PATCHes it. So the catalog→DB copy is a **user-initiated client-side action**, not a server sync job.
+
+There is one more bundled-skill path that never touches `skills_config`: `/Users/burakemre/Code/lobu/packages/server/src/skills/lobu-skill.generated.ts` is a codegen'd string constant served as the `skill://lobu` MCP resource, kept in sync by a test (`/Users/burakemre/Code/lobu/packages/server/src/utils/__tests__/lobu-guidance-sync.test.ts:12`). Separate lane entirely.
+
+### 1.4 Server-side paths — all readers, no writers
+
+Checked exhaustively; none of these write skills:
+- `/Users/burakemre/Code/lobu/packages/server/src/catalog/installed.ts:134-153` — **read-only** projection of `settings.skillsConfig.skills` into catalog `InstalledItem`s.
+- `/Users/burakemre/Code/lobu/packages/server/src/gateway/routes/public/agent-config.ts:283` — read + sanitize.
+- `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/declared-agent-registry.ts:137` — an exhaustiveness projection only; the object is discarded.
+- `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_agents.ts` — the builder-agent MCP tool. Grepped: it touches `name`/`description`/`identity_md`/`default_model` (`:433`) and **never** `skillsConfig`.
+- `/Users/burakemre/Code/lobu/packages/server/src/gateway/routes/public/agents.ts:158` (`saveSettings` on agent create) and `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/core-services.ts:908` (`populateStoreFromAgentConfigs`, in-memory store for the embedded SDK runtime) — neither carries skill data.
+- `deleteSettings` at `postgres-stores.ts:203` resets `skills_config = '{"skills": []}'` — a delete, not a write of content.
+
+**Verdict on §1: exactly three writers, all client-side, all through one route.** No fourth writer exists. The design blocker is resolved: there is no repo-sync to own.
+
+---
+
+## 2. The non-content fields
+
+| Field | Runtime readers | Effect | Escalation risk |
+|---|---|---|---|
+| `providers` | **none** | none — dead field | none (delete it) |
+| `modelPreference` | 1, cosmetic | prompt text only | none |
+| `thinkingLevel` | 1, cosmetic | prompt text only | none |
+| `guardrails` | 5 call sites | **executes LLM judge calls, blocks tool calls** | **yes — real** |
+
+### 2.1 `providers` — dead
+
+Zero readers. Declared at `contracts/agent-settings.ts:140` and `api-types.ts:38`, never read. Nothing consumes it in the worker, gateway, or guardrail planes.
+
+### 2.2 / 2.3 `modelPreference`, `thinkingLevel` — cosmetic only
+
+**Single reader:** `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/instruction-service.ts:93-98`. They are interpolated into a **prompt string**:
+```
+[model: ${skill.modelPreference}]   [thinking: ${skill.thinkingLevel}]
+```
+appended to the skill's summary line (`:99`), under prose that says *"Skills tagged with [model: ...] prefer a specific model — delegate to the corresponding coding agent when available"* (`:110`).
+
+**They do not change model selection.** The actual model resolution is `settings.models` (validated at `agent-routes.ts:1787-1819` against the org's installed providers, with an explicit fail-closed 503 on validation error) and `resolveProviderConfig` (`/Users/burakemre/Code/lobu/packages/server/src/gateway/gateway/index.ts:703`). `skill.modelPreference` is never consulted by either. It's a *hint to the LLM*, honoured only if the model chooses to.
+
+**Escalation risk: low but non-zero — prompt injection, not privilege.** These are unvalidated user strings spliced into the system prompt. `thinkingLevel` is at least union-typed in the schema (`contracts/agent-settings.ts:120-125`), but **the schema is never enforced on the write path**, so a crafted `modelPreference` containing newlines and markdown could inject arbitrary system-prompt text. That risk already exists via `content`/`description` though, so it's not new.
+
+`agent-config.ts:408-409` strips both from that GET response — evidence someone already considered them non-public.
+
+### 2.4 `guardrails` — the real problem
+
+**Readers — 5 call sites, all via `resolveAgentGuardrails`** (`/Users/burakemre/Code/lobu/packages/server/src/gateway/guardrails/aggregator.ts:88`, skill handling at `:121-132`, materialization at `:213-258`):
+1. `/Users/burakemre/Code/lobu/packages/server/src/gateway/orchestration/message-consumer.ts:616` — input stage, every inbound message
+2. `/Users/burakemre/Code/lobu/packages/server/src/gateway/guardrails/output-scan.ts:75` — output scan
+3. `output-scan.ts:174` — withhold-stream decision
+4. `output-scan.ts:217` — suggest-followups config
+5. `/Users/burakemre/Code/lobu/packages/server/src/gateway/auth/mcp/proxy.ts:457` — **pre-tool gate on every `tools/call`**
+
+**What it changes.** Two arms (`contracts/agent-settings.ts:119-127`):
+- `kind: "builtin"` — resolves a registered guardrail by name (`aggregator.ts:216-227`); unknown names are logged + skipped.
+- `kind: "judge"` — `aggregator.ts:233-245` calls `createJudgeGuardrail("pre-tool", entry.policy, { name, tools, model: entry.model })`. At runtime (`/Users/burakemre/Code/lobu/packages/server/src/gateway/guardrails/judge-factory.ts:111`) this makes a **real LLM call**: `judge.decide(policy, text, { model: options.model })`, with the user's `policy` string as the judge prompt and the user's `model` string as the model. `tripped: true` **blocks the tool call**.
+
+**Answer to the privilege-escalation question: yes, concretely, and it is already true today.**
+
+Moving `guardrails` into a user-authorable entity row would let a non-admin:
+
+1. **Disable a pre-tool guardrail by name collision.** Dedup at `aggregator.ts:127-130` is `if (!seen["pre-tool"].has(g.name))` — first-write-wins. Agent operator entries are inserted first (`:108-119`) so they dominate *today*. But a `kind: "builtin"` skill entry naming an operator guardrail is a no-op-shaped shadow, and any reordering of that loop silently flips the precedence. The safety property rests entirely on loop order in one function, with no test asserting the ordering is load-bearing beyond the comment at `:80-81`.
+
+2. **Neuter a judge by narrowing `tools`.** `judge-factory.ts:89-92` builds `toolFilter` from `entry.tools`, and `:98-103` returns `{ tripped: false }` for any tool not in the set. A user-authored skill with `tools: ["noop"]` produces a guardrail that never fires. And because `tools` is part of the name hash (`aggregator.ts:240`, `inlineJudgeHash(policy, tools)`), a re-narrowed copy gets a **different name**, so it does *not* collide with — and therefore does not displace — the strict one. That's the safe direction. The unsafe direction is a user simply attaching a permissive judge that runs *alongside*, adding latency and LLM spend.
+
+3. **Pick an arbitrary judge model.** `entry.model` flows unvalidated: `aggregator.ts:246` → `judge-factory.ts:111` → `/Users/burakemre/Code/lobu/packages/server/src/gateway/proxy/egress-judge/judge-runner.ts:147,180` (`input.model ?? this.defaultModel`). **This bypasses the `models` allow-list entirely.** Compare: `agent-routes.ts:1787-1819` goes to great lengths to validate `settings.models` against the org's providers and fail-closed on a lookup error, precisely because *"the `models` list is an access gate"*. `skill.guardrails["pre-tool"][].model` is the same capability with **none** of that validation. A user could point it at an expensive model, a model the org hasn't provisioned, or a weak model that rubber-stamps.
+
+4. **Free-form LLM prompt with cost + a bypass path.** `policy` is an unvalidated string invoked on **every tool call**. A policy of *"always allow"* on a guardrail whose name shadows a strict one is a direct bypass; a very long policy is a DoS/cost vector.
+
+**The asymmetry that makes this urgent — this is the finding to act on.** The *agent-level* equivalent, `guardrailsInline`, is validated at write time:
+- shape validation: `agent-routes.ts:1714-1723` (`validateGuardrailsInline`, rejects invalid `stage`, missing name/policy)
+- judge-model requirement: `agent-routes.ts:1727-1755` — an explicit `guardrail_model_required` 400 when `EGRESS_JUDGE_MODEL` is unset
+
+**`skillsConfig[].guardrails` gets *none* of that**, on the same route, in the same request body. So a user can express a judge guardrail through the skills field that would be **rejected** if expressed through `guardrailsInline`. The aggregator even has a defensive comment about this class of problem at `:143-146` ("*older rows or out-of-band writes*"). `guardrailsInline` is also correctly marked `"unsupported"` in the CLI (`map-config.ts:52`) — i.e. deliberately not user-authorable from config — while `skillsConfig` is `"post-load"`, i.e. fully user-authorable.
+
+Today the exposure is bounded because the web UI has no editor for `skill.guardrails` — but nothing *prevents* it: the API accepts it, `skill-editor.tsx:46`'s `...row._original` faithfully preserves it, and any user can hand-craft the PATCH. `requireSessionOrAdminPat` (`agent-routes.ts:184-210`) allows **any web session**; admin scope is only required for PAT/OAuth callers.
+
+**Recommendation:** `guardrails` (and `modelPreference`/`thinkingLevel`) are execution config and should **not** move to a user-authorable `$skill` entity row. Either keep them operator-owned on the agent, or gate them behind the same validation `guardrailsInline` already gets. `providers` should just be deleted.
+
+---
+
+## 3. The runtime contract
+
+**No — `.skills/` is not the only path. There are two, and they carry different data.**
+
+### Path A — filesystem materialization
+
+`/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-runner.ts:675-714`:
+- `.skills/` root created at `:677-678`
+- **stale-dir GC** at `:680-698`: any directory not in the incoming name set is `rm -rf`'d. So disabling a skill in the web UI deletes it from the workspace on next session.
+- name sanitized: `path.basename()` at `:701`, then `/^[a-zA-Z0-9._-]+$/` at `:703` (skip + warn on fail)
+- write: `:709` — `fs.writeFile(path.join(skillDir, "SKILL.md"), skill.content, "utf-8")`
+
+Fed by `context.skillsConfig`, built at `/Users/burakemre/Code/lobu/packages/server/src/gateway/gateway/index.ts:716-723`:
+```
+skillsConfig = skills.filter((s) =&gt; s.enabled &amp;&amp; s.content)
+                     .map((s) =&gt; ({ name: s.name, content: s.content! }));
+```
+**Only `{name, content}` crosses to the worker.** Carried through `/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-context.ts:62,82,388`.
+
+### Path B — system-prompt injection
+
+`instruction-service.ts` (the ~34 references) is a **`SkillsInstructionProvider`** — an `InstructionProvider` at priority 15 (`:34-36`). It:
+1. reads `settings.skillsConfig.skills` (`:76`) and filters `s.enabled &amp;&amp; s.content` (`:77`)
+2. **fails closed cross-tenant**: `:46-54` returns generic text if `orgScoped === false`, with the comment *"an id-only read of a shared id would leak another org's skills"*
+3. builds a **progressive-disclosure index** (`:86-102`) — deliberately *not* full content, "to reduce prompt size" (`:88`). Per skill, one line: `- **name** - description (\`repo\`) [model: x] [thinking: y]`, plus an indented `instructions` line if present (`:100-102`)
+4. wraps it (`:105-116`) with *"read the full skill instructions before using it"* and `cat .skills/*/SKILL.md`
+5. falls back to a generic blurb (`:118-123`) when there are no skills or the load throws (`:79-82`)
+
+Assembled at `:333-337`, returned as `skillsInstructions` (`:363`), passed through `gateway/index.ts:725,736`, and **concatenated into `gatewayInstructions`** at `/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-context.ts:364-374`.
+
+### The contract, precisely
+
+| | Path A (`.skills/`) | Path B (prompt) |
+|---|---|---|
+| Carries | `name`, **full `content`** | `name`, `description`, `repo`, `instructions`, `modelPreference`, `thinkingLevel` |
+| Not carried | everything else | `content` |
+| Filter | `enabled &amp;&amp; content` | `enabled &amp;&amp; content` |
+
+**`instructions` and `content` are different fields** — `instructions` is the short prompt-line summary, `content` is the `SKILL.md` body. The web conflates them (`skill-editor.tsx:44`: `content = row.content \|\| row.instructions \|\| row.name`); the CLI never sets `instructions` at all (`desired-state.ts:355-363`), so CLI-authored skills show a bare line with no `→` summary.
+
+**Third, non-prompt consumer:** `nixPackages` drives sandbox provisioning at `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/platform-helpers.ts:108-120`. The comment at `:100-106` documents exactly the split you're investigating: *"CLI apply bakes the skill union at apply time into `nixConfig`"* vs *"skills enabled via the UI/catalog write only `skills_config`, so nothing recomputes `nixConfig`"* — two writers, two different provisioning routes, reconciled defensively at read time.
+
+**So a skill is read by four planes:** worker FS, system prompt, guardrail aggregator, and nix provisioning. Any `$skill` entity migration must serve all four.
+
+---
+
+## 4. What breaks if `defineAgent({ skills })` is removed
+
+### Public API surface (breaking)
+- `/Users/burakemre/Code/lobu/packages/cli/src/config/define.ts:556-557` — the `skills` field on `defineAgent`
+- `define.ts:622` — `defineSkill()` export
+- `define.ts:633` — `skillFromFile()` export
+
+Both are documented public exports (also in the shipped `packages/cli/dist/config/define.d.ts:450,477,500,511`), so this is a **semver-major** change for the CLI config API.
+
+### Implementation to delete
+- `desired-state.ts:302-441` — `SkillFrontmatter`, `parseSkillFrontmatter`, `skillToConfig`, `readSkillFile`, `resolveSkill`, `resolveAgentSkills` (~140 lines)
+- `desired-state.ts:1012-1024` — the loader call site
+- `map-config.ts:284-306` — `mergeAgentDirArtifacts`'s skill half **plus the nix-union at `:295-303`**. ⚠️ Deleting this silently drops skill nix packages from `nixConfig`. `platform-helpers.ts:108` recomputes them at read time from `skills_config`, so behavior *probably* survives — but there's a test asserting the apply-time union (below) that will fail, and this needs an explicit decision.
+- `bootstrap.ts:396-429` — `lobu init --from-org` skill emission + `emitSkillFile`; `skillFromFile` import registration at `:258,409`
+- `init.ts:732-736` — scaffolds `skills/` + `.gitkeep` dirs
+- Compile-time guards: `map-config.ts:46` (`skillsConfig: "post-load"`) and `map-config.ts:417` (`_exhaustive` projection). These are `satisfies`-checked against `AgentSettingsStoredSchema` (`map-config.ts:26-57`) — **you cannot just delete the entry**, you must re-classify it as `"unsupported"` or remove `skillsConfig` from the stored schema. Same for `declared-agent-registry.ts:137`.
+- `diff.ts:331` — remove `skillsConfig` from `SETTINGS_FIELDS`
+
+### Tests that break
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/__tests__/load-config.test.ts` — **5 tests**: `:195` (agent-dir SKILL.md), `:233` (inline `defineSkill`), `:287` (skill shared by two agents), `:323` (duplicate-name rejection), `:338` (missing SKILL.md error)
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/__tests__/map-config.test.ts` — **3 tests**: `:1219` ("sets prompt markdown and skillsConfig"), `:1233` ("preserves agent network; unions skill nix packages"), `:1257` ("no markdown / no skills leaves settings untouched")
+- `/Users/burakemre/Code/lobu/packages/server/src/gateway/__tests__/platform-helpers-nix-union.test.ts` — covers the read-time nix union; may need updating depending on the `map-config.ts:295` decision
+
+### Example configs that break (shipped, user-facing)
+- `/Users/burakemre/Code/lobu/examples/lobu-crm/lobu.config.ts:25` — `skills: [skillFromFile("./skills/crm-ops")]` (documented in `examples/lobu-crm/README.md:17`)
+- `/Users/burakemre/Code/lobu/examples/office-bot/lobu.config.ts:21` — `skills: [skillFromFile("./skills/deliveroo-order")]`
+
+### Migration path — **partially exists, and it is lossy**
+
+There is a path in principle: `lobu init --from-org` already **generates** `SKILL.md` files from remote `skillsConfig` (`bootstrap.ts:396-410`), so the file layout is established and round-trippable.
+
+But three concrete problems:
+
+1. **No reverse migration.** Nothing reads existing `skills/*/SKILL.md` and creates `$skill` entity rows. `--from-org` goes DB→files; you'd need files→entities, and it doesn't exist.
+
+2. **`--from-org` is already lossy** (`emitSkillFile`, `bootstrap.ts:418-429`): it emits only `name`, `description`, `nixPackages`, `content`. `guardrails`, `modelPreference`, `thinkingLevel`, `providers`, `system`, `enabled` are **all dropped**. If you use it as the migration reference, you silently drop the execution config discussed in §2.
+
+3. **Apply is non-destructive today, which is the escape hatch.** Because `map-config.ts:291` skips the assignment when `localSkills` is empty, removing `skills:` from a user's config does **not** delete their skills — the DB keeps them and the runtime keeps serving them. So a phased deprecation is genuinely safe: ship the `$skill` entity, deprecate `defineAgent({ skills })` with a warning, and existing users' skills keep working through the web/entity path until they migrate. The failure mode is silent divergence (config says one thing, DB another), not data loss.
+
+---
+
+## Ambiguities — flagging rather than guessing
+
+- **Is `contentFetchedAt` intended to come back?** I can only confirm it currently has no writer and that its historical writer was ClawHub-specific. Whether the field was retained deliberately (planned re-introduction of a registry) or by oversight during the `agent-settings.ts` schema consolidation (`46657b045`) is not determinable from the code.
+- **The `repo` uniqueness invariant is assumed, never enforced.** Every layer keys on it (dedupe, React keys, catalog join, URL slugs), but there's no DB constraint and no server-side check. Two skills with the same `repo` but different `name` would produce undefined behavior in `agent-skill-context.tsx:103` vs `desired-state.ts:433` (which dedupes by **name**, not repo — the two layers disagree on the key).
+- **Whether the aggregator's agent-wins-over-skill ordering is a deliberate security control** or an incidental property of loop order. The comment at `aggregator.ts:80-81` says *"operator intent dominates"*, suggesting deliberate, but I found no test asserting it.</result>
+<usage><subagent_tokens>114759</subagent_tokens><tool_uses>81</tool_uses><duration_ms>386167</duration_ms></usage>
+</task-notification>

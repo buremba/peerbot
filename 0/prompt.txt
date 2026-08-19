@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b8f5o2khz</task-id>
+<summary>Monitor event: "make review verdict"</summary>
+<event>verdict: bug_free 86, simplicity 84, slop 0, bugs 0, 0 blockers, risk medium</event>
+</task-notification>

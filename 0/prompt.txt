@@ -1,0 +1,1 @@
+skills show up under agents seperately why? isn't skills page folded into the behavior page. i see sources there but we used to have goal and the user can do @ and reference which we add to the sources automatically, is that deleted?

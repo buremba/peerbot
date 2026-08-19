@@ -1,0 +1,194 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The session began as an audit of the `buremba` prod org and evolved into a systematic repair effort. The user's requests, in order:
+
+1. **Audit**: "check buremba org and all data, tell me if everything looks good and everything is building beatifgully. i want to see approval flows, some recent conversations in the sidebar from that user"
+2. **Make things work**: "i want all of them to work and generate things and be actually useful"
+3. **Clarify**: "what's bu7emba?"
+4. **Iterate operationally**: "can you actually iterate on the data being collected, produce some windows and let's make all of them working one by one. ah yes my twitter is bu7emba and mac mini timelie etc all needs to be connecting"
+5. **Challenge a wrong diagnosis**: "it's already autheed no, is there a bug?"
+6. **Delegate + teach**: "you can fix it properly test e2e and make sure it works. but launch a teammate to do it so we don't get distracted here. now how can you test the behaviors end to end"
+7. **Plan**: "let's plan all properly" → then "ask again", "do the best nxt actions", "and fix issues"
+8. **Current**: "google calendar send me the link so i can login"
+
+The through-line intent: Behaviors report `status: completed` while producing nothing, and nothing surfaces the failure. The user wants them actually generating useful output, wants the Mac/data collection connected, and wants proper fixes (not workarounds) verified end-to-end.
+
+## 2. Key Technical Concepts
+
+- **Lobu Behaviors** run on **windows**; `computePendingWindow` (`packages/server/src/utils/window-utils.ts`) chains off the last window's `window_start` and clamps to the current period. No hourly granularity — an hourly cron gets a DAILY window.
+- **`canvas_windows`** table is ground truth for behavior output: `content_analyzed`, `extracted_data`, `run_id`. Errors hide in `extracted_data->'run_metadata'->>'error'`, NOT `runs.error_message`.
+- **`lobu apply`** is a declarative config→prod sync that is a *blind overwrite* with no drift detection.
+- **Device workers**: Owletto Mac app + Chrome extension; `worker_claim_timeout` means the device is gone, not a connector bug.
+- **Notifications are events**: no notifications table (dropped by `20260513200000_notifications_as_events.sql`); state spans `events` + `notification_targets` + `runs`, joined at read time.
+- **Entity resolution**: `x-lobu-resolution` rules on `entity_types.metadata_schema`; `discovery.ts` unions candidates only on identical normalized keys.
+- **Evals program** (#2564): `runs.outcome` taxonomy (PR 1 merged as #2566, squash `b0198396`), capture mode (PR 2, unbuilt).
+- MCP tools: `query_sql` (table allowlist), `query_sdk` (read), `run_sdk` (write), `search_sdk`.
+- Gates: `make pre-pr`, `make review-fix`, `make review`, `make ui-review`, `make task-setup NAME=<slug>`.
+
+## 3. Files and Code Sections
+
+**`examples/personal-agent/lobu.config.ts:1041`** — THE bu7emba bug. Changed in worktree `voice-profile-handle` (PR #2568):
+```
+lower(coalesce(metadata->>'author_handle','')) = 'buremba'
+→ lower(coalesce(metadata->>'author_handle','')) = 'bu7emba'
+```
+Red: 0 rows. Green: 12 rows. `bu7emba` has 24 tweets in 21 days; `buremba` never appeared as an author_handle. Also relevant: `client.ts:661-665` rebuild erases `x-lobu-resolution`.
+
+**`packages/server/src/tools/admin/manage_behaviors/list.ts:57`** — selects `i.last_fired_at`, never `last_run_completed_at`. Root cause of the wrong Behaviors-page chip.
+
+**`packages/owletto/src/components/behaviors/behaviors-page.tsx:97,196`**:
+```tsx
+const text = lastFiredAt ? `Ran ${formatTimeAgo(lastFiredAt)}` : nextRunAt ? `Next run ...` : "Never run";
+...
+<LastRunChip lastFiredAt={record.last_fired_at ?? null} nextRunAt={record.next_run_at ?? null} />
+```
+
+**`packages/server/src/gateway/services/agent-thread-list.ts:283`** — the SIDEBAR correctly reads `last_run_completed_at`, proving the right value is reachable.
+
+**`packages/server/src/utils/table-schema.ts:494`** — documents `last_run_completed_at` as "what the listing orders by".
+
+**`packages/owletto/apps/mac/Owletto/AppState.swift:~1590`** — the terminal latch:
+```swift
+} catch SyncDispatcher.CycleError.credentialsInvalid {
+    Log.error(.sync, "credentials invalid, dropping back to connection card")
+    stopAutoPoll()
+    credentials = nil
+    ...
+    sessionExpired = true
+```
+`:~2422` — 401 → `refreshSession()` (shells out to `lobu whoami --json`) → retry once → `credentialsInvalid`.
+`:~124-130` — `currentContextName` refreshed only "on launch, on account-row expansion, and after any local edit".
+
+**`packages/cli/src/internal/credentials.ts:120`** — teammate's finding: `workerToken = creds.localWorkerToken ?? token`, and `LobuCLI.mapWhoami` prefers `workerToken`. The Mac sent a loopback-only device PAT to prod.
+
+**`~/Library/Logs/Owletto/owletto.log`** (last lines, unchanged for 23h):
+```
+2026-08-06T01:25:24.510Z [ERROR] [sync] reconcileFolderFeeds failed: Worker /api/workers/me/feeds failed (401): {"error":"invalid_token",...}
+2026-08-06T01:25:29.867Z [ERROR] [sync] credentials invalid, dropping back to connection card
+2026-08-06T02:12:27.659Z [INFO] [app] launch version=0.1.0 build=1 pid=1220
+2026-08-06T02:12:33.534Z [INFO] [worker] capabilities=[local_directory, os.shell, reminders, whatsapp_local] context=lobu
+2026-08-06T02:12:35.612Z [ERROR] [sync] credentials invalid, dropping back to connection card
+```
+
+**`~/.config/lobu/credentials.json`** — context classification: `prod` has `email: emrekabakci@gmail.com`, `userId: 8a2D2Yb57odFHO2PldhD6n392Cf6456B`, `refreshToken: yes`. `lobu` has `email: install@buraks-macbook-pro.local`, no refreshToken. `v146` has neither.
+
+**`packages/server/src/notifications/service.ts:556-609`** — the orphan-producing LEFT JOINs (no filter drops a notification when the chain breaks).
+
+**`packages/server/src/tools/admin/manage_connections/handlers/crud.ts:2027-2081`** — cancels pending runs only via `feed_id`, but approval runs have `feed_id IS NULL`.
+
+**`packages/server/src/scheduled/check-stalled-executions.ts:391-399`** — hard-DELETEs runs >30d with NO `run_type` filter; `events_run_id_fkey` is `ON DELETE SET NULL`.
+
+**`packages/server/src/entity-resolution/policy.ts:73-78`** — `DEFAULT_PERSON_RESOLUTION_RULES`, all `onMatch: "review"`, only email/emails/phone/phones. `name_key` is not a rule field anywhere.
+
+**`packages/cli/src/commands/_lib/apply/client.ts:661-665`**:
+```ts
+payload.metadata_schema = { type: "object", properties: properties ?? {}, ...(required ? {required} : {}) };
+```
+
+**`/Users/burakemre/.claude/plans/tranquil-swinging-book.md`** — the approved plan (P0 through P4).
+
+**Memory files written/updated:**
+- `reference_x_handle_is_bu7emba_not_buremba.md` — added the REGRESSION section
+- `project_macbook_owletto_worker_signed_out.md` — created, then rewritten with the CLI-context root cause
+
+## 4. Errors and Fixes
+
+- **Wrong initial diagnosis ("re-authenticate the Owletto app")**. User pushed back: "it's already autheed no, is there a bug?" I re-investigated per the standing instruction and found the real cause (ambient global CLI context / loopback PAT sent to prod). I acknowledged the error plainly.
+- **`log` shadowed by a zsh function** — my `log show ... 2>/dev/null` returned 0 lines, which I nearly read as "no logs". My own memory `reference_mac_app_logging_and_log_shadowing.md` documented this exact trap. Fixed by reading `~/Library/Logs/Owletto/owletto.log` directly.
+- **Piped `make` exit code false green** — `make review 2>&1 | tail` exited 0 while the reviewer had FAILED. Grepped for the verdict marker instead; the codex reviewer is known-broken → `REVIEWER_CLI=claude make review` (verdict: bug_free 88, simplicity 100, 0 bugs, 0 blockers).
+- **`query_sql` table allowlist** — `information_schema`, `device_workers`, `runs`, `watchers` are not queryable; used `query_sdk` → `client.query` instead.
+- **`OutputSizeExceeded` in `query_sdk`** — the SDK call trace records full intermediate results, so multi-call read scripts blow the 1MB cap even when returning a tiny value. Fixed by narrowing filters.
+- **Prod 503 outage mid-session** — `/api/health` returned 503 on all attempts; `kubectl` showed the deployment scaled to 0. Diagnosed as a Flux HelmRelease upgrade doing a zero-overlap cutover. Recovered in ~10s on revision `b0198396`.
+- **`?needs_attention=1` was a wrong URL guess** — fell back to "All activity"; corrected by clicking the actual tab (`?lens=attention`).
+- **Over-claimed Behavior 71 was broken** — corrected: it emits 2–7 signal events every hour; `content_analyzed: 0` is a bookkeeping artifact.
+
+## 5. Problem Solving
+
+**Solved:**
+- bu7emba handle bug (PR #2568 + prod version 7 via `behaviors.createVersion`)
+- Revived Gmail (40 events), Spotify (50), Reminders (8) — all had NO cron; gave them staggered schedules (`12 */2`, `22 */2`, `32 */3`, `42 8`)
+- Behavior 5 now generates — produced 3 real tasks ("Buy peanut butter", "Buy yoghurt", "Register for the 'Coding in Flow' event")
+- Behavior 20 walked forward from Jul 19 to the current week (3 triggers)
+- Mac auth root cause found; CLI context restored to `prod` (`orgSlug: buremba` confirmed)
+
+**Diagnosed, not yet fixed:**
+- Behaviors page last-run (agent running)
+- Orphaned approvals (8 of 12; connection 397 soft-deleted 2026-08-05 is the origin)
+- Behavior 20 emits nothing (no `x-lobu-resolution` rules; `name_key` not a rule field)
+- `lobu apply` erasure (agent running)
+
+**Key insight (answer to "what's the long term best way"):** nothing owns Behavior definitions. Three times in one session one side silently overwrote the other. The durable fix is round-trip fidelity + drift detection (a missing `terraform plan` step), not reconciling one Behavior.
+
+## 6. All User Messages
+
+1. "check buremba org and all data, tell me if everything looks good and everything is building beatifgully. i want to see approval flows, some recent conversations in the sidebar from that user"
+2. "i want all of them to work and generate things and be actually useful"
+3. "what's bu7emba?"
+4. "can you actually iterate on the data being collected, produce some windows and let's make all of them working one by one. ah yes my twitter is bu7emba and mac mini timelie etc all needs to be connecting"
+5. "it's already autheed no, is there a bug?"
+6. "you can fix it properly test e2e and make sure it works. but launch a teammate to do it so we don't get distracted here. now how can you test the behaviors end to end"
+7. "let's plan all properly"
+8. "ask again"
+9. "do the best nxt actions"
+10. "and fix issues"
+11. "google calendar send me the link so i can login"
+
+Plus AskUserQuestion answers: "Add the field (Recommended)", "Fix apply-erasure first, then rules (Recommended)", "what's the long term best way", "After-only, no re-break (Recommended)".
+
+**Standing constraints (from CLAUDE.md/AGENTS.md, must remain in effect):** Never write to `~/Code/lobu` directly — always `make task-setup`. Never enter credentials/passwords — the user performs auth flows. Never hot-swap the Owletto app remotely. Never bulk-delete prod `organization` rows. `events` is append-only. Workers never receive real credentials. No Co-Authored-By / "Generated with Claude Code" in commits. Always show the real `git diff`, never a prose summary. End work with a confidence score + 2-4 next actions. In plan mode, output only the plan file path, not the contents.
+
+## 7. Pending Tasks
+
+Per the approved plan (`/Users/burakemre/.claude/plans/tranquil-swinging-book.md`):
+- **P0.1** Clear merge queue (`check-drift` fails on every PR; owletto#741 `3da851cf` needs a parent bump), then merge #2568
+- **P0.2** Mac worker auth (agent running)
+- **P1.1** Behaviors last-run field (agent running, APPROVED)
+- **P1.2** Orphaned approvals — traced, deliberately not started
+- **P2.1a** `lobu apply` round-trip fidelity (agent running); **P2.1b** drift detection — not started
+- **P2.2** Dedupe rules for `person` — gated on P2.1a
+- **P2.3** Voice profile: restore `authored_archive` + reconcile config to prod's event-output shape — gated on P2.1a
+- **P3.1** Behavior e2e harness; **P3.2** Capture mode (evals PR 2)
+- **P4** Cleanup: 6 duplicate Revolut `transactions` feeds (331, 369–373); 3 zombie runtime devices; prod deploy 503 window
+- **Time-gated**: Behavior 70 cannot re-run until **Mon 2026-08-10 06:40**
+- **User-only**: Revolut sign-in in the paired Chrome
+
+## 8. Current Work
+
+Responding to "google calendar send me the link so i can login".
+
+Before generating the link I checked whether re-consent would even help, and found it likely **won't**: auth profile 91 (`google-calendar-account`, used by connection 418) already has `calendar.readonly` in BOTH `requested_scopes` and `granted_scopes`:
+```
+requested_scopes: ["openid","email","profile","https://www.googleapis.com/auth/calendar.readonly"]
+granted_scopes:  ["https://www.googleapis.com/auth/calendar.readonly", ".../userinfo.email", ".../userinfo.profile", "openid"]
+```
+Yet feed 442 fails with `ACCESS_TOKEN_SCOPE_INSUFFICIENT` on `calendar.v3.Events.List`.
+
+`connections.test({connection_id: 418})` returned:
+```json
+{"status":"ok","message":"Credentials valid","has_token":true,"has_refresh":true,"expires_at":"2026-08-07T00:56:26.943Z"}
+```
+
+`connections.reauthenticate({connection_id: 418})` returned:
+```json
+{"connection_id":418,"auth_profile_slug":"google-calendar-account",
+ "connect_url":"https://app.lobu.ai/connect/REDACTED/oauth/start",
+ "expires_at":"2026-08-07T01:43:04.728Z"}
+```
+
+**Suspicious finding not yet reported to the user:** connection 418 has `auth_profile_id=91` (connector_key `google.calendar`) but `app_auth_profile_id=21`, which is `google-gmail-google-app` with `connector_key: google.gmail`. The Calendar connection is minting tokens through the **Gmail** OAuth app — a plausible explanation for scope-insufficient despite the grant, and something re-consent would NOT fix.
+
+Three agents are running in their own worktrees: Mac context auth (`mac-context-auth`), Behaviors last-run (`behaviors-last-run`), and `lobu apply` schema fidelity (`apply-schema-fidelity`). None has reported yet.
+
+## 9. Optional Next Step
+
+Give the user the connect URL with the caveat that the scope is already granted, so this may not fix it — and flag the Gmail-app/Calendar-connection mismatch as the more likely cause:
+
+> `https://app.lobu.ai/connect/REDACTED/oauth/start` (expires 2026-08-07T01:43 UTC, ~45 min)
+
+Then, after they complete it, verify by triggering feed 442 and checking whether it still returns 403 — and if it does, investigate the `app_auth_profile_id=21` mismatch rather than re-consenting again. This is directly in line with the most recent request ("google calendar send me the link so i can login") and with the standing constraint that I never enter credentials myself.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

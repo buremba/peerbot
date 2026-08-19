@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Focused tests and the MCP bundle gate pass, but ISO timestamp labels no longer match the canonical renderer for viewers whose local date differs from UTC.
+
+Review comment:
+
+- [P2] Format timestamp labels in the viewer's timezone — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-prod-fetch/packages/owletto/src/mcp-apps/interaction/json-template-view.tsx:642-642
+  When a stacked-area row contains an ISO timestamp with an offset, these UTC getters can display a different calendar day from the canonical SPA renderer, which uses local `getMonth()`/`getDate()` in `src/lib/json-renderer/charts/stacked-area-chart.tsx`. For example, `2026-01-01T00:30:00Z` displays as `1/1` for a Pacific-time viewer instead of `12/31`; retain the date-only special case but format timestamp values in the viewer's timezone.
+  </results>
+  </user_action>

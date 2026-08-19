@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:14:57.456Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:15:09.952Z","id":"094a1667","input_tokens":192,"output_tokens":321,"content":[{"type":"tool_use","id":"call_d8b967daf82a43d884653674","name":"send_message","input":{"text":"Sounds good, Sarah! 12:30 works for me. Where are you thinking?"},"result":{"output":"","status":"success"}}]}

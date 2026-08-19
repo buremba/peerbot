@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmaviiyem</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/248c9845-4453-4be5-a7aa-36baff5ca5d5/tasks/bmaviiyem.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for peer PR 2557 to merge" was stopped</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bjbrzziww</task-id>
+<tool-use-id>toolu_012xMNqvAqMM3xtcTCwj9JQm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/bjbrzziww.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on 9b76d2760" completed (exit code 0)</summary>
+</task-notification>

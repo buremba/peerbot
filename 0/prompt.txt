@@ -1,0 +1,11 @@
+<task-notification>
+<task-id>beimdr1ok</task-id>
+<summary>Monitor event: "all required checks on docs PR 2282 after final commit"</summary>
+<event>unit: pass
+format-lint: pass
+integration: pass
+frontend: pass
+migrations: pass
+typecheck: pass
+ALL SETTLED</event>
+</task-notification>

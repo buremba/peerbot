@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bm7je34po</task-id>
+<tool-use-id>toolu_01FpquEf3QbNfTxWTCjqRTf3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bm7je34po.output</output-file>
+<status>completed</status>
+<summary>Background command "make pre-pr-remote &gt; /tmp/prepr-812.log 2&gt;&amp;1; echo "EXIT=$?"; tail -25 /tmp/prepr-812.log" completed (exit code 0)</summary>
+</task-notification>

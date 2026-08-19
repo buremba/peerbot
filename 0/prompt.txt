@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>blj86to5j</task-id>
+<summary>Monitor event: "PR 2715 required checks after blocker fix"</summary>
+<event>2715 frontend: pass</event>
+</task-notification>

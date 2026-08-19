@@ -1,0 +1,1 @@
+ok looks like we should not adopt it at all? for vercel why don't i see the logo etc and i don't have login with vercel?

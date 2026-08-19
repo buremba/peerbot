@@ -1,0 +1,1 @@
+yes rebase. maybe agent responding can clear the emoji etc so it kinda indicates the current status. if acknowledgement is fine it can be silent. the agents will get better at tool calling over time

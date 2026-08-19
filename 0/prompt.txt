@@ -1,0 +1,176 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The user's one and only message was: *"take this session review the work and finish up and then merge when done grok --resume 019fafe0-9423-7e51-8606-bb4ec1d25cfc"*
+
+   Intent: read the referenced grok CLI session (`/Users/burakemre/.grok/sessions/%2FUsers%2Fburakemre%2FCode%2Flobu/019fafe0-9423-7e51-8606-bb4ec1d25cfc/`), review the work it left behind, finish it, and merge it.
+
+   That grok session had produced an **approved plan** (`plan.md`, 325 lines) titled "Finish #2320 thin Skills + Behaviors" with five PRs (A–E) but **zero implementation**. Three prerequisite PRs were already merged: #2324 (strip skill nixPackages), #2327 (kill Handlebars), #2331 (`skills?: string[]` compile-at-apply). So "finish up and merge" = execute PR-A…PR-E.
+
+   Note: no subsequent user messages exist. All later inputs were tool results, system reminders, and automated background-task notifications that explicitly state they are NOT user input and must not be treated as approval.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace, `packages/{core,server,agent-worker,cli,connectors,owletto}`; `owletto` is a git submodule (separate repo `lobu-ai/owletto`)
+   - Issue #2320 "thin Skills + Behaviors": Connections → Agent (who) → Skills (how) → Behaviors (when + optional `skills[]`)
+   - Freeze model: `lobu apply` joins skill bodies in order into `watcher_versions.prompt` (full text, not a ref). No `skill_ref` product.
+   - Behavior-run isolation: signed `WorkerTokenData.source === "watcher-run"` stamped when `session.intent.kind === "behavior_run"`
+   - Progressive skill catalog + `cat .skills/*/SKILL.md` fallback + worker `.skills/` sync
+   - Deployment naming: `generateDeploymentName` = sha256 of `buildCanonicalConversationKey` (includes conversationId) → per-conversation worker process
+   - TypeBox `Type.Object` admits unknown keys by default (so dropping a schema field keeps legacy rows valid)
+   - Source chips: `@[kind:id:label](path)` codec, `PROMPT_REF_TOKEN` regex, `extractSourcesFromPromptTokens`
+   - Gates: `make pre-pr` (build/typecheck/knip/lint/naming), `make review-fix` (unposted fixer), `make review` (posts `pi-review` required status), `make task-setup NAME=<slug>`
+   - Test split: `bun test` for unit (`src/__tests__/unit`, `src/gateway/__tests__`), vitest for integration (needs `DATABASE_URL` with pgvector at `127.0.0.1:5418/lobu_test`)
+   - Mutation testing to validate new tests
+
+3. **Files and Code Sections:**
+
+   **`packages/server/src/gateway/behavior-run-session.ts`** (NEW, PR-A, merged in `18a5f34`)
+   - The single home for the `"watcher-run"` literal shared by producer and consumers; documents why isolation is scoped narrower than "headless" and why the worker cache needs no isolation key.
+   ```ts
+   export const BEHAVIOR_RUN_SOURCE = "watcher-run";
+   ```
+   Doc block covers: the dispatch chain (`intent.kind === "behavior_run"` → `platformMetadata.source` → `buildWorkerTokenClaims` → token), why connector-repair/scheduled-job/internal and ordinary chat are excluded, and: *"a Behavior run opens its own session (`thread: watcher-<runId>`, `forceNew`, see `watchers/automation.ts`), and the deployment name hashes the conversation id — so a run's worker process is never the process that also serves that agent's chat."*
+
+   **`packages/server/src/gateway/gateway/index.ts`** (PR-A)
+   ```ts
+   import { BEHAVIOR_RUN_SOURCE } from "../behavior-run-session.js";
+   // ...in handleSessionContextRequest:
+   // A Behavior run uses version-pinned instructions, so the live library
+   // must not re-enter the turn. Drop both surfaces: the catalog points the
+   // model at `.skills/`, and `skillsConfig` is what the worker syncs there.
+   const behaviorRun = auth.tokenData.source === BEHAVIOR_RUN_SOURCE;
+   let skillsConfig: Array<{ name: string; content: string }> = [];
+   const mcpContext: Record<string, string> = {};
+   if (agentSettings && !behaviorRun) { /* map enabled skills */ }
+   const mergedSkillsInstructions = behaviorRun ? "" : contextData.skillsInstructions || "";
+   ```
+   Log line appends `${behaviorRun ? " (Behavior run — live skill library suppressed)" : ""}`.
+
+   **`packages/server/src/gateway/routes/public/agent.ts`** (PR-A) — producer now uses the constant:
+   ```ts
+   source:
+     session.intent?.kind === "behavior_run"
+       ? BEHAVIOR_RUN_SOURCE
+       : "direct-api",
+   ```
+
+   **`packages/server/src/gateway/platform/unified-thread-consumer.ts`** (PR-A) — `HEADLESS_SOURCES` first entry changed from `"watcher-run"` to `BEHAVIOR_RUN_SOURCE`.
+
+   **`packages/server/src/gateway/__tests__/worker-gateway-session-context.test.ts`** (PR-A) — test consolidated here by review-fix; single test "syncs configured skills for chat but suppresses them for Behavior runs" with a `fetchContext(source?)` helper asserting: chat gets 1 skill + `## Skills`; `watcher-run` gets `[]` + `""`; `connector-repair` still gets the library.
+
+   **`packages/server/src/tools/admin/manage_behaviors/version-actions.ts`** (PR-B, open in #2345)
+   ```ts
+   // 1. `sources` passed → EXPLICIT replacement ([] clears, #2048)
+   // 2. omitted → INHERIT the assignment's stored sources
+   // The instruction text is not a third input. In particular, `lobu apply`
+   // supplies compiled skill bodies as the prompt; chip-shaped prose there must
+   // not add or remove the assignment's sources.
+   const storedSources = normalizeStoredJsonField(watcherRows[0].sources, [] as Array<{name:string;query:string}>);
+   const sources = args.sources !== undefined ? args.sources : storedSources;
+   ```
+   `handleGetVersionDetails` now first reads the assignment:
+   ```ts
+   const watcherRows = await sql`SELECT id, watcher_group_id, sources FROM watchers WHERE id = ${args.behavior_id}`;
+   const groupId = Number(watcherRows[0].watcher_group_id ?? watcherRows[0].id);
+   // version lookup uses ${groupId}
+   // sources: versionSources.length > 0 ? versionSources : normalizeStoredJsonField(watcherRows[0].sources, [])
+   ```
+   Removed the `extractSourcesFromPromptTokens`/`mergePromptSources` import.
+
+   **`packages/server/src/tools/admin/manage_behaviors/crud.ts`** (PR-B) — `handleCreate` KEEPS chip derivation; added comment: *"`create_version` deliberately does NOT derive (see version-actions.ts): on a bump the prompt is compiled skill text, and a skill's prose must not author the Behavior's sources."*
+
+   **`packages/core/src/contracts/tools/manage-behaviors.ts:339`** (PR-B, the pi-review blocker fix) — `sources` description rewritten to:
+   > "...On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input — a Behavior's prompt is usually compiled skill bodies, so @-mention chips inside it neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.)..."
+
+   **`packages/server/src/__tests__/integration/tools/manage-behaviors-source-honesty.test.ts`** (NEW, PR-B) — 2 tests after review-fix consolidation: "keeps sources independent from instruction text" (default content source → skill-chip prompt → plain prompt → explicit replace → `[]` clears → restore → `get_version_details` reports live sources → every listed version fetchable) and "gets group-root versions through an assignment id" (uses `create_from_version` + `createTestEntity`). Fixture: `SKILL_BODY_WITH_CHIP` contains `@[sql:skill_pull:Skill Pull](#sql=SELECT%20id%20FROM%20events)`; `RECENT_QUERY = "SELECT id FROM events ORDER BY occurred_at DESC"`.
+
+   **`packages/server/src/__tests__/integration/watchers/watchers-crud.test.ts`** (PR-B) — two tests rewritten to the new contract: "a version bump does not re-derive sources from the prompt — the caller sends them" and "removing every @-mention chip does not clear sources — `sources: []` does".
+
+   **`packages/server/src/__tests__/integration/tools/manage-behaviors-update-version-fields.test.ts`** (PR-B) — "removes the derived source when the last source token is removed" → "a chip in the prompt does not author sources — only `sources` does".
+
+   **owletto `src/components/agents/skill-config-editors.tsx`** — DELETED (both `StringListEditor` and `SkillCapabilityBadges` lost all callers).
+
+   **owletto files edited for the nix strip (#632):** `agent-skill-context.tsx` (CustomSkillDraft loses `nixPackages`), `agent-skill-detail-form.tsx` (Packages field removed), `agent-skills-create.tsx` (custom-skill Packages field + `customNixPackages` state removed), `skill-editor.tsx` (`nixPackages` off `SkillEditorRow`, build and save), `lib/skill-catalog.ts` (`SkillBadge = "System"`, `skillCapabilityBadges(item: Pick<…,"repo">)` returns `["System"]`/`[]`), `lib/api/agents.ts` (type + `nix_packages` mapping), `lib/skill-catalog.test.ts` (assertion updated).
+
+   **owletto `src/lib/references.ts`** (#633) — added `behaviorSourcesFromPrompt(text, explicit = [])` mirroring the server codec (`SOURCE_KIND_TO_MODE` for feed/connection/connector/channel/metric, `sqlQueryFromPath` for `#sql=`, dedupe by query, `sourceName` slugify + numeric-suffix uniquify).
+
+   **owletto `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx`** (#633) — edit path now:
+   ```ts
+   if (isEditing) {
+     const initialPromptSources = behaviorSourcesFromPrompt(prefill?.prompt ?? "");
+     const editedPromptSources = behaviorSourcesFromPrompt(prompt);
+     if (JSON.stringify(initialPromptSources) !== JSON.stringify(editedPromptSources)) {
+       const initialQueries = new Set(initialPromptSources.map(s => s.query.trim()));
+       const preservedSources = (prefill?.sources ?? []).filter(s => !initialQueries.has(s.query.trim()));
+       sources = behaviorSourcesFromPrompt(prompt, preservedSources);
+     }
+   } else if (prefill?.sources?.length) { sources = prefill.sources; }
+   ```
+
+   **`packages/core/src/contracts/agent-settings.ts`** (PR-D, merged `dcf44fe`) — `nixPackages` removed from `SkillConfigSchema`, replaced by:
+   ```ts
+   // No `nixPackages`: a skill is instruction text, and generic tooling lives on
+   // the agent's `nixConfig` (issue #2320). Stored rows written before the field
+   // was dropped still validate — `Type.Object` admits unknown keys — and every
+   // reader has ignored the value since #2324, so a legacy entry simply stops
+   // round-tripping through the editor the first time an agent's skills are saved.
+   ```
+
+   **`docs/SECURITY.md:87`** (PR-D) — "Skill-level `nixPackages` are ignored. Review the agent's `nixPackages`…" → "Packages come from the agent's `nixPackages` (a skill cannot declare any). Review that list: each binary on the allowlist is a capability, treat them as such."
+
+   **Memory files updated:** `feedback_absence_needs_origin_main_grep.md` (added the stale-HIT corollary), `project_issue_2320_thin_skills_triage.md` (appended full 2026-07-30 execution log), `MEMORY.md` (index line for #2320).
+
+4. **Errors and fixes:**
+   - `Cannot find module '@lobu/connector-sdk/nix-package'` / `@lobu/connector-worker/compile` / `Failed to resolve entry for "@lobu/pgvector-embedded"` / owletto `@lobu/core/errors` → fresh worktrees have no `packages/*/dist`; built the workspace packages (`for p in core plugin-api … connector-worker; do (cd packages/$p && bun run build); done`). Matches memory `reference_worktree_dev_boot_recipe` (`make build` is a NO-OP; use `make build-packages`).
+   - Pre-commit biome failed on stray `.connector-meta-*` directories created by test runs → `rm -rf .connector-meta-* 2>/dev/null` before every commit (zsh errors "no matches found" when absent, hence the redirect).
+   - Test fixture 422: `source "skill_pull": query must project an "id" column` → changed fixtures to `SELECT id FROM events …`.
+   - Test order dependence in `manage-behaviors-update-version-fields.test.ts` (a preceding test had already cleared sources) → seeded `{name:"alpha"}` back before the assertion.
+   - **Stale main checkout**: grepping `/Users/burakemre/Code/lobu` showed `map-config.ts` still unioning skill `nixPackages`. Local `main` = `b8e66f022`, `origin/main` = `84b3bc59b` (10 commits ahead). `git show origin/main:<path>` proved the code was already deleted by #2324. Worktrees from `make task-setup` were correctly based on `origin/main` (verified via `merge-base`). Recorded in memory as a new corollary: a grep HIT on the stale main checkout can be a false positive.
+   - **`check-drift` failed on PR-B (#2345)**: "owletto/main has merged commits past the pinned SHA. The parent bump PR is missing." → the submodule pointer bump (PR-D #2347) had to merge first; then rebase PR-B.
+   - **pi-review BLOCKER on PR-B round 1** (bug_free 52, 1 bug, 1 blocker): `packages/core/src/contracts/tools/manage-behaviors.ts:339` still told agents that prompt chips derive/clear sources on `create_version`. Real, checkable defect on a model-facing contract → rewrote the description, re-ran `make pre-pr`, rebased, force-pushed, re-reviewed once.
+   - **`make review-fix` over-reach on PR-A**: it deleted `behavior-run-session.ts` and inlined `"watcher-run"`. I accepted its test consolidation (it correctly moved the test into the pre-existing `gateway/__tests__/worker-gateway-session-context.test.ts` that I'd missed) but restored the constant module — the literal already lived in 3 decision sites and a shared constant nets −1 duplicate. Dropped the one-caller predicate the fixer actually objected to.
+   - **`make review-fix` over-reach on PR-B**: stripped explanatory comments repo-wide and added cross-repo owletto changes. I restored the load-bearing comments and split the owletto work into its own PR (#633) so PR-B stays server-only (one branch = one concern).
+   - Mutation-test survivor: `details-no-group-root` initially survived because the test behavior WAS the group root → added a `create_from_version` assignment case; all 4 mutations then killed.
+
+5. **Problem Solving:**
+   - Established that the worker's 5-min session-context cache needs no isolation key, by tracing `automation.ts` (`thread: watcher-${run.id}`, `forceNew: true`) → dedicated conversation → `generateDeploymentName` hashes conversationId → dedicated worker process. Wrote the reasoning at the decision site.
+   - Resolved the Path C conflict between the grok plan (stamp chat turns as `watcher-run`) and the triage memory (don't) in favour of the memory: a chat-listen turn runs in a live human conversation sharing a worker and cache; stripping skills there would strip the human's chat skills and poison the cached context.
+   - Sequenced the submodule dance correctly: owletto PRs merged first (#632, #633), then a single lobu pointer bump + schema drop (#2347), then rebase the blocked server PR (#2345).
+   - Discovered PR-B would leave a UI gap (chip edits no longer updating sources); review-fix produced the client-side fix, which I shipped as owletto#633 so the gap closes with the same release.
+
+6. **All user messages:**
+   - *"take this session review the work and finish up and then merge when done grok --resume 019fafe0-9423-7e51-8606-bb4ec1d25cfc"*
+
+   (No other user-role messages. Standing constraints from CLAUDE.md/AGENTS.md that must persist: never write to `~/Code/lobu` directly — use `make task-setup` worktrees; stage by explicit path, never `-A`; no Co-Authored-By / "Generated with Claude Code" in commits; never `git stash`; never resolve merge conflicts in the GitHub web UI; push owletto submodule changes before bumping the pointer; never bulk-delete prod `organization` rows; `events` is append-only; workers never receive real credentials; **do not sign in / create the local dev account — that's the user's step**; "Do not call the AgentTool unless the user requested it"; confirm before outward-facing or hard-to-reverse actions.)
+
+7. **Pending Tasks:**
+   - **Merge lobu #2345** (PR-B, source honesty) once its re-review verdict and remaining CI checks report green.
+   - **PR-C2 — owletto Behavior authoring rework** (the last #2320 acceptance item), deliberately not started: `src/lib/api/behaviors.ts` has no `skills` plumbing; creation funnels through `create-watcher-form.tsx` → `from-scratch-panel.tsx` (1394 lines, prompt-centric). Needs `skills[]` in the API layer, an ordered multi-skill picker, prompt-field removal, ≥1-skill UI validation mirroring the server (schedule/window/manual; zero allowed for event-turn), and the drift UX (show frozen compiled body; keep-frozen vs recompile). Blocked on before/after screenshots, which require a signed-in local session that is the user's step.
+   - **Close issue #2320** with checklist evidence, after C2.
+   - **Flag (not act on): duplicate bot bump PRs #2344 and #2346**, both bumping owletto to `005a13f`, now no-ops since #2347 landed the same bump. Not closed — closing others' PRs is outward-facing.
+   - **Prod-verify** the merged behaviour after rollout (repo rule step 10: gate on the squash commit with `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`).
+
+8. **Current Work:**
+
+   Immediately before this summary I had:
+   - Merged **#2347** (`dcf44fe42c28e7b333b1ad7ce5bbdb3ce4d95c88`) — core schema drop + owletto pointer bump to `005a13f`.
+   - Rebased PR-B onto it: `git rebase origin/main` → new head `2a84c8c6a`, diff against origin/main confirmed as exactly 6 intended files (`manage-behaviors.ts` contract, 3 test files, `crud.ts`, `version-actions.ts`).
+   - Force-pushed: `git push --force-with-lease origin feat/behavior-source-honesty` → `+ 2c86cc38a...2a84c8c6a (forced update)`.
+   - Started `make review` (background id `btzr3qa2c`) — the second and final review round, justified by the round-1 blocker fix.
+   - Armed a background waiter (`by6bvp1f1`): `until [ -s .../btzr3qa2c.output ] && [ "$(gh pr checks 2345 --required 2>&1 | grep -c pending)" = "0" ]; do sleep 45; done` printing the verdict and any non-passing checks.
+   - Confirmed `check-drift` cleared on PR-B after the rebase; remaining pending at last poll were `typecheck`, `integration`, `pi-review`.
+   - Ran cleanup (`rm -rf .claude/worktrees/*/.connector-meta-*`) and printed merged diff stats as evidence for #2342 and #2347.
+
+   Merged so far: lobu **#2342** `18a5f34` (5 files, +85/−26), owletto **#632** `88eab38` (8 files, +8/−161), owletto **#633** `005a13f`, lobu **#2347** `dcf44fe` (5 files, +12/−9).
+
+9. **Optional Next Step:**
+
+   Wait for the background waiter `by6bvp1f1` / review job `btzr3qa2c` to report, then — if the re-review comes back with 0 blockers and every required check on #2345 has reported pass — merge it:
+   `gh pr merge 2345 --squash --admin`
+
+   This is directly in line with the user's instruction to *"finish up and then merge when done"*, and with the state I left off in: PR-B was the last of the four PRs, rebased and re-reviewing after its one real blocker (the `manage_behaviors` tool-schema doc lie at `packages/core/src/contracts/tools/manage-behaviors.ts:339`) was fixed. After that merge, report the completed state and surface the two remaining items for the user's decision — the owletto Behavior-authoring rework (blocked on screenshots requiring a signed-in local session) and the two redundant bot bump PRs #2344/#2346.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

@@ -1,0 +1,9 @@
+<task-notification>
+<task-id>a8e013d5822907b0b</task-id>
+<tool-use-id>toolu_011iC61fcHVDe5rPVVdbWgm5</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/a8e013d5822907b0b.output</output-file>
+<status>failed</status>
+<summary>Agent "Inference facet + provider rows" failed: Agent terminated early due to an API error: You've hit your session limit · resets 9:50pm (Europe/London)</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The renames are already staged from `git mv`, so those old paths no longer exist. Let me drop them from the list.</result>
+</task-notification>

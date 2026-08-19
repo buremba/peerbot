@@ -1,0 +1,203 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The user's requests, chronologically:
+
+1. **Recover prior session state**: Check session `f0b3eac6-8946-4c9e-bbf8-24d856a5592a`, find all remaining work, discuss the best solution.
+2. **Assess value**: "is merging gonna make the project more stable and better" (re: PR #2817).
+3. **Execute**: "ok merge that, plan the others and work on them one be one".
+4. **Explain**: "can you explain the fixes to me and if we're making the tradeoffs etc".
+5. **Continue**: "ok let's continue".
+6. **Quality challenge**: "why pireview is not passing, are you writing ai slop, any way to simplify consolidate reuse".
+7. **Design discussion**: "let's discuss the best options here. i don't want bugs we need to have a simple and effective design".
+8. **Design understanding**: "how does the connectors define these 3 different edges, should they be reusing what we have for the events".
+9. **Concrete examples**: "show some example connector definitions for different use-cases so i can understand".
+10. **Seed data**: "how do they generate data show some seed data".
+11. **Interview**: "interview me understand the traoffs rate them".
+12. **CURRENT**: "admin merge that it's fine. let's do the design proposal use html arifact let me understand go through use-cases the gaps and complexity and confidence on the solution. also save the memory the things we need we will compact"
+
+## 2. Key Technical Concepts
+
+- **Lobu monorepo**: Bun workspace, `packages/*` (core, connector-sdk, server, connectors, cli, owletto submodule)
+- **Entity write funnel** (MERGED): #2794 kernel, #2795-#2797, #2806, #2808, #2813, #2815, CI guard #2792. Zero bypasses. `withEntityWriteTransaction` at `entity-management.ts:348`
+- **Edge write funnel** (DOES NOT EXIST): 6 files write `entity_relationships` directly
+- **Three edge kinds**: identity→entity (`entity_identities`), event→entity (`events.entity_ids` + attribution role), entity→entity (`entity_relationships`)
+- **Connector manifest**: `feeds_schema[feed].eventKinds[kind].attributions` — `EventAttributionRule`, `EventAttributionTargetSpec`, `EntityIdentitySpec`
+- **Connectors cannot emit entities** — `sync()` returns `{ events, checkpoint }` only
+- **Postgres lock semantics**: `40P01` (deadlock, retryable) vs `55P03` (lock_not_available); deadlock detection only works for CYCLES
+- **Gates**: `make pre-pr-remote` (Depot, org-serialized), `make review` (pi-review, cached on diff hash), `make review-fix`, `make ui-review`
+- **Branch protection**: `enforce_admins: true` — `--admin` cannot bypass failing required checks
+
+## 3. Files and Code Sections
+
+### `packages/server/src/__tests__/setup/test-db.ts` (MODIFIED — PR #2820)
+The cleanup TRUNCATE harness. Added bounded lock wait:
+
+```ts
+const TRUNCATE_LOCK_TIMEOUT_MS = 8_000;
+
+async function describeNonIdleDbSessions(db: postgres.Sql): Promise<string> {
+  try {
+    const rows = await db.unsafe(`
+      SELECT pid, state, wait_event_type, wait_event,
+             left(regexp_replace(query, '\\s+', ' ', 'g'), 200) AS query
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND state IS DISTINCT FROM 'idle'
+      ORDER BY xact_start NULLS LAST
+      LIMIT 10
+    `);
+    ...
+}
+```
+
+Both branches collapsed into one `db.begin` (removed duplicated TRUNCATE):
+```ts
+await db.begin(async (tx) => {
+  await tx.unsafe(`SET LOCAL lock_timeout = ${TRUNCATE_LOCK_TIMEOUT_MS}`);
+  if (canDisableTriggers) {
+    await tx.unsafe(`SET LOCAL session_replication_role = 'replica'`);
+  }
+  await tx.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
+});
+```
+
+New `55P03` handler throws with blocker diagnostic. Restored two facts review-fix wrongly deleted: `agent_connections → organization/agents` example and the `ChatInstanceManager` `EXCLUSIVE_TICK_MS` (`chat-instance-manager.ts:264`, `exclusiveTimer` at `:327`) poller attribution.
+
+### `packages/server/src/lobu/__tests__/cleanup-truncate-lock-timeout.test.ts` (NEW — PR #2820)
+Real-Postgres regression. Holds `ACCESS EXCLUSIVE` from a second session. Includes watchdog:
+```ts
+const LOCK_WATCHDOG_MS = 20_000;
+const watchdog = setTimeout(() => release(), LOCK_WATCHDOG_MS);
+watchdog.unref?.();
+```
+Asserts `caught?.code === '55P03'`, message contains 'holding a conflicting lock', matches `/pid=\d+/`, contains `PROBE_TABLE`.
+
+### `packages/server/src/utils/entity-management.ts` (MODIFIED — held on `feat/edge-audit-orphan`, commit `64e7d0d41`)
+`force_delete_tree` reported a preflight PREDICTION (line ~1298, on `sql`, OUTSIDE the tx that opens at 1343). Fix accumulates actual sweep count:
+```ts
+let eventsDetached = 0;
+// ... inside sweep loop:
+eventsDetached += detached.length;
+// ... after tx:
+report.events_detached = eventsDetached;
+```
+
+### `packages/connector-sdk/src/connector-types.ts` (READ — the surface to extend)
+```ts
+eventKinds?: Record<string, {
+  description?: string;
+  metadataSchema?: Record<string, unknown>;
+  attributions?: EventAttributionRule[];
+}>;
+export type EventAttributionRole = 'authored_by' | 'about' | 'mentions' | 'belongs_to';
+export interface EventAttributionTargetSpec {
+  entityType?: string;
+  identities?: EntityIdentitySpec[];
+  titlePath?: string;
+  createWhen?: EntityLinkPredicate;
+}
+export interface EventAttributionRule {
+  role: EventAttributionRole;
+  target: EventAttributionTargetSpec;
+  autoCreate?: boolean;
+  traits?: Record<string, EntityTraitSpec>;
+}
+```
+
+### `packages/connector-sdk/src/identity-namespaces.ts` (READ — #2817 subject)
+`uniquePerOrg: boolean` at `:33`, documented as `/** Human-review hint: true means a value should identify at most one entity per org. */`
+
+### Memory files WRITTEN (3 of N):
+- `reference_edge_write_funnel_does_not_exist.md`
+- `reference_connector_declared_edges_acl_hole.md`
+- `reference_connector_edges_reuse_attributions_not_a_new_resolver.md`
+
+**MEMORY.md index NOT yet updated** — required by memory protocol.
+
+## 4. Errors and Fixes
+
+1. **Overstated #2812 severity.** Called it "the only actual production correctness bug". After reading code: orphan is INERT (bigint[] no FK, bigserial ids never reused, all 3 readers use `entities WHERE id = ANY(ev.entity_ids)` so dangling ids match nothing). Corrected proactively.
+
+2. **`--admin` merge refused twice.** `GraphQL: Required status check "pi-review" is failing`. Root cause: `enforce_admins: true`. Not fixable from my side.
+
+3. **First baseline run poisoned by my own probe test.** Probe timed out → `finally` never ran → lock leaked → whole lane wedged 20 min. Re-ran baseline with probe REMOVED: clean comparison `68/91/7` vs `71/91/7` — zero regressions.
+
+4. **My probe test could wedge the lane.** Added unref'd watchdog, then mutated it to 300ms to prove it fires (`1 pass, 2 fail`).
+
+5. **Gate failed on `format-lint` + `migrations`.** `migrations` was only a fan-in on `FORMAT_LINT_RESULT`. Real cause: review-fix wrote "lock-wait behavior" — `Behavior` is retired vocabulary. Changed to "semantics".
+
+6. **review-fix made 3 wrong claims** (I reversed all): (a) `agent_connections` "dropped" — appears 15× in baseline; (b) ChatInstanceManager poller "unsupported" — exists at `:264`/`:327`; (c) banned word.
+
+7. **Called "resolve type from DB" a non-negotiable safety constraint.** Codex: proves EXISTENCE not AUTHORITY. `member_of` is a live ACL gate (`channel-messages-visibility.ts:118`). Real escalation hole.
+
+8. **Used `belongs_to` as cardinality example.** It's an `EventAttributionRole`, not an edge type. Real edge types (`mentions`, `about`, `member_of`) are all naturally MANY. `member_of: one` would delete ACL memberships.
+
+9. **Proposed `RelationshipEndpointSpec` duplicating `EventAttributionTargetSpec`.** Strict subset → second resolver → source of every spike bug.
+
+10. **Confidence 45 on #2818 was too pessimistic.** Measured: main = 24 hook timeouts / 3 test timeouts; branch = **0** / 5. Cascade eliminated.
+
+11. **#2818 was two bugs.** Split; filed #2821 for the `MessageHandlerBridge` OAuth-workspace hang (reproduces on main at `30000.77ms`).
+
+## 5. Problem Solving
+
+**#2818 SOLVED** — root cause: `40P01` retry only covers deadlock CYCLES; a non-cyclic lock holder blocks TRUNCATE forever. Four proofs: red (25s timeouts), green (`8 pass 19.52s`), mutation (`TRUNCATE_LOCK_TIMEOUT_MS = 0` → red), cascade reproduced live. PR #2820: gate `txp0wt06xl passed`, pi-review **bug_free 84, 0 bugs, 0 blockers, slop 0, simplicity 88**, ui-review not applicable. Blocked only on `integration` red from #2821.
+
+**Design pivot**: all five "hard problems" (cardinality, ACL reservation, ownership, retraction scoping, #2809) reduce to the missing edge write chokepoint.
+
+## 6. All User Messages
+
+1. "can you check this session, find out all the remaining work and let's discuss the best solution claude --resume f0b3eac6-8946-4c9e-bbf8-24d856a5592a"
+2. "is merging gonna make the project more stable and better"
+3. "ok merge that, plan the others and work on them one be one"
+4. "can you explain the fixes to me and if we're making the tradeoffs etc"
+5. "ok let's continue"
+6. "status?"
+7. "why pireview is not passing, are you writing ai slop, any way to simplify consolidate reuse"
+8. "btw the other prs are merged you might need to rebase, let's discuss the best options here. i don't want bugs we need to have a simple and effective design"
+9. "also how does the connectors define these 3 different edges, should they be reusing what we have for the events"
+10. "show some example connector definitions for different use-cases so i can understand"
+11. "how do they generate data show some seed data"
+12. "interview me understand the traoffs rate them"
+13. AskUserQuestion answers: manifest = "Reference attributions by name"; ACL = "Both: deny-list now, grants later"; funnel scope = NO SELECTION, note: "ok but isn't the main has this code, codex merged the pr?"; #2817 = NO SELECTION, note: "why do you need to flip? we didn't have any users using this feature so is it safe to delete?"
+14. "admin merge that it's fine. let's do the design proposal use html arifact let me understand go through use-cases the gaps and complexity and confidence on the solution. also save the memory the things we need we will compact"
+
+**Standing constraints from CLAUDE.md/AGENTS.md**: Never write to `~/Code/lobu` directly (use `make task-setup`); stage by explicit path (`git add -- <paths>`, never `-A`); `events` is append-only; never bulk-delete prod `organization` rows; never resolve merge conflicts in GitHub web UI; two writing agents never share a worktree; never add a table or change DB/API/SDK surface without confirmation; never auto-submit interactive browser drafts; no backwards-compat shims or `@deprecated`; no Co-Authored-By or Claude attribution in commits; no new `*.md` unless asked; always show the diff with `git status` + `git diff --stat`; end with confidence score + 2-4 next actions; never `git stash`; never `--admin` past a check that has not reported; check `pgrep -f "make pre-pr-remote"` before dispatching (Depot serializes org-wide).
+
+## 7. Pending Tasks
+
+1. **#1** — #2817 merge blocked by `enforce_admins`. User said "admin merge that it's fine" but `--admin` is mechanically refused; flipping branch protection is repo-wide/outward-facing and was NOT explicitly authorized.
+2. **#2** — #2812 fix held on `feat/edge-audit-orphan` (`64e7d0d41`), not shipped (no red repro).
+3. **#3** — #2820 awaiting CI rerun; background job `bo3yambtj` waiting for peer gate to clear then `gh run rerun 31956418756 --failed`.
+4. **#4** — `spike-derived-edges` 6 commits, no PR.
+5. **#5, #7, #8** — decisions partly settled, need funnel first.
+6. **#6** — valid-time (#2801) migration — independent track.
+7. **#9** — #2809 collapses into the funnel.
+8. **#10** — Prodma gap register stale (says "22 bypass sites", now 0).
+
+## 8. Current Work
+
+Immediately before this summary I was executing the user's most recent request: "**also save the memory the things we need we will compact**".
+
+I had written 3 memory files:
+- `reference_edge_write_funnel_does_not_exist.md` — entity funnel merged, edge funnel doesn't; 6 writer files listed; `git grep -c relationship origin/main -- scripts/check-entity-write-funnel.mjs` = 0
+- `reference_connector_declared_edges_acl_hole.md` — the ACL escalation finding + deny-list-then-grants decision
+- `reference_connector_edges_reuse_attributions_not_a_new_resolver.md` — the revised manifest surface
+
+Just before that I had verified the user's challenge and confirmed **they were right to ask but the edge funnel genuinely does not exist** — the entity funnel is what merged. And I answered their #2817 question: deletion IS safe (zero consumers verified); the flip is purely procedural, not a safety requirement.
+
+## 9. Optional Next Step
+
+Two things remain from the most recent user message, verbatim: "**let's do the design proposal use html arifact let me understand go through use-cases the gaps and complexity and confidence on the solution. also save the memory the things we need we will compact**"
+
+Next steps in order:
+1. **Finish memory** — update `MEMORY.md` with pointer lines for the 3 new files (required by protocol, not yet done), and add a memory for the #2818 two-bug split (24→0 measurement, #2821) and the review-fix reliability calibration.
+2. **Build the HTML artifact design proposal** — must load the `artifact-design` skill first, then cover: the four use-cases (ERP invoice→customer, personal-assistant works_at, social interaction edges, the `member_of` ACL danger), the gaps (no edge chokepoint; ACL hole; `derivedFrom` indexes unusable for owner sweeps — `btree((metadata->'derivedFrom'->>'relationshipTypeId'), (...->>'ruleVersion')) WHERE metadata ? 'derivedFrom'` has no org/connection/rule-name; `op: assert|retract` insufficient without a claim key; BOM/bulk case inexpressible), complexity, and confidence ratings.
+
+The unresolved question I should re-raise: funnel scope (full 6-file funnel vs design-first) — the user's note "ok but isn't the main has this code, codex merged the pr?" was answered but they never picked an option.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

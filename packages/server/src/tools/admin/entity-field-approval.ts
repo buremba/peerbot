@@ -70,6 +70,24 @@ export const ENTITY_CHANGE_ACTION_KEYS = [
 	ENTITY_CHANGE_ACTION_KEY,
 ] as const;
 
+/**
+ * Internal signal: an escalated (atomic) card had at least one stale field, so
+ * the whole apply must roll back rather than commit the remainder.
+ *
+ * Thrown from inside the apply transaction purely to unwind it — it never
+ * escapes {@link applyEntityFieldChangeProposal}, which converts it into a
+ * fully-stale {@link FieldMergeResult}. Throwing is what lets the atomicity
+ * check reuse the merge's own staleness verdict instead of re-deriving it.
+ */
+class AtomicCardStaleError extends Error {
+	constructor(readonly stale: FieldMergeResult["stale"]) {
+		super(
+			`approved card is stale: ${Object.keys(stale).join(", ")} changed since it was proposed`,
+		);
+		this.name = "AtomicCardStaleError";
+	}
+}
+
 /** Proposed field changes held in runs.action_input for a field-change gate run. */
 export interface EntityFieldChangeProposal {
 	operation?: "update";
@@ -1209,7 +1227,39 @@ export async function applyEntityFieldChangeProposal(
 				});
 			}
 		}
+		// An ESCALATED card is one unit: `updateEntity` deferred the whole
+		// proposal precisely because the fragment could not stand on its own, so
+		// applying a subset commits a state no rule validated and no human
+		// reviewed. Both halves have run by here, so `merge.stale` is the
+		// complete picture — throwing rolls the whole transaction back rather
+		// than re-deriving staleness with a second, divergent implementation.
+		//
+		// Scoped to escalated cards on purpose. A card minted from a field-
+		// ownership hold carries per-field consent (the human owns the VALUE,
+		// not the row), so its fields stay independently applicable.
+		if (
+			(proposal.escalated_fields?.length ?? 0) > 0 &&
+			Object.keys(merge.stale).length > 0
+		) {
+			throw new AtomicCardStaleError(merge.stale);
+		}
 		return merge;
+	}).catch((err) => {
+		// Not an apply failure: nothing was wrong with the write, the reviewed
+		// unit simply no longer describes the row. Resolve as fully stale so the
+		// caller reports "skipped (stale)" and the newer human value stands.
+		if (err instanceof AtomicCardStaleError) {
+			return {
+				changed: false,
+				applied: {},
+				blocked: {},
+				stale: err.stale,
+				affirmed: [],
+				nextMetadata: {},
+				nextControls: {},
+			} satisfies FieldMergeResult;
+		}
+		throw err;
 	});
 }
 

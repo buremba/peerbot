@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-08-17T01:28:37.163Z","content":[{"text":"What is 2+2?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-08-17T01:28:38.378Z","id":"087f358d","input_tokens":22,"output_tokens":1,"content":[{"type":"text","text":"4"}]}

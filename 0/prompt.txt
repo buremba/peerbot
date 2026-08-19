@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bncqn7org</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bncqn7org.output</output-file>
+<status>completed</status>
+<summary>Background command "Run ui-review and wait for CI on 2506" completed (exit code 0)</summary>
+</task-notification>

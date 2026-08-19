@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfxiwanke</task-id>
+<tool-use-id>toolu_01G8djupSKzc2rpuFKNWE87D</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bfxiwanke.output</output-file>
+<status>completed</status>
+<summary>Background command "Monitor release build to completion" completed (exit code 0)</summary>
+</task-notification>

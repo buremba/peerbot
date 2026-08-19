@@ -1,0 +1,1 @@
+also http://127.0.0.1:5261/local-install/connectors page is not centered. also it shows all chips not just the ones that exists

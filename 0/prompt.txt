@@ -1,0 +1,55 @@
+<task-notification>
+<task-id>a1925f7a98ff984e9</task-id>
+<tool-use-id>toolu_01Lix7MpUxgkWWDPozyUPAbP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/a1925f7a98ff984e9.output</output-file>
+<status>completed</status>
+<summary>Agent "Track E: tabs + error CTAs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I've found a blocker that I should surface before writing code, because it determines whether decision 3's fallback exists at all.
+
+## Stopping again — decision 3's fallback has nowhere to land
+
+Decision 5 as written is not just "delete a redirect." Deleting `inference-providers/index.tsx:36-44` deletes the **only exported definition of `InferenceProvidersBody`** — the actual org-level providers UI (the provider list, add/edit/rotate-key/set-default/delete rows, the per-modality capability editor, ~570 lines). That component lives in the same file as the redirect route, at `inference-providers/index.tsx:54`.
+
+Its only consumer is `infrastructure/models.tsx:2`, which decision 1 removes from the Connect tab bar. So after decisions 1, 3, and 5, the situation is:
+
+- The **Models tab** is gone from navigation (decision 1).
+- **`/inference-providers/new`** is deleted (decision 3).
+- **`/inference-providers`** redirect is deleted (decision 5).
+- **`InferenceProvidersBody`** survives only as an orphan behind `/infrastructure/models`, a route with no inbound link from anywhere — the sidebar has no Models entry (I checked `app-sidebar.tsx`; its only infrastructure link is Devices at line 255).
+
+That leaves decision 3's no-`agentId` fallback pointing at either a deleted route or an unreachable orphan. There is no surviving org-level providers surface to fall back to. `knip` in `make pre-pr` will also likely flag the orphan.
+
+The instruction was explicit: *"If deleting the redirect leaves decision 3's fallback with nowhere to land, STOP and report again rather than inventing one."* That is exactly the state, so I stopped.
+
+## The second problem: agent settings cannot host the connect flow
+
+Decision 3 routes `provider-connect` to `/agents/${agentId}/settings#models`. But that section (`agent-editor-form.tsx:384-398`) is a `ModelsListEditor` — an allow-list picker over models that *already exist*. `provider-connect` fires precisely when **no provider is connected**, so the picker has nothing to show. The user arrives at an empty selector with an amber banner explaining a provider is missing, and no control to add one, because `CreateProviderForm` lives in `InferenceProvidersBody`.
+
+That inverts the current behavior. Today `provider-connect` lands on a page with the connect form right there. Both `agentId` and no-`agentId` paths would land somewhere that cannot resolve the error.
+
+Note this does not affect decision 2 — `provider-management` fires when a provider **is** configured but failing, so `#models` is a sensible destination for it. Decision 2 is fine as briefed.
+
+## What I did not do
+
+Nothing modified, nothing staged, no commits. Both trees clean at `fc62394d3` / `56046ad0`. No gates run — there is no diff to gate. I have not implemented decisions 1, 2, or 4 either, since 1 interacts with the above and I did not want to commit a half-state you might want structured differently.
+
+## What I need decided
+
+The root question, unchanged from my last report but now sharper: **where does "connect an inference provider" live?** Something must own `CreateProviderForm` and the provider-management rows. Options:
+
+1. **Keep `/infrastructure/models` as a route, drop it only from the tab bar**, and point `provider-connect`'s no-`agentId` fallback there. Preserves `InferenceProvidersBody`, keeps Slack buttons resolving, satisfies decisions 1/2/4/5 fully. Requires linking it from somewhere (org settings or the sidebar) so it isn't orphaned. Smallest coherent change.
+2. **Move `InferenceProvidersBody` onto Runtime** as a third section alongside Sandboxes and Devices. Gives providers a real home in the two-tab world; means Runtime does host provider config.
+3. **Extract `InferenceProvidersBody` into `components/`** and render it in both agent settings (under `#models`, so the connect form is present when the picker is empty) and an org-level page for the no-`agentId` case. Most work, best UX, closest to the original intent.
+
+I'd recommend option 1 if you want this branch to land soon, option 3 if the model-config-into-agent-settings work is happening anyway — option 3 is essentially a down payment on it.
+
+**Confidence: 92** that decisions 3 and 5 as written strand the org-level providers surface — basis: I traced `InferenceProvidersBody`'s single consumer by grep, confirmed the sidebar has no Models link, and read the `ModelsListEditor` section that decision 3 targets. Not booted; this is code-path reasoning, not observed runtime.
+
+Next actions you can pick from:
+1. Pick option 1, 2, or 3 and I'll implement the full set in one pass.
+2. If you want progress now regardless: authorize decisions 2 and 4 alone (the `#models` anchor + highlight + `provider-management` repoint) — those are self-contained and unaffected by this blocker.
+3. Confirm whether `/infrastructure/models` should remain a reachable route at all, since that single answer resolves both the fallback and the knip-orphan question.
+4. Check whether the parallel model-picker work is already extracting `CreateProviderForm` — if so, this should wait rather than conflict.</result>
+<usage><subagent_tokens>80364</subagent_tokens><tool_uses>5</tool_uses><duration_ms>42934</duration_ms></usage>
+</task-notification>

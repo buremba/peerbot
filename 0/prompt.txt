@@ -1,0 +1,4 @@
+1. we don't need historical data you can cleanup old ones. we need the current version to work properly
+2. do those
+3. yes check
+4. if legacy we can get rid of

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc0fr7lg9</task-id>
+<tool-use-id>toolu_01UhnRZRuKuXCt4NmHKSRn2T</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/bc0fr7lg9.output</output-file>
+<status>completed</status>
+<summary>Background command "Final pre-pr before commit" completed (exit code 0)</summary>
+</task-notification>

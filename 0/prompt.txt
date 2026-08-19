@@ -1,0 +1,1 @@
+remove dead and merged worktrees

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc1deo3by</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab/tasks/bc1deo3by.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for pre-pr" completed (exit code 0)</summary>
+</task-notification>

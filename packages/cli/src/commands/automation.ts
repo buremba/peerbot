@@ -1,16 +1,41 @@
+import { readFile } from "node:fs/promises";
+import { AGENT_KINDS } from "@lobu/core/contracts/worker/device-automation";
+import type { AgentKind } from "@lobu/core/contracts/worker/device-automation";
 import {
   executeClaimedAutomationRun,
   UnexecutableRunError,
 } from "@lobu/connector-worker/daemon";
-import { readFile } from "node:fs/promises";
 import { apiUrlToGatewayOrigin, resolveContext } from "../internal/context.js";
 
 export interface AutomationExecuteOptions {
   apiUrl?: string;
   workerId?: string;
   jobFile?: string;
+  defaultAgentKind?: string;
   context?: string;
   debug?: boolean;
+}
+
+/**
+ * Which agent runs an Automation that names no `agent_kind`.
+ *
+ * The device owns this: `agent_kind` is optional on the wire and which CLIs are
+ * installed is a property of the machine. A caller passes its own user-facing
+ * pick (the Mac app's menubar default). Rejected loudly rather than ignored —
+ * silently falling through would surface much later as "no local agent
+ * executor configured", pointing at the Automation instead of the flag.
+ */
+function parseDefaultAgentKind(
+  value: string | undefined
+): AgentKind | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!(AGENT_KINDS as readonly string[]).includes(trimmed)) {
+    throw new UnexecutableRunError(
+      `--default-agent-kind '${trimmed}' is not a known agent (${AGENT_KINDS.join(", ")})`
+    );
+  }
+  return trimmed as AgentKind;
 }
 
 /** Read the whole of stdin. Rejects a TTY so an unpiped invocation fails fast. */
@@ -87,6 +112,8 @@ export async function automationExecuteCommand(
     );
   }
 
+  const defaultAgentKind = parseDefaultAgentKind(options.defaultAgentKind);
+
   const raw = options.jobFile
     ? await readFile(options.jobFile, "utf8")
     : await readStdin();
@@ -104,6 +131,7 @@ export async function automationExecuteCommand(
     workerId,
     authToken,
     job,
+    ...(defaultAgentKind ? { defaultAgentKind } : {}),
     debug: options.debug === true,
   });
   // A reported failure is still a delivered outcome, so it must not become a

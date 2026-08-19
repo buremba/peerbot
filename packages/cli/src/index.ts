@@ -1206,6 +1206,10 @@ Memory:
         "Worker id that claimed the run (required; must match claimed_by)"
       )
       .option("--job-file <path>", "Read the run envelope from a file")
+      .option(
+        "--default-agent-kind <kind>",
+        "Agent to use when the Automation names no agent_kind"
+      )
       .option("--debug", "Log heartbeat/retry detail")
   ).action(async (options) => {
     const { automationExecuteCommand } = await import(

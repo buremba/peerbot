@@ -46,6 +46,11 @@ export interface ExecuteClaimedRunOptions {
   job: unknown;
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
+  /**
+   * Agent to use when the Automation names no `agent_kind`. A native bridge
+   * passes the machine's own default here (the Mac app's menubar pick).
+   */
+  defaultAgentKind?: AgentKind;
   /** Explicit per-agent binary paths (else PATH lookup). Test injection seam. */
   binaryOverrides?: Partial<Record<AgentKind, string>>;
   debug?: boolean;
@@ -147,6 +152,7 @@ export async function executeClaimedAutomationRun(
     ...(opts.heartbeatIntervalMs != null
       ? { heartbeatIntervalMs: opts.heartbeatIntervalMs }
       : {}),
+    ...(opts.defaultAgentKind ? { defaultAgentKind: opts.defaultAgentKind } : {}),
     ...(opts.binaryOverrides ? { binaryOverrides: opts.binaryOverrides } : {}),
   });
 }

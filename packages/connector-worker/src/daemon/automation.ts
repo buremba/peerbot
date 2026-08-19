@@ -56,6 +56,17 @@ export interface AutomationExecutorConfig {
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
   /**
+   * Agent to use when the Automation names no `agent_kind`.
+   *
+   * The device, not the server, owns this choice: `agent_kind` is optional on
+   * the wire (`AutomationPollMetaSchema`), and which CLIs are actually
+   * installed is a property of the machine. The Mac app has always resolved it
+   * from the user's menubar pick; without it here, every Automation created
+   * without an explicit kind fails on the device with "no local agent executor
+   * configured".
+   */
+  defaultAgentKind?: AgentKind;
+  /**
    * Explicit per-agent binary paths (else PATH lookup). Lets an operator point
    * at a non-PATH CLI install, and is the injection seam the automation tests
    * use to drive a fake binary.
@@ -440,7 +451,9 @@ export async function executeAutomationRun(
     return { itemsCollected: 0, error: message };
   }
 
-  const kind = payload.automation.agent_kind ?? null;
+  // The Automation's explicit kind wins; the caller's device-level default is
+  // the fallback, matching how the Mac app has always resolved an unset kind.
+  const kind = payload.automation.agent_kind ?? cfg.defaultAgentKind ?? null;
   const spec = kind != null ? DEVICE_AGENT_SPECS_BY_KIND.get(kind as AgentKind) : undefined;
   if (!spec) {
     const message = `no local agent executor configured for agent_kind='${kind ?? '(unset)'}'`;

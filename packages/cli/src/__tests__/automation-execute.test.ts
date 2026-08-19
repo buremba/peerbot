@@ -137,6 +137,49 @@ describe("lobu automation execute", () => {
     });
   });
 
+  test("passes --default-agent-kind through for an Automation with no kind", async () => {
+    const execute = spyOn(
+      daemon,
+      "executeClaimedAutomationRun"
+    ).mockResolvedValue({
+      itemsCollected: 0,
+    });
+
+    await withEnv("session-bearer", async () => {
+      await automationExecuteCommand({
+        apiUrl: "https://app.lobu.ai",
+        workerId: "mac-abc",
+        jobFile: envelopeFile(),
+        defaultAgentKind: "claude-code",
+      });
+    });
+
+    expect(execute.mock.calls[0]?.[0]?.defaultAgentKind).toBe("claude-code");
+  });
+
+  test("rejects an unknown --default-agent-kind instead of ignoring it", async () => {
+    const execute = spyOn(
+      daemon,
+      "executeClaimedAutomationRun"
+    ).mockResolvedValue({
+      itemsCollected: 0,
+    });
+
+    await withEnv("session-bearer", async () => {
+      // Ignoring it would resurface much later as "no local agent executor
+      // configured", pointing at the Automation rather than the flag.
+      await expect(
+        automationExecuteCommand({
+          apiUrl: "https://app.lobu.ai",
+          workerId: "mac-abc",
+          jobFile: envelopeFile(),
+          defaultAgentKind: "claude",
+        })
+      ).rejects.toThrow(/is not a known agent/);
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   test("rejects a malformed envelope without reporting anything", async () => {
     const execute = spyOn(
       daemon,

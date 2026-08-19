@@ -176,6 +176,47 @@ describe('executeClaimedAutomationRun', () => {
     expect(completion?.auth).toBe('Bearer oauth_session_token');
   });
 
+  test('falls back to defaultAgentKind when the Automation names none', async () => {
+    // The Mac app has always resolved an unset kind from the user's menubar
+    // pick. Without this the run fails on the device with "no local agent
+    // executor configured" — a regression the moment the Swift dispatcher is
+    // deleted in favour of this path.
+    const job = automationJob() as unknown as Record<string, unknown>;
+    (job.payload as { automation: { agent_kind?: string | null } }).automation.agent_kind =
+      null;
+
+    const result = await executeClaimedAutomationRun(
+      opts({ job, defaultAgentKind: 'pi' })
+    );
+
+    expect(result.error).toBeUndefined();
+    const completion = requests.find((r) => r.path.includes('/complete-automation'));
+    expect(String(completion?.body.output)).toContain('FAKE_OUTPUT');
+  });
+
+  test("an explicit agent_kind still WINS over the caller's default", async () => {
+    const result = await executeClaimedAutomationRun(
+      // Envelope says `pi`; the default names an agent with no binary override,
+      // so if the default won this would report "no local agent executor".
+      opts({ defaultAgentKind: 'not-a-real-agent' as never })
+    );
+
+    expect(result.error).toBeUndefined();
+    const completion = requests.find((r) => r.path.includes('/complete-automation'));
+    expect(String(completion?.body.output)).toContain('FAKE_OUTPUT');
+  });
+
+  test('no agent_kind and no default still reports through the server', async () => {
+    const job = automationJob() as unknown as Record<string, unknown>;
+    (job.payload as { automation: { agent_kind?: string | null } }).automation.agent_kind =
+      null;
+
+    const result = await executeClaimedAutomationRun(opts({ job }));
+
+    expect(result.error).toContain("agent_kind='(unset)'");
+    expect(requests.find((r) => r.path.includes('/complete-automation'))).toBeDefined();
+  });
+
   test('honours the server resume decision through the shared arm', async () => {
     script = [
       { status: 'resume', attempt: 2, max_attempts: 3, nudge: 'finalize it' },

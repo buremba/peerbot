@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx8hwzqaf</task-id>
+<tool-use-id>toolu_01N6gYGjGTneUWmeKdLktuo3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bx8hwzqaf.output</output-file>
+<status>completed</status>
+<summary>Background command "Rerun codex review with configured model" completed (exit code 0)</summary>
+</task-notification>

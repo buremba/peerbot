@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bq9qkhte1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/bq9qkhte1.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run capturing failure detail" completed (exit code 0)</summary>
+</task-notification>

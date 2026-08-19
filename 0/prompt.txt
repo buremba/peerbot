@@ -1,0 +1,185 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+The conversation began as a bug report and evolved through architecture review into shipping a production fix. In order:
+
+- **Initial:** User reported texting their Telegram bot (`@burembalobubot`, connection 459, org `buremba`, https://buremba.lobu.ai/connectors/telegram/459?tab=settings, https://web.telegram.org/a/#8834276769) and getting no answer, noting "i thought we solved this problem?"
+- **Then:** "use my browser to do it. why did it takr 5 mins to answer" — drive their real browser to send a message, and explain the perceived latency.
+- **Then:** Architecture questions — "since we use chat sdk do we do workarounds? is out queueing model overengineered? what's the chat_state_cache?"
+- **Then:** "if we would get rid of chat sdk, would we save complexity? or what are the things we can simplify and consolidate"
+- **Then:** "if we were doing it from scratch how would we design it? we can manually migrate the data and cleanup simplify if that makes sense"
+- **Then:** "plan this, ask codex to get opinion and confirm this refactor makes sense" — write a plan, get adversarial review.
+- **Then:** "do we need fable to review as well"
+- **Then:** "ok are you sure this is the best next fix?" — challenge/verify the recommendation.
+- **Then:** "use gemini api key, it should work. the default will be z.ai and if it doesn't work fallback is gemini right" — wire up Gemini; asked to confirm fallback semantics.
+- **Then (answering AskUserQuestion):** "hmm, we don't have the feature of fallback to another model if that doesn't work right? we can do 1 but let's think the best approach here"
+- **Then:** "can't you use cli tset it" — use the CLI rather than the browser/UI.
+- **Then:** "trace and find out where the gap is" — trace the `400 invalid model ID`.
+- **Most recent:** "ok do best fixes make sure it works, no workarounds" — implement the root-cause fixes properly, verified, with no workarounds.
+
+2. Key Technical Concepts:
+- Lobu monorepo (Bun workspace, `packages/*`), prod on k8s namespace `summaries-prod`, CNPG Postgres cluster `lobu-ai-prod-db`, DB name `owletto`
+- Chat SDK: third-party npm `chat` v4.26.0 + `@chat-adapter/*` (slack, telegram, discord, teams, gchat, whatsapp)
+- `LobuStateAdapter` implementing the SDK's `StateAdapter` over 5 tables: `chat_state_cache`, `_lists`, `_queues`, `_subscriptions`, `_locks`, plus `chat_user_identities`
+- Postgres `ON CONFLICT ... DO UPDATE ... WHERE` conditional upsert; three-valued logic (`NULL <= now()` is NULL, not TRUE)
+- runs-queue: single Postgres table, `SKIP LOCKED` claims, `pg_notify('runs_lobu:<queue>')`, heartbeat, stale-claim sweeper
+- Model resolution chain: `agents.models` (allow-list + first entry drives selection) → `validateMessageModelProvider` → `resolveProviderConfig` → `resolveModelRef` → `session-runner`
+- `inference_providers` table (org-scoped provider credentials, `is_default`, `capabilities` jsonb, generated `has_custom_upstream`)
+- Owletto Chrome bridge via `client.operations.execute` (navigate, focus_tab, get_accessibility_tree, click_ref, type_ref, evaluate)
+- Mutation testing; red→fix→green discipline; `make task-setup`, `make pre-pr`, `make review-fix`, `make review`
+
+3. Files and Code Sections:
+
+- **`packages/server/src/gateway/connections/state-adapter.ts`** (THE FIX, worktree `chat-state-expiry-reclaim`)
+  - Root cause of production message loss. `setIfNotExists` blocked on row existence, not validity.
+  - Before: `ON CONFLICT (key_prefix, cache_key) DO NOTHING RETURNING cache_key`
+  - After (+26/-1 including docblock):
+```js
+  /**
+   * Claim `key` iff it is not currently held — where "held" means present AND
+   * unexpired. Both callers are TTL-bounded claims: the Chat SDK's inbound
+   * dedupe (5-minute window) and `claimThreadBackfill` (24-hour window, whose
+   * own docstring promises "at most once per thread per TTL window"). A lapsed
+   * claim must therefore be re-acquirable.
+   *
+   * A bare `ON CONFLICT DO NOTHING` blocks on the row's EXISTENCE, not its
+   * validity, and expired rows are only swept opportunistically inside `get()`
+   * — which this path never calls. That turned every TTL here into "once,
+   * permanently": a Telegram message id claimed by one bot silently discarded a
+   * different bot's message months later, since ids restart at 1 per bot chat.
+   *
+   * Mirrors `acquireLock` above; this was the one TTL-bounded claim in the file
+   * not already written that way.
+   */
+  async setIfNotExists(key, value, ttlMs?): Promise<boolean> {
+    this.ensureConnected();
+    const serialized = JSON.stringify(value);
+    const expiresAt = ttlMs ? new Date(Date.now() + ttlMs) : null;
+    const rows = await this.sql<{ cache_key: string }>`
+      INSERT INTO chat_state_cache (key_prefix, cache_key, value, expires_at)
+      VALUES (${this.keyPrefix}, ${key}, ${serialized}, ${expiresAt})
+      ON CONFLICT (key_prefix, cache_key) DO UPDATE
+        SET value = EXCLUDED.value,
+            expires_at = EXCLUDED.expires_at,
+            updated_at = now()
+        -- Expired rows are logically absent. A live row fails this guard, so
+        -- nothing is updated and RETURNING is empty: the caller sees false and
+        -- the stored value is untouched. A NULL expires_at (never expires) also
+        -- fails it, since NULL compared to now() is NULL rather than TRUE.
+        WHERE chat_state_cache.expires_at <= now()
+      RETURNING cache_key
+    `;
+    return rows.length > 0;
+  }
+```
+  - Relevant unchanged context: `get()` (line ~177) does opportunistic delete of expired rows on miss; `acquireLock` (line ~115-140) already used `DO UPDATE ... WHERE chat_state_locks.expires_at <= now()`; factory at line ~416 is `new LobuStateAdapter({ keyPrefix: "chat-conn" })` — one global prefix for all connections and orgs.
+
+- **`packages/server/src/gateway/connections/__tests__/state-adapter-expiry-reclaim.test.ts`** (NEW, 181 lines)
+  - 6 tests against real Postgres. Suite: "reclaims an expired key", "preserves a live key", "preserves a non-expiring key", "an expired claim is reclaimable repeatedly", "only one concurrent caller reclaims an expired key" (added by review-fix), plus a `describe("Chat SDK inbound dedupe over the Postgres adapter")` e2e test driving the real `Chat` class via `chat.processMessage(...)` with `waitUntil`: deliver → redelivery suppressed → `UPDATE chat_state_cache SET expires_at = now() - interval '1 hour' WHERE key_prefix='chat-conn' AND cache_key = 'dedupe:test:<messageId>'` → replayed id delivered.
+  - Contains the critical trap comment I restored after review-fix stripped it:
+```js
+    // 🚨 Do NOT assert `get()` before the claim. `get` opportunistically DELETES
+    // an expired row on miss, which removes the condition under test and makes
+    // this pass against the unfixed code. The bug only surfaces on a claim path
+    // that never reads first — exactly what the SDK's dedupe does.
+```
+
+- **`packages/server/src/gateway/auth/provider-catalog.ts`** (READ ONLY — branch 2 abandoned)
+  - `synthesizeOrgProviderModule` line 261-266: `const textUpstream = row.capabilities.text?.base_url; if (!textUpstream) return null;` — I claimed this was the gemini root cause; **DISPROVEN by probe test**.
+  - `getModelPolicy` lines 329-443: builds `providerIds` from the agent's `models` allow-list; `moduleMap.get(providerId)` (static module) is tried FIRST and `continue`s, so synthesis is never reached when a registered module exists.
+  - `findProviderForModel` line 516-547: has a prefix fallback `candidates.find((p) => p.providerId === prefix)`.
+  - `buildProviderCatalog` line 74-138: entries carry `baseUrl`; called with NO configs from getModelPolicy line 370.
+
+- **`packages/server/src/gateway/connections/message-handler-bridge.ts`** (READ)
+  - Line ~885: `captureChannelMessage(...)` is called UNCONDITIONALLY in the routing-org loop.
+  - Line ~908: `if (source === "subscribed" && message.isMention !== true && connection.settings?.recordChannelMessages === true) return;` — record-only mode, NOT transcript gating. This disproved my P5.
+  - Lines 160-222: `validateMessageModelProvider` — pre-dispatch routability check with `allowedRefs` alternates walk gated on `allowInstalledProviderOverride === true` (from `behaviorModelOverride`, never set on ordinary chat turns).
+
+- **`packages/server/src/gateway/gateway/index.ts`** lines 955-1080: `resolveProviderConfig`; credentialed-fallback scan at :976; comment at :972 literally describes the gemini case; `result.defaultProvider = upstream?.slug || primaryProvider.providerId`.
+
+- **`packages/agent-worker/src/runtime/model-resolver.ts`** lines 204-345: `resolveModelRef` — explicit-provider branch requires `allowInstalledProviderOverride`; falls to `if (defaultProvider)` which passes model AS-IS; self-prefix strip only handles `defaultProvider/` and `defaultProviderSlug/`.
+
+- **`packages/server/AGENTS.md:22`** (verbatim): "Runtime connection ids may be slugs/managed ids (for example `slackinst-…`), not numeric `connections.id`. Resolve through connection stores; do not cast runtime ids to bigint." — killed plan step 3.
+
+- **Memory files written/updated:**
+  - `project_dedupe_expired_row_silent_drop.md` (NEW, then updated with PR #2314)
+  - `reference_org_provider_needs_base_url.md` (NEW, then CORRECTED with a "🚨 CORRECTION — the mechanism below is WRONG" section)
+  - `reference_synthetic_events_dont_send_in_react_composers.md` (added focus_tab requirement + `ref` object shape)
+  - `project_slack_telegram_e2e_verify_2026_07_29.md` (added real-browser e2e verification section)
+  - `MEMORY.md` compacted from 20.7KB → 17,369 bytes, reorganized into sections, all 183 links preserved
+  - Plan doc: `<scratchpad>/chat-substrate-plan.md`; PR body: `<scratchpad>/pr-body.md`
+
+4. Errors and fixes:
+
+- **My test passed for the wrong reason (self-caught):** First draft asserted `expect(await adapter.get(k)).toBeNull()` before `setIfNotExists`. `get()` opportunistically DELETES expired rows, destroying the condition under test. Only 1 of 4 tests went red. Fixed by removing the `get()` call and documenting the trap in a comment.
+- **Backticks inside a tagged template literal (self-caught):** Restoring review-fix's stripped comment, I wrote `` `false` `` and `` `NULL <= now()` `` inside the SQL template → `error: Expected ";" but found "false"`. Fixed by removing backticks from inside the template (kept in JSDoc, which is outside).
+- **I broke prod for ~6 minutes:** Patching `personal-agent.models` to put `gemini/gemini-2.5-pro` first caused every turn to fail with `400 invalid model ID`. Two messages (GEMVERIFY, GEMVERIFY2) got no reply. Reverted models list + set z-ai as org default, verified recovery with REVERTCHECK (reply in 6s).
+- **My gemini root cause was WRONG (disproven by my own probe):** I asserted at 95 confidence that `synthesizeOrgProviderModule` returning null was the cause. A probe test registering a `gemini` module with an org row lacking `base_url` returned `MODULES RESOLVED: ["gemini"]` and `findProviderForModel -> gemini`. Stopped branch 2, wrote no speculative fix, corrected the memory file.
+- **Codex found 3 real errors in my plan (external correction):** (a) `recordChannelMessages` semantics inverted; (b) adapter/runner lifecycle overstated ("every connection gets a claim" — false, only exclusive transports); (c) step 1 targeting `conversations` is wrong (ThreadSession carries execution state). All three verified by me directly.
+- **I wrongly claimed "Slack Socket Mode" exists:** stated twice. `git grep -il "socketmode\|socket_mode\|socket mode" origin/main -- packages/server packages/connectors` → zero hits; only Telegram implements `requiresExclusiveStart`.
+- **Wrong file:line citation:** claimed `requireRunningInstance` gates outbound posting; it gates react/edit/delete only. Outbound uses `ensureConnectionRunning` directly.
+- **Browser send silently failed 3×:** `click_ref` on Telegram Web's send button reported success at correct coordinates but left text as a draft. Root cause: the tab was backgrounded. `focus_tab` before the click fixed it. Also `ref` must be an object `{ref_id, document_epoch}`, not a string.
+- **review-fix stripped explanatory comments:** It reduced my docblock to one SQL comment line. I restored a tightened version (kept its good additions: concurrency test, per-key cleanup).
+
+5. Problem Solving:
+
+**SOLVED — root cause of Telegram silent drops.** Three compounding defects in Lobu's own `LobuStateAdapter`: (1) `setIfNotExists` used `ON CONFLICT DO NOTHING` with no expiry predicate; (2) expired rows only swept inside `get()`, which this path never calls, so keys poison forever; (3) global `keyPrefix: "chat-conn"` means dedupe keys `dedupe:<platform>:<chatId>:<messageId>` are shared across all connections and orgs, while Telegram message ids restart at 1 per bot chat. Conclusive prod evidence: May-written expired rows at ids 1,2,3,4,5,6,13,15,16,17,19,21,... — every dropped message had an id in that set; every working message (hey2=8, 10, 12, synthetics 9001/9002) was in a gap. This also means **#2305's "confirmed reproducer" (KK4477 ping) was misattributed**.
+
+**SOLVED — no provider failover exists.** Confirmed by code (`error-handler.ts:82` classifies 429 as `PROVIDER_QUOTA_EXHAUSTED` with no retry) and empirically (buremba has both z-ai and openai active and still 429s).
+
+**UNRESOLVED — why `base_url` fixed gemini.** Setting `capabilities.text.base_url` flipped prod from `400 invalid model ID` to working (verified twice, with a reverted control). Mechanism unknown; my synthesis theory disproven. Next hypothesis: credential resolution, not module resolution. **The prod `base_url` on the gemini row is an unexplained workaround still in place** — flagged, not hidden, given the user's "no workarounds" instruction.
+
+**UNRESOLVED — z-ai/gemini asymmetry.** `z-ai/glm-5.2` resolves to `provider=zai` with the same empty-base_url row shape.
+
+**Current prod state (org buremba):** gemini provider id 13, `is_default=true`, `capabilities={"text":{"model":"gemini-2.5-pro","base_url":"https://generativelanguage.googleapis.com/v1beta/openai"}}`; `personal-agent.models = ["gemini/gemini-2.5-pro","openai/gpt-4o-mini","openrouter/anthropic/claude-sonnet-5","z-ai/glm-5.2"]`. Verified working end-to-end. Watchers still pin `z-ai/glm-5.2` and still 429 until 2026-07-31.
+
+6. All user messages:
+- "i see this https://buremba.lobu.ai/connectors/telegram/459?tab=settings and i text to the bot from here but no answer. i thought we solved this problem? https://web.telegram.org/a/#8834276769"
+- "use my browser to do it. why did it takr 5 mins to answer"
+- "since we use chat sdk do we do workarounds? is out queueing model overengineered? what's the chat_state_cache?"
+- "if we would get rid of chat sdk, would we save complexity? or what are the things we can simplify and consolidate"
+- "if we were doing it from scratch how would we design it? we can manually migrate the data and cleanup simplify if that makes sense"
+- "plan this, ask codex to get opinion and confirm this refactor makes sense"
+- "ultrathink" (sent mid-turn)
+- "do we need fable to review as well"
+- "ok are you sure this is the best next fix?"
+- "use gemini api key, it should work. the default will be z.ai and if it doesn't work fallback is gemini right"
+- (AskUserQuestion answer) "hmm, we don't have the feature of fallback to another model if that doesn't work right? we can do 1 but let's think the best approach here"
+- "can't you use cli tset it"
+- "trace and find out where the gap is"
+- "ok do best fixes make sure it works, no workarounds"
+
+Security/operational constraints in force (from project AGENTS.md, must continue to apply): Never write to `~/Code/lobu` directly — always work in a worktree created by `make task-setup NAME=<slug>`; never `git switch` in the main checkout. `events` is append-only — never `DELETE FROM events`. Never bulk-delete prod `organization` rows. Workers never receive real credentials (only placeholders/proxied access). Stage by explicit path (`git add -- <paths>`, never `-A`). Never `--admin` merge past a check that has not reported. Bug fixes require red→fix→green evidence pasted into the PR body; if you cannot reproduce, stop and report the dead end — do not ship a speculative fix. Never resolve merge conflicts in the GitHub web UI. Absence is only proven by `git fetch -q origin && git grep <pattern> origin/main`. Do not include Co-Authored-By or "Generated with Claude Code" in commit messages.
+
+7. Pending Tasks:
+- Confirm CI green on PR #2314 (typecheck + integration were pending) and merge with `gh pr merge 2314 --squash --admin`
+- Post-merge prod verification of the dedupe fix, using a LOW message id in a chat with old dedupe rows (a high/synthetic id silently avoids the bug)
+- Trace the gemini `base_url` mechanism with instrumentation rather than inference; then either replace the prod workaround with a real fix or justify keeping it
+- Per-connection `keyPrefix` scoping (separate branch; orphans existing rows including sessions, needs a TTL-window plan)
+- Optional: watchers still pin `z-ai/glm-5.2` and still 429
+
+8. Current Work:
+
+Immediately before this summary, I had completed and shipped **fix 1** on branch `feat/chat-state-expiry-reclaim` in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/chat-state-expiry-reclaim`:
+
+- Diff: exactly 2 files, +206/-1 (`state-adapter.ts` +26/-1, new test file 181 lines). `git diff --name-only origin/main...HEAD` verified to be exactly the intended list.
+- Verification: red 2 pass/4 fail (mutation to `DO NOTHING`) → green 6/6; mutation-tested twice; regression suite green (inbound-dispatch-parity 3, state-adapter-connect 2, session-manager 10, chat-history-store 11); `make pre-pr` clean twice (re-run after post-review-fix edits).
+- Committed, pushed, PR **#2314** created with a body containing red/green outputs, the #2305 misattribution note, the mutation-testing record, the class check, and the key-scoping follow-up.
+- `make review` returned: `{"bug_free_confidence":87,"bugs":0,"slop":0,"simplicity":95,"blockers":[],"tests_adequate":true,"suggested_fixes":[]}` with note that it could not execute the tests (`DATABASE_URL` unset in its sandbox, 6 skipped) so CI is the real signal.
+- `gh pr checks 2314 --required`: pass on base-branch-guard, check-drift, frontend, migrations, unit, format-lint, pi-review; **pending on typecheck and integration**. `mergeStateStatus: BLOCKED`.
+- Last action: launched background command `b1h4xlokg` running `gh pr checks 2314 --required --watch --interval 30`.
+
+**Fix 2 was deliberately NOT shipped.** Worktree `org-provider-base-url` is clean (probe test deleted, no source changes) because my root cause was disproven.
+
+9. Optional Next Step:
+
+Wait for background task `b1h4xlokg` (`gh pr checks 2314 --required --watch`) to report, then merge PR #2314 if typecheck and integration pass — `integration` is the check that actually runs the DB-gated tests, as I noted: "`typecheck` and `integration` still pending — and `integration` is the one that actually runs my DB-gated tests, so that's the signal that matters."
+
+This is directly in line with the most recent user instruction, "ok do best fixes make sure it works, no workarounds", and my stated plan: "I'll report the `make review` verdict and CI when they land, then merge if green." If CI fails, fix on the branch rather than merging.
+
+Do not start the gemini investigation (item 2) or the keyPrefix scoping (item 3) without confirming with the user first, since fix 2's premise was disproven and the correct next step there is instrumentation, not another speculative change.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

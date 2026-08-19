@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2tj25uw7</task-id>
+<tool-use-id>toolu_012axfU9SKFU1hiNw6rU6Qj1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/b2tj25uw7.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-brief manage_operations agent with explicit grouping" completed (exit code 0)</summary>
+</task-notification>

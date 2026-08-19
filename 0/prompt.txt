@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw8vb5qw2</task-id>
+<tool-use-id>toolu_01GT2YPDoFYAdnbPCJuYzgay</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bw8vb5qw2.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for make review process to exit" was stopped</summary>
+</task-notification>

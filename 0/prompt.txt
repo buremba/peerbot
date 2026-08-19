@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bz4b5obqr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bz4b5obqr.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for queue then rerun 2810 CI" was stopped</summary>
+</task-notification>

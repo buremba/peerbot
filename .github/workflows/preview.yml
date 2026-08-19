@@ -35,6 +35,8 @@ jobs:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
 
@@ -125,12 +127,29 @@ jobs:
           kubectl -n "$PREVIEW_NS" delete deployment "$PREVIEW_NAME" --ignore-not-found
           kubectl -n "$PREVIEW_NS" delete svc "$PREVIEW_NAME" --ignore-not-found
 
+          # Read the label here rather than from the event payload so a
+          # workflow_dispatch redeploy of a locked PR sees the lock too.
+          LOCAL_INIT_ENV='- { name: LOBU_LOCAL_INIT_ALLOW_PROXY, value: "1" }'
+          if gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' \
+            | grep -qx staging; then
+            # Expands to a whitespace-only line, which YAML reads as a blank
+            # line inside the sequence.
+            LOCAL_INIT_ENV=''
+            echo "staging lock held by this PR - passwordless bootstrap disabled"
+          fi
+
           # The embedded runner binds 127.0.0.1 (HOST below) so /api/local-init
           # sees a loopback peer. socat accepts external connections on 8788 and
           # forwards them over loopback to the app on 8787.
           # LOBU_LOCAL_INIT_ALLOW_PROXY: the private tailnet ingress (Tailscale
           # Serve) injects Forwarded-* headers; tolerate them for this single-user
           # preview so /api/local-init sign-in works (peer is loopback via socat).
+          # Set ONLY while this PR is tailnet-only. The `staging` label puts the
+          # same pod behind a public Funnel host, where the setting would let
+          # anyone on the internet mint an owner session (auth/routes.ts names
+          # Funnel as the case it refuses by default). staging.yml also strips
+          # the var when it acquires the lock; deciding it here as well is what
+          # stops the next push to a locked PR from handing it back.
           # CHOKIDAR_USEPOLLING: the container's default nofile ulimit is 1024, and
           # Vite's inotify watch fds blow through it at boot on a monorepo tree
           # (EMFILE crash, seen after the image grew). Polling uses stat() calls
@@ -162,7 +181,7 @@ jobs:
                       - { name: NODE_ENV, value: "development" }
                       - { name: CHOKIDAR_USEPOLLING, value: "true" }
                       - { name: ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: preview-encryption, key: key } } }
-                      - { name: LOBU_LOCAL_INIT_ALLOW_PROXY, value: "1" }
+                      ${LOCAL_INIT_ENV}
                     ports:
                       - { containerPort: 8787 }
                     readinessProbe:

@@ -93,13 +93,37 @@ jobs:
             fi
           done
 
+          # Staging is PUBLIC (Tailscale Funnel, below), so the passwordless
+          # bootstrap endpoint must not be reachable through it. preview.yml
+          # sets LOBU_LOCAL_INIT_ALLOW_PROXY=1 because a plain preview is
+          # tailnet-only; behind Funnel that same setting would let anyone on
+          # the internet mint an owner session (auth/routes.ts names Funnel as
+          # the case it refuses by default). Strip it before the host goes
+          # public. The rollout restarts the pod, and the preview's data volume
+          # is an emptyDir — so bootstrap AFTER the lock, from inside the pod
+          # where the peer really is loopback:
+          #   kubectl -n $PREVIEW_NS exec deploy/$PREVIEW_NAME -- \
+          #     curl -sS -X POST -H 'X-Lobu-Client: staging-bootstrap' \
+          #     http://127.0.0.1:8787/api/local-init
+          kubectl -n "$PREVIEW_NS" set env "deploy/$PREVIEW_NAME" \
+            LOBU_LOCAL_INIT_ALLOW_PROXY-
+          kubectl -n "$PREVIEW_NS" rollout status "deploy/$PREVIEW_NAME" --timeout=600s
+
           # Pin the staging ingress to this PR's preview.
+          #
+          # Funnel, not Serve: the whole point of the staging URL is a stable
+          # endpoint third-party services can reach — an MCP host (claude.ai,
+          # ChatGPT) resolves and calls /mcp from its own backend, not from the
+          # operator's browser, so a tailnet-only name is unreachable to it and
+          # the connector fails at discovery.
           kubectl apply -f - <<EOF
           apiVersion: networking.k8s.io/v1
           kind: Ingress
           metadata:
             name: $STAGING_INGRESS
             namespace: $PREVIEW_NS
+            annotations:
+              tailscale.com/funnel: "true"
           spec:
             ingressClassName: tailscale
             tls:
@@ -121,6 +145,13 @@ jobs:
             "- **App**: https://$STAGING_HOST" \
             "- **MCP endpoint**: https://$STAGING_HOST/mcp" \
             "" \
-            "Removing the \`staging\` label releases the lock.")
+            "This host is served over Tailscale **Funnel** — publicly reachable, so a cloud MCP host can call it. Passwordless bootstrap is disabled on it; sign in once from inside the pod:" \
+            "" \
+            "\`\`\`" \
+            "kubectl -n $PREVIEW_NS exec deploy/$PREVIEW_NAME -- \\" \
+            "  curl -sS -X POST -H 'X-Lobu-Client: staging-bootstrap' http://127.0.0.1:8787/api/local-init" \
+            "\`\`\`" \
+            "" \
+            "Removing the \`staging\` label releases the lock and takes the public host down.")
           gh pr comment "$PR_NUM" --body "$STAGING_BODY"
           echo "staging locked to PR #$PR_NUM at https://$STAGING_HOST"

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b220esqk4</task-id>
+<tool-use-id>toolu_01MkaZBZUZxPpQfswcZu5Zx8</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/b220esqk4.output</output-file>
+<status>killed</status>
+<summary>Background command "Restart SPA with same-origin proxy" was stopped</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+we want to do it the right way, both sidebar and this specific fix we want and getting rid of ducktaped agent_id in connections

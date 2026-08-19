@@ -1,0 +1,1 @@
+so to collect recent what are we gonna go? what's the api contract to pull those. we should be able to filter by mcp clients, behavior, platform etc as a filter but normally all should be in the recent section

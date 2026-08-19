@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxaoikyzw</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20859076-1eb6-464c-9b1c-dae2360fe186/tasks/bxaoikyzw.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for typecheck and frontend to report" completed (exit code 0)</summary>
+</task-notification>

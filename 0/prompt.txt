@@ -1,0 +1,1 @@
+hmm, that's weird. conversations can be also nested no? i thought so. and threadId seems like an additional complexity

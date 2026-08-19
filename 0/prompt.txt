@@ -1,0 +1,1 @@
+cleanup dead stuff/ make sure it's fully healthy. also identify stale pods and stuff

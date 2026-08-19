@@ -1,0 +1,17 @@
+Prod-verify the five PRs merged 2026-07-31. Rollout gate — poll deployed SHA from prod /health.revision, then for EACH merge SHA run `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` (MERGE COMMIT FIRST — reversed accepts a stale deploy; gate on the SQUASH commit, never a branch head).
+
+MERGE SHAs:
+- 80327c52f2817b31f7c8518862bb2c4dc296f7d2  #2396 owletto pointer dd21025a + os.shell key allowlist
+- a8fe130ffacf48b174c69b33d716e52aa4d7efce  #2397 ClientSDK feeds.trigger dry_run type + search_sdk metadata
+- ea850ad756283df6c20e9b705f79321590c4bc13  #2395 exec-sandbox diagnosis + CI backend probe
+- a63c21ac0a4403df9de7334406d0739c251dbf85  #2398 createSyncRun skip reasons (3 call sites)
+- bae1e0f11c3a264d52603dcca8e9209094fa665d  #2399 device-connector slug-race retry
+
+When the gate opens, verify LIVE (not just deployed):
+1. #2398 — trigger_feed on a feed whose connector is uninstalled must say "no longer installed", NOT "already pending or running". Also check CheckDueFeeds logs no longer say "skipped due to race".
+2. #2397 — search_sdk feeds.trigger must show dry_run in summary/signature/example.
+3. #2396 — os.shell: a real Mac on the new build should install ALL 10 manifests (apple.calendar, apple.computer_use, apple.health, apple.photos, apple.reminders, apple.screen_time, apple.system_audio, local.directory, os.shell, whatsapp.local). BLOCKED until a Mac ships that build via Sparkle — record as owed if so.
+4. #2395 — read the exec-sandbox-backend-probe step summary from a CI run on main: bwrap status, systemd-run --user viability, both userns sysctls. It is continue-on-error and non-gating.
+5. #2399 — no new "Failed to wire device connector ... connections_org_slug_unique" errors in prod logs.
+
+Then write results to memory and clean up any test data. If the gate has not opened, reschedule.

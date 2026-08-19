@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>batei0j3j</task-id>
+<summary>Monitor event: "14.15.0 rollout — availability + quiesce check"</summary>
+<event>ROLLOUT STARTED: generation 1517 -&gt; 1518 (chart 14.15.0)</event>
+</task-notification>

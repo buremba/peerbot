@@ -184,6 +184,21 @@ describe('headless device mint (mint-child-token)', () => {
     `) as unknown as Array<{ worker_id: string; platform: string }>;
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.platform)).toEqual(['chrome-extension', 'headless']);
+
+    // The sharp edge of the old hardcoded predicate: the reuse branch matched
+    // the chrome row even though 'headless' was requested, so the re-mint
+    // revoked every other PAT on that worker_id — killing the live extension's
+    // credential and leaving a headless-named PAT bound to a row whose stored
+    // platform stayed 'chrome-extension'. Both devices must keep a live token.
+    const pats = (await sql`
+      SELECT worker_id, revoked_at FROM personal_access_tokens
+      WHERE user_id = ${user.id} AND worker_id IS NOT NULL
+    `) as unknown as Array<{ worker_id: string; revoked_at: string | null }>;
+    expect(pats).toHaveLength(2);
+    expect(pats.every((p) => p.revoked_at === null)).toBe(true);
+    expect(new Set(pats.map((p) => p.worker_id))).toEqual(
+      new Set([chromeBody.worker_id, headlessBody.worker_id])
+    );
   });
 
   it('rejects a platform that is not eligible for child-token mint', async () => {

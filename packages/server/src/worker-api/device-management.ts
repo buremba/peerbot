@@ -190,10 +190,12 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     platform?: string;
     label?: string;
     /**
-     * Optional: the sibling's existing worker_id. When the Mac bridge forwards
-     * the extension's already-stored id we reuse that device identity (re-mint
-     * the bound PAT, keep the same row) instead of minting a fresh one, so
-     * native re-pairs don't churn the device id and accumulate orphaned
+     * Optional: the caller's previously-stored worker_id — the Mac bridge
+     * forwarding the extension's id, or a headless daemon re-registering after
+     * a restart. Reused only when that id already belongs to this user on the
+     * SAME platform being requested, in which case we keep the device identity
+     * (re-mint the bound PAT, keep the same row) instead of minting a fresh
+     * one, so a re-register doesn't churn the device id and accumulate orphaned
      * `device_workers` rows. See the reuse branch below.
      */
     worker_id?: string;
@@ -212,9 +214,9 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     return c.json({ error: `platform '${platform}' is not eligible for child-token mint` }, 400);
   }
   const label = body.label?.toString().trim() || null;
-  // The sibling's previously-stored worker_id, if the Mac bridge forwarded it.
-  // Trimmed; validated against ownership + platform in the reuse branch below,
-  // so a stale/garbage value just falls through to a fresh mint.
+  // The caller's previously-stored worker_id, if it forwarded one. Trimmed;
+  // validated against ownership + the requested platform in the reuse branch
+  // below, so a stale/garbage value just falls through to a fresh mint.
   const requestedWorkerId = (body.worker_id ?? '').trim();
 
   try {

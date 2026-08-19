@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btuw98jm3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/btuw98jm3.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for integration then merge-gate" completed (exit code 0)</summary>
+</task-notification>

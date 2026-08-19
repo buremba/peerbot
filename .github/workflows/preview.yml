@@ -137,7 +137,7 @@ jobs:
             # behind the ingress reads as http://<host> — OAuth metadata and the
             # MCP App asset URLs would both be stamped http and rejected by the
             # host's sandbox.
-            LOCK_ENV='- { name: PUBLIC_GATEWAY_URL, value: "https://staging.${{ vars.TAILNET_DOMAIN }}/lobu" }'
+            LOCK_ENV='- { name: PUBLIC_GATEWAY_URL, value: "https://${{ vars.STAGING_HOST || 'staging.lobu.ai' }}/lobu" }'
             echo "staging lock held by this PR - passwordless bootstrap disabled"
           fi
 
@@ -148,9 +148,9 @@ jobs:
           # Serve) injects Forwarded-* headers; tolerate them for this single-user
           # preview so /api/local-init sign-in works (peer is loopback via socat).
           # Set ONLY while this PR is tailnet-only. The `staging` label puts the
-          # same pod behind a public Funnel host, where the setting would let
+          # same pod behind the public staging host, where the setting would let
           # anyone on the internet mint an owner session (auth/routes.ts names
-          # Funnel as the case it refuses by default). staging.yml also strips
+          # public tunnels as the case it refuses by default). staging.yml also strips
           # the var when it acquires the lock; deciding it here as well is what
           # stops the next push to a locked PR from handing it back.
           # CHOKIDAR_USEPOLLING: the container's default nofile ulimit is 1024, and
@@ -165,6 +165,10 @@ jobs:
             namespace: $PREVIEW_NS
           spec:
             replicas: 1
+            # The namespace quota grants one pod's worth of CPU, so a rolling
+            # update can never schedule the surge replica: it stalls at "0 of 1
+            # updated" until the timeout. Replace the pod instead of surging.
+            strategy: { type: Recreate }
             selector:
               matchLabels: { app: $PREVIEW_NAME }
             template:

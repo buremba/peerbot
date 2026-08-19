@@ -1,0 +1,1 @@
+wtf we have opencode integration no? do you really need to have classes in there or could this be loaded from ~/.owletto .lobu agents.json file somewhere

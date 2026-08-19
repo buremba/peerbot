@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bv5ln95xr</task-id>
+<tool-use-id>toolu_01X49RL7RCyLaCj1rpok2g3s</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/bv5ln95xr.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on the flaky environmental blocker" completed (exit code 0)</summary>
+</task-notification>

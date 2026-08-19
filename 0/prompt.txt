@@ -1,0 +1,1 @@
+should we merge the sandbox and devices page under runtime maybe? does it make sense?

@@ -1,0 +1,7 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The change preserves parity with the canonical JSON renderer for Markdown data bindings and badge fields. Focused tests, the MCP bundle build, and TypeScript compilation all pass without revealing regressions.
+  </results>
+  </user_action>

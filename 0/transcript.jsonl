@@ -1,0 +1,1 @@
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"assistant","ts":"2026-08-09T23:24:12.600Z","content":[{"text":"The change preserves parity with the canonical JSON renderer for Markdown data bindings and badge fields. Focused tests, the MCP bundle build, and TypeScript compilation all pass without revealing regressions.","type":"text"}]}

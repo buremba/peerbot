@@ -1,0 +1,82 @@
+<task-notification>
+<task-id>a8e013d5822907b0b</task-id>
+<tool-use-id>toolu_01Caqr74cLqb4raJd4QpKjCH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/a8e013d5822907b0b.output</output-file>
+<status>completed</status>
+<summary>Agent "Inference facet + provider rows" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Everything committed as intended. All work is complete.
+
+## Report
+
+### Task 4 — routing (held up, no design fork)
+Provider rows route to **`/$owner/infrastructure/models?provider=&lt;slug&gt;`**.
+
+I confirmed provider rows **cannot** use `/$owner/connectors/$connectorKey`: that page resolves its key against `useInstallableConnectorCatalog`, finds nothing, and renders the "This connector isn't installed… details aren't available" dead end. Bending it was forbidden, so I didn't.
+
+I did not need to invent a route either. `/$owner/infrastructure/models` already accepts `?provider=`, already renders a targeted banner, highlights the row, and auto-opens its edit controls (`ProviderRow`'s `targeted` prop). Zero new routes, zero special-casing. This is the surface the follow-up branch will move anyway, so the deep link is the natural seam.
+
+### Diffs
+**Superproject** (`git status` clean):
+```
+packages/owletto | 2 +-   (pointer bump only)
+```
+**owletto submodule** (`git status` clean), 6 files, +340/−38:
+```
+src/app/$owner/connectors/index.tsx       | 132 ++++++---
+src/components/connectors/facet-chips.tsx |   8 +-
+src/lib/api/connections.ts                |  10 ++-
+src/lib/connectors/facets.ts              |  18 +-
+src/lib/connectors/inference-rows.test.ts | 135 +++++++++  (new)
+src/lib/connectors/inference-rows.ts      |  75 ++++++     (new)
+```
+`inference_providers` untouched, `deriveConnectionFacets` server contract untouched, `models.tsx` / `InferenceProvidersBody` / `CreateProviderForm` / `CONNECT_TABS` all left in place per task 5.
+
+### Mutation testing — 8 mutations, how I broke each
+| # | Mutation | Caught by |
+|---|---|---|
+| 1 | `INFERENCE_ROW_KEY_PREFIX` → `""` | collision + prefix tests |
+| 2 | `inference: true` → `false` in builder | facet-shape + filter tests |
+| 3 | `displayName \|\| slug` → `displayName` | slug-fallback test |
+| 4 | `status: provider.status` → `"active"` | name/status/installed test |
+| 5 | `installed: true` → `false` / deleted | name/status/installed test |
+| 6 | deleted `if (filter === "inference")` branch | **initially passed — real gap** |
+| 7 | label `"Inference"` → `"Models"` | label test |
+| 8 | prefix value changed / key decoupled from constant | **initially passed — real gap** |
+
+Two genuine escapes, both fixed rather than papered over:
+
+- **#6** passed because `connectorMatchesFilter` ended in a permissive `return true`, so an unhandled filter matched everything — my "provider matches inference" assertion was vacuous. Added an **exclusion** test (a data connector must be *hidden* by the Inference filter). `review-fix` independently tightened that fallthrough to `return false`, which I kept.
+- **#8** is the magic-string trap you flagged, in the subtle direction: asserting `key === \`${PREFIX}slug\`` pins the *binding* but is a tautology on the *value*. Split into two assertions — one deriving from the constant (catches decoupling), one literal (catches a silent rename). Both mutations now fail.
+
+Final: 11 tests in the new file, 958 owletto tests, `make test-unit`, `make pre-pr` all green.
+
+### What `review-fix` changed — kept vs reverted
+It again reverted parts of the assignment. **Kept (4 genuine catches):**
+- `useInferenceProviders({ enabled: entityId == null })` + a `scopedInferenceProviders` guard — **a real bug I missed**: providers aren't entity-linked, so they'd wrongly appear when filtering the list by entity.
+- Deleted the `methods` field from both item shapes — genuinely dead once providers skip `connectorNeedsSetup`.
+- `connectorMatchesFilter` fallthrough `return true` → `return false` — this is what made mutation #6 escape.
+- Lede copy now mentions inference.
+
+**Reverted (5 — each undid the brief):**
+- Deleted `export type ConnectorFacet` (task 1 names it). It's unused on `origin/main` too, so this is pre-existing knip-tolerated vocabulary, not something my branch introduced.
+- `inference: boolean` → `inference?: boolean` (task 2 says default false everywhere, not optional).
+- Deleted `installed: true` (task 3 requires it; it's what keeps rows past the installed-only filter).
+- Deleted `INFERENCE_ROW_KEY_PREFIX`'s export and the pinning test, **inlining `"inference-provider:slack"` as a literal** — recreating the exact duplication you told me to pin.
+- `provider.status` → `connector.status` in the meta (equivalent only by coincidence; reading through the provider is the honest source).
+
+I did **not** re-add `isInferenceRowKey` — the fixer was right that it had no consumers; it was speculative API on my part, and the prefix is better pinned via the exported constant.
+
+### Confidence
+- **Facet vocabulary / chips / row builder — high (90).** Pure functions, 11 tests, 8 mutations verified, full suite green.
+- **Connectors-list integration — medium-high (75).** Typechecks, and the `all-routes` smoke test mounts the connectors page, but that's with mocked data — **I did not boot the app or log in**, so I have not seen a real provider row render or clicked one.
+- **Provider-row routing — medium (65).** I traced the route, its `validateSearch`, and confirmed `targeted` opens the edit controls by reading `ProviderRow`. **Never exercised in a browser.**
+- **Not regressing existing rows — high (88).** 958 tests green; the non-provider Link branch is byte-identical apart from the extracted `className`.
+
+### Next actions
+1. **Boot it and click a provider row** — the one gap in every confidence number above. Needs an org with a real `inference_providers` row; verify the Cpu/Inference chip, the `Default · active` meta, and that the Models page opens with that provider highlighted.
+2. **Exercise the entity-filtered list** (`/connectors?entity_id=…`) to confirm the fixer's `enabled` guard actually hides providers — that fix is untested by anything I ran.
+3. **Decide the follow-up's shape**: with rows deep-linking to `?provider=`, removing the Models tab means either giving providers a real detail page or making the Models surface the permanent target. Worth settling before that branch starts.
+4. Consider whether `ConnectorFacet` should be deleted repo-wide as dead vocabulary — out of scope here since the brief named it, but it has zero consumers on `main`.</result>
+<usage><subagent_tokens>161183</subagent_tokens><tool_uses>85</tool_uses><duration_ms>1495017</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1o95foa7</task-id>
+<tool-use-id>toolu_01Eo2fs7GL2ehx4bZ8Q2ZxYR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b1o95foa7.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on the rebased HEAD" completed (exit code 0)</summary>
+</task-notification>

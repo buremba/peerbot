@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc8s19zuq</task-id>
+<tool-use-id>toolu_01L9VKv5Vnpu9APTuE2mntbh</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bc8s19zuq.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review via pi with deepseek-v4-flash" completed (exit code 0)</summary>
+</task-notification>

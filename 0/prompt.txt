@@ -1,0 +1,1 @@
+hmm, that's weird. maybe mcp clients should not be assignedtoagentids?

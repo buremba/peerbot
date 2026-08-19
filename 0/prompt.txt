@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2vx16evx</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/b2vx16evx.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for e2e server ready" completed (exit code 0)</summary>
+</task-notification>

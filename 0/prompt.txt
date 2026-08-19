@@ -1,0 +1,13 @@
+<task-notification>
+<task-id>bklbyxoec</task-id>
+<summary>Monitor event: "CI check results on PR 2218"</summary>
+<event>Analyze (actions): pass
+Analyze (python): pass
+check-drift: fail
+connector-parity-smoke-filter: pass
+format-lint: pass
+mac-build-smoke-filter: pass
+migrations: pass
+Security tests (bun:test): pass
+Security tests (vitest): pass</event>
+</task-notification>

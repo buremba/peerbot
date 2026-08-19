@@ -1,0 +1,1 @@
+i meant rather than seperating it already set up for you etc, why don't we use the existing chips design when people click chips we can show relevant integrations? also i see under connections in the connector page? what if there is so many connections or feeds how it will play out

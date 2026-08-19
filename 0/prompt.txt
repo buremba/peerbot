@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>by7etwcq5</task-id>
+<summary>Monitor event: "final control run terminal"</summary>
+<event>CONTROL TERMINAL: completed</event>
+</task-notification>

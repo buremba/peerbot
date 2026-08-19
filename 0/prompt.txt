@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bq0cd3vsa</task-id>
+<tool-use-id>toolu_01VeTAcCjYzX6hYN6MF5zuwz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bq0cd3vsa.output</output-file>
+<status>completed</status>
+<summary>Background command "Review the settled HEAD" completed (exit code 0)</summary>
+</task-notification>

@@ -1210,6 +1210,12 @@ jobs:
           bash scripts/lib/__tests__/review-skip.test.sh
           bash scripts/lib/__tests__/review-cache.test.sh
 
+      - name: Preview workflow guards
+        # The preview deploy's mid-flight teardown decides whether to delete a
+        # namespace out from under a running PR. It only ever executes on a
+        # close/unlabel race, so without this it would first run in anger.
+        run: bash scripts/lib/__tests__/preview-teardown.test.sh
+
       - name: Remote CI wrapper guards
         # Depot rewrites .github/actions paths to .depot/actions for local runs.
         # Pin the duplicate action and the fail-closed run-status parser so a

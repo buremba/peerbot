@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# The preview deploy job's mid-flight teardown check, executed rather than
+# read. Deploy and cleanup sit in disjoint concurrency groups so teardown is
+# never cancelled; the cost is that a close/unlabel landing mid-deploy no
+# longer cancels the deploy, and the surviving deploy would recreate the
+# namespace cleanup just removed. This step closes that window, so its decision
+# is load-bearing: a wrong answer either leaks a namespace forever or deletes a
+# live preview out from under an open PR.
+#
+# `gh` and `kubectl` are stubbed on PATH; the assertion is whether the real
+# script from the workflow issues the namespace delete.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKFLOW="$SCRIPT_DIR/../../../.github/workflows/preview.yml"
+
+fail() {
+  echo "not ok - $1" >&2
+  exit 1
+}
+
+# Pull the step's shell body straight out of the workflow: a copy in this file
+# would drift from the thing that actually runs.
+teardown_script="$(awk '
+  /^      - name: Tear down if the PR closed or lost the preview label mid-deploy$/ { found = 1 }
+  found && /^        run: \|$/ { capture = 1; next }
+  capture && /^          / { print; next }
+  capture && NF { exit }
+' "$WORKFLOW")"
+[ -n "$teardown_script" ] || fail "could not extract the mid-deploy teardown script"
+
+STUBS="$(mktemp -d)"
+trap 'rm -rf "$STUBS"' EXIT
+
+cat >"$STUBS/gh" <<'STUB'
+#!/usr/bin/env bash
+# `gh api <path> -q <expr>` — answer from the fixture the case exported.
+case "$*" in
+  *".state"*) printf '%s\n' "$FAKE_PR_STATE" ;;
+  *"index(\"preview\")"*) printf '%s\n' "$FAKE_PR_LABELED" ;;
+  *) echo "unexpected gh invocation: $*" >&2; exit 64 ;;
+esac
+STUB
+
+cat >"$STUBS/kubectl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$KUBECTL_LOG"
+STUB
+
+chmod +x "$STUBS/gh" "$STUBS/kubectl"
+
+# state labeled -> "deleted" | "kept"
+teardown_verdict() {
+  local log
+  log="$(mktemp)"
+  FAKE_PR_STATE="$1" FAKE_PR_LABELED="$2" \
+  KUBECTL_LOG="$log" PATH="$STUBS:$PATH" \
+  REPO="lobu-ai/lobu" PR_NUMBER="123" PREVIEW_NS="lobu-preview-123" \
+    bash -e -c "$teardown_script" >/dev/null 2>&1 ||
+    { rm -f "$log"; echo "error"; return; }
+  if grep -q 'delete namespace lobu-preview-123 --ignore-not-found' "$log"; then
+    rm -f "$log"; echo deleted
+  else
+    rm -f "$log"; echo kept
+  fi
+}
+
+assert_teardown() {
+  local expected="$1" state="$2" labeled="$3" got
+  got="$(teardown_verdict "$state" "$labeled")"
+  [ "$got" = "$expected" ] ||
+    fail "teardown with state=$state labeled=$labeled -> $got, wanted $expected"
+}
+
+# The normal case: the PR is still open and still wants a preview. Deleting
+# here would tear down a live preview on every single deploy.
+assert_teardown kept open true
+# Closed mid-deploy: cleanup already ran and this deploy recreated the
+# namespace behind it. This is the leak the step exists to close.
+assert_teardown deleted closed true
+# Label pulled mid-deploy — same window, different trigger.
+assert_teardown deleted open false
+assert_teardown deleted closed false
+# `merged` is not `open`: a PR merged mid-deploy must not keep its namespace.
+assert_teardown deleted merged true
+
+echo "ok - preview mid-deploy teardown decides correctly"

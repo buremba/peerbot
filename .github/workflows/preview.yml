@@ -284,10 +284,11 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          state=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" -q '.state')
-          labeled=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" -q '[.labels[].name] | index("preview") != null')
+          state=$(gh api "repos/$REPO/pulls/$PR_NUMBER" -q '.state')
+          labeled=$(gh api "repos/$REPO/pulls/$PR_NUMBER" -q '[.labels[].name] | index("preview") != null')
           echo "PR state=$state preview-labeled=$labeled"
           if [ "$state" != "open" ] || [ "$labeled" != "true" ]; then
             echo "Preview no longer wanted; deleting namespace $PREVIEW_NS"

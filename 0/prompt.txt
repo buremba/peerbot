@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3necnr04</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/b3necnr04.output</output-file>
+<status>completed</status>
+<summary>Background command "Smoke test gpt-5 arm" completed (exit code 0)</summary>
+</task-notification>

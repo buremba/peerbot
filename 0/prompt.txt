@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzl46rtl9</task-id>
+<tool-use-id>toolu_01KMxESGCeyu3bduSoYhXi5Y</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bzl46rtl9.output</output-file>
+<status>completed</status>
+<summary>Background command "Review the race test on 2300" completed (exit code 0)</summary>
+</task-notification>

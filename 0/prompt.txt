@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bonxypjex</task-id>
+<tool-use-id>toolu_01RVqEGVGq6MBVzRj7R48zNA</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bonxypjex.output</output-file>
+<status>completed</status>
+<summary>Background command "Final clean pre-pr on round-7 HEAD" completed (exit code 0)</summary>
+</task-notification>

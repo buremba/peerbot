@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bogu4ylpu</task-id>
+<tool-use-id>toolu_01AKejsWEaEd9NFECo2bE7Nz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bogu4ylpu.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review once" completed (exit code 0)</summary>
+</task-notification>

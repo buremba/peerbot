@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b97gj1j5b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/25855ca6-1129-4b4d-ba7a-9d72acb13600/tasks/b97gj1j5b.output</output-file>
+<status>completed</status>
+<summary>Background command "Clean up mini temp files and render v2 with real footage" completed (exit code 0)</summary>
+</task-notification>

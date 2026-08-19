@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b4t13294x</task-id>
+<summary>Monitor event: "gate retry/30000ms-hang signals on takeout-entity-naming"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>

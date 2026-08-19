@@ -1,0 +1,1 @@
+how can you consolidate simplify that both in the api and frontend, ultrathink we can do refactoring if it helps

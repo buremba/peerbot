@@ -1,0 +1,119 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+   - **"do those"** — execute the three next actions I had proposed: (1) investigate/deactivate connection #397, (2) wire a GitHub connection so #2249 becomes testable, (3) delete a verification conversation I believed I'd created.
+   - **"wy cant you do that"** [sic] — challenge to my claim that I couldn't complete the GitHub App install myself; demand that I actually test rather than assert a limitation.
+   - **(mid-turn) "https://github.com/organizations/lobu-ai/settings/installations/141913287 is open"** — informing me the GitHub App is already installed on the `lobu-ai` org.
+   - **"you have full permission we have no customers"** — blanket authorization to act on prod without per-action confirmation; proceed with fixing the #2249 issue.
+   - **"ok anything left? we don't want gvisor crun etc, if people need a real computer they need to set up the sandbox."** — a product DECISION rejecting runtime-level sandbox work, plus a request for outstanding-work status.
+   - **"merge now"** — merge the open PRs (#2313, #2314).
+   - **"do we need to do e2e after to make sure it works"** — the current, unanswered question about post-merge end-to-end verification.
+
+2. **Key Technical Concepts:**
+   - **just-bash** — a JS bash interpreter with builtin commands over a *virtual FS*, used as the agent's shell in embedded deployment mode. Real binaries are reachable ONLY when registered as `customCommands`. Probing the container image from inside just-bash is invalid — `ls`/`command -v` resolve against builtins/virtual FS, not the real filesystem.
+   - **`agent_tooling`** — connector-declared `{env:[{name,credential:"lease"}], nix:{packages:[...]}, domains:[...]}` stored as jsonb on `connector_definitions`.
+   - **`registerSpawnedBinaries = sandboxStrategy.kind !== "none" || allowUnsandboxedExec`** — the gate that makes contributed CLIs work; requires bubblewrap.
+   - **bubblewrap/uid_map** — `/proc/self/uid_map` is restricted by the *container runtime*, not seccomp or capabilities, so no chart knob enables bwrap on k3s.
+   - **Filter-after-traverse** — pi's `DefaultResourceLoader.reload()` calls `packageManager.resolve()` unconditionally, then `no*` flags discard results. Same shape as the user's "text matcher is never the boundary" rule.
+   - **Squash-merge ancestry** — gate on `gh pr view <n> --json mergeCommit`, and keep argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` (reversed accepts a stale deploy).
+   - **`${VAR:+yes}${VAR:-no}`** — NOT an either/or; both expansions fire when the variable is set, printing the secret.
+   - **Lobu MCP `query_sql` table allowlist**: behavior_versions, behaviors, canvas_windows, channel_messages, connections, connector_definitions, entities, entity_relationship_types, entity_relationships, event_classifications, events, feeds, oauth_clients, oauth_tokens, user. (`conversations` and `runtime_providers` are NOT queryable.)
+   - **`client.org(slug)`** — cross-org SDK binding; essential before declaring a connector absent.
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/gateway/orchestration/deployment-manager.ts`** — the agent-tooling injection path. Verified correct.
+     - `:1437` `envVars.NIX_PACKAGES = packages.join(",");`
+     - `:1598` `const validated = this.validateMessageData(deploymentName, messageData);` — `validateMessageData` (`:1109-1136`) `return messageData;` (same reference), so the union at `:1661` mutates in place.
+     - `:1658-1670` unions `agentTooling.packages` into `validated.nixConfig.packages`.
+     - `:2260` `const nixShell = nixPackages.length > 0 ? locateNixShell() : null;` with an existing `logger.warn` at `:2277` when packages are dropped.
+     - `locateNixShell()` `:178-195` — probes `nix-shell --version`, honors `LOBU_DISABLE_NIX_SHELL=1`.
+
+   - **`packages/agent-worker/src/embedded/just-bash-bootstrap.ts`** — the root of the #2249 behaviour.
+     ```js
+     const IMAGE_BAKED_EXECUTABLES: ReadonlyMap<string, readonly string[]> = new Map([
+       ["git", ["git"]], ["gh", ["gh"]], ["ripgrep", ["rg"]],
+     ]);
+     ```
+     ```js
+     const registerSpawnedBinaries =
+       sandboxStrategy.kind !== "none" || allowUnsandboxedExec;
+     const binaries = registerSpawnedBinaries ? discoverBinaries() : new Map();
+     ```
+     Console warn predicts: "Exec sandbox unavailable; not registering spawned binary commands, so connector-contributed CLIs will exit 127."
+
+   - **`charts/lobu/values.yaml:80-131`** — THE authoritative document. Records that bwrap CANNOT be enabled by any securityContext change on this cluster (k3s v1.32.8, containerd 2.0.5, Ubuntu 24.04, kernel 6.8); fails at `bwrap: setting up uid map: Operation not permitted` even with SETUID+SETGID+SYS_CHROOT+MKNOD+DAC_OVERRIDE, `allowPrivilegeEscalation: true`, seccomp removed. crun/gvisor RuntimeClasses declared but handlers not installed. Verify command:
+     ```
+     kubectl exec <app-pod> -- bwrap --unshare-user --unshare-pid --ro-bind \
+       /usr /usr --proc /proc --dev /dev -- /usr/bin/true
+     ```
+
+   - **`docker/app/Dockerfile:163-183`** — runtime stage installs `curl ca-certificates git gh unzip bubblewrap` plus Chromium libs. Comment: "bubblewrap is what makes the contributed CLIs REACHABLE".
+
+   - **`node_modules/@mariozechner/pi-coding-agent/dist/core/resource-loader.js`** — proves the #2313 blocker:
+     ```js
+     212:  const resolvedPaths = await this.packageManager.resolve();   // unconditional traversal
+     272:  const extensionPaths = this.noExtensions ? cliEnabledExtensions : this.mergePaths(...);
+     292:  const skillPaths = this.noSkills ? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths) : ...;
+     ```
+
+   - **`packages/agent-worker/src/runtime/pi-resources.ts`** (branch `feat/pi-loader-hardening`, PR #2313) — `createLobuResourceLoader({cwd, settingsManager})` passes `cwd: options.cwd` (agent workspace) plus `noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles: true`, `agentDir: LOBU_PI_AGENT_DIR` (= `path.join(os.tmpdir(), "lobu-pi-agent")`), `systemPromptOverride: () => undefined`, `appendSystemPromptOverride: () => []`, then `await loader.reload()`.
+
+   - **Memory files:**
+     - Created `reference_contributed_clis_exit_127_by_design.md` — records the whole finding + the user's DECISION + the `${VAR:+yes}${VAR:-no}` lesson + "never probe the image from inside just-bash".
+     - **Deleted** `project_connector_agent_tooling_nix_half_broken.md` (wrong conclusion).
+     - Edited `reference_device_pin_unique_index.md` — replaced "Open anomaly found" with the confirmed #2288 root cause, the expired-approval cost, the explicit disclaimer that this is NOT `feedback_computer_use_cant_grant_owletto`, and the `status='paused'` mitigation.
+     - Edited `project_prod_verification_2026_07_29.md` — #2249 marked RESOLVED/by-design; "check every member org with `client.org(slug)` before declaring a connector absent."
+     - `MEMORY.md` lines 17, 119, and the connector-tooling line updated.
+
+   - **Scratchpad scripts** (in `/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/scratchpad/`):
+     - `merge-when-green.sh` — completed (task bda35rtlq).
+     - `wait-rollout.sh` — RUNNING (task btnc25esx), polls `https://app.lobu.ai/health` `.revision` every 60s up to 60 times, gating on `git merge-base --is-ancestor 0862364360475219258973c1f5c3adab85e50847 "$DEPLOYED"`.
+
+4. **Errors and fixes:**
+   - **Leaked a live GitHub App installation token into prod + transcript.** Used `echo "TOKEN_SET=${GH_TOKEN:+yes}${GH_TOKEN:-no}"` as a presence check; both expansions fire, printing `REDACTED`. The `sed` guard filtered `ghp_`, not `ghs_`. Disclosed immediately with a revoke curl; user implicitly accepted the ≤1h expiry given "no customers". Correct form: `[ -n "$VAR" ] && echo SET || echo UNSET`.
+   - **Wrongly declared #2249 "PROD-BROKEN".** Root cause of my error: probing the container image from inside just-bash. Deleted the bad memory, wrote the correct one. The tell I misread: `command -v rg` → `/usr/bin/rg` despite ripgrep not being in the apt line (it's a just-bash builtin).
+   - **Wrongly declared #2249 "not verifiable"** — I tested in `buremba` (zero github connections) instead of `lobu-team` (connection 385).
+   - **Wrongly linked connection 397's expired approvals to `feedback_computer_use_cant_grant_owletto`** — that memory is about the local `mcp__computer-use__*` resolver. Corrected with an explicit disclaimer.
+   - **Item 3 of "do those" was based on a false premise** — I had not created a throwaway conversation; my turn appended to the user's existing default web thread. Did not delete it; `conversations` has no delete method anyway.
+   - Schema/API errors fixed by discovery: `connections.name`→`display_name`; no `connector_definitions.requires_device`; `conversations`/`runtime_providers` not in query allowlist; `conversations.list` rejects `limit`; `conversations.send` rejects an unknown explicit `conversation_id`.
+
+5. **Problem Solving:**
+   - **Connection 397** diagnosed as the live prod manifestation of the already-open **#2288** (fast path pins one connection per poll with no ORDER BY, keeps selecting the already-correct 447, so 397 is never re-pinned). Cost measured: three computer-use approvals expired unanswered after 7 days on 2026-07-27. Mitigated with `status='paused'`; invariant now holds org-wide.
+   - **#2249** fully traced and closed as working-as-designed. All wiring above the sandbox gate verified live: `NIX_PACKAGES=[gh]` reaches the worker, `GH_TOKEN` lease mints and lands, `IMAGE_BAKED_EXECUTABLES` maps `gh → ["gh"]`.
+   - **#2314 merged** (merge commit `0862364360475219258973c1f5c3adab85e50847`).
+   - **#2313 blocked** by a pi-review blocker I independently CONFIRMED against pi's source.
+
+6. **All user messages:**
+   - "do those"
+   - "wy cant you do that"
+   - "https://github.com/organizations/lobu-ai/settings/installations/141913287 is open"
+   - "you have full permission we have no customers"
+   - "ok anything left? we don't want gvisor crun etc, if people need a real computer they need to set up the sandbox."
+   - "merge now"
+   - "do we need to do e2e after to make sure it works"
+
+   *Standing constraints from AGENTS.md/CLAUDE.md still in force:* **Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup NAME=<slug>`**; **never bulk-delete prod `organization` rows**; **`events` is append-only — never `DELETE FROM events`**; **workers never receive real credentials** (only placeholders/proxied access; exceptions are device-pinned connectors and short-lived provider-derived leases); **stage by explicit path (`git add -- <paths>`, never `-A`)**; **never `git stash`**; **never resolve merge conflicts in the GitHub web UI**; **never `--admin` past a check that has not reported**; **no Co-Authored-By/Claude attribution in commits**; **absence must be proven with `git fetch -q origin && git grep <pattern> origin/main`**; **`LOBU_ALLOW_UNSANDBOXED_EXEC=1` must NOT be used** (workers and gateway share the container; `/proc/1/environ` is readable); prohibited regardless of authorization: entering credentials/API keys/tokens into fields.
+
+7. **Pending Tasks:**
+   - **Answer the e2e question** (the user's current, unanswered request).
+   - **Post-rollout e2e for #2314** once `0862364…` is deployed — verify a replayed low Telegram message id now delivers AND that genuine redelivery is still suppressed (the fix must not weaken dedupe).
+   - **#2313** — needs the confirmed blocker addressed before it can merge (`pi-review` is required with `enforce_admins`). Reviewer's suggested fix: "Use a non-discovering ResourceLoader whose reload never invokes DefaultPackageManager against the workspace, and add a hostile large/cyclic skill-tree test proving session boot does not traverse it." A candidate minimal fix: pass a fixed empty dir as the loader's `cwd` instead of the agent workspace.
+   - **#2309** `chore(main): release lobu 14.7.1` — explicitly left as the user's call (merging cuts a release).
+   - **#2234** draft — blocked pending generation-routing redesign, another program's work.
+   - **Offered, not started:** docs-only `charts/lobu/values.yaml` edit recording that gvisor/crun is declined and 127 is final.
+
+8. **Current Work:**
+   Answering "do we need to do e2e after to make sure it works". I had just:
+   - Confirmed **#2314 MERGED** and **#2313 held back** by a pi-review blocker, which I independently verified in `resource-loader.js` (line 212 unconditional `packageManager.resolve()` vs. lines 272/292 filtering after).
+   - Retrieved merge SHA `0862364360475219258973c1f5c3adab85e50847` and current deployed revision `2c838b9a6cd8be7d088684c7c68cfdb0b64b3b8b` (prod had moved past the `468c39888` I'd been assuming earlier in the session).
+   - Launched background task **btnc25esx** running `wait-rollout.sh`, which gates on the squash commit with the correct argument order and will notify on rollout.
+
+   My last message to the user quoted the pi-review evidence and said: "Now, your actual question. Let me set up the rollout gate for what did merge." The e2e answer itself was not yet delivered.
+
+9. **Optional Next Step:**
+   Answer the user's question — "do we need to do e2e after to make sure it works" — with the specific e2e owed for #2314 now that it has merged, namely: after `0862364360475219258973c1f5c3adab85e50847` is live, send a Telegram message on a low/previously-burned message id and confirm it delivers, and separately confirm a genuine redelivery is still suppressed (per the PR's own note, "an assertion of `get()` *before* the claim makes the test pass against the unfixed code"). Also note that #2313's e2e is moot until its blocker is fixed. Wait for background task btnc25esx before running the live check; do not begin fixing #2313 without confirming with the user first, since it is another branch's design decision.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

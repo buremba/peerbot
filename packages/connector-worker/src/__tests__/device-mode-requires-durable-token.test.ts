@@ -92,6 +92,27 @@ describe("device mode requires a durable token", () => {
     expect(stderr).toContain("Starting worker daemon");
   }, 20000);
 
+  test("refuses a worker id the device row cannot round-trip", async () => {
+    // worker_id keys the (user_id, worker_id) upsert and is how Automation
+    // pins find this device. A mangled value mints a SECOND device instead of
+    // failing, and the pinned Automations simply stop running here.
+    const stderr = await runDaemon(
+      { WORKER_API_TOKEN: "owl_pat_durabletoken0123456789" },
+      ["--platform", "macos", "--worker-id", "my device #1", "--capabilities", "os.files"]
+    );
+    expect(stderr).toContain("invalid --worker-id");
+    expect(stderr).not.toContain("Starting worker daemon");
+  }, 20000);
+
+  test("refuses a worker id past the length cap", async () => {
+    const stderr = await runDaemon(
+      { WORKER_API_TOKEN: "owl_pat_durabletoken0123456789" },
+      ["--platform", "macos", "--worker-id", "d".repeat(129), "--capabilities", "os.files"]
+    );
+    expect(stderr).toContain("invalid --worker-id");
+    expect(stderr).not.toContain("Starting worker daemon");
+  }, 20000);
+
   test("--help does not send users to a credential the guard rejects", async () => {
     // The guard and the setup instructions are edited in different places, so
     // they can drift apart silently: --help used to name the `lobu whoami

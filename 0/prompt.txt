@@ -1,0 +1,1 @@
+why doesn't it have write operations? doesnt mcp extension allows that for us

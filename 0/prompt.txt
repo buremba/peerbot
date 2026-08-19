@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhls8qanj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bhls8qanj.output</output-file>
+<status>completed</status>
+<summary>Background command "Final review on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

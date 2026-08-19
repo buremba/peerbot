@@ -1,0 +1,55 @@
+<task-notification>
+<task-id>afece6a81f659bef4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/tasks/afece6a81f659bef4.output</output-file>
+<status>completed</status>
+<summary>Agent "Fable review of chat substrate plan" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All checks are done. Here is the structured verdict.
+
+## BLOCKERS
+
+**B1 — Step 3's backfill is unsatisfiable for cross-org hosted-preview rows, and every fallback weakens the dedupe fence.**
+- `connections.id` is globally unique (single-column PK on a global sequence — `db/migrations/00000000000000_baseline.sql:707-708,741-746,2765-2769`), so two orgs' rows cannot collapse by id collision. That is not the failure mode.
+- The failure mode: `channel_messages` deliberately holds rows whose `organization_id` is the *binding* org while the connection belongs to a *different* org. Writer: `packages/server/src/gateway/connections/channel-transcript.ts:23` ("the binding's org for cross-org preview") and :7-9. Reader proof of the cross-org binding: branch (B) of `resolveBoundChannelRows` selects subscriptions where `connection_organization_id` ≠ the querying org (`packages/server/src/gateway/channels/bound-channels.ts:96-121`). The whole reason `channel_messages_org_dedup` is org-scoped is "a hosted preview connection can route one physical message to Behaviors in several organizations" (`db/migrations/20260719120000_channel_messages_org_dedupe.sql`, header comment).
+- Consequence for a bigint FK: the binding org has **no** `connections` row for that slug (`connections_org_slug_unique` is per-org and partial on `deleted_at IS NULL` — baseline:3368-3371). Backfilling by `(organization_id, slug)` yields NULL for those rows; backfilling by slug alone resolves to *another org's* `connections.id` (a cross-tenant reference); leaving NULL breaks the dedupe arbiter — `channel_messages_org_dedup` is the `ON CONFLICT` target (`channel-transcript.ts:104-106`), and NULLs are distinct in a unique index, so webhook redeliveries duplicate rows for exactly the hosted-preview population that index was built for. The index IS load-bearing: it is the per-org idempotent-capture arbiter (tenant *read* isolation is via org predicates, `channel-transcript.ts:155`). The plan's "80 rows" framing hides all of this.
+
+**B2 — Step 3 omits `authz_source_acl_state.connection_id`.** The ACL fail-closed gate compares `a.connection_id = channel_messages.connection_id` like-for-like as runtime text ids — documented explicitly at `packages/server/src/authz/channel-messages-visibility.ts:46-48` and executed at :145-150 (plus the slug-join at :120). Migrating only `channel_messages` to bigint breaks the enforced-set membership check (the thing that keeps ACL-enforced Slack channel content member-gated). The plan lists search.ts / resolveBoundChannelRows / manage_feeds / execute-data-sources but never this table.
+
+**B3 — Step 3 cannot pass the migration gates as one step.** `channel_messages` is in `QUERYABLE_SCHEMA` with `connection_id` in the exposed column list (`packages/server/src/utils/table-schema.ts:637-655`, column at :641), so removing/retyping that column is a two-phase, two-release change (`docs/GOTCHAS.md:65`; `packages/server/AGENTS.md:10`). Squawk exits non-zero on warnings (`docs/GOTCHAS.md:67`): an in-place `ALTER COLUMN ... TYPE` and a plain `ADD FOREIGN KEY` both warn, and the replacement unique index must be built `CONCURRENTLY` with `transaction:false` plus an INVALID-carcass heal — the repo's own precedent is the three-migration dance `20260719115959` + `20260719120000` + `20260719120010`. Honest phasing: release N (add bigint col, `NOT VALID` FK + validate, concurrent index, dual-write), N+1 (flip reads + QUERYABLE_SCHEMA swap), N+2 (drop text column + old index). Step 5 as described has no migrations, so the gate question is moot there.
+
+## HAZARDS (survivable, but the plan has no mitigation)
+
+**H1 — Step 2's "worker" must be a gateway-replica background consumer, never the agent-worker/sandbox tier.** Replaying stored bytes through the SDK requires the connection's bot token, and signature verification requires the signing secret; "Workers never see real credentials" (`packages/server/AGENTS.md:28`, root `AGENTS.md` hard invariant). The plan's diagram just says "worker" — one wrong reading violates a hard invariant.
+
+**H2 — Step 2's consumption needs a Postgres claim, and the inbound table must be new.** `pg_notify` wakes every replica; correctness must not depend on affinity (`packages/server/AGENTS.md:36-40`). No claim mechanism is stated. The row also mutates ("terminal state with a reason"), so it cannot be `events` (append-only, root invariant) and cannot be `channel_messages`-as-queue: the "constraint we already have" needs parse products (`channel_id`, `platform_message_id`) *and* the binding org — which for cross-org preview is only known after routing, i.e. after the parse the plan moves post-ACK. The edge cannot stamp `organization_id` for those rows. The dedupe-by-existing-constraint claim in P2 is wrong for the raw-inbound insert.
+
+**H3 — Step 5 orphans webhook registration.** `configureWebhook`/`registerCommands` run at instance hydration today (plan §1.4 observed it inline; `platforms/telegram.ts:352+`). If webhook-mode connections get neither runner nor instance, nothing ever calls `setWebhook` — inbound goes fully dark for new/re-credentialed connections. Registration must move to an explicit connection-lifecycle step; the plan doesn't say where.
+
+**H4 — Step 5's stateless outbound loses the status/config gate.** `requireRunningInstance` (`chat-instance-manager.ts:1069`) incidentally enforces paused/revoked status and fresh config. A per-pod adapter cache is fine as *derived* state (consistent with `packages/server/AGENTS.md:13` "hydrate from DB rows"), but only if pause/revoke/rotation enforcement is re-checked from Postgres at send. Q3 admits this as an open question; it needs to be a design commitment, or Step 5 sends on revoked connections from stale pods.
+
+**H5 — Step 3 FK `ON DELETE` is unspecified while a hard delete exists.** `DELETE FROM connections WHERE id = ...` at `packages/server/src/tools/admin/manage_connections/handlers/connect.ts:625`. Plain FK blocks that path; CASCADE silently destroys the compliance transcript the table exists to retain on-demand-only deletion for (`20260618130000_channel_messages.sql` header); SET NULL re-breaks the dedupe arbiter (B1).
+
+**H6 — Step 3 is in tension with a documented boundary and the hot path.** `packages/server/AGENTS.md:22`: "Runtime connection ids may be slugs/managed ids … do not cast runtime ids to bigint. Resolve through connection stores." Every current site exchanges runtime text ids — `persistChannelMessage` (fire-and-forget in the webhook hot path), `search.ts:539-546`, `manage_feeds.ts:355-368`, the CTEs in `execute-data-sources.ts:700-708`. Step 3 adds a resolve hop to each, including capture. Also note `slack-installations.ts:24-28`: the stable text id is the secret-store prefix and webhook routing key and "the bigint PK can't serve as it" — so P4's "one id namespace" can only ever apply to the transcript table, not the runtime; the plan should state that limit.
+
+**H7 — Step 5's premise misstates the exclusive-transport set.** Only Telegram implements `requiresExclusiveStart` (`platforms/telegram.ts:344`; the hook is optional at `platforms/types.ts:125`). "Slack Socket Mode" appears nowhere under `platforms/` (grep for "socket": zero hits). Unverified against prod config, but as of the working tree the claim is false; the split's runner scope should be derived from code, not this sentence.
+
+## NON-GOAL CORRECTIONS
+
+**N1 — "Do not change the `conversations` table shape" contradicts Step 1 as written.** `ThreadSession` carries `workingDirectory`, `provider`, `model`, `networkConfig`, `nixConfig`, `turnCount`, `status`, `botResponseId` (`packages/server/src/gateway/session.ts:16-41`). `conversations` has no session-payload or expiry columns (`20260714160000_conversations.sql` + `_sandbox_pin` + `_thread_id` follow-ups), and its DDL comment scopes it to "identity + listing only". Either `conversations` grows session-state columns (breaking the non-goal) or Step 1 needs a new session-state table (absent from the plan). One of the two must be chosen explicitly; the non-goal cannot stand next to Step 1 unmodified.
+
+**N2 — "Do not touch the per-platform descriptor registry" is too strong given Step 5.** The adapter/runner split necessarily changes the descriptor *contract* (`configureWebhook` timing, `requiresExclusiveStart` consumers, adapter-factory vs lifecycle hooks in `platforms/types.ts`). Correct form: keep the registry *pattern* as a non-goal; freeze of the hook contract is impossible.
+
+**N3 — The other three non-goals are correctly drawn.** Runs queue: keep (and Step 2's consumer should *reuse* its SKIP LOCKED/claim pattern rather than invent a sibling). Keeping the four unused platforms matches the root deletion-evidence rule. Card DSL vs `json_template`: correct to keep separate — json_template is a much larger, separately-consumed web vocabulary (`manage_view_templates.ts`, `resolve_path.ts`, etc.), consistent with the repo's don't-overconsolidate posture.
+
+## Bottom line
+
+**No — not safe as written.** Step 3 has three checkable defects (cross-org backfill, `authz_source_acl_state`, gate phasing), Step 1 contradicts non-goal 4, and Steps 2/5 each leave a hard-invariant-adjacent gap (credential tier ambiguity; webhook-registration ownership) that must be resolved in the plan, not during implementation.
+
+---
+
+**Confidence:** high (85) on B1-B3, H5, H6, N1 — every claim is read from the working tree with file:line, and B1's cross-org mechanism is corroborated by three independent sources (writer comment, bound-channels branch B, migration header). Medium (70) on H7 — code-verified absence of Socket Mode, but not verified against `origin/main` or prod config. This was read-only analysis; nothing was executed.
+
+**Next actions:** (1) re-run the B1 evidence against `origin/main` (`git grep` after fetch) before treating it as final, per the absence rule; (2) query prod for actual cross-org preview rows in `channel_messages` (`organization_id` with no same-org `connections.slug` match) to size B1 concretely; (3) have the plan author name the inbound-row table and the Step 2 consumer tier explicitly; (4) reconcile Step 1 with non-goal 4 (new session table vs conversations columns) before any sequencing is settled.</result>
+<usage><subagent_tokens>101618</subagent_tokens><tool_uses>39</tool_uses><duration_ms>447768</duration_ms></usage>
+</task-notification>

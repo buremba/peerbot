@@ -1,0 +1,1 @@
+we changed some code do we really need this pr? in the recent section we already show the connected ones no? so people can use cmd k to find all historical if they wanty

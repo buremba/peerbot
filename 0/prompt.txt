@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcik5icht</task-id>
+<tool-use-id>toolu_01MeTFZnHVecmgScZHn3AhTE</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1eebddbf-4c2c-4bd1-9494-4a0bad73b495/tasks/bcik5icht.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for debate and judge stages" completed (exit code 0)</summary>
+</task-notification>

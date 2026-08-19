@@ -1,0 +1,1 @@
+why skills have nixPackages? the agent's sandbox we can let them install whatever maybe? or this can be under the agentSettings. skills are just instructions

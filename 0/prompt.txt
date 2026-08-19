@@ -1,0 +1,1 @@
+the telegram bot answers the user to login etc right? how does full end to end loop work

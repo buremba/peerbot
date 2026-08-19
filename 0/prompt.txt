@@ -1,0 +1,1 @@
+can you create a sandbox, copy our prompt in landing page, copy our opencode auth and install opencode there, and then let is ask me questions and we want to connect some services using our managed auth, slack managed etc. guide me through. you need to run things on tmux so i can ssh into there and see the opencod esession

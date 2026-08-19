@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzq9c03n0</task-id>
+<tool-use-id>toolu_01ACy4p7RTQpx4xpcYSP94qu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bzq9c03n0.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on artifact PR 2379" completed (exit code 0)</summary>
+</task-notification>

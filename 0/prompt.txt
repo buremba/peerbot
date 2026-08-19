@@ -1,0 +1,1 @@
+and could we have end to end working stuff. you can run teammates to make sure all works. we want to use dummy inference url to test or you can use my claude keys

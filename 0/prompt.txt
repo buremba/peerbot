@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu4z475it</task-id>
+<tool-use-id>toolu_018Y4Bbgz9oKz3jbATv9x96Y</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b495caea-80b1-4ed4-9dcf-1726b2bc90e1/tasks/bu4z475it.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run the Depot gate on the repinned tree" completed (exit code 0)</summary>
+</task-notification>

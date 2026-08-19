@@ -1,0 +1,113 @@
+<task-notification>
+<task-id>a75e7d2649953b5fb</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/a75e7d2649953b5fb.output</output-file>
+<status>completed</status>
+<summary>Agent "Close period-close test gap" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## TASK 1 — done, mutation-proven
+
+Entry point verified by reading the code, not the brief: **`promoteBehaviorEntityOutput`** (exported from `packages/server/src/utils/promote-keyed-entities.ts:506`), called in production only by `src/tools/admin/manage_behaviors/complete-window.ts`. The per-row gate lives inside its private helper `upsertKeyedEntity`.
+
+New file: `/Users/burakemre/Code/lobu/.claude/worktrees/erp-period-close/packages/server/src/__tests__/integration/watchers/promotion-period-close.test.ts` (6 tests, drives the real entry point inside a transaction the way `complete_window` does).
+
+Both required branches plus a mixed-batch case that a per-type gate cannot pass:
+
+- backdated row → denied, nothing inserted, `deferred` empty (deny ≠ defer)
+- row on the boundary (`closed_through` is inclusive) → denied
+- row after the close → promotes
+- **mixed window**: backdated + open in one call → exactly one promotes
+- type with no `x-period-close` → backdated row promotes (proves the deny comes from the close rule, not some other fail-closed branch)
+- re-sync that backdates an already-promoted open invoice → denied (the update half of the same path)
+
+**Mutation test.** Removed the per-row create gate block (lines 392-431 of `promote-keyed-entities.ts`):
+
+```
+ FAIL  ... &gt; denies promoting a row dated inside the closed period
+   expect(result.promoted).toBe(0)   - 0  + 1
+ FAIL  ... &gt; denies a row dated exactly on the close date (closed_through is inclusive)
+   AssertionError: expected 1 to be +0
+ FAIL  ... &gt; denies only the backdated row in a mixed window and promotes the open one
+   AssertionError: expected 2 to be 1
+ Test Files  1 failed (1)
+      Tests  3 failed | 3 passed (6)
+```
+
+Restored (`cp` from backup, `git diff` confirmed byte-identical):
+
+```
+ ✓ src/__tests__/integration/watchers/promotion-period-close.test.ts (6 tests) 815ms
+ ✓ src/__tests__/integration/watchers/promotion-gate-fail-closed.test.ts (2 tests) 159ms
+ Test Files  2 passed (2)
+      Tests  8 passed (8)
+```
+
+I found no bug in the per-row gate. It sits in the right place (inside the savepoint, before `insertEntityWithUniqueSlug`, after the `createNeedsApproval` short-circuit), carries the row's real metadata, and fails closed on anything but `allow`.
+
+## TASK 2 — cannot route through the gate. Built it, it regressed, reverted.
+
+I did not stop at reasoning — I implemented it and let the test suite decide.
+
+First, the hole is real. A probe test (`manage_entity` merge as an owner, invoice type closed through 2026-06-30) went **red on both halves** before any change:
+
+- merging a closed invoice as the **loser** tombstones it (`deleted_at` set) — `success: true`
+- merging into a closed **winner** rewrites its metadata (`mergeEntityState` folds in every field the winner lacks, plus the loser's name as `aliases`) — `success: true`
+
+Then I built the fix at the chokepoint: `runMergeMutationGate` inside `applyMergeInTransaction`, `mergedState` computed before any write so the gate judges the exact metadata about to land, `principal: ActingPrincipal` threaded through `ApplyMergeParams`/`ApplyMergeGroupParams` and both production call sites (`handleMerge`, `applyEntityChangeProposal`). My 3 merge tests went green. Then the regression sweep:
+
+```
+ FAIL  manage_entity merge action &gt; auto-merges an exact configured email match without human approval
+   ToolUserError: Merge failed: Policy denied deleting entity 101
+ FAIL  manage_entity merge action &gt; discovers duplicate groups server-side from candidate IDs
+   ToolUserError: Merge failed: Policy denied deleting entity 103
+```
+
+**Why it is structural.** `WRITE_ACTION_MANIFEST.entity.defaultEffect.delete` is `"approval"` (`src/authz/write-action-manifest.ts:64`). Every merge tombstones its loser, so gating the merge as a `delete` makes the approval interceptor demand approval for *every agent/watcher auto-merge* under default policy — and a merge transaction cannot express a defer: it is one atomic fuse plus an undo ledger, with no post-commit hook. Worse, the question is already answered upstream: `handleMerge` runs `assessEntityResolution` and routes `review` to `proposeEntityMerge`, a merge-specific approval card. Reaching `applyMerge` means approval is settled; re-asking the approval interceptor double-gates with a mechanism that already ran.
+
+The missing capability is in the gate, not in `entity-merge.ts`: **`runMutationGate` runs an undifferentiated interceptor list and folds approval and data rules into one verdict.** There is no way to say "approval is already decided, run only the data-rule interceptors." Splitting them (interceptor categories, or a `policyAlreadyDecided` flag) changes the gate's public contract, which per AGENTS.md needs a surfaced proposal first. So I stopped, per your instruction.
+
+I deliberately did **not** ship the winner-update half alone (it gates cleanly — entity `update` defaults to `auto`, no regression). Landing half would have left the loser-tombstone hole open behind a suite that reads as comprehensive, and would have meant accepting the double-gate on `update` while rejecting it on `delete` purely because one broke tests. That is motivated reasoning, not a design.
+
+## Confidence
+
+- **Per-row create gate in Behavior promotion — 92.** I ran the real entry point against a real Postgres over both branches, and mutation-killed 3 of 6 tests by deleting the gate. Not 100 only because I drove `promoteBehaviorEntityOutput` directly rather than through a full `complete_window` agent run.
+- **Period-close interceptor generally — 80.** Unchanged by me; I re-ran its 19 existing tests plus the whole affected sweep (325 passed). I did not exercise it in a booted server.
+- **`entity-merge.ts` is ungated — 95.** Proven by a red test I wrote and ran, not by reading. That test is now deleted along with the reverted fix; nothing in the tree records the hole.
+- **"It cannot route through the gate without a structural change" — 85.** Grounded in a real failing implementation plus the manifest default, not speculation. The residual doubt is whether a gate-contract change is genuinely required or whether a narrower seam exists that I did not find.
+
+## Next actions
+
+1. **Decide the gate-contract question**: add interceptor categories (`approval` vs `data-rule`) or a `skipApprovalInterceptor` flag to `runMutationGate`, so `applyMergeInTransaction` can run data rules only. That is the unblock for merge and for every future data-rule interceptor. Needs your sign-off — it changes the gate's public contract.
+2. **Re-land the merge fix on top of that** — my implementation is straightforward to reconstruct from this report (gate at `applyMergeInTransaction`, `mergedState` computed pre-write, `ActingPrincipal` threaded through both call sites, ~15 test call sites updated).
+3. **Fix `entity-merge-tool.test.ts`'s auto-merge fixture** independently: watcher 6009 references `agent_id = 'personal-agent'` with no matching `agents` row, so `resolveWatcherOwner` returns `ownerResolved: false`. Today nothing consults the gate on that path so it passes silently; any future gating there will deny. That is a latent fixture bug regardless of Task 2.
+4. **Decide on `events`**: still unenforced and explicitly out of scope. With merge also unfixed, an org that closes a period today is protected on `manage_entity` create/update/delete, the approval-apply path, and Behavior promotion — but not on merge and not on `events`.
+
+## Ground truth
+
+```
+$ git status --short
+(clean)
+
+$ git diff --stat origin/main...HEAD
+ .../integration/tools/entity-period-close.test.ts  | 434 +++++++++++++++++++++
+ .../watchers/promotion-period-close.test.ts        | 233 +++++++++++
+ .../__tests__/unit/entity-mutation-gate.test.ts    |  19 +-
+ packages/server/src/authz/entity-mutation-gate.ts  |  10 +
+ .../server/src/authz/period-close-interceptor.ts   | 352 +++++++++++++++++
+ .../src/tools/admin/entity-field-approval.ts       |  96 ++++-
+ packages/server/src/utils/entity-management.ts     | 184 +++++----
+ .../server/src/utils/promote-keyed-entities.ts     |  83 +++-
+ 8 files changed, 1318 insertions(+), 93 deletions(-)
+```
+
+My commit is `845185300`, adding exactly one file (`promotion-period-close.test.ts`, +233) on top of `b9216537a`. Everything else in that stat is the prior agent's commit. Not pushed, no PR.
+
+## Contradicting the brief
+
+Three things worth flagging:
+
+- **The brief's file path for the tests was wrong** — it says `packages/server/__tests__/`, but tests live under `packages/server/src/__tests__/`. Minor, but it means the brief was written from memory rather than the tree.
+- **`entity-merge.ts` was called "the sharpest ungated writer" — accurate, and it is worse than described.** The brief mentions only the metadata rewrite. The loser tombstone is the second hole, and it is the one that blocks the fix.
+- **I did not run `make review-fix` / `make pre-pr-remote`.** You explicitly scoped this to commit-only with no push and no PR, and those are the pre-PR gates. Local pre-commit hooks (biome + `tsc --noEmit`) passed. Note `tsconfig.json` excludes `src/**/__tests__/**`, so no typecheck covers test files — which is why my Task 2 test-call-site breakage would only ever have surfaced at runtime.</result>
+<usage><subagent_tokens>194721</subagent_tokens><tool_uses>92</tool_uses><duration_ms>891764</duration_ms></usage>
+</task-notification>

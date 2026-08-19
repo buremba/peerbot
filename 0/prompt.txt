@@ -1,0 +1,1 @@
+yes, let's see how the core can be more pluggable so all these things live in the project code like conenctors

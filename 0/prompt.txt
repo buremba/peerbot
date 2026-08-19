@@ -1,0 +1,1 @@
+event kind is under connectors, entities but do we show relevant kinds in the dropdown?

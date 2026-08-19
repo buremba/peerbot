@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0w1d1zpl</task-id>
+<tool-use-id>toolu_0195vTKpJpD5QmTUpA2BfND2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b0w1d1zpl.output</output-file>
+<status>completed</status>
+<summary>Background command "Boot the UI-proof worktree runtime" completed (exit code 0)</summary>
+</task-notification>

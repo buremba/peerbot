@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwqr34i95</task-id>
+<tool-use-id>toolu_01XtQkU5F4posF7H8cVzRtVS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bwqr34i95.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 2343 checks after the authz fix" stream ended</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+can you use isorun to do all these docker etc checks? also smoke runs docker in ci no

@@ -1,0 +1,1 @@
+why conversations client_id? i thought we have seperate mcp_clients with an id and we can just have that under the events no?

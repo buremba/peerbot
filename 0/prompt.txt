@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b75lvwtm7</task-id>
+<tool-use-id>toolu_01Baw5EuNMm27VmasYQoFMFY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/b75lvwtm7.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr after fixer changes" completed (exit code 0)</summary>
+</task-notification>

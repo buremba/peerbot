@@ -449,6 +449,45 @@ describe("entity row validation at the physical writer", () => {
 			expect(await readDeletedAt(doc.id)).not.toBeNull();
 		}, 60_000);
 
+		/**
+		 * A dry run exists to answer "may I delete this?" before committing. Once
+		 * the rule governs the delete, a preview that ignores the rule answers the
+		 * wrong question — and answers it optimistically, which is the worst way to
+		 * be wrong here.
+		 */
+		it("reports the rule verdict in a dry run instead of promising the delete", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			const preview = await deleteEntity(
+				invoice.id,
+				false,
+				TEST_ENV,
+				ctxFor(org.id, { userId: user.id }),
+				{ dryRun: true },
+			);
+
+			expect(preview.message).toMatch(/would NOT be deleted/);
+			expect(preview.message).toMatch(/posted is frozen: \$deleted is not writable/);
+			expect(preview.deleted).toBe(0);
+			// A dry run mutates nothing, verdict or no verdict.
+			expect(await readDeletedAt(invoice.id)).toBeNull();
+		}, 60_000);
+
+		it("still promises the delete in a dry run the rule permits", async () => {
+			const { org, user, invoice } = await seedInvoice("draft");
+
+			const preview = await deleteEntity(
+				invoice.id,
+				false,
+				TEST_ENV,
+				ctxFor(org.id, { userId: user.id }),
+				{ dryRun: true },
+			);
+
+			expect(preview.message).toBe("Dry run: entity would be soft-deleted");
+			expect(await readDeletedAt(invoice.id)).toBeNull();
+		}, 60_000);
+
 		/** The grant is SCOPED: it covers `$deleted` and nothing else. */
 		it("does not let a delete grant waive an escalate on another field", async () => {
 			const { org, user, invoice } = await seedInvoice("posted");

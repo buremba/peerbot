@@ -1801,6 +1801,28 @@ export async function deleteEntity(
   }
 
   if (opts?.dryRun) {
+    // Preview the RULE too, or the preview lies. Soft delete is rule-governed
+    // now, so reporting "would be soft-deleted" for a row a rule refuses is
+    // exactly backwards for the one caller who asked before committing.
+    //
+    // A pool read is right HERE, and only here: a dry run enforces nothing, so
+    // there is no check for a concurrent write to overtake. The verdict is
+    // advisory by construction — the real delete below re-asks it under lock.
+    try {
+      await validateEntityRowPatchGrantingApprovedFields({
+        tx: sql,
+        ids: [entityId],
+        patch: { softDelete: true },
+        approvedFields: opts?.approvedFields ?? [],
+      });
+    } catch (err) {
+      if (!(err instanceof EntityRowValidationError)) throw err;
+      return {
+        message: `Dry run: entity would NOT be deleted — ${err.verdict.reason}`,
+        deleted: 0,
+        dry_run: true,
+      };
+    }
     return {
       message: 'Dry run: entity would be soft-deleted',
       deleted: 0,

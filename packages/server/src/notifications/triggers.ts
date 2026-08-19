@@ -2,6 +2,7 @@ import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
+import { CONNECTOR_OPERATION_APPROVAL_KIND } from "../utils/platform-event-kinds";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
@@ -538,7 +539,14 @@ export async function notifyActionApprovalNeeded(params: {
 	requesterUserId?: string | null;
 	mcpActivity?: McpActivityAttribution | null;
 	details?: ActionApprovalDetails;
+	/** Human-readable operation name, when this is a connector operation. */
+	operationName?: string | null;
+	/** The operation's input, rendered so the decision can be made from chat. */
+	operationInput?: Record<string, unknown> | null;
 }): Promise<void> {
+	// `details` is set only by the entity-approval families; a connector
+	// operation has none, which is exactly why its card was empty before.
+	const isConnectorOperation = params.details == null;
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
 		// Run-scoped, via the shared permalink resolver — same reasoning as the
 		// approval_url: the pending event is superseded on approve→complete, but the
@@ -564,6 +572,21 @@ export async function notifyActionApprovalNeeded(params: {
 					details: params.details,
 				}),
 			}),
+			// A connector operation renders through its platform event kind, so the
+			// chat post, the Memory view and MCP apps all show the SAME operation /
+			// connection / input table from one declaration. Entity approvals keep
+			// their hand-built card (it carries the field diff and the buttons)
+			// until they have a kind of their own.
+			...(isConnectorOperation
+				? {
+						semanticType: CONNECTOR_OPERATION_APPROVAL_KIND,
+						payloadData: {
+							operation: params.operationName ?? params.actionKey,
+							connection: params.connectionName ?? null,
+							input: params.operationInput ?? null,
+						},
+					}
+				: {}),
 			resourceType: "event",
 			resourceId: String(params.eventId),
 			resourceUrl,

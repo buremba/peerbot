@@ -756,6 +756,10 @@ export async function handleExecute(
 			runId,
 			actionKey: operation.operation_key,
 			connectionName: connection.display_name ?? connection.connector_key,
+			operationName: operation.name,
+			// The decision needs the arguments, not just the verb: "run" says
+			// nothing, "run · rm -rf /" says everything.
+			operationInput: input,
 			eventId,
 			approvalUrl,
 			connectionId: chatOrigin.connectionId,

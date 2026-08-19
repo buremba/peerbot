@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpeygc5u4</task-id>
+<tool-use-id>toolu_01RuqwrrkXheBb8EJ9XirbNK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3d24866b-b631-44fd-a5da-05ad63d65961/tasks/bpeygc5u4.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

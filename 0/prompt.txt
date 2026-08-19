@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bl2kgnv3r</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bl2kgnv3r.output</output-file>
+<status>completed</status>
+<summary>Background command "Rebuild with the shared disclosure header" completed (exit code 0)</summary>
+</task-notification>

@@ -57,7 +57,18 @@ export const MAC_DEVICE_CAPABILITIES = [
 // The device daemon can run agent work and touch a shell/files, but has no
 // browser to drive and no screen to notify. Keep this set small and honest -
 // add strings here only as headless connectors actually land.
-export const HEADLESS_CAPABILITIES = ["os.shell", "os.files"] as const;
+//
+// `automations.execute` is the rolling-deploy-safe claim gate for headless
+// Automation execution: the server only hands `run_type='automation'` runs to
+// device workers that advertise it, so an old deployed connector-worker (which
+// refuses automation runs) can never claim and wedge one. The daemon auto-
+// advertises it on the headless platform; a device that cannot run the local
+// agent CLIs simply does not opt in.
+export const HEADLESS_CAPABILITIES = [
+  "os.shell",
+  "os.files",
+  "automations.execute",
+] as const;
 
 const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {
   macos: [

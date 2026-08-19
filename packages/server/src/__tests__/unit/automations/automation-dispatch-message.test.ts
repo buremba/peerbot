@@ -108,4 +108,24 @@ describe("automation dispatch message", () => {
 			"If there is no content, do not fabricate results.",
 		);
 	});
+
+	it("builds the same completion contract for a device executor without an agent id", () => {
+		const message = buildDispatchMessage({
+			automationId: 71,
+			runId: 9001,
+			executor: "device",
+			payload: {
+				automation_id: 71,
+				window_start: "2026-08-18T00:00:00.000Z",
+				window_end: "2026-08-19T00:00:00.000Z",
+				dispatch_source: "manual",
+			},
+		});
+
+		expect(message).toContain("client.knowledge.read({ automation_id: 71");
+		expect(message).toContain("client.automations.completeWindow");
+		expect(message).toContain('"executor": "device"');
+		expect(message).not.toContain("Assigned agent ID: undefined");
+		expect(message).not.toContain("Session agent ID: undefined");
+	});
 });

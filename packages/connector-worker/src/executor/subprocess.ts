@@ -133,7 +133,7 @@ const SYSTEM_ENV_KEYS = [
   'NODE_PATH',
   'PLAYWRIGHT_BROWSERS_PATH',
 ];
-function pickSystemEnv(): Record<string, string | undefined> {
+export function pickSystemEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of SYSTEM_ENV_KEYS) {
     if (process.env[key]) env[key] = process.env[key];

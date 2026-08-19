@@ -45,6 +45,7 @@ import {
   verifyAutomationRunIntent,
 } from "../../permissions/automation-run-intent.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
+import { buildAutomationRunWorkerAccess } from "../../services/automation-run-worker-token.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
 import type { ISessionManager, ThreadSession } from "../../session.js";
@@ -874,20 +875,28 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         // Reuse existing session — touch lastActivity and return existing token
         await sessMgr.touchSession(conversationId);
 
-        const token = generateWorkerToken(
-          agentId,
-          conversationId,
-          deploymentName,
-          {
+        const automationAccess =
+          automationIntent && tokenOrganizationId
+            ? buildAutomationRunWorkerAccess({
+                agentId,
+                automationId: automationIntent.automationId,
+                runId: automationIntent.runId,
+                organizationId: tokenOrganizationId,
+                conversationId,
+              })
+            : null;
+        const token =
+          automationAccess?.token ??
+          generateWorkerToken(agentId, conversationId, deploymentName, {
             channelId,
             agentId,
             organizationId: tokenOrganizationId,
             platform: "api",
             sessionKey: userId,
-          }
-        );
+          });
 
-        const expiresAt = Date.now() + TOKEN_EXPIRATION_MS;
+        const expiresAt =
+          automationAccess?.expiresAt ?? Date.now() + TOKEN_EXPIRATION_MS;
         const baseUrl = pubUrl || "http://localhost:8080";
 
         logger.info(
@@ -908,15 +917,28 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
     }
 
-    const token = generateWorkerToken(agentId, conversationId, deploymentName, {
-      channelId,
-      agentId,
-      organizationId: tokenOrganizationId,
-      platform: "api",
-      sessionKey: userId,
-    });
+    const automationAccess =
+      automationIntent && tokenOrganizationId
+        ? buildAutomationRunWorkerAccess({
+            agentId,
+            automationId: automationIntent.automationId,
+            runId: automationIntent.runId,
+            organizationId: tokenOrganizationId,
+            conversationId,
+          })
+        : null;
+    const token =
+      automationAccess?.token ??
+      generateWorkerToken(agentId, conversationId, deploymentName, {
+        channelId,
+        agentId,
+        organizationId: tokenOrganizationId,
+        platform: "api",
+        sessionKey: userId,
+      });
 
-    const expiresAt = Date.now() + TOKEN_EXPIRATION_MS;
+    const expiresAt =
+      automationAccess?.expiresAt ?? Date.now() + TOKEN_EXPIRATION_MS;
 
     const session: ThreadSession = {
       conversationId,

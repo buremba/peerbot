@@ -1016,8 +1016,9 @@ export async function runAutomationTick(
 export function buildDispatchMessage(params: {
 	automationId: number;
 	runId: number;
-	agentId: string;
-	sessionAgentId: string;
+	agentId?: string;
+	sessionAgentId?: string;
+	executor?: string;
 	payload: AutomationRunPayload;
 	automationInstructions?: string;
 }): string {
@@ -1039,7 +1040,7 @@ export function buildDispatchMessage(params: {
 				"",
 				`Automation ID: ${params.automationId}`,
 				`Automation run ID: ${params.runId}`,
-				`Assigned agent ID: ${params.agentId}`,
+				...(params.agentId ? [`Assigned agent ID: ${params.agentId}`] : []),
 				"Result delivery: silent",
 				"",
 				"Automation instructions:",
@@ -1058,7 +1059,7 @@ export function buildDispatchMessage(params: {
 			"",
 			`Automation ID: ${params.automationId}`,
 			`Automation run ID: ${params.runId}`,
-			`Assigned agent ID: ${params.agentId}`,
+			...(params.agentId ? [`Assigned agent ID: ${params.agentId}`] : []),
 			`Result delivery: ${params.payload.trigger_output ?? "silent"}`,
 			"",
 			"Automation instructions:",
@@ -1086,8 +1087,8 @@ export function buildDispatchMessage(params: {
 		"",
 		`Automation ID: ${params.automationId}`,
 		`Automation run ID: ${params.runId}`,
-		`Assigned agent ID: ${params.agentId}`,
-		`Session agent ID: ${params.sessionAgentId}`,
+		...(params.agentId ? [`Assigned agent ID: ${params.agentId}`] : []),
+		...(params.sessionAgentId ? [`Session agent ID: ${params.sessionAgentId}`] : []),
 		`Queued window start: ${params.payload.window_start}`,
 		`Queued window end: ${params.payload.window_end}`,
 		`Dispatch source: ${params.payload.dispatch_source}`,
@@ -1106,11 +1107,11 @@ export function buildDispatchMessage(params: {
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
 			{
-				executor: "lobu-agent",
-				agent_id: params.agentId,
+				executor: params.executor ?? "lobu-agent",
+				...(params.agentId ? { agent_id: params.agentId } : {}),
 				automation_run_id: params.runId,
 				dispatch_source: params.payload.dispatch_source,
-				session_agent_id: params.sessionAgentId,
+				...(params.sessionAgentId ? { session_agent_id: params.sessionAgentId } : {}),
 			},
 			null,
 			2
@@ -1246,7 +1247,7 @@ async function getAutomationModelOverride(
 	return typeof model === "string" && model.trim() ? model.trim() : undefined;
 }
 
-async function ensureAutomationAgentExists(
+export async function ensureAutomationAgentExists(
 	sql: DbClient,
 	organizationId: string,
 	agentId: string

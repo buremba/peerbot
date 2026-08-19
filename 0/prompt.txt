@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdqsb4a7w</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bdqsb4a7w.output</output-file>
+<status>completed</status>
+<summary>Background command "Back up seed-cmd and run smoke baseline" completed (exit code 0)</summary>
+</task-notification>

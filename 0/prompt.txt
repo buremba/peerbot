@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>br2aekghk</task-id>
+<tool-use-id>toolu_01TmZyPNGBQTLcpPLgTwBm2W</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/br2aekghk.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full Depot gate on staged tree" completed (exit code 0)</summary>
+</task-notification>

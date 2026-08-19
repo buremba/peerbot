@@ -1,0 +1,1 @@
+could you do the next steps and make sure all chat sdk integrations work properly

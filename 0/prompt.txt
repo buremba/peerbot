@@ -1,0 +1,1 @@
+in the prod when main is merged we actually do a real z.ai based test with opencode in a sandbox right? or pi agent is better no need for opencode

@@ -1,0 +1,1 @@
+show some example connector definitions for different use-cases so i can understand

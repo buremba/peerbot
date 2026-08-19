@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bd9yw94ei</task-id>
+<tool-use-id>toolu_01GaSyjobpTXUCCUUFpgxbSS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bd9yw94ei.output</output-file>
+<status>completed</status>
+<summary>Background command "Stage and gate the two blocker fixes" completed (exit code 0)</summary>
+</task-notification>

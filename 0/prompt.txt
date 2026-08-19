@@ -1,0 +1,18 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The focused suites and build pass, but the new compatibility state machine can display a stale card, misidentify app-initiated results during persistence, and fail to reset actual rendered control state between results.
+
+Full review comments:
+
+- [P1] Do not let a stale parent preload replace the inner result — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:821-821
+  When both same-origin compatibility targets retain data from different card revisions, this loop applies the inner global first and the parent global last. A current `window.openai.toolOutput` is therefore replaced and potentially cached by stale `window.parent.openai.toolOutput`; paired stale approval metadata can also make the wrong approval card actionable. Select one authoritative data-bearing target rather than unconditionally applying every preload.
+
+- [P2] Clear the old card identity for app-initiated results — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:909-915
+  When `callTool` returns a new structured result in a standard host with `toolInfo`, these lines replace the snapshot capability but retain the originating `toolCallId` and `toolCallName`. A later `setViewState` sends the old ID/name with the new capability, causing `save_lobu_app_state` to reject the tool-name mismatch or identity collision, so state for an approval or other app-initiated result is not persisted. Clear the old identity and save using the new capability/tool identity.
+
+- [P2] Remount local controls when resetting per-result state — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:271-273
+  When a new card reaches this reset after the user opened `PersistentDetails` or paged `ValueList`, replacing the context map with `{}` does not reset those components' local `useState`. With no restored key they fall back to the previous card's `localOpen` or `localPage`, so the new card still displays the old disclosure/page state even though `viewStateRef` is empty. Carry a result revision as a React key or synchronize those local fallbacks on reset.
+  </results>
+  </user_action>

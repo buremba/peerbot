@@ -1,0 +1,1 @@
+update the http://127.0.0.1:4181/mcp-app-harness.html all cases and we need to confirm and see it working properly. query_sdk, query_sql, run_sdk, save_content, search_content are our proirities no? guide me though how we will show these and the options

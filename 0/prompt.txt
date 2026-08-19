@@ -1,0 +1,21 @@
+You are tracing a security-relevant path in the Lobu monorepo (packages/server). READ-ONLY: do not edit files. Produce file:line evidence and a precise verdict + recommended fix for each question.
+
+BACKGROUND: manage_operations approve/reject enforces requireHumanApprovalContext (manage_operations.ts:2338): reject if ctx.agentId || ctx.clientId; reject if !ctx.userId. A previous trace found that a signed-in, UNBOUND cookie-session MCP session yields userId set, clientId null, agentId null, tokenType "session", and therefore PASSES the gate and can reach approve/reject. We need to know whether that is a real production reachable path and what the correct fix is.
+
+QUESTION A — WHO CREATES COOKIE-SESSION MCP SESSIONS?
+1. Trace how an MCP session authenticates. Look at packages/server/src/gateway/auth/mcp/proxy.ts, packages/server/src/mcp-handler.ts, packages/server/src/workspace/multi-tenant.ts (esp. lines ~601-628), packages/server/src/auth/resolve-session.ts, packages/server/src/tools/execute.ts extractAuthContext (lines ~114-149). Which production clients actually establish MCP over a web cookie session rather than OAuth/PAT? Is it the Owletto UI, the CLI (lobu), Slack, or something else? Grep for callers/initialization of these MCP sessions and for how the browser-based MCP client connects.
+2. Can such a session be AGENT-BOUND (which would set agentId and be rejected by the gate), and is the unbound shape reachable in practice or just theoretically constructible?
+
+QUESTION B — CAN THAT CONTEXT REACH approve/reject?
+3. Direct dispatch: INTERNAL_DISPATCH_TOOLS in tools/registry.ts (~413-466) are callable by name but not listed. Confirm manage_operations is in that set, and that mcp-handler dispatch (mcp-handler.ts:443-455) will execute any registered name a caller sends.
+4. run_sdk path: trace packages/server/src/sandbox/namespaces/operations.ts approve/reject (~25-98) → how it calls manageOperations. What ToolContext does it build? Does it carry agentId (worker context)? Does requireHumanApprovalContext actually run in that path? Check packages/server/src/sandbox/run-script.ts for how ctx is assembled and whether mcpSessionId/clientId/agentId/userId survive. Also check what permission tier/scope guards run_sdk and the operations.approve method itself (packages/server/src/sandbox/method-metadata.ts ~837-844).
+
+QUESTION C — INTENDED OR HOLE?
+5. Search for comments, AGENTS.md, docs/GOTCHAS.md, tests (grep for cookie session + approve, run_sdk approve tests, operations approve tests) that pin the intended behavior. Is there a test asserting a cookie-session MCP can approve? Or asserting the gate? List every test that would break if we tightened the gate.
+6. Determine the discriminating signal: does the ToolContext of an MCP-originated call carry an mcpSessionId field (check registry.ts ToolContext ~93-150 and how mcp-handler populates it)? Does the Owletto UI "native" approve path (ClientSDK directly calling manage_operations over REST, NOT through MCP) carry mcpSessionId? If mcpSessionId is the discriminator, then adding a gate condition "if mcpSessionId present, require the lobu/approval-capability flow" would block MCP-originated approvals while leaving the web UI approve working.
+
+QUESTION D — RECOMMEND THE MINIMAL CORRECT FIX.
+7. Given the answers, state precisely: what to change (which function, which line, which condition), what legitimately must keep working (web UI approve via ClientSDK; Slack interaction-bridge approve; the resolve_lobu_approval capability path — note that resolveLobuApproval clears agentId/clientId/mcpAppApprovalCapability but does NOT clear mcpSessionId, so if you gate on mcpSessionId you must also clear it in the humanContext at mcp_app.ts:632), and the blast radius (list every call site of manageOperations approve/reject and whether it carries mcpSessionId).
+8. Call out any test that asserts the CURRENT (possibly hole-y) behavior, so we know the test-update surface.
+
+Final output: numbered findings A1-A2, B3-B4, C5-C6, D7-D8, each with file:line evidence and a bottom-line one-liner on whether cookie-session MCP approving is intended or a hole, and the concrete minimal fix.

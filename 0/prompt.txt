@@ -1,0 +1,1 @@
+option a agent will always know previous windows no? it can start going back dates if it has quota for example and continue. why would there be gaps

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bclmc1p4s</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bclmc1p4s.output</output-file>
+<status>killed</status>
+<summary>Background command "Restart device daemon for twitter attribution run" was stopped</summary>
+</task-notification>

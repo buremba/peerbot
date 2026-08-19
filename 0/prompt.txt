@@ -1,0 +1,97 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+This session continued the "providers are normal connectors" redesign of Lobu's Connect surface into full implementation, then extended into a new sidebar-first IA. Requests in order:
+
+- **"let's think of it again, identify all the gaps and address all of them"** — re-derive the complete gap list under the final design (providers use the SAME `/connectors/$connectorKey` detail page via `ConnectorPageShell`; only the form in the content slot is provider-specific) and implement every gap.
+- **Mid-turn constraint (verbatim, still in effect): "don't use new dynamic workflows but don't kill already running ones. we need to be protective about token usage"** — no new Workflow tool invocations; token-protective execution (direct tools + focused Agent dispatches only).
+- **"trying to understna, don't you just show the added models not all of them under the agents with their name?"** — comprehension question about the agent-settings Models list (answered: yes, only added models render).
+- **"so the provider adding is fully in the connectors? can we do the same for the runtime ones and maybe get rid of tabs? we can even replace memory sidebar with activity that shows and models that shows entities. would that be better ux?"** — design exploration.
+- **"no you got me right? the idea is to avoid using tabs and using sidebar items and good dx. the tabs for agents can also be collapsible item in sidebar no?"** — confirmed IA principle: sidebar = site map, pages = content, tabs only for views of one record.
+- **"ok should we do this"** — approval to build the sidebar-first nav branch.
+
+2. Key Technical Concepts:
+- Bun workspace monorepo; `owletto` git submodule frontend; TanStack Router file-based routes (`routeTree.gen.ts` GENERATED, never hand-edited)
+- Derived connection facets (data/chat/actions/audience/**inference**); `INFERENCE_ROW_KEY_PREFIX = "inference-provider:"` now shared via `@lobu/core/reserved` (browser-safe subpath, vite-aliased to source, importable by server)
+- Detail-route resolution by prefix branch in `$connectorKey.index.tsx` — deliberately NOT joined into `useInstallableConnectorCatalog` (other consumers must never see provider pseudo-defs)
+- Two error-CTA kinds: `provider-connect` (provider missing) and `provider-management` (provider broken) — both now land on `/$owner/connectors/<inference-provider:key>`; `#models` reserved for model-choice CTAs only (agent settings can't rotate an API key)
+- Immutable historical Slack/Telegram card URLs (`/inference-providers/new` since #1766, `/infrastructure/models` since #1847) → two redirect-only route files, the one flagged no-legacy exception
+- Stale `@lobu/core` dist + vite dep-optimizer prebundle trap (blank SPA); fix = `bunx tsc --build --force` in packages/core + clear `node_modules/.vite` + restart vite
+- Mutation testing (break code → confirm red → restore) as required evidence
+- Submodule mechanics: push owletto before lobu gitlink bump; `git merge` never rebase; merge order MD → CT → IF → sidebar-nav
+- Stacked branches: `feat/sidebar-nav` based on `feat/inference-facet` in BOTH repos (task-setup.sh line 134 always bases on origin/main, so manual `reset --hard` restack was required)
+- Dev topology: gateway 9057 (IF worktree, embedded Postgres, DATABASE_URL unset), vite 9160 (IF), vite 9161 (CT), planned 9162 (sidebar-nav); `LOBU_API_PROXY=http://127.0.0.1:9057` proxies `/api`,`/oauth`,`/connect`
+
+3. Files and Code Sections:
+
+- **`/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/project_inference_facet_connect_surface.md`** — twice updated; now records: detail-route prefix-branch mechanics, final CTA destinations, the redirect exception, merge order, and the new sidebar-nav track (sidebar shape, stacked base, Activity constraints, "Memory→Entities is label-only with brand implications").
+
+- **Three implementation worktrees** (all committed, ALL UNPUSHED):
+  - `feat/models-dev-snapshot`: 18 files +9920 (server/config only; unchanged this session; merges first)
+  - `feat/connect-tabs-cta`: lobu `4e047d35f` (owletto gitlink→`6c712379`, `chat-response-bridge.ts`, `message-handler-bridge.ts`, `url-builder.ts` + test — `buildAgentSettingsUrl` gains opt-in `opts.modelsAnchor` appending `#models`); owletto commits `3da6f2ae` (anchor/flash/scroll; provider CTA branches byte-identical to origin/main) + `6c712379` (chained provider→model picker; `InferenceModelDetail` + `modelDetails`/`modelsDevId` on `InferenceCatalogItem`; hints like "200K ctx · $3/$15 per M")
+  - `feat/inference-facet`: lobu `bdf748fdb` (exactly 7 paths: `packages/core/src/reserved.ts`, owletto gitlink→`f324ecc6`, `url-builder.ts`, `chat-response-bridge.ts`, `device-binding.ts`, two test files); owletto `f324ecc6` (22 files: `$connectorKey.index.tsx` +402 provider resolution; new `src/components/inference-providers/provider-detail.tsx` 511 lines; `providers.tsx` DELETED; `inference-providers/index.tsx` 617→redirect-only; `new.tsx` 125→redirect-only; NEW `infrastructure/models.tsx` 36-line redirect; orphans `provider-catalog.ts`/`.test.ts` and `agents.ts:583-651` deleted; `all-routes.test.tsx` + new `provider-detail-route.test.tsx`)
+
+- **`packages/owletto/src/components/agents/models-list-editor.tsx` (CT branch)** — key answer to the user's comprehension question, line 261:
+  ```tsx
+  {value.map((ref, index) => {
+      const unresolved = isUnresolvedRef(ref);
+      const { provider, model, detail } = labelForRef(ref, choices);
+      ...
+      {unresolved ? "no model selected" : hint ? `${model} · ${hint}` : model}
+  ```
+  Rows = ONLY the agent's stored ordered allow-list; empty state "No models pinned — this agent uses the org default."; `__unresolved__` sentinel renders dimmed "no model selected".
+
+- **`packages/owletto/src/lib/owner-sections.ts` (IF branch)** — currently exactly two sections (memory: Brain/"Memory"/["memory"]; connectors: Plug/"Connect"/["connectors"]); feeds sidebar AND page headers; being restructured by the sidebar-nav agent.
+
+- **Agent sub-routes** (`src/app/$owner/agents/$agentId/`): behaviors, chat, conversations, guardrails, identity, permissions, settings, skills — 8 total; sidebar shows curated 3 (Chat/Behaviors/Settings), agent page keeps its full strip.
+
+- **`scripts/task-setup.sh`** line 134: `git worktree add "$worktree_dir" -b "$branch" origin/main` — always bases on origin/main; restacking done via `git reset --hard feat/inference-facet` (lobu) and `git -C packages/owletto fetch <IF-worktree-path> feat/inference-facet && git reset --hard f324ecc6`.
+
+4. Errors and fixes:
+
+- **Blank SPA on 9160** — console: `SyntaxError: The requested module '/node_modules/.vite/deps/@lobu_core_reserved.js' does not provide an export named 'INFERENCE_ROW_KEY_PREFIX'`. Stale `@lobu/core` dist prebundled by vite; agents' gates were green because tests/typecheck resolve source. Fixed: rebuilt core dist, cleared `.vite` cache, restarted vite. The sidebar-nav brief explicitly warns the new agent about this trap.
+- **vite restart port conflict** — `pkill -f` pattern missed the old vite; new instance failed "Port 9160 is already in use" (exit 1) while the old one (PID 34549) still served with a deleted cache. Fixed by killing the PID and relaunching.
+- **CT branch reset incident (agent-reported, verified)** — `git reset --soft origin/main` exposed 11 stale fork-point file copies (get_content/#2214 area) in the working tree; never staged thanks to explicit-path adds; restored to HEAD.
+- **psql lookups failed twice** — first empty `$url` (DATABASE_URL is commented out; embedded Postgres), answered questions from component code instead.
+- **Radix picker automation flakiness** — stale element ref click reset the picker to placeholder; synthetic `PointerEvent` couldn't open Radix selects (untrusted events). Accepted component-test coverage (real-Radix jsdom, mutation-proven) for the final pick→append step; reported honestly as the confidence caveat.
+- **User feedback shaping work**: the token-protection directive arrived mid-turn right after the gap-sweep workflow completed — I switched to two focused Agent dispatches and held `make review`/`review-fix` (LLM-cost gates) for PR time.
+
+5. Problem Solving:
+
+- Deduped 45 sweep findings into one coherent correction; key architectural calls: prefix-branch resolution (not catalog join); prefix constant into `@lobu/core/reserved`; provider-management belongs on the provider's connector page (superseding CT's earlier agent-settings repoint — agent settings can't rotate a key); two redirect-only files as the flagged no-legacy exception.
+- Full browser verification via DOM-first tools: provider row → shared-shell detail page (breadcrumb/status/Inference chip/4 tabs); uninstalled kind → CreateProviderForm in shell; both legacy redirects land correctly with explainer ("This agent needs a model provider before it can reply…") and targeting ("Review Claude for model claude/claude-fable-5. Its edit controls are open."); create catalog shows 18 providers; delete in Settings tab; one screenshot for visual parity.
+- `make pre-pr` green on both changed branches; trees clean.
+- `#models` verified on 9161: anchor exists, hash honored, inViewport true; picker provider list = Claude, Groq + catalog + "Connect a provider…".
+- Sidebar IA assessment: endorsed with guardrails (record-level tabs stay; only active agent expands; Activity = strongest idea; "Memory"→"Entities" is a brand-affecting label choice; runtime lists stay separate but tab strip dies — sidebar children give "no tabs" without merging lists).
+
+6. All user messages:
+- "let's think of it again, identify all the gaps and address all of them"
+- "don't use new dynamic workflows but don't kill already running ones. we need to be protective about token usage" (mid-turn; standing constraint)
+- "trying to understna, don't you just show the added models not all of them under the agents with their name?"
+- "so the provider adding is fully in the connectors? can we do the same for the runtime ones and maybe get rid of tabs? we can even replace memory sidebar with activity that shows and models that shows entities. would that be better ux?"
+- "no you got me right? the idea is to avoid using tabs and using sidebar items and good dx. the tabs for agents can also be collapsible item in sidebar no?"
+- "ok should we do this"
+
+7. Pending Tasks:
+- **sidebar-nav agent running in background** (frontend-typescript-tailwind type) — on completion: diff-verify vs stacked bases (`git diff --name-only feat/inference-facet...HEAD` lobu; `git -C packages/owletto diff --name-only f324ecc6..HEAD`), browser-verify (boot vite on 9162 from the sidebar-nav worktree against gateway 9057), run gates, report with diffs + confidence + next actions.
+- Push + open 4 PRs (owletto branches pushed BEFORE lobu gitlink bumps); merge order MD → CT → IF → sidebar-nav via `git merge`.
+- Run `make review-fix` then ONE `make review` per branch at PR time (deliberately held for token cost; verify review-fix's diff before trusting — it reverted deliberate work three times previously).
+- User decisions outstanding: (a) keep or delete the two historical redirect files (`/inference-providers/new`, `/infrastructure/models`); (b) MCP default-agent fallback (`system_agent_id` when no `x-lobu-agent-id`) — separate branch/decision; (c) after MD merges, live-check the catalog endpoint emits `modelDetails` as the picker expects.
+- Residual verification owed: live pick→append in the chained picker (component-tests only); one real Slack provider-error CTA round-trip post-deploy.
+
+8. Current Work:
+
+Immediately before this summary: the user approved the sidebar-first IA ("ok should we do this"). I:
+1. Scouted: `task-setup.sh` bases on origin/main; `/memory` is a full browse model (`memory-browse` scopes — so Entities is a label change, not a route rename); agent pages have 8 sub-routes.
+2. Ran `make task-setup NAME=sidebar-nav`, then restacked both repos onto the inference-facet HEADs (lobu → `bdf748fdb`, owletto → `f324ecc6`, both verified clean).
+3. Dispatched a frontend-typescript-tailwind agent (running now) with this brief: sidebar shape **New chat · Activity (/$owner/activity, NEW) · Entities (label-only for /memory) · Connect ▸ Connectors/Runtime (collapsible; DELETE `connect-tabs.ts` + test + renderings) · Agents ▸ per-agent collapsible with exactly Chat/Behaviors/Settings, only route-active agent expanded**; record-level tab strips stay; Activity reuses the existing workspace-recent-conversations hook (referenced at `agents/$agentId.tsx:372`) — STRICTLY no new server endpoints; lobu side adds "activity" to `OWNER_ROUTE_SEGMENTS` + rebuild core dist (stale-dist warning included); mutation-test sidebar assertions; gates; commit by explicit path; NO push, NO review-fix, no .md files; don't kill servers on 9057/9160/9161.
+4. Updated the memory file with the sidebar-nav track details.
+
+9. Optional Next Step:
+
+Wait for the sidebar-nav agent's completion notification, then verify and report — exactly as promised in my last user-facing status: "Sidebar branch is underway." and, from the dispatch turn, the agent must deliver "git status + diff --stat + name-only vs the stacked bases for BOTH repos, mutation evidence, per-surface confidence 0-100". On notification: diff-verify against the stacked bases myself (agent self-report is a claim, the diff is evidence), boot vite on port 9162 from `/Users/burakemre/Code/lobu/.claude/worktrees/sidebar-nav/packages/owletto` with `LOBU_API_PROXY=http://127.0.0.1:9057`, DOM-verify the new sidebar (Activity page, Entities label, Connect children, per-agent collapsible, tab strip gone), then report with the review URL. No pushes or PRs until the user reviews — and per the standing constraint, no new dynamic workflows and token-protective execution throughout.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

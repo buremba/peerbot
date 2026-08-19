@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>balj3995g</task-id>
+<tool-use-id>toolu_01P6iyyjuPwCoPMNMtB6Eos8</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/balj3995g.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for all PR B checks including dead-code-report" completed (exit code 0)</summary>
+</task-notification>

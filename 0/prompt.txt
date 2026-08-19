@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bn1pgqkhh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bn1pgqkhh.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after the precedence fix" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  No actionable regressions were identified. The changed host behavior aligns with the MCP Apps and server snapshot contracts, and all 130 focused tests pass.
+  </results>
+  </user_action>

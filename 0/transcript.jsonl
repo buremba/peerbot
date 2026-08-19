@@ -1,0 +1,1 @@
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"assistant","ts":"2026-08-11T17:09:28.792Z","content":[{"text":"No actionable regressions were identified. The changed host behavior aligns with the MCP Apps and server snapshot contracts, and all 130 focused tests pass.","type":"text"}]}

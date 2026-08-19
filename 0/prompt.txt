@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhnvxuin2</task-id>
+<tool-use-id>toolu_01SLipeJcqt4KdcPovRaZmiv</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bhnvxuin2.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for review-fix" completed (exit code 0)</summary>
+</task-notification>

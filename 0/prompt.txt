@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bil04jvgv</task-id>
+<tool-use-id>toolu_012EsmTDr3XGfnys4mwjun2r</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/bil04jvgv.output</output-file>
+<status>killed</status>
+<summary>Background command "Full suite, failures-only output" was stopped</summary>
+</task-notification>

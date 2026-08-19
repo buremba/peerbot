@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>badwlkfk3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/badwlkfk3.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pi-review on rebased HEAD" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byxlkp12c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/byxlkp12c.output</output-file>
+<status>failed</status>
+<summary>Background command "make pre-pr-remote &gt; /tmp/prepr-812.log 2&gt;&amp;1; echo "EXIT=$?"; grep -cE "PASS|SUCCESS|✅" /tmp/prepr-812.log" failed with exit code 1</summary>
+</task-notification>

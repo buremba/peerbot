@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b94twbauz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f33cc6c8-268a-4dc1-9605-e2ffb3bfbbbc/tasks/b94twbauz.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the pre-PR gate" completed (exit code 0)</summary>
+</task-notification>

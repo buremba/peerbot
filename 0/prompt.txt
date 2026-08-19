@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqu5imwjz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bqu5imwjz.output</output-file>
+<status>completed</status>
+<summary>Background command "Relaunch arch with sandbox fix" completed (exit code 0)</summary>
+</task-notification>

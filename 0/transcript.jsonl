@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:00:43.360Z","content":[{"text":"New message in #sales:\n\nmike: @dave can you grab the projector for the 3pm?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:00:58.941Z","id":"fdec2bf6","input_tokens":234,"output_tokens":909,"content":[{"type":"text","text":"Do you want me to reply in #sales? Suggested replies:\n- On it—I’ll bring the projector by 2:50.\n- I’m offsite until 3—can someone else grab it?\n- Sure—where’s the projector stored?"}]}

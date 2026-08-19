@@ -1,0 +1,1 @@
+do we know write all the turns into the database? that jsonl files etc doesn't come from the local filesystem? we were thinking of using s3 files etc later on. but do you think pg consolidation is a better way

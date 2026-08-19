@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bna67bucw</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/bna67bucw.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on 2420" completed (exit code 0)</summary>
+</task-notification>

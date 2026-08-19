@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b020ns1fe</task-id>
+<tool-use-id>toolu_01QqmVtrjgNjVFYGG1fw22bn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b020ns1fe.output</output-file>
+<status>failed</status>
+<summary>Background command "Run the pre-PR remote gate" failed with exit code 144</summary>
+</task-notification>

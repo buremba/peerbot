@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs5zrzhc0</task-id>
+<tool-use-id>toolu_017XNkbT1y31yynmHe2Ea8fX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bs5zrzhc0.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2365 CI to settle" completed (exit code 0)</summary>
+</task-notification>

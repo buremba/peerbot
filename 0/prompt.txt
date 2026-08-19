@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvncd8o0c</task-id>
+<tool-use-id>toolu_01TmoQ43aMVJz1f6W1zQCn1X</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bvncd8o0c.output</output-file>
+<status>completed</status>
+<summary>Background command "Build Release with one-row-per-permission layout" completed (exit code 0)</summary>
+</task-notification>

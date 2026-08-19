@@ -1,0 +1,1 @@
+can't it show like the other connectors and we can have custom mcp client etc as well? also are we gonna list the agents there how will it connect?

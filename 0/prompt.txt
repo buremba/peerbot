@@ -1,0 +1,26 @@
+should i isntall linux etc what do you recommend se this form to activate the Linux installation for your server. The Linux installation does not start automatically after activating it! You have to restart your Server first. For this you can either log into your server and reboot it or use the reset-option in the Robot. The installation starts once the server is rebooting.
+
+A notification will be sent to your given address as soon as the installation completed.
+
+Please note that the Linux installation will erase all data on all drives of your server.
+
+Heterogeneous disk configurations or hardware RAID setups might lead to unexpected results. In order to customize your installation, please use installimage in our Linux Rescue System or contact our support team for further assistance.
+
+Operating system	
+ 	AlmaLinux 8 base
+ 	AlmaLinux 9 base
+ 	AlmaLinux 10 base
+ 	Arch Linux latest minimal
+ 	CentOS Stream 9 base
+ 	CentOS Stream 10 base
+ 	Debian 11 base
+ 	Debian 12 base
+ 	Debian 13 base
+ 	openSUSE 16.0 base
+ 	Rocky Linux 8 base
+ 	Rocky Linux 9 base
+ 	Rocky Linux 10 base
+ 	Ubuntu 22.04.2 LTS base
+ 	Ubuntu 22.04.2 LTS Nextcloud
+ 	Ubuntu 24.04 LTS base
+ 	Ubuntu 26.04 LTS base

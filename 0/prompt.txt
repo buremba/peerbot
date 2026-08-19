@@ -1,0 +1,1 @@
+explain full design in an html artifact. go through different industries use-cases and explain where it lacks behind etc

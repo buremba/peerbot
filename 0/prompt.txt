@@ -1,0 +1,1 @@
+let's try that approach, i thought behavurs can define event kinds but don't we support that? where are the event types stored?

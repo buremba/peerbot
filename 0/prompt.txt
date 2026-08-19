@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bt80t1ymm</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/279de3ab-0acd-4e7e-8c0b-0774e773be4a/tasks/bt80t1ymm.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on hardening branch" completed (exit code 0)</summary>
+</task-notification>

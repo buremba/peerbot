@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_3iVpckKuEF/CleanShot 2026-08-02 at 22.54.44@2x.png">
+
+</image>
+
+in the recent i see the chatgpt etc but not much info. would there be possibility into having better titles, what other products do for this use-case [Image #1]

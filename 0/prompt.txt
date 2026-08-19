@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7ojoz0j0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/b7ojoz0j0.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for review-fix to finish, then show its summary" completed (exit code 0)</summary>
+</task-notification>

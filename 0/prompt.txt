@@ -1,0 +1,1 @@
+what's this This endpoint is for loopback callers only. Forwarded-* headers are not allowed. For private Tailscale Serve, set LOBU_LOCAL_INIT_ALLOW_PROXY=1 on the host (single-user installs only).

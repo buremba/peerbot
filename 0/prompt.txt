@@ -1,0 +1,1 @@
+this is still kinda like speicifc to our use-case. i was hoping we have abstraction enough to enable these hooks so transition etc can be implemented in the project level no?

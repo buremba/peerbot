@@ -1,0 +1,1 @@
+we don't want to keep legacy stuff and simplify and make sure all works, how hard it is to implement and where the gap is

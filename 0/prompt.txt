@@ -1,0 +1,1 @@
+so on cli for example how would we do this properly. or should we show those under connectors instead and only show the known agents in the sidebar and the mcp client vendors

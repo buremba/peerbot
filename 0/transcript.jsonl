@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:30:58.887Z","content":[{"text":"New message in #sales:\n\nmike: does anyone know the current MRR for Acme Corp?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:31:00.063Z","id":"b621e63b","input_tokens":3418,"output_tokens":19,"content":[{"type":"text","text":"I’ll look up Acme Corp’s current MRR and report back."}]}

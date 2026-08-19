@@ -1,0 +1,1 @@
+shouldnt save memory show it properly do you think it's overengineering. also you see chatgpt couldn't render any chart there is a bug

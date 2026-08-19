@@ -1,0 +1,1 @@
+<bash-input>bash /private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/scratchpad/acl-state.sh</bash-input>

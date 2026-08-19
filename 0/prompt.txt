@@ -1,0 +1,10 @@
+review these prs, fix issues if there some and then merge. fix(personal-agent): use chrome_dispatcher for Midas connector 
+#2018 opened 2 days ago by buremba Member
+• Review required
+2 of 5 tasks
+ 11
+
+fix(personal-agent): buremba schema source of truth + prune 
+#2013 opened 3 days ago by buremba Member
+• Review required
+3 of 4 tasks

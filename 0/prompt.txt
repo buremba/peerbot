@@ -1,0 +1,1 @@
+how about using agent-browser, don't let it create new window though we can only use it for headles

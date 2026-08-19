@@ -1,0 +1,1 @@
+the connect your agent and build managed agent doesn't need to be shown if there are agents already. the plus icon over there can be a dropdown that has these values if there are any agents

@@ -1,0 +1,1 @@
+i see the memory page http://localhost:5173/buremba/memory like this, this is very hard to follow. what's the best in class solution for these? i want default view to be clean for people, no matter how many edges are, how long their name is etc.[Image #1]

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bb1lk4ou2</task-id>
+<tool-use-id>toolu_01P8QBiuwie4NQBrtvJuBWc2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bb1lk4ou2.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for dev server to accept connections" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+don't we need to actually scaffold the project, test it properly? i thought we will create the project locally and test it and plug in a model so we can do end to end dmeo

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9ftp60ru</task-id>
+<tool-use-id>toolu_012tuCzqc1r8Gf4VCJrUpkqS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/b9ftp60ru.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 626 CI" completed (exit code 0)</summary>
+</task-notification>

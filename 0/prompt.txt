@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byd19jdrc</task-id>
+<tool-use-id>toolu_01NqYXpGL4RC1mmAjJFgi4o1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/byd19jdrc.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for fixer" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+ok interesting. show me a full example in different cases. also how does the agent know lobu url for a conversation or agent etc

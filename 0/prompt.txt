@@ -1,0 +1,1 @@
+ok go do next actions. instead of z.ai you can use gemini api keys

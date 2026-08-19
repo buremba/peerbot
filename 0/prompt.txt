@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bktj2c2ef</task-id>
+<tool-use-id>toolu_01THBoaMskS3KaK9ZUZH7x92</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/bktj2c2ef.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review once on settled HEAD for 2322" completed (exit code 0)</summary>
+</task-notification>

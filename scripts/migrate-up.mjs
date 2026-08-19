@@ -28,40 +28,30 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import postgres from "postgres";
-import {
-  NO_QUIESCE_MARKER,
-  classifyMigrationSource,
-} from "./lib/migration-compatibility.mjs";
 
 const CHECK_PENDING_NONE_EXIT = 3;
 const CHECK_PENDING_COMPATIBLE_EXIT = 4;
 
 /**
- * Decide whether one pending migration may skip the quiesce. Fails closed: an
- * unreadable or unparseable file reports as blocking. The marker is checked
- * before the file is parsed so a malformed migration nobody marked reports the
- * plain "not marked" reason rather than a parse error.
+ * The author's assertion that the code deployed *before* this migration keeps
+ * working against the post-migration schema -- the expand half of an
+ * expand/contract pair, or a contract whose last reference went away in an
+ * earlier deploy.
+ *
+ * There is deliberately no SQL analysis behind this. Backward compatibility is
+ * a property of sequencing relative to the running code, not of the DDL verbs:
+ * a DROP COLUMN is safe once nothing reads it, and a widened CHECK constraint
+ * is safe because it only ever accepts more. The SQL cannot express either, so
+ * only the author can make the call.
  */
-function classifyPendingMigration(dir, file) {
+const NO_QUIESCE_MARKER = /^--[ \t]*lobu:no-quiesce\b/m;
+
+/** Unreadable counts as unmarked, so anything unexpected still quiesces. */
+function isMarkedNoQuiesce(dir, file) {
   try {
-    const content = readFileSync(join(dir, file), "utf-8");
-    if (!NO_QUIESCE_MARKER.test(content)) {
-      return {
-        file,
-        compatible: false,
-        reason: "not marked -- lobu:no-quiesce",
-      };
-    }
-    const { sql } = loadMigrationUp(dir, file);
-    return classifyMigrationSource(file, content, splitSqlStatements(sql));
-  } catch (error) {
-    return {
-      file,
-      compatible: false,
-      reason: `could not be read: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
+    return NO_QUIESCE_MARKER.test(readFileSync(join(dir, file), "utf-8"));
+  } catch {
+    return false;
   }
 }
 
@@ -259,18 +249,18 @@ if (checkPendingOnly) {
   console.log(`Pending migrations (${pending.length}): ${pending.join(", ")}`);
 
   // Quiescing costs a full scale-to-zero, which the ingress answers with 503.
-  // A migration that the old code can already run against does not need it.
-  const verdicts = pending.map((file) =>
-    classifyPendingMigration(migrationsDir, file)
+  // A migration the running code can already serve against does not need it.
+  const unmarked = pending.filter(
+    (file) => !isMarkedNoQuiesce(migrationsDir, file)
   );
-  for (const verdict of verdicts) {
-    console.log(`  ${verdict.file}: ${verdict.reason}`);
-  }
-  if (verdicts.every((verdict) => verdict.compatible)) {
+  if (unmarked.length === 0) {
     console.log(
-      "Every pending migration is marked backward-compatible; the quiesce can be skipped."
+      "Every pending migration is marked -- lobu:no-quiesce; the quiesce can be skipped."
     );
     process.exit(CHECK_PENDING_COMPATIBLE_EXIT);
+  }
+  for (const file of unmarked) {
+    console.log(`  ${file}: not marked -- lobu:no-quiesce`);
   }
   process.exit(0);
 }

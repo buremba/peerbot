@@ -1550,11 +1550,10 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/lobu_ci?sslmode=disable
         # charts/lobu/files/migrate-upgrade.sh skips its scale-to-zero quiesce
         # on --check-pending exit status 3 (nothing pending) or 4 (every
-        # pending migration marked -- lobu:no-quiesce). Pin all four
+        # pending migration marked -- lobu:no-quiesce). Pin all three
         # real-database answers here, where every migration was just applied.
         # --check-pending never executes migration SQL, so the probe files
-        # below are read, classified, and discarded without touching the
-        # schema.
+        # below are read and discarded without touching the schema.
         run: |
           probe=db/migrations/99999999999999_pending_probe.sql
           # A complete ledger reports 3.
@@ -1565,17 +1564,12 @@ jobs:
           pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
           rm "$probe"
           test "$pending_rc" -eq 0
-          # Marked and additive: the old replicas can serve across it, so the
-          # hook may skip its scale-to-zero.
+          # Marked: the author declared the running code can serve across it,
+          # so the hook may skip its scale-to-zero.
           printf -- '-- migrate:up\n-- lobu:no-quiesce\nALTER TABLE public.events ADD COLUMN IF NOT EXISTS quiesce_probe text;\n' > "$probe"
           pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
           rm "$probe"
           test "$pending_rc" -eq 4
-          # Marked but incompatible: the guard overrides the author's claim.
-          printf -- '-- migrate:up\n-- lobu:no-quiesce\nALTER TABLE public.events DROP COLUMN legacy;\n' > "$probe"
-          pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
-          rm "$probe"
-          test "$pending_rc" -eq 0
 
       # The committed pgvector libraries bypass normal TypeScript builds. Keep
       # their ABI floor in this already-required, Docker-capable policy job

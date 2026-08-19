@@ -33,11 +33,11 @@ ALTER TABLE public.device_workers
 Rules:
 
 - The marker must be **its own comment line**. Prose mentioning it does not arm it.
-- It asserts something about the **application**, not the DDL: that the code running *before* this deploy keeps working against the post-migration schema. Only the author can know that. `scripts/lib/migration-compatibility.mjs` only rejects DDL that contradicts the claim — drops, renames, `SET NOT NULL`, type changes, added constraints, and `ADD COLUMN … NOT NULL` with no `DEFAULT`.
+- It asserts something about the **application**, not the DDL: that the code running *before* this deploy keeps working against the post-migration schema. Nothing inspects your SQL, because backward compatibility is a property of sequencing rather than of the DDL verbs — a `DROP COLUMN` is safe once nothing reads that column, and a widened `CHECK` constraint is safe because it only ever accepts more. Only you know where the migration sits in that sequence.
 - **Every** pending migration in the deploy must carry it, or the whole batch quiesces. One unmarked migration removes the fast path for all of them.
 - Everything fails closed. Unmarked, unreadable, unparseable, or a pending-check that crashes all quiesce exactly as before.
 
-If you are contracting — dropping the column, tightening the constraint — leave the marker off. That is what the window exists for.
+Leave the marker off when the running code would actually break: a column it still reads is going away, a constraint is being tightened under it, or a new `NOT NULL` column has no `DEFAULT` to fill in for inserts that predate it. That is what the window exists for.
 
 ---
 

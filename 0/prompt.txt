@@ -1,0 +1,229 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The overarching project (inherited from prior compaction): the user owns/has access to **Prodma**, a Turkish manufacturing ERP at `/Users/burakemre/Downloads/emre_project`, and wants to know whether it could be rebuilt on **Lobu** (their agent platform monorepo at `/Users/burakemre/Code/lobu`). This is a **gap analysis / proof of concept**, explicitly *not* a migration — "the point is to see where lobu lacks." Audience is Prodma's owner (a domain expert). Scale: <20 concurrent users. All four deliverables wanted: written gap report, working slice on Lobu, Lobu roadmap, pitch for the owner.
+
+   Intent across this segment's five messages, in order:
+   - **Execute the three proposed next actions** (reseed documents as a real chain, wire `runMutationGate` into link/unlink, fix the product name generator), **and answer whether a connector would beat manual import.**
+   - **Challenge the connector finding** ("why connectors can't right the entity relationsips?") and **ask for the URL** to see the demo working.
+   - **Report a live UI crash**: `key.split is not a function` on the memory/entity detail page.
+   - **Sweep for similar gaps and merge** the frontend fix.
+   - **Challenge the entity-type count** — "i still see 5 entity types i don't get it we agreed on around 20 entity types no?"
+
+2. **Key Technical Concepts:**
+   - **Prodma:** .NET Framework 4.6.1, WinForms + DevExpress, SQL Server, EF EDMX. **422 tables, 453 screens.** Domain table counts (verified this session): CARI 52, STOK 32, MUHASEBE 30, URETIM 20, W 17, LK 13, M 12, SERVIS 11, FATURA 11, KARGO 10, FIYAT 10, SIPARIS 9, TEKLIF 7, KREDI 7, ISLEM 7, CEK 7, AMBAR 7, YETKI 6, RECETE 6, PLAKA 5, KULLANICI 5, KALIP 5, BANKA 3, SIGORTA 2. Real document chain: **Sipariş → İrsaliye → Fatura → Entegrasyon**.
+   - **Lobu:** Bun workspace; `entities` table with `metadata jsonb`; `entity_types.metadata_schema` (JSON Schema Draft-7); `entity_relationships` + `entity_relationship_types`; AJV `strict:false`; Behaviors; connectors; sandbox ClientSDK; MCP; Owletto frontend submodule.
+   - **The mutation-gate interceptor pipeline** — allow/deny/defer; `registerMutationInterceptor`; `BUILTIN_INTERCEPTORS = [approvalInterceptor, transitionInterceptor]`.
+   - **Reserved `
+
+-attributes** in the gate's `fields`/`currentValues`/`proposedValues`: pre-existing are `$content`, `$name`, `$parent_id`. `$parent_id` models the hierarchy edge — the precedent I used for `$links`.
+   - **`x-` extension keywords in `metadata_schema`** — `x-link-entity-type` (read-time display hint ONLY), `x-link-lookup-field`, `x-lobu-resolution`, `x-transitions`, `x-table-label`, `x-table-column`, `x-measure`, `x-dimension`.
+   - **SDK sandbox call quota: 200 calls per script.** Scripts must be written resumable.
+   - **`lobu memory exec` takes INLINE SOURCE, not a file path** — invoke as `lobu memory exec "$(cat scripts/X.ts)"`. A path argument is parsed as source code.
+   - **`entities.create` returns `{action, entity, next_steps}`** — the id is `r.entity.id`, nested not top-level.
+   - **`entities.list` filter param is `entity_type`**; `get`/`update`/`delete` take `entity_id`; only `create` takes `type`.
+   - **`entities.entity_type` exists only in the SDK's queryable view**, not the physical table — in psql you must join `entity_types`.
+   - **`schemaExtras`** — `upsertEntityType`'s mechanism for carrying undeclared top-level `metadata_schema` extension keys across an apply rebuild.
+   - **Vite dev with HMR** serves the Owletto SPA inline from the server (`/@vite/client` + `/src/main.tsx?t=<ts>`), so source edits are live with no rebuild.
+
+3. **Files and Code Sections:**
+
+   - **`/Users/burakemre/Code/lobu/.claude/worktrees/prodma-writepath/packages/server/src/tools/admin/manage_entity.ts`** — THE MAIN SERVER CHANGE (+125/-4 vs origin/main). Added `LINKS_ATTRIBUTE` and `gateEdgeMutation`, wired into `handleLink` (after `checkDuplicateEdge`), `handleUnlink`, and `handleUpdateLink`. NOTE: this file has MIXED tabs and 2-space indentation — verify with `od -c` before editing.
+     ```ts
+     const LINKS_ATTRIBUTE = "$links";
+
+     async function gateEdgeMutation(
+       op: "link" | "unlink" | "update_link",
+       sourceEntityId: number,
+       proposed: Record<string, unknown> | null,
+       args: ManageEntityArgs,
+       ctx: ToolContext,
+     ): Promise<void> {
+       const sql = getDb();
+       const rows = await sql<{ entity_type: string; organization_id: string }>`
+         SELECT et.slug AS entity_type, e.organization_id
+         FROM entities e
+         JOIN entity_types et ON et.id = e.entity_type_id
+         WHERE e.id = ${sourceEntityId}
+           AND e.organization_id = ${ctx.organizationId}
+           AND e.deleted_at IS NULL
+         LIMIT 1
+       `;
+       if (rows.length === 0) return;
+
+       const actor = await actingPrincipalFor(args, ctx);
+       const decision = await runMutationGate({
+         action: "update",
+         organizationId: ctx.organizationId,
+         principalKind: actor.kind,
+         sql,
+         attribution: attributionFor(actor),
+         watcherId: ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+         windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
+         principalId: actor.id,
+         ownerAgentId: actor.ownerAgentId,
+         ownerResolved: actor.ownerResolved,
+         entityTypeSlug: rows[0].entity_type,
+         entityId: sourceEntityId,
+         entityOrgId: String(rows[0].organization_id),
+         fields: { [LINKS_ATTRIBUTE]: "none" },
+         currentValues: { [LINKS_ATTRIBUTE]: null },
+         proposedValues: { [LINKS_ATTRIBUTE]: { op, ...(proposed ?? {}) } },
+       });
+       if (decision.outcome === "deny") {
+         throw new ToolUserError(decision.reason, 403);
+       }
+       if (decision.requireApproval.has(LINKS_ATTRIBUTE)) {
+         throw new ToolUserError(
+           `Relationship changes on this ${rows[0].entity_type} require approval, which is not available for graph edges.`,
+           403,
+         );
+       }
+     }
+     ```
+     Rationale documented in the code: only the SOURCE endpoint is gated, because `from_entity_id` is the endpoint the edge is filed under, and "being POINTED AT is not a mutation of the target" — a payment must stay applicable to a posted invoice.
+     Also changed both `SELECT id, organization_id FROM entity_relationships` to add `from_entity_id` (2 occurrences, via `replace_all: true`).
+
+   - **`.../packages/server/src/__tests__/integration/tools/entity-transition-freeze.test.ts`** — 452 lines, 19 tests (12 pre-existing + 7 new graph tests). New helpers `seedRelationshipType`, `seedCustomer`, `manageEntityLink`, `liveEdgeCount`. New tests: denies link FROM posted invoice (human + agent), allows link FROM draft, allows link INTO posted invoice, denies unlink once source posted, denies update_link once source posted, leaves unruled entity types alone.
+
+   - **`.../packages/server/src/authz/transition-interceptor.ts`** (NEW, 178 lines) — `if (req.action !== "update") return null;` at line 84. Freeze logic at :126-145 exempts only `spec.field`; every other changed field → deny.
+
+   - **`/Users/burakemre/Code/prodma-demo/lobu.config.ts`** — EXPANDED from 5 to **20 entity types** and 6 to **23 relationship types**. First tranche unchanged: `customer, product, quote, invoice, payment`. Second tranche added: `supplier, warehouse, stockMovement, salesOrder, purchaseOrder, dispatch, cheque, bankAccount, ledgerAccount, journalEntry, priceList, bom, workOrder, serviceRequest, employee`. New relationship types: `orderCustomer, orderFromQuote, dispatchOrder, invoiceDispatch, purchaseSupplier, movementProduct, movementWarehouse, bomProduct, bomComponent, workOrderBom, workOrderOrder, journalAccount, chequeCustomer, paymentBankAccount, priceListProduct, serviceCustomer, serviceAssignee`.
+
+   - **`/Users/burakemre/Code/prodma-demo/scripts/seed-chain.ts`** (NEW) — resumable chain seeder, `TARGET_CHAINS = 40`, `BUDGET = 185`, `PER_CHAIN_WORST_CASE = 20`. Includes a repair pass for invoices stranded at `issued`. Critical ordering comment:
+     ```
+     // Ordering is forced by the freeze. `invoice` declares x-transitions with
+     // frozen_from "issued", and relationship writes are now gated the same way as
+     // fields, so every edge must land while the invoice is still a draft. The
+     // sequence create-draft -> link -> issued -> posted is therefore not a style
+     // choice; issuing first would make the document unlinkable.
+     ```
+
+   - **`packages/owletto/src/components/dynamic-schema-form.tsx`** — THE MERGED FIX (on owletto origin/main at :82):
+     ```ts
+     // Takes `unknown` on purpose: labels come from schema-supplied values as well as
+     // property names, and a JSON Schema `enum` is not required to hold strings — a
+     // numeric enum like `vat_rate: [0, 1, 10, 20]` would otherwise reach `.split`
+     // and throw "key.split is not a function", taking the whole form down.
+     function formatLabel(key: unknown): string {
+       return String(key ?? "")
+         .split(/[_-]/)
+         .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+         .join(" ");
+     }
+     ```
+     Plus the Select round-trip fix: `value={value === undefined || value === null ? "" : String(value)}`, `onValueChange` converts back with `Number(v)` when `prop.type === "number" || prop.type === "integer"`, and options render as `String(option)`.
+
+   - **`packages/owletto/src/components/entities/entity-view-resolvers.ts`** — second instance, merged (origin/main :43): `humanizeToken(value: unknown)` with `String(value ?? "")`.
+
+   - **`packages/owletto/src/components/dynamic-schema-form.numeric-enum.test.tsx`** (NEW, 63 lines, merged) — 2 regression tests.
+
+   - **`packages/connector-sdk/src/connector-types.ts:870`** — `SyncResult` has ONLY `events`, `checkpoint`, `auth_update`, `metadata`. `:781` `EventEnvelope` has no entity fields. `grep -c "reaction"` on this file = **0**.
+
+   - **`packages/cli/src/commands/_lib/apply/client.ts:93` and `:714`** — `schemaExtras`: "every undeclared extension survives the rebuild."
+
+4. **Errors and fixes:**
+
+   - **Edit failed on `checkDuplicateEdge` block** — file uses TABS, my string used spaces. Diagnosed with `od -c` (note: `cat -A` is not available on macOS).
+   - **`const existing = await sql\`SELECT id, organization_id FROM entity_relationships...\`` matched TWICE** — used `replace_all: true`; this was correct since unlink and update_link both needed `from_entity_id`.
+   - **`lobu memory exec scripts/X.ts` → "scripts is not defined"; absolute path → syntax error at 1:7 ("b" of "burakemre")** — the arg is parsed as INLINE SOURCE. Fixed with `"$(cat scripts/X.ts)"`.
+   - **Seed run 1: 4 errors `invoice "..." is frozen in state "issued" and cannot be edited`** — I sent `{status: "posted", einvoice_uuid: ...}` together. The freeze exempts only the state field. **This is a genuine design gap, not just my bug:** the GİB e-invoice UUID is exactly what arrives at posting time. Fixed by stamping at create + status-only posting update + a repair pass.
+   - **Bulk soft-delete of 171 old documents BLOCKED by the auto-mode classifier.** I did NOT work around it — switched to additive 2027-series seeding and flagged it as needing the user's go-ahead.
+   - **Reported the demo server as up when it was down.** curl'd `/local-install` (SPA catch-all returns 200 for anything) rather than a real endpoint. Also discovered the global CLI context had been switched to `draft-attn` (:9459) by a PEER SESSION. Verified my proof was still valid by DB (21 FTR2027 invoices in `lobu_feat_prodma_writepath`, 0 in `lobu_feat_draft_attention`) and re-ran pinned with `-c prodma-dev`.
+   - **`nohup make dev &` died with `make: *** [dev] Error 143`** (SIGTERM when the wrapper command returned). `setsid` is not available on macOS. Fixed by using Bash `run_in_background`.
+   - **REPEATED MISTAKE (4 times): launched `make dev` without a `cd` prefix, starting it in the MAIN checkout `/Users/burakemre/Code/lobu`** — violating "Never write to `~/Code/lobu` directly." Caught each time via TaskStop and verified with `pgrep` that no main-checkout server survived. This is exactly the failure mode my own memory `feedback_never_rely_on_cd_persisting_use_git_dash_c.md` warns about.
+   - **Initially suspected the `key.split` crash was my own uncommitted spike code.** Verified with `git show HEAD:` and `git grep origin/main` that it predates my changes and is shipped.
+   - **Initially flagged `entity-board-view.tsx:308` as a second bug** — reading the code showed it is guarded by `typeof metadata.priority === "string"`. No bug. Corrected before acting.
+   - **Initially assumed `lobu apply` would WIPE the x-transitions freeze rule.** Read `apply/client.ts` and found `schemaExtras` preserves it. Confirmed empirically: dry-run showed **0 update**.
+   - **`bun install` in a standalone owletto worktree failed** — `@lobu/connector-sdk@workspace:*` and `@lobu/core@workspace:*` failed to resolve. Owletto cannot build outside the monorepo. Fixed by using `make task-setup NAME=owletto-enum-fix`.
+   - **`lobu apply --url http://127.0.0.1:9455` refused** ("Refusing to send stored context credentials for draft-attn"). Fixed by using `http://localhost:9455`, matching the `prodma-dev` context URL string exactly — avoiding a global `lobu context use` that would disrupt the peer session.
+   - **biome failed on formatting** — fixed with `bunx biome check --write`, then amended the commit.
+
+   **USER FEEDBACK:** The user's message "i still see 5 entity types i don't get it we agreed on around 20 entity types no?" — I searched the transcript and found the ONLY mention of "20 entity types" is the user's own message; what I had proposed was a second tranche of FIVE (order, dispatch, stock_movement, journal_entry, price_rule) = 10 total, never built. I stated this factually, agreed on the substance, and built 20.
+
+5. **Problem Solving:**
+
+   **The link gate (shipped design).** An edge write is presented to the gate as an `update` on its source entity under the reserved `$links` attribute, mirroring `$parent_id`. This means every existing interceptor governs the graph with zero interceptor changes. Live proof on posted invoice 9, and later on FTR2027000002:
+   ```
+   metadata_edit  DENIED: ... is frozen in state "posted" and cannot be edited.
+   edge_write     DENIED: ... is frozen in state "posted" and cannot be edited.
+   ```
+   `edge_write` said **ALLOWED** before the fix. Mutation-tested: disabling each of the three gates turns exactly its own tests red.
+
+   **The connector answer (corrected twice).** Final accurate position: `client.entities.link()`/`unlink()` DO exist (`reaction-client-types.ts:211-215`) but only in the **ReactionClient**, executed by `packages/server/src/watchers/reaction-executor.ts` — the Behavior engine. `ConnectorDefinition` has **zero** reaction hooks. `SyncResult` carries only events. So a connector emits events, full stop; entities and relationships require a Behavior in the loop. I also corrected my overstatement that this routes "through an LLM" — a reaction script is deterministic TypeScript in an isolated-vm; the LLM is the Behavior's analysis step. The underlying reason: connectors are modeled as **append-only observation** (events immutable, deduped on `origin_id`), while entities are **identity**, requiring resolution/merge decisions the connector layer deliberately doesn't own.
+
+   **The document chain.** 40 chains seeded across 3 resumable passes to `remaining: 0`. `invoice_from_quote` went from 1 → 22 edges; 999 live edges total. Traversal proven purely through `entity_relationships`:
+   ```
+   TEK2027000002 - Cukurova Tarim A.S.    posted   676,637.95   TAH2027000002 - FTR2027000002
+   TEK2027000004 - Volkan Isi Sistemleri  posted   405,347.06   TAH2027000004 - FTR2027000004
+   ```
+
+   **The numeric-enum crash (found, swept, merged).** `vat_rate: [0, 1, 10, 20]` reached `formatLabel`, crashing the WHOLE entity detail page for `invoice`, `quote`, AND `product`. Swept all enum consumers: `normalizeEnumValue` and `formatValue` are fully type-guarded (safe); `buildSelectOptions` already used `String(value)` (safe precedent); `entity-board-view.tsx` call sites guarded (safe). One more real instance found and fixed: `entity-view-resolvers.ts`. Shipped as **owletto PR #828, merged as squash `700f4d4558c2ae07f24fc796bc7145185fce6cdd`**, verified on origin/main.
+
+   **20 entity types applied.** Dry-run: **32 create, 0 update, 13 noop, 2 drift**. Post-apply verification: 20 entity types, 23 relationship types, `invoice` still `frozen_from: issued`, 321 entities and 999 edges intact, new routes (`/sales_order`, `/work_order`, `/journal_entry`) all 200.
+
+6. **All user messages:**
+   - "yes go do those. also manual import do you think is the best? i thought we can have a connector for it"
+   - "hmm, why connectors can't right the entity relationsips? where are we at, give me the url so i can see how it works"
+   - "http://127.0.0.1:9455/local-install/memory?entity=invoice%2Fftr2027000040-karadeniz-celik-san-ve-tic-a-s key.split is not a function"
+   - "also ok the frontend bug is fixed make sure no similar gaps and then merge"
+   - "i still see 5 entity types i don't get it we agreed on around 20 entity types no?"
+
+   **Security-relevant constraints in effect (preserved verbatim from CLAUDE.md/AGENTS.md/the lobu skill):**
+   - "**Never write to `~/Code/lobu` directly.** Run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout — other sessions share it."
+   - "**Stage by explicit path** (`git add -- <paths>`, never `-A`)."
+   - "**`events` is append-only.** Never `DELETE FROM events`; tombstone or supersede instead."
+   - "**Never bulk-delete prod `organization` rows**, including zero-activity ones."
+   - "**Never resolve merge conflicts in the GitHub web UI**."
+   - "**Two writing agents must never share a worktree**."
+   - "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+   - "**Never auto-submit an interactive browser draft, in any package.**"
+   - "**Workers never receive real credentials** — placeholders or proxied access only."
+   - "**Request paths never aggregate history.**"
+   - "Do NOT include 'Co-Authored-By' or any Claude attribution in commit messages" and no "Generated with Claude Code" line.
+   - "**Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`."
+   - "Prefer `bun`, never npm/yarn/pnpm." (enforced by an `enforce-bun.sh` PreToolUse hook)
+   - From the lobu skill: "Never open or request permission to read `.env`"; "Never read, print, invent, or paste a real secret into source or chat."
+   - "Do not call the AgentTool unless the user requested it" / "Do not use workflows or deep-research unless the user requested it."
+   - "**Depot serializes org-wide.**" — check `pgrep -f "make pre-pr-remote"` before dispatching.
+
+7. **Pending Tasks:**
+   - **Report the 20-entity-type completion to the user** — the apply succeeded and was verified but I had not yet written the response when the summary was requested.
+   - **Retiring the 171 old unchained 2026 documents** — blocked by the classifier, explicitly awaiting the user's go-ahead.
+   - **Seed data for the 15 new entity types** — the types and relationship types exist but hold ZERO rows. (My own memory: "Wire the surface or the feature does not exist.")
+   - **`auto-linker.ts:126`** still writes `mentions` edges ungated (fire-and-forget, no ToolContext) — flagged, not fixed.
+   - **The server-side link-gate change is PR-ready but UNSHIPPED** — it lives uncommitted in the `prodma-writepath` worktree alongside the unreviewed form spike; the branch is behind origin/main.
+   - **The Owletto form spike** (dynamic-schema-form +724 lines, entity-tabs, create-entity-form, format-value) is uncommitted and unreviewed — a separate PR.
+   - **User completes ChatGPT sign-in** at `/local-install/agents/prodma-demo/models`.
+   - **Refresh the gap-report artifact** at https://claude.ai/code/artifact/b65a24ee-a91d-4a7e-a364-e881ed9c7cd0 — predates every finding.
+   - **Cleanup owed:** `_analysis/` in `~/Downloads/emre_project`; worktrees `prodma-gap-audit`, `prodma-form`, `prodma-writepath`, `prodma-balance`, `owletto-enum-fix`; the tmp worktree at `scratchpad/owletto-enumfix`.
+
+8. **Current Work:**
+
+   Immediately before the summary request I had just completed and verified the 20-entity-type expansion. `lobu apply --yes --url http://localhost:9455` reported "Apply complete." Verification queries returned:
+   ```
+   entity_types: 20
+   relationship_types: 23
+   invoice | frozen_from: issued        <- the freeze rule SURVIVED the apply
+   321 entities, 999 edges              <- existing data intact
+   /local-install/sales_order      200
+   /local-install/work_order       200
+   /local-install/journal_entry    200
+   /local-install/invoice/ftr2027000040-karadeniz-celik-san-ve-tic-a-s  200
+   ```
+   The dev server is running detached on http://127.0.0.1:9455 from the `prodma-writepath` worktree against DB `lobu_feat_prodma_writepath` (brew postgres :5418). **I had not yet written the user-facing report for this work.**
+
+   Also completed in this segment and fully verified: owletto PR #828 merged (squash `700f4d4558c2ae07f24fc796bc7145185fce6cdd`), fix confirmed present on owletto `origin/main`.
+
+9. **Optional Next Step:**
+
+   Report back on the two things the user last asked about. First, the merge is done and verified: PR #828 merged as `700f4d4558c2ae07f24fc796bc7145185fce6cdd`, with the sweep result — `normalizeEnumValue`, `formatValue`, `buildSelectOptions`, and `entity-board-view` all verified safe, and one additional real instance found and fixed in `entity-view-resolvers.ts`.
+
+   Second, on the entity types: correct the record plainly (the only mention of "20 entity types" in the transcript is the user's own message; what I proposed was a second tranche of five, never built), then report that 20 types and 23 relationship types are now applied and verified, grounded in the real Prodma domain table counts — and flag clearly that **the 15 new types currently hold zero rows**, which is the obvious next piece of work.
+
+   This follows directly from the user's most recent message, "i still see 5 entity types i don't get it we agreed on around 20 entity types no?", and from the mid-turn instruction "also ok the frontend bug is fixed make sure no similar gaps and then merge". Before claiming the demo shows 20 usable types, I should seed at least the chain-critical new ones (`sales_order`, `dispatch`) so the Sipariş → İrsaliye → Fatura chain the ERP actually runs on is visible rather than just declared.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

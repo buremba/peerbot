@@ -19,7 +19,7 @@ export { REDACTED_SENTINEL };
  * `kind` union so per-kind counts and per-resource rows line up in the
  * deployments UI without a mapping table.
  */
-const CONFIG_RESOURCE_KINDS = [
+export const CONFIG_RESOURCE_KINDS = [
   'agent',
   'agent-settings',
   'platform',
@@ -44,11 +44,21 @@ export function isConfigResourceKind(
   return typeof kind === 'string' && CONFIG_RESOURCE_KIND_SET.has(kind);
 }
 
-/** Server-emitted workspace identity resources; never part of `lobu apply`. */
+/**
+ * Server-emitted workspace identity resources; never part of `lobu apply`.
+ *
+ * A runtime const rather than a bare type union because the platform event
+ * catalog enumerates these to decide what an Automation may subscribe to — a
+ * type alone cannot be iterated, and a second hand-kept list would drift.
+ */
+export const WORKSPACE_AUDIT_RESOURCE_KINDS = [
+  'organization',
+  'member',
+  'invitation',
+] as const;
+
 export type WorkspaceAuditResourceKind =
-  | 'organization'
-  | 'member'
-  | 'invitation';
+  (typeof WORKSPACE_AUDIT_RESOURCE_KINDS)[number];
 
 export type AuditResourceKind = ConfigResourceKind | WorkspaceAuditResourceKind;
 

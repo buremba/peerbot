@@ -11,7 +11,10 @@ import type { DbClient } from "../db/client";
 import { listCatalogEntries } from "../catalog/load";
 import { validateSchedule, validateTimezone } from "../utils/cron";
 import { ToolUserError } from "../utils/errors";
-import { withPlatformAutomationEvents } from "./platform-event-catalog";
+import {
+	platformEventKinds,
+	withPlatformAutomationEvents,
+} from "./platform-event-catalog";
 import { resolveAutomationEventCatalog } from "./connector-derived";
 
 export interface AutomationTriggerProjection {
@@ -414,8 +417,13 @@ export async function assertAutomationTriggerConnections(
 					`Workspace event trigger entity type '${entityTypeSlug}' was not found in this organization.`
 				);
 			}
+			// Platform events union in on both branches. Without an entity type the
+			// catalog is the whole workspace; WITH one, `entity.updated` narrowed by
+			// `entity_type` is exactly how an Automation subscribes to "an invoice
+			// changed", so dropping the union there would break the common case.
 			const eventKinds = Object.assign(
 				{},
+				platformEventKinds(),
 				...rows.map((row) =>
 					row.event_kinds && typeof row.event_kinds === "object"
 						? row.event_kinds

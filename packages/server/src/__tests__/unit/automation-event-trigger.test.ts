@@ -331,41 +331,40 @@ describe('automation event trigger matching', () => {
     ).toBe(false);
   });
 
-  test('matches platform audit rows by stamped type or by semantic type', () => {
-    // Every audit row shares the `change` semantic type, so the stamp is the
-    // only way to name one kind of change. Both names must work: dropping the
-    // semantic arm would silently unsubscribe anyone already listening to
-    // `change`, and dropping the stamped arm is the whole point of the stamp.
+  test('names an audit row by its stamped type only, never by `change`', () => {
     const auditRow = {
       semanticType: 'change',
-      auditEventType: 'device.online',
+      auditEventType: 'connection.deleted',
       entityTypeSlugs: [] as string[],
       metadata: {},
     };
     const bySubject = {
       kind: 'event',
       source: 'workspace',
-      event_types: ['device.online'],
-    } satisfies AutomationWorkspaceEventTrigger;
-    const bySemanticType = {
-      kind: 'event',
-      source: 'workspace',
-      event_types: ['change'],
+      event_types: ['connection.deleted'],
     } satisfies AutomationWorkspaceEventTrigger;
     expect(matchesWorkspaceEventTrigger(bySubject, auditRow)).toBe(true);
-    expect(matchesWorkspaceEventTrigger(bySemanticType, auditRow)).toBe(true);
+    // Every audit row shares `change`, so matching on it would wake an
+    // Automation on essentially every write in the organization. The depth and
+    // fan-out limits bound the resulting cascade, not that ingress.
+    expect(
+      matchesWorkspaceEventTrigger(
+        { kind: 'event', source: 'workspace', event_types: ['change'] },
+        auditRow
+      )
+    ).toBe(false);
     expect(
       matchesWorkspaceEventTrigger(
         {
           kind: 'event',
           source: 'workspace',
-          event_types: ['device.offline'],
+          event_types: ['connection.created'],
         },
         auditRow
       )
     ).toBe(false);
     // A plain Automation output carries no stamp, so a `<subject>.<op>`
-    // subscription must not pick it up on the semantic arm alone.
+    // subscription must not pick it up by semantic type.
     expect(
       matchesWorkspaceEventTrigger(bySubject, {
         ...auditRow,

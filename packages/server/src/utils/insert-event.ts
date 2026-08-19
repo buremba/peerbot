@@ -12,6 +12,10 @@ import {
   type AuditEventType,
   formatAuditEventType,
 } from './audit-event-type';
+import type {
+  AuditLifecycleSubject,
+  EdgeOp,
+} from '../automations/platform-event-catalog';
 import {
   type AuditResourceKind,
   type ConfigResourceKind,
@@ -850,7 +854,7 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
   // Keep this stable across the retry below, while allowing a relationship
   // revived by unmerge to record the same operation again later.
   const originId = `edge:${params.relationshipId}:${params.op}:${crypto.randomUUID()}`;
-  const verb =
+  const verb: EdgeOp =
     params.op === 'link' ? 'linked' : params.op === 'unlink' ? 'unlinked' : 'updated';
 
   retryWithBackoff(
@@ -904,12 +908,16 @@ type LifecycleOp = 'created' | 'updated' | 'deleted';
 interface LifecycleEventParams {
   organizationId: string;
   /**
-   * Entity-type slug used by dashboard SQL to pivot lifecycle rows
-   * (`metadata->>'entity_type'`). Kept as a free-form string so new entity
-   * types can emit without touching this file — keep slugs short, lowercase,
-   * singular: `agent`, `connection`, `automation`, `device`, `member`, `client`.
+   * Platform object this row is about, used by dashboard SQL to pivot lifecycle
+   * rows (`metadata->>'entity_type'`).
+   *
+   * Narrowed to `AUDIT_LIFECYCLE_SUBJECTS` rather than free-form: the same
+   * value becomes the `<subject>` half of a subscribable event type, so a
+   * subject the catalog does not know about would emit an event nothing can
+   * ever subscribe to. Adding one is a one-line change in the catalog, which
+   * then makes it subscribable and discoverable in the same edit.
    */
-  entityType: string;
+  entityType: AuditLifecycleSubject;
   op: LifecycleOp;
   entityId: string | number;
   /** Human-readable summary (e.g. "Agent 'Marketing' created"). */

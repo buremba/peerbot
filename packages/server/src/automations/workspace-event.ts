@@ -28,10 +28,10 @@ interface WorkspaceEventRecord {
   semanticType: string;
   /**
    * The stamped `<subject>.<op>` type for a platform-written audit row, or
-   * null for an Automation output. Carried alongside `semanticType` rather
-   * than collapsed into it because a subscription may legitimately name
-   * either: audit rows all share the `change` semantic type, so the stamp is
-   * the only way to subscribe to one kind of change without the rest.
+   * null for an Automation output. Kept separate from `semanticType` so the
+   * matcher can name an audit row by its stamp only: every audit row shares
+   * the `change` semantic type, and naming by that would wake a subscriber on
+   * essentially every write in the organization.
    */
   auditEventType: string | null;
   metadata: Record<string, unknown>;
@@ -123,19 +123,20 @@ export async function enqueueWorkspaceEventActivations(
 }
 
 /**
- * The type names a subscription may use for this event, most specific first.
+ * The single name a subscription uses for this event.
  *
- * An Automation output is nameable only by its semantic type. A platform-written
- * audit row is additionally nameable by its stamped `<subject>.<op>` type, which
- * is what makes `device.online` subscribable without also matching every other
- * row whose semantic type is `change`.
+ * A platform audit row is named by its stamped `<subject>.<op>` type; anything
+ * else by its semantic type. Audit rows are deliberately NOT also matchable by
+ * their raw `change` semantic type: every audit row shares it, so a `change`
+ * subscription would wake an Automation on essentially every write in the
+ * organization, and the depth and fan-out limits bound the resulting cascade,
+ * not that ingress. `change` is a storage classification, not something that
+ * happened, so the platform catalog never offers it.
  */
-function subscribableEventTypes(
+function subscribableEventType(
   event: Pick<WorkspaceEventRecord, 'semanticType' | 'auditEventType'>
-): string[] {
-  return event.auditEventType == null
-    ? [event.semanticType]
-    : [event.auditEventType, event.semanticType];
+): string {
+  return event.auditEventType ?? event.semanticType;
 }
 
 export function matchesWorkspaceEventTrigger(
@@ -145,10 +146,7 @@ export function matchesWorkspaceEventTrigger(
     'semanticType' | 'auditEventType' | 'metadata' | 'entityTypeSlugs'
   >
 ): boolean {
-  const namesThisEvent = subscribableEventTypes(event).some((eventType) =>
-    trigger.event_types.includes(eventType)
-  );
-  if (!namesThisEvent) return false;
+  if (!trigger.event_types.includes(subscribableEventType(event))) return false;
   if (
     trigger.entity_type !== undefined &&
     !event.entityTypeSlugs.includes(trigger.entity_type)
@@ -231,27 +229,15 @@ async function findMatchingWorkspaceEventActivations(
   matches: MatchingWorkspaceEventActivation[];
   fanoutLimited: boolean;
 }> {
-  // Coarse GIN needle, narrowed precisely by `matchesWorkspaceEventTrigger`
-  // below. An audit row is subscribable under two names, and containment
-  // cannot express a disjunction, so each name gets its own arm — the same
-  // shape `findMatchingAutomationActivations` uses for connector triggers.
-  // One arm alone would be wrong in both directions: the audit arm misses
-  // Automations subscribed to the raw semantic type, and the semantic arm
-  // misses every `<subject>.<op>` subscriber.
-  const needle = (eventType: string) => [
+  // Coarse GIN needle on the event's one subscribable name, narrowed precisely
+  // by `matchesWorkspaceEventTrigger` below.
+  const needle = [
     {
       kind: 'event',
       source: 'workspace',
-      event_types: [eventType],
+      event_types: [subscribableEventType(event)],
     },
   ];
-  const triggerFilter =
-    event.auditEventType == null
-      ? db`w.triggers @> ${db.json(needle(event.semanticType))}::jsonb`
-      : db`(
-          w.triggers @> ${db.json(needle(event.auditEventType))}::jsonb
-          OR w.triggers @> ${db.json(needle(event.semanticType))}::jsonb
-        )`;
   const rows = await db`
     SELECT w.id, w.organization_id, w.agent_id, w.entity_ids,
            w.device_worker_id::text AS device_worker_id,
@@ -261,7 +247,7 @@ async function findMatchingWorkspaceEventActivations(
       AND w.status = 'active'
       AND w.current_version_id IS NOT NULL
       AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
-      AND ${triggerFilter}
+      AND w.triggers @> ${db.json(needle)}::jsonb
     ORDER BY w.id ASC
   `;
 
@@ -401,7 +387,7 @@ export async function activateWorkspaceEventTask(
     kind: 'event',
     source: 'workspace',
     event_id: event.id,
-    event_type: event.auditEventType ?? event.semanticType,
+    event_type: subscribableEventType(event),
     delivery_id: `workspace-event:${event.id}`,
     occurred_at: event.occurredAt,
     root_event_ids: payload.rootEventIds,

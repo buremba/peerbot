@@ -1,0 +1,1 @@
+i clicked approve Failed to apply entity merge: Cannot read properties of undefined (reading 'duplicates'). The approval is back to pending — approve again after fixing the blocker, or reject it.

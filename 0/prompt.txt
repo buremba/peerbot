@@ -1,0 +1,1 @@
+also the models will live in the agent settings? the model providers can maybe be a dropdown, where we have connect item so the user can see the new providers in a dropdown or select existing, we can even use peek panel for this? that way only connectors and runtime and models under the settings. let's identify all the gaps

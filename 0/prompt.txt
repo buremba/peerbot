@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b23j77r4o</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/b23j77r4o.output</output-file>
+<status>completed</status>
+<summary>Monitor "Final CI settle on lobu#2204 after repoint" stream ended</summary>
+</task-notification>

@@ -1,0 +1,189 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The session is a continuing effort to make the `buremba` production org's Behaviors actually produce useful output, plus a merge train for the PRs that fix the underlying bugs. User requests in order:
+
+1. **"i logged in"** — confirming Google Calendar OAuth re-consent was completed; wanted verification it now works.
+2. **"why semantic type filter i don't get it, it should process all no? also check this session as well, it tried to fix issues we had before opencode -s ses_026e0d1a5ffeJSCCnumP3sP1Wr"** — two asks: explain why Behavior 5 filters `semantic_type` at all, and inspect a named opencode session.
+3. **"in this machine, check using the opencode session id locally"** — pushback; the session IS on this machine, look harder.
+4. **"you can fix connector code if it helps. it's also virtual right"** — authorization to change connector code; asking whether the calendar feed is virtual.
+5. **"you merge. screen time photos needs to be active"** — explicit green-light to merge the open PRs; and make screen-time + photos feeds active.
+6. **"they both have access on those no?"** — pushback: both Macs already have the macOS permissions granted.
+7. **"ok where are we on buremba behaviors all working properly"** — status request on all Behaviors.
+8. **"did the voice thing actually have all my x tweets and linkined post comments and all"** — does the voice-profile Behavior's corpus include X tweets and LinkedIn post comments?
+9. **"why 12, we had twitter export in my mac? it needs to be properly working no? also linkedin thing needs to be working?"** — pushback + directive: the Twitter export exists locally, make it work; make LinkedIn work too.
+
+**Through-line intent:** Behaviors must actually generate useful output, the data collection must be complete and connected, and fixes must be proper root-cause fixes verified end-to-end (not workarounds).
+
+## 2. Key Technical Concepts
+
+- **Behavior windows**: `computePendingWindow` is only a *fallback*. `alignRequestedWindow` + `behavior-mode.ts:451` accept an agent-supplied `since`/`until`, aligned to granularity — "an agent-written window is indistinguishable in shape from a server-computed one." `readWindowCursor` = `MAX(window_start)` from `canvas_windows`. `behaviors.trigger` accepts only `behavior_id`, so it cannot express a range. The real path is `knowledge.read(behavior_id, since, until)` → 581-char JWT `window_token` → `behaviors.completeWindow`.
+- **Device capability gating**: `AppState.swift:997` `currentCapabilities` gates each capability on a TCC probe AND a UserDefaults kill switch. `worker-api/device-reconcile.ts:7` pauses auto-wired feeds whose capability isn't served. The server correctly follows the device.
+- **`event_kinds` is a CLOSED allowlist once non-empty.** `connector_definitions.feeds_schema` is code-derived via `connector-definition-install.ts:322`, but synced by an **hourly cron** (`jobs.ts:288`), NOT at deploy — creating a silent write-rejection window during rollout.
+- **Submodule merge order** (`feedback_merge_owletto_pr_last_not_first.md`): merging an Owletto PR early turns `check-drift` red on EVERY open lobu PR. Safe order: parent green (incl. ui-review) → merge Owletto → repin to squash SHA → merge parent. On submodule-pointer branches use `git merge`, never rebase.
+- **`ui-review` gate**: requires `ARTIFACT=<hosted HTTPS>`; records proof on the exact merged Owletto PR. A changed head re-owes it.
+- **False-green class**: `feeds.last_sync_status: success` with 0 items; `runs.status: completed` with no output; `connections.test` "Credentials valid" during a scope-insufficient outage.
+- **MCP tool limits**: `query_sql` allowlist excludes `runs`, `device_workers`, `auth_profiles`, `watchers`. `behavior_versions` has no `behavior_id`/`config`/`sources`; Behavior sources live on `behaviors.sources`.
+
+## 3. Files and Code Sections
+
+**`packages/connectors/src/google_calendar.ts:652`** — the outlier. PR #2573 changes:
+```diff
+         eventKinds: {
+-          event: {
++          // `calendar_event`, not `event`: … `event_kinds` is a closed allowlist
++          // once non-empty, so a one-sided rename makes the server reject every
++          // write from this feed.
++          calendar_event: {
+-      origin_type: 'event',
++      origin_type: 'calendar_event',
+```
+
+**`examples/personal-agent/lobu.config.ts`** — PR #2573 splits one filter into two bounded budgets:
+```diff
+-  WHERE semantic_type IN ('message','thread','reminder','calendar_event','note')
+-  ORDER BY occurred_at DESC LIMIT 200
++  WHERE semantic_type IN ('message','thread','reminder','note')
++    AND occurred_at <= now() ORDER BY occurred_at DESC LIMIT 200
++ upcoming_calendar:
++  WHERE semantic_type = 'calendar_event'
++    AND occurred_at BETWEEN now() - interval '1 day' AND now() + interval '30 days'
++  ORDER BY occurred_at ASC LIMIT 20
+```
+This file is also #2568's only changed file (`buremba` → `bu7emba`).
+
+**`packages/server/src/tools/admin/manage_behaviors/list.ts:57`** — PR #2571 (MERGED `e21a2fbf`):
+```
+       i.last_fired_at,
++      -- Materialized completion stamp of the most recent completed run,
++      -- written by a trigger on runs. last_fired_at is NOT a substitute: only
++      -- the worker-api terminal-report path stamps it...
++      i.last_run_completed_at,
+```
+
+**`packages/owletto/apps/mac/Owletto/AppState.swift:997-1015`** — capability construction:
+```swift
+var currentCapabilities: [String: Bool] {
+    var caps: [String: Bool] = [:]
+    if hasFDA && !screenTimeDisabled { caps["screentime"] = true }
+    if !localFolders.isEmpty { caps["local_directory"] = true }
+    if hasHealthKit && healthKitAvailable && !healthKitDisabled { caps["healthkit"] = true }
+    if hasPhotos && !photosDisabled { caps["photos"] = true }
+    ...
+    if hasCalendar && !calendarDisabled { caps["calendar"] = true }
+    if hasReminders && !remindersDisabled { caps["reminders"] = true }
+    if shellEnabled && !shellDisabled { caps["os.shell"] = true }
+```
+`:2304-2318` — the FDA probe does a real `FileHandle(forReadingAtPath:)` on `~/Library/Application Support/Knowledge/knowledgeC.db` (deliberately an open(), so the app registers in System Settings).
+
+**`packages/owletto/apps/mac/Owletto/LobuContextIdentity.swift`** — new file (+273), owletto#743. `:151` `workspaceDrift` is "Reported, never enforced"; the only blocking case is `localInstallAgainstRemote`. `read()` fails open on unparseable config.
+
+**`packages/server/src/tools/get_content/behavior-mode.ts:449-466`** — the arbitrary-window branch:
+```ts
+if (args.since && args.until) {
+    // An agent-chosen range, aligned to the granularity so an agent-written
+    // window is indistinguishable in shape from a server-computed one.
+    ({ windowStart, windowEnd } = alignRequestedWindow(
+      parseBehaviorWindowDate(args.since), parseBehaviorWindowDate(args.until), timeGranularity));
+    windowCursor = await readWindowCursor(sql, watcherId);
+} else { ({ windowStart, windowEnd, cursor: windowCursor } = await computePendingWindow(...)); }
+```
+
+**`packages/server/src/scheduled/check-stalled-executions.ts:394`** — still unfixed on origin/main; hard-DELETEs runs with **no `run_type` filter**, `cancelled` in its status list.
+
+**`/private/tmp/.../scratchpad/mac-context-auth-proof.html`** — created; published as artifact `https://claude.ai/code/artifact/34ed1033-57dc-4827-aacc-4abde2b134d3`. Log-derived (not screenshots) proof for #2572.
+
+**Memory files written/updated:**
+- `reference_connections_test_does_not_validate_scopes.md` — created; later extended with the future-dated-calendar-events section and the vocabulary split.
+- `project_macbook_owletto_worker_signed_out.md` — added a CORRECTED banner on the device map (whatsapp.local is Mac mini `e7806c72`, not MacBook), plus a new section "A paused device feed is usually a MISSING CAPABILITY, not a broken feed" documenting both wrong explanations.
+- `MEMORY.md` — added a pointer line for the connections.test memory.
+
+## 4. Errors and Fixes
+
+- **Predicted re-consent wouldn't fix Google Calendar (35% vs 60% for a Gmail-app mismatch).** It did fix it. Owned it plainly; wrote memory noting a newly-discovered structural oddity that predates the failure is not more likely than the boring stale-grant explanation.
+- **`pkill -f "review-fix"` killed both agents' fixer runs.** It matched the `make` wrappers; I then checked the orphaned child (pid 7096) and wrongly concluded the kill hadn't landed. Both agents lost a cycle.
+- **Reported "130 WhatsApp messages recovered" as proof the MacBook fix worked.** The Mac agent caught it: feed 309 is pinned to `e7806c72` (Mac mini), verified via `os.shell` returning `HOST=Buraks-Mac-mini`, and it completed with Owletto fully quit on the MacBook. Confirmed independently via `connections.device_worker_id`. Corrected the memory device map. Real MacBook evidence is feed **343** (`local-folder`) syncing at 00:57:01 on run 873651.
+- **Claimed "Behavior 70 cannot re-run until Monday 2026-08-10".** User pushed back ("can't we trigger windows"). Re-read the code: wrong. Proved it by running `knowledge.read(behavior_id:"70", since:"2026-08-03", until:"2026-08-09")` → real token, `authored_recent: 4` rows (was 0).
+- **Git greps returned nothing because shell cwd had persisted into the owletto submodule** (`git rev-parse origin/main` returned owletto's `44c4c8bc`). Fixed by using `git -C /Users/burakemre/Code/lobu`.
+- **`make review` batch had a `cd`-scoping bug (twice)** — the second invocation would run in the wrong worktree. First `TaskStop` posted `pi-review fail … exit 143` on #2571. Fixed by launching two independent fully-qualified background commands.
+- **Told the user the unsigned dev build reset their macOS permissions.** Wrong — `codesign -dv` shows `Developer ID Application: Burak Emre Kabakci (CCV9Q352W3)`, same bundle id, hardened runtime, not sandboxed. User pushed back with "they both have access on those no?".
+- **Hypothesized the feeds point at a dead worker** (`lobu.workerId = mac-99ecbfae-…` vs `2c295bed`). Wrong — `2c295bed` executed feed 343 at 00:57:01.
+- **Told the user the opencode session wasn't on this machine.** Wrong — I only searched the JSON storage tree; it was in `~/.local/share/opencode/opencode.db` (SQLite).
+- **My proposed 7-day calendar window** returned 0 rows (next real event 18 days out); the agent used 30 days instead.
+- **My "feeds_schema updates at deploy" claim** — the agent corrected it to an hourly cron (`jobs.ts:288`), meaning a silent write-rejection window during rollout.
+- **`feeds.trigger(394)` → "Feed not found"** — feed 394 and connection 408 were soft-deleted 2026-08-05T18:05:57.
+
+## 5. Problem Solving
+
+**Fixed and verified in prod:**
+- Google Calendar: re-consent → 20 new events (254 total), failures 12→0, plus a `52 */2 * * *` cron it never had.
+- Behavior 5 producing 7 task entities in 3 days; Behavior 71 producing real `observation` events.
+- Orphaned approvals closed by peer PR #2565 (fixed both read path and connection-delete).
+
+**Diagnosed:**
+- Screen-time/photos feeds re-pause because the MacBook advertises only `[local_directory, os.shell, reminders, whatsapp_local]`. Kill-switches all `0`, `lobu.photosRequested = 1`, app properly signed and unsandboxed → genuine TCC denial. Leading theory: stale TCC entry after binary replacement (toggle shows ON, denies). Cannot verify — reading `TCC.db` requires FDA the shell lacks.
+- Voice profile corpus: `authored_recent` returns **12 rows, all x/tweet**. Three gaps: (1) `twitter.takeout` has 0 events (connection soft-deleted Aug 5); (2) 3,380 user-authored LinkedIn `message` rows all predate the 21-day window (latest 2026-06-19); (3) LinkedIn `post` rows (558, 374 distinct authors) contain none of the user's writing.
+- LinkedIn export at `/Users/burakemre/Downloads/REDACTED.zip` is a **directory** (not a zip) containing no `Shares.csv`/`Comments.csv`/`Reactions.csv` — it's the Basic export. The connector also has no feed key for shares/comments. Only active LinkedIn feed is 429 `home_feed`.
+- Four connections soft-deleted 2026-08-05 18:01–18:05: 369 `chrome`, 397 `mac-computer-use`, 403 `google-takeout`, 408 `twitter-takeout`.
+
+**Merge train completed/in progress:** #2570 MERGED `8c2bb27f`; owletto#742 MERGED `3188b69d`; owletto#743 MERGED `4db95165`; #2571 MERGED `e21a2fbf`.
+
+## 6. All User Messages
+
+1. "i logged in"
+2. "why semantic type filter i don't get it, it should process all no? also check this session as well, it tried to fix issues we had before opencode -s ses_026e0d1a5ffeJSCCnumP3sP1Wr"
+3. "in this machine, check using the opencode session id locally"
+4. "you can fix connector code if it helps. it's also virtual right"
+5. "you merge. screen time photos needs to be active"
+6. "they both have access on those no?"
+7. "ok where are we on buremba behaviors all working properly"
+8. "did the voice thing actually have all my x tweets and linkined post comments and all"
+9. "why 12, we had twitter export in my mac? it needs to be properly working no? also linkedin thing needs to be working?"
+
+**Standing constraints that remain in effect (from CLAUDE.md/AGENTS.md):** Never write to `~/Code/lobu` directly — always `make task-setup`. Never enter credentials/passwords or drive OAuth consent screens — the user performs auth flows. Never hot-swap the Owletto app remotely. Never bulk-delete prod `organization` rows. `events` is append-only — never `DELETE FROM events`. Workers never receive real credentials. No Co-Authored-By / "Generated with Claude Code" in commit messages. Always show the real `git diff`, never a prose summary. End work with a confidence score + 2–4 next actions. Stage by explicit path (`git add -- <paths>`, never `-A`). Never `--admin` past a check that has not reported. Never resolve merge conflicts in the GitHub web UI. On submodule-pointer branches use `git merge`, not rebase.
+
+## 7. Pending Tasks
+
+- **Restore the Twitter takeout** — connection 408 / feed 394 soft-deleted 2026-08-05T18:05:57. Archive is now extracted at `/Users/burakemre/Downloads/twitter_takeout_2026-07-07`. Needs the connection recreated/undeleted and pointed at that absolute path, then re-synced. **Blocked: the `lobu` MCP server disconnected.**
+- **LinkedIn own-posts/comments** — needs (a) LinkedIn's complete archive (Basic lacks Shares/Comments/Reactions) and (b) connector feed keys for them. Feature gap, not config.
+- **#2572** — `make review` running in background (`byo63xi9a`); ui-review already re-recorded. Then merge.
+- **#2568** — merged main in and pushed; awaiting fresh CI, then merge.
+- **#2573** (calendar) — needs user's sequencing decision: migration → pods roll → `behaviors.createVersion` for Behavior 5. Backfill has NOT run on prod (254 rows still `semantic_type='event'`).
+- **Behavior 70** — Aug 3–9 window runnable on demand; open who does the synthesis (me = fast but a synthetic run polluting the evals table; or its own model).
+- **Behavior 20** — finds 4 real duplicate groups (incl. the user's own profile split across email/Slack) but nothing merges them. Now unblocked by #2570; needs `x-lobu-resolution` rules for `person`.
+- **Screen Time / Photos** — user must toggle Full Disk Access and Photos off/on in System Settings.
+- **`check-stalled-executions.ts:394`** run_type filter — still unfixed; recreates orphaned approvals in ~30 days.
+
+## 8. Current Work
+
+Immediately before the summary request I was finishing the merge train while answering the user's Twitter/LinkedIn question.
+
+On the Twitter side I had: found the export zip (177MB, `data/tweets.js` 6.2MB), **extracted it** to `/Users/burakemre/Downloads/twitter_takeout_2026-07-07`, updated feed 394's config to that absolute path (the update applied), but `feeds.trigger` returned `"Feed not found"` because feed 394 and connection 408 carry `deleted_at = 2026-08-05T18:05:57`. I then attempted `query_sql` for the `twitter.takeout` connector definition and got:
+
+> `Error: No such tool available: mcp__lobu__query_sql` — the `lobu` MCP server disconnected.
+
+On the PR side, in the last actions I:
+- Merged `origin/main` into the `voice-profile-handle` worktree for **#2568** (clean, no conflicts, `git diff --name-only origin/main...HEAD` = exactly `examples/personal-agent/lobu.config.ts`) and pushed.
+- Confirmed **#2572** has all 8 required checks passing (`base-branch-guard, check-drift, format-lint, frontend, integration, migrations, typecheck, unit`) but is BLOCKED because `pi-review` and `ui-review` dropped off when the merge commit changed the head.
+- Re-ran `make ui-review` for #2572 with `ARTIFACT=https://claude.ai/code/artifact/34ed1033-57dc-4827-aacc-4abde2b134d3` → "proof recorded at https://github.com/lobu-ai/owletto/pull/743#issuecomment-5210962027".
+- Launched `REVIEWER_CLI=claude make review` for #2572 in background task **`byo63xi9a`** from `/Users/burakemre/Code/lobu/.claude/worktrees/mac-context-auth`.
+
+## 9. Optional Next Step
+
+Report to the user the complete answer to *"why 12, we had twitter export in my mac? it needs to be properly working no? also linkedin thing needs to be working?"* — specifically that the Twitter export was never the problem (it's on disk, now extracted), the real cause is that **connection 408 / feed 394 were soft-deleted on 2026-08-05T18:05:57** along with three other connections, and that the `lobu` MCP server has disconnected so the restore can't proceed until it reconnects.
+
+Then, once MCP is back, restore the Twitter takeout connection pointed at the extracted directory and re-sync so the archive returns to the voice-profile corpus.
+
+Verbatim anchors for where I left off:
+
+- User: *"why 12, we had twitter export in my mac? it needs to be properly working no? also linkedin thing needs to be working?"*
+- My finding: feed 394 config was `{"takeout_dir": "./takeout/twitter"}` while feed 399 (Instagram, which worked) used `{"takeout_dir": "/Users/burakemre/Downloads/instagram_takeout_2026-07-05"}`.
+- Blocking error: `ClientSdkActionError … "Feed not found"` on `feeds.trigger({feed_id: 394})`, explained by `feed_deleted / conn_deleted = 2026-08-05T18:05:57`.
+- Then: `Error: No such tool available: mcp__lobu__query_sql`.
+
+Also pending and unreported: background task `byo63xi9a` (`make review` on #2572); once it and #2568's CI settle, merge both.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

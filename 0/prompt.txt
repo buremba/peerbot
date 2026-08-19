@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>boh8vv58a</task-id>
+<tool-use-id>toolu_014dzgZUN1UhsLntnjB4PN7k</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/boh8vv58a.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch remaining integration check" completed (exit code 0)</summary>
+</task-notification>

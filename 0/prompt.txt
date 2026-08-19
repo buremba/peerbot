@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6nn0hatr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/b6nn0hatr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on the audit branch" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+This connector isn't installed in this workspace, so its details aren't available. Existing connections still appear below.

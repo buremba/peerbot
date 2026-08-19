@@ -1,0 +1,1 @@
+why do we generate snapshot? instead of pulling from models dev at runtime

@@ -1,0 +1,31 @@
+REVIEW A PLAN. Do NOT write, edit, or commit any code. Your entire output is a written verdict. You are in a git worktree at /Users/burakemre/Code/lobu/.claude/worktrees/gate-links (branch feat/gate-links). Read the root AGENTS.md first for repo invariants.
+
+BUDGET: be efficient. Read only what you need to check the claims below. Do not survey the codebase broadly.
+
+THE SECURITY GAP (verify each claim; say so if any is wrong):
+`entity_relationships` is the authz substrate — principals are entities, memberships are `member_of` edges, ACLs are `can_read`/`deny_read` edges, and one SQL gate reads all of it. An agent holding the `manage_entity` tool can assert relationship edges via its `$links` surface. There is no mutation gate on that path: `entity-mutation-gate.ts` guards only `update` and contains zero occurrences of "link" on origin/main (already verified). `validateTypeRule` permits any pair when no rules are seeded. So an agent in an ACL-synced org can assert an access-granting edge such as `member_of` and widen its own read access. Known mitigation: `access-graph` reconcile sweeps a rogue edge on the next sync, so the window is time-bounded, not permanent.
+
+START POINTS (use these, don't go hunting):
+- packages/server/src/**/entity-mutation-gate.ts
+- the `manage_entity` tool's link handler (grep for the $links / entities.link path)
+- packages/server/src/**/access-graph.ts  (buildAccessGraph)
+- packages/server/src/**/relationship-validation.ts (validateTypeRule)
+- packages/server/src/auth/subject-identities.ts (reads member_of)
+
+THE TWO OPTIONS:
+
+OPTION A — gate the write path. Enforce protected relationship types behind an internal capability only audited internal callers hold. Protected = whatever the ACL gate reads (`member_of`, `can_read`, `deny_read`) plus `$resource` registry types. Fail closed on unknown types. Small diff, closes the path now.
+
+OPTION B — edge provenance. Add an `assertion_key` recording WHO asserted each edge, and change the ACL READ gate to honour `member_of`/`can_read`/`deny_read` only when the asserter is an audited internal writer. An agent-asserted edge then grants nothing by construction, so no write-path blocklist is load-bearing. Larger: every writer of `entity_relationships` must stamp its asserter, and the read gate changes. NOTE: the `assertion_key` column has already been approved by the repo owner; adding it is NOT a blocked action here, but any FURTHER schema change would need separate approval.
+
+MY ARGUMENT FOR B (attack it, don't agree reflexively): Option A is a maintained list. It fails closed for unknown types today, but the next authz-relevant relationship type someone adds is assertable until a human remembers to extend the list. B removes the class instead of enumerating instances.
+
+ANSWER THESE, each with file:line evidence:
+1. Is the gap real as described? Any claim above that is wrong?
+2. How many distinct writers of `entity_relationships` exist, and would Option B require changing all of them? Name them.
+3. Does the ACL read gate actually read by type today, such that a trust-by-asserter change is feasible where it lives? Point at the code.
+4. Is there a THIRD option better than both? Explicitly consider: storing authz edges in a separate table agents cannot write at all. Say why it is or isn't better here.
+5. Which option do you recommend, and what would you do FIRST? If you think A-then-B (ship the small gate, then the structural fix) beats going straight to B, argue it.
+6. What does Option B break or risk that I have not mentioned? Be specific — this is the part I most want.
+
+Finish with: a recommendation in one paragraph, and a confidence score 0-100 with the one-line basis for it. If you could not verify something, say which and why rather than guessing.

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>ba2441q2j</task-id>
+<summary>Monitor event: "full prod rollout of PR 2337 across all pods"</summary>
+<event>ROLLOUT COMPLETE: #2337 (f3020833504154a985e882834fe727262934507c) live on all 2 api pods (image ghcr.io/lobu-ai/lobu-app:20260729-233501-001739)</event>
+</task-notification>

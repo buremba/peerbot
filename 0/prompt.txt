@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b02loluro</task-id>
+<tool-use-id>toolu_01D5BTDCvDPR679NA6xRRp5f</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b02loluro.output</output-file>
+<status>killed</status>
+<summary>Background command "review-fix on connector-worker branch" was stopped</summary>
+</task-notification>

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bcnw111ai</task-id>
+<summary>Monitor event: "PR 2692 mergeability after rebase"</summary>
+<event>2692 BLOCKED | unit=pending base-branch-guard=pass check-drift=pass format-lint=pending frontend=pending typecheck=pending pi-review=pass ui-review=pass</event>
+</task-notification>

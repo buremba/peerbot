@@ -1,0 +1,54 @@
+<task-notification>
+<task-id>a460758126772a08d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/a460758126772a08d.output</output-file>
+<status>completed</status>
+<summary>Agent "Build sidebar-first nav branch" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Both repos are committed on their stacked branches with scope exactly matching the task.
+
+## Diff evidence (vs stacked bases)
+
+**lobu** (`feat/sidebar-nav`, base `feat/inference-facet` = bdf748fdb) — commit `25c35b47c`:
+```
+packages/core/src/reserved.ts | 1 +   ("activity" added to OWNER_ROUTE_SEGMENTS)
+packages/owletto              | 2 +-  (gitlink → fe692cf2)
+```
+
+**owletto** (`feat/sidebar-nav`, base f324ecc6) — commit `fe692cf2`, 13 files, +810/−278:
+- NEW `src/app/$owner/activity.tsx` (325 lines), NEW `src/components/sidebar/app-sidebar.test.tsx` (142 lines)
+- Restructured `app-sidebar.tsx`, `owner-sections.ts` (+ its test), smoke test +2 `/activity` entries, regenerated `routeTree.gen.ts`
+- DELETED `connect-tabs.ts`, `connect-tabs.test.ts`, `connect-tab-bar.tsx`; connectors layout keeps padding only; two comment fixes
+
+## What shipped
+- Sidebar = site map: New chat / **Activity** / **Entities** (route stays `/memory`) / **Connect** (Radix `Collapsible`, children Connectors + Runtime, expanded on connect routes, longest-prefix active match) / **Agents** (per-agent collapsible Chat/Behaviors/Settings; only the route-active agent expands by default, via a route-default-with-manual-override hook).
+- **Activity page** uses existing hooks only — `useRecentAgentThreads` (conversations, day-grouped, agent name + title + relative time) and `useActivityFeed` (existing `manage_operations.list_activity` hook already exposes workspace-wide runs + notifications, so the conditional second section IS shipped). Zero server changes.
+- Core dist force-rebuilt after the reserved.ts edit as instructed.
+
+## Decisions you should know about (all reversible)
+1. **Removed the sidebar "Recent" list** — it's not in your final sidebar shape and the Activity page supersedes it. Easy to restore if you meant to keep it.
+2. **Entities icon changed Brain→Boxes** to match `EntitiesBrowseShell`'s existing Entities glyph.
+3. Activity conversation rows use the app's proven per-platform routing (web→chat thread, platform→`conversations/$conversationId`, behavior→behavior page) rather than literally `conversations/…` for all; snippet = title only (`AgentThreadItem` carries no body).
+4. **Worktree infra fix**: `make typecheck` was failing (pre-existing) because this worktree's package dists were unbuilt, so server tsc silently resolved the MAIN checkout's stale `@lobu/core` dist (traced via `--traceResolution`). Built all worktree package dists; typecheck now clean.
+
+## Mutation evidence
+- Mutation 1 (`useRouteDefaultOpen(selected)` → `(true)`, all agents expand): `2 failed | 2 passed` — "expands only the route-active agent…" and "renders no agent children…" both red. Restored.
+- Mutation 2 (Runtime child `to` → `/$owner/connectors`): `2 failed | 7 passed` — sidebar DOM test and owner-sections unit test both red. Restored; final run 9/9 green.
+
+## Gates
+- owletto `bunx tsc -b`: clean. Full owletto vitest: **111 files / 969 tests pass** (includes the 61-route smoke with `/activity` auth+anon).
+- lobu `make typecheck` (server + owletto): clean. Core reserved bun test: 3/3. Biome on touched files: clean (full-repo lint has pre-existing failures in untouched files).
+
+## Confidence
+- Sidebar structure/links: **90** — DOM-tested (expansion, hrefs) + full suite; not visually inspected in a browser.
+- Activity page: **75** — typechecks, smoke-mounts auth+anon, vite build passes; but I never drove it against a live server with real conversations/feed data.
+- Connect tab-strip removal: **90** — grep-verified zero remaining refs, smoke mounts all connect routes.
+- lobu reserved segment: **95** — additive const, tests green.
+
+## Next actions
+1. Boot the dev app and eyeball `/$owner/activity` plus sidebar behavior with real data (the only unexercised path).
+2. Decide whether the removed sidebar "Recent" list should return in some form.
+3. Consider a "Recent" empty-state CTA from home to `/activity`, and whether Deployments should appear anywhere in the site map (currently reachable but unlisted).
+4. When PR-ing, run `make pre-pr` + `make review-fix` per repo flow (explicitly out of scope here per your instructions).</result>
+<usage><subagent_tokens>212745</subagent_tokens><tool_uses>123</tool_uses><duration_ms>1285225</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,1 @@
+when approved how does it look? also do we know which mcp client or agent etc sends these, should we make the event show that as well and link it properly

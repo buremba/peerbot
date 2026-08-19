@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu20la7px</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bu20la7px.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix on the settled diff" completed (exit code 0)</summary>
+</task-notification>

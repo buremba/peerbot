@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bug64t2mn</task-id>
+<summary>Monitor event: "control run reaches terminal state"</summary>
+<event>TERMINAL: completed</event>
+</task-notification>

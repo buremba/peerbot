@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b039mxxwj</task-id>
+<tool-use-id>toolu_013mZm12ZKE4A4cHGJWbfJKZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/b039mxxwj.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after the flake fix" completed (exit code 0)</summary>
+</task-notification>

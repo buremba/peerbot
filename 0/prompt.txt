@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfs7i3ak9</task-id>
+<tool-use-id>toolu_019m1RBy51XP8TxJrQy5XDrR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bfs7i3ak9.output</output-file>
+<status>completed</status>
+<summary>Background command "Run mutant smoke from worktree root" completed (exit code 0)</summary>
+</task-notification>

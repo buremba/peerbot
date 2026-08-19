@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2jpk2meo</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b2jpk2meo.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate 2711 with the workflow-changes flag" completed (exit code 0)</summary>
+</task-notification>

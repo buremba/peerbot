@@ -1,0 +1,18 @@
+Read /tmp/lobu-plan-review/connector-authz-plugin-plan.md and verify against:
+packages/server/src/authz/sources.ts
+packages/server/src/authz/acl-sync.ts
+packages/server/src/gateway/connections/sender-identity.ts
+packages/server/src/gateway/connections/channel-transcript.ts
+packages/connector-sdk/src/acl-source.ts
+packages/connectors/src/slack-identity.ts
+
+Structured review only, no implementation:
+1. Verdict APPROVE / APPROVE WITH CHANGES / REJECT
+2. Confidence 0-100 end-to-end clean cut
+3. Blockers
+4. Risks / missing steps
+5. PR1 vs PR2 order
+6. Telegram L1 scope
+7. File checklist PR1+PR2
+8. What lowers confidence
+Harsh, cite paths.

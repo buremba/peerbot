@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bviukq1f3</task-id>
+<tool-use-id>toolu_014wTjzAkFxD85TAPKT1kSQi</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bviukq1f3.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr-remote on the fix" completed (exit code 0)</summary>
+</task-notification>

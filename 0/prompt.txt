@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bex8gbgyb</task-id>
+<tool-use-id>toolu_011ewHTUaieUE1RGZQZdWMgU</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/bex8gbgyb.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on af602ecc0" completed (exit code 0)</summary>
+</task-notification>

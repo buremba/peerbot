@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The state bridge still selects stale cross-window data and drops the restore capability under a valid compatibility/standard delivery ordering. These defects can display the wrong historical card or lose restored interaction state.
+
+Full review comments:
+
+- [P1] Keep the nearest widget snapshot authoritative — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:817-819
+  When ChatGPT's same-origin inner and parent globals contain Lobu widget snapshots from different card revisions, this loop applies both in order, so the later parent snapshot replaces the current inner snapshot. This regresses the precedence used by `currentOpenAiGlobals()` and can render a stale card after reload; select one data-bearing target and use other targets only for metadata.
+
+- [P2] Pair metadata-less standard delivery with compatibility data — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:540-544
+  When a full `openai:set_globals` update containing data and a snapshot capability arrives before the standard `toolresult`, and the standard notification omits `_meta`, the compatibility update has already set `hasCurrentLifetimeToolResult`; these lines therefore classify the identical standard payload as a new result. `resetCurrentResult()` drops the capability and invalidates the in-flight restore, so disclosure and pagination state are neither hydrated nor saved on hosts without `toolInfo`; compare the payload fingerprint or otherwise correlate the two deliveries before resetting.
+  </results>
+  </user_action>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bith4un0a</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bith4un0a.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2365 to settle" completed (exit code 0)</summary>
+</task-notification>

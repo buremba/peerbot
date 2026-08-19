@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc5ggzia8</task-id>
+<tool-use-id>toolu_01CV1zTMRPW33ugfKpvuQ8jz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9/tasks/bc5ggzia8.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch integration jobs to completion" completed (exit code 0)</summary>
+</task-notification>

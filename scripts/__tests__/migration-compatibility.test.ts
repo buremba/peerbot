@@ -124,6 +124,10 @@ describe("findIncompatibleDdl", () => {
     ["ALTER TABLE a ALTER COLUMN x SET NOT NULL;", /NOT NULL/],
     ["ALTER TABLE a ALTER COLUMN x TYPE bigint;", /column type/],
     ["ALTER TABLE a ADD CONSTRAINT c CHECK (x > 0);", /constraint/],
+    ["ALTER TABLE a ADD UNIQUE (email);", /constraint/],
+    ["ALTER TABLE a ADD PRIMARY KEY (id);", /constraint/],
+    ["ALTER TABLE a ADD FOREIGN KEY (x) REFERENCES b(id);", /constraint/],
+    ["ALTER TABLE a ADD EXCLUDE USING gist (x WITH &&);", /constraint/],
   ])("blocks %s", (statement, expected) => {
     expect(findIncompatibleDdl(statement)).toMatch(expected);
   });

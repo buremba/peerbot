@@ -36,7 +36,7 @@ const INCOMPATIBLE_DDL = [
   ],
   [/\bALTER\s+COLUMN\b[\s\S]*\bTYPE\b/i, "changes a column type"],
   [
-    /\bADD\s+(CONSTRAINT|CHECK)\b/i,
+    /\bADD\s+(CONSTRAINT|CHECK|UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|EXCLUDE)\b/i,
     "adds a constraint the old code's writes may violate",
   ],
 ];

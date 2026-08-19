@@ -6,7 +6,10 @@ import { join, resolve } from "node:path";
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const MIGRATE_UP = join(REPO_ROOT, "scripts/migrate-up.mjs");
 
-/** charts/lobu/files/migrate-upgrade.sh only skips its quiesce on this status. */
+/** One of the two statuses (3 = nothing pending, 4 = all backward-compatible)
+ * that let charts/lobu/files/migrate-upgrade.sh skip its quiesce. The tests
+ * below pin the fail-closed paths against this one; the sibling
+ * migration-compatibility.test.ts covers the 4 path. */
 const NOTHING_PENDING = 3;
 
 function runCheckPending(env: Record<string, string>) {
@@ -40,8 +43,8 @@ describe("migrate-up --check-pending", () => {
       MIGRATIONS_DIR: dir,
     });
 
-    // An unreachable database must never read as "nothing pending" -- that is
-    // the status that lets the pre-upgrade hook skip its quiesce.
+    // An unreachable database must never read as "nothing pending" -- those
+    // are the statuses that let the pre-upgrade hook skip its quiesce.
     expect(result.exitCode).not.toBe(NOTHING_PENDING);
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toMatch(

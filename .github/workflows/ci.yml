@@ -1151,12 +1151,14 @@ jobs:
         run: bun test scripts/__tests__/review-output-schema.test.ts --timeout 30000
 
       - name: Migration runner guards
-        # migrate-up.mjs --check-pending exit status 3 is the ONLY status that
-        # lets the chart's pre-upgrade hook skip its scale-to-zero quiesce
-        # (charts/lobu/files/migrate-upgrade.sh). These pin the fail-closed
-        # paths: an unreachable ledger, a missing DATABASE_URL, or a duplicate
-        # migration version must never read as "nothing pending", or an
-        # incompatible migration applies while the old pods are still serving.
+        # migrate-up.mjs --check-pending exit status 3 (nothing pending) and
+        # 4 (every pending migration marked -- lobu:no-quiesce) are the ONLY
+        # statuses that let the chart's pre-upgrade hook skip its
+        # scale-to-zero quiesce (charts/lobu/files/migrate-upgrade.sh). These
+        # pin the fail-closed paths: an unreachable ledger, a missing
+        # DATABASE_URL, or a duplicate migration version must never read as
+        # "nothing pending", or an incompatible migration applies while the
+        # old pods are still serving.
         run: |
           bun test scripts/__tests__/migrate-up-check-pending.test.ts --timeout 30000
           bun test scripts/__tests__/migrate-up-duplicate-version.test.ts --timeout 30000
@@ -1547,15 +1549,32 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/lobu_ci?sslmode=disable
         # charts/lobu/files/migrate-upgrade.sh skips its scale-to-zero quiesce
-        # only on --check-pending exit status 3. Pin both real-database
-        # answers here, where every migration was just applied: a complete
-        # ledger reports 3, and one unapplied file reports 0 (quiesce).
+        # on --check-pending exit status 3 (nothing pending) or 4 (every
+        # pending migration marked -- lobu:no-quiesce). Pin all four
+        # real-database answers here, where every migration was just applied.
+        # --check-pending never executes migration SQL, so the probe files
+        # below are read, classified, and discarded without touching the
+        # schema.
         run: |
+          probe=db/migrations/99999999999999_pending_probe.sql
+          # A complete ledger reports 3.
           pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
           test "$pending_rc" -eq 3
-          printf -- '-- migrate:up\nSELECT 1;\n' > db/migrations/99999999999999_pending_probe.sql
+          # An unmarked pending file reports 0 -- quiesce.
+          printf -- '-- migrate:up\nSELECT 1;\n' > "$probe"
           pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
-          rm db/migrations/99999999999999_pending_probe.sql
+          rm "$probe"
+          test "$pending_rc" -eq 0
+          # Marked and additive: the old replicas can serve across it, so the
+          # hook may skip its scale-to-zero.
+          printf -- '-- migrate:up\n-- lobu:no-quiesce\nALTER TABLE public.events ADD COLUMN IF NOT EXISTS quiesce_probe text;\n' > "$probe"
+          pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
+          rm "$probe"
+          test "$pending_rc" -eq 4
+          # Marked but incompatible: the guard overrides the author's claim.
+          printf -- '-- migrate:up\n-- lobu:no-quiesce\nALTER TABLE public.events DROP COLUMN legacy;\n' > "$probe"
+          pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
+          rm "$probe"
           test "$pending_rc" -eq 0
 
       # The committed pgvector libraries bypass normal TypeScript builds. Keep

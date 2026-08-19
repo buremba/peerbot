@@ -1,0 +1,1 @@
+ok you can make agents.md concise as much as possible and link to other relevant docs then and merge right away

@@ -227,8 +227,10 @@ export function requireSessionOrAdminPat(c: any): Response | null {
  * `requireOrganizationSettingsAdmin` and the manage_agents tool's admin
  * tier, both of which treat the role check as non-authorizable: an
  * `mcp:admin` scope alone never elevates a plain member, and a demoted
- * owner's stale admin token stays denied. Evals (`/evals/cases`,
- * `/automations/:id/evals/run`) deliberately stay member-open.
+ * owner's stale admin token stays denied. The eval routes
+ * (`POST /evals/cases`, `POST /automations/:automationId/evals/run`) are out
+ * of this gate's scope: they keep the weaker session-or-admin-PAT tier, so a
+ * plain member can still run them.
  */
 function requireManageAgentAccess(c: any): Response | null {
 	const denied = requireSessionOrAdminPat(c);
@@ -240,7 +242,7 @@ function requireManageAgentAccess(c: any): Response | null {
 			{
 				error: "forbidden",
 				error_description:
-					"Agent management requires owner or admin access.",
+					"Agent and inference-provider management requires owner or admin access.",
 			},
 			403
 		);

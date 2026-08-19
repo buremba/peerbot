@@ -281,8 +281,54 @@ describe("agent management mutations — role gate", () => {
       body: JSON.stringify({ providerId: "openai-codex" }),
     });
     expect(res.status).toBe(403);
-    expect(((await res.json()) as { error_description?: string }).error_description)
-      .toContain("owner or admin");
+    const body = (await res.json()) as { error_description?: string };
+    expect(body.error_description).toContain("owner or admin");
+  });
+
+  // The remaining newly gated mutations. The owner side is proven by the
+  // representative pairs above — every route shares the one
+  // `requireManageAgentAccess` helper — so these assert only that each route
+  // is actually wired to it.
+  test("member: POST /inference-providers/oauth/complete is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/oauth/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "openai-codex", code: "abc" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /inference-providers/:slug is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ displayName: "Renamed" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /inference-providers/:slug/default is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai/default", {
+      method: "PUT",
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /inference-providers/:slug/capabilities/:modality is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai/capabilities/text", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5" }),
+    });
+    expect(res.status).toBe(403);
   });
 
   test("member: GET config stays readable (read is org-wide by decision)", async () => {

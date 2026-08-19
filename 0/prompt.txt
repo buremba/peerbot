@@ -1,0 +1,1 @@
+isn't it the way to do it? why do we need seperate endpoint doesn't mcp clients write to conversations table

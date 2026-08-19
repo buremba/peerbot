@@ -544,6 +544,26 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         AND identifier LIKE ${`${automationId}::%`}
     `;
     expect(Number(promoted[0].c)).toBe(0);
+
+    // Policy is the other decider, and its refusals need the same record: with
+    // nothing created and nothing carded, the run's change set is all there is.
+    const [changeSet] = await sql`
+      SELECT metadata FROM current_event_records
+      WHERE run_id = ${runId}
+        AND organization_id = ${workspace.org.id}
+        AND semantic_type = 'change_set'
+    `;
+    expect(changeSet).toBeDefined();
+    const meta = changeSet.metadata as Record<string, unknown>;
+    expect(Number(meta.created_count)).toBe(0);
+    expect(Number(meta.denied_count)).toBeGreaterThan(0);
+    const changes = meta.changes as Array<{
+      kind: string;
+      denied?: { source: string; reason: string };
+    }>;
+    expect(changes.every((c) => c.kind === 'denied')).toBe(true);
+    expect(changes.every((c) => c.denied?.source === 'policy')).toBe(true);
+    expect(changes.every((c) => (c.denied?.reason ?? '').length > 0)).toBe(true);
   });
 
   it('is idempotent across a same-window replay — no duplicate entities', async () => {
@@ -1752,6 +1772,75 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       });
     });
 
+    it('records a rule DENY in the run change set, not just a log line', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const token = await readWindowToken(ctx);
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: await queueRunningRun(ctx) },
+        extracted_data: {
+          problems: [{ category: 'Stability', name: 'App Crashes', summary: 'first' }],
+        },
+      });
+
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update") {
+    row.deny("this topic is frozen for the quarter");
+  }
+};`
+      );
+
+      // Its OWN run: the change set is idempotent per run, so a denial folded
+      // into the create's run would be swallowed by the existing event.
+      const denyRunId = await queueRunningRun(ctx);
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: denyRunId },
+        extracted_data: {
+          problems: [{ category: 'Stability', name: 'App Crashes', summary: 'second' }],
+        },
+      });
+
+      // A deny is a refusal, not a request for review: nothing written, nothing
+      // carded — which is exactly why the run event is the only record left.
+      expect(await metaFor(ctx, APP_CRASHES_KEY)).toMatchObject({ summary: 'first' });
+      expect(await pendingCard(ctx)).toEqual([]);
+
+      const [changeSet] = await ctx.sql`
+        SELECT title, metadata, entity_ids
+        FROM current_event_records
+        WHERE run_id = ${denyRunId}
+          AND organization_id = ${ctx.workspace.org.id}
+          AND semantic_type = 'change_set'
+      `;
+      expect(changeSet).toBeDefined();
+      const meta = changeSet.metadata as Record<string, unknown>;
+      expect(Number(meta.created_count)).toBe(0);
+      expect(Number(meta.updated_count)).toBe(0);
+      expect(Number(meta.denied_count)).toBe(1);
+      expect(String(changeSet.title)).toContain('1 denied');
+      const changes = meta.changes as Array<{
+        kind: string;
+        denied?: { source: string; reason: string };
+      }>;
+      expect(changes).toHaveLength(1);
+      expect(changes[0].kind).toBe('denied');
+      expect(changes[0].denied).toEqual({
+        source: 'rule',
+        reason: 'this topic is frozen for the quarter',
+      });
+    });
+
     it('cards with NO grant when the rule escalates the residual but allows the whole write', async () => {
       const ctx = await setupKeyedAutomation();
       const { sql, workspace } = ctx;
@@ -1958,6 +2047,40 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       expect(windowError).toBeNull();
       expect(await findEntity(ctx, APP_CRASHES_KEY)).toEqual([]);
       expect(await pendingAnyCard(ctx)).toEqual([]);
+
+      // No entity and no card means the run's change set is the ONLY record
+      // that this row was seen and refused. A refused create has no id, so it
+      // is recorded under the name the automation proposed.
+      const [changeSet] = await ctx.sql`
+        SELECT title, metadata, entity_ids
+        FROM current_event_records
+        WHERE run_id = ${runId}
+          AND organization_id = ${ctx.workspace.org.id}
+          AND semantic_type = 'change_set'
+      `;
+      expect(changeSet).toBeDefined();
+      const meta = changeSet.metadata as Record<string, unknown>;
+      expect(Number(meta.created_count)).toBe(0);
+      expect(Number(meta.denied_count)).toBe(1);
+      // A row that was never written must not be linked as an entity — and in
+      // particular must not link the `0` placeholder a refused create carries.
+      // An event with no links stores NULL; a linked one comes back as a raw PG
+      // array literal (`{0}` if the placeholder ever leaked through).
+      expect(changeSet.entity_ids ?? null).toBeNull();
+      const changes = meta.changes as Array<{
+        kind: string;
+        name: string;
+        denied?: { source: string; reason: string };
+      }>;
+      expect(changes).toHaveLength(1);
+      expect(changes[0].kind).toBe('denied');
+      // The readable promoted name, not the stable key — the refusal has to be
+      // legible to whoever reads the run.
+      expect(changes[0].name).toBe('Stability · App Crashes');
+      expect(changes[0].denied).toEqual({
+        source: 'rule',
+        reason: 'this type is closed to new rows',
+      });
     });
   });
 });

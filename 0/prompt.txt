@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  A supported compatibility-event ordering can erase the only available restore capability and reproduce the empty-card failure this patch is intended to fix.
+
+Review comment:
+
+- [P1] Preserve compatibility tokens across metadata-less replays — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:379-379
+  When ChatGPT supplies the restore token through `openai:set_globals` metadata and then emits an empty standard `toolresult` without `_meta`, this assignment replaces the retained token with `null`. An in-flight capability restore is then rejected by the capability check, and without `toolInfo` there is no fallback identity, leaving the card blank. Distinguish omitted metadata from an explicit capability clear for empty replays.
+  </results>
+  </user_action>

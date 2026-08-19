@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:31:11.430Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:31:13.569Z","id":"54b3c1d1","input_tokens":3441,"output_tokens":13,"content":[{"type":"text","text":"I’m in! What are we thinking?"}]}

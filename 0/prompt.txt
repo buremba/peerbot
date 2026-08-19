@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btdrxcuv3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/btdrxcuv3.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR #2299 fourth pi-review" stream ended</summary>
+</task-notification>

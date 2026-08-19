@@ -1,0 +1,1 @@
+ok cleanup all dead code. also http://127.0.0.1:5261/local-install/connectors/create is still not centered

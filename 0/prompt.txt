@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpd3fmsx0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bpd3fmsx0.output</output-file>
+<status>completed</status>
+<summary>Background command "Rerun CLI probe with polling driver" completed (exit code 0)</summary>
+</task-notification>

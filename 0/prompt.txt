@@ -1,0 +1,4 @@
+sayds Not signed in
+Please sign in to view your settings.
+
+ but it can't talk to backend probs http://127.0.0.1:5273/account/settings GET http://127.0.0.1:9143/lobu/api/auth-config?callbackUrl=http%3A%2F%2F127.0.0.1%3A5273%2Faccount%2Fsettings 404 (Not Found)

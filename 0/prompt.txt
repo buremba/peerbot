@@ -1,0 +1,1 @@
+is the classifier selection something the agents can decide or do we need to change the core code

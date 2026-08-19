@@ -1,0 +1,4 @@
+1. /Users/burakemre/Downloads/M_MENU.xlsx
+2. no dealbreaker everything is negotiatble.
+
+use many opencode agents with its default model on different scopes to do the discovery and research. think of it like dynamic workflows but don't use native claude dnyamic workflows use opencode as an agent instead

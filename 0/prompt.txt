@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpile2i1l</task-id>
+<tool-use-id>toolu_01CQkeiQGtwohhDU9g7Vfthm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bpile2i1l.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review with claude/fable reviewer" completed (exit code 0)</summary>
+</task-notification>

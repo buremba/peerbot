@@ -1,0 +1,1 @@
+we have been suffering from so many bugs, the agents say it's fixed and it's still going on. what should we do, check all prs issues and past transcriptions

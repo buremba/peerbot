@@ -1,0 +1,2 @@
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-08-05T15:02:23.429Z","content":[{"id":"ce8ec513-c3cf-4b26-a6dc-f352828ff33c","text":"reply with the single word OK"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-08-05T15:02:24.173Z","id":"c78bf6b7-cc1d-4674-b8f2-a076795e5e0e","content":[{"text":"You've hit your session limit · resets 4:40pm (Europe/London)","type":"text"}]}

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkkt390r5</task-id>
+<tool-use-id>toolu_014TFcnnaH7cMjeunnM8wLps</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bkkt390r5.output</output-file>
+<status>completed</status>
+<summary>Background command "Build packages in regen worktree" completed (exit code 0)</summary>
+</task-notification>

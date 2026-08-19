@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>aa56c94fc13cecff1</task-id>
+<tool-use-id>toolu_01AMhsPyhmy6G9jt89KSfPgS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/aa56c94fc13cecff1.output</output-file>
+<status>failed</status>
+<summary>Agent "Fable advisor review of authz model" failed: Agent terminated early due to an API error: You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+</task-notification>

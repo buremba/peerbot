@@ -1,0 +1,1 @@
+auth can also be a tab in the connector no?

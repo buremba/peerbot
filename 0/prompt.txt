@@ -1,0 +1,199 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The session continued from merged sidebar-nav work into a security/infrastructure investigation. Successive explicit user requests:
+
+   - **"yes do those and test. pull main github connector advertise the gh"** — do the previously-listed next actions, pull main, make the GitHub connector advertise `gh` as agent tooling.
+   - **"is this agent sandbox stuff gonna work, did you test or are we actually overengineering"** — challenge on whether the sandbox machinery is real or over-built.
+   - **"you need to teste2e"** — stop reasoning about prod, probe it.
+   - **"some code changed, check current status"**
+   - **"let's do the fix, pull from main"**
+   - **"i don't understand why do we need those"** — explain why the layering exists.
+   - **"so you didn't fix the problem properly?"**
+   - **"interview me, i just want us to be prod ready"**
+   - **"why do we need these? what changes have you done and decisions left?"**
+   - **"1. demo. but we need to test it. 2. we need to do tehe right fix"** — agent-creates-PRs is a demo (remote runtime path); the tenancy/isolation issue is the real work.
+   - **"yes fix it properly"**
+   - **"what the fuck is deployment tenancy?"** — objection to invented jargon.
+   - **"what's the best dx here, we can make tradeoffs but we want it to be safe"**
+   - **"we have cloud version env"** — pointer that an existing env flag covers this.
+   - **"what's the fix"**
+   - **"ok sounds good"** — approval to build the env allowlist.
+   - **"go do it"** — push, PR, review.
+
+2. **Key Technical Concepts:**
+   - Bun workspace monorepo; `packages/owletto` is a private git submodule
+   - `just-bash` — a restricted interpreter; agent bash only runs explicitly registered `customCommands`
+   - `probeSandboxStrategy()` → bwrap (Linux) / sandbox-exec (macOS) / none
+   - `UNSANDBOXED_INTERPRETERS` — blocklist of full code-execution binaries (includes `git`, `curl`, `node`, `python`)
+   - `IMAGE_BAKED_EXECUTABLES` — maps nix package attribute → real command names (`ripgrep` → `rg`)
+   - `NIX_PACKAGES` — gateway's record of the declared connector tooling contribution
+   - `agentTooling` connector declaration: `nix.packages`, `env` (credential: 'lease'), `domains`
+   - Credential lease (Tier 1) — short-lived provider-derived token (~1h), vs. the retired placeholder tier
+   - `LOBU_CLOUD_MODE` — pre-existing flag separating multi-tenant cloud from single-tenant self-hosted install (`packages/server/src/utils/cloud-mode.ts`, truthy: `1`/`true`/`yes`)
+   - `LOBU_ALLOW_UNSANDBOXED_EXEC` — per-agent escape hatch that also unlocks interpreters
+   - `stripEnv(env, keys)` — denylist helper in `packages/core/src/utils/sanitize.ts`
+   - `SENSITIVE_WORKER_ENV_KEYS` — the old two-item denylist (`WORKER_TOKEN`, `DISPATCHER_URL`)
+   - k3s v1.32.8 / containerd 2.0.5 / kernel 6.8; `uid_map` write restricted by the container runtime
+   - Flux image automation; prod namespace `summaries-prod`; prod DB is `owletto` (not `app`/`lobu`)
+   - `tokenKind: "worker" | "egress-proxy"` discriminator; `generateWorkerTokenPair`, `verifyEgressProxyToken`
+   - Mutation testing as proof that tests bite
+   - `make task-setup NAME=<slug>` → worktree; `make pre-pr` (6 gates); `make review-fix`; `make review`
+
+3. **Files and Code Sections:**
+
+   - **`packages/connectors/src/github.ts:348`** — already declares (from #2243, not written by me):
+     ```ts
+     agentTooling: {
+       nix: { packages: ['gh'] },
+       env: [{ name: 'GH_TOKEN', credential: 'lease' }],
+       domains: ['api.github.com', 'github.com'],
+     },
+     ```
+
+   - **`packages/agent-worker/src/shared/worker-env-keys.ts`** — REWRITTEN (the core fix). Was a 2-item denylist; now an allowlist:
+     ```ts
+     export const WORKER_ENV_ALLOWLIST = [
+       "PATH","HOME","TMPDIR","TEMP","TMP","SHELL","USER","LOGNAME","PWD",
+       "LANG","LANGUAGE","LC_ALL","LC_CTYPE","TERM","TZ",
+       "HTTP_PROXY","HTTPS_PROXY","NO_PROXY","ALL_PROXY",
+       "http_proxy","https_proxy","no_proxy","all_proxy",
+       "NIX_PACKAGES","JUST_BASH_ALLOWED_DOMAINS",
+       "NIX_PATH","NIX_PROFILES","NIX_SSL_CERT_FILE","SSL_CERT_FILE","SSL_CERT_DIR",
+       "GH_TOKEN",   // added on disk after my initial write
+     ] as const;
+
+     export const WORKER_ENV_ALLOWLIST_PREFIXES = ["LOBU_AGENT_ENV_"] as const;
+
+     export function buildAgentEnv(
+       env: Record<string, string | undefined>,
+       extra?: Record<string, string | undefined>
+     ): Record<string, string> {
+       const allowed = new Set<string>(WORKER_ENV_ALLOWLIST);
+       const out: Record<string, string> = {};
+       for (const [key, value] of Object.entries(env)) {
+         if (value === undefined) continue;
+         if (allowed.has(key) || WORKER_ENV_ALLOWLIST_PREFIXES.some((p) => key.startsWith(p))) {
+           out[key] = value;
+         }
+       }
+       for (const [key, value] of Object.entries(extra ?? {})) {
+         if (value !== undefined) out[key] = value;
+       }
+       return out;
+     }
+     ```
+
+   - **`packages/agent-worker/src/embedded/just-bash-bootstrap.ts`** — 2 call sites converted. The spawned-binary block now builds `shellEnv` from `ctx.env` and passes it as `extra` so the agent cannot re-introduce a gateway secret:
+     ```ts
+     const shellEnv: Record<string, string> = {};
+     if (ctx.env && typeof ctx.env.forEach === "function") {
+       ctx.env.forEach((v: string, k: string) => { shellEnv[k] = v; });
+     } else if (ctx.env && typeof ctx.env === "object") {
+       Object.assign(shellEnv, ctx.env);
+     }
+     const envRecord = buildAgentEnv(process.env, shellEnv);
+     ```
+     And line ~624: `env: buildAgentEnv(process.env),`
+
+   - **`packages/agent-worker/src/embedded/runtime/generic-runtime-bash.ts`** — worst call site (env POSTed over network to third-party sandbox):
+     ```ts
+     const cleanEnv = buildAgentEnv(env ?? process.env);
+     for (const key of REMOTE_UNSUPPORTED_ENV_KEYS) { delete cleanEnv[key]; }
+     return { ...cleanEnv, ...remoteEnv };
+     ```
+
+   - **`packages/agent-worker/src/gateway/sse-client.ts:669`** — the `jobType:exec` path (spawns `sh -c` on host): `const baseEnv = buildAgentEnv(process.env);`
+
+   - **`packages/agent-worker/src/runtime/tools.ts:166`** — `env: buildAgentEnv(params.env) as NodeJS.ProcessEnv,`
+
+   - **`packages/agent-worker/src/__tests__/worker-env-allowlist.test.ts`** — NEW. Drives real `createEmbeddedBashOps` under strictest posture; asserts ENCRYPTION_KEY/JWT_SECRET/DATABASE_URL/ANTHROPIC_API_KEY return `""`, PATH non-empty, `LOBU_AGENT_ENV_GREETING` and `GH_TOKEN` pass through, plus `buildAgentEnv` unit tests including `SOME_FUTURE_SECRET` (the property a denylist cannot have).
+
+   - **`packages/agent-worker/src/__tests__/agent-session-bash-env.test.ts`** — removed stale `SENSITIVE_WORKER_ENV_KEYS` import; rewrote the constant-coverage test to assert against `buildAgentEnv` (now also asserts ENCRYPTION_KEY excluded, PATH kept).
+
+   - **`packages/core/src/worker/auth.ts`** — review-fix change I verified and committed: added `tokenKind?: "worker" | "egress-proxy"` to `WorkerTokenData`, a kind check on verify (defaults to `"worker"` for legacy tokens), and `verifyEgressProxyToken`.
+
+   - **`packages/server/src/gateway/proxy/http-proxy.ts`** — `verifyWorkerToken` → `verifyEgressProxyToken` in `validateProxyAuth`.
+
+   - **`packages/server/src/gateway/orchestration/deployment-manager.ts:682,1689`** — `buildDeploymentTokenPair` calls `generateWorkerTokenPair`; only `egressProxyToken` goes into `buildProxyUrl`.
+
+   - **`packages/agent-worker/src/embedded/just-bash-bootstrap.ts` (tenancy-gate worktree, PARKED)** — `resolveWorkerIsolation()` returning `{isolated, reason: "sandbox"|"self-hosted"|"unsandboxed-opt-in"|"none"}`, gating on `LOBU_CLOUD_MODE`. Commit `d19cb8ec3` on branch `feat/tenancy-gate`, not pushed.
+
+4. **Errors and fixes:**
+
+   - **Called the worker PATH "broken."** It's a deliberate just-bash sandbox. Corrected after reading `just-bash-bootstrap.ts`.
+   - **Was about to build a feature that already existed.** #2243 (`932ccf51c`) had merged ~6h earlier. Should have pulled main first.
+   - **Recommended a chart fix that doesn't work.** I told the user SYS_ADMIN or a Localhost seccomp profile would enable bwrap. #2245 measured that `unshare --user` succeeds with SYS_ADMIN but bwrap then fails at `setting up uid map: Operation not permitted`, unreachable from any chart knob. My `unshare` probe was a false floor.
+   - **Invented `LOBU_SINGLE_TENANT_HOST` when `LOBU_CLOUD_MODE` existed.** User: "we have cloud version env". Violated AGENTS.md's "grep for the env var the codebase already reads". Deleted my flag.
+   - **Bad intermediate rename** to `LOBU_WORKER_SHARES_NO_TENANTS` — boolean-sounding name compared against `"single"`. Renamed again.
+   - **sed rename inverted test semantics** — `LOBU_CLOUD_MODE=1` means cloud (not isolated), opposite of the test names. Truncated the block (`head -629`) and rewrote it.
+   - **AskUserQuestion rejected by the user** when asked to "do the fix" — user wanted a decision, not a menu.
+   - **Threat-model error (found by review-fix).** I argued "single tenant ⇒ no sibling ⇒ nothing to leak", collapsing two distinct threats. `stripEnv` only removes 2 keys, so the agent could read gateway secrets regardless of tenancy. Verified by probe: `echo $FAKE_ENCRYPTION_KEY` → `SUPER_SECRET_VAULT_KEY_123` exit 0.
+   - **My HTTP_PROXY test was wrong, not the code.** I asserted against a URL containing the worker token — a scenario production no longer produces after the egress-token split. Removed it; the fixer had already added correct coverage in `worker-auth.test.ts`.
+   - **`make review-fix` timeout too short (1500s)** — killed it mid-run (`Terminated: 15`), leaving partial edits. Verified the tree by test rather than trusting it.
+   - **`agent-tooling-resolver.test.ts` "failure"** — 0 tests at exactly 5000ms under parallel load; passed 21/21 on 3 consecutive isolated reruns. A flake, not a regression.
+   - **`bun install` tarball integrity failure** (`isolated-vm`) during task-setup; resolved by re-running `bun install` in the created worktree.
+   - **First run of the new test file wasn't a true red** — it died on an import error (removed export), not an assertion. I later got a genuine red by mutation-testing the denylist back in.
+
+5. **Problem Solving:**
+
+   **Prod e2e (measured, not inferred):** `bwrap`, `gh`, `git` all installed at /usr/bin. `bwrap --unshare-user` exit 1; `unshare --user true` EPERM; `CapEff: 0`, `Seccomp: 2`. Kernel permits userns (`unprivileged_userns_clone=1`, `max_user_namespaces=62303`) — the container's seccomp filter blocks it. So contributed CLIs exit 127 in prod by design.
+
+   **Prod tenancy:** `owletto` DB → **66 organizations, 32 with agents, 54 agents**. Genuinely multi-tenant; no single-tenant shortcut available.
+
+   **The security leak (the session's real finding):** Under the strictest posture (cloud mode, no sandbox, no opt-in, zero binaries registered), `echo $ENCRYPTION_KEY` returned the value with exit 0. `stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS)` copied the whole gateway env into the just-bash instance minus 2 names. Fixed as a class across 5 call sites with `buildAgentEnv`.
+
+   **The second hole (found by review-fix in my fix):** `HTTP_PROXY` is necessarily allowlisted, and its URL embedded the WORKER token as Basic-auth password — so `printenv HTTP_PROXY` returned the credential the allowlist withholds. Fixed by minting a separately-typed `egress-proxy` token sharing one `jti`.
+
+   **Verification:** 730/730 agent-worker, 1662/1662 server gateway, 373/373 core, 29/29 core worker-auth, `make pre-pr` clean 6/6. Mutation tests: restoring the denylist → 4 fail; disabling the `tokenKind` check → cross-surface test fails.
+
+6. **All user messages:**
+   - "yes do those and test. pull main github connector advertise the gh"
+   - "is this agent sandbox stuff gonna work, did you test or are we actually overengineering"
+   - "you need to teste2e"
+   - "some code changed, check current status"
+   - "let's do the fix, pull from main"
+   - "i don't understand why do we need those"
+   - "so you didn't fix the problem properly?"
+   - "interview me, i just want us to be prod ready"
+   - "why do we need these? what changes have you done and decisions left?"
+   - "1. demo. but we need to test it. 2. we need to do tehe right fix"
+   - "yes fix it properly"
+   - "what the fuck is deployment tenancy?"
+   - "what's the best dx here, we can make tradeoffs but we want it to be safe"
+   - "we have cloud version env"
+   - "what's the fix"
+   - "ok sounds good"
+   - "go do it"
+
+   **Security constraint carried forward from earlier in the session (still in force):** the user previously pasted a live Vercel API token in plaintext chat. I refused to use or store it, and told the user it is compromised and must be revoked at vercel.com/account/settings/tokens or via `vercel tokens remove <id>`. **This refusal stance persists: do not write that token to `.env`, do not use it for any test, do not echo it.** The safe alternative offered: `! read -s T && sed -i '' "s|^VERCEL_TOKEN=.*|VERCEL_TOKEN=$T|" <path>/.env && unset T`
+
+7. **Pending Tasks:**
+   - **`make review` on PR #2263** — running in background (task ID `bcyeqrg0v`), posts the required `pi-review` status. Then merge when CI green.
+   - **Revoke the exposed Vercel token** (user action).
+   - **BYO Vercel exec / agent-creates-PRs demo** — blocked on `VERCEL_TOKEN` (still empty in `.env`). This is the "demo" half of the user's "1. demo. but we need to test it."
+   - **Tenancy gate branch `feat/tenancy-gate` (`d19cb8ec3`) is PARKED** — unpushed; should be re-evaluated on top of the allowlist fix, since "self-hosted has no sibling to leak to" is now much closer to true.
+   - **Live agent run** against a booted gateway — explicitly flagged as NOT done in the PR body.
+   - Deferred idea: replace the bare 127 with an explanatory stub ("gh unavailable because…") as its own PR.
+
+8. **Current Work:**
+
+   Immediately before the summary request I had:
+   - Committed `6589b6e08` ("fix(worker): allowlist the agent environment instead of denying two keys") and `082b6417b` ("fix(gateway): mint an egress-only proxy credential for HTTP_PROXY") on branch `feat/worker-env-allowlist` in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/worker-env-allowlist`.
+   - Verified `git diff --name-only origin/main...HEAD` = exactly 21 intended files, no owletto pointer.
+   - Pushed the branch and opened **PR #2263**: "fix(worker): allowlist the agent environment and split the egress proxy credential" (gh reported "Warning: 1 uncommitted change" — the owletto submodule pointer, deliberately unstaged).
+   - Cleaned up temp files (`/tmp/pr-body.md`, `/tmp/auth.bak`, `/tmp/wek.bak`, `/tmp/jbb.bak`, `/tmp/jbb2.bak`).
+   - Launched `timeout 2400 make review` in the background (ID `bcyeqrg0v`, output at `/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bcyeqrg0v.output`).
+
+9. **Optional Next Step:**
+
+   Wait for the background `make review` (task `bcyeqrg0v`) to complete, read its verdict, and — per AGENTS.md step 9, "Merge squash once CI is green: `gh pr merge <n> --squash --admin`. Never `--admin` past a check that has not reported" — merge PR #2263 once the `pi-review` status and CI have reported green.
+
+   This follows directly from the user's most recent instruction, **"go do it"**, given in response to my stated plan: *"Next: review-fix lands → push + PR + `make review`. Then either the live-run verification or revisiting the tenancy gate — your call which."*
+
+   Note per repo rules: do not iterate `make review` as a find-fix loop — it runs **once** on the settled HEAD. If the verdict raises findings, surface them to the user rather than re-running. Also note the user still owes a decision on the two follow-ups I offered ("the live-run verification or revisiting the tenancy gate"), which should be confirmed before starting either.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

@@ -1,0 +1,1 @@
+trying to understand. when a device is connected, chatgpt can connect to it through run_sdk no?

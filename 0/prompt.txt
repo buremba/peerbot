@@ -1,0 +1,1 @@
+ok good, is this concept applicable to every where? run sdk query sql sql

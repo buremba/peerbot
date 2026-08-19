@@ -1,0 +1,1 @@
+why do we need seperate public path? if an org is public we can enable the public users or mcp without auth to see things through listing the agents no?

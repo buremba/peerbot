@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx8uu73uq</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bx8uu73uq.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on amended SHA" completed (exit code 0)</summary>
+</task-notification>

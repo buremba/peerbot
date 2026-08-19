@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>k6fi17und</task-id>
+<status>failed</status>
+<summary>MCP task k6fi17un (lobu/run_sdk) failed.</summary>
+<result>
+Task failed: MCP server "lobu" tool "run_sdk" sent no response or progress for 300s; aborting. If this server is configured in your MCP settings, set a per-server "timeout" (ms) to allow longer silent runs for just this server; otherwise set CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT (ms) globally (0 disables).
+</result>
+</task-notification>

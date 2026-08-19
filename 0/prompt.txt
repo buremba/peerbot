@@ -1,0 +1,1 @@
+maybe we can have seperate skills page that's fine. we just make the existing skill page also using that rich format. and in the behavior the user either referencing a skill or enter their custom prompt. makes sense?

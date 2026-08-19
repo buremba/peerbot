@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9j4cqe5j</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8/tasks/b9j4cqe5j.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on qwen config change" completed (exit code 0)</summary>
+</task-notification>

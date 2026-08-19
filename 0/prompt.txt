@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs9pkwxqz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bs9pkwxqz.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the remote pre-PR gate" completed (exit code 0)</summary>
+</task-notification>

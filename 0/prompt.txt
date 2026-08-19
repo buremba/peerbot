@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bv4p73ve6</task-id>
+<summary>Monitor event: "CI on lobu#2236 after orphaned-test removal"</summary>
+<event>ALL REPORTED
+GREEN</event>
+</task-notification>

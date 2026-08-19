@@ -1,0 +1,1 @@
+so we check for status field? we don't know those though no? shouldnt that field be set in a x- something

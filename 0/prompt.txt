@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>biuqbvrag</task-id>
+<tool-use-id>toolu_01X3nEmJQiN8FodGgb8EZ6NF</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/biuqbvrag.output</output-file>
+<status>killed</status>
+<summary>Background command "Start dev server with the slug fix" was stopped</summary>
+</task-notification>

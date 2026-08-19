@@ -1,0 +1,1 @@
+[Image #6] also don't use this border style. make the dots in the background more transparent. all system entities should be shown also we want th position them vertically not horizontally i mean when there is multiple entity types

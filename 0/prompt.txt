@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>br9czdoem</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/br9czdoem.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on WIP commit head" completed (exit code 0)</summary>
+</task-notification>

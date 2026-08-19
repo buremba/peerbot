@@ -1,0 +1,1 @@
+do we make it clear that we don't require the harness to be built on lobu and we're composable? people can access their data everywhere using our cli and mcp. where are the gaps

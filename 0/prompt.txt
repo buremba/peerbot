@@ -1,0 +1,1 @@
+when people are onboarding, we can ask them how they want to manage their agents. agent and the users should know we have this hosted path, they get our slack invite link, they can install it into their workspace etc. and even use our ui. where is the gap, is it just the prompt? also use the lobu link e2e and make sure it works

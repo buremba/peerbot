@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bglb0hggj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/tasks/bglb0hggj.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review once on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

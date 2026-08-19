@@ -15,8 +15,9 @@ import type {
 import {
 	EntityRowValidationError,
 	unvalidatedEntityRowPatch,
-	validateEntityRowInsert,
+	validateEntityRowInsertGrantingApprovedFields,
 	validateEntityRowPatch,
+	validateEntityRowPatchGrantingApprovedFields,
 } from "../authz/entity-row-validation";
 import {
 	deferEntityFieldChange,
@@ -197,7 +198,7 @@ interface EntityCreateOptions {
 	 * Fields a human already approved on a create card. Absent means none, so an
 	 * escalate throws and the caller routes the create into an approval.
 	 *
-	 * See `validateEntityRowInsert`'s `approvedFields`.
+	 * See `validateEntityRowInsertGrantingApprovedFields`'s `approvedFields`.
 	 */
 	approvedFields?: readonly string[];
 }
@@ -638,7 +639,7 @@ export async function mergeEntityFields(params: {
 	/**
 	 * Set when this merge IS the application of a human-approved proposal, so a
 	 * rule that escalates does not escalate the very write its escalation asked
-	 * for. See `validateEntityRowPatch`'s `approvedFields`.
+	 * for. See `validateEntityRowPatchGrantingApprovedFields`'s `approvedFields`.
 	 */
 	approvedFields?: readonly string[];
 }): Promise<FieldMergeResult> {
@@ -674,14 +675,14 @@ export async function mergeEntityFields(params: {
 		await patchEntityRows({
 			tx,
 			ids: [entityId],
-			patch: await validateEntityRowPatch({
+			patch: await validateEntityRowPatchGrantingApprovedFields({
 				tx,
 				ids: [entityId],
 				patch: {
 					metadata: merge.nextMetadata,
 					fieldControls: merge.nextControls,
 				},
-				approvedFields: params.approvedFields,
+				approvedFields: params.approvedFields ?? [],
 			}),
 		});
 	}
@@ -903,7 +904,7 @@ export async function createEntity(
 				// THE create path. Everything a tenant, an agent or the API creates
 				// arrives here, so this is where a rule has to be able to reject a row
 				// born in a state no transition would have reached.
-				row: await validateEntityRowInsert({
+				row: await validateEntityRowInsertGrantingApprovedFields({
 					tx,
 					row: {
 						organizationId: data.organization_id as string,
@@ -918,7 +919,7 @@ export async function createEntity(
 						embedding: data.embedding,
 						contentHash,
 					},
-					approvedFields: opts?.approvedFields,
+					approvedFields: opts?.approvedFields ?? [],
 				}),
 			});
 		});

@@ -15,6 +15,11 @@
 #   - The loose Nix charset regex `[A-Za-z0-9._-]+` re-introduced inside
 #     packages/server/src/gateway/orchestration/. WS3 hardening replaced this
 #     with a strict attribute-ref validator; the loose form must stay out.
+#   - Imports of the GRANTING entity-row validators
+#     (`validateEntityRow{Patch,Insert}GrantingApprovedFields`) outside the
+#     approval apply path (entity-field-approval.ts) and the write kernel
+#     (entity-management.ts) — the only importers allowed to waive a rule
+#     escalation.
 #
 # Out of scope: the postgres.js `.unsafe(query, params)` form is the SAFE
 # parameterized API — flagging it would be noise. We rely on the
@@ -101,6 +106,34 @@ HITS=$(
 )
 if [ -n "$HITS" ]; then
   echo "::error::Loose Nix package charset re-introduced — use isValidNixAttrRef() instead:"
+  echo "$HITS"
+  VIOLATIONS=$((VIOLATIONS + 1))
+fi
+
+# --- 4. GRANTING validator module boundary ---------------------------------
+# Only the approval apply path may waive an escalation. The granting validator
+# exports (`*GrantingApprovedFields`) may be imported only from the module that
+# routed a card (entity-field-approval.ts) and the write kernel that forwards a
+# grant (entity-management.ts); any other importer lets an ordinary write path
+# waive a rule escalation. A lint-side `noRestrictedImports` cannot enforce this
+# today (packages/server/** is biome-excluded), so this grep is the live gate.
+# Defining module and tests are exempt by construction.
+# NOTE: `git grep` scans tracked files only, so a rogue importer is caught once
+# staged/committed (the CI case) but not while untracked in a dirty worktree.
+echo "  -> granting validator imports outside the approval apply path"
+HITS=$(
+  git grep -nE 'validateEntityRow(Patch|Insert)GrantingApprovedFields' -- \
+    'packages/' \
+    2>/dev/null \
+    | grep -E '\.tsx?:' \
+    | grep -v '^packages/server/src/tools/admin/entity-field-approval.ts:' \
+    | grep -v '^packages/server/src/utils/entity-management.ts:' \
+    | grep -v '^packages/server/src/authz/entity-row-validation.ts:' \
+    | grep -v '/__tests__/' \
+    | filter_allowlist
+)
+if [ -n "$HITS" ]; then
+  echo "::error::Granting validator imported outside the approval apply path — only entity-field-approval.ts (card routing) and entity-management.ts (write kernel) may waive an escalation:"
   echo "$HITS"
   VIOLATIONS=$((VIOLATIONS + 1))
 fi

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bu3dz104g</task-id>
+<summary>Monitor event: "auto-merge of PR 2337"</summary>
+<event>MERGED: #2337 squashed as f3020833504154a985e882834fe727262934507c</event>
+</task-notification>

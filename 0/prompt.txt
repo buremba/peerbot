@@ -1,0 +1,1 @@
+review approve doesn't open in the peek panel

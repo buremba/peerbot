@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpvbnhpgu</task-id>
+<tool-use-id>toolu_01QaMxsZYvvGpVMXJuo7rsCP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bpvbnhpgu.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch for 2506 rollout" completed (exit code 0)</summary>
+</task-notification>

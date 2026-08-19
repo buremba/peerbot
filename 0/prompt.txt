@@ -1,0 +1,1 @@
+ok these things can be based on that linkedin_slugs entity events the agent can look it up, and say because of these i think we should merge these entities etc

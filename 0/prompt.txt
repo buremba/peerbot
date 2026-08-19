@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bwqr34i95</task-id>
+<summary>Monitor event: "PR 2343 checks after the authz fix"</summary>
+<event>2343 integration: pass</event>
+</task-notification>

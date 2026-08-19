@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5pkoor95</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/b5pkoor95.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for the Mac release build" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>be00zmwco</task-id>
+<summary>Monitor event: "required checks on lobu PR 2358"</summary>
+<event>typecheck: pass</event>
+</task-notification>

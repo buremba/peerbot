@@ -1,0 +1,1 @@
+i see some behaviors prompt just say the ai to create json, that's dumb and we should never do that. we have the behavior contracts/ let's do 1 and we want to cleanup fix things properly

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btej7xd4c</task-id>
+<tool-use-id>toolu_01YaETgMMCPsszJ3wZsgSdSH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/btej7xd4c.output</output-file>
+<status>completed</status>
+<summary>Background command "Final review run" completed (exit code 0)</summary>
+</task-notification>

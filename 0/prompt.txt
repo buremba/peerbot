@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b150befge</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e8ae611f-3800-43ed-836d-8de4d4fb9fe5/tasks/b150befge.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the unposted fixer pass" completed (exit code 0)</summary>
+</task-notification>

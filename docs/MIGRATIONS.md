@@ -16,6 +16,31 @@ The rules below are what we wish #765 had followed.
 
 ---
 
+## The deploy window (`-- lobu:no-quiesce`)
+
+The pre-upgrade hook scales the app **to zero** before migrating, so no old replica can ever observe a new schema. The ingress answers that gap with 503 for the length of a pod restart — measured at 41s in prod on 2026-08-19. It fires on every deploy carrying a pending migration, whether or not that migration needs it.
+
+Most don't. The expand half of an expand/contract pair — an additive nullable column, a comment, a new index — is one the *old* code already runs against happily. Mark those and the deploy rolls with no downtime:
+
+```sql
+-- migrate:up
+-- lobu:no-quiesce  (additive: no code before this deploy selects the column)
+
+ALTER TABLE public.device_workers
+  ADD COLUMN IF NOT EXISTS agent_kinds text[];
+```
+
+Rules:
+
+- The marker must be **its own comment line**. Prose mentioning it does not arm it.
+- It asserts something about the **application**, not the DDL: that the code running *before* this deploy keeps working against the post-migration schema. Only the author can know that. `scripts/lib/migration-compatibility.mjs` only rejects DDL that contradicts the claim — drops, renames, `SET NOT NULL`, type changes, added constraints, and `ADD COLUMN … NOT NULL` with no `DEFAULT`.
+- **Every** pending migration in the deploy must carry it, or the whole batch quiesces. One unmarked migration removes the fast path for all of them.
+- Everything fails closed. Unmarked, unreadable, unparseable, or a pending-check that crashes all quiesce exactly as before.
+
+If you are contracting — dropping the column, tightening the constraint — leave the marker off. That is what the window exists for.
+
+---
+
 ## Watch out for
 
 ### `ADD COLUMN ... GENERATED ALWAYS AS (...) STORED`

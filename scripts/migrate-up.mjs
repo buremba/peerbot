@@ -18,15 +18,52 @@
  * deploy that ships no schema change:
  *   0 - at least one migration is pending (the caller must quiesce)
  *   3 - the ledger is complete, nothing is pending (safe to skip the quiesce)
+ *   4 - migrations are pending, but every one of them is marked
+ *       `-- lobu:no-quiesce` and survives the incompatible-DDL guard below, so
+ *       the old replicas can keep serving across the migration
  *   1 - the answer could not be determined (the caller must quiesce)
- * Only the definitive 3 unlocks the fast path; every other status, including a
- * crash, leaves the caller quiescing.
+ * Only the definitive 3 and 4 unlock the fast path; every other status,
+ * including a crash, leaves the caller quiescing.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import postgres from "postgres";
+import {
+  NO_QUIESCE_MARKER,
+  classifyMigrationSource,
+} from "./lib/migration-compatibility.mjs";
 
 const CHECK_PENDING_NONE_EXIT = 3;
+const CHECK_PENDING_COMPATIBLE_EXIT = 4;
+
+/**
+ * Decide whether one pending migration may skip the quiesce. Fails closed: an
+ * unreadable or unparseable file reports as blocking. The marker is checked
+ * before the file is parsed so a malformed migration nobody marked reports the
+ * plain "not marked" reason rather than a parse error.
+ */
+function classifyPendingMigration(dir, file) {
+  try {
+    const content = readFileSync(join(dir, file), "utf-8");
+    if (!NO_QUIESCE_MARKER.test(content)) {
+      return {
+        file,
+        compatible: false,
+        reason: "not marked -- lobu:no-quiesce",
+      };
+    }
+    const { sql } = loadMigrationUp(dir, file);
+    return classifyMigrationSource(file, content, splitSqlStatements(sql));
+  } catch (error) {
+    return {
+      file,
+      compatible: false,
+      reason: `could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
 
 const checkPendingOnly = process.argv.slice(2).includes("--check-pending");
 const migrationsDir =
@@ -220,6 +257,21 @@ if (checkPendingOnly) {
     process.exit(CHECK_PENDING_NONE_EXIT);
   }
   console.log(`Pending migrations (${pending.length}): ${pending.join(", ")}`);
+
+  // Quiescing costs a full scale-to-zero, which the ingress answers with 503.
+  // A migration that the old code can already run against does not need it.
+  const verdicts = pending.map((file) =>
+    classifyPendingMigration(migrationsDir, file)
+  );
+  for (const verdict of verdicts) {
+    console.log(`  ${verdict.file}: ${verdict.reason}`);
+  }
+  if (verdicts.every((verdict) => verdict.compatible)) {
+    console.log(
+      "Every pending migration is marked backward-compatible; the quiesce can be skipped."
+    );
+    process.exit(CHECK_PENDING_COMPATIBLE_EXIT);
+  }
   process.exit(0);
 }
 

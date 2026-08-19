@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bvt8mjnzs</task-id>
+<summary>Monitor event: "PR 2374 required checks after the submodule repoint"</summary>
+<event>format-lint: pass
+migrations: pass</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbvdrv3bg</task-id>
+<tool-use-id>toolu_01W7RCrppUkeNUBiWwqxuJ1k</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bbvdrv3bg.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review via claude/fable" completed (exit code 0)</summary>
+</task-notification>

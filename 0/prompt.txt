@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1vq5xcqt</task-id>
+<tool-use-id>toolu_01UASgtzPAj4i1m6F4j8t3Dp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f33cc6c8-268a-4dc1-9605-e2ffb3bfbbbc/tasks/b1vq5xcqt.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot API server" was stopped</summary>
+</task-notification>

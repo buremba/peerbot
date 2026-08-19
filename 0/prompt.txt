@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bepl26v6m</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bepl26v6m.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for main CI containing both merges" completed (exit code 0)</summary>
+</task-notification>

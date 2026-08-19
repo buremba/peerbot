@@ -1,0 +1,1 @@
+so it needs to be in the events, no seperate system you say? is it designed this way because we might allow inference api to bring in for users so if they use another ui with mcp we can see full conversation? we want to simplidy and consoldiate

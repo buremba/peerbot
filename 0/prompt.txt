@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzm3abaln</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/bzm3abaln.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the unposted review-fix pass" completed (exit code 0)</summary>
+</task-notification>

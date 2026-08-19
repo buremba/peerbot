@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzt1xjo20</task-id>
+<tool-use-id>toolu_01LybFuzPUL68C4FzjYJB48v</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bzt1xjo20.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for dev server readiness in background" was stopped</summary>
+</task-notification>

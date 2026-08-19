@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bk8rz0fau</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/bk8rz0fau.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the pre-review fixer on PR2" completed (exit code 0)</summary>
+</task-notification>

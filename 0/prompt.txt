@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bolx43i43</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bolx43i43.output</output-file>
+<status>failed</status>
+<summary>Background command "Restart dev server with fresh Vite cache" failed with exit code 144</summary>
+</task-notification>

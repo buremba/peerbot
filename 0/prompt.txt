@@ -1,0 +1,97 @@
+<task-notification>
+<task-id>a42d739629d179f65</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/a42d739629d179f65.output</output-file>
+<status>completed</status>
+<summary>Agent "asOf point-in-time reads" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>`asOf` is implemented and green. Committed on `feat/erp-asof-reads` (`958f7e1b4`), not pushed.
+
+## The truth I found
+
+The audit was right that `asOf` was declared-and-throwing, but the shape of the gap is different from "the compiler needs a point-in-time engine":
+
+- `MetricReadMode = 'current' | 'raw' | { asOf: string }` lives in `packages/connector-sdk/src/metrics.ts:27`, is re-exported by the CLI config (`packages/cli/src/config/define.ts:71`), and its doc comment **already settles the semantics**: `asOf` compares against `occurred_at` — *event time, NOT system time*.
+- `packages/server/src/metrics/compiler.ts` threw `MetricNotImplementedError` for anything but `"current"`.
+- So the whole feature is one predicate on a relation the compiler already builds. It is genuinely mechanical — the hard part is only choosing the right temporal semantics and not silently getting the boundary day wrong.
+
+## What I built
+
+`packages/server/src/metrics/read-mode.ts` (new) lowers `reads` into a predicate ANDed into the existing inner events filter, **before** dedupe/segment/aggregate:
+
+- date-only `2026-03-31` → `occurred_at &lt; '2026-04-01T00:00:00.000Z'::timestamptz` — read as the *end* of that UTC day, which is what "the balance on 31 March" means. Taking it literally as `&lt;= 2026-03-31T00:00:00Z` would silently drop the whole day; that off-by-one is the main trap and it has a dedicated test.
+- explicit instant → `occurred_at &lt;= '…'::timestamptz`, inclusive.
+- offset-less timestamp (`2026-03-31T12:00:00`) is **rejected**: Postgres resolves it in the session timezone, so the same config would answer differently on two replicas.
+- `'raw'` stays NotImplemented, deliberately — `validateAndScopeQuery` rewrites `events` → `current_event_records` unconditionally, so the compiler cannot express "include superseded rows" as a predicate.
+- Malformed `asOf` now fails at **apply** (`manage_entity_schema.assertValidMetricsConfig`), not at first query.
+
+I deliberately did **not** touch `@lobu/connector-sdk` or any MCP tool schema, so no API/SDK surface changed (see proposals below).
+
+One non-obvious bug the tests caught that a typecheck never would: I first emitted `TIMESTAMPTZ '…'`, which is valid Postgres but **`@polyglot-sql/sdk` fails to parse it**, so `validateAndScopeQuery` threw `Could not parse SQL query for table extraction` on every asOf query. The `'…'::timestamptz` cast form is required, and there's now a comment saying why.
+
+## Proof (real output)
+
+```
+ ✓ src/__tests__/integration/metrics/metric-asof.test.ts (10 tests) 363ms
+ ✓ src/__tests__/integration/metrics/metric-tools.test.ts (5 tests) 238ms
+ ✓ src/__tests__/integration/metrics/compiler-golden.test.ts (2 tests) 206ms
+ ✓ src/__tests__/integration/metrics/run-metric-user-visibility.test.ts (3 tests) 190ms
+ Test Files  4 passed (4)
+      Tests  20 passed (20)
+```
+Entity-schema suites (the apply-validation surface): `6 files / 41 tests passed`. `bunx tsc --noEmit` clean.
+
+The test asserts the historical answer *differs correctly*, not that it returns something. Same entity, same events: current = **157**, as-of-end-of-31-March = **150** (April charge gone, boundary-day charge kept), as-of-midday-31-March = **100** (the 18:00 charge hadn't happened), plus explicit `not.toBeCloseTo` assertions that the three are genuinely different numbers. Dedupe (a duplicated boundary-day charge collapses) and the outflow segment (a same-day refund excluded) still hold under the cut.
+
+## The invariant — my explicit position
+
+**`asOf` does not introduce an aggregation-over-history read path; it strictly narrows one that already shipped.** The compiler's `GROUP BY` over `events` is pre-existing, in the `current` read, and `asOf` adds one range predicate and nothing else — no join, no `DISTINCT ON`, no per-row `regexp_*`, no leading-wildcard `LIKE`. If that `GROUP BY` violates the invariant, it violates it today for `current`, and fixing it means materializing the *whole metric layer*, not gating this feature.
+
+I measured rather than assumed. 1,000,001 events, single entity, embedded Postgres, `EXPLAIN (ANALYZE, BUFFERS)` on the real scoped SQL, 5 runs each:
+
+| measure | median e2e | EXPLAIN exec | rows scanned |
+|---|---|---|---|
+| `balance` (current, already shipped) | 379.3 ms | 398.5 ms | 1,000,000 seq scan |
+| `balance_asof` (new) | 313.7 ms | 334.1 ms | 812,584 seq scan (187,417 removed by the asOf filter) |
+
+So `asOf` is ~17% **cheaper** than the current read it derives from, exactly proportional to the rows it excludes, on an identical plan shape. This matches the benchmark you cited (sub-200ms-class single-customer balance reads at 1M rows) — no write-time materialization machinery is needed here, and I'd have been wrong to build it.
+
+The honest caveat: both plans are **sequential scans**, so this path is O(org history) already. `asOf` inherits that; it does not create it. The scan is bounded by org history in prod (org-scoping uses `idx_events_organization_id`; my single-org benchmark is the worst case).
+
+Where the invariant *would* genuinely bite is **system-time** `asOf` ("what did we believe on 31 March"), which needs a per-row supersede-chain walk (`superseded_by` + the superseder's `created_at`). That is the shape that must be materialized at write time. `read-mode.ts` refuses it rather than compiling it, and both it and the compiler header document why.
+
+## Needs your confirmation (not built)
+
+1. **Runtime `as_of` argument on `query_metric`.** Today `asOf` is *declared* in config, so an author ships `balance_at_fy_end` as a named measure. Ad-hoc "what was it on 31 March?" needs a new optional `as_of` on the MCP tool schema → API surface change, forbidden without sign-off. Plumbing cost is small: `RunMetricInput.asOf` → `CompileMetricInput.asOf` overriding `eventSet.reads`. Worth noting this is what makes the feature feel alive to an agent.
+2. **System-time / bitemporal `asOf`.** Needs a design (materialized valid-from/valid-to, or an events-snapshot table) — a new table, so proposal-only.
+
+## Confidence
+
+- **Compiler + read-mode lowering — 92.** Ran the real end-to-end path (compile → `validateAndScopeQuery` → execute) against Postgres and asserted three different historical answers, plus the SQL-injection and offset-less rejections. Not 100 because only the `alias` resolver exists to exercise it.
+- **Apply-time validation — 85.** Exercised through the real `entity_schema.createType` tool (422 with the right message, shown in test output) and 41 pre-existing entity-schema tests pass. I did **not** run `lobu apply` end-to-end from a CLI config.
+- **Performance / invariant claim — 88.** Measured, not assumed: 1M rows, `EXPLAIN ANALYZE`, 5-run medians, both arms. Embedded Postgres on a Mac, single org, synthetic metadata — prod cardinality and index selectivity will differ.
+- **Not-run gates — 0 evidence.** `make review-fix`, `make review`, `make pre-pr-remote` have **not** run. Typecheck + targeted suites are not CI.
+
+## Next actions
+
+1. Decide on the runtime `as_of` argument (proposal 1). Without it this only serves config-declared cuts, which is a real but narrower surface.
+2. Run `make review-fix` on the settled diff, then `make pre-pr-remote`, then push + PR. Check `pgrep -f "make pre-pr-remote"` first — Depot serializes org-wide.
+3. Consider whether the seq scan on the metric path deserves its own issue. It is pre-existing and not this PR's concern, but the 1M-row measurement above is the first hard number on it.
+4. If you want `raw` too, it needs a second scoped relation in `validateAndScopeQuery` (not a predicate) — currently a deliberate NotImplemented with a test pinning that.
+
+```
+$ git status --short
+(clean)
+
+$ git diff --stat origin/main...HEAD
+ .../integration/metrics/metric-asof.test.ts        | 283 +++++++++++++++++++++
+ packages/server/src/metrics/compiler.ts            |  28 +-
+ packages/server/src/metrics/errors.ts              |   9 +
+ packages/server/src/metrics/read-mode.ts           | 144 +++++++++++
+ .../server/src/tools/admin/manage_entity_schema.ts |  11 +-
+ 5 files changed, 463 insertions(+), 12 deletions(-)
+```
+
+One process note: `bunx biome check --write` without `--config-path config/biome.config.json` reformatted three server files wholesale (tabs, 1,000+ line diff) — the repo config ignores `packages/server` entirely. I reverted from backups and re-applied the edits by hand; the committed diff above is the clean minimal one. The temporary 1M-row benchmark file was deleted.</result>
+<usage><subagent_tokens>134356</subagent_tokens><tool_uses>73</tool_uses><duration_ms>823834</duration_ms></usage>
+</task-notification>

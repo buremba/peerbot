@@ -1,0 +1,1 @@
+why not just nix shell

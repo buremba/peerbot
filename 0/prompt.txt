@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b226ewa5c</task-id>
+<tool-use-id>toolu_017vicYuSpVeRG25GKVozW2v</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/b226ewa5c.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on PR A" completed (exit code 0)</summary>
+</task-notification>

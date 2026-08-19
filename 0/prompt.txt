@@ -1,0 +1,1 @@
+the agents can take screenshots on before and after and show me a html artifact on the feature so i can verify. don't  we already have such instructions

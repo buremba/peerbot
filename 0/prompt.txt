@@ -1,0 +1,1 @@
+ok you do all extensive testing and even create different projects and run the opencode in there so we can test end to end

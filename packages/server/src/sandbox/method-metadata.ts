@@ -52,6 +52,14 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 		example: "const org = await client.organizations.current();",
 	},
 
+	// devices
+	"devices.list": {
+		summary:
+			"List the caller's own registered devices, most-recently-seen first. Each carries the `id` that `automations.device_worker_id` and `connections.device_worker_id` take when pinning work to a machine, plus `agent_kinds` (which agent CLIs it advertised — null means it never advertised, so the Automation lane leaves it unrestricted), `capabilities`, `online`, and the workspace it is attached to. Owner-scoped: devices are user-owned, so this never lists a colleague's machines.",
+		access: "read",
+		example: "const devices = await client.devices.list();",
+	},
+
 	// entities
 	"entities.manage": {
 		summary: "Raw manage_entity action wrapper. Prefer named methods.",

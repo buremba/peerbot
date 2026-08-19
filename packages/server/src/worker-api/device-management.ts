@@ -30,13 +30,124 @@ import { getWorkspaceRole } from '../utils/organization-access';
 import { parseJsonBody } from '../gateway/routes/shared/helpers';
 import { buildAutomationUrl, getPublicWebUrl } from '../utils/url-builder';
 
+/** One of the caller's registered devices, as both readers return it. */
+export interface DeviceWorkerSummary {
+  id: string;
+  worker_id: string;
+  platform: string | null;
+  app_version: string | null;
+  capabilities: string[];
+  agent_kinds: string[] | null;
+  label: string | null;
+  last_seen_at: string;
+  online: boolean;
+  organization_id: string | null;
+  organization_name: string | null;
+  organization_slug: string | null;
+  connector_count: number;
+  connector_error_count: number;
+  last_sync_at: string | null;
+  connectors: Array<{
+    connection_id: number;
+    connector_key: string;
+    display_name: string;
+    status: string;
+    organization_slug: string | null;
+  }>;
+}
+
+/**
+ * The caller's registered devices, most-recently-seen first.
+ *
+ * Owner-scoped on `user_id`, never on the org: `device_workers` is keyed
+ * `(user_id, worker_id)` and `organization_id` records where a device is
+ * ATTACHED, not who owns it — so an org filter would both hide a user's own
+ * unattached devices and expose colleagues' machines (`label` is typically a
+ * personal name, `last_seen_at` a presence feed).
+ *
+ * Shared deliberately: `GET /api/me/devices` and the ClientSDK `devices`
+ * namespace are two transports over this one query, so a column added here
+ * reaches both and neither can drift.
+ */
+export async function queryDeviceWorkers(
+  userId: string
+): Promise<DeviceWorkerSummary[]> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT
+      dw.id,
+      dw.worker_id,
+      dw.platform,
+      dw.app_version,
+      dw.capabilities,
+      dw.agent_kinds,
+      dw.label,
+      dw.last_seen_at,
+      (dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})) AS online,
+      dw.organization_id,
+      o.name AS organization_name,
+      o.slug AS organization_slug,
+      (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL)::int AS connector_count,
+      (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL AND cn.status = 'error')::int AS connector_error_count,
+      (
+        SELECT max(f.last_sync_at) FROM feeds f
+        JOIN connections cn ON cn.id = f.connection_id
+        WHERE cn.device_worker_id = dw.id AND f.deleted_at IS NULL
+      ) AS last_sync_at,
+      (
+        SELECT coalesce(
+          json_agg(
+            json_build_object(
+              'connection_id', cn.id,
+              'connector_key', cn.connector_key,
+              'display_name', coalesce(cd.name, cn.connector_key),
+              'status', cn.status,
+              'organization_slug', cno.slug
+            )
+            ORDER BY cn.created_at
+          ),
+          '[]'::json
+        )
+        FROM connections cn
+        LEFT JOIN organization cno ON cno.id = cn.organization_id
+        LEFT JOIN LATERAL (
+          SELECT name FROM connector_definitions
+          WHERE key = cn.connector_key AND status = 'active' AND organization_id = cn.organization_id
+          ORDER BY updated_at DESC LIMIT 1
+        ) cd ON TRUE
+        WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL
+      ) AS connectors
+    FROM device_workers dw
+    LEFT JOIN organization o ON o.id = dw.organization_id
+    WHERE dw.user_id = ${userId}
+    ORDER BY dw.last_seen_at DESC
+  `) as unknown as Array<
+    Omit<DeviceWorkerSummary, 'agent_kinds'> & { agent_kinds: string | string[] | null }
+  >;
+
+  return rows.map((r) => ({
+    ...r,
+    capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+    // null (never advertised) is distinct from [] (advertised none): the
+    // automation lane leaves the former unrestricted and withholds every run
+    // from the latter, so a reader must be able to tell "unknown" from "runs
+    // nothing". The driver hands text[] back as a raw '{a,b}' literal, so it
+    // needs parsing, not Array.isArray.
+    agent_kinds: r.agent_kinds == null ? null : parsePgTextArray(r.agent_kinds),
+    connector_count: r.connector_count ?? 0,
+    connector_error_count: r.connector_error_count ?? 0,
+    connectors: Array.isArray(r.connectors) ? r.connectors : [],
+  }));
+}
+
 /**
  * GET /api/me/devices
  *
- * Returns the calling user's registered device workers, each with its surrogate
- * id (used as `device_worker_id` when pinning a connection), the workspace the
- * device is attached to, how many connections are pinned to it (and how many of
- * those are erroring), and when its feeds last synced.
+ * Thin transport over `queryDeviceWorkers`. Returns the calling user's
+ * registered device workers, each with its surrogate id (used as
+ * `device_worker_id` when pinning a connection or an Automation), the workspace
+ * the device is attached to, how many connections are pinned to it (and how
+ * many of those are erroring), and when its feeds last synced.
  * Requires session / PAT / OAuth authentication (mcpAuth).
  */
 export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
@@ -45,104 +156,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   try {
-    const sql = getDb();
-    const rows = (await sql`
-      SELECT
-        dw.id,
-        dw.worker_id,
-        dw.platform,
-        dw.app_version,
-        dw.capabilities,
-        dw.agent_kinds,
-        dw.label,
-        dw.last_seen_at,
-        (dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})) AS online,
-        dw.organization_id,
-        o.name AS organization_name,
-        o.slug AS organization_slug,
-        (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL)::int AS connector_count,
-        (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL AND cn.status = 'error')::int AS connector_error_count,
-        (
-          SELECT max(f.last_sync_at) FROM feeds f
-          JOIN connections cn ON cn.id = f.connection_id
-          WHERE cn.device_worker_id = dw.id AND f.deleted_at IS NULL
-        ) AS last_sync_at,
-        (
-          SELECT coalesce(
-            json_agg(
-              json_build_object(
-                'connection_id', cn.id,
-                'connector_key', cn.connector_key,
-                'display_name', coalesce(cd.name, cn.connector_key),
-                'status', cn.status,
-                'organization_slug', cno.slug
-              )
-              ORDER BY cn.created_at
-            ),
-            '[]'::json
-          )
-          FROM connections cn
-          LEFT JOIN organization cno ON cno.id = cn.organization_id
-          LEFT JOIN LATERAL (
-            SELECT name FROM connector_definitions
-            WHERE key = cn.connector_key AND status = 'active' AND organization_id = cn.organization_id
-            ORDER BY updated_at DESC LIMIT 1
-          ) cd ON TRUE
-          WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL
-        ) AS connectors
-      FROM device_workers dw
-      LEFT JOIN organization o ON o.id = dw.organization_id
-      WHERE dw.user_id = ${userId}
-      ORDER BY dw.last_seen_at DESC
-    `) as unknown as Array<{
-      id: string;
-      worker_id: string;
-      platform: string | null;
-      app_version: string | null;
-      capabilities: string[];
-      agent_kinds: string | string[] | null;
-      label: string | null;
-      last_seen_at: string;
-      online: boolean;
-      organization_id: string | null;
-      organization_name: string | null;
-      organization_slug: string | null;
-      connector_count: number;
-      connector_error_count: number;
-      last_sync_at: string | null;
-      connectors: Array<{
-        connection_id: number;
-        connector_key: string;
-        display_name: string;
-        status: string;
-        organization_slug: string | null;
-      }>;
-    }>;
-    return c.json({
-      devices: rows.map((r) => ({
-        id: r.id,
-        worker_id: r.worker_id,
-        platform: r.platform,
-        app_version: r.app_version,
-        capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
-        // null (never advertised) is distinct from [] (advertised none): the
-        // automation lane leaves the former unrestricted and withholds every run
-        // from the latter, so the UI must be able to tell "unknown" from "runs
-        // nothing". The driver hands text[] back as a raw '{a,b}' literal, so it
-        // needs parsing, not Array.isArray.
-        agent_kinds: r.agent_kinds == null ? null : parsePgTextArray(r.agent_kinds),
-        label: r.label,
-        last_seen_at: r.last_seen_at,
-        online: r.online,
-        organization_id: r.organization_id,
-        organization_name: r.organization_name,
-        organization_slug: r.organization_slug,
-        connector_count: r.connector_count ?? 0,
-        connector_error_count: r.connector_error_count ?? 0,
-        last_sync_at: r.last_sync_at,
-        connectors: Array.isArray(r.connectors) ? r.connectors : [],
-      })),
-    });
+    return c.json({ devices: await queryDeviceWorkers(userId) });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[listDeviceWorkers] Error');
     captureServerError(c, err, 'listDeviceWorkers');

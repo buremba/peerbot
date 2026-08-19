@@ -39,6 +39,7 @@ import {
 	buildClassifiersNamespace,
 	buildConnectionsNamespace,
 	buildConversationsNamespace,
+	buildDevicesNamespace,
 	buildEntitiesNamespace,
 	buildEntitySchemaNamespace,
 	buildFeedsNamespace,
@@ -56,6 +57,7 @@ import type { CatalogNamespace } from "./namespaces/catalog";
 import type { ClassifiersNamespace } from "./namespaces/classifiers";
 import type { ConnectionsNamespace } from "./namespaces/connections";
 import type { ConversationsNamespace } from "./namespaces/conversations";
+import type { DevicesNamespace } from "./namespaces/devices";
 import type { EntitiesNamespace } from "./namespaces/entities";
 import type { EntitySchemaNamespace } from "./namespaces/entity-schema";
 import type { FeedsNamespace } from "./namespaces/feeds";
@@ -84,6 +86,7 @@ export interface ClientSDK {
 	knowledge: KnowledgeNamespace;
 	metrics: MetricsNamespace;
 	notifications: NotificationsNamespace;
+	devices: DevicesNamespace;
 	organizations: OrganizationsNamespace;
 	schedules: SchedulesNamespace;
 
@@ -207,6 +210,7 @@ export function buildClientSDK(
 		knowledge: buildKnowledgeNamespace(ctx, env),
 		metrics: buildMetricsNamespace(ctx, env),
 		notifications: buildNotificationsNamespace(ctx, env),
+		devices: buildDevicesNamespace(ctx),
 		organizations: buildOrganizationsNamespace(ctx),
 		schedules: buildSchedulesNamespace(ctx, env),
 	};

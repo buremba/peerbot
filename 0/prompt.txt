@@ -1,0 +1,1 @@
+i like your suggestion but i feel like it's complex. is this going to replace all the $resource and acl and all these things? we ideally want to use these links fir all use-cases, even for row level column level permissions in the future so it's important

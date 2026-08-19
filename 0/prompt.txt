@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_Xl0JawWgbN/CleanShot 2026-08-03 at 20.23.04@2x.png">
+
+</image>
+
+the navigation thing is not centered. [Image #1]

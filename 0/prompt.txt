@@ -1,0 +1,1 @@
+so let me understand, if full disk is not given, running that shell what is it gonna do? we can maybe change the name of the permission to say shell

@@ -1,0 +1,1 @@
+We try running, uh, a prompt, like saying, um, create a new PR in the landing page, changing the readme, and see if it is actually gonna do it. Uh, so give me the PR link so I can check. We need to test it and then

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bb9o31ua8</task-id>
+<summary>Monitor event: "pre-pr-remote gate outcome"</summary>
+<event>&gt;&gt; retrying failed Depot jobs (1/1); successful jobs are preserved</event>
+</task-notification>

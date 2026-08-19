@@ -1,0 +1,241 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The user's requests evolved through the session:
+
+1. **"is the docker deployement working? there is a recent github issue triage"** — Investigate Docker deployment health and recent GitHub issues.
+2. **"do we need to fix andything in the code to address the user's issues he created? or do we need to do 1 2"** — Distinguish code fixes from release-hygiene tasks.
+3. **"yes reproduce make sure all works reliably and then we can merge"** — Reproduce the #2183 bug before fixing.
+4. **"you check make sure do the work"** — Implement the full fix.
+5. **"ok fine. anything else for this session?"** — Enumerate remaining work.
+6. **"do it"** — Merge #2187 (release PR) to unstick Docker `latest`.
+7. **"go do it and make sure it works"** — Re-run the cancelled release build and fix the underlying defect.
+8. **"ok once we're done we can merge"** — Merge when verified.
+9. **"test then merge them make sure all good"** — Test and merge all PRs.
+10. **"do the right fix"** — After I recommended narrowing PR #2250, user directed doing the proper coordinated two-repo fix.
+11. **"are we doe here"** — Status check.
+
+Overarching intent: fix the self-hoster Docker 404 issue (#2183), unstick the frozen Docker `latest` tag, and fix the CI defect that silently dropped a release build — with real verification at each step, not just green typechecks.
+
+## 2. Key Technical Concepts
+
+- **Lobu monorepo**: Bun workspace, `packages/*`, with `packages/owletto` as a git submodule (separate private repo `lobu-ai/owletto`)
+- **Per-org subdomain vs path-based routing**: `{org}.{zone}` Host-header extraction vs `/{org}` path segments
+- **Flux CD ImagePolicy**: `filterTags.pattern` + `extract`, policy types `numerical` (uses `strconv.ParseFloat(version, 64)` — float64, ~15-17 significant digits) vs `alphabetical` (string sort, no precision ceiling)
+- **GitHub Actions concurrency groups**: only ONE pending run per group; a third arrival evicts the queued second, silently (cancelled runs report no failure)
+- **TOCTOU (check-then-act) race** in registry-probe tag allocation
+- **Go RE2 regex engine** (what Flux uses) vs Python's arbitrary-precision ints (which masked the float64 bug)
+- **Mutation testing**: break the implementation to prove tests bite
+- **Stale-dist trap**: `make build-packages` needed before `bun test` resolves workspace deps; server bundles to `dist/server.bundle.mjs` but `make dev` runs from source via `tsx watch`
+- **release-please**: publishes `lobu-vX.Y.Z` tags; `GITHUB_TOKEN` releases do NOT fire `release:` triggers (hence `RELEASE_PLEASE_TOKEN`)
+- **Gates**: `make pre-pr` (build+typecheck+knip+lint+naming), `make review-fix` (unposted fixer, edits working tree), `make review` (posts `pi-review` required status)
+
+## 3. Files and Code Sections
+
+### `packages/owletto/src/lib/subdomain.ts` (MERGED via owletto#615)
+Root cause of #2183. Original code inferred zone from hostname:
+```ts
+function getZoneFromHostname(hostname: string): string | null {
+  if (isIpLiteral(hostname)) return null;
+  const labels = hostname.split('.');
+  if (labels.length < 3) return null;
+  return labels.slice(-2).join('.');
+}
+export function getSubdomainZone(hostname?: string): string | null {
+  const envZone = (import.meta.env.VITE_SUBDOMAIN_ZONE as string | undefined)?.trim();
+  if (envZone) return envZone.replace(/^\./, '').toLowerCase();
+  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : '');
+  if (!host) return null;
+  return getZoneFromHostname(host.toLowerCase());
+}
+```
+Final merged form (after `make review-fix` simplification):
+```ts
+/** The zone the server declared, or null when routing stays path-based. */
+export function getSubdomainZone(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.__LOBU_RUNTIME_CONFIG__?.subdomainZone ?? null;
+}
+```
+`VITE_SUBDOMAIN_ZONE` removed entirely (it appeared nowhere in the lobu repo — never configured).
+
+### `packages/owletto/src/vite-env.d.ts` (MERGED)
+Added the runtime config global type with `subdomainZone?: string | null`.
+
+### `packages/server/src/public-pages.ts` (MERGED via lobu#2247)
+New `injectRuntimeConfig`:
+```ts
+export function injectRuntimeConfig(templateHtml: string): string {
+  const zone = getConfiguredSubdomainZone();
+  const script = `<script>window.__LOBU_RUNTIME_CONFIG__=${serializeForScript({
+    subdomainZone: zone,
+  })};</script>`;
+  const firstScript = templateHtml.search(/<script\b/i);
+  if (firstScript !== -1) {
+    return `${templateHtml.slice(0, firstScript)}${script}\n${templateHtml.slice(firstScript)}`;
+  }
+  return /<\/head>/i.test(templateHtml)
+    ? templateHtml.replace(/<\/head>/i, `${script}\n</head>`)
+    : `${script}${templateHtml}`;
+}
+```
+Injects before the FIRST `<script>` because Vite emits the app bundle inside `<head>` — appending at `</head>` placed config AFTER the bundle.
+
+### `packages/server/src/utils/public-origin.ts` (MERGED)
+Added loopback/IP guard to `getSubdomainZone` and new narrower `getConfiguredSubdomainZone`:
+```ts
+export function getConfiguredSubdomainZone(
+  cookieDomain = process.env.AUTH_COOKIE_DOMAIN
+): string | null {
+  const zone = normalizeHost(cookieDomain);
+  return zone && isSubdomainCapableHost(zone) ? zone : null;
+}
+function isSubdomainCapableHost(host: string): boolean {
+  if (LOCALHOST_HOSTNAMES.has(host)) return false;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
+  if (host.includes(':') || host.startsWith('[')) return false;
+  return true;
+}
+```
+`getConfiguredSubdomainZone` is deliberately narrower — `getSubdomainZone` falls back to the `PUBLIC_GATEWAY_URL` host, which every path-based deployment also sets.
+
+### `packages/server/src/index.ts` (MERGED)
+Injection wired into `serveStaticFile` (gated on `isHtml`), plus the SSR public-page branch and the vite-dev branch.
+
+### `packages/server/src/__tests__/unit/runtime-config-injection.test.ts` (NEW, MERGED)
+Note: `src/__tests__/unit/**` is EXCLUDED from vitest — runs under `bun test`. Requires `__resetPublicOriginCachesForTests()` after each env assignment because `PUBLIC_GATEWAY_URL` is memoized.
+
+### `docker-compose.example.yml` and `docs/DOCKER.md` (MERGED)
+Documented path-based as default, `AUTH_COOKIE_DOMAIN` as the wildcard-DNS opt-in.
+
+### `.github/workflows/build-images.yml` (IN FLIGHT — PR #2250)
+Concurrency split:
+```yaml
+concurrency:
+  group: build-images${{ github.event_name == 'release' && '-release' || '' }}
+  cancel-in-progress: false
+```
+Current tag generation (v5):
+```yaml
+      - name: Generate shared image tag
+        id: timestamp
+        run: |
+          set -euo pipefail
+          # The WHOLE run number, never truncated. Taking it modulo anything
+          # reintroduces collisions: a rerun reuses an OLD run_number, so
+          # re-running 1562 beside a fresh 1662 yields the same suffix in the
+          # same second. Reruns are not hypothetical — one published v14.4.0.
+          run_number="${{ github.run_number }}"
+          if [ "$run_number" -gt 999999 ]; then
+            echo "::error::run_number $run_number exceeds the 6 digits the tag format allows."
+            exit 1
+          fi
+          tag="$(date -u +'%Y%m%d-%H%M%S')-$(printf '%06d' "$run_number")"
+          echo "Using image tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+```
+
+### `packages/owletto/deploy/k8s/infrastructure/image-automation/image-policies.yaml` (IN FLIGHT)
+All three policies (lobu-app, lobu-worker, lobu-embeddings) changed:
+```yaml
+    pattern: '^(?P<date>\d{8})-(?P<time>\d{6})(?:-(?P<run>\d{6}))?
+    extract: '${date}${time}${run}'
+  policy:
+    alphabetical:
+      order: asc
+```
+Was `numerical` with pattern `^(?P<date>\d{8})-(?P<time>\d{6})
+
+.
+
+## 4. Errors and Fixes
+
+**Stale local checkout (20 commits behind)** — my first read of `build-images.yml` showed pre-#2241 tagging. Fixed by re-reading everything from `origin/main`; disclosed to user.
+
+**#2183 root cause initially misattributed** — I first relayed the issue thread's `PUBLIC_GATEWAY_URL` framing. Corrected after reading code: the frontend hostname heuristic is the direct cause and fires regardless of `PUBLIC_GATEWAY_URL`.
+
+**IP-literal zone (found by booting, not tests)** — server declared `{"subdomainZone":"127.0.0.1"}`. Unit tests passed because they used hostname-style URLs. Added `isSubdomainCapableHost`.
+
+**Injection ordering (found by checking real built HTML)** — config landed at 3165, module bundle at 3006. My unit test used a toy template with the bundle in `<body>`. Changed to inject before first `<script>`; test now asserts against a head-script shell.
+
+**review-fix's test didn't bite** — mutation test passed when it should have failed. review-fix had removed my `__resetPublicOriginCachesForTests()` calls; memoized `PUBLIC_GATEWAY_URL` made the env assignment a no-op in full-file runs. Restored the resets; mutant then failed correctly.
+
+**Stale `EADDRINUSE 8314` gave a false verification** — a `null` result came from a previous server instance after a failed boot. Killed leftovers, re-verified on a clean boot with zero boot errors. Disclosed rather than reported.
+
+**PR #2250 iteration — five versions, four caught by review:**
+- v1 (clock alone): same-second runs collide
+- v2 (registry probe): TOCTOU — both runs see tag free before either pushes; loop exhaustion silently emitted the taken tag (reproduced)
+- v3 (`run_number` alone): rerun gets LOWER number → recovered release never deploys (reproduced against today's actual runs 1660-1664)
+- v4 (`run_number % 100`): a RERUN reuses an old run_number → 1562 and 1662 both give suffix 62
+- v5 (current): full 6-digit run number + `alphabetical` policy
+
+**Reviewer's suggested fix would have caused an outage** — it proposed dropping the timestamp tag from release runs. I checked Flux's ImagePolicy: it filters ONLY on `^(\d{8})-(\d{6})
+
+; semver and `latest` are invisible. Releases would build images that never deploy. Rejected with evidence.
+
+**int64 overflow claim was overstated** — I declared 20-digit extract "disqualifying" for int64. Then WebFetched Flux's source: it uses `strconv.ParseFloat(version, 64)`. Real constraint is float64's ~15-17 significant digits collapsing the tie-break, not int64 saturation.
+
+**Nearly reverted merged work** — the owletto branch in the `release-build-concurrency` worktree was 10 commits behind main and LACKED #615's fix. Committing the submodule pointer would have silently reverted it. Caught by checking before committing; rebased using a WIP commit (never `git stash`).
+
+**Codesmith bot pushed to my branch mid-work** — commit `e4c369e4` "docs(ci): record why the release group keeps queue: single", authored under the user's name. Push rejected; rebased locally (never web UI), resolved the comment-only conflict by keeping BOTH notes.
+
+**`routeTree.gen.ts` regenerated repeatedly** by dev-server boots — reverted/excluded from staging four times.
+
+## 5. Problem Solving
+
+**Solved and verified:**
+- v14.4.0 Docker images published: all three (`lobu-app`, `lobu-worker`, `lobu-embeddings`) carry `14.4.0`, `20260728-135124`, `latest`. This resolved the user's original question — `latest` had been frozen on `20260728-071749`.
+- #2183 self-host 404 fix merged (owletto#615 squash `8303c01f`, lobu#2247 squash `70145d22`), verified on main: runtime config present, heuristic gone, `VITE_SUBDOMAIN_ZONE` gone.
+- Diagnosed the release-eviction defect: single global concurrency group; four runs in two minutes evicted the queued release run 30364235587.
+
+**Ongoing:** PR #2250 (release concurrency + tag format) is on its fifth implementation, review #5 in flight.
+
+## 6. All User Messages
+
+1. "is the docker deployement working? there is a recent github issue triage"
+2. "do we need to fix andything in the code to address the user's issues he created? or do we need to do 1 2"
+3. "yes reproduce make sure all works reliably and then we can merge"
+4. "you check make sure do the work"
+5. "ok fine. anything else for this session?"
+6. "do it"
+7. "go do it and make sure it works"
+8. "ok once we're done we can merge"
+9. "test then merge them make sure all good"
+10. "do the right fix"
+11. "are we doe here"
+
+**Standing constraints from CLAUDE.md / AGENTS.md (must persist):** Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup NAME=<slug>`; never `git switch` in the main checkout. `events` is append-only — never `DELETE FROM events`. Never bulk-delete prod `organization` rows. Workers never receive real credentials (only exceptions: device-pinned connectors and short-lived provider-derived credential leases). Stage by explicit path (`git add -- <paths>`, never `-A`); after commit/rebase `git diff --name-only origin/main...HEAD` must equal the intended file list. Never `git stash` — use WIP commits. Never resolve merge conflicts in the GitHub web UI. Push owletto FIRST, then bump the submodule pointer. Never `--admin` past a check that has not reported. Run `make review` ONCE on settled HEAD. No "Co-Authored-By" or Claude attribution in commit messages. Never use the Workflow tool. Do not call AgentTool unless requested. Bug fixes require red→fix→green evidence pasted into the PR body. Never report done off a green typecheck.
+
+## 7. Pending Tasks
+
+- **PR #2250** — review #5 in flight; merge if clean
+- **`Closes #2183` scope question** — the merged fix stops the bogus redirect and makes path-based default, but does NOT deliver per-org subdomains behind a single reverse proxy without wildcard DNS (the reporter's follow-up ask). User has not answered whether to reopen #2183 or file fresh.
+- **Issue #2231** — full CLI vs esbuild-bundled subset in the Docker app image; blocked on user decision, never touched this session.
+- **Suggested follow-up (not requested):** nothing alerts when a release publishes no image — today's failure was invisible for hours because cancelled runs look like successes.
+
+## 8. Current Work
+
+Immediately before the summary request I was running `make review` (background task `bq35fbs4i`, log `/tmp/review-v6.log`) on lobu#2250's fifth implementation, after the fourth review found the `run_number % 100` collision.
+
+The v5 change, already committed and pushed to both repos:
+- `lobu` commit `885200aa9` "fix(ci): make the image tag unique per run, not per second" — 2 files: `.github/workflows/build-images.yml` + `packages/owletto` pointer
+- `owletto` commit `c5f03844` "fix(flux): order image tags alphabetically and accept a run-number suffix" — 1 file
+
+Tag format `YYYYMMDD-HHMMSS-NNNNNN` with all three Flux ImagePolicies switched `numerical` → `alphabetical`. The switch removes float64's precision ceiling (which forced the truncation that broke v4), so the full run number is affordable. Verified under Go RE2 with the exact deployed pattern: same-second runs 100 apart stay distinct; rerun at 14:00 beats push at 13:59; mixed old/new formats order correctly; adversarial mixed-length lexicographic edge cases behave correctly.
+
+`make pre-pr` clean (EXIT=0). Submodule pointer verified to contain #615's fix (no regression).
+
+Last check output: `REVIEW RUNNING`.
+
+## 9. Optional Next Step
+
+Wait for `make review` (task `bq35fbs4i`) on lobu#2250 to return, then act on the verdict — merge if clean, or fix if it finds another real defect.
+
+I stated the fallback position verbatim before the user's last message: "If this round finds another real defect, my recommendation shifts back to narrowing #2250 to the concurrency split alone — the part that has survived every review untouched and fixes the incident that actually happened. Five rounds on one file is enough signal that the tag-format work wants its own dedicated pass rather than continued iteration inside a PR that started as a one-line concurrency fix."
+
+The user's most recent directive governing this work is "do the right fix", followed by the status check "are we doe here" — so the immediate step is reporting the review verdict and completing or narrowing #2250 accordingly. Everything else from the session is merged and verified.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

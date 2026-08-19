@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>ba8wqwxhs</task-id>
+<tool-use-id>toolu_01KBavjtLDWv2GPAFayG41LW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/ba8wqwxhs.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review once" completed (exit code 0)</summary>
+</task-notification>

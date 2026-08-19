@@ -148,19 +148,43 @@ export function selectOwlettoPullRequest(
  * The pointer can span several merged PRs, so inspect its endpoint diff rather
  * than only the head PR. GitHub caps comparison files at COMPARE_FILE_CAP and
  * reports no total, so empty and cap-sized responses fail closed. Renames must
- * stay under `deploy/` at both ends.
+ * stay inside the unhosted prefixes at both ends.
  */
 export const COMPARE_FILE_CAP = 300;
 
-export function isDeployOnlyRange(
+/**
+ * Owletto trees that ship no hosted web surface, so a before/after URL cannot
+ * exist for them:
+ *
+ *   deploy/      k8s manifests — nothing user-visible
+ *   apps/chrome/ the browser extension — distributed as a Web Store zip
+ *   apps/mac/    the native Mac app — distributed as a signed build
+ *
+ * The extension and the Mac app do have their own UI (the Owletto side panel,
+ * for one), and this exemption deliberately does NOT claim otherwise. It says
+ * only that hosted proof is the wrong instrument for them: there is no URL to
+ * compare, and the sole way to satisfy the gate would be a screenshot, which
+ * is exactly the unverifiable artifact the proof mechanism exists to reject.
+ * Their content review belongs to the Owletto repo's own PR review.
+ *
+ * Kept as an explicit allowlist rather than "anything that isn't src/" so the
+ * gate stays fail-closed: a future hosted tree (say apps/web/) correctly
+ * demands proof instead of inheriting an exemption nobody revisited.
+ */
+export const UNHOSTED_PREFIXES = ["deploy/", "apps/chrome/", "apps/mac/"];
+
+const isUnhostedPath = (path: string) =>
+  UNHOSTED_PREFIXES.some((prefix) => path.startsWith(prefix));
+
+export function isUnhostedRange(
   files: Array<{ filename: string; previous_filename?: string }>
 ): boolean {
   if (files.length === 0 || files.length >= COMPARE_FILE_CAP) return false;
   return files.every(
     (file) =>
-      file.filename.startsWith("deploy/") &&
+      isUnhostedPath(file.filename) &&
       (file.previous_filename === undefined ||
-        file.previous_filename.startsWith("deploy/"))
+        isUnhostedPath(file.previous_filename))
   );
 }
 

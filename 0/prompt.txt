@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bode43r01</task-id>
+<summary>Monitor event: "Lobu dev server boot: readiness or failure"</summary>
+<event>@lobu/server dev: Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-collapse-generic-returns/node_modules/@lobu/embeddings/dist/index.js' imported from /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-collapse-generic-returns/packages/connector-worker/dist/embeddings.js</event>
+</task-notification>

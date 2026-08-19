@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>boexbcrtz</task-id>
+<tool-use-id>toolu_01LD1m79DGXvb3rv9uedbNTm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/05838765-35fd-4133-b449-2ea6731efb06/tasks/boexbcrtz.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for agent reply" completed (exit code 0)</summary>
+</task-notification>

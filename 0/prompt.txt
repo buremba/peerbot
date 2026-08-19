@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bn7bzzs3n</task-id>
+<tool-use-id>toolu_01HHxkxeTVG6VyMAqpTodhf4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f33cc6c8-268a-4dc1-9605-e2ffb3bfbbbc/tasks/bn7bzzs3n.output</output-file>
+<status>completed</status>
+<summary>Background command "Bump and run the final review" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,142 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The user made five requests, escalating from diagnosis to remediation:
+
+1. **"can you check our kubernetes health"** — health sweep of the production Kubernetes cluster.
+2. **"cleanup dead stuff/ make sure it's fully healthy. also identify stale pods and stuff"** — remove dead/orphaned resources and bring the cluster to a fully healthy state.
+3. **"and tell me if we have capacity in the fleet"** (sent mid-turn) — capacity assessment.
+4. **"go do those"** — execute the 4 follow-up actions I had proposed (cert-manager bump, metrics-server install, Flux notification token fix, cert split).
+5. **"ok do those"** — execute the next 4 follow-ups (grant `statuses` permission, cert-manager into git, Flux beyond 2.6.0, worktree note).
+
+Two mid-flight decisions were made by the user via AskUserQuestion:
+- Cloudflare stale records → **"Delete the 4 stale dbfor.dev records (Recommended)"**
+- Flux notifications → **"Upgrade flux-operator + Flux"**; Cert split → **"Skip it (Recommended)"**
+
+## 2. Key Technical Concepts
+
+- **k3s v1.32.8** cluster `buremba-prod-master1` on Hetzner (3 nodes; master1 tainted `CriticalAddonsOnly`, two CPX41 workers)
+- **Flux GitOps** — FluxInstance CRD managed by **flux-operator**, itself a **k3s HelmChart CRD** (`helm.cattle.io/v1`)
+- **cert-manager** ACME DNS-01 via Cloudflare; Challenge immutability (solver spec is snapshotted at creation)
+- **Cloudflare API** — Global API Key auth (`X-Auth-Email` + `X-Auth-Key`), NOT Bearer
+- **Server-side apply adoption** of hand-applied resources into Flux
+- **kustomize JSON6902 patches** vs strategic-merge (merge replaces list-valued `args`)
+- **Helm chart `args` vs `defaultArgs`** append semantics (metrics-server chart)
+- Flux API versioning: `image.toolkit.fluxcd.io/v1beta2`, `notification.toolkit.fluxcd.io/v1beta3`
+- Prometheus as metrics fallback when metrics-server is absent
+
+## 3. Files and Code Sections
+
+All infra files live in the **owletto** repo (`github.com/lobu-ai/owletto`), which Flux syncs directly from `main` — merging deploys. Work was done in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/k8s-infra-fixes/packages/owletto/`.
+
+**`deploy/k8s/infrastructure/metrics-server/release.yaml`** (created, PR #725) — metrics-server was never installed; `v1beta1.metrics.k8s.io` did not exist.
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: metrics-server
+      version: "3.x"
+      sourceRef:
+        kind: HelmRepository
+        name: metrics-server
+        namespace: flux-system
+  values:
+    # `args` APPENDS to the chart's `defaultArgs` ... Only add what is missing —
+    # repeating a defaultArgs flag here passes it twice on the command line.
+    args:
+      - --kubelet-insecure-tls
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {memory: 192Mi}
+```
+
+**`deploy/k8s/infrastructure/flux/flux-instance.yaml`** (modified across PRs #725, #726, #728) — final state `version: 2.7.x` with a long comment documenting: 2.6.0 minimum for GitHub App auth; **2.7.x is the ceiling because k8s 1.32.8** (2.8 needs ≥1.33, 2.9 needs ≥1.34.1); 2.9 removes `image/v1beta2`; range-not-exact-pin rationale. Also contains a pre-existing `--kube-api-qps=500 / --kube-api-burst=1000` patch for kustomize/helm controllers, and `sync.provider: github` with `pullSecret: flux-github-app`.
+
+**`deploy/k8s/infrastructure/cert-manager/kustomization.yaml`** (created, PR #727) — the single local deviation as a JSON6902 append:
+```yaml
+resources:
+  - cert-manager.yaml
+  - cluster-issuer.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: cert-manager
+      namespace: cert-manager
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --acme-http01-solver-nameservers=8.8.8.8:53
+```
+
+**`deploy/k8s/infrastructure/cert-manager/cert-manager.yaml`** — 13,263-line verbatim upstream v1.16.4 release manifest (Flux cannot fetch remote bases).
+
+**`deploy/k8s/infrastructure/cert-manager/cluster-issuer.yaml`** — `letsencrypt-prod` ClusterIssuer, previously untracked. http01/traefik fallback + dns01/cloudflare for zones `buremba.com, peerbot.ai, lobu.ai, dbfor.dev`, `apiKeySecretRef: {key: api-key, name: cloudflare-api-key-secret}`.
+
+**`deploy/k8s/clusters/buremba-prod/cert-manager.yaml`** (created) — own Kustomization, `prune: true, wait: true, timeout: 10m`, deliberately in **no `dependsOn` chain**.
+
+**Memory files** (`/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/`): created `reference_certmanager_cloudflare_zoneid_bug.md`, `reference_prod_k8s_cluster_topology.md`, `reference_flux_operator_is_the_version_ceiling.md`; MEMORY.md compacted 19.6KB → 17.7KB with all 238 links verified resolving.
+
+## 4. Errors and Fixes
+
+- **dbfor.dev serving an expired cert for 4 days** — `Certificate.status.Ready=True` while `notAfter=2026-08-01`. Two stacked causes: (a) a Challenge from 2026-07-02 froze a solver spec missing the `key` field; (b) cert-manager v1.16.2 hit [#7540](https://github.com/cert-manager/cert-manager/issues/7540) — Cloudflare's `/dns_records` list endpoint stopped returning `zone_id`, producing `DELETE /zones//dns_records/<id>` → error 7003. Fixed by deleting the stuck Order, manually clearing spent TXT records, then bumping to v1.16.4.
+- **My own metrics-server bug, caught before merge** — I initially added `--kubelet-preferred-address-types` alongside `--kubelet-insecure-tls`; the chart's `args` *appends* to `defaultArgs` which already sets it, so the flag would have been passed twice. Removed; verified with `helm template` that each flag appears exactly once.
+- **`build failed: no match found for semver: 2.6.4`** — my pin overshot flux-operator v0.21.0's ceiling (its newest known Flux is exactly 2.6.0). The FluxInstance went **Stalled and upgraded nothing** while merely looking unhealthy. Fixed via PR #726 pinning 2.6.0; later switched to range `2.7.x` so the trap cannot recur.
+- **Lost an uncommitted edit** — ran `git checkout feat/k8s-infra-fixes -- deploy/k8s/infrastructure/flux/flux-instance.yaml`, which overwrote my working-tree 2.6.0 change with the committed 2.6.4. Fixed with `git fetch && git reset --hard origin/main` then reapplying.
+- **MEMORY.md label truncation** — a Python 24-char truncation script produced mangled labels (two bare `[Remove]`, `[Entity views ->]`). Fixed with an explicit replacement map.
+- **Browser extension not connected** — blocked the GitHub App permission change; reported as needing the user.
+- **`kubectl run` failed with `namespaces "lobu" not found`** — kubectl's default namespace is `lobu`, which does not exist; must pass `-n <ns>`.
+
+## 5. Problem Solving
+
+**Solved:** dbfor.dev outage (cert reissued, valid to Nov 3 2026, HTTP 200); cluster cleanup (2 Error pods, node-debugger, 34 stale ReplicaSets 71→37, orphaned `termos-termos` HelmChart with no ownerReferences); metrics-server installed (`kubectl top` works, HPA reads `cpu: 6%/70%`); Flux 2.5.1→2.7.0; cert-manager brought under Flux with adoption proven a near no-op.
+
+**Verification discipline used throughout:** e2e throwaway cert to prove DNS-01 cleanup (TXT 1→0); `helm template` against the real chart; `kubectl diff` over all 50 cert-manager objects; a deliberate no-op checkpoint after each flux-operator bump (FluxInstance Ready on the *old* Flux with controllers unchanged) before raising the Flux version; confirming image automation rescanned after each Flux upgrade.
+
+**Diagnosed but blocked:** GitHub App `buremba-k3s-runners` (appID 1578597, installation 115481607) has `actions/administration/checks/contents: write` but **no `statuses` permission**. Flux's `github` provider uses the commit-**statuses** API, not checks. There is no API to alter a GitHub App's permission set — UI only.
+
+## 6. All User Messages
+
+1. "can you check our kubernetes health"
+2. "cleanup dead stuff/ make sure it's fully healthy. also identify stale pods and stuff"
+3. "and tell me if we have capacity in the fleet"
+4. "go do those"
+5. "ok do those"
+
+(Plus two AskUserQuestion selections: "Delete the 4 stale dbfor.dev records (Recommended)"; "Upgrade flux-operator + Flux" and "Skip it (Recommended)".)
+
+**Security-relevant constraints observed:** The Cloudflare Global API Key was read from `cert-manager/cloudflare-api-key-secret` and used for API calls without ever printing its value (only its length). The GitHub App private key was never read — only appID/installationID. I explicitly declined to mint a GitHub PAT on the user's behalf ("I won't mint GitHub credentials on your behalf"). Standing repo rules from AGENTS.md remain in force: never write to `~/Code/lobu` directly (use `make task-setup`); stage by explicit path, never `-A`; never `git stash`; the secret `cloudflare-api-key-secret` still needs sealing before it can enter git.
+
+## 7. Pending Tasks
+
+- **Grant the GitHub App `statuses` permission** — blocked on the user (browser extension not connected; no API exists). At `https://github.com/organizations/lobu-ai/settings/apps/buremba-k3s-runners/permissions`, set *Commit statuses: Read and write*, then accept the request on the installation. This is the only remaining item from the user's list.
+- Seal `cert-manager/cloudflare-api-key-secret` into git (noted, not requested).
+- Migrate 7 `image.toolkit.fluxcd.io/v1beta2` objects to `v1` before any Flux 2.9 attempt (blocked anyway by k8s 1.32.8).
+
+## 8. Current Work
+
+Immediately before the summary request I had completed all executable items from "ok do those" and was finishing memory bookkeeping.
+
+Final verified cluster state: **Flux 2.7.0** (`version: 2.7.x` resolving to `v2.7.0@sha256:d09e2002...`), flux-operator v0.30.0, controllers at kustomize v1.7.0 / source v1.7.0 / notification v1.7.1 / helm v1.4.0 / image-* v1.0.1. All 6 Kustomizations `True` (apply log showed every object `unchanged`), all 7 HelmReleases `True`, no pods outside Running/Completed, all 5 certificates `Ready`, `dbfor.dev` → 200 and `app.lobu.ai/health` → 200. `imagepolicies` now serve both `v1` and `v1beta2`, so existing manifests work with deprecation warnings only.
+
+Three PRs merged this phase: **#727** (cert-manager under Flux), **#728** (Flux 2.7.x). Earlier: **#725**, **#726**.
+
+The last tool call confirmed `MEMORY.md` is 17,756 bytes with "all 238 resolve" for link integrity. The final notification-controller log check confirmed the *only* remaining error is the known `403` on `could not list commit statuses` — no new failure introduced by the upgrade.
+
+## 9. Optional Next Step
+
+No next step should be started. All items the user asked for that are executable by me are complete and verified; the single remaining item is explicitly blocked on the user.
+
+The work I was finishing was memory bookkeeping after completing the user's "ok do those" list. The one outstanding item, quoted from my report to the user: *"Grant the `statuses` permission — the last step to close item 3."* — which I established cannot be done programmatically: "GitHub exposes no API to change an App's permission set", and the browser route returned "Browser extension is not connected."
+
+I should report the completed state and wait for the user to either grant that permission or direct new work.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/5b3a8fb5-1a3b-47a3-a6e5-aa4b52e14cb0.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

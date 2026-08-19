@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>brwb3fppx</task-id>
+<tool-use-id>toolu_01Xkd7WWNaVHF7peXxWHPp1N</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/brwb3fppx.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot API server on 9186" was stopped</summary>
+</task-notification>

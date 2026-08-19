@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>borilfomd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/borilfomd.output</output-file>
+<status>completed</status>
+<summary>Background command "Run spike on Sonnet 4.5 same resolution as glm" completed (exit code 0)</summary>
+</task-notification>

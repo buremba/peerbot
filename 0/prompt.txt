@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bb1y3qwri</task-id>
+<tool-use-id>toolu_01XvuBGvu6hLgwcqSdtgZjqz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bb1y3qwri.output</output-file>
+<status>completed</status>
+<summary>Background command "Final review on the sweep" completed (exit code 0)</summary>
+</task-notification>

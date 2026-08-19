@@ -9,6 +9,7 @@ export { buildCatalogNamespace } from "./catalog";
 export { buildClassifiersNamespace } from "./classifiers";
 export { buildConnectionsNamespace } from "./connections";
 export { buildConversationsNamespace } from "./conversations";
+export { buildDevicesNamespace } from "./devices";
 export { buildEntitiesNamespace } from "./entities";
 export { buildEntitySchemaNamespace } from "./entity-schema";
 export { buildFeedsNamespace } from "./feeds";

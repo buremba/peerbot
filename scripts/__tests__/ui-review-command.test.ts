@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildProofBody } from "../lib/ui-review-proof";
+import { buildProofBody, UNHOSTED_PREFIXES } from "../lib/ui-review-proof";
 
 const UI_REVIEW_SCRIPT = resolve(import.meta.dir, "..", "ui-review.ts");
 const BASE_POINTER = "1".repeat(40);
@@ -300,7 +300,7 @@ describe("ui-review command", () => {
     });
   });
 
-  it("passes a complete deploy-only PR and clears stale parent proof copy", () => {
+  it("passes a complete unhosted PR and clears stale parent proof copy", () => {
     const fixture = createFixture();
     const state = readState(fixture.stateFile);
     const parentEndpoint = "repos/lobu-ai/lobu/issues/2500/comments";
@@ -334,13 +334,13 @@ describe("ui-review command", () => {
       context: "ui-review",
       state: "success",
       description:
-        "Owletto 111111111...222222222 is deploy-only; no UI to prove",
+        "Owletto 111111111...222222222 ships no hosted surface; no URL to prove",
       target_url: "https://github.com/lobu-ai/owletto/pull/712",
     });
     // The exemption is judged over the whole pointer range, so the range is what
     // the human-readable note must name.
     expect(finalState.comments[parentEndpoint]?.[0]?.body).toContain(
-      `\`${"1".repeat(40)}...${"2".repeat(40)}\` changes only \`deploy/\` (2 files, through Owletto #712).`
+      `\`${"1".repeat(40)}...${"2".repeat(40)}\` touches no hosted surface (2 files under ${UNHOSTED_PREFIXES.join(", ")}, through Owletto #712).`
     );
     expect(finalState.opened).toBe(
       "https://github.com/lobu-ai/owletto/pull/712"

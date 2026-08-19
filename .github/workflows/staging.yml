@@ -1,6 +1,6 @@
 name: Staging lock
 
-# The 'staging' label pins the rolling staging URL (staging.<tailnet>) to one PR.
+# The 'staging' label pins the rolling staging URL (STAGING_HOST, public) to one PR.
 # Adding the label acquires the lock (strips it from other open PRs, moves the
 # staging ingress to this PR's namespace); removing it releases the lock.
 # Also dispatchable manually (workflow_dispatch) for manual lock control.
@@ -41,7 +41,15 @@ jobs:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       STAGING_INGRESS: lobu-staging
-      STAGING_HOST: staging.${{ vars.TAILNET_DOMAIN }}
+      # Public DNS, not the tailnet name: an MCP host (claude.ai, ChatGPT)
+      # resolves and calls /mcp from its own backend, so a tailnet-only name
+      # is unreachable to it and the connector fails at discovery.
+      STAGING_HOST: ${{ vars.STAGING_HOST || 'staging.lobu.ai' }}
+      # cert-manager issues the *.lobu.ai wildcard into the prod namespace;
+      # the staging ingress lives in the preview namespace and needs its own
+      # copy of that secret.
+      WILDCARD_TLS_NS: summaries-prod
+      WILDCARD_TLS_SECRET: wildcard-lobu-ai-tls
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       # labeled = acquire, unlabeled = release (label event or manual dispatch)
@@ -56,7 +64,11 @@ jobs:
         run: |
           # Only release if THIS PR holds the lock (scoped to this namespace).
           kubectl delete ingress "$STAGING_INGRESS" -n "$PREVIEW_NS" --ignore-not-found
-          echo "staging lock released (staging.${{ vars.TAILNET_DOMAIN }} no longer mapped)"
+          # The preview keeps running on its own private host; hand back the
+          # settings the public host required.
+          kubectl -n "$PREVIEW_NS" set env "deploy/$PREVIEW_NAME" \
+            PUBLIC_GATEWAY_URL- LOBU_LOCAL_INIT_ALLOW_PROXY=1 2>/dev/null || true
+          echo "staging lock released ($STAGING_HOST no longer mapped)"
 
       - name: Acquire lock (labeled)
         if: env.STAGING_ACTION == 'labeled'
@@ -93,7 +105,35 @@ jobs:
             fi
           done
 
-          # Pin the staging ingress to this PR's preview.
+          # Staging is PUBLIC (the ingress below), so the passwordless bootstrap
+          # endpoint must not be reachable through it. preview.yml sets
+          # LOBU_LOCAL_INIT_ALLOW_PROXY=1 because a plain preview is
+          # tailnet-only; on a public host that same setting would let anyone on
+          # the internet mint an owner session (auth/routes.ts names public
+          # tunnels as the case it refuses by default). Strip it before the host
+          # goes public. The rollout restarts the pod, and the preview's data volume
+          # is an emptyDir — so bootstrap AFTER the lock, from inside the pod
+          # where the peer really is loopback:
+          #   kubectl -n $PREVIEW_NS exec deploy/$PREVIEW_NAME -- \
+          #     curl -sS -X POST -H 'X-Lobu-Client: staging-bootstrap' \
+          #     http://127.0.0.1:8787/api/local-init
+          # PUBLIC_GATEWAY_URL: resolvePublicOrigin otherwise falls back to the
+          # request URL, which behind the ingress reads as http://<host>; OAuth
+          # metadata and the MCP App asset URLs would both be stamped http.
+          kubectl -n "$PREVIEW_NS" set env "deploy/$PREVIEW_NAME" \
+            LOBU_LOCAL_INIT_ALLOW_PROXY- \
+            "PUBLIC_GATEWAY_URL=https://$STAGING_HOST/lobu"
+          kubectl -n "$PREVIEW_NS" rollout status "deploy/$PREVIEW_NAME" --timeout=600s
+
+          # The wildcard cert lives in the prod namespace; a TLS secret is only
+          # readable from its own namespace, so copy it next to the ingress.
+          kubectl -n "$WILDCARD_TLS_NS" get secret "$WILDCARD_TLS_SECRET" -o json \
+            | jq --arg ns "$PREVIEW_NS" \
+                '{apiVersion, kind, type, data, metadata: {name: .metadata.name, namespace: $ns}}' \
+            | kubectl apply -f -
+
+          # Pin the staging ingress to this PR's preview, on the public
+          # (traefik) class rather than the tailnet one.
           kubectl apply -f - <<EOF
           apiVersion: networking.k8s.io/v1
           kind: Ingress
@@ -101,9 +141,10 @@ jobs:
             name: $STAGING_INGRESS
             namespace: $PREVIEW_NS
           spec:
-            ingressClassName: tailscale
+            ingressClassName: traefik
             tls:
               - hosts: ["$STAGING_HOST"]
+                secretName: $WILDCARD_TLS_SECRET
             rules:
               - host: $STAGING_HOST
                 http:
@@ -121,6 +162,13 @@ jobs:
             "- **App**: https://$STAGING_HOST" \
             "- **MCP endpoint**: https://$STAGING_HOST/mcp" \
             "" \
-            "Removing the \`staging\` label releases the lock.")
+            "This host is publicly reachable, so a cloud MCP host can call it. Passwordless bootstrap is disabled on it; sign in once from inside the pod:" \
+            "" \
+            "\`\`\`" \
+            "kubectl -n $PREVIEW_NS exec deploy/$PREVIEW_NAME -- \\" \
+            "  curl -sS -X POST -H 'X-Lobu-Client: staging-bootstrap' http://127.0.0.1:8787/api/local-init" \
+            "\`\`\`" \
+            "" \
+            "Removing the \`staging\` label releases the lock and takes the public host down.")
           gh pr comment "$PR_NUM" --body "$STAGING_BODY"
           echo "staging locked to PR #$PR_NUM at https://$STAGING_HOST"

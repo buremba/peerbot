@@ -103,7 +103,8 @@ import type {
   PollResponse,
   StreamBatch,
 } from "@lobu/core/contracts/worker/protocol";
-import { AGENT_KINDS } from "@lobu/core/contracts/worker/device-automation";
+import type { AgentKind } from "@lobu/core/contracts/worker/device-automation";
+import { resolveRunnableAgentKinds } from "./agent-binaries.js";
 
 /** Capability strings the worker advertises, keyed by name (e.g. `browser.debugger`). */
 export type WorkerCapabilities = Record<string, boolean>;
@@ -131,6 +132,9 @@ export class WorkerDecodeError extends Error {
   }
 }
 
+/** How long a local CLI discovery sweep is reused before re-running. */
+const AGENT_KIND_DISCOVERY_TTL_MS = 60_000;
+
 /**
  * Worker API Client
  */
@@ -143,6 +147,8 @@ export class WorkerClient implements ExecutorClient {
   private platform?: string;
   private label?: string;
   private manifests: unknown[] = [];
+  private binaryOverrides?: Partial<Record<AgentKind, string>>;
+  private agentKindsCache: { kinds: AgentKind[]; at: number } | null = null;
 
   constructor(config: {
     apiUrl: string;
@@ -156,6 +162,8 @@ export class WorkerClient implements ExecutorClient {
     label?: string;
     /** Device-manifest connector definitions to register on each poll. */
     manifests?: unknown[];
+    /** Executor binary overrides, so advertised kinds match what the arm spawns. */
+    binaryOverrides?: Partial<Record<AgentKind, string>>;
   }) {
     this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
@@ -165,6 +173,23 @@ export class WorkerClient implements ExecutorClient {
     this.platform = config.platform?.trim() || undefined;
     this.label = config.label?.trim() || undefined;
     this.manifests = config.manifests ?? [];
+    this.binaryOverrides = config.binaryOverrides;
+  }
+
+  /**
+   * Agent kinds this machine can spawn, re-discovered at most every
+   * `AGENT_KIND_DISCOVERY_TTL_MS`. Installing a CLI mid-session must start
+   * attracting runs without a daemon restart, but a filesystem sweep on every
+   * poll (default 10s) buys nothing.
+   */
+  private runnableAgentKinds(): AgentKind[] {
+    const now = Date.now();
+    if (this.agentKindsCache && now - this.agentKindsCache.at < AGENT_KIND_DISCOVERY_TTL_MS) {
+      return this.agentKindsCache.kinds;
+    }
+    const kinds = resolveRunnableAgentKinds(this.binaryOverrides);
+    this.agentKindsCache = { kinds, at: now };
+    return kinds;
   }
 
   private authHeaders(): Record<string, string> {
@@ -211,7 +236,7 @@ export class WorkerClient implements ExecutorClient {
         ? {
             platform: this.platform,
             app_version: this.version,
-            agent_kinds: AGENT_KINDS,
+            agent_kinds: this.runnableAgentKinds(),
           }
         : {}),
       ...(this.label ? { label: this.label } : {}),

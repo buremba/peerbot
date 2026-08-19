@@ -18,15 +18,42 @@
  * deploy that ships no schema change:
  *   0 - at least one migration is pending (the caller must quiesce)
  *   3 - the ledger is complete, nothing is pending (safe to skip the quiesce)
+ *   4 - migrations are pending, but every one of them carries the author's
+ *       `-- lobu:no-quiesce` declaration, so the old replicas can keep
+ *       serving across the migration
  *   1 - the answer could not be determined (the caller must quiesce)
- * Only the definitive 3 unlocks the fast path; every other status, including a
- * crash, leaves the caller quiescing.
+ * Only the definitive 3 and 4 unlock the fast path; every other status,
+ * including a crash, leaves the caller quiescing.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import postgres from "postgres";
 
 const CHECK_PENDING_NONE_EXIT = 3;
+const CHECK_PENDING_COMPATIBLE_EXIT = 4;
+
+/**
+ * The author's assertion that the code deployed *before* this migration keeps
+ * working against the post-migration schema -- the expand half of an
+ * expand/contract pair, or a contract whose last reference went away in an
+ * earlier deploy.
+ *
+ * There is deliberately no SQL analysis behind this. Backward compatibility is
+ * a property of sequencing relative to the running code, not of the DDL verbs:
+ * a DROP COLUMN is safe once nothing reads it, and a widened CHECK constraint
+ * is safe because it only ever accepts more. The SQL cannot express either, so
+ * only the author can make the call.
+ */
+const NO_QUIESCE_MARKER = /^--[ \t]*lobu:no-quiesce\b/m;
+
+/** Unreadable counts as unmarked, so anything unexpected still quiesces. */
+function isMarkedNoQuiesce(dir, file) {
+  try {
+    return NO_QUIESCE_MARKER.test(readFileSync(join(dir, file), "utf-8"));
+  } catch {
+    return false;
+  }
+}
 
 const checkPendingOnly = process.argv.slice(2).includes("--check-pending");
 const migrationsDir =
@@ -220,6 +247,21 @@ if (checkPendingOnly) {
     process.exit(CHECK_PENDING_NONE_EXIT);
   }
   console.log(`Pending migrations (${pending.length}): ${pending.join(", ")}`);
+
+  // Quiescing costs a full scale-to-zero, which the ingress answers with 503.
+  // A migration the running code can already serve against does not need it.
+  const unmarked = pending.filter(
+    (file) => !isMarkedNoQuiesce(migrationsDir, file)
+  );
+  if (unmarked.length === 0) {
+    console.log(
+      "Every pending migration is marked -- lobu:no-quiesce; the quiesce can be skipped."
+    );
+    process.exit(CHECK_PENDING_COMPATIBLE_EXIT);
+  }
+  for (const file of unmarked) {
+    console.log(`  ${file}: not marked -- lobu:no-quiesce`);
+  }
   process.exit(0);
 }
 

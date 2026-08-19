@@ -197,4 +197,28 @@ grep -Fxq 'scale deployment lobu-app --replicas=0' "$command_log"
 grep -Fxq 'scale deployment lobu-worker --replicas=0' "$command_log"
 grep -Fxq 'migrate' "$migration_log"
 
+# Status 4: migrations are pending, but every one is marked backward-compatible.
+# The old replicas keep serving across the migration, so nothing may be scaled.
+: >"$command_log"
+: >"$migration_log"
+COMMAND_LOG="$command_log" \
+MIGRATION_LOG="$migration_log" \
+PENDING_LOG="$pending_log" \
+KUBECTL_BIN="$test_dir/kubectl" \
+NAMESPACE=lobu \
+APP_DEPLOYMENT=lobu-app \
+APP_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=api' \
+WORKER_DEPLOYMENT=lobu-worker \
+WORKER_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=worker' \
+MIGRATION_PENDING_CHECK="$test_dir/pending-check" \
+PENDING_EXIT_CODE=4 \
+  sh "$orchestrator" "$test_dir/migrate"
+
+grep -Fxq 'migrate' "$migration_log"
+if [ -s "$command_log" ]; then
+  echo 'backward-compatible migration unexpectedly ran kubectl:' >&2
+  cat "$command_log" >&2
+  exit 1
+fi
+
 echo 'migration upgrade failure recovery passed'

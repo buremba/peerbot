@@ -55,11 +55,12 @@ export interface EntityRowValidationVerdict {
  * Thrown when a patch would produce an illegal state.
  *
  * Throwing rather than returning a verdict is deliberate: it makes failing
- * closed the DEFAULT for every caller. Only `updateEntity` has approval
- * machinery to route an escalation into, and it opts in by catching this and
- * reading {@link verdict}. Merge, link auto-create and eval scaffolding have
- * nowhere to queue a card, so for them a rule that asked for review must stop
- * the write — which is exactly what an uncaught throw does.
+ * closed the DEFAULT for every caller. Only a caller with approval machinery to
+ * route an escalation into opts in by catching this and reading {@link verdict}
+ * — `updateEntity`, and automation promotion (`promote-keyed-entities`). Merge,
+ * link auto-create and eval scaffolding have nowhere to queue a card, so for
+ * them a rule that asked for review must stop the write — which is exactly what
+ * an uncaught throw does.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;

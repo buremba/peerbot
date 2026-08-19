@@ -80,8 +80,12 @@ export interface EntityRuleBatch {
  * Guest-side runner wrapped around the author's module.
  *
  * This is what removes the need for host bridges. `deny` throws a tagged error
- * the runner catches; `escalate` assigns a local. Both are ordinary JS inside
- * the isolate, so the whole verdict array crosses the boundary once, on return.
+ * the runner catches; `escalate` accumulates into a local — repeated calls on
+ * one row UNION their fields (deduped, first-seen order) and join their reasons
+ * with `"; "`, so every escalated field reaches the verdict. A later `deny`
+ * still wins, because it throws past whatever was accumulated. Both are
+ * ordinary JS inside the isolate, so the whole verdict array crosses the
+ * boundary once, on return.
  *
  * `changed(field)` compares VALUES between `committed` and `next`. It cannot be
  * key presence: the seam hands a rule the fully merged value set, not a delta, so
@@ -113,6 +117,8 @@ export default async (ctx) => {
   const verdicts = [];
   for (const row of ctx.rows) {
     let verdict = { outcome: "allow" };
+    const escalatedFields = [];
+    const escalatedReasons = [];
     const next = { ...row.committed, ...row.patch };
     const api = {
       committed: row.committed,
@@ -126,10 +132,24 @@ export default async (ctx) => {
         throw err;
       },
       escalate: (fields, reason) => {
+        // UNION, not assignment. A rule may escalate several times for
+        // different field sets; overwriting would keep only the last set, and
+        // the earlier fields would ride through the same write unreviewed,
+        // because the granting validator only ever sees this list.
+        //
+        // Both accumulators are per-row locals, never re-parsed out of the
+        // verdict: deduping reasons by splitting the joined string on "; "
+        // would tear a reason that itself contains "; " into segments, and
+        // then silently drop a later distinct reason equal to one segment.
+        for (const f of Array.isArray(fields) ? fields : [fields]) {
+          if (!escalatedFields.includes(f)) escalatedFields.push(f);
+        }
+        const r = String(reason);
+        if (!escalatedReasons.includes(r)) escalatedReasons.push(r);
         verdict = {
           outcome: "escalate",
-          fields: Array.isArray(fields) ? fields : [fields],
-          reason: String(reason),
+          fields: escalatedFields.slice(),
+          reason: escalatedReasons.join("; "),
         };
       },
     };

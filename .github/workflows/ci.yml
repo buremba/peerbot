@@ -576,23 +576,27 @@ jobs:
   # independently retryable and visible.
   sdk-cli-e2e:
     if: always()
-    needs: [sdk-lifecycle-e2e, sdk-error-taxonomy-e2e, cli-command-smoke]
+    # `sdk-cli-build` is in `needs` on purpose: the three smokes `needs` it, so
+    # when it fails they report `skipped`, and a fan-in that accepted `skipped`
+    # turned a broken build into a green required check. None of these jobs
+    # has a paths filter, so every result must be an actual success.
+    needs: [sdk-cli-build, sdk-lifecycle-e2e, sdk-error-taxonomy-e2e, cli-command-smoke]
     runs-on: ubuntu-slim
     steps:
       - name: Require every deep smoke
         env:
+          BUILD_RESULT: ${{ needs.sdk-cli-build.result }}
           SDK_RESULT: ${{ needs.sdk-lifecycle-e2e.result }}
           ERROR_TAXONOMY_RESULT: ${{ needs.sdk-error-taxonomy-e2e.result }}
           CLI_RESULT: ${{ needs.cli-command-smoke.result }}
         run: |
+          echo "SDK/CLI build: $BUILD_RESULT"
           echo "SDK lifecycle: $SDK_RESULT"
           echo "Error taxonomy: $ERROR_TAXONOMY_RESULT"
           echo "CLI surface: $CLI_RESULT"
-          # Skipped is success here: the deep smokes skip (paths filter) when
-          # no runtime paths changed, and this fan-in must stay green then.
-          for r in "$SDK_RESULT" "$ERROR_TAXONOMY_RESULT" "$CLI_RESULT"; do
-            if [ "$r" != success ] && [ "$r" != skipped ]; then
-              echo "job result \"$r\" is neither success nor skipped"
+          for r in "$BUILD_RESULT" "$SDK_RESULT" "$ERROR_TAXONOMY_RESULT" "$CLI_RESULT"; do
+            if [ "$r" != success ]; then
+              echo "job result \"$r\" is not success (skipped means an upstream job failed)"
               exit 1
             fi
           done
@@ -993,8 +997,13 @@ jobs:
   # into a skipped required check.
   integration:
     if: always()
-    needs: [server-integration-vitest, server-integration-bun]
-    # This compatibility context only evaluates two strings. Keep it on the
+    # `check-author` and `paths` are in `needs` on purpose: the shards `needs`
+    # them, so when either fails the shards report `skipped`, and a fan-in
+    # that accepted `skipped` unconditionally turned a broken gate job into a
+    # green required check. Skipped shards are only legitimate when the paths
+    # filter itself said no runtime paths changed.
+    needs: [check-author, paths, server-integration-vitest, server-integration-bun]
+    # This compatibility context only evaluates a handful of strings. Keep it on the
     # lightweight runner image while older open PRs still require the legacy
     # `integration` context; branch protection can move directly to the four
     # worker contexts once those PRs refresh.
@@ -1003,18 +1012,30 @@ jobs:
     steps:
       - name: Require every backend integration job
         env:
+          AUTHOR_RESULT: ${{ needs.check-author.result }}
+          PATHS_RESULT: ${{ needs.paths.result }}
+          PACKAGES_CHANGED: ${{ needs.paths.outputs.packages }}
           VITEST_RESULT: ${{ needs.server-integration-vitest.result }}
           BUN_RESULT: ${{ needs.server-integration-bun.result }}
         run: |
+          echo "check-author: $AUTHOR_RESULT"
+          echo "paths: $PATHS_RESULT (packages=$PACKAGES_CHANGED)"
           echo "Vitest matrix: $VITEST_RESULT"
           echo "Bun/Postgres: $BUN_RESULT"
-          # Skipped is success here: the shards skip (paths filter) when no
-          # runtime paths changed, and this required fan-in must stay green.
-          for r in "$VITEST_RESULT" "$BUN_RESULT"; do
-            if [ "$r" != success ] && [ "$r" != skipped ]; then
-              echo "job result \"$r\" is neither success nor skipped"
+          for r in "$AUTHOR_RESULT" "$PATHS_RESULT"; do
+            if [ "$r" != success ]; then
+              echo "gate job result \"$r\" is not success"
               exit 1
             fi
+          done
+          # Skipped shards are success ONLY when the paths filter decided no
+          # runtime paths changed. With packages=true a skipped shard means an
+          # upstream dependency failed and must not pass as green.
+          for r in "$VITEST_RESULT" "$BUN_RESULT"; do
+            if [ "$r" = success ]; then continue; fi
+            if [ "$r" = skipped ] && [ "$PACKAGES_CHANGED" != true ]; then continue; fi
+            echo "job result \"$r\" is not acceptable (packages=$PACKAGES_CHANGED)"
+            exit 1
           done
 
   format-lint:
@@ -1151,12 +1172,14 @@ jobs:
         run: bun test scripts/__tests__/review-output-schema.test.ts --timeout 30000
 
       - name: Migration runner guards
-        # migrate-up.mjs --check-pending exit status 3 is the ONLY status that
-        # lets the chart's pre-upgrade hook skip its scale-to-zero quiesce
-        # (charts/lobu/files/migrate-upgrade.sh). These pin the fail-closed
-        # paths: an unreachable ledger, a missing DATABASE_URL, or a duplicate
-        # migration version must never read as "nothing pending", or an
-        # incompatible migration applies while the old pods are still serving.
+        # migrate-up.mjs --check-pending exit status 3 (nothing pending) and
+        # 4 (every pending migration marked -- lobu:no-quiesce) are the ONLY
+        # statuses that let the chart's pre-upgrade hook skip its
+        # scale-to-zero quiesce (charts/lobu/files/migrate-upgrade.sh). These
+        # pin the fail-closed paths: an unreachable ledger, a missing
+        # DATABASE_URL, or a duplicate migration version must never read as
+        # "nothing pending", or an incompatible migration applies while the
+        # old pods are still serving.
         run: |
           bun test scripts/__tests__/migrate-up-check-pending.test.ts --timeout 30000
           bun test scripts/__tests__/migrate-up-duplicate-version.test.ts --timeout 30000
@@ -1547,16 +1570,27 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/lobu_ci?sslmode=disable
         # charts/lobu/files/migrate-upgrade.sh skips its scale-to-zero quiesce
-        # only on --check-pending exit status 3. Pin both real-database
-        # answers here, where every migration was just applied: a complete
-        # ledger reports 3, and one unapplied file reports 0 (quiesce).
+        # on --check-pending exit status 3 (nothing pending) or 4 (every
+        # pending migration marked -- lobu:no-quiesce). Pin all three
+        # real-database answers here, where every migration was just applied.
+        # --check-pending never executes migration SQL, so the probe files
+        # below are read and discarded without touching the schema.
         run: |
+          probe=db/migrations/99999999999999_pending_probe.sql
+          # A complete ledger reports 3.
           pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
           test "$pending_rc" -eq 3
-          printf -- '-- migrate:up\nSELECT 1;\n' > db/migrations/99999999999999_pending_probe.sql
+          # An unmarked pending file reports 0 -- quiesce.
+          printf -- '-- migrate:up\nSELECT 1;\n' > "$probe"
           pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
-          rm db/migrations/99999999999999_pending_probe.sql
+          rm "$probe"
           test "$pending_rc" -eq 0
+          # Marked: the author declared the running code can serve across it,
+          # so the hook may skip its scale-to-zero.
+          printf -- '-- migrate:up\n-- lobu:no-quiesce\nALTER TABLE public.events ADD COLUMN IF NOT EXISTS quiesce_probe text;\n' > "$probe"
+          pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
+          rm "$probe"
+          test "$pending_rc" -eq 4
 
       # The committed pgvector libraries bypass normal TypeScript builds. Keep
       # their ABI floor in this already-required, Docker-capable policy job

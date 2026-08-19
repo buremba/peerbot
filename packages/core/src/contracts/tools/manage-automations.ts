@@ -398,9 +398,10 @@ export type AutomationDeliveryTarget = Static<
  * configured", so accepting an arbitrary string here only defers the failure
  * to a place nobody is watching (#2504).
  *
- * Adding a CLI means adding an `AgentSpec` there AND a literal here — a device
- * advertises its kinds on poll (`agent_kinds`), but the gateway does not yet
- * persist them, so the server still has no way to derive this list.
+ * Adding a CLI means adding an `AgentSpec` there AND a literal here. The gateway
+ * persists what a device advertises on poll (`device_workers.agent_kinds`) and
+ * uses it to withhold runs from devices that can't execute them, but that is a
+ * per-device set, not the product-wide vocabulary this list defines.
  */
 const DEVICE_AGENT_KIND_LITERALS = [
   Type.Literal("claude-code"),

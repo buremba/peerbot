@@ -4,8 +4,12 @@
  * A sandbox binds a runtime provider to an org's vault credential. The `builtin`
  * runtime is synthetic and devices are virtual (`/api/me/devices`), so neither
  * is a row here — this surface manages provider-backed sandboxes only. All
- * routes are org-scoped via mcpAuth + orgContext; mutations require a session or
- * an mcp:admin PAT.
+ * routes are org-scoped via mcpAuth + orgContext. Reads need only that; every
+ * MUTATION additionally requires org owner/admin (`requireManageAgentAccess`),
+ * because a sandbox is an org-level credential shared by every agent — the
+ * same tier as the inference providers next to it. Deleting one silently
+ * drops dependent agents back to the built-in runtime, so it is not a
+ * per-member action.
  */
 
 import { Hono } from "hono";
@@ -16,7 +20,7 @@ import {
 } from "../gateway/runtime/index";
 import type { Env } from "../index";
 import { isCloudMode } from "../utils/cloud-mode";
-import { requireSessionOrAdminPat } from "./agent-routes";
+import { requireManageAgentAccess } from "./agent-routes";
 import { orgContext } from "./stores/org-context";
 import {
 	readSandboxSecret,
@@ -160,7 +164,7 @@ async function decorateSandbox(
 
 // Create a sandbox, optionally writing its credential in the same call.
 routes.post("/", async (c) => {
-	const rejection = requireSessionOrAdminPat(c);
+	const rejection = requireManageAgentAccess(c);
 	if (rejection) return rejection;
 
 	const orgId = c.get("organizationId") as string;
@@ -217,7 +221,7 @@ routes.post("/", async (c) => {
 
 // Rotate/set a sandbox's credential.
 routes.put("/:id/credential", async (c) => {
-	const rejection = requireSessionOrAdminPat(c);
+	const rejection = requireManageAgentAccess(c);
 	if (rejection) return rejection;
 
 	const orgId = c.get("organizationId") as string;
@@ -248,7 +252,7 @@ routes.put("/:id/credential", async (c) => {
 
 // Delete a sandbox; dependent agents fall back to the default runtime.
 routes.delete("/:id", async (c) => {
-	const rejection = requireSessionOrAdminPat(c);
+	const rejection = requireManageAgentAccess(c);
 	if (rejection) return rejection;
 
 	const orgId = c.get("organizationId") as string;

@@ -24,7 +24,7 @@ help:
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>] [ARTIFACT=<url>] - Lightweight pointer PR + required statuses (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
-	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
+	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward pointer diffs touching no hosted surface pass as not applicable; OPEN=1 opens the merged PR"
 	@echo "  make pre-pr                                 - Local fast gates before push (GitHub CI is the canonical gate)"
 	@echo "  make pr-fast                                - Optional: broad Linux merge jobs (Daytona sandbox, else local)"
 	@echo "  make pr-full [REMOTE_JOBS='unit …']        - Optional: full Linux CI (Daytona sandbox, else local)"

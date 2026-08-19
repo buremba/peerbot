@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:32:41.492Z","content":[{"text":"New message in #sales:\n\nsarah: ok cool, sounds good 👍"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:32:42.964Z","id":"3e32e26f","input_tokens":3437,"output_tokens":14,"content":[{"type":"tool_use","id":"call_x6GEoIxJ9MkfAOd7pw5v5Qod|fc_0c256865976df2ef006a6cce2a8f40819ea7e03b9f61128dbb","name":"skip_reply","input":{},"result":{"output":"Skipped.","status":"success"}}]}

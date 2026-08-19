@@ -1,0 +1,1 @@
+the agent can run any nix command no?

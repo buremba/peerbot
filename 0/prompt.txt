@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bu70irgym</task-id>
+<summary>Monitor event: "2332 required checks reporting"</summary>
+<event>pi-review: fail
+ALL-REPORTED</event>
+</task-notification>

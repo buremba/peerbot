@@ -1,0 +1,1 @@
+2 why do we need it for shell? also these things are already available, somehow the menubar says screenrecording is not avilable but when i click i see i gave access

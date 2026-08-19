@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bo68bk064</task-id>
+<tool-use-id>toolu_01BSy61pcrtVcV5uzJkTV6Vh</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bo68bk064.output</output-file>
+<status>completed</status>
+<summary>Background command "make pre-pr-remote REMOTE_JOBS=server-integration-vitest &gt; /tmp/prepr-lane.log 2&gt;&amp;1; grep -E "Depot run status|make: \*\*\*|failed —" /tmp/prepr-lane.log | tail -5" completed (exit code 0)</summary>
+</task-notification>

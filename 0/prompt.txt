@@ -1,0 +1,1 @@
+ok that's good but in lobu ui agents can send notification and custom json_template and then the users resume and take action with custom buttons. isn't this use-case covered when user uses an external client like chathpt

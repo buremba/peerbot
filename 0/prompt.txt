@@ -1,0 +1,1 @@
+hmm, i thought when a device is clicked we can show the devices in the sidebar and let people bring their mac or we can link the chrome extension etc

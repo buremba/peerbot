@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_8qWcVpGvGA/CleanShot 2026-08-15 at 14.17.50@2x.png">
+
+</image>
+
+i see this in chatgpt, i thought earlier sessions we changed the mcp apps to show only relvant stuff. is there a bug let's dig in i don't get it [Image #1]

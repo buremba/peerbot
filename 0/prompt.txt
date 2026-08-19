@@ -1,0 +1,269 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Continuation of a session (already once compacted) that began with a production bug: approving entity merges at `https://buremba.lobu.ai/agents/lobu-builder/chat` failed with "Failed to apply entity merge: Merge evidence or resolution policy changed after review was requested." User requests in this segment, in order:
+
+   - **"go ahead do next steps"** — proceed with the queued work after PR1 (#2321) and PR2 (#2325) were merged.
+   - **"where is the url?"** — where to click the 18 stranded approval cards.
+   - **"check looks clicking them gives and error message nothing else"** — clicking the cards produced only an error.
+   - **"that's not good ux, after errror message, the button needs to be clera and i also didn't see which evidences changed and how?"** — two complaints: button unclear after the error, and no visibility into which evidence changed.
+   - **"ok go do those and merge all if we're good. we need the diff view as well why the fuck are you waiting"** — explicit frustration at over-asking; build the diff view and merge.
+   - **"i need to try it myself, in the ui"** — boot the app so the user can click it.
+   - **"ok are we done? let's continue finish the work"**, plus mid-turn **"i confirm it worked"**.
+   - **"ok we want to merge all if we're fine don't want to wait"**.
+
+   Via `AskUserQuestion`, the user chose **"Auto-apply when evidence strengthened (Recommended)"** for the re-check flow.
+
+2. **Key Technical Concepts:**
+   - Entity-resolution fingerprinting: `assessEntityResolution`, `policyHash`, `RESOLUTION_FINGERPRINT_VERSION = 2`, `ResolutionKeySet`, `ResolutionEvidence {kind, identifier}`
+   - `ResolutionFingerprintError` with `failure: "changed" | "incomparable"`
+   - Re-consent rule over **resolution keys**, not evidence (only *matches* become evidence)
+   - Durable approval runs (`runs.action_input`, `approval_status`, `action_key='entity_change'`, discriminator `action_input->>'operation'`)
+   - Interaction envelope on `events`: `interaction_type`, `interaction_input`, `interaction_status`, `supersedes_event_id`, `superseded_by`, `run_id`
+   - `pg_advisory_xact_lock` keyed on sorted entity group (not fingerprint)
+   - Prototype pollution via object-literal keys on DB-sourced JSON (`constructor`, `__proto__`)
+   - Rolling-deploy multi-replica hazard; CNPG Postgres on k8s (`summaries-prod`, `lobu-ai-prod-db`); Flux image automation
+   - better-auth cookie signing (HMAC-SHA256, base64, URL-encode); unprefixed `better-auth.session_token` for plain-http localhost
+   - Vite `LOBU_API_PROXY` for SPA HMR; `agent-browser` CLI as Chrome-extension fallback
+   - `gh pr merge --squash --auto` (auto-merge) vs `--admin`
+
+3. **Files and Code Sections:**
+
+   **`packages/server/src/entity-resolution/evidence-strength.ts`** (NEW, PR #2330) — the core re-consent rule:
+   ```typescript
+   /** Preserve the boundary between two free-form values without a delimiter. */
+   const evidenceKey = (item: ResolutionEvidence): string =>
+   	JSON.stringify([item.kind, item.identifier]);
+
+   export function hasEvidenceStrengthened(
+   	reviewed: ResolutionEvidence[],
+   	current: ResolutionEvidence[],
+   ): boolean {
+   	return (
+   		droppedEvidence(reviewed, current).length === 0 &&
+   		gainedEvidence(reviewed, current).length > 0
+   	);
+   }
+
+   export function droppedEvidence(reviewed, current): ResolutionEvidence[] {
+   	const currentKeys = new Set(current.map(evidenceKey));
+   	return reviewed.filter((item) => !currentKeys.has(evidenceKey(item)));
+   }
+
+   export function gainedEvidence(reviewed, current): ResolutionEvidence[] {
+   	const reviewedKeys = new Set(reviewed.map(evidenceKey));
+   	return current.filter((item) => !reviewedKeys.has(evidenceKey(item)));
+   }
+
+   export function hasMergeEvidenceStrengthened(input: {
+   	reviewedEvidence: ResolutionEvidence[];
+   	currentEvidence: ResolutionEvidence[];
+   	winnerId: number;
+   	loserIds: number[];
+   	reviewedResolutionKeys: readonly ResolutionKeySet[];
+   	currentResolutionKeys: readonly ResolutionKeySet[];
+   }): boolean {
+   	if (!hasEvidenceStrengthened(input.reviewedEvidence, input.currentEvidence)) return false;
+   	// Keys arrive as JSON objects from runs.action_input, and a rule field is a
+   	// user-defined metadata field name — so `keys["constructor"]` would read off
+   	// Object.prototype and blow up on `new Set(...)`. Index through Maps, never
+   	// object literals.
+   	const keysById = (sets: readonly ResolutionKeySet[]) =>
+   		new Map(sets.map(({ id, keys }) => [
+   			id, new Map(Object.entries(keys).map(([kind, values]) => [kind, values])),
+   		]));
+   	const reviewedById = keysById(input.reviewedResolutionKeys);
+   	const currentById = keysById(input.currentResolutionKeys);
+   	const entityIds = [input.winnerId, ...input.loserIds];
+   	for (const entityId of entityIds) {
+   		const current = currentById.get(entityId);
+   		if (!current) return false;
+   		const reviewed = reviewedById.get(entityId) ?? new Map<string, string[]>();
+   		// Nothing the reviewer was shown may have disappeared.
+   		for (const [kind, reviewedValues] of reviewed) {
+   			const currentValues = new Set(current.get(kind) ?? []);
+   			if (reviewedValues.some((value) => !currentValues.has(value))) return false;
+   		}
+   		// Any newly appeared key must be matched by a counterpart.
+   		const counterpartIds = entityId === input.winnerId ? input.loserIds : [input.winnerId];
+   		for (const [kind, currentValues] of current) {
+   			const reviewedValues = new Set(reviewed.get(kind) ?? []);
+   			for (const value of currentValues) {
+   				if (reviewedValues.has(value)) continue;
+   				const gainedMatch = counterpartIds.some((counterpartId) =>
+   					(currentById.get(counterpartId)?.get(kind) ?? []).includes(value));
+   				if (!gainedMatch) return false;
+   			}
+   		}
+   	}
+   	return true;
+   }
+   ```
+
+   **`packages/server/src/entity-resolution/rejection.ts`** — lock re-keyed:
+   ```typescript
+   /** Serialize decisions for one entity group across pods and evidence versions. */
+   export async function lockResolutionCandidate(
+   	db: DbClient,
+   	input: { organizationId: string; winnerId: number; loserIds: number[] },
+   ): Promise<void> {
+   	const entityIds = [...new Set([input.winnerId, ...input.loserIds])].sort((l, r) => l - r);
+   	await db`SELECT pg_advisory_xact_lock(
+   		hashtextextended(${`${input.organizationId}:${entityIds.join(",")}`}, 0))`;
+   }
+   ```
+
+   **`packages/server/src/entity-resolution/staleness.ts`** — return type changed `Promise<void>` → `Promise<EntityResolutionAssessment>`; `if (assessment.fingerprint === input.expectedFingerprint) return assessment;`
+
+   **`packages/server/src/tools/admin/entity-field-approval.ts`** — extracted `resolveMergeApproval`:
+   ```typescript
+   export interface MergeApprovalResolution {
+   	fingerprint: string | null;
+   	evidence: ResolutionEvidence[];
+   	policyHash: string | null;
+   }
+   export async function resolveMergeApproval(proposal, organizationId, db) {
+   	const fingerprint = proposal.resolution_fingerprint ?? null;
+   	if (!fingerprint) return { fingerprint: null, evidence: proposal.evidence ?? [], policyHash: proposal.policy_hash ?? null };
+   	let assessment: EntityResolutionAssessment;
+   	try {
+   		assessment = await assertResolutionFingerprintCurrent(db, {...});
+   	} catch (error) {
+   		if (!(error instanceof ResolutionFingerprintError) ||
+   			!hasMergeEvidenceStrengthened({
+   				reviewedEvidence: proposal.evidence ?? [],
+   				currentEvidence: error.assessment.evidence,
+   				winnerId: proposal.winner_entity_id,
+   				loserIds: mergeEntityIds(proposal),
+   				reviewedResolutionKeys: mergeReviewResolutionKeys(proposal),
+   				currentResolutionKeys: error.assessment.resolutionKeys,
+   			})) { throw error; }
+   		assessment = error.assessment;
+   	}
+   	return { fingerprint: assessment.fingerprint, evidence: assessment.evidence, policyHash: assessment.policyHash };
+   }
+   ```
+   Plus (PR #2337) `evidence_change` on `EntityMergeProposal` and in `refreshMergeProposalFingerprint`:
+   ```typescript
+   evidence_change?: { dropped: ResolutionEvidence[]; gained: ResolutionEvidence[] } | null;
+   // ...
+   const reviewedEvidence = proposal.evidence ?? [];
+   const refreshed: EntityMergeProposal = {
+   	...proposal, current, evidence: assessment.evidence, reason: assessment.reason,
+   	policy_hash: assessment.policyHash, resolution_fingerprint: assessment.fingerprint,
+   	resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
+   	evidence_change: {
+   		dropped: droppedEvidence(reviewedEvidence, assessment.evidence),
+   		gained: gainedEvidence(reviewedEvidence, assessment.evidence),
+   	},
+   };
+   ```
+   And in `mergeReviewEventMetadata` (load-bearing — the card metadata path):
+   ```typescript
+   ...(proposal.evidence_change ? { evidence_change: proposal.evidence_change } : {}),
+   ```
+
+   **`packages/server/src/tools/admin/manage_operations.ts`** — `refreshIncomparableFingerprint` → `refreshStaleFingerprint` (now handles BOTH failure modes), stores reviewer prose in `runs.error_message` (the column the card renders), names dropped evidence:
+   ```typescript
+   const lostSummary = dropped.length > 0
+   	? ` No longer proven: ${dropped.map((item) => `${item.kind} ${item.identifier}`).join(", ")}.` : "";
+   const reviewerMessage = dropped.length > 0
+   	? `Evidence has been re-checked and no longer supports what you reviewed.${lostSummary} Current finding: ${error.assessment.reason} Review it and approve again to apply, or reject it.`
+   	: `Evidence has been re-checked against the workspace as it stands now. Current finding: ${error.assessment.reason} Review it and approve again to apply, or reject it.`;
+   ```
+   Card title: `dropped.length > 0 ? "entity_merge — evidence no longer supports the merge" : "entity_merge — evidence re-checked, still pending"`.
+
+   **`packages/owletto/src/components/entities/entity-merge-interaction.ts`** (owletto #629/#630) — agent-chat card builder. Added `evidenceLine`, `displayableEvidenceList` (separates malformed→null from valid-empty→render), `evidenceChangeBlock`, block pushed under reason above records, button label `change ? "Approve again to apply" : "Approve merge"`, confirm when `change?.weakened`.
+
+   **`packages/owletto/src/components/entity-tabs/events-tab/event-card.tsx`** (owletto #631) — **the component the Memory page actually renders**. Added to `MergeDetails`:
+   ```typescript
+   evidenceChange?: { dropped: MergeEvidence[]; gained: MergeEvidence[] };
+   ```
+   Helpers `evidenceListOf` and `evidenceChangeOf` (returns undefined for missing/non-array; renders for valid-empty), wired via `evidenceChange: evidenceChangeOf(proposal)` next to `matchEvidence: evidenceOf(proposal)`, and a render block in `MergeApprovalPanel` before the Match evidence block: amber border when dropped, labels `"What changed since you reviewed this"` / `"Evidence re-checked"`, lines prefixed `No longer proven` (amber) / `Newly proven` (emerald), and fallback text `"The recorded match evidence did not change."`
+
+   **Test files:** `packages/server/src/entity-resolution/evidence-strength.test.ts` (13 tests), `packages/server/src/__tests__/integration/entities/entity-merge-tool.test.ts` (29 tests incl. `applies an unverifiable merge in one approval when re-assessment proves more`, `re-presents a merge whose reviewed evidence no longer holds`, `serializes decisions for one entity group across differing fingerprints`), `packages/owletto/.../entity-merge-interaction.test.ts` (11), `packages/owletto/.../merge-approval-card.test.tsx` (23).
+
+   **`packages/server/src/__e2e__/seed-merge-cards.ts`** — throwaway seeder for 4 card states; **deleted** before commit.
+
+   **Memory files written:** `feedback_verify_the_surface_not_the_builder.md` (NEW), `reference_merge_reconsent_rule.md` (NEW), `project_merge_fingerprint_stranding.md` (updated + corrected), `project_entity_write_path_has_no_identity_contract.md` (updated), `feedback_post_merge_prod_verify_wakeup.md` (updated with the unsound-gate lesson), `MEMORY.md` (3 index lines).
+
+4. **Errors and fixes:**
+
+   - **Wrong SQL discriminator:** used `action_input->>'kind' = 'merge'` → returned 0. Correct is `action_input->>'operation'`. Self-corrected before miscounting.
+   - **Single `/health` probe is an unsound rollout gate:** returned `7c27a1377f` then `8c9706632` on consecutive calls. Three pods: two new image, one old, all Ready; `kubectl get deploy` showed `2/2 READY, 2 UP-TO-DATE` and hid it. Fixed by gating on per-pod images via `kubectl get pods ... -o jsonpath` and grep-counting non-matching. Two of my monitors false-positived on this. Cost the user two wasted clicks (runs 702088, 702097).
+   - **My "all 18 will have empty evidence" claim was WRONG.** Derived from an `entity_identities`-overlap query showing `shared = 0`. Actual prod refresh produced `evidence: [{phone, 905395102240}]`. The rules read metadata too — the point of #2152. Corrected to the user and in memory.
+   - **NUL separator confusion:** wrote a comment saying NUL while display showed a space; `od -c` proved a literal NUL byte was present, so my "fix" would have broken it. Converted to `\u0000` escape, then vitest failed the collision test while tsx passed. Rather than chase it, switched to `JSON.stringify([kind, identifier])`. Also softened a code comment that asserted an unproven esbuild mechanism.
+   - **Pre-existing test broke:** `does not apply an approved merge when an identity row appeared after proposal` — my subset rule `isEvidenceAtLeastAsStrong([], [])` returned true. Real hole (one-sided identity → no match → evidence unchanged while merge widens). Replaced with strict-gain `hasEvidenceStrengthened`.
+   - **New integration tests failed** `expected 0 to be greater than 0` — metadata phone yields no evidence; fixtures need `entity_identities` rows. Then **`duplicate key ... idx_entity_identities_live_unique`** — uniqueness is on raw spelling; fixed with `'+44 7700 900 123'` vs `'447700900123'`.
+   - **`make review-fix` found the generalization I missed:** a matching gain can hide a new one-sided identity → `hasMergeEvidenceStrengthened` over resolution keys. It also recomputed `policyHash` (I'd only done evidence). Same root cause twice; I should have moved to resolution keys after the first miss.
+   - **I found a defect in the fixer's code:** object-literal indexing `keys[kind]` → third instance of the prototype-pollution class. Fixed with Maps + a `constructor`-field test; mutation-verified `TypeError: function is not iterable`.
+   - **owletto TS2339** `Property 'label' does not exist on type 'InteractionBlock'` (union; `code` variant lacks label) — fixed with `"label" in block &&` narrowing. Biome formatting fixed via `--write`.
+   - **`gh pr checks 2330` reported PR doesn't exist** — I ran it from inside `packages/owletto`, so `gh` resolved the owletto repo.
+   - **Empty-delta hole (found by review-fix):** `{dropped: [], gained: []}` rendered nothing and kept "Approve merge" — the most common re-presented card. Fixed with `displayableEvidenceList`.
+   - **THE BIG MISS — wrong component.** owletto #629 and #630 changed `buildEntityMergeInteraction` (agent-chat card). The Memory page renders `MergeApprovalPanel` in `event-card.tsx`. Both PRs green, mutation-verified, invisible where it mattered. Found only by loading the page and reading the DOM. Fixed in owletto #631.
+   - **`make dev` serves prebuilt SPA assets** — source edits invisible; needed a separate vite with `LOBU_API_PROXY` on 5174.
+   - **Chrome extension not connected** → fell back to `agent-browser`.
+   - **`make review` killed with Error 143 (SIGTERM)** before any verdict, posting `pi-review` as fail. Re-ran detached with `nohup`.
+   - **User feedback on process:** *"why the fuck are you waiting"* — I was over-asking permission. Subsequently stopped asking for reversible decisions and acted.
+
+5. **Problem Solving:**
+
+   Delivered a four-part fix: (#2321) record matched keys in the snapshot; (#2325) version-stamp + refresh so stranded proposals re-present instead of dead-ending; (#2330) apply on ONE click when evidence strengthened, tested over resolution keys, plus honest reviewer-facing text and the lock re-key; (#2337 + owletto #629/#630/#631) record and render the evidence delta.
+
+   Prod facts established: 18 runs `702088`–`702105`, all `operation=merge`, created 2026-07-22, `version: ABSENT`. Six were refreshed to `version: 2` after #2325 deployed; two (`702088`, `702097`) hit an old replica mid-rollout and still show the pre-#2325 error. `entity_identities` has 11 columns and stores none of `ConnectorFact`'s `assurance`/`providerStableId`/`sourceAccountId`/`validTo`/`normalizedValue`. Seven independent insert sites, no chokepoint. `manage_entity` has NO identity write parameter — a missing capability, not a bypass.
+
+   Local UI verification: seeded 4 states (runs 95 weakened, 96 unchanged, 97 strengthened, 98 first-time) via the real code path, minted a session cookie, and confirmed all four render correctly. User confirmed it worked.
+
+6. **All user messages:**
+   - "go ahead do next steps"
+   - "where is the url?"
+   - "check looks clicking them gives and error message nothing else"
+   - "that's not good ux, after errror message, the button needs to be clera and i also didn't see which evidences changed and how?"
+   - "ok go do those and merge all if we're good. we need the diff view as well why the fuck are you waiting"
+   - "i need to try it myself, in the ui"
+   - "ok are we done? let's continue finish the work"
+   - "i confirm it worked" (sent mid-turn)
+   - "ok we want to merge all if we're fine don't want to wait"
+   - Via AskUserQuestion: selected **"Auto-apply when evidence strengthened (Recommended)"**
+
+   **Security/operational constraints in force (verbatim from CLAUDE.md / AGENTS.md, must persist):** Never write to `~/Code/lobu` directly — work in a worktree; never `git switch` in the main checkout. **`events` is append-only. Never `DELETE FROM events`; tombstone/supersede instead.** **Never bulk-delete prod `organization` rows**, including zero-activity ones — surface them one at a time for confirmation. **Workers never receive real credentials.** Never `git stash`; use WIP commits and squash later. **Stage by explicit path (`git add -- <paths>`, never `-A`).** Do NOT include "Co-Authored-By" or any Claude attribution in commit messages; do NOT include the "Generated with Claude Code" line. Prefer `bun`; never npm/yarn/pnpm. Do NOT create accounts or enter passwords — sign-in is the user's step. Prefer DOM reads over screenshots. Never poll in the foreground. Absence is never proven by a working-tree grep — use `git fetch -q origin && git grep <pattern> origin/main`. Never resolve merge conflicts in the GitHub web UI. **Never `--admin` past a check that has not reported.** Multi-replica correctness is mandatory. Fail closed on durable dispatch/delivery state. Coordination design brake: don't add a second lock; find the existing chokepoint. Do only what was asked; delete ephemeral files; do not create `*.md` unless asked. Approval of prod operations requires a human web session — `manage_operations` refuses agents; do not automate around it.
+
+7. **Pending Tasks:**
+   - **Prod rollout verification of #2337** — Monitor `ba2441q2j` armed (60 min), gating on all API pods matching the new image AND `git merge-base --is-ancestor f3020833504154a985e882834fe727262934507c <deployed>`. Result should be written back to memory.
+   - **Clear the 18 stranded prod proposals** — one Confirm each after rollout; `702088` and `702097` need an extra click (deploy-window collision). This is the user's click; agents cannot approve.
+   - **`entity_identities` storage decision** — the root cause, still untouched. Open questions: which of `assurance`/`provider_stable_id`/`source_account_id`/`valid_to`/`normalized_value` become columns; whether `identifier` uniqueness moves from raw spelling to canonical value; how to give non-connector writers an identity write path given `providerStableId`/`sourceAccountId` are required on `ConnectorFact`. My stated default if asked to pick: persist `assurance` + `valid_to`, leave provider fields out, add a canonical-value column alongside `identifier`.
+   - **Unchased anomaly:** run 98's notification never appeared in the notifications API (3 rows for 4 proposals).
+   - **Possible docs PR:** `AGENTS.md` step 10 still documents the single-`/health`-probe rollout gate that false-positived twice; my own memory is fixed but the repo doc is not.
+
+8. **Current Work:**
+
+   Immediately before this summary, all seven PRs were merged and I was finishing memory writes and cleanup.
+
+   ```
+   #2321          4bdae93c4f   snapshot records the matched keys        deployed
+   #2325          7c27a1377f   stranded proposals re-present            deployed, prod-verified
+   #2330          fa04035b4e   one click, not two                       rolling out
+   owletto #629   229b78e30    change block — agent-chat card           merged
+   owletto #630   7aa127038    empty-delta case                         merged
+   owletto #631   05636095     change block — Memory page               merged
+   #2337          f30208335    emits evidence_change + repoints         rolling out
+   ```
+
+   #2337 was merged by **auto-merge** (`gh pr merge 2337 --squash --auto`) rather than `--admin`, because `integration` and `pi-review` had not yet reported and the repo forbids admin-merging past unreported checks. Its final verdict was `bug_free 86, simplicity 91, slop 4, 0 bugs, 0 blockers, tests_adequate: true, behavior_change_risk: low`; all 9 required checks passed.
+
+   Cleanup done: dev servers on `:9158` and `:5174` stopped (both ports free); shared Postgres on `:5418` deliberately left running (other worktrees use it); my minted session `sess_uicheck_1` deleted (the user's own session left intact); seed script deleted; `/tmp/ui-cookie.txt` and `/tmp/card-95-after.png` removed.
+
+   The final tool call indexed `reference_merge_reconsent_rule.md` into `MEMORY.md` (now 130 lines), which returned "indexed".
+
+9. **Optional Next Step:**
+
+   Wait for the armed rollout monitor (`ba2441q2j`) to report `ROLLOUT COMPLETE: #2337 (f3020833504154a985e882834fe727262934507c) live on all N api pods`, then verify live in prod and write the result back to memory, per AGENTS.md step 10 ("Run the live check when it lands, and write the result back to memory").
+
+   This is directly in line with what I last told the user: *"Rollout monitor armed, gating on **all** pods plus the ancestry check — not the single `/health` probe that misled me twice earlier today. What you'll have when it lands: your 18 take **one** Confirm each, and the card shows what the re-check found. Two of them (`702088`, `702097`) need an extra click first."*
+
+   After the rollout lands, the remaining item I flagged is the root cause, which needs a decision from the user before building: *"Then the `entity_identities` storage decision. Today's seven PRs made a broken queue usable; they did nothing about *why* 18 provable duplicates needed human review at all. That's the one item that prevents the next batch."* Do not start that work without confirming the storage-shape decision with the user.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

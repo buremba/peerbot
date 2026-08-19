@@ -213,17 +213,22 @@ export function requireSessionOrAdminPat(c: any): Response | null {
 }
 
 /**
- * Gate agent management mutations (update/delete/config) to org
- * owner/admin. `requireSessionOrAdminPat` alone only proves an
- * authenticated caller — any org MEMBER passes it, so a member could
- * rewrite or delete another member's agent (or change its soulMd,
- * guardrails or tool surface) via PATCH/DELETE. On top of that
- * session-or-admin-scope check, the caller's member role must be
- * owner/admin for EVERY auth source — mirroring index.ts
+ * Gate agent management mutations (create/update/delete/config) and every
+ * inference-provider mutation (create/update/key/default/capabilities/
+ * delete/OAuth) to org owner/admin. Inference providers are ORG-level
+ * credentials shared by every agent, so they sit on the same admin tier as
+ * agent administration (`manage_agents` in auth/tool-access.ts).
+ * `requireSessionOrAdminPat` alone only proves an authenticated caller — any
+ * org MEMBER passes it, so a member could create agents, rewrite or delete
+ * another member's agent (or change its soulMd, guardrails or tool surface)
+ * via POST/PATCH/DELETE, or add/rotate/delete the org's provider
+ * credentials. On top of that session-or-admin-scope check, the caller's
+ * member role must be owner/admin for EVERY auth source — mirroring index.ts
  * `requireOrganizationSettingsAdmin` and the manage_agents tool's admin
  * tier, both of which treat the role check as non-authorizable: an
  * `mcp:admin` scope alone never elevates a plain member, and a demoted
- * owner's stale admin token stays denied.
+ * owner's stale admin token stays denied. Evals (`/evals/cases`,
+ * `/automations/:id/evals/run`) deliberately stay member-open.
  */
 function requireManageAgentAccess(c: any): Response | null {
 	const denied = requireSessionOrAdminPat(c);
@@ -490,7 +495,7 @@ routes.get("/", async (c) => {
 // ── Create agent ─────────────────────────────────────────────────────────────
 
 routes.post("/", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const body = await c.req.json<{
 		agentId: string;
@@ -687,6 +692,8 @@ function requireInteractiveUser(c: any): { id: string } | Response {
 }
 
 routes.post("/inference-providers/oauth/start", async (c) => {
+	const denied = requireManageAgentAccess(c);
+	if (denied) return denied;
 	const config = resolveOAuthProvider(c, await readProviderId(c));
 	if (config instanceof Response) return config;
 	const user = requireInteractiveUser(c);
@@ -733,6 +740,8 @@ routes.post("/inference-providers/oauth/start", async (c) => {
 });
 
 routes.post("/inference-providers/oauth/complete", async (c) => {
+	const denied = requireManageAgentAccess(c);
+	if (denied) return denied;
 	const body = (await c.req.json().catch(() => ({}))) as {
 		providerId?: unknown;
 		code?: unknown;
@@ -881,7 +890,7 @@ async function readProviderId(c: any): Promise<unknown> {
 }
 
 routes.post("/inference-providers", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
@@ -1078,7 +1087,7 @@ routes.post("/inference-providers", async (c) => {
 // per-modality capability edits keep their dedicated routes below; the Edit UI
 // calls whichever it needs.
 routes.put("/inference-providers/:slug", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
@@ -1133,7 +1142,7 @@ routes.put("/inference-providers/:slug", async (c) => {
 // (automation → agent → org default). Exactly one live default per org (enforced
 // by a partial unique index); setting a new one clears the prior in one txn.
 routes.put("/inference-providers/:slug/default", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
@@ -1180,7 +1189,7 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 });
 
 routes.put("/inference-providers/:slug/capabilities/:modality", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
@@ -1240,7 +1249,7 @@ routes.put("/inference-providers/:slug/capabilities/:modality", async (c) => {
 });
 
 routes.put("/inference-providers/:slug/key", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
@@ -1285,7 +1294,7 @@ routes.put("/inference-providers/:slug/key", async (c) => {
 });
 
 routes.delete("/inference-providers/:slug", async (c) => {
-	const denied = requireSessionOrAdminPat(c);
+	const denied = requireManageAgentAccess(c);
 	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;

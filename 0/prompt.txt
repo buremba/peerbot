@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bso326g7l</task-id>
+<tool-use-id>toolu_01XV3y1VYyLWT7p7MccQN46o</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bso326g7l.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the snapshot-race fix" completed (exit code 0)</summary>
+</task-notification>

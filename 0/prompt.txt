@@ -1,0 +1,1 @@
+what's the cleanest and best ux? potentially we don't need a placeholder if it's a search. do we know how many connectors agents behaviors are? in the sidebar should we have that number next to the sidebar items? also under activity if there is zero agents we can show those bring your agent, create managed agent and also zero connectors connect your system stuff?

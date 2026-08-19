@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bk40rx67k</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5fac93d6-b0f7-4f45-95d5-7d540a337c3e/tasks/bk40rx67k.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2518 auto-merge in background" completed (exit code 0)</summary>
+</task-notification>

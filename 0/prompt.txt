@@ -1,0 +1,1 @@
+make sure the relogin etc is working properly, simplify consolidate the logi

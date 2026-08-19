@@ -1,0 +1,32 @@
+You reviewed a connector-declared-edge design earlier and raised: (a) model connectors as making versioned retractable assertions, not writing edges; (b) write from insertEvent's afterPersist, not the attribution transaction; (c) an ACL `purpose` classification that READS depend on; (d) a separate assertion ledger.
+
+The owner has now signed off on a plan. Your job is ONLY to find GAPS — things that will bite us that this plan does not address, or places where the plan is internally inconsistent. Do not re-argue decisions already made. Be concrete and cite mechanisms, not principles. If you think a phase is mis-ordered or a phase boundary leaks, say exactly how.
+
+Repo: Lobu (Bun monorepo, packages/server, packages/connector-sdk, Postgres). Read the code before asserting.
+
+## Settled decisions
+- D1: attributions get an immutable `key`; eventKind gets `relationships: [{type, from, to}]` referencing those keys; relationship rules get their own stable key.
+- D2: fail closed. Preflight at connection activation (`setup_required`) naming the missing relationship type; runtime also fails the item and does NOT advance its checkpoint.
+- D3: system-controlled `purpose='authorization'` classification. ACL READS require it; the connector write path categorically refuses those types.
+- D4: reconciliation scope = organization + connection_id + origin_id + relationship_rule_key. Never events.id. `reconcile:'replace'` declared per rule. Omitted field != explicit null.
+- D5: cardinality on the relationship TYPE (org-owned schema), enforced at write.
+- D6: assertion ledger — DEFERRED to phase 4.
+- D7: phase 1-3 ship single-producer; the ledger lands before a second producer exists.
+
+## Phasing
+- PR A (~250 lines): add `purpose` column; classify existing rows; 3 ACL read sites (channel-visibility.ts:190, resource-visibility.ts:103, channel-messages-visibility.ts:118) gain `AND rt.purpose='authorization'`; ensureMemberOfType stamps on create.
+- PR B (~390): SDK `key` + `relationships`; publish/activation-time validation.
+- PR C (~630): applyEventAttributions returns per-item resolved ids (mirroring what resolveEventAttributionsForItems already returns); edges written from afterPersist; reconciliation by the D4 scope; cardinality enforced.
+- PR D (~700, deferred): assertion ledger.
+
+## Two claims I am relying on — verify or refute them
+1. `insertEvent` opens an advisory-lock transaction keyed on (connection_id, origin_id) that serializes concurrent ingests of the same source item across replicas, and passing a caller-supplied `sql` SKIPS it. Therefore, if phase-1 edge writes happen inside afterPersist WITHOUT a caller-supplied handle, same-subject edge writes are already serialized and phase 1 needs NO new locking primitive for cardinality. Is that sound? What does it NOT cover?
+2. Prod audit just run: all 4 `member_of` relationship types have created_by IS NULL and metadata IS NULL, live edges only from source='feed'. No org has ever created its own `member_of`. So PR A needs no data migration to a reserved slug — classify-in-place is safe. Does anything make classify-in-place unsafe anyway?
+
+## Specifically hunt for
+- What breaks at the phase-1/phase-4 boundary — i.e. what does single-producer phase 1 make hard to migrate to the ledger later? Is the D4 scope key actually sufficient to backfill the ledger from?
+- Anything about entity merge, connection deletion, connector uninstall, or relationship-type archival that phase 1 silently gets wrong and that is expensive to retrofit.
+- Whether "fail the item and don't advance the checkpoint" is actually achievable in the current sync loop, given event inserts are statement-per-autocommit.
+- Any ordering problem in PR A: changing ACL reads to require purpose while rows are being classified.
+
+Output: a ranked list of gaps. For each: what breaks, the concrete mechanism, and the cheapest thing to do about it now. Say explicitly if a gap is cheap to defer.

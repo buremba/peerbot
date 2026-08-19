@@ -1,0 +1,2 @@
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"user","ts":"2026-08-18T17:01:12.386Z","content":[{"id":"dba93ae4-db2a-449d-a825-4cfd82a8138a","text":"say ok"}]}
+{"v":1,"agent":"claude-code","cli_version":"0.10.1","type":"assistant","ts":"2026-08-18T17:01:19.565Z","id":"msg_011CeAaAY8nAyQF8McV66PUT","input_tokens":2,"output_tokens":4,"content":[{"text":"ok","type":"text"}]}

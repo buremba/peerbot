@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0p91p2bg</task-id>
+<tool-use-id>toolu_01VoGfPMrpMULVAPuqTWH193</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b0p91p2bg.output</output-file>
+<status>failed</status>
+<summary>Background command "Boot dev for PR B" failed with exit code 144</summary>
+</task-notification>

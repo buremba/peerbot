@@ -1,0 +1,52 @@
+<task-notification>
+<task-id>a498870ddb33fdb54</task-id>
+<tool-use-id>toolu_01KKiLxAKKBfbtY5pp628YQ5</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/a498870ddb33fdb54.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify connection-creation surfaces" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All facts verified. Compiling the ground-truth list now.
+
+Sanity check performed: I re-read the ask (4 surfaces + 2 claims to verdict) and confirmed each claim below against the actual policy tables, handler code, schemas, and route registrations in the main checkout — not from memory. Static read only; nothing was executed or modified.
+
+## Fact list (file:line evidence, phrased for public use)
+
+**1. MCP admin tools**
+
+- Connection/connector management is one MCP tool, `manage_connections`, with per-action gating in `packages/server/src/auth/tool-access.ts`:
+  - Admin-tier (org role owner/admin AND `mcp:admin` token scope): `install_connector`, `uninstall_connector`, `connect`, `delete`, `test`, all connector-source lifecycle actions, `apply_chat_connection` — tool-access.ts:78-101.
+  - Member-write tier: `create`, `update`, `reauthenticate` — tool-access.ts:29 — but the handler restricts members to connections bound to their own OAuth account (comment at tool-access.ts:24-28).
+- Credential profiles: `manage_auth_profiles` `create_auth_profile` is member-tier ONLY for `oauth_account` (personal login); `env` / `oauth_app` / `browser_session` kinds are explicitly rejected for non-admins — `packages/server/src/tools/admin/manage_auth_profiles.ts:336-339` ("Only admins can create … Ask an organization owner or admin"), same gate on update at :614-624 ("env / oauth_app / browser_session are org-shared credentials — admin only").
+- Enforcement is real and double-keyed: admin tier requires org role owner/admin AND `mcp:admin` scope — `packages/server/src/tools/access-control.ts:55-70`; scope checks fail closed (tool-access.ts:258-281).
+- **Bottom line 1a: TRUE — an MCP client with `mcp:admin` scope, bound to a user whose org role is owner/admin, can install connectors and create org-shared connections carrying shared credentials.**
+- **Bottom line 1b: the caller can NOT set `visibility`.** The tool input schema has zero `visibility` fields (`packages/server/src/tools/admin/manage_connections/schemas.ts` — no occurrences). Visibility is derived server-side by `resolveConnectionVisibility` (`packages/server/src/tools/admin/helpers/connection-helpers.ts:577-590`): personal `oauth_account` credential → always `private` even for admins; shared credential kinds → `org` only when the creator's role is admin/owner, else `private`. A DB trigger additionally blocks personal-credential connections from ever being `org`-visible (connection-helpers.ts:610-617, migration `20260703200000_connection_personal_cred_private_guard.sql`). No code path anywhere (server or frontend) issues `SET visibility` on a connection — the only `SET visibility` statement in the repo is org-level workspace visibility (`packages/server/src/index.ts:2324`, itself admin+`mcp:admin` gated at :2252-2286). Updates can only FLOOR visibility to private on rebind to a personal credential (`.../manage_connections/handlers/crud.ts:1829`).
+
+**2. CLI**
+
+- `lobu apply` syncs `lobu.config.ts` to the cloud (`packages/cli/src/index.ts:124,285`) and DOES support declaring connections with credentials: `defineConnection` with `credentials: Record&lt;string,string&gt;` where values may be `$ENV`/`secret()` refs (`packages/cli/src/commands/_lib/apply/desired-state.ts:192-200`), `defineAuthProfile` (:291-292), org inference providers with `apiKey` via `defineConfig({ providers })` (:249-259), and BYO chat connections routed through the secret-aware `apply_chat_connection` action (:165-171).
+- Apply drives the same gated REST tool proxy — `POST /api/:orgSlug/manage_connections` with actions `install_connector` (client.ts:1147), `uninstall_connector` (:1167), `apply_chat_connection` (:1333) — so it needs an admin-role user with an `mcp:admin`-scoped token. Notably, `lobu token create` defaults to `mcp:read mcp:write` only (`packages/cli/src/commands/token.ts:59`), so a default PAT cannot do connector administration.
+- `lobu providers create|set-key|…` manages org inference providers incl. API keys (`packages/cli/src/commands/providers/manage.ts:150,272`), and `lobu call [tool]` can invoke any admin REST tool (index.ts help, :130s). The CLI has no visibility flag anywhere (`grep visibility packages/cli/src` → no settable field) — same server-side derivation applies.
+
+**3. Web UI**
+
+- Confirmed: connector/connection management pages exist at `packages/owletto/src/app/$owner/connectors/` (`connectors.tsx`, `create.$connectorKey.tsx`, `$connectorKey.$connectionId.tsx`) plus `$owner/inference-providers/`; API client at `packages/owletto/src/lib/api/connections.ts` (visibility appears only as a read-only typed field, :123 — no UI toggle for connection visibility either).
+
+**4. Chat participants / non-admins**
+
+- No chat-side flow lets a group member create an org-shared connection. The only user-facing "claim" flow is for provider-initiated installs (`POST /api/connector/:connector/connection/claim`, `packages/server/src/index.ts:2599`), registered for Slack only (:2553). It requires a signed-in Lobu web session, membership in the destination org (`packages/server/src/gateway/connections/connection-claim.ts:301-311`), and the provider's authority verdict — for Slack, being an admin/owner of that Slack workspace verified via Slack sign-in + `users.info` flags, or (Grid) the verified installer (`packages/server/src/gateway/connections/slack-claim.ts:86-134`). The `connection_claims` table elsewhere is a replica lease, not a user flow. Post-claim onboarding (`slack-claim-onboarding.ts:1-24`) only wires the Builder agent DM. A plain member's only creation path (MCP `create` on their own `oauth_account`) is forced `visibility='private'` by both the role default and the credential-kind rule.
+
+## Verdicts on the proposed claims
+
+- "Shared accounts are set up by an org admin … not by arbitrary group members" — **TRUE on substance**; the "(web UI today)" parenthetical is **FALSE as an exclusivity claim**: admin-scoped MCP clients and the CLI (`lobu apply`, `lobu call`, `lobu providers`) are equally capable admin surfaces today.
+- "Admin-scoped MCP clients and the CLI can also create org-shared connections" — **TRUE**, with two accurate qualifiers worth including publicly: (a) "admin-scoped" means BOTH an `mcp:admin` token scope and the bound user holding org admin/owner role (default-minted tokens are read+write only), and (b) no surface sets `visibility` explicitly — a shared-credential connection created by an admin lands `org`-visible automatically, and personal-credential connections can never be org-visible (enforced down to a DB trigger).
+
+result: Verified with file:line evidence that org-shared Lobu connections are admin-only across all surfaces (web UI, admin-scoped MCP, CLI apply/call), visibility is server-derived and never caller-settable, and no chat-side flow lets a non-admin group member create one — "web UI only" is the one FALSE part of the proposed reply.
+
+Confidence: 90 (high) — every claim is read directly from the policy tables, handlers, schemas, and route registrations in the current main checkout; deductions only because this is static reading (no live request exercised the gates) and the owletto submodule SHA may lag its upstream, though the surfaces cited are long-stable.
+
+Suggested next actions:
+1. If the reply will assert the DB trigger, optionally confirm the migration file `20260703200000_connection_personal_cred_private_guard.sql` exists in the migrations dir (I verified the code reference, not the file itself).
+2. If exactness on "members can create connections off a pinned org OAuth app but they stay private" matters for the thread, spot-check `crud.ts` create-path role gates around app_auth_profile (I verified the visibility outcome, not every field gate).
+3. A one-command live check (list `visibility` of a member-created connection on a dev instance) would upgrade this from code-read to exercised-path confidence.</result>
+<usage><subagent_tokens>85317</subagent_tokens><tool_uses>35</tool_uses><duration_ms>345731</duration_ms></usage>
+</task-notification>

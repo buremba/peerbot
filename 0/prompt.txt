@@ -1,0 +1,1 @@
+you can run it as a teammate, we will remove the nix etc right? also skills won't be a tab anymore under agents. the user can refer to skills as @ in the behavior etc.

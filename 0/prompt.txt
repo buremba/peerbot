@@ -1,0 +1,1 @@
+hmm, maybe it could like if people select entities, we can have a checkbox saying fan out for each entity etc? but in behaviors it will be shown as a single item, we will just have the selector on the behavior right

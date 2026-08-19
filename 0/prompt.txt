@@ -1,0 +1,1 @@
+why you have write rule stuff, the mutation hook api or this one is better let me know? compare with convex or similar tools and let's settle on an approach

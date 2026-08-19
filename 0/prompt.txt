@@ -1,0 +1,1 @@
+i like how you took screenshots and embedded into html artifacts. use this tip in claude.md. looks good add this into the same pr and review and if all good merge. btw, do you think it's good to add the access like a box under the guardrails instead of subtabs?

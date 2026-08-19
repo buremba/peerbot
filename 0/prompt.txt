@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbf9yk7o5</task-id>
+<tool-use-id>toolu_016vgYfegmjFH1t3wXvJg1yc</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bbf9yk7o5.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on updated HEAD" completed (exit code 0)</summary>
+</task-notification>

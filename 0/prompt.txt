@@ -1,0 +1,54 @@
+<task-notification>
+<task-id>ada6a8317c57924bf</task-id>
+<tool-use-id>toolu_015W92fbabrEBneRanRWAfst</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/ada6a8317c57924bf.output</output-file>
+<status>completed</status>
+<summary>Agent "Fable review of connector-agent-env" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Review complete. I read the full diff (9 commits, 20 files), the new modules in full, the surrounding deployment-manager/message-consumer context, AGENTS.md + packages/server/AGENTS.md, and ran both new unit suites (declaration: 15 pass; DB-backed resolver/env-assembly: 20 pass). Nothing was edited.
+
+## Verdict: no blocker. One real correctness bug (should fix before merge), one significant test gap, several follow-ups.
+
+---
+
+### 1. SHOULD FIX BEFORE MERGE — warm-path grant reconcile revokes the nix-cache domains that connector packages required
+
+The create path and the warm path disagree about `expectedDomains` when an agent's *only* nix packages are connector-contributed:
+
+- Cold create: `deployment-manager.ts:1638-1650` folds `gh` into `validated.nixConfig.packages`, so `syncNetworkConfigGrants` (`deployment-manager.ts:1207-1214`) adds `NIX_CACHE_DOMAINS` (cache.nixos.org etc.) to the expected set and grants them (I confirmed the grants land in the test run output).
+- Warm path: `message-consumer.ts:565-591` folds only **domains** into the payload, never packages. On the next message for a live deployment, `syncNetworkConfigGrants(dataWithTrace)` (`message-consumer.ts:1132`) sees `nixConfig` empty → nix-cache domains are not in `expectedDomains` → the unconditional PG reconcile (`deployment-manager.ts:1225-1237`) **revokes** them (they are not in the `NPM_REGISTRY_DOMAINS` exemption).
+
+Failure scenario: org has a GitHub connection, agent has no own nix packages. First-ever deploy starts nix downloading `gh` (can take minutes); user sends a follow-up message 30s in; the warm-path sync revokes cache.nixos.org mid-download; if that traffic transits the proxy the worker boot wedges/fails in a way the agent can't explain. Even outside the race, grant rows flap revoke/re-grant on every warm→cold cycle, which defeats the stated "create and update can never diverge" single-sourcing (comment at `deployment-manager.ts:1671-1673`). Connector *egress* domains (api.github.com/github.com) do survive the warm path — but only because the consumer folds them; the packages half of the contribution was not given the same treatment. Natural fix: fold contributed packages (or at least the nix-cache condition) in the consumer alongside the domains.
+
+### 2. SHOULD FIX — the message-consumer fold is completely untested; a specific mutation survives the suite
+
+Delete `message-consumer.ts:565-591` (the connector-domains fold) and every test in this PR stays green, while two things break in prod:
+- remote runtimes lose the connector domains from the signed `runJobToken` claim (`message-consumer.ts:614`), which is the *only* thing they trust;
+- on the **second** message of any conversation, the warm-path reconcile at `message-consumer.ts:1132` revokes api.github.com/github.com from the grant store, so the embedded worker's `gh` dies mid-conversation.
+
+Other surviving mutations I checked: (a) making `resolveConnectorAgentTooling` return empty when `this.leaseRegistry` is unset — the documented "no registry still contributes packages and domains" behavior (`deployment-manager.ts:1552-1555`, `EMPTY_LEASE_REGISTRY` at :700-706) has no test; (b) deleting *either one* of the two reserved-name guards (resolver parse `resolver.ts:130-150` / merge site `deployment-manager.ts:1701-1711`) individually survives — only deleting both fails the hostile-declaration test. (b) is acceptable defense-in-depth; (a) and especially the consumer fold deserve tests.
+
+Mutations that ARE caught (verified by reading assertions): moving tooling resolution after the worker-token mint or after the grant sync (`agent-tooling-resolver.test.ts:544-564` asserts both the grant rows and the token claim), weakening the `preMaterializedSecrets` check from value-compare to key-presence (:586-607), placeholder-tier fallback to durable credential (:635-661), durable-credential-in-env sweep (:663-685).
+
+### Security review — the three prior fixes hold, and I found no durable-credential path
+
+- **Egress validation (fix 1)**: `isValidDomainPattern` is applied in both resolvers via `parseAgentTooling` (`resolver.ts:156-160`), values re-trimmed, and the resolver test covers `*`, `*.com`, scheme, path, port, comma-join, `localhost`. Sound.
+- **Placeholder tier removal (fix 2)**: `credential !== "lease"` → dropped, not defaulted (`resolver.ts:147`); a persisted `placeholder` declaration is proven to contribute nothing and the stored durable secret proven absent from the whole env (test :635-661). Sound.
+- **Reserved names (fix 3)**: enforced case-insensitively at parse AND merge, including the `NIX_*` family and lowercase proxy vars; the merge sets tooling env **before** `moduleEnvVarsBuilder`/`config.worker.env` so operator values win (tested). Sound. Note `NIX_PACKAGES` itself is covered by the `NIX_` prefix rule — good, since that env var drives the sandbox nix command line.
+- **Attacker-chosen strings reaching the worker**: env *values* are never attacker-chosen (always a freshly minted provider token); env *names* are regex+`__proto__`+reserved-checked; nix packages are validated by `nixPackageAttrRef` at parse (`resolver.ts:121`) **and again** at spawn (`deployment-manager.ts:2225`); domains are shape-checked. The `"constructor" in env` quirk at `resolver.ts:270` fails safe (skips minting).
+- **Signed-token boundary**: both mints read the folded config before signing — consumer fold (:568) precedes `buildRunJobToken` (:593); deployment fold (:1623-1650) precedes `buildDeploymentWorkerToken` (:1652), which now reads `validated.networkConfig` (post-fold) instead of the raw `messageData`. Verified in source, and the token-claim assertion in the test pins it.
+- **Lease minting**: cross-tenant install ref, provider/instance mismatch, and non-active install all rejected before minting with tests; the App private key never leaves the gateway (only env-var *names* are stamped onto the install row, `credential-lease.ts:190-201`); token never logged.
+- **Multi-replica**: minting is genuinely stateless per deployment; the only new singletons hold stateless provider instances; domains reconcile against Postgres. Holds at N replicas.
+
+### Follow-ups (not blockers)
+
+1. **IP-literal egress grants**: `isValidDomainPattern` accepts `169.254.169.254` or `metadata.google.internal` (both match the 2-label regex). A hostile org-installed custom connector can silently widen *every* agent's egress to cloud-metadata endpoints — same power an operator has per-agent via settings, but org-wide and with no UI surfacing at install time. Consider rejecting IP literals/link-local here, and surfacing contributed domains at connector install.
+2. **Doc overstatement**: the comment at `network-domains.ts:40-44` claims the check "match[es] what the public agent settings API accepts", but the settings contract is `Type.Array(Type.String())` with no validation (`packages/core/src/contracts/agent-settings.ts:33`). The connector path is stricter than the operator path (fine), but the comment asserts a parity that doesn't exist.
+3. **Audit durability**: lease issuance is a log line only (`credential-lease.ts:223-235`); given #2233 just added durable audit for MCP tool calls, an events row for credential issuance is the consistent next step.
+4. **Log noise**: `resolver.ts:242-247` warns "malformed declaration" for valid-but-filtered-to-empty declarations, once per deployment.
+
+Confidence: security invariants **high** (real-DB tests exercise the actual JWT/mint/placeholder path end-to-end; I re-verified each prior fix in source, not just the diff). Warm-path finding #1 **medium-high** — derived from code reading of both sync paths plus observed grant logs, not a live two-message repro, since the task was read-only. Test-gap claims **high** (assertion-by-assertion check of what the suite pins).
+
+Suggested next actions: (a) fold connector nix packages in the consumer (fixes #1) and add a consumer-level test that kills the fold-deletion mutation (#2); (b) decide on IP-literal rejection before a third-party connector ecosystem exists; (c) fix the parity comment; (d) optionally add the no-registry-wired contribution test.</result>
+<usage><subagent_tokens>150453</subagent_tokens><tool_uses>39</tool_uses><duration_ms>571226</duration_ms></usage>
+</task-notification>

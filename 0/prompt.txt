@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3il064cl</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab/tasks/b3il064cl.output</output-file>
+<status>completed</status>
+<summary>Background command "Block until pre-pr verdict" completed (exit code 0)</summary>
+</task-notification>

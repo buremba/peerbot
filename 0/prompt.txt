@@ -1,0 +1,49 @@
+# Brief 2 — Write-funnel bypasser audit (READ-ONLY, produces a plan)
+
+## Why this is the bottleneck
+The settled entity-write-hook design is GATED: hooks stay disabled until the
+entity write funnel has ZERO production bypasses. So the funnel comes FIRST, and
+nothing downstream (approval/invariant separation, merge+unmerge as first-class
+ops, then the hook) can start until this is nailed down. This audit is what
+unblocks the whole Prodma ERP build order.
+
+## Job
+Six known bypassers were identified. VERIFY each against `origin/main` — not the
+working tree — and produce an elimination plan:
+  1. entity-merge
+  2. entity-link-upsert
+  3. classifier extraction
+  4. member-entity maintenance
+  5. approval application
+  6. ACL-resource refreshes
+
+For EACH: exact file:line of the write, what it writes, why it bypasses, what it
+would take to route it through the funnel, and what breaks if you do.
+
+Then go looking for a SEVENTH. The list is "known", not proven complete. Find
+every site that INSERTs or UPDATEs entities outside the funnel and say how you
+searched, so the absence argument is checkable.
+
+## Known specifics to confirm or refute
+- `entity-link-upsert.ts` creates entities with its own INSERT.
+- `entity-link-upsert.ts` writes identities, NEVER relationships (previously verified).
+- unmerge already exists at `entity-merge.ts:450`.
+- Numbering allocates at create but SHOULD allocate on `draft -> issued`.
+- Re-adding `runMutationGate` to `entity-merge.ts` is PROVEN to regress every
+  agent auto-merge — do not propose it.
+
+## Method
+- Absence claims need `git fetch -q origin && git grep <pattern> origin/main`.
+  A working-tree grep proves nothing, and the fetch is load-bearing.
+- Sanity-check any glob pathspec — a glob pathspec that matches nothing looks
+  identical to a clean result.
+- You may READ the repo at /Users/burakemre/Code/lobu. Do NOT write to it, do NOT
+  `git switch` there, do NOT commit. Write your output to /tmp only.
+
+## Deliverable — /tmp/funnel-audit-report.md
+1. A table: bypasser -> file:line -> what it writes -> why it bypasses -> fix -> risk.
+2. The seventh-bypasser search: what you searched, what you found, why you believe
+   the list is now complete.
+3. A sequenced elimination plan (what to fix first, what each unblocks).
+4. Which ones can be done independently vs. which must be done together.
+5. Confidence 0-100 per claim with its basis, and what you could NOT verify.

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bse1ya3as</task-id>
+<tool-use-id>toolu_01BnNRsTdPvVKt56rz6BoQVY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bse1ya3as.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review-fix on settled diff" completed (exit code 0)</summary>
+</task-notification>

@@ -143,13 +143,19 @@ jobs:
 
       # Cache the .deb so the steady-state install touches no apt mirror at all.
       # The mirror stall this avoids is a HANG, not an error, so no retry policy
-      # can bound it — only not needing the network can. Keyed on the runner
-      # image, which is what determines the package version.
+      # can bound it — only not needing the network can.
+      #
+      # ImageOS is in the key because runner.os/runner.arch are Linux/X64 on
+      # EVERY Ubuntu image: without it a .deb cached on 24.04 would be restored
+      # onto whatever image comes next. A stale .deb degrades safely (dpkg
+      # fails, the script falls through to apt) but it would spend the runtime
+      # this cache exists to save, on exactly the runs where the image just
+      # changed.
       - name: Cache bubblewrap package
         uses: actions/cache@v4
         with:
           path: ~/.cache/lobu-bwrap
-          key: bwrap-deb-${{ runner.os }}-${{ runner.arch }}-v1
+          key: bwrap-deb-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-v1
 
       - name: Install bubblewrap (for embedded exec-sandbox tests)
         # The ONLY job that requires bwrap: the worker exec-sandbox escape

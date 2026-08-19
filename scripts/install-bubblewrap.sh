@@ -75,7 +75,7 @@ if ! have_bwrap; then
     if sudo cp "$deb" "$CACHE_DIR/" 2>/dev/null; then
       sudo chown "$(id -u):$(id -g)" "$CACHE_DIR/$(basename "$deb")" 2>/dev/null || true
       echo "cached $(basename "$deb") for future runs"
-    fi || true
+    fi
   done
 fi
 

@@ -112,11 +112,16 @@ case "$out" in *"::error::"*) ;; *) fail "exhausted: no ::error:: annotation: $o
 echo "ok: an unavailable bwrap fails the build closed"
 
 # --- 4. apt succeeds but the cache is unwritable: install must still pass ----
-# The stash is an optimisation. `set -e` on a bare `cp && chown` would let a
-# read-only cache dir turn a perfectly good install red.
+# The stash is an optimisation and must not turn a good install red.
+#
+# Precisely what this case discriminates: a bare `sudo cp` on its own line. It
+# does NOT discriminate `cp && chown` — errexit exempts every command in an
+# `&&` list except the last, so that form was already safe and survives the
+# mutation. The guard is written explicitly anyway, so the property holds if
+# someone later unfolds it into simple commands, which is what this pins.
 setup_case
-# Without a .deb here the stash loop never runs and this case asserts nothing —
-# it passed against a deliberately reverted `cp && chown` until this line existed.
+# Without a .deb here the stash loop never runs at all and this case asserts
+# nothing — it passed against every mutation until this line existed.
 echo "stub" > "$work/archives/bubblewrap_1.2.3_amd64.deb"
 chmod 500 "$work/cache"
 cat > "$work/bin/apt-get" <<EOF

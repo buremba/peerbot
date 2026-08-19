@@ -1,0 +1,31 @@
+check these open issues, see and confirm if we need them, interview me if needed. Status: Open.
+#2359 In lobu-ai/lobu;· buremba opened 1w ago
+A quota-exhausted inference provider takes Behaviors to zero, and the terminal 429 is retried ~2000 times
+
+Status: Open.
+#2350 In lobu-ai/lobu;· buremba opened 1w ago
+1
+comment
+Imports and agents cannot write identity claims, so the workspace mints duplicate people
+
+Status: Open.
+#2349 In lobu-ai/lobu;· buremba opened 1w ago
+Merge-evidence card: verify the server→card evidence_change path is actually live
+
+Status: Open.
+#2339 In lobu-ai/lobu;· buremba opened 1w ago
+Progressive multi-channel identity: person-first mint, /link Behaviors, B2B chat without login
+enhancement
+New feature or request
+product
+
+Status: Open.
+#2338 In lobu-ai/lobu;· buremba opened 1w ago
+Spawned binaries can bypass the egress allowlist (allowNet: true)
+bug
+Something isn't working
+security
+Security vulnerabilities and hardening
+
+Status: Open.
+#2244 In lobu-ai/lobu;· buremba opened 1w ago

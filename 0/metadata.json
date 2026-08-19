@@ -1,0 +1,15 @@
+{
+  "cli_version": "0.10.1",
+  "checkpoint_id": "e811adabe066",
+  "session_id": "019fef7b-b5cf-7a40-ad45-a5a34ee2ab6f",
+  "strategy": "import",
+  "created_at": "2026-08-11T06:21:32.475Z",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "",
+  "checkpoint_transcript_start": 3,
+  "transcript_lines_at_start": 3,
+  "compact_transcript_start": 0,
+  "kind": "imported"
+}

@@ -1,0 +1,1 @@
+still shows the sdk discovery, didn't you get rid of the ui for search_sdk?

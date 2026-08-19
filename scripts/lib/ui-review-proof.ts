@@ -159,6 +159,7 @@ export const COMPARE_FILE_CAP = 300;
  *   deploy/      k8s manifests — nothing user-visible
  *   apps/chrome/ the browser extension — distributed as a Web Store zip
  *   apps/mac/    the native Mac app — distributed as a signed build
+ *   scripts/     build and post-build checks — run in CI, never served
  *
  * The extension and the Mac app do have their own UI (the Owletto side panel,
  * for one), and this exemption deliberately does NOT claim otherwise. It says
@@ -171,7 +172,12 @@ export const COMPARE_FILE_CAP = 300;
  * gate stays fail-closed: a future hosted tree (say apps/web/) correctly
  * demands proof instead of inheriting an exemption nobody revisited.
  */
-export const UNHOSTED_PREFIXES = ["deploy/", "apps/chrome/", "apps/mac/"];
+export const UNHOSTED_PREFIXES = [
+  "deploy/",
+  "apps/chrome/",
+  "apps/mac/",
+  "scripts/",
+];
 
 const isUnhostedPath = (path: string) =>
   UNHOSTED_PREFIXES.some((prefix) => path.startsWith(prefix));

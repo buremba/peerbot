@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>btieqwyup</task-id>
+<summary>Monitor event: "PR 2691 mergeability after rebase"</summary>
+<event>2691 head=42360bd8 BLOCKED | migrations=pending base-branch-guard=pass typecheck=pending unit=pending check-drift=pass frontend=pending format-lint=pass pi-review=pass ui-review=pass</event>
+</task-notification>

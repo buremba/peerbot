@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b34t4yhwm</task-id>
+<tool-use-id>toolu_01JPL2fR8xadtQtkzaQ9uegq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/b34t4yhwm.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2364 checks excluding check-drift" completed (exit code 0)</summary>
+</task-notification>

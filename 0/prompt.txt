@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b2z95e0r1</task-id>
+<summary>Monitor event: "CI failures and completion on PRs 614 + 2236"</summary>
+<event>lobu/check-drift: fail</event>
+</task-notification>

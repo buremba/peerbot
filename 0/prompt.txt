@@ -1,0 +1,265 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The user's requests, in order:
+
+1. **`/tmp/public-workspace-rest-transport-gap.md continue with this work`** — Continue a handoff doc describing that public-workspace REST routes ignore `PUBLIC_READ_ACTIONS` (same data 200 via tool transport, 401 via REST), plus an org-root product problem.
+
+2. **`why do we need seperate public path? if an org is public we can enable the public users or mcp without auth to see things through listing the agents no?`** — Pushback questioning why the `/api/{org}/public/*` namespace needs to exist at all.
+
+3. **`ok let's do this consolidation but before get codexes plan review it properly`** — Do the consolidation, but get a codex DESIGN review first.
+
+4. **`what's sandbox schema type etc i don't undestand`** — Request to explain the sandbox `schema_type` finding.
+
+5. **`ok test all and let's merge, did we cleanup and consoldiate all`** — Run all tests, merge, and confirm whether cleanup/consolidation was complete.
+
+6. **`ok is query_sdk fully compatible with run_sdk? we expose everything properly and no gaps and duplication right?`** — Audit query_sdk vs run_sdk compatibility, gaps, duplication.
+
+7. **`ok do next actions, consolidate and simplify, interview me if you need questions`** — Proceed with next actions, consolidate and simplify, ask questions as needed.
+
+**Overarching intent:** consolidate/simplify the public-workspace read path. **The consolidation itself was never built** — both shipped PRs came from *investigating* it.
+
+## 2. Key Technical Concepts
+
+- **Three "doors"**: MCP (`/mcp`), tool transport (`POST /api/{org}/{toolName}`), REST (`GET /api/{org}/...`)
+- `isPublicReadable(toolName, args)` — single allow-list, 3 call sites: `mcp-handler.ts:1092`, `tools/execute.ts:184`, `multi-tenant.ts:194`
+- `PUBLIC_READ_ACTIONS` / `OWNER_ADMIN_ACTIONS` / `MEMBER_WRITE_ACTIONS` in `auth/tool-access.ts` — **action-name allow-lists, NOT field-level**
+- **Action-discriminator override class**: server fixes a discriminator, then spreads caller data after it
+- SameSite=Lax session cookies (`auth/routes.ts:334`) → cross-site GET carries cookie
+- Hono: `c.req.routePath` returns `/api/:orgSlug/agents/*` before `next()`; `routePath(c, -1)` helper returns the resolved path
+- `canReadOrg` (`utils/organization-access.ts:140`): `if (!ctx.userId) return true` — anonymous PASSES, so it is NOT a boundary
+- `isSystemContext(ctx)` = `isAuthenticated && !userId && !memberRole` — designed for policy bypass at handler boundary, NOT for data exposure
+- Squash merges break ancestry → gate prod-verify on `mergeCommit.oid`, classify worktrees by `gh pr` state
+- Bun test for `__tests__/unit`; vitest for `__tests__/integration`
+
+## 3. Files and Code Sections
+
+### `packages/server/src/http/rest-tool-action.ts` (NEW — PR #2360, merged)
+Kept separate from `rest-api.ts` because importing `rest-api` pulls the whole tool graph and unit tests die on `Cannot find module '@lobu/connector-sdk'`.
+```ts
+export function fixedActionArgs(
+	action: string,
+	callerArgs?: Record<string, unknown>
+): Record<string, unknown> {
+	return { ...callerArgs, action };
+}
+```
+
+### `packages/server/src/rest-api.ts` (MODIFIED — PR #2360, merged)
+```ts
+export async function restToolAction(
+	c: Context<{ Bindings: Env }>,
+	toolName: string,
+	action: string,
+	callerArgs?: Record<string, unknown>
+) {
+	return restToolProxy(c, toolName, fixedActionArgs(action, callerArgs));
+}
+```
+Import placed after `./db/client` (alphabetical): `import { fixedActionArgs } from "./http/rest-tool-action";`
+
+### `packages/server/src/index.ts` (MODIFIED — PR #2360, merged)
+All 7 wrappers converted. Before/after:
+```ts
+// BEFORE (vulnerable):
+app.get("/api/:orgSlug/connections", mcpAuth, async (c) => {
+	return restToolProxy(c, "manage_connections", { action: "list", ...c.req.query() });
+});
+// AFTER:
+app.get("/api/:orgSlug/connections", mcpAuth, async (c) => {
+	return restToolAction(c, "manage_connections", "list", c.req.query());
+});
+```
+Exactly ONE bare `restToolProxy(` remains — the generic `POST /api/:orgSlug/:toolName` at ~line 2707.
+
+### `packages/server/src/sandbox/namespaces/entity-schema.ts` (MODIFIED — PR #2360, merged)
+Final state after review-fix (note: `{ ...payload, schema_type }` — fixed value LAST):
+```ts
+	// Keep both handler discriminators independent of caller input.
+	const callEntity = <T>(
+		actionName: string,
+		payload: object | undefined,
+		publicMethod: string,
+	): Promise<T> =>
+		action(actionName, { ...payload, schema_type: "entity_type" }, publicMethod);
+	const callRel = <T>(
+		actionName: string,
+		payload: object | undefined,
+		publicMethod: string,
+	): Promise<T> =>
+		action(actionName, { ...payload, schema_type: "relationship_type" }, publicMethod);
+
+	return {
+		manage,
+		listTypes: (input) => callEntity("list", input, "listTypes"),
+		createType: (input) => callEntity("create", input, "createType"),
+		// ... all 15 methods pass a literal action string
+	};
+```
+`payload: object | undefined` (NOT `Record<string, unknown>`) — required because `listTypes(input?)` is optional and `EntitySchemaAddRuleInput` is an interface without index signature.
+
+### `packages/server/src/tools/admin/manage_connections/public-projection.ts` (NEW — PR #2363, open)
+```ts
+import { isSystemContext } from "../../access-control";
+import type { ToolContext } from "../../registry";
+
+const PUBLIC_CONNECTION_FIELDS: ReadonlySet<string> = new Set([
+	"id", "slug", "display_name", "connector_key", "connector_name",
+	"status", "visibility", "created_at", "updated_at",
+	"feed_count", "data_feed_count", "entity_ids", "entity_names",
+	"declares_chat", "has_feeds_schema", "has_operations",
+	"operations_summary", "facets",
+]);
+
+function isInProcessSystemCall(ctx: ToolContext): boolean {
+	return isSystemContext(ctx) && ctx.tokenType === "session";
+}
+
+export function projectConnectionForReader(
+	row: Record<string, unknown>,
+	ctx: ToolContext
+): Record<string, unknown> {
+	if (ctx.memberRole || isInProcessSystemCall(ctx)) return row;
+	const projected: Record<string, unknown> = {};
+	for (const key of Object.keys(row)) {
+		if (PUBLIC_CONNECTION_FIELDS.has(key)) projected[key] = row[key];
+	}
+	return projected;
+}
+```
+
+### `packages/server/src/tools/admin/manage_connections/handlers/crud.ts` (MODIFIED — PR #2363)
+`handleList` (~line 436, no cast — review-fix removed it):
+```ts
+    connections: connections.map((row) =>
+      projectConnectionForReader(row, ctx)
+    ),
+```
+`handleGet`: `connection: projectConnectionForReader({ ...resolved, ... }, ctx),`
+Import: `import { projectConnectionForReader } from "../public-projection";`
+
+### Test files
+- `__tests__/unit/http/rest-fixed-action-args.test.ts` (merged) — composition tests + source guard asserting exactly ONE bare `restToolProxy(` and 7 `restToolAction(`
+- `__tests__/unit/sandbox/action-discriminator-source.test.ts` (merged) — class guard, regex `/\b(payload|input|args|rest)\s*(\.|\[["'])action\b/` over `sandbox/namespaces/`, excluding `action-call.ts`, plus non-vacuity check `length > 5`
+- `__tests__/unit/sandbox/sdk-signature-contract.test.ts` (merged) — review-fix added `"pins both entity-schema discriminators against caller input"`
+- `__tests__/unit/connections/public-connection-projection.test.ts` (PR #2363) — 7 tests
+- `__tests__/integration/connections-list-filters.test.ts` (PR #2363) — inserts real `ct_public_projection` token, asserts owner still receives it
+
+### Reference files examined (not modified)
+- `packages/server/src/workspace/multi-tenant.ts` — `:180` `canAccessPublicOrgRequest`, `:334` `userId: tokenData.userId || undefined`, `:562`/`:606` decision points, `:580` bare `catch {}` (still unfixed)
+- `packages/server/src/tools/admin/manage_connections/handlers/crud.ts:270` `SELECT c.*`, `:305-307` connect_token subselect
+- `packages/server/src/__tests__/setup/test-fixtures.ts:704` — feed inherits `options.status`
+- `packages/owletto/src/components/entity-tabs/events-tab/index.tsx:238-260` — `canManageWorkspace` gating
+- `packages/server/src/watchers/reaction-executor.ts:49-53` — system ctx uses `tokenType: 'session'`
+
+## 4. Errors and Fixes
+
+1. **Handoff doc's `legal-review` witness was wrong** — org has 0 agent rows; empty sidebar was truthful data. Fix: use `atlas` (public, 2 agents). Recorded in memory.
+
+2. **My claim "`/public/*` is redundant" was WRONG** — I checked one handler (behaviors) and generalized to seven. Codex found real differences. Corrected publicly and in memory.
+
+3. **My claim "REST handlers have no execution-time gate" false for 4 of 7** — connections/runs/actions go through `restToolProxy` → `executeTool` → `isPublicReadable`.
+
+4. **`make pre-pr` reported exit 0 while actually failing — TWICE.** Task notification said exit 0; output had `make: *** [pre-pr] Error 2`. Fix: always `grep` the output or capture `make exit=$?` explicitly. Written to memory.
+
+5. **TS2345 in entity-schema** — `payload: Record<string, unknown>` too narrow. Fix: `object | undefined`.
+
+6. **TS2339 in crud.ts** — `as ManageConnectionsResult["connection"]` failed (union type). Fix: removed both casts; contract types it as `Record<string, unknown>`.
+
+7. **Fresh worktree stale dist** — 43 unit failures + unrelated gateway typecheck errors. Fix: `make build-packages`.
+
+8. **Integration CI FAIL**: `feeds_status_check` violation — `createTestConnection` stamps connection status onto default feed; `pending_auth` invalid for feeds. Fix: `createDefaultFeed: false`.
+
+9. **My mutation test silently no-opped** — printed "mutation APPLIED" unconditionally; pattern didn't match because review-fix removed a cast. Fix: `assert old in s, "PATTERN NOT FOUND"`. Then genuinely failed with `expected { id: 4, …(48) } to not have property "connect_token"`.
+
+10. **review-fix introduced a security gap** — replaced my `memberRole` gate with bare `isSystemContext(ctx)`, which a userId-less token satisfies. Fix: `isInProcessSystemCall` requiring `tokenType === "session"`. RED proven.
+
+11. **Nearly shipped without the strongest test** — `gh pr create` warned "1 uncommitted change"; that was review-fix's integration test.
+
+12. **Push rejected** — user's git identity had pushed identical fix `d8d2e0652`. Fix: `git reset --hard origin/...`.
+
+13. **My prod-verify of #2360 did NOT verify the fix** — I probed anonymously (always 401); the vulnerable caller was an authenticated member/admin. Reported honestly.
+
+14. **`make task-clean` refused** on squash-ancestry. Fix: `FORCE=1`, correct per PR state MERGED.
+
+## 5. Problem Solving
+
+**Solved:** Diagnosed the transport gap correctly; got the design falsified before implementing (saving a wrong build); found and shipped a real security class (3 instances) merged as #2360; found and fixed the connect_token/created_by exposure (#2363).
+
+**Architecture finding that reshaped everything:** `PUBLIC_READ_ACTIONS` gates action *names*, not *fields*. So "declare REST route ≡ tool action" would inherit all 49 connection fields. The declaration must bound the projection.
+
+**Prod evidence (anonymous, no credentials, `market.lobu.ai`):** 49 fields, `connect_token` present (null — 0 pending org-wide), `created_by='8a2D2Yb57odFHO2PldhD6n392Cf6456B'`, `created_by_username='buremba'`. Only `market` has org-visible connections among public orgs.
+
+**query_sdk/run_sdk audit result:** 127 runtime methods = 127 metadata entries; tiers read 46 / write 23 / admin 48 / external 10; run_sdk is a strict superset at every caller tier; nothing in query_sdk but not run_sdk. One implementation (`runSandbox`), schemas differ only by `dry_run`.
+
+**Ongoing:** `pi-review` stuck **pending** on PR #2363 after a killed `make review`. Restarted detached as pid 65141 → `/tmp/rev4.out`.
+
+## 6. All User Messages
+
+1. `/tmp/public-workspace-rest-transport-gap.md continue with this work`
+2. `why do we need seperate public path? if an org is public we can enable the public users or mcp without auth to see things through listing the agents no?`
+3. `ok let's do this consolidation but before get codexes plan review it properly`
+4. `what's sandbox schema type etc i don't undestand`
+5. `ok test all and let's merge, did we cleanup and consoldiate all`
+6. `ok is query_sdk fully compatible with run_sdk? we expose everything properly and no gaps and duplication right?`
+7. `ok do next actions, consolidate and simplify, interview me if you need questions`
+
+**Note:** Three AskUserQuestion calls received no response (one rejected with a clarify request, two timed out after 60s). Multiple system notifications explicitly stated background-task events are NOT user input and must NOT be treated as approval.
+
+**Standing constraints from AGENTS.md/CLAUDE.md (must remain in effect):** Never write to `~/Code/lobu` directly — use `make task-setup NAME=<slug>` worktrees. Stage by explicit path (`git add -- <paths>`, never `-A`); verify `git diff --name-only origin/main...HEAD` matches intent. Bug fixes require red→fix→green evidence pasted in PR body. `make review-fix` before `make review`; `make review` ONCE. Never `--admin` past a check that has not reported. Never `git stash`. Never resolve merge conflicts in the GitHub web UI. No Co-Authored-By / "Generated with Claude Code" in commits. Prefer `bun`. Absence proven only by `git fetch -q origin && git grep <pattern> origin/main`. Workers never receive real credentials. Never bulk-delete prod `organization` rows. `events` is append-only.
+
+## 7. Pending Tasks
+
+**Explicitly blocked on user decisions (asked 3× via AskUserQuestion, never answered):**
+1. **Consolidation abstraction** — proxy-only `(tool, action)` coupling + explicit DTOs for agents/`/installed`, vs projection-level capabilities throughout (codex's recommendation; also narrows the tool door — a live behaviour change).
+2. **Public workspace root** — what a non-member sees at `legal-review.lobu.ai/`. Builder is genuinely owner-only.
+3. **46 read-tier label audit** — labels proven to EXIST, not proven TRUE.
+
+**Other open items:**
+- The public-workspace consolidation itself — **NOT BUILT**
+- `manage_operations.list_runs`, `manage_feeds`, `manage_classifiers`, `manage_catalog.list_installed` — same raw-row-spread class, deliberately not fixed
+- `multi-tenant.ts:580` bare `catch {}` — still unfixed
+- #2360 prod-verify for the *authenticated* path — needs a credential
+- 46 accumulated worktrees
+
+## 8. Current Work
+
+Immediately before the summary request I was finishing **PR #2363** (`feat/public-connection-projection`, branch HEAD `d8d2e0652`), which withholds connection credentials/identity from non-members.
+
+State at cutoff:
+```
+base-branch-guard      pass
+check-drift            pass
+format-lint            pass
+frontend               pass
+integration            pass
+migrations             pass
+typecheck              pass
+unit                   pass
+pi-review              pending      ← stuck
+```
+`mergeStateStatus: BLOCKED`.
+
+`pi-review` had posted bug_free 88 / 0 blockers against `0617d5648`, but the two fixture commits moved HEAD, so the verdict no longer applied. My re-run of `make review` was killed by the system, leaving the check registered as **pending with no verdict** — a state that will never resolve on its own. My last action was restarting it detached:
+
+```
+nohup make review > /tmp/rev4.out 2>&1 &
+started pid=65141
+```
+
+Evidence already gathered for #2363: unit RED 3 pass/4 fail → GREEN 7 pass/0 fail; token-gap test RED 6 pass/1 fail against bare `isSystemContext`; integration verified locally against embedded PG (7/7) and in CI; integration mutation-proven non-vacuous (`expected { id: 4, …(48) } to not have property "connect_token"`); `make pre-pr` clean via explicit `make exit=0`.
+
+Also merged and live this session: **#2360**, squash `0b641f5c7a8614de614035f07e8fa4e3121157b0`, prod rollout confirmed.
+
+## 9. Optional Next Step
+
+Wait for the detached `make review` (pid 65141, output `/tmp/rev4.out`) to post `pi-review` on HEAD `d8d2e0652`, then — if it reports pass with 0 blockers — merge PR #2363 with `gh pr merge 2363 --squash --admin`, set a prod rollout gate on the resulting squash commit, and clean the worktree with `make task-clean NAME=public-connection-projection FORCE=1`.
+
+This follows directly from the user's `ok do next actions, consolidate and simplify, interview me if you need questions` and my stated position immediately prior: *"I'll merge #2363 when integration reports green, and not before."* Integration now reports `pass`; only `pi-review` remains, and unsticking it is a mandated gate (AGENTS.md: *"Run mandated gates automatically; never ask permission to run one"*).
+
+**Do not proceed past that** onto the consolidation itself. As stated at cutoff: *"The three decisions blocking the actual consolidation are still open."* All three questions remain unanswered, and per my repeated commitment I should not guess at the abstraction — the choice between proxy-only coupling and projection capabilities differs by roughly an order of magnitude in blast radius and would change live anonymous tool-door behaviour.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/be3008ba-304c-41dc-a7e2-686c16cc1fdc.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

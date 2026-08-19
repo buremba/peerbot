@@ -7,7 +7,7 @@
  * ignores). The fix: the poll automation lane only matches devices that
  * advertise `automations.execute` (the daemon opts in by auto-advertising it
  * on the headless platform) — with the macOS exemption preserving the
- * pre-capability behavior for Owletto's bridge, which advertises a fixed
+ * pre-capability exemption for Owletto's bridge, which advertises a fixed
  * capability set with no such string.
  *
  * These tests drive the real poll endpoint with a device-pinned automation:

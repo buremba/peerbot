@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bj65hg050</task-id>
+<tool-use-id>toolu_0155725QHHBNi4ojtNbC9T21</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/bj65hg050.output</output-file>
+<status>completed</status>
+<summary>Background command "Run Sonnet spike from correct cwd" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+is it the pi native way? are we running on latest pi version? soulMd is also gonna be part of the discussion right? also if user changes soulMd is doesn't affect existing conversations right

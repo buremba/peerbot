@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b2ciypeh4</task-id>
+<summary>Monitor event: "PRs #2299/#2300 required checks"</summary>
+<event>PR2300 all required checks GREEN incl pi-review — mergeable</event>
+</task-notification>

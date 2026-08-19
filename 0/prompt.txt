@@ -1,0 +1,4 @@
+now you removed the add member button, bring it back next to the dropdown where we select the view, make it primary. a couple of issues. in here one item will be one row. also same style in the skills page. also the tabs and the header should be centered for easily tracking. remove Behaviors can use the Skills enabled for this agent. Manage skills
+
+
+ as well /Users/burakemre/Library/Application\ Support/CleanShot/media/media_NZQ5ZDdWvt/CleanShot\ 2026-07-31\ at\ 05.15.31@2x.png

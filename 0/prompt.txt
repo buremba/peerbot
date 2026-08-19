@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The persistence event path can overwrite fresh approval cards with their display-only snapshot, disabling valid inline approval controls. Existing tests do not cover this sequence with approval actions.
+
+Review comment:
+
+- [P1] Ignore widget-state echoes for live approval data — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-chatgpt-rehydrate/packages/owletto/src/mcp-apps/_shared/host.tsx:168-172
+  When a fresh or preloaded approval result contains `resolve_lobu_approval` actions, this persistence call removes those actions before invoking `setWidgetState`; the resulting `openai:set_globals` event is then processed by `applyOpenAiGlobals`, which replaces the live view with the sanitized snapshot. The currently authorized card therefore immediately loses Approve/Reject rather than only becoming display-only after a reload; use snapshots only when no live output has been received, or ignore the setter's widget-state echo.
+  </results>
+  </user_action>

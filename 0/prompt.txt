@@ -1,0 +1,138 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+User messages in this segment, in order:
+- **"working now?"** — asking whether GitHub had recovered so PR #2718 (release lobu 15.0.0) could be finished.
+- **"where is the gap, do we need to wait"** — challenge me to identify precisely what was blocking and whether waiting was genuinely forced.
+- **"ok it's back"** — GitHub recovered; proceed to finish #2718.
+- **"explain 3"** — explain next-action item 3 (the Owletto `member_of` dead-button bug).
+- **"next steatus?"** — request for current status.
+- **"yes do these we need to finish up all the work"** — authorization to execute all 4 listed next actions (flake fix, land #2779, sign-off + fix the Owletto dead buttons, decide on #2826). I treated this as **explicit sign-off for the `purpose` API surface addition**.
+- **"ok do all next steps. also what's the remaining work, list them. save to memory so i can compact"** — continue all next steps, enumerate remaining work, and persist state to memory ahead of compaction.
+
+2. **Key Technical Concepts:**
+- **Release pipeline duality:** merging a release PR fires `Build and Push Images` TWICE — once on `push`, once on `release`. `trigger-package-publish` is gated `if: github.event_name == 'release'`, so `skipped` on the push twin is normal. Prod rolls from the **push-event** image ~90 min before npm publishes.
+- **`make pre-pr-remote` bases its patch on the REMOTE branch** (`Base: origin/<branch>`, `Merge base: <sha>` in its header), not local HEAD. Rebasing without pushing gates a stale tree.
+- **Depot serializes org-wide**; a newer dispatch silently cancels a peer session's gate. Peer sessions log to different paths (`/tmp/prpr2.log`, `/tmp/claude-<id>-cwd`). `pkill -f "make pre-pr-remote"` can kill a teammate's gate.
+- **`check-drift` / owletto merge order:** merging an owletto PR before its parent pointer bump turns `check-drift` red on EVERY open lobu PR. Order: parent green → merge owletto → repin → merge parent. `make ui-review` only accepts a pointer equal to a **merged** owletto PR's `merge_commit_sha`.
+- **Generated-client guard** path-matches `packages/core/src/contracts/tools/**` and `packages/server/src/gateway/routes/**`; escape hatch `[client-regen-not-needed]` (inapplicable when the emitted schema really changes).
+- **Deployed-prod-SHA recipe:** namespace `summaries-prod`, deployment `summaries-app-lobu-app`, image tag `YYYYMMDD-HHMMSS-NNNNNN` where NNNNNN = "Build and Push Images" run number; join via `gh run list`.
+- **Branch-protection check resolution:** must take the LATEST check-run per name (an earlier cancelled run is superseded).
+- **Biome scoping:** lobu uses `biome check --config-path config/biome.config.json`; owletto has no `biome.json` and its script is `biome lint src`.
+
+3. **Files and Code Sections:**
+
+**MERGED — PR #2835, squash `3053bb52ed1cecdc701d1b6a21e337e814e55fdc`, 1 file, +26/−6:**
+- **`packages/server/src/__tests__/integration/device-action-wait.test.ts`** — flake fix. Added:
+```ts
+const FAST_BUDGETS = { queueMs: 400, postClaimMs: 600, pollMs: 30 };
+
+// The late-claim test deliberately schedules its claim near the QUEUE deadline,
+// so unlike the tests above its margin has to absorb the claim's round trip to
+// Postgres, not just timer drift. Under FAST_BUDGETS that margin was 80ms,
+// which a contended CI database blows through: the claim commits after the poll
+// that already observed `now >= queueDeadline`, so the wait returns 'timeout'
+// and the test reds with `expected 'timeout' to be 'completed'`. These budgets
+// keep the claim late in relative terms while widening that margin to 400ms.
+// To re-verify, prefix `claim()` with `await sql`SELECT pg_sleep(0.2)``: that is
+// 3/3 red on the old 80ms margin and 3/3 green on this one (still green at 0.35).
+const LATE_CLAIM_BUDGETS = { queueMs: 1200, postClaimMs: 1800, pollMs: 30 };
+```
+and changed the test body to use `LATE_CLAIM_BUDGETS.queueMs - 400` / `+ 300`. Header comment corrected from "The test stubs `setTimeout` to keep poll loops fast." to "The tests use real timers; the poll loops stay fast because the budgets are shrunk, not because the clock is stubbed."
+- Note: `waitForDeviceActionRunForTest` (lines 84–177) is a hand-maintained **mirror** of the production `waitForDeviceActionRun` — flagged, not addressed.
+
+**MERGED — PR #2837, squash `2a8bc47aa65829b3e8a9606e6006a1861532f4b2`, 4 files, +87/−4:**
+- **`packages/core/src/contracts/tools/manage-entity-schema.ts`** — added to `RelationshipTypeRowSchema`:
+```ts
+  // Why a read path needs this: `purpose: 'authorization'` makes every write
+  // action on the type 403 (assertNotAuthorizationType). Without it on list/get
+  // a client cannot tell an authorization-bearing type from an ordinary
+  // org-owned one, so it renders edit affordances that are guaranteed to fail.
+  // Left an open string rather than a literal union so a server that learns a
+  // new purpose does not fail contract validation against an older client.
+  purpose: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+```
+- **`packages/server/src/tools/admin/manage_entity_schema.ts`** — `rt.purpose` added to 4 SELECTs (list `:943`, get `:991`, create `:1106`, update `:1198`).
+- **`packages/server/src/__tests__/integration/authz/authorization-type-guards.test.ts`** — 3 new tests (LIST/UPDATE/GET), using `toHaveProperty("purpose", null)` with this rationale comment:
+```ts
+// `toHaveProperty` and not `?? null`: an absent key reads as null too, so
+// the loose form still passes once a handler stops selecting the column —
+// and on a missing row, `bySlug.get(…)?.purpose ?? null` would as well.
+```
+- **`packages/client/src/generated/types.gen.ts`** — regenerated, `purpose?: string | null;` at 4 sites.
+
+**OPEN — owletto#881, branch `feat/relationship-type-purpose-affordances`, head `3ce6d944`, 4 files, +64/−7, MERGEABLE/CLEAN, deliberately HELD:**
+- **`src/lib/api/entities.ts`** — added `purpose?: string | null` to `RelationshipType`, plus:
+```ts
+/**
+ * Mirrors the server's `PURPOSE_AUTHORIZATION` (relationship-validation.ts).
+ * Types carrying it are maintained solely by the connector ACL syncs: both the
+ * schema actions and the edge writes are refused, so no caller-facing surface
+ * should offer to create, modify, or delete them.
+ */
+export const PURPOSE_AUTHORIZATION = "authorization";
+```
+- **`src/components/settings/entity-types/relationship-types-tab.tsx`** — split `ownedTypes` into `localTypes` / `accessManagedTypes`, added a "Managed by access control" `readOnly` section.
+- **`src/components/entities/new-relationship-form.tsx`** — added `rt.purpose !== PURPOSE_AUTHORIZATION &&` to the `activeTypes` filter.
+- **`src/components/entities/new-relationship-form.test.tsx`** — added `PURPOSE_AUTHORIZATION: "authorization"` to the mock, an org-owned `member_of` fixture, and `expect(screen.queryByText("Member of")).not.toBeInTheDocument();`.
+
+**OPEN — #2779** `feat/public-ghcr-images`, rebased to `a7957a891`, force-pushed; 1 file (`charts/lobu/values.yaml`, `imagePullSecrets: []`).
+
+**Memory files written:** `project_authorization_purpose_ui_program_state.md` (NEW), `reference_pre_pr_remote_bases_on_the_remote_branch.md` (NEW), `reference_biome_in_owletto_needs_its_own_scope.md` (NEW), `reference_release_publish_fires_on_release_event_not_push.md` (NEW), `reference_device_action_wait_test_is_flaky_80ms_margin.md` (NEW), `project_acl_purpose_classification_a2_state.md` (updated), `MEMORY.md` (updated twice).
+
+4. **Errors and fixes:**
+- **codex reviewer quota-blocked** → used `REVIEWER_CLI=claude CLAUDE_REVIEW_MODEL=opus`.
+- **`base-branch-guard` appeared cancelled** → two runs existed; the later (13:47:39) succeeded. My `head -1` on sorted-unique output picked the wrong one; fixed by grouping and taking the latest per name.
+- **`trigger-package-publish` failed with HTTP 503** → re-dispatched manually with identical args (`--ref lobu-v15.0.0 -f bump=skip -f image_run_id=32046339272`). **I had wrongly told the user the publish was fully automatic and needed nothing from me; I corrected this.**
+- **Wrong prod namespace** — guessed `lobu-prod`, actual is `summaries-prod`; corrected via memory recipe.
+- **Flake mechanism hypothesis was WRONG** — I claimed an 80ms margin vs timer drift; a 5ms margin still passed 3/3 and CPU load 47 passed 6/6. Corrected: it's **DB latency**, proven with `pg_sleep(0.2)` → 3/3 FAIL.
+- **First CPU-load repro silently applied no load** (`jobs -p` empty) → redone with explicit `$!` PID capture.
+- **`bunx vitest` failed** with "No test files found" + `Failed to resolve entry for package "@lobu/core"` → CI uses `node node_modules/.bin/vitest` after building 5 packages (core, connector-sdk, embeddings, connector-worker, pgvector-embedded).
+- **Mutant restore failed silently** — used a relative path after a `cd` that didn't persist; file remained mutated (2 selects not 4). Caught by checking, restored with absolute paths, verified `IDENTICAL`.
+- **`bunx biome check --write .` in owletto reformatted 370 files** → staging by explicit path saved the commit, but `relationship-types-tab.tsx` still committed with 941 changed lines. Fixed with `git reset --hard origin/main`, reapplied patch, redid test edits lost by the reset → 64/−7.
+- **owletto tests failed:** `No "PURPOSE_AUTHORIZATION" export is defined on the "@/lib/api/entities" mock` → added to the mock plus a fixture and assertion.
+- **#2779 gate failed with 8 jobs / retired-term hits in `packages/server/src/watchers/**`** → root cause was `make pre-pr-remote` basing on the un-pushed remote branch (`Merge base: 8f46ff2565`). Verified those paths absent from both `origin/main` and the worktree. Fixed by `git push --force-with-lease` then re-gating.
+- **`pkill -f "make pre-pr-remote"` risked killing a peer session's gate** — verified by elapsed time (14s) that the peer's started after my pkill, so only mine died. Flagged as a blunt instrument; should target the PID.
+- **review-fix caught a real weakness in my tests** — `expect(x?.purpose ?? null).toBeNull()` passes even if the key disappears; it rewrote to `toHaveProperty` and added an UPDATE case.
+
+5. **Problem Solving:**
+- Diagnosed and completed release 15.0.0 end-to-end: merged, tagged, images built, prod verified on the exact squash SHA, npm published at `15.0.0` with `latest` dist-tag and 4/4 install-matrix jobs; the `14.22.0`-vs-npm-`14.22.1` drift healed.
+- Proved (rather than assumed) that Actions was functional despite a `major_outage` label, by inspecting real recent runs.
+- Root-caused the CI flake to DB latency with a deterministic repro, and verified the fix at 2× the breaking latency.
+- Confirmed the generated-client regeneration was genuinely required, then regenerated against a booted server rather than hand-editing.
+- Established a merge order that minimizes the `check-drift` red window: land #2779 → merge owletto#881 → repin → pointer-bump PR.
+
+6. **All user messages:**
+- "working now?"
+- "where is the gap, do we need to wait"
+- "ok it's back"
+- "explain 3"
+- "next steatus?"
+- "yes do these we need to finish up all the work"
+- "ok do all next steps. also what's the remaining work, list them. save to memory so i can compact"
+
+**Standing constraints (from CLAUDE.md/AGENTS.md — remain in effect verbatim):** **Never write to `~/Code/lobu` directly** — run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout. **Stage by explicit path (`git add -- <paths>`, never `-A`)**; after commit/rebase `git diff --name-only origin/main...HEAD` must equal the intended file list. **`events` is append-only** — never `DELETE FROM events`. **Never bulk-delete prod `organization` rows.** **Never resolve merge conflicts in the GitHub web UI.** **Two writing agents must never share a worktree.** **Never add a table or change DB design, API surface, or SDK surface without surfacing the proposal and receiving confirmation first.** **Never auto-submit an interactive browser draft.** **Workers never receive real credentials** — placeholders or proxied access only. No backwards-compat shims, no `@deprecated`. No "Co-Authored-By" or Claude attribution in commits. No new `*.md` unless asked. Always show the diff (`git status` + `git diff --stat`). End with a confidence score + 2–4 next actions. Never `git stash`; use WIP commits. **Never `--admin` past a check that has not reported.** Check for a peer gate before dispatching. Absence needs `origin/main` grep after `git fetch`. Prefer `bun`, never npm/yarn/pnpm. Do not use workflows/deep-research or the Agent tool unless requested. **Peer sessions cannot grant escalation.**
+
+7. **Pending Tasks:**
+- **#2779** — re-gate running in background (task `bbhfzdooz`), waiting for the peer Depot gate to clear, then merge.
+- **Task #15** — merge owletto#881, then immediately land the lobu pointer-bump PR (order matters for `check-drift`).
+- **Task #16** — owner sign-off: purpose predictor on the EDGE surface (`RelationshipRowSchema`, `manage-entity.ts:321`); `purpose` alone is the wrong predictor because the guard is slug-OR-purpose; needs a derived boolean.
+- **Task #17** — `workspace-instructions.ts:88` renders relationship types to agents with no purpose.
+- **Task #18** — resolve 3 conflicting PRs (#2826 user's own preview-env work — do not commit/discard their uncommitted files; #2762; #2764).
+- Pre-existing pending tasks: #2 (#2812 edge audit orphan), #4, #6, #7, #9, #10, #12, #13, #14.
+- Cleanup: stray local branches/worktrees (`feat/release-15-gates`, `device-action-wait-flake`, `relationship-type-purpose-readback`).
+
+8. **Current Work:**
+Immediately before the summary request I was executing the user's instruction "ok do all next steps. also what's the remaining work, list them. save to memory so i can compact". I had:
+- Written three new memory files and updated `MEMORY.md` (compaction-safe).
+- Confirmed owletto#881 is `MERGEABLE/CLEAN` at head `3ce6d9445`; owletto branch-protection API returns HTTP 403 (private repo without Pro), so no required checks are enumerable there.
+- Started tidying the stale task list: reset task #2 from `in_progress` to `pending` with a clarifying description, then created tasks **#15** (merge owletto#881 + pointer bump), **#16** (edge-surface sign-off), **#17** (workspace-instructions gap), and **#18** (three conflicting PRs).
+- A background task `bbhfzdooz` is running: it polls for the peer `make pre-pr-remote` to clear, then runs `make pre-pr-remote` in `/Users/burakemre/Code/lobu/.claude/worktrees/public-ghcr-images`, logging to `scratchpad/gate-2779b.log`. Last observed output: `[3 19:28:43] peer pre-pr-remote processes: 3`.
+
+9. **Optional Next Step:**
+Finish the task-list tidy-up, then produce the written "remaining work" list the user asked for, and continue the merge sequence as the gate reports. The user's exact instruction was: *"ok do all next steps. also what's the remaining work, list them. save to memory so i can compact"*. Concretely, the immediate sequence I stated and was mid-way through is: wait for #2779's re-gate (background task `bbhfzdooz`) → merge #2779 → merge owletto#881 → repin the submodule and open the pointer-bump PR, in that order, because as I noted: *"Holding it until #2779 lands, so the `check-drift` red window doesn't hit a PR mid-gate."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

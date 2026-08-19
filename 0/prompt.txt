@@ -1,0 +1,1 @@
+run dev server and open the pages in my owletto browser one by one to show how it works

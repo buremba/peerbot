@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bewpb5osu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/bewpb5osu.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review to post pi-review status" completed (exit code 0)</summary>
+</task-notification>

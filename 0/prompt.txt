@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b83gouw14</task-id>
+<tool-use-id>toolu_015xXzG9Hwsw23spoLgeQE2H</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/59170af4-27c9-4466-bc60-1820469338cb/tasks/b83gouw14.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-review 2249 after isolation fix" completed (exit code 0)</summary>
+</task-notification>

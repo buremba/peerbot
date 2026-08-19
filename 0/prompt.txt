@@ -1,0 +1,67 @@
+<task-notification>
+<task-id>ae0ec4af86bd579ee</task-id>
+<tool-use-id>toolu_01Xaw4MBazoZsWEJkH46wuXj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/ae0ec4af86bd579ee.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix SDK tier drift guard" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>CI dispatched and running. Work is complete.
+
+## What was done
+
+**PR #2283**: https://github.com/lobu-ai/lobu/pull/2283 (branch `feat/sdk-tier-drift-guard`)
+
+```
+ .../__tests__/unit/sandbox/method-metadata.test.ts |   8 +-
+ .../src/__tests__/unit/sandbox/sdk-search.test.ts  |  11 +-
+ .../__tests__/access-model-cross-check.test.ts     | 187 +++++++++++++++++----
+ packages/server/src/sandbox/method-metadata.ts     |  22 +--
+ 4 files changed, 173 insertions(+), 55 deletions(-)
+```
+
+All four of your verified facts re-confirmed, including the `3 passed` green baseline on main.
+
+## Key finding: 11 drifts, not 3
+
+Your independent parser found 3 because it can't resolve `entitySchema`'s runtime-computed actions — the exact limitation you flagged. Runtime observation surfaced 8 more of identical shape: the six `entitySchema` create/update/delete pairs plus `authProfiles.get`/`delete`.
+
+**`authProfiles.get` needs your call.** It's a three-way contradiction: #2046 set metadata to `read` (handler returns sanitized data — sound reasoning) but never mirrored it into `tool-access.ts`, where `get_auth_profile` is owner-admin. I aligned discovery *down* and left enforcement untouched, because widening a credential-adjacent boundary is your decision, not a test fixup. This broke two tests asserting the contradicted `read` tier; I updated both with the reasoning and the exact two-line change to reverse it.
+
+## Design note
+
+`make review-fix` **reverted my production change** and rewrote capture to read the `action` discriminator from the stub handler's payload. That's strictly better — **zero production code changed**, `tool-access.ts` byte-identical, same ground truth observed one layer closer to enforcement. I re-ran both mutations against the rewritten version.
+
+## Mutation-test evidence (both on final code)
+
+**A. Tier drift** — `connections.delete` admin→write:
+```
+× keeps SDK discovery tiers aligned with runtime enforcement
++ "connections.delete: SDK=write runtime(manage_connections.delete)=admin"
+      Tests  1 failed | 3 passed (4)
+```
+**B. Unresolvable action** — `feeds.delete`→`remove_feed` (*the exact case the old guard silently skipped*):
+```
++ "feeds.delete: manage_feeds.remove_feed is in no tier map and implicitly falls through to read..."
+      Tests  1 failed | 3 passed (4)
+```
+Both revert to `Tests 4 passed (4)`.
+
+## Coverage: 53→93 checked, 25→0 silently skipped
+
+The other 35 are excluded by explicit documented rules (12 `.manage` passthroughs, 23 untiered namespaces, 2-entry allowlist), not a `continue`. The `external` exemption is preserved.
+
+## Confidence
+
+- **Guard correctness — 95.** Ran it green, red on 11 real drifts, green again, plus two mutations in both directions.
+- **The 11 alignments — 90.** Convention matched against e041c3479. Discovery-only; enforcement provably unchanged (`git diff` on `tool-access.ts` empty). Not exercised against a live member-role caller.
+- **No regressions — 88.** `make test-unit` 0 fail, 117 unit sandbox, 165 vitest auth/sandbox, all 6 `pre-pr` gates. CI dispatched but **not yet reported** — I have not seen it pass.
+- **`authProfiles.get` resolution — 70.** Deliberately conservative; the underlying product question is genuinely open.
+
+## Next actions
+
+1. **Decide `authProfiles.get`** — keep admin-enforced, or move `get_auth_profile` to `PUBLIC_READ_ACTIONS` and flip metadata back together (guarded by this test either way).
+2. **Run `make review` once** on settled HEAD `633549a2c` — I left it for you as instructed.
+3. **Watch `integration` and `sdk-e2e`** — the tier changes affect `search_sdk` visibility; local suites are green but CI hasn't reported.
+4. **Consider `catalog`/`viewTemplates`** — both are in `NAMESPACE_TOOL` and now checked, but I didn't separately audit whether their tier maps are complete rather than merely consistent.</result>
+<usage><subagent_tokens>162660</subagent_tokens><tool_uses>76</tool_uses><duration_ms>1496039</duration_ms></usage>
+</task-notification>

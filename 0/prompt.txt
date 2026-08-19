@@ -1,0 +1,1 @@
+explain different apis and brainstom tell me gotchas tradeoffs issues etc

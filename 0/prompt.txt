@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buenf4ve2</task-id>
+<tool-use-id>toolu_0189Bqa992LCMe4a58E34rZx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/buenf4ve2.output</output-file>
+<status>completed</status>
+<summary>Background command "git status -s | head -6 &amp;&amp; make pre-pr-remote &gt; /tmp/prepr-full2.log 2&gt;&amp;1" completed (exit code 0)</summary>
+</task-notification>

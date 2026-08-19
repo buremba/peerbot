@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs6h2qfkh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8/tasks/bs6h2qfkh.output</output-file>
+<status>killed</status>
+<summary>Background command "Run prod rollout gate for PR 2521" was stopped</summary>
+</task-notification>

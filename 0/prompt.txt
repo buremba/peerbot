@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkzabdlqe</task-id>
+<summary>Monitor event: "PR 2374 checks on final HEAD"</summary>
+<event>check-drift: pass
+format-lint: pass
+migrations: pass</event>
+</task-notification>

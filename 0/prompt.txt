@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b2he3v451</task-id>
+<summary>Monitor event: "2326 required checks all reporting"</summary>
+<event>integration: pass
+ALL-REPORTED</event>
+</task-notification>

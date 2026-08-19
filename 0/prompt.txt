@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b591i467v</task-id>
+<tool-use-id>toolu_017CPp4jWeptPUoqx8oWG23A</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/b591i467v.output</output-file>
+<status>completed</status>
+<summary>Background command "pre-pr on trigger-feed branch" completed (exit code 0)</summary>
+</task-notification>

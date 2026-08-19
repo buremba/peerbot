@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmol99hkp</task-id>
+<tool-use-id>toolu_01LUvNDT8VBNFPJ26TLdW8Jt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/bmol99hkp.output</output-file>
+<status>completed</status>
+<summary>Background command "Codex design review of the turn-lifecycle design" completed (exit code 0)</summary>
+</task-notification>

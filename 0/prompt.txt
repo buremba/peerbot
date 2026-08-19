@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blpb2evot</task-id>
+<tool-use-id>toolu_013yEu8qvWEEdAC1tp69g4jy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/blpb2evot.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for parent CI" completed (exit code 0)</summary>
+</task-notification>

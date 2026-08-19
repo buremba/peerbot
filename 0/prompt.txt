@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvhdi8yot</task-id>
+<tool-use-id>toolu_01RN2quSC1ouj5j6h8ZhaZw3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bvhdi8yot.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for remaining checks on 2383" completed (exit code 0)</summary>
+</task-notification>

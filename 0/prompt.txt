@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqjo6tutm</task-id>
+<tool-use-id>toolu_01227StFq2ifju2AKJkf7xRQ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/872c1f9c-d1ae-4139-93a5-3ed7b02ede10/tasks/bqjo6tutm.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2380 CI to settle" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bv2o79izk</task-id>
+<tool-use-id>toolu_019X8ey9pXLdw3yuy3pMTfLw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1eebddbf-4c2c-4bd1-9494-4a0bad73b495/tasks/bv2o79izk.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for judge to finish" completed (exit code 0)</summary>
+</task-notification>

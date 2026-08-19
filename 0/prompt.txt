@@ -1,0 +1,1 @@
+ok let's finalize the spec, if you want to do spikes you can to save the memory so i can also compact

@@ -1,0 +1,1 @@
+the desction can appear in a new line [Image #5] also in http://127.0.0.1:5261/local-install/connectors/github/16?feedId=3 page the settings can appear before the runs table. also why feedId query parameter can be a path parameter isn't it better?

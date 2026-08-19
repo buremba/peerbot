@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bey49pzif</task-id>
+<tool-use-id>toolu_01MSUHWstAvKDsRCNDG2bAGG</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bey49pzif.output</output-file>
+<status>completed</status>
+<summary>Background command "Final pre-pr after review-fix reconciliation" completed (exit code 0)</summary>
+</task-notification>

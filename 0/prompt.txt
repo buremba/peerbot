@@ -1,0 +1,150 @@
+<task-notification>
+<task-id>af8dce9a5b6af1ff5</task-id>
+<tool-use-id>toolu_01T3uD33kgcAhPWHn8YWbB1T</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/af8dce9a5b6af1ff5.output</output-file>
+<status>completed</status>
+<summary>Agent "Plan agent-initiated declared installs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have a complete, code-verified picture. Here is the design and implementation plan.
+
+# Design: Agent-initiated declared package installs
+
+## Verified architecture (what I read)
+
+- **Declared-package resolution**: `resolveAgentOptions` in `/Users/burakemre/Code/lobu/packages/server/src/gateway/services/platform-helpers.ts` (origin/main version, PR #2218) unions three nix sources — per-request `baseOptions.nixConfig`, `settings.nixConfig`, and enabled skills' `nixPackages` — into `mergedOptions.nixConfig`. Every enqueue path routes through it (`message-handler-bridge.ts:1301`, `routes/public/agent.ts:1492`, `scheduled/jobs.ts`, `manage_conversations.ts:242`). A fourth source (connector-contributed tooling, PR #2243) is folded at deploy time via `packages/server/src/gateway/agent-tooling/resolver.ts` + `message-consumer.ts`.
+- **Provisioning**: `deployment-manager.ts` spawns the embedded worker wrapped in `nix-shell -E 'let pkgs = … buildInputs = [ ${packageRefs} ]'` (~line 2100), after validating every name through `nixPackageAttrRef` (re-exported at line 584 from `@lobu/connector-sdk/nix-package`). Nix packages are **spawn-time only**; warm workers never pick up new packages (`ensureDeployment` reuses the process; the comment at line 895 confirms warm workers never re-run `createWorkerDeployment`). `NIX_CACHE_DOMAINS` egress grants are auto-added whenever `nixConfig` is present (`syncNetworkConfigGrants`, lines 1180–1187).
+- **Runtime denial**: `packages/agent-worker/src/runtime/tool-policy.ts` (`DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES`, `DIRECT_PACKAGE_INSTALL_PATTERNS`, `isDirectPackageInstallCommand`) enforced in `enforceBashPreflight` at `packages/agent-worker/src/runtime/tools.ts:267-271`, whose error message currently points at "nixPackages in lobu.config.ts or agent settings".
+- **Interpreter gate**: `UNSANDBOXED_INTERPRETERS` set in `packages/agent-worker/src/embedded/just-bash-bootstrap.ts:79-124`; `discoverBinaries()` silently filters those names unless `LOBU_ALLOW_UNSANDBOXED_EXEC=1`.
+- **Approval machinery (reused)**: the durable pattern is a pending `runs` row (`run_type='internal'`, `action_key`, `action_input`, `approval_status='pending'`, idempotency key + `pg_advisory_xact_lock`) plus an append-only `events` row (`interactionType:'approval'`, `interactionStatus:'pending'`), notification via `notifyActionApprovalNeeded` (`notifications/triggers.ts:463`), decision + apply via the **`BuilderApprovalHandler` registry** in `manage_operations.ts` (`getBuilderApprovalHandlers()` ~line 1712, `claimBuilderRun` ~line 1753, `supersedeActionEvent` line 1520). `manage_agents.ts` `queueWriteForApproval` (line 666) is the cleanest template. Undecided approvals expire via `scheduled/expire-pending-approvals.ts` (action-key-agnostic — new families are covered automatically).
+- **Policy substrate (reused)**: the generalized write-gate (#1827/#1834): `write_approval_policies` + `write_policy_action_effects`, resolved by `resolveWriteEffect` in `packages/server/src/authz/entity-policy.ts:863`, legal tuples declared in `packages/server/src/authz/write-action-manifest.ts` — which **explicitly reserves `install`** ("intentionally NOT declared until a class actually uses it", line 23-24). Policy CRUD is REST in `packages/server/src/index.ts` (~1348 list, ~1702/2127 upsert).
+- **MCP registration**: agent-facing tools live in `AGENT_TOOLS` in `packages/server/src/tools/registry.ts`; workers reach them through the system `lobu-memory` MCP server (`gateway/auth/mcp/config-service.ts`) served by `mcp-handler.ts` ("tools/list — agent-facing surface only", line 212), with the caller's durable `agentId` bound to the session from the worker token (`mcp-handler.ts:817-835`, PR #2128) and available as `ToolContext.agentId`. The naming gate (`scripts/check-exposed-surface-naming.ts`, `BANNED = /watcher/i`) scans these TypeBox schemas.
+- **Device divergence**: device connector-workers poll `/worker-api/poll` and receive nix ONLY from `connector_runtime.nix.packages` (`worker-api/poll.ts:932-941`); they never run agent conversations (no `MessagePayload` in `packages/connector-worker/src`). Sandbox providers are cloud-only (`provider_kind IN ('vercel','cloudflare','e2b','daytona')`, migration `20260629000050_environments.sql:32`). So agent-settings-derived nix structurally never reaches a user device today — the design must keep it that way.
+- **Respawn feasibility**: transcripts are mirrored to PG and rehydrated before `SessionManager.open()` (`packages/agent-worker/src/runtime/transcript-snapshot.ts`, `hydrateFromSnapshot`), so killing and respawning a worker between turns preserves the conversation. `EmbeddedWorkerEntry.env` (deployment-manager.ts:250) retains spawn-time `NIX_PACKAGES` for a drift check.
+- **Clobber hazard**: `lobu apply` computes and writes `settings.nixConfig` from `lobu.config.ts` (`packages/cli/src/commands/_lib/apply/map-config.ts:297-371`) — a grant folded into `settings.nixConfig` would be silently reverted by the next apply. This drives the persistence choice below.
+
+## Design decisions
+
+### 1. Persistence: a dedicated `agent_package_grants` table (per-agent)
+
+Not `agents.settings.nixConfig` (CLI apply clobbers it; also settings writes race with UI edits) and not org-wide rows (org-wide intent is expressed as *policy*, not grants — an allowlisted package auto-grants for any agent that asks, which gives org-wide behavior without an org-wide grant object). Skill provenance is recorded as a column, not a scope.
+
+```sql
+-- db/migrations/&lt;ts&gt;_agent_package_grants.sql
+CREATE TABLE IF NOT EXISTS public.agent_package_grants (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+  agent_id text NOT NULL,
+  package text NOT NULL,               -- validated via nixPackageAttrRef before insert
+  reason text,
+  skill text,                          -- provenance only
+  source_run_id bigint,                -- approval run, NULL for auto-approved
+  granted_by_user_id text,             -- NULL for policy auto-grants
+  granted_via text NOT NULL DEFAULT 'approval',  -- 'approval' | 'auto_policy'
+  created_at timestamptz NOT NULL DEFAULT now(),
+  revoked_at timestamptz,              -- tombstone; never DELETE
+  revoked_by_user_id text,
+  CONSTRAINT agent_package_grants_active_key
+    UNIQUE (organization_id, agent_id, package, revoked_at)  -- see note
+);
+```
+(Note: a partial unique index `WHERE revoked_at IS NULL` is the cleaner uniqueness; per GOTCHAS squawk conventions it needs `CREATE UNIQUE INDEX IF NOT EXISTS … -- squawk-ignore require-concurrent-index-creation` on the brand-new table instead of the table constraint sketched above.)
+
+Consumption: **source 4 in `resolveAgentOptions`** — after the existing three-way union, read active grants for `(agentId, organizationId)` via a new store (`packages/server/src/lobu/stores/package-grants.ts`, using `getDb()` like the adjacent `provider-secrets.ts` import) and fold into `mergedOptions.nixConfig.packages`. Skip when `organizationId` is absent (declared orgless agents — fail closed, no grant lookup). This automatically covers every scheduled/chat/API run and inherits `NIX_CACHE_DOMAINS` egress granting and `nixPackageAttrRef` validation downstream.
+
+### 2. MCP tool: `request_environment_package`
+
+New file `packages/server/src/tools/request_environment_package.ts`, registered in `AGENT_TOOLS` in `packages/server/src/tools/registry.ts` (visible on tools/list to every worker via the lobu MCP server). No "watcher" anywhere in name/description/schema (naming gate).
+
+```ts
+export const RequestEnvironmentPackageSchema = Type.Object({
+  package: Type.String({
+    description:
+      "nixpkgs attribute to add to this agent's sandbox, e.g. 'ffmpeg', 'imagemagick', or 'python3Packages.requests'. Leaf or &lt;namespace&gt;.&lt;leaf&gt; only — no flake URLs, no versions.",
+  }),
+  reason: Type.String({
+    description: "One sentence on why the package is needed; shown on the approval card.",
+  }),
+  skill: Type.Optional(Type.String({ description: "Skill this dependency supports, if any." })),
+});
+// Result: { status: 'granted' | 'pending_approval' | 'denied',
+//           run_id?: number, event_id?: number, message: string }
+```
+
+Handler flow (mirrors `queueWriteForApproval` in `manage_agents.ts:666-820`):
+1. Require `ctx.agentId` + `ctx.organizationId` (`ToolContext`, bound from the worker token — `mcp-handler.ts:835`); reject human/anonymous sessions with a pointer to agent settings instead (humans edit settings directly).
+2. Validate the name with `nixPackageAttrRef` (import from `@lobu/connector-sdk/nix-package`; server already depends on it) — reject before anything is queued so an un-approvable card never exists (same principle as manage_agents' pre-validation).
+3. **Interpreter-gate check** (requirement 6): if the package name (or its known binary aliases, e.g. `nodejs`→`node`) is in the gated set → return `denied` with an explicit message ("full interpreters/network tools are excluded from the sandbox command surface; granting would be a no-op because the worker filters these binaries") — never silently granted, never auto-approved. To share the list, lift `UNSANDBOXED_INTERPRETERS` from `packages/agent-worker/src/embedded/just-bash-bootstrap.ts:79` into `@lobu/core` (e.g. `packages/core/src/contracts/sandbox-exec.ts`, exported as `UNSANDBOXED_INTERPRETER_NAMES`), import it back in the bootstrap (behavior-identical) and in the server handler. Server cannot import agent-worker (not a dependency — verified `packages/server/package.json`), core is shared by both.
+4. Resolve the effect via `resolveWriteEffect` (`entity-policy.ts:863`) with the new class/action (below): `auto` → insert grant + audit event, return `granted (available next session)`. `approval` → pending run + card. `deny` → return denied.
+5. Pending path: `INSERT INTO runs (… action_key='sandbox_package_install', approval_status='pending' …)` with `idempotency_key = hash('sandbox_package_install|org|agent|package')` + the advisory-lock/find-existing/reuse pattern from `entity-field-approval.ts:750-785` so repeated asks collapse to one card; `insertEvent` with `interactionType:'approval'`; fire `notifyActionApprovalNeeded`; return the "card is shown, stay terse" message idiom (`manage_agents.ts:816`).
+
+Also update the bash deny message at `packages/agent-worker/src/runtime/tools.ts:269` to point agents at `request_environment_package`.
+
+### 3. Policy tiers: new write-gate class `sandbox_package`, action `install`
+
+- `packages/server/src/authz/entity-policy.ts:51`: `WriteResourceClass` += `'sandbox_package'`.
+- `packages/server/src/authz/write-action-manifest.ts`: add `install` to `WriteAction`; add class manifest `{ actions: ['install'], effects: ['auto','approval','deny'], defaultEffect: { install: 'approval', …others: 'deny' } }` — approval-gated by default, per requirement 2.
+- Migration widening the child-table CHECK (`write_policy_action_effects.action IN (…)`, created in `20260710120000_write_policy_action_effects.sql:49`) to include `'install'`, using the `NOT VALID` + `VALIDATE` two-step from `20260709120000_write_policy_expand.sql` (precedent: `20260713150000_write_policy_entity_read.sql`).
+- **Org auto-approve allowlist** = policy rows: `{ resource_class:'sandbox_package', operation_key:'&lt;package&gt;' | NULL, principal_kind/principal_id optional, install → auto }`, reusing `operation_key` as the package scope exactly as `connector_action` scopes per operation. CRUD through the existing REST endpoints in `packages/server/src/index.ts` (`upsertEntityApprovalPolicy` at `entity-policy.ts:1107`) — extend their class/action validation.
+- **Hard floor**: the handler's interpreter-gate check runs *before* policy resolution, so an org allowlist row can never auto-approve a gated interpreter.
+
+### 4. Approval decision + apply
+
+Register a third `BuilderApprovalHandler` in `getBuilderApprovalHandlers()` (`manage_operations.ts:1712`):
+```ts
+{ actionKey: SANDBOX_PACKAGE_INSTALL_ACTION_KEY, nounLabel: 'Package',
+  isValidProposal, apply: applySandboxPackageGrant, describe: p =&gt; `install ${p.package}` }
+```
+`applySandboxPackageGrant` (in the new tool file) inserts the grant row (`ON CONFLICT DO NOTHING` on the active-uniqueness index) and the audit event. The shared claim path (`claimBuilderRun`, `UPDATE … RETURNING` — multi-replica safe), `supersedeActionEvent` terminal chain, and the expiry sweep all apply with zero new orchestration code.
+
+### 5. Device workers: structural + explicit deny (requirement 2/3)
+
+- Grants live only in `agent_package_grants` → consumed only in `resolveAgentOptions` → `messageData.nixConfig` → embedded gateway spawn. The device poll path (`worker-api/poll.ts:932`) reads `connector_runtime.nix.packages` exclusively; the two channels never touch. Add a regression test asserting a grant for an agent does not alter the poll response for a device-pinned connection.
+- Defense in depth: the tool handler denies when the MCP session is not an agent-worker session, and device connector-workers have no MCP tool surface at all (they use `/worker-api`). Document the invariant in `packages/server/AGENTS.md`'s device-pinned section.
+- Remote sandbox providers (vercel/e2b/…) currently don't get nix provisioning on main (feat/connector-agent-env branch is unmerged); grants degrade exactly like declared packages do there (warned, unavailable) — no new hazard.
+
+### 6. In-session experience (requirement 4)
+
+- **Phase-1 UX**: the tool result says "granted — available in your next session" (auto) or "queued for approval; available in a later session once approved". Correct with zero orchestration risk, because nix is spawn-time only.
+- **Phase-2 (fast-follow) — nix-drift respawn**: at the warm-dispatch site in `message-consumer.ts` (~line 1097 "Existing thread"), compare the payload's `nixConfig.packages` (freshly resolved per message by `resolveAgentOptions`) against the spawn-time `entry.env.NIX_PACKAGES` via a new `DeploymentManager.hasNixDrift(deploymentName, packages)` (the entry shape at `deployment-manager.ts:250` already retains `env`). On drift: `deleteDeployment` → `createWorkerDeployment`. This is pod-local (each pod compares its own process's spawn record against the authoritative Postgres-derived payload — no cross-pod state), runs between turns by construction (the conversation advisory lock serializes turns), and the transcript survives via PG snapshot hydration. Cost: SIGTERM→respawn seconds, plus nix-shell evaluation (fast on warm cache; cold-cache downloads can take tens of seconds — acceptable at turn start, and `NIX_CACHE_DOMAINS` grants are already synced). Mid-turn refresh is **not** feasible and not attempted.
+
+### 7. Audit (requirement 5)
+
+All append-only `events`: request → `interaction_type='approval'` pending event (origin `run_&lt;id&gt;_pending`); decision → `supersedeActionEvent` chain (approved/rejected/expired), reviewer recorded; auto-grants → a non-interactive `semanticType:'operation'` event with `metadata: { action: 'sandbox_package_grant', package, granted_via: 'auto_policy', policy_id }`; revocation → tombstone (`revoked_at`) + a new event, never a delete. MCP tool invocations are additionally captured by the existing tool audit (`packages/server/src/tools/audit.ts`).
+
+## Phased implementation plan
+
+- **Phase 0 (core, no behavior change)**: move `UNSANDBOXED_INTERPRETERS` to `@lobu/core` as `UNSANDBOXED_INTERPRETER_NAMES`; re-import in `just-bash-bootstrap.ts`. Note the three build lists / stale-dist gotchas (`make build-packages` before typecheck).
+- **Phase 1 (storage + union)**: migration `agent_package_grants`; store `packages/server/src/lobu/stores/package-grants.ts` (mind `pgTextArray` for any array binds); fold source 4 into `resolveAgentOptions` in `platform-helpers.ts` (biome-excluded — edit surgically); tests alongside the #2218 union tests.
+- **Phase 2 (policy class)**: `WriteResourceClass`/manifest additions; CHECK-widening migration (`bun run db:lint` it); REST validation in `index.ts`.
+- **Phase 3 (tool + approval family)**: `tools/request_environment_package.ts` + registry entry + `BuilderApprovalHandler` registration + notification + worker deny-message update. Run `make pre-pr` for the naming gate.
+- **Phase 4 (freshness, optional)**: nix-drift respawn in `message-consumer.ts` + `deployment-manager.ts`.
+- **Phase 5 (UI, paired owletto PR)**: grants list/revoke in agent settings; approval card already renders via the generic interaction envelope.
+
+Rollout: all additive (new table, widened CHECK, new action_key string — `runs.action_key` is free text); no two-phase column dance needed; old replicas ignore the new tool during rollout overlap. Multi-replica correctness rests entirely on Postgres (runs claim, grants table, per-message resolution).
+
+**Risks**: package→binary alias mapping for the interpreter gate is best-effort (worker-side `discoverBinaries` filter remains the hard enforcement — a slipped-through grant is a no-op, not an escape); prompt-injected package requests (mitigated: nixpkgs-attr-only, no flakeUrl, approval default, reason on card); cold-cache nix latency at next spawn; config-as-code drift (grants invisible to `lobu.config.ts`); pending-request spam (idempotency collapses dupes; consider a per-agent pending cap).
+
+**Open product questions**: (1) should "Approve" offer an "always allow for this org" that also writes the allowlist policy row? (2) grant expiry/review UI? (3) gated-interpreter requests: flat deny (proposed) vs escalate to operator, since `LOBU_ALLOW_UNSANDBOXED_EXEC` is a deployment-level knob no org admin can approve? (4) auto-revoke skill-provenance grants when the skill is disabled? (5) proactively wake the conversation on approval vs discover-next-turn?
+
+### Critical Files for Implementation
+- /Users/burakemre/Code/lobu/packages/server/src/gateway/services/platform-helpers.ts (`resolveAgentOptions` — grant union point)
+- /Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_operations.ts (`getBuilderApprovalHandlers`, `claimBuilderRun`, `supersedeActionEvent`)
+- /Users/burakemre/Code/lobu/packages/server/src/tools/registry.ts (`AGENT_TOOLS` registration)
+- /Users/burakemre/Code/lobu/packages/server/src/authz/write-action-manifest.ts (+ `entity-policy.ts` — policy class/effect resolution)
+- /Users/burakemre/Code/lobu/packages/server/src/gateway/orchestration/deployment-manager.ts (nix spawn, `syncNetworkConfigGrants`, drift respawn)
+
+### Confidence (0–100)
+- **Approval-flow reuse: 95** — read the full propose/claim/apply/supersede/expire chain in code (`entity-field-approval.ts`, `manage_agents.ts`, `manage_operations.ts`, `expire-pending-approvals.ts`).
+- **Nix resolution/provisioning: 90** — read origin/main `resolveAgentOptions` union, `deployment-manager` spawn + validation; did not run anything, and the #2243 agent-tooling fold in `message-consumer.ts` was only skimmed.
+- **Policy-class extension: 85** — manifest, resolver entry points, CHECK migrations and REST CRUD all read; exact `resolveWriteEffect` argument shapes for a non-entity scope (operation_key reuse) verified only via `connector_action` precedent, not traced call-by-call.
+- **Device-worker isolation: 85** — poll path and connector-worker sources verified grant-free; "no agent conversations on devices" established by absence of `MessagePayload` in connector-worker, which is strong but negative evidence.
+- **In-session respawn (Phase 4): 75** — transcript snapshot/hydrate and `EmbeddedWorkerEntry.env` verified; the claim that warm dispatch always happens between turns rests on the conversation-lock design read in comments, not on an executed trace; workspace-dir persistence across respawn was inferred, not tested.
+- **MCP registration/binding: 90** — registry, `lobu-memory` config service, and agentId session binding read directly; I did not exercise a live tools/list.
+
+### Next actions
+1. Trace `resolveWriteEffect`/`resolveWritePolicyDecision` (entity-policy.ts:827-950) call signatures end-to-end and confirm `operation_key` is accepted as a scope for a non-connector class, or plan the small resolver extension.
+2. Prototype Phase 1 in a worktree (`make task-setup NAME=agent-package-grants`): migration + store + union, with an integration test proving a grant row lands in the spawned worker's `NIX_PACKAGES`.
+3. Verify with a live run that a respawned deployment resumes a conversation cleanly from the PG transcript snapshot (basis for Phase 4 and for the "available next session" wording).
+4. Decide the gated-interpreter product stance (deny vs escalate) and the "always allow" card affordance with the team before Phase 3, since both change the tool's result contract.</result>
+<usage><subagent_tokens>181317</subagent_tokens><tool_uses>99</tool_uses><duration_ms>760306</duration_ms></usage>
+</task-notification>

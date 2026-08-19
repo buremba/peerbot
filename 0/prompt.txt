@@ -1,0 +1,1 @@
+do you think we should have tabs or this design is better? create a html artifact that changes the page in place so i can navigate like the app

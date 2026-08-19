@@ -1,0 +1,1 @@
+neon can work in k8s and r2 maybe? also this feature would mainly be for seperating the compute and storage for different users

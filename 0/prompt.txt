@@ -1,0 +1,1 @@
+i don't understand wha'ts the point of stamping the response. input i get, because we will need that data in the ui but the response is indeed not needed because we support going back in time and looking up events search etc already no?

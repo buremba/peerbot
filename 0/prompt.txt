@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6n8odiwb</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/b6n8odiwb.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for the image build" completed (exit code 0)</summary>
+</task-notification>

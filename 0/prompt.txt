@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bnhgrgpqr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bnhgrgpqr.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:15:54.793Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:15:59.594Z","id":"d9bc719b","input_tokens":192,"output_tokens":152,"content":[{"type":"tool_use","id":"call_6c18d875269a46aebe30aaa2","name":"send_message","input":{"text":"Hey Sarah! I'm just a coding assistant, so lunch isn't really my thing 😄 But hope you find some takers!"},"result":{"output":"","status":"success"}}]}

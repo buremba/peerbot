@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btv3s5ye3</task-id>
+<tool-use-id>toolu_01Wc7SfGtSwNMCt2ubQi2SUp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/btv3s5ye3.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on PR 2303" completed (exit code 0)</summary>
+</task-notification>

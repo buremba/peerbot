@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:20:50.487Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:20:55.811Z","id":"8a7519a0","input_tokens":192,"output_tokens":411,"content":[{"type":"text","text":"Looks like a casual lunch invitation in #sales — nothing that needs me. Is there something you'd like me to help with, or were you just sharing the channel activity?"}]}

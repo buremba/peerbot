@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3r3lhf3o</task-id>
+<tool-use-id>toolu_01AVMfARff26UWxthq8C5qsY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/b3r3lhf3o.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot server to regenerate client" was stopped</summary>
+</task-notification>

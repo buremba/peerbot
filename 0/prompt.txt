@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bv4p73ve6</task-id>
+<tool-use-id>toolu_017YRMEDoP2fCRohUL54tp6t</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bv4p73ve6.output</output-file>
+<status>completed</status>
+<summary>Monitor "CI on lobu#2236 after orphaned-test removal" stream ended</summary>
+</task-notification>

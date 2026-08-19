@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bikz07lbd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/bikz07lbd.output</output-file>
+<status>failed</status>
+<summary>Background command "Wait for e2e server ready" failed with exit code 1</summary>
+</task-notification>

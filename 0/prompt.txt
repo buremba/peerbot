@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwgx2at6j</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/bwgx2at6j.output</output-file>
+<status>completed</status>
+<summary>Monitor "CI checks on owletto#593" stream ended</summary>
+</task-notification>

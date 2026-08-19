@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpbm9ndsw</task-id>
+<tool-use-id>toolu_01CwB8SkML37Sc9cyqcHLS1a</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bpbm9ndsw.output</output-file>
+<status>failed</status>
+<summary>Background command "Wait for the integration check" failed with exit code 1</summary>
+</task-notification>

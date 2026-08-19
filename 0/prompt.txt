@@ -1,0 +1,1 @@
+fix the bug properly then and you can build here and install to mac mini if needed

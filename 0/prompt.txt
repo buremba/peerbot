@@ -1,0 +1,1 @@
+can you tell me for the user identities, if we assume $member is always person, it becomes an entity type under that no? so slack_id x can help us know if a member entity is a user. if another org also has $member entitty with same slack we can auto assume there is enety relationships across multiple orgs automatically

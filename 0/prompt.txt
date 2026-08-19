@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bljmkmmnu</task-id>
+<tool-use-id>toolu_01YUVeiXecpWzRiUnJe9uV9F</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/bljmkmmnu.output</output-file>
+<status>completed</status>
+<summary>Monitor "release PR #2276 integration check" stream ended</summary>
+</task-notification>

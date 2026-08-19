@@ -369,7 +369,7 @@ export class WorkerClient implements ExecutorClient {
       body = await response.json();
     } catch {
       throw new WorkerDecodeError(
-        `complete-automation returned an unrecognised 2xx body`
+        'complete-automation returned a 2xx body that is not JSON'
       );
     }
     return interpretCompleteAutomationResponse(body);
@@ -399,12 +399,6 @@ export function interpretCompleteAutomationResponse(
     typeof (body as Record<string, unknown>).status === 'string'
   ) {
     return body as CompleteAutomationResponse;
-  }
-  // The one legitimate legacy shape: a minimal 2xx object with no `status`.
-  // Recognised explicitly — and still rejected if it signals failure.
-  const ack = body as { ok?: boolean | null; error?: string | null } | null;
-  if (ack != null && typeof ack === 'object' && ack.error == null && ack.ok !== false) {
-    return { ok: true, status: 'completed' };
   }
   throw new WorkerDecodeError(
     'complete-automation returned an unrecognised 2xx body'

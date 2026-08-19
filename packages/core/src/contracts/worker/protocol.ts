@@ -114,8 +114,6 @@ export const PollRequestSchema = Type.Object({
   agent_kinds: Type.Optional(Type.Array(Type.String())),
 });
 
-/** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
-
 /**
  * Per-automation device-worker CLI execution settings. Mirrors the server's
  * `automations.execution_config` jsonb column; a missing key means "use the
@@ -183,6 +181,7 @@ export const AutomationPollPayloadSchema = Type.Object({
   context: AutomationPollContextSchema,
 });
 
+/** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
 export const PollResponseSchema = Type.Object({
   next_poll_seconds: Type.Optional(Type.Number()),
   page_activations: Type.Optional(
@@ -234,13 +233,14 @@ export const PollResponseSchema = Type.Object({
       metadata: Type.Record(Type.String(), Type.Unknown()),
     })
   ),
+  /** Owning org of a claimed automation run; sent on the automation lane only. */
+  organization_id: Type.Optional(Type.String()),
   /**
    * Automation-run envelope. Present only when `run_type === 'automation'`: the
    * gateway composes the payload a device-local CLI executor needs to build a
    * prompt, and the device returns its process exit via `/complete-automation`.
    * No connector code, credentials, or compiled_code are shipped on this lane.
    */
-  organization_id: Type.Optional(Type.String()),
   payload: Type.Optional(AutomationPollPayloadSchema),
 });
 

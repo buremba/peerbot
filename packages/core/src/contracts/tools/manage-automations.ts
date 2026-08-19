@@ -390,16 +390,17 @@ export type AutomationDeliveryTarget = Static<
 /**
  * Local CLI runtimes a device-pinned Automation can name in `agent_kind`.
  *
- * This is the write-side half of a contract whose other half lives in the Mac
- * app: the device registers one executor per `AgentSpec` and resolves the
- * Automation's kind against that registry at dispatch. A kind with no executor
- * there produces a run that fails on the device with "no local agent executor
+ * This is the write-side half of a contract whose other half is the device
+ * `AgentSpec` table (`@lobu/core/contracts/worker/device-automation`, shared by
+ * the connector-worker daemon and the Mac app): the device resolves the
+ * Automation's kind against that table at dispatch. A kind with no spec there
+ * produces a run that fails on the device with "no local agent executor
  * configured", so accepting an arbitrary string here only defers the failure
  * to a place nobody is watching (#2504).
  *
- * Adding a CLI means adding an `AgentSpec` on the device AND a literal here —
- * the device cannot yet advertise its runnable kinds, so the server has no way
- * to derive this list.
+ * Adding a CLI means adding an `AgentSpec` there AND a literal here — a device
+ * advertises its kinds on poll (`agent_kinds`), but the gateway does not yet
+ * persist them, so the server still has no way to derive this list.
  */
 const DEVICE_AGENT_KIND_LITERALS = [
   Type.Literal("claude-code"),

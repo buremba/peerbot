@@ -13,10 +13,6 @@ export function setDebug(enabled: boolean): void {
   debugEnabled = enabled;
 }
 
-export function isDebugEnabled(): boolean {
-  return debugEnabled;
-}
-
 export const log = {
   /** Always-on: one line per run, startup/shutdown, and hard failures. */
   info: (...parts: unknown[]): void => {

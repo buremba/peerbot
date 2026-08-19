@@ -161,3 +161,43 @@ describe('automation arm e2e', () => {
     expect(completions[0].body.exit_reason).toBe('error_message');
   });
 });
+
+/**
+ * Regression: a grandchild that inherits the CLI's stdout keeps the pipe's
+ * write end open after the CLI itself is reaped. Draining without a deadline
+ * parked the run forever — claimed and heartbeating, so the server's stale-run
+ * sweep never reclaimed it either. `runCli` now caps the post-exit flush.
+ */
+describe('automation arm drain deadline', () => {
+  const hangBinary = path.join(tmp, 'pi-orphan-pipe');
+
+  beforeAll(() => {
+    writeFileSync(
+      hangBinary,
+      // Ignore SIGTERM so the run reaches the SIGKILL arm, and leave a
+      // grandchild holding stdout well past the 2s post-SIGKILL flush window.
+      `#!/bin/sh\ntrap '' TERM\nsleep 15 &\necho "PARTIAL_OUTPUT"\nsleep 15\n`
+    );
+    chmodSync(hangBinary, 0o755);
+  });
+
+  test('a CLI whose grandchild holds stdout still reports, keeping flushed output', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const hang = cfg();
+    hang.timeoutMs = 500;
+    hang.binaryOverrides = { pi: hangBinary };
+
+    const startedAt = Date.now();
+    const result = await executeAutomationRun(client(), automationJob(), hang);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(result.error).toBeUndefined();
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('timeout');
+    // The bytes the CLI did flush survive the forced close.
+    expect(completions[0].body.output).toContain('PARTIAL_OUTPUT');
+    // Well under the 15s the grandchild holds the pipe: the deadline fired.
+    expect(elapsedMs).toBeLessThan(12_000);
+  }, 30_000);
+});

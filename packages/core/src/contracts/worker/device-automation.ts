@@ -9,7 +9,9 @@
  *     not a ~140-line executor copy.
  *   - the Automation prompt builder — the completion contract the spawned CLI
  *     must satisfy, byte-for-byte the same text the Mac app emits (pinned by
- *     ported `TurnPromptTests` fixtures).
+ *     ported `TurnPromptTests` fixtures). The envelope JSON around it is
+ *     serialized natively (JSON.stringify), so key order and omitted-vs-null
+ *     optional fields can differ from the Swift dump; the contract cannot.
  *
  * Both the connector-worker daemon (growing the automation arm) and — later —
  * the Mac app consume these from core, so the prompt and the spec table cannot
@@ -211,8 +213,8 @@ function automationIdLiteral(automationId: string): string {
   return /^\d+$/.test(trimmed) ? trimmed : `"${trimmed}"`;
 }
 
-/** Serialize a JSON-Schema object the way Swift's JSONSerialization does:
- * compact, keys sorted. */
+/** Compact JSON with sorted keys, so the same schema always yields the same
+ * prompt bytes regardless of the object's insertion order. */
 function stringifySorted(value: unknown): string {
   const sortKeys = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(sortKeys);

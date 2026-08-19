@@ -24,7 +24,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import {
@@ -45,7 +45,7 @@ import type { ExecutorConfig } from './executor.js';
 import { log } from './log.js';
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
-interface ExecutorResult {
+export interface ExecutorResult {
   output: string;
   error: string | null;
   exitCode: number | null;
@@ -117,9 +117,35 @@ function drain(stream: Readable, capBytes: number): Promise<{ data: Buffer; trun
         truncated = true;
       }
     });
-    stream.on('end', () => resolve({ data: Buffer.concat(chunks), truncated }));
-    stream.on('error', () => resolve({ data: Buffer.concat(chunks), truncated }));
+    const settle = () => resolve({ data: Buffer.concat(chunks), truncated });
+    stream.on('end', settle);
+    stream.on('error', settle);
+    // `close` covers the forced-destroy path below, which emits neither.
+    stream.on('close', settle);
   });
+}
+
+/**
+ * Await a drain with a hard deadline. A grandchild that inherited the child's
+ * pipes can hold the read end open after the child is reaped, so an unbounded
+ * wait here would hang the run forever — claimed, heartbeating, never swept.
+ * Past the deadline, force-close the pipe and take what was flushed.
+ */
+async function awaitDrain(
+  pending: Promise<{ data: Buffer; truncated: boolean }>,
+  stream: Readable,
+  deadlineMs: number
+): Promise<{ data: Buffer; truncated: boolean }> {
+  const expired = Symbol('drain-deadline');
+  const outcome = await Promise.race([
+    pending,
+    new Promise<typeof expired>((resolve) => {
+      setTimeout(() => resolve(expired), deadlineMs).unref?.();
+    }),
+  ]);
+  if (outcome !== expired) return outcome;
+  stream.destroy();
+  return pending;
 }
 
 /** Wait for the child to exit, or report the timeout lapsed. */
@@ -132,10 +158,10 @@ function waitForExit(
     const onExit = () => {
       if (!settled) {
         settled = true;
+        clearTimeout(timer);
         resolve({ timedOut: false });
       }
     };
-    proc.once('exit', onExit);
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
@@ -144,6 +170,7 @@ function waitForExit(
       }
     }, timeoutMs);
     timer.unref?.();
+    proc.once('exit', onExit);
   });
 }
 
@@ -200,7 +227,7 @@ function buildMcp(
 
   const bearer = mcpWiring.bearer ?? '';
   if (spec.mcpDelivery.kind === 'claude-config-file') {
-    const dir = mkdtempSync(path.join(path.join(homedir(), '.lobu-automation-mcp-')));
+    const dir = mkdtempSync(path.join(tmpdir(), 'lobu-automation-mcp-'));
     const file = path.join(dir, 'mcp.json');
     writeFileSync(
       file,
@@ -286,8 +313,18 @@ async function runCli(
       ]);
     }
 
-    const { data: stdoutData, truncated: stdoutTruncated } = await stdoutPromise;
-    const { data: stderrData } = await stderrPromise;
+    // A SIGKILLed child gets a short flush window; a clean exit gets a long one.
+    const drainDeadlineMs = killedSignal === 'SIGKILL' ? 2000 : 60_000;
+    const { data: stdoutData, truncated: stdoutTruncated } = await awaitDrain(
+      stdoutPromise,
+      proc.stdout,
+      drainDeadlineMs
+    );
+    const { data: stderrData } = await awaitDrain(
+      stderrPromise,
+      proc.stderr,
+      drainDeadlineMs
+    );
 
     const label = spec.binaryName;
     const exitCode = proc.exitCode;
@@ -459,7 +496,7 @@ export async function dispatchAutomationResumeLoop(
       // nothing: heartbeats stop when we return, so the server's heartbeat-stale
       // reaper reclaims it in minutes if the report never landed.
       log.info(
-        `[executor] Automation run exit report undelivered — leaving the run to the server sweep`
+        '[executor] Automation run exit report undelivered — leaving the run to the server sweep'
       );
       return { itemsCollected: 0 };
     }

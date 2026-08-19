@@ -161,12 +161,9 @@ describe('interpretCompleteAutomationResponse', () => {
     expect(interpretCompleteAutomationResponse({ status: 'completed' }).status).toBe('completed');
   });
 
-  test('accepts the legacy minimal ack', () => {
-    expect(interpretCompleteAutomationResponse({ ok: true }).status).toBe('completed');
-    expect(interpretCompleteAutomationResponse({}).status).toBe('completed');
-  });
-
-  test('rejects an error ack and unreadable bodies', () => {
+  test('rejects every body without a `status`', () => {
+    expect(() => interpretCompleteAutomationResponse({ ok: true })).toThrow(WorkerDecodeError);
+    expect(() => interpretCompleteAutomationResponse({})).toThrow(WorkerDecodeError);
     expect(() => interpretCompleteAutomationResponse({ ok: false })).toThrow(WorkerDecodeError);
     expect(() => interpretCompleteAutomationResponse({ error: 'x' })).toThrow(WorkerDecodeError);
     expect(() => interpretCompleteAutomationResponse('<html>502</html>')).toThrow(WorkerDecodeError);

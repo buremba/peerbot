@@ -1,0 +1,1 @@
+i logged in with another user but i'm getting Atlassian Rovo MCP connects with Atlassian sites that use apps like Jira or Confluence. Your account isn't currently associated with a supported site. Understand Rovo MCP Server﻿

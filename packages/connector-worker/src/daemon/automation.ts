@@ -22,27 +22,27 @@
  * credentials or the MCP bearer wired per-spec.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
-import type { Readable } from "node:stream";
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import type { Readable } from 'node:stream';
 import {
   buildDeviceAutomationPrompt,
   DEVICE_AGENT_SPECS_BY_KIND,
   type AgentKind,
   type AgentSpec,
-} from "@lobu/core/contracts/worker/device-automation";
+} from '@lobu/core/contracts/worker/device-automation';
 import type {
   AutomationPollPayload,
   CompleteAutomationResponse,
   PollResponse,
   WorkerExitReason,
-} from "@lobu/core/contracts/worker/protocol";
-import type { ExecutorClient } from "./client.js";
-import { WorkerDecodeError, WorkerHttpError } from "./client.js";
-import type { ExecutorConfig } from "./executor.js";
-import { log } from "./log.js";
+} from '@lobu/core/contracts/worker/protocol';
+import type { ExecutorClient } from './client.js';
+import { WorkerDecodeError, WorkerHttpError } from './client.js';
+import type { ExecutorConfig } from './executor.js';
+import { log } from './log.js';
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 interface ExecutorResult {
@@ -65,7 +65,7 @@ const EXIT_REPORT_RETRY_DELAY_MS = 2000;
 class ExecutableNotFoundError extends Error {
   constructor(name: string) {
     super(`${name} binary not found on PATH`);
-    this.name = "ExecutableNotFoundError";
+    this.name = 'ExecutableNotFoundError';
   }
 }
 
@@ -75,15 +75,15 @@ function searchDirs(): string[] {
   return [
     `${home}/.local/bin`,
     `${home}/.bun/bin`,
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
   ];
 }
 
 function locateBinary(name: string): string | null {
   const dirs = [
     ...searchDirs(),
-    ...(process.env.PATH ?? "").split(":").filter(Boolean),
+    ...(process.env.PATH ?? '').split(':').filter(Boolean),
   ];
   for (const dir of dirs) {
     const candidate = path.join(dir, name);
@@ -102,7 +102,7 @@ function drain(stream: Readable, capBytes: number): Promise<{ data: Buffer; trun
     const chunks: Buffer[] = [];
     let total = 0;
     let truncated = false;
-    stream.on("data", (chunk: Buffer) => {
+    stream.on('data', (chunk: Buffer) => {
       if (total < capBytes) {
         const room = capBytes - total;
         if (chunk.length > room) {
@@ -117,8 +117,8 @@ function drain(stream: Readable, capBytes: number): Promise<{ data: Buffer; trun
         truncated = true;
       }
     });
-    stream.on("end", () => resolve({ data: Buffer.concat(chunks), truncated }));
-    stream.on("error", () => resolve({ data: Buffer.concat(chunks), truncated }));
+    stream.on('end', () => resolve({ data: Buffer.concat(chunks), truncated }));
+    stream.on('error', () => resolve({ data: Buffer.concat(chunks), truncated }));
   });
 }
 
@@ -135,11 +135,11 @@ function waitForExit(
         resolve({ timedOut: false });
       }
     };
-    proc.once("exit", onExit);
+    proc.once('exit', onExit);
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        proc.removeListener("exit", onExit);
+        proc.removeListener('exit', onExit);
         resolve({ timedOut: true });
       }
     }, timeoutMs);
@@ -151,13 +151,13 @@ function waitForExit(
 export function buildArguments(
   spec: AgentSpec,
   prompt: string,
-  config: AutomationPollPayload["automation"]["execution_config"],
+  config: AutomationPollPayload['automation']['execution_config'],
   mcpArgs: string[],
   timeoutSeconds: number
 ): string[] {
   const args: string[] = [];
   let trailingPrompt: string | undefined;
-  if (spec.promptDelivery.kind === "flag") {
+  if (spec.promptDelivery.kind === 'flag') {
     args.push(spec.promptDelivery.flag, prompt);
   } else {
     args.push(...spec.promptDelivery.subcommand);
@@ -170,16 +170,16 @@ export function buildArguments(
     args.push(spec.timeoutFlag.flag, `${seconds}${spec.timeoutFlag.suffix}`);
   }
   if (config) {
-    if (config.model && config.model !== "" && spec.modelFlag) {
+    if (config.model && config.model !== '' && spec.modelFlag) {
       args.push(spec.modelFlag, config.model);
     }
     if (config.max_budget_usd && config.max_budget_usd > 0 && spec.budgetFlag) {
       args.push(spec.budgetFlag, String(config.max_budget_usd));
     }
-    if (config.permission_mode && config.permission_mode !== "" && spec.permissionModeFlag) {
+    if (config.permission_mode && config.permission_mode !== '' && spec.permissionModeFlag) {
       args.push(spec.permissionModeFlag, config.permission_mode);
     }
-    if (config.effort && config.effort !== "" && spec.effortFlag) {
+    if (config.effort && config.effort !== '' && spec.effortFlag) {
       args.push(spec.effortFlag, config.effort);
     }
   }
@@ -198,16 +198,16 @@ function buildMcp(
   let cleanup = () => {};
   if (!mcpWiring) return { mcpArgs, mcpEnv, cleanup };
 
-  const bearer = mcpWiring.bearer ?? "";
-  if (spec.mcpDelivery.kind === "claude-config-file") {
-    const dir = mkdtempSync(path.join(path.join(homedir(), ".lobu-automation-mcp-")));
-    const file = path.join(dir, "mcp.json");
+  const bearer = mcpWiring.bearer ?? '';
+  if (spec.mcpDelivery.kind === 'claude-config-file') {
+    const dir = mkdtempSync(path.join(path.join(homedir(), '.lobu-automation-mcp-')));
+    const file = path.join(dir, 'mcp.json');
     writeFileSync(
       file,
       JSON.stringify({
         mcpServers: {
           lobu: {
-            type: "http",
+            type: 'http',
             url: mcpWiring.url,
             headers: { Authorization: `Bearer ${bearer}` },
           },
@@ -217,11 +217,11 @@ function buildMcp(
     );
     mcpArgs.push(spec.mcpDelivery.flag, file, ...spec.mcpDelivery.extraArgs);
     cleanup = () => rmSync(dir, { recursive: true, force: true });
-  } else if (spec.mcpDelivery.kind === "opencode-config-env") {
+  } else if (spec.mcpDelivery.kind === 'opencode-config-env') {
     mcpEnv[spec.mcpDelivery.variable] = JSON.stringify({
       mcp: {
         lobu: {
-          type: "remote",
+          type: 'remote',
           url: mcpWiring.url,
           headers: { Authorization: `Bearer ${bearer}` },
           enabled: true,
@@ -236,7 +236,7 @@ function buildMcp(
 async function runCli(
   spec: AgentSpec,
   prompt: string,
-  config: AutomationPollPayload["automation"]["execution_config"],
+  config: AutomationPollPayload['automation']['execution_config'],
   mcpWiring: { url: string; bearer?: string } | undefined,
   timeoutMs: number,
   binaryPath?: string
@@ -255,15 +255,15 @@ async function runCli(
     delete env.WORKER_API_TOKEN;
     for (const [key, value] of Object.entries(mcpEnv)) env[key] = value;
     // GUI/app-launched daemons can have a stripped PATH; re-add common installs.
-    const extraPath = searchDirs().join(":");
-    const currentPath = env.PATH ?? "/usr/bin:/bin";
-    if (!currentPath.includes("/.local/bin")) {
+    const extraPath = searchDirs().join(':');
+    const currentPath = env.PATH ?? '/usr/bin:/bin';
+    if (!currentPath.includes('/.local/bin')) {
       env.PATH = `${extraPath}:${currentPath}`;
     }
 
     const proc = spawn(binary, args, {
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const stdoutPromise = drain(proc.stdout, STDOUT_CAP);
@@ -272,16 +272,16 @@ async function runCli(
     const { timedOut } = await waitForExit(proc, timeoutMs);
     let killedSignal: string | null = null;
     if (timedOut) {
-      proc.kill("SIGTERM");
-      killedSignal = "SIGTERM";
+      proc.kill('SIGTERM');
+      killedSignal = 'SIGTERM';
       await sleep(3000);
       if (proc.exitCode === null && proc.signalCode === null) {
-        proc.kill("SIGKILL");
-        killedSignal = "SIGKILL";
+        proc.kill('SIGKILL');
+        killedSignal = 'SIGKILL';
       }
       // Bounded wait for the process to be reaped so the pipes flush.
       await Promise.race([
-        new Promise((resolve) => proc.once("exit", resolve)),
+        new Promise((resolve) => proc.once('exit', resolve)),
         sleep(5000),
       ]);
     }
@@ -297,25 +297,25 @@ async function runCli(
     let exitReason: WorkerExitReason;
     let errorMessage: string | null;
     if (timedOut) {
-      exitReason = "timeout";
-      errorMessage = `${label} exited via ${killedSignal ?? "SIGTERM"} after ${Math.trunc(timeoutMs / 1000)}s timeout`;
+      exitReason = 'timeout';
+      errorMessage = `${label} exited via ${killedSignal ?? 'SIGTERM'} after ${Math.trunc(timeoutMs / 1000)}s timeout`;
     } else if (exitCode === 0) {
-      exitReason = "ok";
+      exitReason = 'ok';
       errorMessage = null;
     } else if (proc.signalCode != null) {
-      exitReason = "crash";
+      exitReason = 'crash';
       errorMessage = `${label} exited via signal (status=${proc.signalCode})`;
     } else {
-      exitReason = "error_message";
-      const stderr = stderrData.toString("utf8").trim();
+      exitReason = 'error_message';
+      const stderr = stderrData.toString('utf8').trim();
       errorMessage =
-        stderr === ""
+        stderr === ''
           ? `${label} exited with non-zero status ${exitCode}`
           : `${label} exited with status ${exitCode}: ${stderr}`;
     }
 
-    let output = stdoutData.toString("utf8");
-    if (stdoutTruncated) output += "\n[output truncated]";
+    let output = stdoutData.toString('utf8');
+    if (stdoutTruncated) output += '\n[output truncated]';
     const durationMs = Date.now() - started;
 
     return {
@@ -369,20 +369,20 @@ export async function executeAutomationRun(
   const runId = job.run_id;
   const payload = job.payload;
   if (runId == null) {
-    return { itemsCollected: 0, error: "automation run missing run_id" };
+    return { itemsCollected: 0, error: 'automation run missing run_id' };
   }
   if (!payload) {
-    const message = "automation run missing payload envelope";
-    await completeAutomationWithError(client, runId, message, "error_message");
+    const message = 'automation run missing payload envelope';
+    await completeAutomationWithError(client, runId, message, 'error_message');
     return { itemsCollected: 0, error: message };
   }
 
   const kind = payload.automation.agent_kind ?? null;
   const spec = kind != null ? DEVICE_AGENT_SPECS_BY_KIND.get(kind as AgentKind) : undefined;
   if (!spec) {
-    const message = `no local agent executor configured for agent_kind='${kind ?? "(unset)"}'`;
+    const message = `no local agent executor configured for agent_kind='${kind ?? '(unset)'}'`;
     log.info(`[executor] Automation run ${runId}: ${message}`);
-    await completeAutomationWithError(client, runId, message, "error_message");
+    await completeAutomationWithError(client, runId, message, 'error_message');
     return { itemsCollected: 0, error: message };
   }
 
@@ -400,14 +400,14 @@ export async function executeAutomationRun(
   // can distinguish a live turn from an abandoned one.
   const heartbeat = setInterval(() => {
     client.heartbeat(runId).catch((err) => {
-      log.debug("[executor] Automation heartbeat failed:", err);
+      log.debug('[executor] Automation heartbeat failed:', err);
     });
   }, cfg.heartbeatIntervalMs ?? 30_000);
 
   const io: AutomationRunIo = {
     run: async (finalizeNudge) => {
       let prompt = buildDeviceAutomationPrompt(payload, runId);
-      if (finalizeNudge && finalizeNudge !== "") {
+      if (finalizeNudge && finalizeNudge !== '') {
         prompt += `\n\n---\nFINALIZE NUDGE (prior attempt did not complete the window):\n${finalizeNudge}\n`;
       }
       return runCli(
@@ -447,7 +447,7 @@ export async function dispatchAutomationResumeLoop(
       // Unambiguous: nothing has been reported yet. Missing binary is a
       // configuration problem, not a crash.
       const reason: WorkerExitReason =
-        err instanceof ExecutableNotFoundError ? "error_message" : "crash";
+        err instanceof ExecutableNotFoundError ? 'error_message' : 'crash';
       const message = err instanceof Error ? err.message : String(err);
       await io.reportError(message, reason);
       return { itemsCollected: 0, error: message };
@@ -464,11 +464,11 @@ export async function dispatchAutomationResumeLoop(
       return { itemsCollected: 0 };
     }
 
-    if (report.status === "resume") {
+    if (report.status === 'resume') {
       finalizeNudge =
         report.nudge ??
         report.error ??
-        "Prior attempt did not call completeWindow. Finalize via lobu CLI or MCP.";
+        'Prior attempt did not call completeWindow. Finalize via lobu CLI or MCP.';
       finalizeAttempt = report.attempt ?? finalizeAttempt + 1;
       continue;
     }
@@ -478,7 +478,7 @@ export async function dispatchAutomationResumeLoop(
   // Every path out of the loop is a delivered report that came back `resume`:
   // the server granted past its own budget. Report the honest description.
   const message = `device finalize resume loop exceeded local safety cap (${LOCAL_MAX_ROUNDS})`;
-  await io.reportError(message, "error_message");
+  await io.reportError(message, 'error_message');
   return { itemsCollected: 0, error: message };
 }
 
@@ -505,7 +505,7 @@ export async function deliverExitReport(
       const retriable = isRetriableDeliveryFailure(err);
       log.debug(
         `[executor] Automation run=${runId} exit report delivery failed ` +
-          `(try ${attempt + 1}/${EXIT_REPORT_DELIVERY_ATTEMPTS}, retriable=${retriable ? "yes" : "no"}): ` +
+          `(try ${attempt + 1}/${EXIT_REPORT_DELIVERY_ATTEMPTS}, retriable=${retriable ? 'yes' : 'no'}): ` +
           (err instanceof Error ? err.message : String(err))
       );
       if (!retriable) return null;
@@ -528,7 +528,7 @@ async function completeAutomationWithError(
   try {
     await client.completeAutomation(runId, {
       worker_id: client.id,
-      output: "",
+      output: '',
       error,
       duration_ms: 0,
       exit_reason: exitReason,

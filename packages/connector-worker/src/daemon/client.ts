@@ -116,7 +116,7 @@ export class WorkerHttpError extends Error {
     body: string
   ) {
     super(`${path} failed: ${status} ${body.slice(0, 500)}`);
-    this.name = "WorkerHttpError";
+    this.name = 'WorkerHttpError';
   }
 }
 
@@ -127,7 +127,7 @@ export class WorkerHttpError extends Error {
 export class WorkerDecodeError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "WorkerDecodeError";
+    this.name = 'WorkerDecodeError';
   }
 }
 

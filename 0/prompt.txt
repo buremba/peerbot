@@ -1,0 +1,1 @@
+what's chat_user_identities do we need it? we have the other idnetity table no? interview me long term best solution that will be composable and can be managed by connectors as well.

@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The normal focused tests, bundle build, and TypeScript build pass, but result identity is not consistently applied across empty standard replays and compatibility-only updates. These paths can leave a new card showing or persisting state from the previous result.
+
+Full review comments:
+
+- [P2] Reset stale data when an empty replay changes capability — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:468-471
+  When a reused iframe already displays result A, an empty `toolresult` for result B with a different snapshot capability does not enter this reset branch because `hasLiveData` is false. The subsequent `restoreSnapshot()` exits immediately while `hasData.current` is true, so result A remains displayed and B is never restored; treat a changed capability as a new result identity even when `structuredContent` is empty.
+
+- [P2] Reset view state on compatibility result changes — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:565-570
+  When ChatGPT delivers sequential non-empty results only through `openai:set_globals`, changing to a new snapshot capability updates this ref without resetting `viewState` or its revision. If the user edited result A, restoration for result B consequently treats A's state as a local edit, merges it over B's restored pagination/disclosure state, and persists the stale values into B.
+  </results>
+  </user_action>

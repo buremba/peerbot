@@ -1,0 +1,1 @@
+in .env don't we have gemini keys

@@ -40,10 +40,7 @@ import {
   isValidAgentId,
   touchAgentLastUsed,
 } from './lobu/stores/postgres-stores';
-import {
-  LOBU_INTERACTION_RESOURCE_URI,
-  MCP_APP_RESOURCE_ALIASES,
-} from './mcp-app-resource-uris';
+import { LOBU_INTERACTION_RESOURCE_URI } from './mcp-app-resource-uris';
 import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
   mcpSessionMap,
@@ -60,7 +57,7 @@ import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
-import { readMcpAppBundle, renderMcpAppTemplate } from './utils/mcp-app-bundle';
+import { renderMcpAppTemplate } from './utils/mcp-app-bundle';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
 
@@ -200,8 +197,6 @@ const MCP_APP_RESOURCES: Record<
     /** Surfaced on `resources/list` — clients show it in resource browsers. */
     description: string;
     appDir: string;
-    /** How resources/read delivers the current immutable host resource. */
-    template: 'embedded' | 'external';
     /**
      * Domains the host should allow the rendered iframe to reach, in the MCP
      * Apps `_meta.ui.csp` shape. The host owns the resulting policy; we only
@@ -221,7 +216,6 @@ const MCP_APP_RESOURCES: Record<
     description:
       'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    template: 'external',
     csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
     prefersBorder: true,
   },
@@ -272,8 +266,7 @@ function supportsMcpApps(capabilities: Record<string, unknown> | null | undefine
 
 function mcpAppUiMeta(
   authCtx: SessionAuthContext,
-  app: (typeof MCP_APP_RESOURCES)[string],
-  template: 'embedded' | 'external' = app.template
+  app: (typeof MCP_APP_RESOURCES)[string]
 ): {
   csp: {
     connectDomains: string[];
@@ -283,13 +276,6 @@ function mcpAppUiMeta(
   permissions: { clipboardWrite: Record<string, never> };
   prefersBorder: boolean;
 } {
-  if (template === 'embedded') {
-    return {
-      csp: app.csp,
-      permissions: { clipboardWrite: {} },
-      prefersBorder: app.prefersBorder,
-    };
-  }
   const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
   return {
     csp: {
@@ -391,17 +377,12 @@ function createServerForContext(
         contents: [{ uri, mimeType: 'text/markdown', text: skill.text }],
       };
     }
-    const alias = MCP_APP_RESOURCE_ALIASES.get(uri);
-    const canonicalUri = alias?.canonicalUri ?? uri;
-    const app = MCP_APP_RESOURCES[canonicalUri];
+    const app = MCP_APP_RESOURCES[uri];
     if (!app) throw new Error(`Unknown resource: ${uri}`);
-    const template = alias?.template ?? app.template;
-    const html = template === 'embedded'
-      ? await readMcpAppBundle(app.appDir, 'legacy-v2.html')
-      : await renderMcpAppTemplate(
-          app.appDir,
-          resolvePublicOrigin(authCtx.requestUrl)
-        );
+    const html = await renderMcpAppTemplate(
+      app.appDir,
+      resolvePublicOrigin(authCtx.requestUrl)
+    );
     if (html == null) {
       throw new Error(`MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`);
     }
@@ -412,7 +393,7 @@ function createServerForContext(
           mimeType: MCP_APP_MIME_TYPE,
           text: html,
           _meta: {
-            ui: mcpAppUiMeta(authCtx, app, template),
+            ui: mcpAppUiMeta(authCtx, app),
           },
         },
       ],

@@ -1,0 +1,119 @@
+<task-notification>
+<task-id>a611d86bc52fc3d3a</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/a611d86bc52fc3d3a.output</output-file>
+<status>completed</status>
+<summary>Agent "Entity merge gap analysis" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary
+
+Merge is a **human-gated cleanup facility**, not a write-path resolver. For the Slack case it is a partial cleanup at best, and it is **structurally blind** to hollow `T…:U…` persons today. It is not a substitute for getting identity resolution right at write time.
+
+---
+
+## 1. What the merge feature actually is
+
+**Both auto and reviewed, but auto only under a policy that Slack members can never satisfy.**
+
+Entry points (all funnel through one tool — there is no HTTP route, cron, or connector hook that merges):
+
+- `packages/server/src/tools/admin/manage_entity.ts:637` `handleMerge` — `manage_entity(action:'merge')`. Human actors must be admin/owner (`:642`) and **skip policy assessment entirely** (`:706` gates assessment on `actor.kind !== "user"`), so a human can merge anything of the same type. Agent/watcher actors get `assessEntityResolution` recomputed server-side (`:719`) and either auto-merge or queue an approval (`:755` `proposeEntityMerge`).
+- `packages/server/src/tools/admin/manage_entity.ts:860` `handleResolveDuplicates` — `manage_entity(action:'resolve_duplicates')`: discovery + a loop that calls `handleMerge` per pair (`:891-911`).
+- `packages/server/src/tools/admin/manage_entity.ts:932` `handleUnmerge`.
+- `packages/server/src/tools/admin/entity-field-approval.ts:1254-1274` — the **human approval** path: approving a queued merge proposal calls `applyMergeGroupInTransaction`.
+- All three actions are admin-gated at `packages/server/src/auth/tool-access.ts:67`.
+- UI surfaces exist: `packages/owletto/src/components/entity-tabs/events-tab/merge-approval-card.test.tsx`, `packages/owletto/src/components/entities/entity-merge-interaction.ts`, `.../watchers/entity-resolution-interactions.ts`.
+
+**Is there an automatic duplicate-detection pass?** Only as an **opt-in Behavior template**, not a platform job: `packages/server/src/catalog/behavior-templates.ts:133-180`, id `duplicate-merge`, cron `0 3 * * *` (`:141`), source `@entity:person` (`:145`), whose reaction script calls `resolve_duplicates` with candidate ids (`:171-174`). It lives in `BEHAVIOR_CATALOG_TEMPLATES` consumed by `packages/server/src/catalog/generate-defaults.ts:11` — a **catalog** entry a user installs. I found no code path that auto-installs it (grep for `duplicate-merge` outside catalog/tests returns nothing).
+
+Verified. The only *inference* here is "not auto-installed" — based on the absence of an installer call site, not on a positive proof.
+
+---
+
+## 2. Proposal / review model — and the hollow-entity verdict
+
+**Candidate generation requires a SHARED normalized rule key. A hollow `person` shares none. It is structurally invisible.**
+
+- `packages/server/src/entity-resolution/discovery.ts:71-88` builds `ownersByIdentity` keyed on `${rule.normalizer}:${rule.fields}:${value}` and only `union()`s candidates that land on the **same key** (`:84-88`). `:100-102` then keeps only components of size &gt; 1. A candidate with zero rule keys is a singleton and is dropped.
+- The rules come from `readEntityResolutionRules` (`policy.ts:148`). With no `x-lobu-resolution` on the type, `person` falls back to `DEFAULT_PERSON_RESOLUTION_RULES` (`policy.ts:73-78`) = **email / emails / phone / phones only**, all `onMatch: "review"`.
+- `normalizedResolutionRuleKeys` (`policy.ts:201-225`) reads metadata path `field` **and** identity rows whose `namespace === field` (`:213-215`). A hollow Slack person has metadata `{display_name:'T…:U…', slack_user_id:'T…:U…'}` (`access-graph.ts:191-193`) and one identity in namespace `slack_user_id`. Neither matches `email`/`phone` → `values.length === 0` → early `return []` at `policy.ts:218`.
+
+**So: today a hollow `T…:U…` person produces zero resolution keys, is never grouped, and can never be proposed.** Even if it were hand-fed as a loser, `assessEntityResolution` yields empty evidence and `allLosersHaveAutoMatch === false` → `decision: "review"` (`policy.ts:295-298`) with reason "No matching email or phone could be verified automatically."
+
+`resolution_keys` = a per-entity readable snapshot of those normalized rule keys, grouped by rule label (`policy.ts:307-322`). It is stored with the proposal so approval-time re-checking can tell "new proof appeared" from "the underlying identities changed."
+
+Approval semantics (`entity-field-approval.ts:1171-1216`): on approval the fingerprint is recomputed (`assertResolutionFingerprintCurrent`); a mismatch is fatal **unless** `hasMergeEvidenceStrengthened` passes. That helper (`evidence-strength.ts:45-105`) requires (a) nothing the reviewer saw disappeared, (b) at least one new evidence item, and (c) **every newly appeared resolution key is matched by a counterpart on the other side** (`:93-101`) — an unmatched new key fails closed, because unmatched keys produce no evidence and would silently widen a merge nobody reviewed.
+
+Verified in code.
+
+---
+
+## 3. Does merge preserve `member_of` ACL edges? — **Yes.**
+
+`entity-merge.ts` handles relationships generically (no relationship-type filter, so `member_of` is included):
+
+- `:290-316` — first tombstones loser edges that would become self-loops **or** collide with an existing winner edge on `(relationship_type_id, from, to)`. This is a *dedupe*, not a loss: the winner already has that edge.
+- `:319-328` — repoints all remaining live edges: `from_entity_id`/`to_entity_id` → winner, `RETURNING id` counted as `repointedEdges`.
+- `:229-242` / `:387-404` — before/after snapshots persisted into the `entity_merge_operations` ledger so unmerge restores endpoints exactly.
+
+So a merge does **not** revoke channel visibility. The loser's `member_of` edges land on the winner, deduped against edges the winner already had. `entities.name` of the winner is never overwritten (`:278-284` updates only `metadata` + `field_controls`); the loser's name is folded into `metadata.aliases` (`merge-state.ts:65-73`), so `T…:U…` becomes an alias on the real person.
+
+Verified in code (not exercised against a DB in this session).
+
+---
+
+## 4. Does the 15-minute sync undo the merge? — **No. Rule this failure mode OUT.**
+
+The sync is `packages/server/src/scheduled/jobs.ts:194-198`, `authz-acl-sync`, cron `*/15 * * * *` → `runAclSyncTick` → `slack-acl-sync.ts:238` `buildAccessGraph`.
+
+The reason it is stable:
+
+- `applyMerge` step 1 (`entity-merge.ts:252-261`) **moves every live `entity_identities` row** from loser to winner (`SET entity_id = winner ... WHERE entity_id = loser AND deleted_at IS NULL`). The `slack_user_id` row now *belongs to* the winner.
+- `resolveMembers` (`access-graph.ts:159-166`) looks identities up by `(organization_id, namespace, identifier)` with `deleted_at IS NULL` **on the identity row only** — it never joins `entities`, so it never sees `merged_into` or the tombstone. It gets the winner's id back.
+- The `member_of` insert is `ON CONFLICT (from,to,type) WHERE deleted_at IS NULL DO NOTHING` (`access-graph.ts:365-378`), and the winner is in the `keep` set for the departure reconcile (`:391-404`). Nothing re-creates the hollow entity.
+- The create path is also protected independently: `lookupMatches` (`entity-link-upsert.ts:353-363`) joins `entities` and filters `e.deleted_at IS NULL`, and the global live-unique index on `(org, namespace, identifier)` makes a duplicate identity row impossible — a lost create race is hard-deleted and re-resolved (`entity-link-upsert.ts:851-878`).
+
+**Latent bug I found while checking this (adjacent, not caused by merge):** `resolveMembers` has *no* `entities` join at all. If a member's entity is soft-deleted by an ordinary `delete` (no merge, so identities are **not** moved), the identity row survives and `resolveMembers` will hand back a **deleted entity id**, write `member_of` edges to it, and never mint a replacement. `lookupMatches` guards this; `resolveMembers` does not. Verified by reading; not reproduced.
+
+---
+
+## 5. The gap list
+
+**What merge DOES solve for the Slack case**
+1. It is a safe, reversible, ledger-backed way to fold an already-forked hollow person into a real one, including `member_of` edges — no ACL regression (§3).
+2. The fold is durable against the 15-minute re-sync (§4).
+3. It gives a human review surface and an approval trail (`entity_merge_operations`, unmerge, merge-approval card).
+
+**What merge does NOT solve**
+
+1. **It never fires for this case.** Zero rule keys → never grouped, never proposed (§2). Merge is only reachable by a human manually picking two ids, or by an agent hand-picking them. There is no path from "hollow `T…:U…` person exists" to "someone is asked about it."
+2. **It cannot cross entity types.** `entity-merge.ts:210-214` throws on `entity_type_id` mismatch. The most common real duplicate here is hollow `person` vs the signed-in human's **`$member`** entity — that merge is *impossible*, at any privilege level. The `duplicate-merge` template compounds this: its source is `@entity:person` (`behavior-templates.ts:145`), so `$member` is never even a candidate.
+3. **It's O(n) manual work that regrows.** Merge is cleanup for entities that already forked. Every new Slack member in every newly-synced channel forks a fresh hollow person on the next tick. Merge never closes the tap.
+4. **It cannot fix a wrong resolution — only a duplicate one.** `resolveMembers` (`access-graph.ts:173-184`) takes the **FIRST** identity hit in `m.identities` array order, ignores `primary`, and has no ambiguity detection. Once email is added as a second Slack member identity, a stale/shared `email` row can win over `slack_user_id` and attach a channel's ACL edge to the *wrong* person. That is a mis-grant, and merge is not the remedy — unmerge would be, and only after someone notices. Note the contract at `packages/connector-sdk/src/acl-source.ts:30-33` explicitly promises "`primary` ones additionally govern creation," which `entity-link-upsert.ts:756-781` honors and `resolveMembers` does not. GitHub already ships two member identities (`packages/connectors/src/github-identity.ts:128-131`), so this first-hit path is already live, not hypothetical.
+5. **Email enrichment is a precondition for merge to ever become useful here, not an alternative to it.** If the enrichment writes the Slack member's email into the hollow person's metadata (or as an `email`-namespace identity), the entity *becomes* discoverable to `discovery.ts` and would then group with a real `person` carrying the same email — decided as `"review"` under the default rules, i.e. queued for a human. That is the correct order of operations: enrich first (so collapse happens at write time and merge becomes a rarely-needed backstop), not merge first.
+6. **`$member` has no `email` identity row.** `packages/server/src/utils/member-entity.ts:99-144` stores the member's email in `metadata[emailField]` and writes only an `auth_user_id` identity. The only writer of a `namespace='email'` identity I found is the Gmail connector rule (`packages/connectors/src/google_gmail.ts:200`); `save_content.ts:305-330` only *reads* one as a backfill probe. So an `email`-namespace lookup in `resolveMembers` will typically **miss** signed-in `$member` entities and hit `person` entities instead — the exact collapse the Slack work wants may not happen without also writing an `email` identity at member provisioning. **This is the finding I'm least certain of** — I verified the writers by grep, not by inspecting prod rows.
+
+**Verdict:** merge is a cleanup for cases that slipped through. It is not a substitute for getting the identity ordering right at write time, and for the dominant Slack case (`person` vs `$member`) it is not even available.
+
+---
+
+## Confidence
+
+| Area | Score | Basis |
+|---|---|---|
+| Merge entry points &amp; manual/reviewed model | **92** | Read `manage_entity.ts` handlers, `tool-access.ts`, and all `applyMerge*` call sites end to end. Only gap: didn't trace MCP/REST exposure of `manage_entity` itself. |
+| Hollow entity invisible to proposer | **93** | Traced `discovery.ts` → `policy.ts` key generation line by line; the `return []` at `policy.ts:218` is decisive. Not executed against a DB. |
+| Merge preserves `member_of` | **90** | Read the SQL directly; relationship handling is type-agnostic. Reasoned from code, did not run the integration suite. |
+| Sync does not undo the merge | **88** | Identities move (`:252`), `resolveMembers` reads identities without an entity join → resolves to winner. Not executed; no prod query run. |
+| `duplicate-merge` is opt-in, not auto-installed | **72** | Absence argument from grep on the working tree — **not** run against `origin/main` per the repo's absence rule. |
+| `$member` lacks an `email` identity row | **65** | Grep found no writer in `packages/server/src`; possible I missed a migration backfill or a connector-side rule. |
+| `resolveMembers` returning soft-deleted entities | **75** | Read the query; there is genuinely no `entities` join. Not reproduced. |
+
+## Suggested next actions
+
+1. **Design the fix at write time, not at merge time** — put ambiguity detection and `primary`-precedence into `resolveMembers` (`access-graph.ts:173-184`), mirroring `entity-link-upsert.ts:756-794`. Without it, adding `email` as a second Slack member identity turns a *duplicate* problem into a *mis-grant* problem, which is strictly worse.
+2. **Decide the `person` ↔ `$member` question before writing code.** Merge cannot bridge these types. Either (a) `resolveMembers` must prefer the `$member` entity when both match, or (b) `$member` provisioning must write an `email`-namespace identity so the lookup collapses onto it. Verify (b)'s premise first with `git grep -n "namespace, identifier" origin/main -- packages/server/src | grep -i email`.
+3. **Fix or file the soft-deleted-member bug** in `resolveMembers`: add the `JOIN entities e ON e.id = ei.entity_id AND e.deleted_at IS NULL` that `lookupMatches` already has. Small, independent, and it's the same class as the ordering defect (a matcher that skips a guard its sibling matcher has).
+4. **Run a prod read before committing to a backfill plan**: count hollow persons (`person` entities whose `name ~ '^T[A-Z0-9]+:U'`) and how many already have a same-email `person` or `$member` counterpart. That number decides whether a one-time migration-side merge is worth building or whether write-time collapse alone suffices going forward.</result>
+<usage><subagent_tokens>118151</subagent_tokens><tool_uses>33</tool_uses><duration_ms>254850</duration_ms></usage>
+</task-notification>

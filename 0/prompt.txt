@@ -1,0 +1,54 @@
+<task-notification>
+<task-id>ae5a2be8a31ce7310</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/ae5a2be8a31ce7310.output</output-file>
+<status>completed</status>
+<summary>Agent "Reuse review" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have what I need. Here are my findings on the reuse angle.
+
+## Findings
+
+### 1. The new test is redundant — existing tests already cover both remaining sources
+
+**`packages/server/src/gateway/guardrails/__tests__/guardrails.test.ts:583-604`** — `merges agent built-ins + inline guardrails per stage` asserts three things, and every one is already asserted by a sibling test in the same describe block:
+
+- `out.names.input` contains `"pii-scan"` and `out.names["pre-tool"]` contains `"secret-scan"` (built-in resolution across stages) — already covered at **line 686** (`inline name colliding with a built-in is dropped`), which passes `{ guardrails: ["pii-scan"] }` and asserts `out.names.output` contains exactly one `pii-scan`. That test *cannot* pass unless step 1 of the aggregator resolves built-ins per stage.
+- `out.names["pre-tool"]` contains the inline judge `"no-prod-writes"` — already covered at **line 700** (`agent inline judge resolves under its operator name and respects exclude`, output stage) and at **line 719** (`agent inline judges: distinct operator names -&gt; distinct guardrails`, which resolves *two* inline judges at the **pre-tool** stage and asserts both names). The latter is a strict superset of the new test's inline assertion.
+- The "merge" property itself (built-ins + inline coexisting in the same result) is covered at **line 686**, which supplies both `{ guardrails: ["pii-scan"] }` and an `inline` entry and asserts on the merged `names.output`.
+
+**Cost:** one extra test (22 lines) that adds no assertion the file doesn't already make, on the slowest-to-read part of the file. Each new case in this describe pays the `setupRegistry()` + full-aggregator cost and adds another site to update whenever `resolveAgentGuardrails`'s signature moves — this diff already had to rewrite 6 call sites for that reason. If you want the merge property named explicitly, the cheaper move is to rename line 686 to say "merge" or add one line to line 719's test rather than a seventh case.
+
+The 7 removed tests were not all replaced by this one anyway — they covered skill-specific dedup/precedence semantics that no longer exist, so there is nothing left to restore.
+
+### 2. Helper reuse is correct
+
+The new test does use `setupRegistry()` (**line 584**) and inherits `createPiiScanGuardrail` / `createNoopGuardrail` through it (**lines 575-579**). No hand-rolled registry, no local guardrail stub. Clean on this point.
+
+### 3. Dead import left behind in the test file
+
+**`packages/server/src/gateway/guardrails/__tests__/guardrails.test.ts:15`** — `type SkillConfig` is still imported from `@lobu/core` but has zero remaining uses in the file (grep confirms line 15 is the only hit). All 7 tests that used it were removed.
+
+**Cost:** an unused import that survives `tsc` (type-only imports don't trip `noUnusedLocals` in most configs) but will be flagged by `bunx knip` / the `tech-debt` pass, and it falsely signals to the next reader that this file still exercises skill guardrails.
+
+### 4. `inlineJudgeHash` is no longer used outside its own module
+
+Remaining call sites after the aggregator import was dropped:
+
+- **`packages/server/src/gateway/guardrails/judge-factory.ts:88`** — the only production caller, and it is *inside the same file* that defines it (line 34), building the default `inline:&lt;stage&gt;:&lt;hash8&gt;` name.
+- **`packages/server/src/gateway/guardrails/index.ts:9`** — re-exported from the barrel.
+- **`packages/server/src/gateway/guardrails/__tests__/guardrails.test.ts:532`** — a test that only asserts `createJudgeGuardrail`'s name equals `` `inline:input:${inlineJudgeHash("policy text")}` ``, i.e. it re-derives the value from the same function it is testing.
+
+So the `export` keyword on `judge-factory.ts:34` and the barrel re-export at `index.ts:9` are now dead surface — the aggregator was the sole cross-module consumer. **Cost:** a public API on the guardrails barrel that nothing outside the module consumes, and the test at line 532 is now tautological (it can't fail unless `createJudgeGuardrail` stops calling `inlineJudgeHash` at all — the four hash-behavior tests at lines 538-566 already pin the interesting properties via `createJudgeGuardrail` names alone, without touching `inlineJudgeHash`). Un-exporting the function and switching line 532 to a literal-shape assertion (`expect(g.name).toMatch(/^inline:input:[0-9a-f]{8}$/)`) would remove both.
+
+### 5. No duplication between the built-in path and the inline path
+
+I checked for the duplication you suspected the skill branch was hiding. The built-in path (**`aggregator.ts:97-108`**) delegates entirely to `GuardrailRegistry.resolve` (**`packages/core/src/guardrails/registry.ts:46-62`**) and does nothing but a `seen` insert. The inline path (**`aggregator.ts:110-172`**) constructs guardrails and validates stages. They share only the three-line `if (!seen[stage].has(g.name)) seen[stage].set(...)` idiom, repeated at lines 103-105, 149-151, and 169-171. That's below the threshold where extracting a helper pays for itself, and it was already 3 occurrences before this diff (the skill branch's insert at the old lines 115-117 made it 4). Not a finding.
+
+`materializeSkillPreTool` was the only helper in the file besides `emptyByStage`/`emptyNames`, and both of those still have one caller each (**lines 86-87**) — they were single-use before this diff too, so nothing regressed there.
+
+### Summary
+
+The reuse problems are all in the test file, not the production code. The aggregator deletion is clean. Concretely: drop the new test at **guardrails.test.ts:583** (covered by lines 686 and 719), drop the `SkillConfig` import at **line 15**, and consider un-exporting `inlineJudgeHash` (**judge-factory.ts:34**, **index.ts:9**) now that the aggregator was its only external caller.</result>
+<usage><subagent_tokens>48131</subagent_tokens><tool_uses>14</tool_uses><duration_ms>65341</duration_ms></usage>
+</task-notification>

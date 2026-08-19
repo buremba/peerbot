@@ -6,7 +6,7 @@ import { CONNECTOR_OPERATION_APPROVAL_KIND } from "../utils/platform-event-kinds
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
-import { escapeSlackText } from "./template-card";
+import { escapeSlackText } from "../utils/slack-text";
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */
 type OrgNotification = Omit<

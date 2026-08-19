@@ -41,32 +41,28 @@ import {
 	Table,
 } from "chat";
 import { resolveEntityRender } from "../utils/default-entity-template";
+import { escapeSlackText } from "../utils/slack-text";
 
 /** Slack degrades a table past these to an ASCII code fence; keep it native. */
 const MAX_ROWS = 100;
 const MAX_COLS = 20;
-/** No documented cap on a table cell; stay well inside the 2000 mrkdwn limit. */
+/**
+ * Slack's native table also has a budget across EVERY cell (headers included),
+ * not just per cell — `DATA_TABLE_MAX_CHARS` in the adapter. Breaching it does
+ * not error: the table silently becomes an ASCII code fence, which on mobile is
+ * the difference between a readable record and a wall of monospace. So the
+ * per-cell cap is derived from what is left after the table's own shape, with
+ * headroom for the caption and emoji expansion.
+ */
+const MAX_TABLE_CHARS = 9500;
+/** Below this a cell is too short to carry meaning; degrade the table instead. */
+const MIN_CELL_CHARS = 40;
+/** Upper bound for one cell when the table is small enough to afford it. */
 const MAX_CELL_CHARS = 400;
+/** Slack paginates a native table; show the whole record rather than page 1. */
+const TABLE_PAGE_SIZE = 100;
 const MAX_TEXT_CHARS = 1900;
 
-/**
- * Escape text bound for Slack **mrkdwn**.
- *
- * Load-bearing: a card renders a connector operation's INPUT, which the agent
- * controls. Unescaped, `<!channel>` pings the room from inside a trusted
- * approval card and `<https://evil|Review in Lobu>` renders a link spoofing the
- * genuine one.
- *
- * NOT applied to table cells: the Slack adapter emits those as `raw_text`,
- * which is not parsed for entities, so escaping there would render a literal
- * `&lt;` to the reader.
- */
-export function escapeSlackText(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-}
 
 function clamp(value: string, max: number): string {
 	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -202,6 +198,8 @@ const cardVisitor: TemplateVisitor<Frag> = {
 		}
 		if (type === "fields") return children;
 		if (type === "th" || type === "td") {
+			// Clamped again at table level once the shape is known; this is only a
+			// sanity bound on a single pathological cell.
 			return [{ kind: "cell", text: clamp(textOf(children), MAX_CELL_CHARS) }];
 		}
 		if (type === "tr") {
@@ -220,6 +218,13 @@ const cardVisitor: TemplateVisitor<Frag> = {
 				rows.reduce((w, r) => Math.max(w, r.length), 0),
 				MAX_COLS,
 			);
+			// Share the whole-table budget across the cells that actually exist, so
+			// a wide or long table keeps its native rendering instead of silently
+			// collapsing to ASCII.
+			const cellBudget = Math.max(
+				MIN_CELL_CHARS,
+				Math.min(MAX_CELL_CHARS, Math.floor(MAX_TABLE_CHARS / (rows.length * width || 1))),
+			);
 			// Slack's native table always renders its first row as the header, and
 			// the default entity template has no `thead` — its `th` is a per-row
 			// label in column 0. Blank headers keep the shape rectangular without
@@ -228,9 +233,13 @@ const cardVisitor: TemplateVisitor<Frag> = {
 				{
 					kind: "block",
 					child: Table({
+						// The caption is announced by Slack above the table and defaults
+						// to the literal "Table"; name the thing being shown instead.
+						caption: str(props.caption, "Details"),
+						pageSize: TABLE_PAGE_SIZE,
 						headers: Array.from({ length: width }, () => ""),
 						rows: rows.map((r) =>
-							Array.from({ length: width }, (_, i) => r[i] ?? ""),
+							Array.from({ length: width }, (_, i) => clamp(r[i] ?? "", cellBudget)),
 						),
 					}),
 				},

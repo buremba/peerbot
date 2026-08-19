@@ -2,6 +2,7 @@ import { createLogger } from "@lobu/core";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { PlatformConnection } from "./types.js";
+import { escapeSlackText, joinSectionLines } from "../../utils/slack-text";
 
 const logger = createLogger("slack-platform-bridge");
 
@@ -243,29 +244,28 @@ function humanizeSource(platform: string | null): string | null {
 }
 
 /** Escape Slack mrkdwn control chars so titles can't inject formatting. */
-function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 /** Render the "Recent activity" list as a single section, or `[]` if empty. */
 function recentBlocks(
   recent: SlackHomeRecentItem[],
 ): Record<string, unknown>[] {
   if (recent.length === 0) return [];
   const lines = recent.map((item) => {
-    const title = escapeMrkdwn(item.title);
+    const title = escapeSlackText(item.title);
     const source = humanizeSource(item.platform);
     // `<!date^…>` renders in the viewer's own timezone; the pipe text is the
     // fallback Slack shows if it can't resolve the token.
     const when = `<!date^${item.ts}^{date_short_pretty}|recently>`;
     return source
-      ? `• *${title}*  ·  ${escapeMrkdwn(source)}  ·  ${when}`
+      ? `• *${title}*  ·  ${escapeSlackText(source)}  ·  ${when}`
       : `• *${title}*  ·  ${when}`;
   });
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `*Recent activity*\n${lines.join("\n")}` },
+      text: {
+        type: "mrkdwn",
+        text: joinSectionLines(lines, { header: "*Recent activity*" }).text,
+      },
     },
     { type: "divider" },
   ];
@@ -334,7 +334,7 @@ function notificationBlocks(
 
   const lines = inbox.items.map((item) => {
     const dot = item.isRead ? ":white_circle:" : ":large_blue_circle:";
-    const title = escapeMrkdwn(item.title);
+    const title = escapeSlackText(item.title);
     return item.url
       ? `${dot} <${absolute(item.url)}|${title}>`
       : `${dot} ${title}`;
@@ -346,7 +346,10 @@ function notificationBlocks(
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `${header}\n${lines.join("\n")}` },
+      text: {
+        type: "mrkdwn",
+        text: joinSectionLines(lines, { header }).text,
+      },
     },
     { type: "divider" },
   ];

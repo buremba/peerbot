@@ -1,0 +1,133 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   This session continues prior work. Requests in chronological order:
+
+   **(Inherited, from prior session)** Audit the codebase so it doesn't "look like AI slop", refactor big files, improve directory structure, produce an HTML artifact with diagrams. Then: "launch opencode to do the refactoring for different pieces, use opencode as subagent." Then: "yes do those, put relevant guardrails make sure no gaps and then merge." Via AskUserQuestion the user chose **Two PRs** (PR A = four refactors; PR B = guardrail) and **Merge when all checks are green** (run the gate sequence and squash-merge each PR once every required check reports green, without pausing; stop and report only on a red gate or a real review finding).
+
+   **(This session)**
+   - "go ahead finish up" — after I flagged peer-session Depot contention, this authorized taking the Depot slot and completing the merges.
+   - "yes do those" — approving my four proposed follow-ups: (1) boot the app and exercise a Behavior run + `manage_operations` execute E2E, (2) clear orphaned embedded-postgres instances, (3) scope the remaining large files as a follow-up pass, (4) decide whether peer-session Depot contention needs a convention.
+   - "do you think it's worth it or we don't need it" — asking for a genuine verdict on PR C (large-file split) and the AGENTS.md convention line.
+   - "ok you can make agents.md concise as much as possible and link to other relevant docs then and merge right away."
+   - "question everyying in agents.md and tell me if we need that sentence" — a per-rule audit with a verdict on each.
+   - "yes go do it. the anthropuc suggests deleting this file even over time because models get smarter and you are smarter compared to the model that generated that file so question everything"
+   - "ok sounds good" (most recent).
+
+2. **Key Technical Concepts:**
+   - Bun monorepo, 19 workspace packages under `packages/*`, TS source in `src`, tests in `__tests__`
+   - Lobu architecture: connectors → feeds → events (append-only) → Behaviors/watchers → run queue → job-router → deployment-manager → agent-worker → gateway proxy
+   - Depot CI: serializes **org-wide** (newer dispatch cancels older); attestation is keyed on the **tree hash**, not the commit SHA
+   - GitHub Actions CI has an auto-cancel concurrency group per ref; `gh run rerun` counts as a dispatch
+   - `[client-regen-not-needed]` sentinel, matched via `git log "$BASE_SHA"..HEAD --format=%B | grep -qF`
+   - Dual test harnesses: `bun test` vs `bunx vitest run`; `bunx vitest` ignores `singleFork` → use `node node_modules/.bin/vitest`
+   - macOS `kern.sysv.shmmni` = 32 shm segments; embedded-postgres consumes one each
+   - `scc --by-file -f csv` columns: Language,Provider,Filename,Lines,Code,Comments,Blanks,Complexity,Bytes,ULOC
+   - PAT scheme: `owl_pat_<token>`, sha256 hex hash, prefix = first 12 chars (`packages/server/src/auth/oauth/utils.ts`)
+   - Embedded postgres password `postgres` (`packages/server/src/embedded-runtime.ts:136`)
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/tools/admin/manage_operations/handlers/execute.ts`** — hand-ported #2734's page-activation logic (4 hunks) after the extraction. Import re-depthed to `../../../../runs/page-activation`. Key hunks:
+     ```ts
+     if (args.activation && shouldQueue) {
+       throw new ToolUserError("Page-activated operations cannot also require human approval.", 422);
+     }
+     const activation = args.activation
+       ? { kind: args.activation.kind,
+           urls: normalizePageActivationUrls(args.activation.urls),
+           expiresInSeconds: args.activation.expires_in_seconds ?? DEFAULT_PAGE_ACTIVATION_SECONDS }
+       : undefined;
+     ```
+     plus `createdByUserId: activation ? visibilityUserId : ctx.userId`, `activation,` field, and the `if (activation) { ... status: "in_progress" ... }` early return.
+
+   - **`packages/agent-worker/src/runtime/tool-policy.ts`** (667→347) + `bash-command-parser.ts` (325)
+   - **`packages/server/src/gateway/worker-dispatch/`** (renamed from `gateway/gateway/`), `index.ts` → `worker-gateway.ts`
+   - **`packages/server/src/gateway/orchestration/{host-capabilities,conversation-locks,deployment-identity,worker-invocation}.ts`** — extracted siblings
+   - **`scripts/check-directory-structure.mjs`** (189 lines) — the guardrail; `EXCLUDED_PACKAGES` now only `owletto` + `node_modules` (the `client` exclusion was removed per review blocker); `SKIPPED_DIRS` includes `generated`; `EXTRACTION_WEIGHT_THRESHOLD = 300`
+   - **`scripts/__tests__/check-directory-structure.test.ts`** — 9 tests, including the new fixture:
+     ```ts
+     it("governs handwritten client source but not its generated surface", () => { ... })
+     ```
+   - **`.github/workflows/ci.yml`** — two gate steps added; they run in the **`format-lint`** job (verified), not `typecheck`
+   - **`AGENTS.md`** (root) — rewritten twice; final 7,537 chars / 53 lines (from 16,284 / 74). Structure: Repo map / Unrecoverable — never do these / Facts you cannot derive / Ship a change / How to work
+   - **`docs/AGENT_PLAYBOOK.md`** (NEW) — rationale, incident history, gate table, rollout verification, session efficiency
+   - **`docs/README.md`** — added `AGENT_PLAYBOOK.md` index entry
+   - **`packages/server/AGENTS.md`** — new section added before "## Connector operations and feed health":
+     ```
+     ## Durable dispatch and coordination
+     - **Fail closed on durable dispatch/delivery state.** ...
+     - **Coordination design brake.** ... worker dispatch is serialized by `job-router` on the worker-SSE-owner pod ...
+     - **Interactive browser drafts are page-activated, never tab-pushed.** ...
+     ```
+
+4. **Errors and fixes:**
+   - **Cherry-pick conflict from upstream #2734** — resolved facade with `--theirs`, hand-ported activation into `handlers/execute.ts`, verified 43/44 lines verbatim.
+   - **Typecheck failures from stale worktree dist** — rebuilt `core`, `pgvector-embedded`, `connector-sdk`, `connector-worker`.
+   - **Reported a nonexistent flaky test earlier (prior session)** — root cause was shm exhaustion, corrected to user.
+   - **CI `typecheck` red was NOT tsc** — it was the "Generated client must track the contract" step. Fixed with the `[client-regen-not-needed]` sentinel via message-only amend (tree hash unchanged → attestation survived).
+   - **`ui-review` status silently absent after force-push** — re-ran `make ui-review`.
+   - **Biome pre-commit hook writes AFTER staging** — left formatted `.mjs` uncommitted; fixed by amending.
+   - **PR B review blocker: whole `client` package excluded** — removed exclusion, added fixture, mutation-tested it.
+   - **I cancelled main's CI myself** by running `gh run rerun` on an OLD commit, making it the newest dispatch. Acknowledged; recorded rule: only rerun the ref's current HEAD. (A second cancellation of `4904a4ae` was legitimate — a new merge `a094cf6fb`.)
+   - **Mislabeled scc Bytes column as Complexity** — corrected with the real header.
+   - **Bad wait condition** — grep matched "errors: 0" as a failure signal; rewrote to poll the actual port with real failure signatures.
+   - **zsh doesn't word-split unquoted `$VAR`** — used literal file lists.
+   - **Assumed the directory-structure gate ran in `typecheck`** — it actually runs in `format-lint`; verified by scanning all jobs.
+   - **First AGENTS.md cut dropped "port allocation"** — a genuine regression (it's the fact that makes `git worktree add` non-equivalent to `make task-setup`); restored.
+
+5. **Problem Solving:**
+   Shipped both PRs. Proved merge order empirically (guardrail clean on PR A tree, 2 violations on pre-PR-A main). Confirmed `device-action-wait` failure was a flake via rerun→success plus local 10/10. Full E2E boot exercised all 5 extracted handlers live (all 200/proper errors), 47 worker polls, 0 5xx, 0 module-resolution errors. Cleaned up all test data.
+
+6. **All user messages:**
+   - "go ahead finish up"
+   - "yes do those"
+   - "do you think it's worth it or we don't need it"
+   - "ok you can make agents.md concise as much as possible and link to other relevant docs then and merge right away"
+   - "question everyying in agents.md and tell me if we need that sentence"
+   - "yes go do it. the anthropuc suggests deleting this file even over time because models get smarter and you are smarter compared to the model that generated that file so question everything"
+   - "ok sounds good"
+
+   **Standing constraints (from user's global CLAUDE.md and repo AGENTS.md) that MUST continue to apply:**
+   - **Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup NAME=<slug>`; never `git switch` in the main checkout**
+   - **Do NOT include "Co-Authored-By" or "Generated with Claude Code" in commit messages**
+   - **Stage by explicit path (`git add -- <paths>`), never `-A`; after commit, `git diff --name-only origin/main...HEAD` must equal the intended file list**
+   - **Never `git stash`; use WIP commits**
+   - **Never run biome on `packages/server`, `connector-sdk`, `connector-worker`, `connectors`** — biome-excluded
+   - **Workers never receive real credentials** (placeholders/leases only)
+   - **`events` is append-only — never `DELETE FROM events`**
+   - **Never bulk-delete prod `organization` rows**
+   - **Never resolve merge conflicts in the GitHub web UI**
+   - **Poll delegated CLIs at most once every 4.5 minutes**
+   - **Never `--admin` past a check that has not reported**
+   - **`make review` once on settled HEAD; `make review-fix` runs BEFORE the first `make review`**
+   - **Intentional `.github/workflows` changes require `DEPOT_ALLOW_WORKFLOW_CHANGES=1 make pre-pr-remote`**
+   - **Always show the diff (`git status` + `git diff --stat`), not a prose summary**
+   - **End reports with a confidence score and 2–4 concrete next actions**
+   - **Never introduce a new table or change DB design/API/SDK surface without explicit user confirmation**
+
+7. **Pending Tasks:**
+   - Complete the AGENTS.md concision PR: finish `make review-fix`, verify its diff, stage the 4 paths explicitly, `make pre-pr-remote`, commit, push, `gh pr create`, `make review` once, `make ui-review`, merge on green.
+   - (Declined/deferred by mutual agreement) PR C large-file split — I recommended skipping it; user did not ask for it.
+
+8. **Current Work:**
+   Working in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/agents-md-concise` on the AGENTS.md concision change. Four files changed:
+   ```
+    M AGENTS.md
+    M docs/README.md
+    M packages/server/AGENTS.md
+   ?? docs/AGENT_PLAYBOOK.md
+   ```
+   Final AGENTS.md is **7,537 chars / 53 lines**, down from 16,284 / 74 — **54% smaller**. Applied: cut 3 advice rules (unused-params/`_`-prefixing, `statusCheckRollup` anti-pattern, read-before-edit, batch-narrow-fixes, repetitive-multi-file-edits, "skim GOTCHAS before you start"), deduped 5 rules stated in both Hard invariants and Ship a change, relocated 3 architecture rules to `packages/server/AGENTS.md` and mutation-checks to the playbook. Restructured by severity. Restored the "port allocation" clause after verification caught it as a genuine regression.
+
+   `make review-fix` was started in the background (task id `bse1ya3as`). The most recent tool output, while checking its progress, instead surfaced peer `make pre-pr-remote` processes running in the `prod-health-fixes` worktree (PIDs 79641, 79645, 85504) — the same Depot org-wide contention pattern encountered twice earlier this session.
+
+9. **Optional Next Step:**
+   Read the completed `make review-fix` output at `/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bse1ya3as.output`, verify any working-tree changes it made (re-reading the files, since the fixer edits in place), then — **waiting for the peer session's `make pre-pr-remote` in `prod-health-fixes` to finish before dispatching, per the convention established this session** — stage the four paths explicitly (`AGENTS.md`, `docs/AGENT_PLAYBOOK.md`, `docs/README.md`, `packages/server/AGENTS.md`), run `make pre-pr-remote`, commit, push, open the PR, run `make review` once and `make ui-review`, and merge on green.
+
+   This follows directly from the user's "yes go do it" and "merge right away", and my stated plan: "`make review-fix` is running on the settled diff, then I'll gate and merge." The prior review-fix run on the earlier version returned "Not fixed: None" and advised: "Stage the three paths explicitly, run `make pre-pr-remote`, commit, then run `make review` once and `make ui-review`." (Now four paths, since `packages/server/AGENTS.md` was added in the latest pass.)
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

@@ -1826,5 +1826,138 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       await approve(ctx, Number(cards[0].id));
       expect((await metaFor(ctx, APP_CRASHES_KEY)).severity).toBe('high');
     });
+
+    /**
+     * Creates are the other half of the class. `validateEntityRowInsert` throws
+     * on an uncovered escalate, and the caller only ever queued a create card
+     * for a POLICY defer — so a rule escalate on create reached the outer catch
+     * and rolled the whole completion back, on every retry.
+     */
+    // A create card carries `entity_change`, not the update path's
+    // `entity_field_change`, so it needs its own lookup.
+    const pendingAnyCard = async (ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>) =>
+      await ctx.sql`
+        SELECT id, action_key, action_input FROM runs
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND run_type = 'internal'
+          AND approval_status = 'pending'
+      `;
+
+    const findEntity = async (
+      ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>,
+      stableKey: string
+    ) =>
+      await ctx.sql`
+        SELECT id, slug, metadata FROM entities
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND metadata->>'stable_key' = ${stableKey}
+      `;
+
+    it('cards a CREATE the rule escalated instead of failing the window', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "create") {
+    row.escalate(["severity"], "a new topic needs sign-off");
+  }
+};`
+      );
+
+      let windowError: unknown = null;
+      try {
+        await ctx.api.automations.completeWindow({
+          automation_id: String(ctx.automationId),
+          window_token: await readWindowToken(ctx),
+          run_metadata: { automation_run_id: runId },
+          extracted_data: {
+            problems: [{ category: 'Stability', name: 'App Crashes', severity: 'critical' }],
+          },
+        });
+      } catch (err) {
+        windowError = err;
+      }
+
+      expect(windowError).toBeNull();
+      // No row: a create has no held-field bookkeeping, because the aborted
+      // savepoint leaves nothing behind and the whole proposal is the card.
+      expect(await findEntity(ctx, APP_CRASHES_KEY)).toEqual([]);
+
+      const cards = await pendingAnyCard(ctx);
+      expect(cards.length).toBe(1);
+      expect(cards[0].action_key).toBe('entity_change');
+      // The verdict needs no second ask here: a create strips nothing before
+      // the rule runs, so the judged write and the replayed write are the same.
+      expect((cards[0].action_input as { escalated_fields?: string[] }).escalated_fields).toEqual([
+        'severity',
+      ]);
+
+      await approve(ctx, Number(cards[0].id));
+      const created = await findEntity(ctx, APP_CRASHES_KEY);
+      expect(created.length).toBe(1);
+      expect(created[0].metadata as Record<string, unknown>).toMatchObject({
+        severity: 'critical',
+      });
+
+      // The automation_key identity is claimed on the NEXT promotion, not at
+      // approval — so re-promoting must adopt the approved row, not fork it.
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: await readWindowToken(ctx),
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [{ category: 'Stability', name: 'App Crashes', severity: 'critical' }],
+        },
+      });
+      expect((await findEntity(ctx, APP_CRASHES_KEY)).length).toBe(1);
+    });
+
+    it('skips a CREATE the rule denied, and mints no card for it', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "create") {
+    row.deny("this type is closed to new rows");
+  }
+};`
+      );
+
+      let windowError: unknown = null;
+      try {
+        await ctx.api.automations.completeWindow({
+          automation_id: String(ctx.automationId),
+          window_token: await readWindowToken(ctx),
+          run_metadata: { automation_run_id: runId },
+          extracted_data: {
+            problems: [{ category: 'Stability', name: 'App Crashes', severity: 'low' }],
+          },
+        });
+      } catch (err) {
+        windowError = err;
+      }
+
+      // Fail the ROW closed, not the window — and mint nothing, because
+      // approval cannot launder a deny into a write.
+      expect(windowError).toBeNull();
+      expect(await findEntity(ctx, APP_CRASHES_KEY)).toEqual([]);
+      expect(await pendingAnyCard(ctx)).toEqual([]);
+    });
   });
 });

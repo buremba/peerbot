@@ -470,17 +470,58 @@ async function upsertKeyedEntity(params: {
 
   // 2. Create the entity (sequence-allocated id — multi-replica safe),
   //    tolerating a slug collision so promotion can never poison-pill the window.
-  const entityId = await insertEntityWithUniqueSlug({
-    tx,
-    organizationId,
-    entityTypeId: params.entityTypeId,
-    parentEntityId: params.parentEntityId,
-    name: params.name,
-    baseSlug: params.baseSlug,
-    identifier,
-    metadata: params.metadata,
-    createdBy: params.createdBy,
-  });
+  let entityId: number;
+  try {
+    entityId = await insertEntityWithUniqueSlug({
+      tx,
+      organizationId,
+      entityTypeId: params.entityTypeId,
+      parentEntityId: params.parentEntityId,
+      name: params.name,
+      baseSlug: params.baseSlug,
+      identifier,
+      metadata: params.metadata,
+      createdBy: params.createdBy,
+    });
+  } catch (err) {
+    if (!(err instanceof EntityRowValidationError)) throw err;
+    // Same containment as the update path above, and for the same reason: a
+    // rule verdict is per-ROW, so letting it escape rolls back the whole window
+    // completion and recurs on every retry.
+    //
+    // Validation runs INSIDE the savepoint and throws before `insertEntityRow`,
+    // so the savepoint has already unwound — there is no partial row to undo.
+    if (err.verdict.outcome !== 'escalate') {
+      logger.warn(
+        {
+          automationId: params.automationId,
+          organizationId,
+          identifier,
+          reason: err.verdict.reason,
+        },
+        '[promote-keyed-entities] a write rule denied this create — row skipped'
+      );
+      return {
+        entityId: 0,
+        created: false,
+        blocked: {},
+        applied: {},
+        blockedCreate: true,
+      };
+    }
+    // Unlike the update path, this verdict needs no second ask. A create has no
+    // committed row and so no held fields — nothing is stripped before the rule
+    // runs — and the card replays the same `entity_data` that was just judged.
+    // The verdict and the replay are already about the same write.
+    return {
+      entityId: 0,
+      created: false,
+      blocked: {},
+      applied: {},
+      blockedCreate: true,
+      escalated: { fields: err.verdict.fields, reason: err.verdict.reason },
+    };
+  }
 
   // 3. Claim the stable key. ON CONFLICT DO NOTHING against the live-unique
   //    index: if a concurrent completion already claimed it, our insert is a
@@ -723,9 +764,13 @@ export async function promoteAutomationEntityOutput(
         continue;
       }
       if (blockedCreate) {
-        // Only a 'defer' outcome queues an approval; a 'deny' is fail-closed —
-        // the row is skipped entirely (no create, no approval card).
-        if (createGate.outcome === 'defer') {
+        // A create is carded when POLICY defers it or when a write RULE
+        // escalated it. A 'deny' from either is fail-closed — the row is skipped
+        // entirely (no create, no approval card), because approval cannot
+        // launder a refusal into a write. A rule deny needs no separate signal:
+        // it can only be reached once policy already said 'allow', because a
+        // policy defer returns before the insert the rule runs inside.
+        if (createGate.outcome === 'defer' || escalated) {
           const createProposal = {
             entity_type: entityTypeSlug,
             name,
@@ -742,6 +787,11 @@ export async function promoteAutomationEntityOutput(
               },
               proposal: createProposal,
               attribution: ApprovalAttribution.Automation,
+              // A rule-held create carries the rule's own grant and reason: the
+              // apply path replays the insert, so an empty grant re-escalates.
+              ...(escalated
+                ? { escalatedFields: escalated.fields, reason: escalated.reason }
+                : {}),
               automationId,
               windowId,
             })

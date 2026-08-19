@@ -1,0 +1,1 @@
+can you first add it to my ssh and call it lobu-prod so i can ssh easily. we need to isntall k3s here right? and that should be available in our kube ctl. also the database pod etc name needs to be properly done like lobu-db-prod etc so while migrating make sure we have a clean cut and don't have things like hetzner storage in k3s etc.

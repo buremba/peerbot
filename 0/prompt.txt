@@ -1,0 +1,4 @@
+1. it's just a config change right? if yes let's do it.
+2. you can e2e when prod is deployed
+3. wht are those
+3. yes

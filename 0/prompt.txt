@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsvm0d91e</task-id>
+<tool-use-id>toolu_01GjX7gSLGTfE5gGTwG6u7yf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/bsvm0d91e.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait past the 03:00Z scheduled firing" was stopped</summary>
+</task-notification>

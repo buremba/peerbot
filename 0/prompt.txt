@@ -1,0 +1,147 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+   - **Initial:** Check prior session `4226e7a7-3646-49f8-ac53-c326d3a23430` and report if any work was left.
+   - **"fix things properly simplify and do next steps"** — fix root causes rather than workarounds, simplify, and execute the next-step list I'd proposed.
+   - **"who is that session? any work left here?"** — identify who pushed foreign commits to my branch.
+   - **"can codesmith just push commits? is it the best approach? any work here?"** — assess whether the Codesmith bot's ability to push to PR branches is safe/correct. User then selected "Guard review.sh (Recommended)" from an AskUserQuestion.
+   - **"ok did you merge all so we can try it in prod?"** / **"the 2294 etc all merge? anything left for the session?"** — confirm merge state.
+   - **"ok make sure no gaps, review with codex using make review and we can merge"** — gap audit + codex review + merge.
+   - **"yes"** — proceed with the prod-verification pass over the merged backlog (chosen from a 3-option recommendation where option 1 was prod-verify).
+
+2. **Key Technical Concepts:**
+   - `pi-review`: LLM verdict posted as a GitHub **commit status** keyed to a specific SHA; a REQUIRED context with `enforce_admins: true` (no override path).
+   - Reviewer runs under `codex exec --sandbox read-only` → filesystem writes (`mkdtemp`) fail with `EPERM`.
+   - Branch protection rulesets all target `~DEFAULT_BRANCH`; **feature branches have zero protection**.
+   - `merged-reachability` reports `skipping` on PRs (daily sweep job) — must NEVER be a required context.
+   - Squash merges break `--is-ancestor` on branch heads; must gate on `gh pr view --json mergeCommit`.
+   - Codex/`Codesmith` bot pushes commits to open PR branches asynchronously (15+ branches/30 days).
+   - `git ls-remote` vs `git fetch`: fetch writes `FETCH_HEAD` (per-worktree shared scratch) and downloads objects; ls-remote writes nothing.
+   - `/g` regex flag makes `.test()` stateful via `lastIndex` — a real bug source.
+   - `init.defaultBranch` differs between dev host (`main`) and CI runner (`master`).
+   - Lobu MCP tools: `query_sql` (table allowlist, no schema introspection), `query_sdk`, `run_sdk`, `search_sdk`.
+   - Prod rollout gate: `GET https://app.lobu.ai/health` → `revision` field.
+
+3. **Files and Code Sections:**
+
+   - **`prompts/review-prompt.md`** (root cause of the deadlock)
+     - §4 contained the lone contradictory rule across 4 documents. Original:
+       ```
+       - If the environment itself is broken (e.g. you cannot run even a narrow
+         test file), record that as a `blocker` and finish with a partial
+         verdict. Do not retry indefinitely.
+       ```
+     - Final (as merged, after review-fix's causation-based rewording):
+       ```
+       - If test execution is unavailable because of the reviewer's environment
+         rather than the diff — for example, the sandbox is read-only or a probe
+         dies with `EPERM` — that is never a `blocker`. Record it in `notes` with
+         the `[env]` prefix, keep
+         `bug_free_confidence` in the 70–89 band you can actually defend, and
+         finish the verdict from static review plus the CI snapshot. The
+         deterministic suites are separate required checks and still have to pass
+         on their own. Do not retry indefinitely.
+       ```
+
+   - **`scripts/__tests__/review-prompt-env-blockers.test.ts`** (new, #2308) — final design uses a **whitelist**, after 3 blacklist revisions each failed:
+     ```ts
+     const PROHIBITS_BLOCKER = [
+       /\b(?:never|not)\s+a\s+`?blockers?`?/i,
+       /\bnot\s+\w+\s+(?:them\s+)?(?:to|under|in|as)\s+`?blockers?`?/i,
+     ];
+     function contradictions(markdown: string): string[] {
+       return bullets(markdown)
+         .filter((bullet) => ENV_INABILITY.test(bullet))
+         .flatMap((bullet) => bullet.split(CLAUSE_BOUNDARY))
+         .filter((clause) => MENTIONS_BLOCKER.test(clause))
+         .filter((clause) => !PROHIBITS_BLOCKER.some((allowed) => allowed.test(clause)))
+         .map((clause) => clause.trim());
+     }
+     ```
+     Plus `CONTRADICTORY` (6 must-flag fixtures) and `CONSISTENT` (4 must-allow) arrays. 14 tests.
+
+   - **`scripts/lib/review-upstream-guard.sh`** (new, #2311) — core:
+     ```bash
+     review_assert_head_is_current() {
+       local head_sha="$1"
+       local status_context="${2:-pi-review}"
+       upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+       [ -n "$upstream" ] || return 0
+       remote="${upstream%%/*}"; branch="${upstream#*/}"
+       upstream_sha="$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
+       if [ -z "$upstream_sha" ]; then
+         printf '>> warning: could not read %s from %s — skipping stale-head check\n' "$branch" "$remote" >&2
+         return 0   # fail OPEN
+       fi
+       git merge-base --is-ancestor "$upstream_sha" "$head_sha" 2>/dev/null && return 0
+       ...; return 1
+     }
+     ```
+
+   - **`scripts/review.sh`** — 3 guard call sites added: `:113` (preflight, `|| exit 2`), `:140` (inside `finalize_review_status`, gated on `GH_AVAILABLE`, `return 2`), `:441` (before PR comment, inside `PR_NUMBER` non-empty branch). Key pre-existing lines: `:96 HEAD_SHA="$(git rev-parse HEAD)"`, `:130 gh api -X POST "repos/$repo/statuses/$HEAD_SHA"`, `:393 [ "$BLOCKER_COUNT" -eq 0 ] || STATUS_REASONS+=("blockers>0")`.
+
+   - **`scripts/lib/__tests__/review-upstream-guard.test.sh`** (new) — 6+ cases; branch names pinned via `symbolic-ref HEAD refs/heads/main` (not `init -b`, avoiding a git 2.28 floor) and `clone -q -b main`. Discriminating case seeds `FETCH_HEAD` with `sentinel` and asserts survival.
+
+   - **`.github/workflows/ci.yml`** — added "Review-prompt blocker rule" step (`:589` area) and `bash scripts/lib/__tests__/review-upstream-guard.test.sh` (`:622`).
+
+   - **Memory files written:** `reference_pi_review_env_blocker_deadlock.md` (new), `project_prod_verification_2026_07_29.md` (new), `reference_device_pin_unique_index.md` (appended prod findings + corrected the wrong "one connection per DEVICE" claim), `project_codex_auto_approve.md` (corrected stale branch-protection claims + documented Codesmith pushes), `MEMORY.md` (lines 8 and 119).
+
+4. **Errors and fixes:**
+   - **Guard v1 passed against the broken prompt (3 pass/0 fail).** Negation search over whole bullet matched "Do **not** retry indefinitely" from a different sentence. Fixed by scoping to the sentence naming the blocker + stripping env phrasing.
+   - **Guard v2 `/g` flag bug.** Sharing one global regex between `.test()` and `.replace()` carried `lastIndex`, silently skipping bullets. Discovered only via differential mutation testing which showed **both** my guard and review-fix's passed mutation C. Split into `ENV_INABILITY` (non-global) + `ENV_INABILITY_ALL` (global).
+   - **I wrongly claimed review-fix left a broken state** (asserting 3 call sites without adding them). It had added all three. Corrected plainly.
+   - **codex blocker: `do not hide it; record it as a blocker`** — sentence-scoped negation. Fixed with clause boundaries `/(?<=[.;!?—,])\s*/`.
+   - **codex blocker (same class again): `do not hide it and record it as a blocker`** — no clause boundary at "and". Stopped patching; **inverted to a whitelist**.
+   - **Accidentally posted an `error` pi-review status onto `468c39888` (main's head)** by running `review.sh` from a branch at main's HEAD after a `git checkout` aborted. Disclosed to user; refused to post a fake `success`; later superseded with an honest description when user said "clean".
+   - **CI `format-lint` failure** — fixture bug, not guard bug: `init.defaultBranch` main vs master. Reproduced locally with `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0=master`.
+   - **FETCH_HEAD "silent fail-open" claim was wrong** — fetch rewrites FETCH_HEAD before the read, so the seeded sentinel never mattered; my test passed against both implementations. Switched to `ls-remote` and justified it honestly (no local writes), corrected the comment.
+   - **Misattributed Codesmith's commits to session `824ebede`.** Corrected via `grep -l` across transcripts + `git log --format='%cn'`.
+   - **Wrongly recommended pruning 36 worktrees.** Withdrew after finding 6 with uncommitted source edits and one `.KEEP-WORKTREE-` marker.
+   - **Memory claim "ONE connection per DEVICE" was wrong** — corrected to per (device, connector).
+   - `gh api -X POST .../contexts -f 'contexts[]=...'` failed → used `printf '{"contexts":["base-branch-guard"]}' | gh api --input -`.
+   - `runaway make review-fix` edited files for ~20 min under me; killed pids 56906/56908/56914/56963.
+
+5. **Problem Solving:**
+   Solved the `pi-review` deadlock at root (prompt contradiction) with **no governance downgrade** — `pi-review` stays required, `enforce_admins` stays `true`. Added `base-branch-guard` to required contexts (9 total) after verifying it reports+passes on both open PRs. Established that Codesmith cannot reach `main` unreviewed (fails closed) but can silently strand PRs behind an orphaned status — fixed by #2311. Completed a real prod-behaviour verification pass.
+
+6. **All user messages:**
+   - "can you check this session and tell me if there is any work left? claude --resume 4226e7a7-3646-49f8-ac53-c326d3a23430"
+   - "fix things properly simplify and do next steps"
+   - "who is that session? any work left here?"
+   - "can codesmith just push commits? is it the best approach? any work here?"
+   - (AskUserQuestion answer) "Guard review.sh (Recommended)"
+   - "1"
+   - "ok did you merge all so we can try it in prod?"
+   - "ok make sure no gaps, review with codex using make review and we can merge"
+   - "the 2294 etc all merge? anything left for the session?"
+   - "yes"
+   - "clean and let me know what's the best next action for us?"
+
+   *Standing constraints from AGENTS.md/CLAUDE.md that remain in force:* never write to `~/Code/lobu` directly (work in worktrees via `make task-setup NAME=<slug>`); **never bulk-delete prod `organization` rows**; `events` is append-only, never `DELETE FROM events`; **workers never receive real credentials**; stage by explicit path (`git add -- <paths>`, never `-A`); never `git stash`; never resolve merge conflicts in the GitHub web UI; never `--admin` past a check that has not reported; no Co-Authored-By/Claude attribution in commits; absence must be proven with `git fetch -q origin && git grep <pattern> origin/main`.
+
+7. **Pending Tasks:**
+   - Complete/close out the prod-verification report to the user (was mid-flight).
+   - **#2249 remains unverifiable** — needs a GitHub connection wired (OAuth, user action).
+   - **Open anomaly:** connection `397 mac-computer-use` — active `apple.computer_use`, `device_worker_id=NULL`, `config=null`. Not yet triaged.
+   - **#2309** (`chore(main): release lobu 14.7.1`) open — explicitly left as the user's call since merging cuts a release.
+   - **#2234** draft — another program's, recorded as unmergeable pending generation-routing redesign.
+   - Optional: clean up the prod test conversation created by `conversations.send` on `personal-agent`.
+   - Open decision: whether to switch Codex/Codesmith from pushing commits to posting suggestions (Codex-side setting, user's call).
+
+8. **Current Work:**
+   Executing the prod-verification pass the user approved with "yes". Prod deployed revision confirmed as `468c39888` via `GET https://app.lobu.ai/health`. Results:
+   - **#2294 VERIFIED** — live `personal-agent` turn returned `npm install` / `26` / `bash: gh: command not found`; package managers as argument data no longer denied.
+   - **#2299/#2300 VERIFIED** — zero duplicate `(device_worker_id, connector_key)` pairs, 17 pinned connections / 5 devices.
+   - **#2302 VERIFIED** — `client.conversations.get({agent_id, platform:"web", conversation_id})` → `matches_requested: true`.
+   - **#2305 VERIFIED** — telegram inbound rows 87/89/91 interleaved with bot replies 88/90/92.
+   - **MCP client activity VERIFIED** — `client_id` on 13,542/19,658 events (7d), resolving to Lobu CLI / Claude / Codex / Owletto for Mac.
+   - **#2249 NOT VERIFIABLE** — only the `github` connector declares `agent_tooling = {"env":[{"name":"GH_TOKEN","credential":"lease"}],"nix":{"packages":["gh"]},"domains":[...]}`, and the org has **zero** github connections.
+   
+   The immediately-preceding actions were memory writes: created `project_prod_verification_2026_07_29.md`, appended prod findings to `reference_device_pin_unique_index.md`, and fixed `MEMORY.md` line 8 to read `COMPLETE; PROD-VERIFIED 2026-07-29 (client_id on 13.5k/19.6k events); NEVER standalone-bump owletto` plus new line 119.
+
+9. **Optional Next Step:**
+   Deliver the consolidated prod-verification report to the user — what held, what could not be tested, and the one anomaly found — since the memory writes that were in flight are the final step of the task the user authorized with "yes". This directly continues the agreed work: I told the user "Say go and I'll drive the live product against the specific claims in each, and report what actually holds versus what only merged," and the user replied "yes". The report should state plainly that #2249 could not be scored either way (no GitHub connection exists), and surface connection 397 (`mac-computer-use`, active, `device_worker_id=NULL`) as the single open anomaly for the user to decide on. No new work should begin without confirmation.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

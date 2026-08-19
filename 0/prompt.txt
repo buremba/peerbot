@@ -1,0 +1,1 @@
+ok think of use-cases and see if we would fall short on anything. also update memory as i will compact

@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Two stale compatibility-state orderings can associate a previous card's snapshot capability and view state with the current card. Both were reproducible despite the focused suites passing and can persist the wrong snapshot binding.
+
+Full review comments:
+
+- [P1] Do not pair cached identity with fresh output — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/openai-compat.ts:235-237
+  When ChatGPT reuses an iframe and updates `toolOutput` while the previous card remains in `widgetState`, `data` comes from the live output but this still returns the old widget `resultIdentity`. The provider then records and persists that identity for the current card, so delayed metadata for the old token can restore old view state/tool information and bind the old snapshot to a new host ID. Only expose the widget identity when data came from that same widget snapshot, or discard it whenever `hasToolOutput` is true.
+
+- [P1] Reject metadata that only correlates with itself — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:878-880
+  After a current result arrives through standard `toolresult`, a delayed `openai:set_globals` payload can contain both a stale widget snapshot identity and its matching stale capability. This final disjunct lets that incoming payload prove its own correlation even though neither current identity reference matches; restoration then applies the old view state/tool and may save the old snapshot under the current host ID. Correlate only against an identity already accepted for the displayed result, or verify the incoming widget data against the current fingerprint.
+  </results>
+  </user_action>

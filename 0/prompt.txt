@@ -1,0 +1,1 @@
+yes both slack and telegram and our ui needs to be consistent. we can still have the review button for peek but the native actions can show up there

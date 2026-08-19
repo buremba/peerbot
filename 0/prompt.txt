@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bvnl4pbq9</task-id>
+<summary>Monitor event: "PR #2286 pi-review verdict"</summary>
+<event>PR2286 pi-review: SUCCESS — ready to merge
+PR2286 watch ended</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bv1tjb70w</task-id>
+<tool-use-id>toolu_013q6ayRZNbtXLn19mhL1h9P</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9/tasks/bv1tjb70w.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for the merge commit to reach prod" completed (exit code 0)</summary>
+</task-notification>

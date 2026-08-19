@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b51f0bvgl</task-id>
+<tool-use-id>toolu_0143N556NtthJVcEW7i543za</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/fc2de4d8-db6d-4d4c-8398-88fe7691ce6b/tasks/b51f0bvgl.output</output-file>
+<status>completed</status>
+<summary>Background command "cd /Users/burakemre/Code/lobu/.claude/worktrees/configure-tabs &amp;&amp; make review-fix 2&gt;&amp;1 | tail -50" completed (exit code 0)</summary>
+</task-notification>

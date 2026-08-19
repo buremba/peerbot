@@ -1,0 +1,9 @@
+<task-notification>
+<task-id>a078a1c5e7df1f942</task-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/a078a1c5e7df1f942.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix flaky webhook test #2073" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Waiting on the pre-pr completion notification.</result>
+<usage><subagent_tokens>124520</subagent_tokens><tool_uses>59</tool_uses><duration_ms>786215</duration_ms></usage>
+</task-notification>

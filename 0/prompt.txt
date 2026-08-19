@@ -1,0 +1,1 @@
+hmm, so you say from project code we can't do our hooks that will be run in the transaction? how does neon run typescript for example let's dig in and think of the best appraoch

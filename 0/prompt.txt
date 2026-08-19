@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bd5hn9iym</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/bd5hn9iym.output</output-file>
+<status>failed</status>
+<summary>Background command "Wait for facet server to be ready" failed with exit code 7</summary>
+</task-notification>

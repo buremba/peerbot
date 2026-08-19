@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>buvxvegam</task-id>
+<summary>Monitor event: "CI on PR 2393"</summary>
+<event>CI ALL REPORTED on 2393</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7hffoq9k</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/957f3182-b92b-4e7f-9988-fa5fcd2420b5/tasks/b7hffoq9k.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for CI after rebase" was stopped</summary>
+</task-notification>

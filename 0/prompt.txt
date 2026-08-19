@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_pJvXPebeeK/CleanShot 2026-08-03 at 04.36.23@2x.png">
+
+</image>
+
+hmm the tooltip i don't like, maybe do it like this? so insteead of tooltip you can show it in there? also run the dev server on the prod, i see buremba recent activity going to the activity page i don't get it [Image #1]

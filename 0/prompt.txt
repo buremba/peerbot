@@ -1,0 +1,1 @@
+ok i guess your solution was good go implement that ambient stuff keep it simple, no need for model based tuning people can change their instructions. for the slack thing, don't we have the entity merging feature, let's identify the gaps there

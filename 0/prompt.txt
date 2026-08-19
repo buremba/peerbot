@@ -1,0 +1,1 @@
+open full page in peek panel can be view in activity

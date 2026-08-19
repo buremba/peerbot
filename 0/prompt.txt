@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxq5iup53</task-id>
+<tool-use-id>toolu_018Rm7riPggZJBo6i7YDw5sP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bxq5iup53.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review gate on config PR" completed (exit code 0)</summary>
+</task-notification>

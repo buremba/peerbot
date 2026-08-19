@@ -1,0 +1,1 @@
+yes let's do those and i will need to test locally make sure it works properly. make sure you pull main first

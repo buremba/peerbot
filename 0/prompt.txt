@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvit5k00g</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bvit5k00g.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch remaining required checks" completed (exit code 0)</summary>
+</task-notification>

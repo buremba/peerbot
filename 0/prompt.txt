@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzumbzj6y</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bzumbzj6y.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on release PR 2254" completed (exit code 0)</summary>
+</task-notification>

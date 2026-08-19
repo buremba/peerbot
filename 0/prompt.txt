@@ -1,0 +1,140 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The user made two explicit requests:
+   
+   - **First**: "look at this session, review the work, and if all good merge then grok --resume 019fb102-2f7c-7161-bda2-ab326388f35f" — inspect the grok CLI session with that ID, review the work it produced, merge if it checks out. (`grok --resume` is an interactive TUI I told the user I can't drive from the harness.)
+   - **Second**: "ok go do and test it" — after I reported that the work was blocked by a real pi-review finding and listed 4 next actions, this authorized me to implement and test the fix myself.
+   
+   The grok session (85 turns, 15 commits, 3 PRs opened, 5 merged) had stopped mid-way babysitting **PR #2361** `feat(server): device Behavior complete-behavior resume + Mac CLI path` in worktree `.claude/worktrees/device-behavior-cli-resume/`.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace, `packages/server` (gateway), `packages/owletto` (git submodule containing both the web SPA and the native Mac app under `apps/mac/`)
+   - Device Behaviors: Behaviors executed by a local CLI (claude-code, agy) on the user's Mac, dispatched via `/api/workers/poll`, reported via `POST /api/workers/me/runs/:runId/complete-behavior`
+   - Window Behaviors complete via `completeWindow` (minting a canvas); event turns complete on the agent's reply with no window
+   - `finalize_nudge_count` / `finalize_nudges` budget: bounded re-spawn allowance, shared between the cloud requeue path and the device-held resume path
+   - Idempotent delivery via a client-supplied attempt index (`finalize_attempt`) — a compare-and-swap plus a replay guard
+   - "Fail closed on durable dispatch/delivery state": an ambiguous delivery outcome must never be reinterpreted as proceed/deliver/skip
+   - Swift standalone test pattern in owletto: `swiftc <sources> <test>.swift -o /tmp/x && /tmp/x` with `@main struct` and a `check()` helper (no XCTest target exists; only the `Owletto` scheme)
+   - Gates: `make pre-pr` (6 gates), `make review-fix` (unposted fixer), `make review` (posts the required `pi-review` status), `check-drift` (submodule pointer must be on owletto main and carry all merged commits)
+   - `enforce_admins: true` on lobu `main` means `gh pr merge --admin` cannot bypass a *failing* required check
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/worker-api/run-lifecycle.ts`** — the exit-report handler; where the blocker lived.
+     - Added `finalize_attempt?: number` to the `parseJsonBody` type with a doc comment.
+     - Hoisted the nudge to module level so a grant and its replay are byte-identical:
+       ```ts
+       const MISSING_COMPLETE_WINDOW_NUDGE =
+         "Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
+         "finalize via the lobu skill + CLI (preferred): " +
+         "`lobu memory exec` with client.knowledge.read({ behavior_id }) then " +
+         "client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
+         "MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
+       ```
+       (the `behavior_id` correction came from `make review-fix` — see Errors)
+     - The replay guard (the core fix):
+       ```ts
+       const reportedAttempt =
+         typeof body.finalize_attempt === "number" &&
+         Number.isFinite(body.finalize_attempt)
+           ? Math.max(0, Math.trunc(body.finalize_attempt))
+           : attemptsSoFar;
+       if (reportedAttempt < attemptsSoFar) {
+         logger.info(
+           { run_id: runId, reported: reportedAttempt, granted: attemptsSoFar },
+           "[completeBehaviorRun] replayed exit report — re-serving the granted resume"
+         );
+         return c.json({
+           ok: true, status: "resume", reason_code: "missing_complete_window",
+           attempt: attemptsSoFar, max_attempts: budget,
+           nudge: MISSING_COMPLETE_WINDOW_NUDGE, error: MISSING_COMPLETE_WINDOW_NUDGE,
+           idempotent: true,
+         });
+       }
+       ```
+     - From `make review-fix` (all verified and kept): an early `if (run.claimed_by !== body.worker_id) return c.json({ok:true, status: run.status, idempotent: true});`; `claimed_by = ${body.worker_id}` added to the failRun UPDATE; event-turn completion collapsed into a single `finalizeRun` call with an `extraSet` carrying `window_id = NULL`, `model_used`, exit metadata and `run_metadata`; CAS-loser reconciliation that re-reads `status`/`claimed_by`/`finalize_nudge_count` and re-serves the resume if a concurrent report committed the grant.
+
+   - **`packages/server/src/watchers/run-completion.ts`**
+     - `bumpDeviceFinalizeNudge` gained a `workerId: string` param and `AND claimed_by = ${workerId}` in the CAS predicate.
+     - `markWatcherRunCompleted` reverted from `Promise<boolean>` back to `Promise<void>` (no longer needed once the turn path uses `finalizeRun`).
+     - `MAX_FINALIZE_NUDGES` now `Math.min(5, Math.floor(n))`.
+
+   - **`packages/server/src/__tests__/integration/watchers/automation-contract.test.ts`** — added two tests: `"replays the granted resume instead of consuming a second finalize attempt"` (posts an identical report twice with `finalize_attempt: 0`, asserts the second is `resume`/`idempotent: true`/count still 1, then `finalize_attempt: 1` → `failed`) and `"completes an event-turn Behavior on a clean device exit"` (patches `approved_input.trigger_execution` to `"turn"` via SQL, asserts `completed`/`reason_code: event_turn`/`window_id` null/`model_used = "device-cli:claude-code"`/`execution_time_ms = 40`/no `canvas_state` event/duplicate is an idempotent ack). `make review-fix` added a wrong-worker sub-case and `behavior_id`/`watcher_id` nudge assertions.
+
+   - **`packages/owletto/apps/mac/Owletto/LobuClient.swift`**
+     - `completeBehaviorRun` gained `finalizeAttempt: Int? = nil` and a `finalize_attempt` body field.
+     - New free function:
+       ```swift
+       func isRetriableWorkerDeliveryFailure(_ error: Error) -> Bool {
+           if case let WorkerClientError.http(_, code, _) = error {
+               return code >= 500 || code == 429
+           }
+           if error is WorkerClientError { return false }
+           return true
+       }
+       ```
+
+   - **`packages/owletto/apps/mac/Owletto/WatcherDispatcher.swift`**
+     - The finalize loop split into two failure domains: `executor.run` in its own `do/catch` (terminal, unambiguous), then delivery via a `guard let report = await deliverExitReport(...) else { NSLog(...); return }` that leaves the run claimed rather than reporting a failure.
+     - New `deliverExitReport` (3 attempts, 2s×n backoff, returns `nil` on unknown outcome), plus `exitReportDeliveryAttempts = 3` / `exitReportRetryDelay: TimeInterval = 2`.
+     - `finalizeAttempt = report.attempt ?? (finalizeAttempt + 1)` follows the server's count.
+     - Prompt fix: `var isEventTurn: Bool { event.payload?["trigger_execution"]?.stringValue == "turn" }` on `WatcherPayload`; `DeviceBehaviorPrompt.turnContract()`; and `ClaudeCodeExecutor.completionContract` branching on `payload.isEventTurn`. `AgyPrintExecutor` reuses `ClaudeCodeExecutor.buildPrompt` (line 643), so one change covers both executors.
+
+   - **New: `packages/owletto/apps/mac/Tests/ExitReportDeliveryTests.swift`** — pins the retry classifier boundary (transport/5xx/429 retriable; 403/409/decode not) and that a replayed `resume` still decodes with its nudge.
+   - **New: `packages/owletto/apps/mac/Tests/TurnPromptTests.swift`** — decodes turn/window/scheduled payloads, asserts the turn contract says "Do NOT call completeWindow" and omits "lobu memory exec", window/scheduled keep `completeWindow` + `behavior_run_id: 7`, and that `buildPrompt` carries it through.
+
+   - **`packages/server/src/worker-api/shared.ts:101`** (read only) — `authorizeRunForWorker` has an unconditional `if (run.claimed_by !== expectedWorkerId) return 403`, yet the integration harness showed a wrong-worker report reaching the handler, which is why the SQL-level claim predicates are load-bearing.
+   - **`packages/server/src/sandbox/namespaces/knowledge.ts:43`** (read only) — declares `behavior_id?: number`, proving the old `watcher_id` nudge text was unusable.
+
+4. **Errors and fixes:**
+
+   - **The pi-review blocker (the whole point of the task)**: exit-report delivery was non-idempotent. Fixed on both sides — server replay guard keyed on `finalize_attempt`, Mac split of execution vs delivery. Proven red→green:
+     - Red: `AssertionError: expected 'failed' to be 'resume'` at `automation-contract.test.ts:1085`, `Tests 1 failed | 44 skipped (45)`
+     - Green: `Tests 45 passed (45)`
+     - To get the red I copied the fixed file to the scratchpad, `git checkout --` the original, ran, then restored — `git stash` is banned by AGENTS.md.
+   - **`make review` killed (exit 143)** mid-run, posting "codex review failed before verdict". Re-ran later on a settled head.
+   - **`check-drift: completed failure`** — owletto main had advanced past my pinned SHA with #653 and #655. Fixed by bumping the pointer to owletto main.
+   - **Push rejected** — another process pushed `f1c79baf9`, an identical pointer bump. I verified both `git ls-tree` targets were the same `a23fe0d1` and dropped mine with `git reset --hard origin/feat/...`.
+   - **My own cwd mistake**: I inspected the branch divergence while cwd had persisted into `packages/owletto`, so `git log HEAD..origin/feat/...` showed owletto commits and I briefly misread the situation. Fixed by re-running with an explicit `cd` to the worktree root and `pwd` confirmation.
+   - **Third review round's verdict (bugs 2, blockers 2) never posted** because the branch head moved under it (someone merged origin/main as `8e404cecf`), and the verdict JSON wasn't persisted anywhere — so those two blockers were never readable. The subsequent run on the settled head returned 0 bugs / 0 blockers.
+   - **`gh pr merge --admin` refused**: "Required status check pi-review is failing." Memory `reference_high_risk_blocks_admin_merge.md` documents that `enforce_admins: true` makes `--admin` ineffective and that the only route is temporarily DELETEing the protection — explicitly the owner's call, and that hand-posting a success status is forbidden. I asked; **the user did not answer within 60s**, so I declined to flip protection unilaterally and instead did the prompt fix, which cleared the blocker on its merits.
+   - **Review-fix findings I had to verify rather than trust**: the `watcher_id`→`behavior_id` nudge (real bug, confirmed against the SDK), and the `claimed_by` early return (I mutation-tested by deleting it; the test still passed, proving the SQL predicates are the real gate — I kept the early return as chokepoint enforcement after confirming `claimed_by` is only cleared by reclaim/requeue paths).
+
+5. **Problem Solving:**
+   - Established that `finalize_attempt` was the minimal correct idempotency key: the server is the sole writer of `finalize_nudge_count`, so `reported < stored` unambiguously means "this report already got its grant."
+   - Chose "return nil, leave the run claimed" over `completeWithError` for unknown delivery outcomes — the heartbeat-stale reaper reclaims in minutes, and reporting a failure would overwrite a decision the server may have committed.
+   - Deliberately declined to add extra coordination for the concurrent-CAS-loser case (invoking the AGENTS "coordination design brake"); `make review-fix` then added a clean reconciliation for it, which I verified and accepted.
+   - Discovered `trigger_execution` already reaches the device nested in `payload.event.payload` (poll ships `approved_input` verbatim), so the prompt fix needed no server change.
+   - Mutation-tested every new test: the Swift classifier (`return true` → 2 failures), the prompt branch (`if false` → 3 failures), and the server guard (the pre-fix red run).
+   - Noted but did not fix: owletto #653 made `completeBehaviorRun` throw `.decode` on unreadable 2xx bodies, and its doc comment still claims WatcherDispatcher catches it and calls `completeWithError` — stale after my split. Behavior is fail-closed either way.
+
+6. **All user messages:**
+   - "look at this session, review the work, and if all good merge then grok --resume 019fb102-2f7c-7161-bda2-ab326388f35f"
+   - "ok go do and test it"
+   - (AskUserQuestion answer) "Merge now, fix prompt separately" — admin-merge #2361 past the failing pi-review, then open a separate owletto PR for the device prompt.
+   - (AskUserQuestion #2, about temporarily disabling `enforce_admins` on `main`) — **no response after 60 seconds**; the harness told me to proceed on best judgment.
+
+7. **Pending Tasks:**
+   - **Prod-verify #2361** — a `ScheduleWakeup` is armed for ~20:12 carrying the gate: poll `kubectl get pods -n summaries-prod -l app.kubernetes.io/component=api -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}'` until all pods are on the new tag (a single `/health` probe is an unsound gate), then `git merge-base --is-ancestor a23ad740f6f11b28892628037b295ddbe601d112 "$DEPLOYED_SHA"` (merge commit first). Live checks: force a missing `completeWindow` → exactly one `resume` then a terminal fail; dispatch an event-turn Behavior → completes with `window_id` NULL and no `canvas_state` event. Then write the closure line into `memory/project_device_behavior_exit_report_delivery.md`.
+   - **Not done, flagged only**: owletto #653's stale doc comment claiming `WatcherDispatcher` catches a `.decode` throw and calls `completeWithError`.
+
+8. **Current Work:**
+
+   PR #2361 was **merged as `a23ad740f6f11b28892628037b295ddbe601d112`** with all 9 required checks green (`pi-review pass — bug_free 88, simplicity 82, slop 0, bugs 0, 0 blockers`), so nothing was bypassed and branch protection was never touched. Three owletto PRs shipped alongside it: **#654** (exit-report delivery split), **#656** (event-turn prompt), with #653/#655 picked up by the pointer bump.
+
+   Immediately before this summary I completed the post-merge bookkeeping:
+   - Wrote `memory/project_device_behavior_exit_report_delivery.md` recording the delivery contract, the turn-prompt fix, the `watcher_id`→`behavior_id` bug, the `claimed_by` predicates, and the OWED prod-verify.
+   - Added the MEMORY.md "Open work" pointer.
+   - Set the `ScheduleWakeup` (1500s), which returned "Next wakeup scheduled for 20:12:00 (in 1549s). Nothing more to do this turn."
+
+9. **Optional Next Step:**
+
+   Nothing further until the wakeup fires. When it does, run the rollout gate exactly as carried in the wakeup prompt and then the two live checks, per AGENTS.md step 10: *"Prod-visible surface? Verify it live after rollout... Run the live check when it lands, and write the result back to memory."*
+
+   One thing owed to the user in plain terms when they return: I asked whether to temporarily disable `enforce_admins` on `main` to force the merge and got no answer, so I did not touch branch protection — the merge ultimately went through cleanly because the owletto #656 prompt fix cleared the blocker on its merits.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

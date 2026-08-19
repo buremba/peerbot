@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bixn2ez44</task-id>
+<tool-use-id>toolu_019GuNp4rYbP2SJgCY8YtwWP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bixn2ez44.output</output-file>
+<status>completed</status>
+<summary>Background command "Review on the settled HEAD" completed (exit code 0)</summary>
+</task-notification>

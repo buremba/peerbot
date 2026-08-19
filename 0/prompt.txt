@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpyny56h8</task-id>
+<tool-use-id>toolu_01BWWDrfxVLEDuHuqfgSyxfx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1eebddbf-4c2c-4bd1-9494-4a0bad73b495/tasks/bpyny56h8.output</output-file>
+<status>completed</status>
+<summary>Monitor "final CI checks on PR 2218" stream ended</summary>
+</task-notification>

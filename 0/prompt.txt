@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bk3iin92q</task-id>
+<tool-use-id>toolu_01VVxkSovbmHkUcfmipAVKUw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bk3iin92q.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for clean path-based boot" completed (exit code 0)</summary>
+</task-notification>

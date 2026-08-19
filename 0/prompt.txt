@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b3cgjf9fl</task-id>
+<summary>Monitor event: "PR 2343 required checks after rebase"</summary>
+<event>2343 frontend: pass</event>
+</task-notification>

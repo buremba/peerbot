@@ -1,0 +1,1 @@
+also in mac app under permissions do we let the user to select and allow shell access?

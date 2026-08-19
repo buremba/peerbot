@@ -1,0 +1,28 @@
+Review a proposed architecture direction and SIZE it. Verify against code; I have been wrong repeatedly this session.
+
+CONTEXT
+Lobu models permissions as edges in entity_relationships. A locked design (docs/plans/authz-acl-permission-program.md) extends this: principals=entities, memberships=member_of edges, ACLs=can_read/deny_read edges, one SQL gate. can_read/deny_read are NOT built.
+
+I surveyed industry fit and found six structural gaps, all failing for the same reason — they are not expressible as edge EXISTENCE:
+ - field/column-level access (healthcare, HR salary)
+ - intersectional rules A AND B (finance information barriers, Jira browse AND issue-security) — allow-edges are disjunctive under an EXISTS gate
+ - deny/exclusion (ethical walls)
+ - temporal (access expires)
+ - purpose limitation / consent (GDPR, healthcare)
+ - classification lattices (government) — dominance, not reachability
+
+PROPOSAL: a two-layer model — 'facts + rules'.
+ Layer 1 (exists): the graph = indexed reachability facts, narrows candidate rows by index.
+ Layer 2 (new): a policy expression over reachability + entity attributes + request context, COMPILED INTO A SQL PREDICATE plus a column projection. Not compiled into data.
+Claim: each of the six gaps becomes a one-line condition (a && b; forbid when...; when now() < expires_at; when ctx.purpose == X; projection for fields; subj.clearance >= obj.label).
+Claim: this is CHEAPER than the locked plan's 'compile intersections to synthetic effective principals at write time', because synthetic principals must be recomputed on every membership change in either input group, whereas read-time evaluation is two index lookups.
+Claim: Lobu already has this seam — authz/connection-visibility.ts compileConnectionFkVisibility/compileConnectionRowVisibility, utils/execute-data-sources.ts buildScopedQuery, and a CI lint guard scripts/check-connection-visibility-compiler.mjs that bans re-deriving the gate outside the compiler.
+
+QUESTIONS
+A. Is the facts+rules analysis correct? Is 'allow-edges are disjunctive, so intersections leak' right, and is read-time evaluation genuinely cheaper than write-time effective-principal materialization? Where am I wrong?
+B. SIZE IT CONCRETELY. Read connection-visibility.ts, execute-data-sources.ts, resource-visibility.ts, the lint guard. Estimate LOC for: (1) a minimal policy expression + predicate compiler generalizing the existing seam, (2) field projection applied before indexing/embedding/prompt construction, (3) migration of existing gates onto it. Give ranges and say what dominates.
+C. Field projection: I claim the mask must apply BEFORE every content-consuming seam (search index, embeddings, prompt construction, summaries, exports, logs), not at read. How many such seams exist in this codebase? Is facet-splitting (separate finance-only child events) actually simpler?
+D. Reverse queries ('who can see X') under read-time evaluation — how bad, and does Lobu need them today?
+E. Is this right FOR LOBU, or over-engineering? If the roadmap is SaaS + a manufacturing ERP with <20 trusted users and no regulated vertical, should this be built at all?
+
+Be blunt. file:line. If it is over-engineering for this product, say so plainly.

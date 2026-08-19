@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bp7sr6l5l</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bp7sr6l5l.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the full remote gate" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The focused tests and MCP App bundle build pass, but the restore state machine can accept state from a stale host-ID snapshot when a fresh capability is present. This can corrupt historical card restoration and invalidate the fresh snapshot.
+
+Review comment:
+
+- [P1] Validate ID restores even when a capability is present — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:589-594
+  When a stale or reused host card ID points to an older result from the same tool while a fresh capability is delivered, this mismatch guard is skipped because `capability` is non-null. The server resolves `tool_call_id` first without validating it against `snapshot_capability` (`packages/server/src/mcp-app-result-snapshots.ts:283-320`), so the old view state is accepted and the subsequent bind can collide with and expire the fresh capability snapshot. Combined ID/capability restores should reject mismatched data or prefer capability-only restoration.
+  </results>
+  </user_action>

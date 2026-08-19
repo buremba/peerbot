@@ -1,0 +1,48 @@
+# Architecture review request (fable / scenario model)
+
+You are reviewing a **LOCKED thin product design** for Lobu. Do NOT propose the heavier "pin snapshot columns + entity skills + dual task/method fields" unless you find a fatal flaw in the thin design. Prefer find issues, duplication, and go/no-go.
+
+## Locked design (v1 — do not overengineer)
+
+1. **Strip nixPackages from skills.** Packages live on agent nixConfig and/or connector `agentTooling` (already shipped: GitHub `gh` + lease). Skills = instruction text only.
+2. **Skills stay in `agents.skills_config` JSONB** — not system entities, no new skills table.
+3. **Behavior remains the automation unit:** triggers, sources, classifiers/keying, reaction script/guidance, and **prompt** (what to do).
+4. **Optional "Use skill" on Behavior:** single control — type instructions OR pick a skill. Picking a skill **copies skill body into `watcher_versions.prompt`** (expand at save/apply). Runtime uses existing prompt / `prompt_rendered` path. Do NOT rely on agent `cat .skills` for Behavior runs.
+5. **No skill version product.** Git + `lobu apply` is human versioning for config-as-code. Behavior `create_version` when prompt/sources/etc. change is the cloud freeze for runs (already exists). Accept library-vs-automation drift; document it.
+6. **Skills page:** thin library optional (chat/catalog/picker); not architecturally required.
+7. **Reaction scripts, entity schema, sources:** stay on Behavior / org schema — skills never own them.
+8. **Apply:** skill files → skills_config; Behaviors that reference a skill get **prompt = full skill body**; prompt change → create_version as today.
+
+## Ground in code (read-only)
+
+Prefer `origin/main` if local is behind: `git fetch -q origin` then `git show origin/main:path`.
+Skim: docs/plans/agent-model.md, packages/core contracts for skills + manage-behaviors, apply-cmd Behavior create_version routing, instruction-service progressive disclosure, agent-tooling resolver, get_content behavior-mode prompt_rendered.
+
+## Method: FABLE / scenario review
+
+1. List **duplication** (where the same data lives twice and whether intentional).
+2. Walk **at least 8 concrete fables** (user stories that break or succeed), e.g.:
+   - one-off automation typed prompt
+   - PR review skill + GitHub agentTooling
+   - two Behaviors one skill file
+   - edit skill in git, apply; automation refresh expectations
+   - edit skill in UI, expect automations to change (failure fable)
+   - chat uses latest skill, automation uses old prompt copy
+   - reaction-heavy Behavior, thin prompt
+   - entity type / schema change orthogonal
+   - mid-run WAIT + apply bumps version
+   - catalog skill upgrade
+3. For each: who owns when / what / tools / data; what breaks.
+4. **Duplication & drift** severity.
+5. **Go / no-go** on this thin design vs what minimal fix if almost-go.
+6. What NOT to build.
+7. Confidence 0–100.
+
+Output structure:
+- Executive verdict (3–5 sentences)
+- Duplication map
+- Fable results table
+- Must-fix before ship / accept as known limits
+- Go/No-go + confidence
+
+No code changes. Analysis only.

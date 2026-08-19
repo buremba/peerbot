@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bq7wl96yr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/bq7wl96yr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on the owletto bump PR" completed (exit code 0)</summary>
+</task-notification>

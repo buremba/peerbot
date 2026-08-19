@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bmk01jc6y</task-id>
+<summary>Monitor event: "2335 checks after rebase"</summary>
+<event>pi-review: pass
+typecheck: pass</event>
+</task-notification>

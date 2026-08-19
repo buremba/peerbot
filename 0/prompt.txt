@@ -1,0 +1,1 @@
+did you clean dead code and simplidy and all good? is the connector for lobu gonna work for the erp as it can generate edges etc

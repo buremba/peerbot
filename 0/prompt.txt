@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>behrckdvu</task-id>
+<tool-use-id>toolu_01CuB8j91NUVt9dmGcNJg4U6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/behrckdvu.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review and ui-review on PR 2837" completed (exit code 0)</summary>
+</task-notification>

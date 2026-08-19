@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvm4i56bp</task-id>
+<tool-use-id>toolu_01TjTdkTahBUDebtcgTGab4t</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8/tasks/bvm4i56bp.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on proxy health change" completed (exit code 0)</summary>
+</task-notification>

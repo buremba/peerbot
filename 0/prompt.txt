@@ -1,0 +1,1 @@
+Background agent "Period close enforcement" was stopped by the user.

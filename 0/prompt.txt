@@ -1,0 +1,1 @@
+is this your code? https://github.com/lobu-ai/lobu/pull/2465/changes do we need it? also it says Thanks for adding Lobu to your workspace! Connect it to your Lobu account to finish setup: https://app.lobu.ai/connector/slack/connection?ref=E0BDSKL1KJL it's raw link and the link is not valid. the org is not there?

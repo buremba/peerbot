@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkzabdlqe</task-id>
+<tool-use-id>toolu_012VJ1FaMC8Vw4BBHSCioMeZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/bkzabdlqe.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 2374 checks on final HEAD" stream ended</summary>
+</task-notification>

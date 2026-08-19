@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc3ul8zh4</task-id>
+<tool-use-id>toolu_01EakkY1d5sTdiQnqcKK2uFT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bc3ul8zh4.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on settled origin HEAD" completed (exit code 0)</summary>
+</task-notification>

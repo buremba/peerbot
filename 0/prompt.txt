@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>boj8odkil</task-id>
+<tool-use-id>toolu_01Fw7rYYopZQRgV8mSX6itRt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/boj8odkil.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on the settled head" completed (exit code 0)</summary>
+</task-notification>

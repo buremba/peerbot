@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bnuymeimp</task-id>
+<tool-use-id>toolu_01B7Vabo6sLRetwrHL6L6Nti</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bnuymeimp.output</output-file>
+<status>completed</status>
+<summary>Background command "Review 2396 on the post-bot HEAD" completed (exit code 0)</summary>
+</task-notification>

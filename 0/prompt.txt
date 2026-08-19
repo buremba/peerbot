@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The patch mishandles a supported reused-iframe transition from an unkeyed result to a capability-backed result, allowing result identity and view state to cross card boundaries. This can misbind restored snapshots despite the focused tests passing.
+
+Review comment:
+
+- [P1] Reset capability-backed updates after unkeyed cards — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:696-701
+  When a reused iframe already shows a live result whose snapshot capability was omitted, `capabilityChangesResult()` returns false for the next capability because the prior identity is null, while this fingerprint fallback is disabled whenever the new compatibility payload has a string capability. A different non-empty `openai:set_globals` result is therefore applied without `resetCurrentResult()`, allowing the previous card's `toolCallId` and view state to survive and potentially bind the new snapshot under the old card. Treat differing capability-backed payloads as a result boundary while preserving the identical split-delivery case.
+  </results>
+  </user_action>

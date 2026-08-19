@@ -1,0 +1,19 @@
+Read /tmp/lobu-plan-review/member-vs-person-question.md.
+Optionally skim:
+- packages/server/src/gateway/connections/sender-identity.ts
+- packages/server/src/utils/entity-link-upsert.ts (resolveSenderIdentity comments)
+- packages/server/src/auth/index.tsx invite  status invited
+- packages/server/src/utils/member-entity.ts
+
+Answer as a senior product+platform architect:
+
+1. Verdict: always $member / always person-until-login / hybrid
+2. Direct response to 'isn't every user our user?'
+3. When minting $member on chat is right
+4. When person-first is right  
+5. Concrete default for Lobu B2B multi-tenant + optional consumer bots
+6. If hybrid, exact lifecycle (statuses, auth_user_id, UI lists)
+7. Risks of each
+8. Confidence 0-100
+
+Be blunt. No fluff. Cite code paths if useful.

@@ -1,0 +1,1 @@
+you say agent defines but isn't it just a prompt in the identity? people can reference skills in their system prompts using @ maybe?

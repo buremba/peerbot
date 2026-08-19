@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx64kkrsp</task-id>
+<tool-use-id>toolu_01BiZ5u1vFEoREeSV2u72FsY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bx64kkrsp.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for review-fix to finish" was stopped</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+why manually adding? i also don't see chatgpt icon there. check prod logs to see how it appears in the db

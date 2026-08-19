@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blsnt6eoi</task-id>
+<tool-use-id>toolu_01VGX2mJubqsvo4Bbap7nPaV</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/blsnt6eoi.output</output-file>
+<status>completed</status>
+<summary>Background command "PR A review gate" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw4fay27v</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bw4fay27v.output</output-file>
+<status>completed</status>
+<summary>Background command "Rerun full remote gate on worker branch for attestation" completed (exit code 0)</summary>
+</task-notification>

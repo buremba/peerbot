@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bysyir0op</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bysyir0op.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on the settled HEAD" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhz3sjz2i</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bhz3sjz2i.output</output-file>
+<status>failed</status>
+<summary>Background command "Gate the tests-adequate fix" failed with exit code 2</summary>
+</task-notification>

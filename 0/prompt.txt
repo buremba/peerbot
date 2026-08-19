@@ -1,0 +1,1 @@
+hmm, didn't think about it. what's the best way here. can lobu apply update the entity values

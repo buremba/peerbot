@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The primary capability-only path works in focused tests, but a supported event ordering can permanently miss binding the snapshot to a later host card ID, breaking future restoration for that card.
+
+Review comment:
+
+- [P2] Retry host-card binding after a capability-only save — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:231-231
+  When a host delivers the result before delayed `toolInfo`, the capability-only save sets `snapshotBinding.current`; if `hostcontextchanged` arrives while that request is pending, its binding attempt returns here. The first request captured `id === null`, and the `finally` block only clears the guard without retrying, so the snapshot remains unbound to the newly available card ID unless the user later changes view state. A subsequent reload that retains `toolInfo` but not result metadata therefore cannot restore the card.
+  </results>
+  </user_action>

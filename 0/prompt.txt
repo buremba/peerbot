@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0vtkhv9k</task-id>
+<tool-use-id>toolu_01A1KAyEyddhTVvzxohSchte</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/b0vtkhv9k.output</output-file>
+<status>completed</status>
+<summary>Background command "Push ReDoS fix and run pre-pr" completed (exit code 0)</summary>
+</task-notification>

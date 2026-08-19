@@ -1,0 +1,1 @@
+ok go ahead fix it properly, if you need you can add our tailscale url t chatgpt and refresh and try it there and make it work e2e and we can deploy later

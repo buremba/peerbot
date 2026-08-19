@@ -87,7 +87,28 @@
       "style": {
         "noNamespace": "error",
         "useAsConstAssertion": "error",
-        "noNonNullAssertion": "off"
+        "noNonNullAssertion": "off",
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "paths": {
+              "../authz/entity-row-validation": {
+                "importNames": [
+                  "validateEntityRowPatchGrantingApprovedFields",
+                  "validateEntityRowInsertGrantingApprovedFields"
+                ],
+                "message": "GRANTING boundary: only the approval apply path may waive an escalation. Import the granting variants only from tools/admin/entity-field-approval.ts (the module that routed a card) and utils/entity-management.ts (the write kernel that forwards a grant). Invariant: only the apply path may waive an escalation — a module-boundary property, so express it at the module boundary. Known ceiling: TypeScript has no module-private, so lint is the strongest available enforcement and lint can be disabled. NOTE: packages/server/** is currently excluded from this config's files.includes, so the live gate for the boundary is scripts/check-security-patterns.sh; enable it here the day server re-enters biome."
+              },
+              "../../authz/entity-row-validation": {
+                "importNames": [
+                  "validateEntityRowPatchGrantingApprovedFields",
+                  "validateEntityRowInsertGrantingApprovedFields"
+                ],
+                "message": "GRANTING boundary: only the approval apply path may waive an escalation. Import the granting variants only from tools/admin/entity-field-approval.ts (the module that routed a card) and utils/entity-management.ts (the write kernel that forwards a grant). Invariant: only the apply path may waive an escalation — a module-boundary property, so express it at the module boundary. Known ceiling: TypeScript has no module-private, so lint is the strongest available enforcement and lint can be disabled. NOTE: packages/server/** is currently excluded from this config's files.includes, so the live gate for the boundary is scripts/check-security-patterns.sh; enable it here the day server re-enters biome."
+              }
+            }
+          }
+        }
       },
       "suspicious": {
         "noAsyncPromiseExecutor": "error",
@@ -144,6 +165,19 @@
     }
   },
   "overrides": [
+    {
+      "includes": [
+        "**/tools/admin/entity-field-approval.ts",
+        "**/utils/entity-management.ts"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": "off"
+          }
+        }
+      }
+    },
     {
       "includes": ["**/*.json"],
       "json": {

@@ -7,7 +7,7 @@
  * lives in manage_operations next to `supersedeActionEvent`.
  */
 
-import { validateEntityRowPatch } from "../../authz/entity-row-validation";
+import { validateEntityRowPatchGrantingApprovedFields } from "../../authz/entity-row-validation";
 import { createHash } from "node:crypto";
 import {
 	ApprovalAttribution,
@@ -1179,7 +1179,7 @@ export async function applyEntityFieldChangeProposal(
 				await patchEntityRows({
 					tx,
 					ids: [proposal.entity_id],
-					patch: await validateEntityRowPatch({
+					patch: await validateEntityRowPatchGrantingApprovedFields({
 						tx,
 						ids: [proposal.entity_id],
 						patch: {

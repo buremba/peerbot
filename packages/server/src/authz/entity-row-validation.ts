@@ -158,6 +158,59 @@ function committedState(row: CommittedRow): Record<string, unknown> {
  * Validate an effective patch against every target row's declared write rules,
  * returning the patch branded for {@link patchEntityRows}.
  *
+ * This entry point WAIVES NOTHING: it takes no approval list, so any escalate
+ * throws and the caller decides whether to route it into an approval or fail
+ * closed. A patch that is itself the application of a card a human approved
+ * must go through {@link validateEntityRowPatchGrantingApprovedFields}.
+ *
+ * Queries only the caller's handle — never `getDb()`. A pooled query from
+ * inside an entity write transaction is the #2818 deadlock (every pool session
+ * parked `idle in transaction` on the same statement), and it would also read a
+ * different snapshot than the one being written.
+ *
+ * @throws EntityRowValidationError when a rule denies the write, when a rule
+ * crashes or times out (fail closed: a rule that did not finish cannot bless a
+ * write), or when it returns an unusable verdict.
+ */
+export async function validateEntityRowPatch(params: {
+	tx: DbClient;
+	ids: number[];
+	patch: EntityRowPatch;
+}): Promise<ValidatedEntityRowPatch> {
+	return validateEntityRowPatchGrantingApprovedFields({
+		...params,
+		approvedFields: [],
+	});
+}
+
+/**
+ * The GRANTING validator: the only way to waive an escalation.
+ *
+ * Takes the fields a human already approved — taken from the proposal that
+ * minted their card — and REQUIRES them (no default), so an ordinary write path
+ * that never validates against them fails to compile rather than silently
+ * waiving.
+ *
+ * Without this, escalation is a dead end: approving re-runs the same rule
+ * against the same state, it escalates again, and the write throws — so the
+ * approval a rule asked for could never be honoured.
+ *
+ * SCOPED, not a blanket waiver. A mode flag would wave through every escalate
+ * the rule can raise, including one raised for the first time after the card
+ * was minted (a redeployed rule, a moved row) — consent to a field nobody
+ * reviewed. Only fields actually on the card are covered; a new escalation
+ * needs its own card. A `deny` still throws regardless: approval cannot make
+ * an illegal state legal. When an escalate is NOT covered, the thrown error
+ * names the approved fields and the rule's requested ones side by side, so an
+ * unapproved skip cannot pass in silence.
+ *
+ * GRANTING is a module-boundary property: only the approval apply path (the
+ * module that routed a card) and the entity write kernel that forwards a grant
+ * may import this. Enforced by `scripts/check-security-patterns.sh` and the
+ * repo lint config's scoped `noRestrictedImports`. Known ceiling: TypeScript
+ * has no module-private, so lint is the strongest available enforcement and
+ * lint can be disabled.
+ *
  * Queries only the caller's handle — never `getDb()`. A pooled query from
  * inside an entity write transaction is the #2818 deadlock (every pool session
  * parked `idle in transaction` on the same statement), and it would also read a
@@ -170,30 +223,16 @@ function committedState(row: CommittedRow): Record<string, unknown> {
  *
  * @throws EntityRowValidationError when a rule denies the write, when a rule
  * crashes or times out (fail closed: a rule that did not finish cannot bless a
- * write), or when it returns an unusable verdict.
+ * write), when it returns an unusable verdict, or when it escalates fields the
+ * caller has not been granted.
  */
-export async function validateEntityRowPatch(params: {
+export async function validateEntityRowPatchGrantingApprovedFields(params: {
 	tx: DbClient;
 	ids: number[];
 	patch: EntityRowPatch;
-	/**
-	 * The fields a human already approved, taken from the proposal that minted
-	 * their card. Empty/absent (the default) means nothing is approved, so any
-	 * escalate throws and the caller decides whether to route it into an approval
-	 * or fail closed.
-	 *
-	 * Without this, escalation is a dead end: approving re-runs the same rule
-	 * against the same state, it escalates again, and the write throws — so the
-	 * approval a rule asked for could never be honoured.
-	 *
-	 * SCOPED, not a blanket waiver. A mode flag would wave through every escalate
-	 * the rule can raise, including one raised for the first time after the card
-	 * was minted (a redeployed rule, a moved row) — consent to a field nobody
-	 * reviewed. Only fields actually on the card are covered; a new escalation
-	 * needs its own card. A `deny` still throws regardless: approval cannot make
-	 * an illegal state legal.
-	 */
-	approvedFields?: readonly string[];
+	/** REQUIRED. Fields a human already approved; anything an escalate names
+	 * outside this list throws with the gap spelled out. */
+	approvedFields: readonly string[];
 }): Promise<ValidatedEntityRowPatch> {
 	const { tx, ids, patch, approvedFields } = params;
 	const branded = patch as ValidatedEntityRowPatch;
@@ -259,13 +298,21 @@ export async function validateEntityRowPatch(params: {
 				// Every escalated field was on the card a human approved.
 				if (
 					verdict.fields.length > 0 &&
-					verdict.fields.every((f) => approvedFields?.includes(f))
+					verdict.fields.every((f) => approvedFields.includes(f))
 				) {
 					continue;
 				}
+				// Not covered: spell out the gap so a partial approval cannot pass
+				// in silence. With an empty grant (the waives-nothing entry point)
+				// this reads exactly as before.
+				const granted =
+					approvedFields.length > 0
+						? ` — approved ${approvedFields.join(", ")}; rule asked for ${verdict.fields.join(", ")}`
+						: "";
 				throw new EntityRowValidationError(
 					`entity ${entityId}: ${verdict.reason} ` +
-						`(approval required for ${verdict.fields.join(", ")})`,
+						`(approval required for ${verdict.fields.join(", ")})` +
+						granted,
 					{
 						outcome: "escalate",
 						reason: verdict.reason,
@@ -325,6 +372,10 @@ export type ValidatedEntityRowInsert = EntityRowInsert & {
  * Validate a pending insert against its type's write rules, returning the row
  * branded for {@link insertEntityRow}.
  *
+ * Same waives-nothing contract as {@link validateEntityRowPatch}: no approval
+ * list, so an escalate stops the create. A create that APPLIES a card a human
+ * approved must go through {@link validateEntityRowInsertGrantingApprovedFields}.
+ *
  * Reads `entity_types` directly rather than joining through `entities`, because
  * the row does not exist yet — that is the only structural difference from the
  * update path.
@@ -335,11 +386,28 @@ export type ValidatedEntityRowInsert = EntityRowInsert & {
 export async function validateEntityRowInsert(params: {
 	tx: DbClient;
 	row: EntityRowInsert;
-	/**
-	 * Fields a human already approved — same scoped contract as
-	 * {@link validateEntityRowPatch}. Set by the path applying a create card.
-	 */
-	approvedFields?: readonly string[];
+}): Promise<ValidatedEntityRowInsert> {
+	return validateEntityRowInsertGrantingApprovedFields({
+		...params,
+		approvedFields: [],
+	});
+}
+
+/**
+ * The GRANTING validator for creates: the only way to waive an escalation on
+ * an insert.
+ *
+ * Same required-approval-list contract as
+ * {@link validateEntityRowPatchGrantingApprovedFields}, including the
+ * module-boundary restriction and the diagnostic on an uncovered escalate — a
+ * create that is the application of a card may only cover fields that card
+ * showed.
+ */
+export async function validateEntityRowInsertGrantingApprovedFields(params: {
+	tx: DbClient;
+	row: EntityRowInsert;
+	/** REQUIRED. Fields a human already approved on the create card. */
+	approvedFields: readonly string[];
 }): Promise<ValidatedEntityRowInsert> {
 	const { tx, row, approvedFields } = params;
 	const branded = row as ValidatedEntityRowInsert;
@@ -384,16 +452,21 @@ export async function validateEntityRowInsert(params: {
 		// Every escalated field was on the card a human approved.
 		if (
 			verdict.fields.length > 0 &&
-			verdict.fields.every((f) => approvedFields?.includes(f))
+			verdict.fields.every((f) => approvedFields.includes(f))
 		) {
 			return branded;
 		}
 		// Otherwise stop the create and let the caller route it. A create needs no
 		// held-field bookkeeping — the row does not exist, so an aborted
 		// transaction leaves nothing behind and the whole proposal is the card.
+		const granted =
+			approvedFields.length > 0
+				? ` — approved ${approvedFields.join(", ")}; rule asked for ${verdict.fields.join(", ")}`
+				: "";
 		throw new EntityRowValidationError(
 			`new ${row.slug}: ${verdict.reason} ` +
-				`(approval required for ${verdict.fields.join(", ")})`,
+				`(approval required for ${verdict.fields.join(", ")})` +
+				granted,
 			{
 				outcome: "escalate",
 				reason: verdict.reason,

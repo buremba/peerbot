@@ -105,6 +105,32 @@ if [ -n "$HITS" ]; then
   VIOLATIONS=$((VIOLATIONS + 1))
 fi
 
+# --- 4. GRANTING validator module boundary ---------------------------------
+# Only the approval apply path may waive an escalation. The granting validator
+# exports (`*GrantingApprovedFields`) may be imported only from the module that
+# routed a card (entity-field-approval.ts) and the write kernel that forwards a
+# grant (entity-management.ts); any other importer lets an ordinary write path
+# waive a rule escalation. The repo lint config mirrors this with a scoped
+# `noRestrictedImports`; this grep is the LIVE gate because packages/server/**
+# is biome-excluded. Defining module and tests are exempt by construction.
+echo "  -> granting validator imports outside the approval apply path"
+HITS=$(
+  git grep -nE 'validateEntityRow(Patch|Insert)GrantingApprovedFields' -- \
+    'packages/' \
+    2>/dev/null \
+    | grep -E '\.tsx?:' \
+    | grep -v '/entity-field-approval.ts' \
+    | grep -v '/entity-management.ts' \
+    | grep -v '/entity-row-validation.ts' \
+    | grep -v '/__tests__/' \
+    | filter_allowlist
+)
+if [ -n "$HITS" ]; then
+  echo "::error::Granting validator imported outside the approval apply path — only entity-field-approval.ts (card routing) and entity-management.ts (write kernel) may waive an escalation:"
+  echo "$HITS"
+  VIOLATIONS=$((VIOLATIONS + 1))
+fi
+
 if [ "$VIOLATIONS" -gt 0 ]; then
   echo "[check-security-patterns] FAIL — $VIOLATIONS pattern(s) violated"
   exit 1

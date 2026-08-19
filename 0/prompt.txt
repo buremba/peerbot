@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5k9a84jg</task-id>
+<tool-use-id>toolu_01AAcPn4Eo4oHsGywcfygV9b</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/b5k9a84jg.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr gate" completed (exit code 0)</summary>
+</task-notification>

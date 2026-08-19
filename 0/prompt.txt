@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byv7x3dvl</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/byv7x3dvl.output</output-file>
+<status>killed</status>
+<summary>Background command "Retry both gates until GitHub accepts the statuses" was stopped</summary>
+</task-notification>

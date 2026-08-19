@@ -1,0 +1,1 @@
+if it'm the owner, i should be able to see it properly right? test make sure it works? do we have extra encryption there that we dont need?

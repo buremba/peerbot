@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu0z4ei0q</task-id>
+<tool-use-id>toolu_01RzYfoHR7RbPD4syz1XudtW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bu0z4ei0q.output</output-file>
+<status>completed</status>
+<summary>Background command "Launch 4 hard-rule agents on Prodma" completed (exit code 0)</summary>
+</task-notification>

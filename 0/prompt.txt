@@ -1,0 +1,31 @@
+You are investigating an open design question in the Lobu monorepo (a Bun workspace, packages under `packages/*`). Your job is INVESTIGATION + a written PROPOSAL. You must NOT implement anything.
+
+CONSTRAINTS — obey these verbatim:
+- Investigation and a written proposal ONLY. Do not modify any source file. The only file you may create is `_proposal/connector-declared-edges.md`.
+- Do not run migrations, do not touch any database, do not start servers.
+- Cite real file paths and line numbers. If you cannot find something, say "not found" — never invent a path or an API.
+- Prefer `bun`, never npm/yarn/pnpm.
+
+=== THE QUESTION ===
+Connectors cannot declare entity->entity relationships. There are two different edge kinds and only one has a declarative surface:
+
+1. event -> entity ATTRIBUTION — declarative today via `attributions` on `eventKinds` (values: authored_by | about | mentions | belongs_to). Rides the sync path. Bulk-capable.
+2. entity -> entity RELATIONSHIP — table `entity_relationships` (plus `entity_relationship_types`, `entity_relationship_type_rules`). Believed to be written ONLY by: `manage_entity.ts` (imperative, exposed to reactions as `entities.link`), `auto-linker.ts` (NER-lite `mentions`, capped 20/event), and three purpose-built materializers (`github-team-graph`, `channel-about`, `access-graph`). `entity-link-upsert.ts` writes IDENTITIES, never relationships. VERIFY this list against the code — it may be incomplete.
+
+Every ERP edge is the second kind — invoice->customer, order line->product, movement->warehouse, lot->work order, cost allocation->cost centre. So importing a relational dataset is currently one SDK call per edge, each its own transaction.
+
+Restate of the problem: this is NOT a volume/throughput problem. It is that **no manifest surface maps a foreign key on an emitted event to a typed entity->entity edge.** Note `packages/server/src/utils/relationship-validation.ts` is claimed to already list `feed` as a valid relationship source — so the schema may have anticipated this and the declaring surface was simply never built. Confirm or refute that claim from the code, with a quote.
+
+=== DELIVERABLE ===
+Write ONE markdown file at `_proposal/connector-declared-edges.md`, grounded in real file paths and line numbers, containing:
+
+1. Ground truth: every writer of `entity_relationships` today (INSERT/UPDATE/DELETE — include merge/repointing and soft-delete writers, not just creators), and the exact shape of the `attributions` declaration on `eventKinds` (the existing precedent to mirror). Show the actual type definition and where it is consumed on the sync path.
+2. Confirm or refute: does `relationship-validation.ts` really accept `feed` as a relationship source? Quote the exact line(s) with line numbers. Also check whether anything actually PASSES `feed` today.
+3. Why the attribution surface cannot be stretched to cover entity->entity. Be specific about what it resolves (what identity resolution it performs, against what table) and what it structurally cannot express.
+4. A concrete proposed declaration surface for connector-declared entity->entity edges: the manifest shape (write the actual TypeScript type), where it would live in the connector SDK (exact file), and how a foreign key on an emitted event resolves to two entity ids. Design for the ERP case: an emitted invoice event carrying `customer_origin_id` must become a typed `invoice_customer` edge.
+5. Ordering/identity problems it must solve: the target entity may not exist yet when the source syncs; `events.id` is a stored-version id, NOT stable source identity (a resync supersedes the row and mints a new id for the same source item), so identity must key on the connector's `origin_id` scoped to its connection/source. Propose how deferred/unresolved edges are handled.
+6. What it would touch: exact files, and explicitly whether it needs a NEW TABLE, a DB MIGRATION, or an API/SDK SURFACE CHANGE. Call these out loudly with a clear yes/no each — in this repo they require the owner's explicit sign-off before any implementation.
+7. Rejected alternatives with the reason each was rejected.
+8. An honest open-questions list.
+
+Read the ACTUAL code. Do not speculate. Start by locating: `packages/server/src/utils/relationship-validation.ts`, `packages/server/src/utils/auto-linker.ts`, `packages/server/src/tools/admin/manage_entity.ts`, `packages/server/src/utils/entity-link-upsert.ts`, the connector SDK package (grep for `eventKinds` and `attributions` type definitions), and the migrations that created `entity_relationships` / `entity_relationship_types` / `entity_relationship_type_rules`.

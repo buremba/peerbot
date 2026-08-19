@@ -1,0 +1,1 @@
+resolve_approval stuff do we need it? in chatgpt can we trigger the chat to continue in a way? or tell the user to text to chatgpt etc

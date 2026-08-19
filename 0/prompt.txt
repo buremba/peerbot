@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>baongq9n7</task-id>
+<summary>Monitor event: "PR 2692 outstanding required checks"</summary>
+<event>2692 BLOCKED | outstanding: format-lint frontend typecheck</event>
+</task-notification>

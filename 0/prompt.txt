@@ -1,0 +1,1 @@
+the user can whitelist etc no? by defailt we can allow shell and for run the user needs to add it to the guardrail i supppose for github

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1k0q3okf</task-id>
+<tool-use-id>toolu_018iq9YnZqKTYM4Suo2wVtMj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/248c9845-4453-4be5-a7aa-36baff5ca5d5/tasks/b1k0q3okf.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run full integration suite cleanly" completed (exit code 0)</summary>
+</task-notification>

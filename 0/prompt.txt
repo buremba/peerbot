@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>batcs5ajl</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/batcs5ajl.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for server readiness" completed (exit code 0)</summary>
+</task-notification>

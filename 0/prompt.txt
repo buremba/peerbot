@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0pvhl3l3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/b0pvhl3l3.output</output-file>
+<status>completed</status>
+<summary>Background command "Codex design review" completed (exit code 0)</summary>
+</task-notification>

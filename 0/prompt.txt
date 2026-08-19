@@ -1,0 +1,44 @@
+<task-notification>
+<task-id>ac60e4d38df7d7765</task-id>
+<tool-use-id>toolu_01JH6HTNCxCadRyc66Pbma3B</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/ac60e4d38df7d7765.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix Telegram silent drop #2230" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Everything is verified. The four uncommitted files in `git status` are the newer-origin/main files and the owletto pointer that I deliberately never staged — my commit contains exactly the four intended files. Not merging, per instructions.
+
+## Report
+
+**`git diff --stat origin/main...HEAD`**
+```
+ .../preview/workspace-unlinked-notice.test.ts      |  39 ++---
+ .../__tests__/message-handler-bridge.test.ts       | 166 +++++++++++++++++-
+ .../gateway/connections/message-handler-bridge.ts  | 189 ++++++++++++++-------
+ packages/server/src/preview/slack.ts               |  40 +++--
+ 4 files changed, 334 insertions(+), 100 deletions(-)
+```
+
+**PR:** https://github.com/lobu-ai/lobu/pull/2257 — one clean commit `cde5f4944`, "Fixes #2230", no attribution lines.
+
+**What the fix does.** `workspaceUnlinkedNotice()` returns a generic dashboard+CLI notice for non-Slack platforms (no workspace/team deep links, no mrkdwn, deliberately static so no lookup failure re-creates the dead drop); Slack output unchanged. Both drop sites now share one `postUnlinkedChatNotice()` helper, so Slack *interactions* get the notice too — they were silently dropping even on Slack. Class fix found while there: the notice tells users to paste `/link &lt;code&gt;`, which on non-Slack platforms arrives as plain message text and died in the same dead end; the unrouted path now tries `tryHandleSlashText` first. Loop prevention adds no new state, mirroring Slack's existing semantics.
+
+**Ran vs assumed.**
+- Ran: red→green (4 failing → 60/60 pass, both drop sites), integration 7/7 on embedded PG, `make test-unit` 323/0, `make pre-pr` all six gates, `make typecheck`, `make review-fix` (verified its diff before committing), `make review` **once**.
+- CI: unit, typecheck, frontend, security, Trivy, check-drift all pass; `integration` + CodeRabbit still running at handoff.
+- Assumed / not done: **no live Telegram bot exercise.** Every Telegram assertion is unit-level against the bridge with a mocked thread — I never saw a real bot reply in a real chat.
+
+**Confidence.**
+- Routing/notice logic (`message-handler-bridge.ts`) — **88.** Both drop sites covered by tests that genuinely failed first; pi-review independently re-ran routing tests 28/28 plus its own notice probe. Not higher because no live platform run.
+- Notice text (`preview/slack.ts`) — **92.** Pure function, 7/7 integration tests, Slack path asserted unchanged.
+- Telegram end-to-end delivery — **65.** The generic string is produced correctly, but that it renders acceptably in a real Telegram chat is untested.
+- No unintended files — **99.** The soft reset surfaced four foreign files (newer main's `build-images.yml`, `derive-image-tags*`, owletto pointer); all explicitly unstaged, and `git diff --name-only origin/main...HEAD` is exactly four files.
+
+**Next actions.**
+1. Wait for `integration` + CodeRabbit to finish, then merge — I did not merge, and CI is not fully reported.
+2. Exercise once against a real Telegram bot (unlinked chat message + button click) to close the 65-confidence gap.
+3. Consider whether the notice should also fire for `isPreview` connections at the interaction site — I deliberately kept the existing `!isPreview` gate, so preview clicks still drop silently.
+4. Optional follow-up: `resolveSlackActionReviewer` (interaction-bridge.ts:144) is also Slack-gated, but it's reviewer authz rather than a silent user-facing drop — deliberately out of scope, worth its own issue if non-Slack approvals are wanted.
+
+result: PR #2257 open and pi-review green (bug_free 91, simplicity 92, 0 blockers) — Telegram/non-Slack unrouted messages *and* button clicks now reply with a generic unlinked notice instead of dropping silently; fixes lobu#2230, not merged.</result>
+<usage><subagent_tokens>226133</subagent_tokens><tool_uses>203</tool_uses><duration_ms>1017836</duration_ms></usage>
+</task-notification>

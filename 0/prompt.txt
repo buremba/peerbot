@@ -1,0 +1,1 @@
+bheavior logo? also the events page don't seem to be rendering showing those. also how does it show under connectors as well

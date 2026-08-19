@@ -1,0 +1,1 @@
+the regec etc all seems hacky. could we maintain our own system prompt, what's the best way here?

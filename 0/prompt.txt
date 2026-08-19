@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzl8ru6r9</task-id>
+<tool-use-id>toolu_011B1FzXx7cuBJ1Cjn46WYoi</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bzl8ru6r9.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on the keyword fix" completed (exit code 0)</summary>
+</task-notification>

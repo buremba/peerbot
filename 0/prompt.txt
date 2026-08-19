@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9m80q29d</task-id>
+<tool-use-id>toolu_01EBnZ6uAT4DTJuiVNjntKej</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1bee61bc-7d7b-4da4-9b6e-6df8fc619728/tasks/b9m80q29d.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait one connector-health scan window" completed (exit code 0)</summary>
+</task-notification>

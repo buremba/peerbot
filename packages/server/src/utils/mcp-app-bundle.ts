@@ -43,7 +43,8 @@ const assetCache = new Map<string, McpAppAsset>();
 
 const HEAD_OPEN = /<head(?:\s[^>]*)?>/i;
 const HEAD_CLOSE = /<\/head\s*>/i;
-const HEAD_DECLARES_BASE = /<base(?:\s|\/?>)/i;
+// `src="./assets/app.js?v=…"` / `href="assets/app.css?v=…"`, either spelling.
+const RELATIVE_ASSET_URL = /(\s(?:src|href)=")(?:\.\/)?(assets\/[^"]*)(")/gi;
 
 /** One built asset plus the content digest its template URL pins it by. */
 export interface McpAppAsset {
@@ -62,25 +63,42 @@ export function mcpAppAssetVersion(bytes: Uint8Array): string {
 }
 
 /**
- * Give the bundle an absolute asset base, unless its own `<head>` already sets
- * one.
+ * Rewrite the template's relative asset URLs to absolute ones on our origin.
  *
- * Both halves are scoped to the head element on purpose. A substring test over
- * the whole document also matches a `<base ` written inside an inline script or
- * a comment, and skipping the injection on that evidence leaves every relative
- * asset URL resolving against the MCP host's origin (claude.ai) rather than
- * ours — the widget renders blank and no request ever reaches us to explain why.
+ * A `<base href>` would express the same thing in one tag, and used to. It does
+ * not survive an MCP host: Claude renders the app inside a sandbox document
+ * served with `base-uri 'self'` (measured — the host honours `resourceDomains`
+ * and `connectDomains` from `_meta.ui.csp` but never `baseUriDomains`), so the
+ * browser drops the `<base>` element and every relative URL resolves against
+ * the sandbox origin instead of ours. Those requests 404 on the host, no
+ * request ever reaches us to explain it, and the widget paints blank.
+ *
+ * Absolute URLs need only `script-src`/`style-src` to name our origin, which is
+ * exactly what `resourceDomains` buys, so they work on every host a `<base>`
+ * worked on and on Claude besides.
+ *
+ * Rewriting is scoped to the `<head>` element on purpose: the pattern also
+ * matches attribute-shaped text inside an inline script or a comment elsewhere
+ * in the document, and rewriting that would corrupt it.
  */
-export function withAssetBase(html: string, assetBase: string): string {
+export function withAbsoluteAssetUrls(html: string, assetBase: string): string {
   const headOpen = HEAD_OPEN.exec(html);
   if (!headOpen) return html;
   const headStart = headOpen.index + headOpen[0].length;
   const rest = html.slice(headStart);
   const headClose = HEAD_CLOSE.exec(rest);
-  const head = headClose ? rest.slice(0, headClose.index) : rest;
-  if (HEAD_DECLARES_BASE.test(head)) return html;
-  const href = assetBase.replaceAll('"', '%22');
-  return `${html.slice(0, headStart)}\n\t\t<base href="${href}" />${rest}`;
+  const headEnd = headClose ? headClose.index : rest.length;
+  // A quote in the origin would otherwise close the attribute and let the rest
+  // of it be read as markup.
+  const base = assetBase.replaceAll('"', '%22');
+  const head = rest
+    .slice(0, headEnd)
+    .replace(
+      RELATIVE_ASSET_URL,
+      (_match, lead: string, assetPath: string, tail: string) =>
+        `${lead}${base}${assetPath}${tail}`
+    );
+  return `${html.slice(0, headStart)}${head}${rest.slice(headEnd)}`;
 }
 
 /** Read a built MCP App bundle's HTML. Returns null when no build is present. */
@@ -118,7 +136,7 @@ export async function renderMcpAppTemplate(
   if (html == null) return null;
 
   const assetBase = `${publicOrigin}/mcp-apps/${encodeURIComponent(appDir)}/`;
-  return withAssetBase(html, assetBase).replaceAll(
+  return withAbsoluteAssetUrls(html, assetBase).replaceAll(
     ORIGIN_PLACEHOLDER,
     publicOrigin
   );

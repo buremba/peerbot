@@ -279,7 +279,6 @@ function mcpAppUiMeta(
     connectDomains: string[];
     resourceDomains: string[];
     frameDomains: string[];
-    baseUriDomains?: string[];
   };
   permissions: { clipboardWrite: Record<string, never> };
   prefersBorder: boolean;
@@ -296,7 +295,6 @@ function mcpAppUiMeta(
     csp: {
       ...app.csp,
       resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],
-      baseUriDomains: [publicOrigin],
     },
     permissions: { clipboardWrite: {} },
     prefersBorder: app.prefersBorder,

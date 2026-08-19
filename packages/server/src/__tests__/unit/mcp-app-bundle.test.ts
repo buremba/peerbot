@@ -6,7 +6,7 @@ import {
 } from '../../mcp-app-resource-uris';
 import {
   mcpAppAssetVersion,
-  withAssetBase,
+  withAbsoluteAssetUrls,
 } from '../../utils/mcp-app-bundle';
 
 // Every alias as it resolved before this table was generated rather than
@@ -125,67 +125,94 @@ describe('mcpAppAssetVersion', () => {
   });
 });
 
-describe('withAssetBase', () => {
+describe('withAbsoluteAssetUrls', () => {
   const base = 'https://app.lobu.ai/mcp-apps/interaction/';
+  const doc = (head: string, body = '') =>
+    `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
-  test('injects an absolute base into a head that has none', () => {
-    const html = withAssetBase(
-      '<!doctype html><html><head><title>x</title></head><body></body></html>',
+  test('rewrites the head asset urls onto our origin', () => {
+    const html = withAbsoluteAssetUrls(
+      doc(
+        '<script defer src="./assets/app.js?v=0123456789abcdef"></script>' +
+          '<link rel="stylesheet" crossorigin href="./assets/app.css?v=fedcba9876543210">'
+      ),
       base
     );
-    expect(html).toContain(`<base href="${base}" />`);
-    expect(html.indexOf('<base')).toBeLessThan(html.indexOf('</head>'));
+    expect(html).toContain(`src="${base}assets/app.js?v=0123456789abcdef"`);
+    expect(html).toContain(`href="${base}assets/app.css?v=fedcba9876543210"`);
   });
 
-  test('injects even when the body mentions a base tag in inline script text', () => {
-    // A substring test over the whole document reads this as "already based" and
-    // skips injection, leaving every relative asset URL to resolve against the
-    // MCP host's origin instead of ours — a blank widget, and no request ever
-    // arrives here to explain it.
-    const html = withAssetBase(
-      '<!doctype html><html><head><title>x</title></head>' +
-        '<body><script>const tpl = \'<base href="./">\';</script></body></html>',
+  test('leaves no relative asset url behind', () => {
+    // The whole point: one unrewritten reference resolves against the MCP
+    // host's sandbox origin, 404s there, and paints a blank widget with no
+    // request arriving here to explain it.
+    const html = withAbsoluteAssetUrls(
+      doc('<script defer src="./assets/app.js?v=0123456789abcdef"></script>'),
       base
     );
-    expect(html).toContain(`<base href="${base}" />`);
+    expect(html).not.toMatch(/(?:src|href)="(?:\.\/)?assets\//);
+  });
+
+  test('rewrites a reference written without the leading ./', () => {
+    const html = withAbsoluteAssetUrls(
+      doc('<script defer src="assets/app.js?v=0123456789abcdef"></script>'),
+      base
+    );
+    expect(html).toContain(`src="${base}assets/app.js?v=0123456789abcdef"`);
+  });
+
+  test('emits no base element', () => {
+    // A <base href> expressed the same intent and is what this replaced. Claude
+    // serves the app sandbox with `base-uri 'self'`, so the element is dropped
+    // and every relative URL resolves against the host instead of us.
+    const html = withAbsoluteAssetUrls(
+      doc('<script defer src="./assets/app.js?v=0123456789abcdef"></script>'),
+      base
+    );
+    expect(html).not.toContain('<base');
+  });
+
+  test('leaves attribute-shaped text in the body alone', () => {
+    // Rewriting past </head> would corrupt an inline script that happens to
+    // contain the same attribute shape in a string.
+    const body = '<script>const tpl = \'<img src="./assets/app.js">\';</script>';
+    const html = withAbsoluteAssetUrls(
+      doc('<title>x</title>', body),
+      base
+    );
+    expect(html).toContain(body);
   });
 
   test('bounds the head at a close tag written with trailing space', () => {
     // If `</head >` is not recognised the "head" runs to the end of the
-    // document, and a `<base>` in the body then suppresses the injection.
-    const html = withAssetBase(
-      '<!doctype html><html><head><title>x</title></head >' +
-        '<body><base href="./"></body></html>',
+    // document and body text gets rewritten with it.
+    const body = '<img src="./assets/app.js">';
+    const html = withAbsoluteAssetUrls(
+      `<!doctype html><html><head><title>x</title></head ><body>${body}</body></html>`,
       base
     );
-    expect(html).toContain(`<base href="${base}" />`);
-  });
-
-  test('leaves a head that already declares its own base alone', () => {
-    const source =
-      '<!doctype html><html><head><base href="./"><title>x</title></head><body></body></html>';
-    expect(withAssetBase(source, base)).toBe(source);
+    expect(html).toContain(body);
   });
 
   test('honours a head opened with attributes', () => {
-    const html = withAssetBase(
-      '<!doctype html><html><head data-build="7"><title>x</title></head></html>',
+    const html = withAbsoluteAssetUrls(
+      '<!doctype html><html><head data-build="7">' +
+        '<script defer src="./assets/app.js?v=0123456789abcdef"></script></head></html>',
       base
     );
-    expect(html).toContain(`<base href="${base}" />`);
-    expect(html.indexOf('<base')).toBeGreaterThan(html.indexOf('<head'));
+    expect(html).toContain(`src="${base}assets/app.js?v=0123456789abcdef"`);
   });
 
-  test('never emits an unescaped quote into the href attribute', () => {
-    const html = withAssetBase(
-      '<!doctype html><html><head></head></html>',
+  test('never emits an unescaped quote into a rewritten url', () => {
+    const html = withAbsoluteAssetUrls(
+      doc('<script defer src="./assets/app.js"></script>'),
       'https://evil"onload="x/'
     );
-    expect(html).toContain('<base href="https://evil%22onload=%22x/" />');
+    expect(html).toContain('src="https://evil%22onload=%22x/assets/app.js"');
   });
 
   test('returns the document untouched when it has no head at all', () => {
     const source = '<div>fragment</div>';
-    expect(withAssetBase(source, base)).toBe(source);
+    expect(withAbsoluteAssetUrls(source, base)).toBe(source);
   });
 });

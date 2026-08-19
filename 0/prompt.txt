@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b0yg0unqu</task-id>
+<summary>Monitor event: "PR 2335 integration check result"</summary>
+<event>integration: pass</event>
+</task-notification>

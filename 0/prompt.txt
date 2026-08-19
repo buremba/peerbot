@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>biwrwlkhr</task-id>
+<tool-use-id>toolu_01Pok8qqxGYT152gx4U7QFWW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/biwrwlkhr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run codex review on 2326 new head" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+can you consolidate things that makes sense? the behaviors might already call subagents etc so it can fan out all different conversatiosn no?

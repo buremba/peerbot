@@ -115,9 +115,11 @@ fi
 # exports (`*GrantingApprovedFields`) may be imported only from the module that
 # routed a card (entity-field-approval.ts) and the write kernel that forwards a
 # grant (entity-management.ts); any other importer lets an ordinary write path
-# waive a rule escalation. The repo lint config mirrors this with a scoped
-# `noRestrictedImports`; this grep is the LIVE gate because packages/server/**
-# is biome-excluded. Defining module and tests are exempt by construction.
+# waive a rule escalation. A lint-side `noRestrictedImports` cannot enforce this
+# today (packages/server/** is biome-excluded), so this grep is the live gate.
+# Defining module and tests are exempt by construction.
+# NOTE: `git grep` scans tracked files only, so a rogue importer is caught once
+# staged/committed (the CI case) but not while untracked in a dirty worktree.
 echo "  -> granting validator imports outside the approval apply path"
 HITS=$(
   git grep -nE 'validateEntityRow(Patch|Insert)GrantingApprovedFields' -- \

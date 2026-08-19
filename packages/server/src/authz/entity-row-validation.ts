@@ -212,10 +212,9 @@ export async function validateEntityRowPatch(params: {
  *
  * GRANTING is a module-boundary property: only the approval apply path (the
  * module that routed a card) and the entity write kernel that forwards a grant
- * may import this. Enforced by `scripts/check-security-patterns.sh` and the
- * repo lint config's scoped `noRestrictedImports`. Known ceiling: TypeScript
- * has no module-private, so lint is the strongest available enforcement and
- * lint can be disabled.
+ * may import this. Enforced by `scripts/check-security-patterns.sh`. Known
+ * ceiling: TypeScript has no module-private, so grep is the strongest available
+ * enforcement, and the script's allowlist/exemption list can be edited.
  *
  * Same handle/#2818 contract as {@link validateEntityRowPatch}: only the
  * caller's transaction handle, never `getDb()`.

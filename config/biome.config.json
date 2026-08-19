@@ -87,35 +87,7 @@
       "style": {
         "noNamespace": "error",
         "useAsConstAssertion": "error",
-        "noNonNullAssertion": "off",
-        "noRestrictedImports": {
-          "level": "error",
-          "options": {
-            "paths": {
-              "../authz/entity-row-validation": {
-                "importNames": [
-                  "validateEntityRowPatchGrantingApprovedFields",
-                  "validateEntityRowInsertGrantingApprovedFields"
-                ],
-                "message": "GRANTING boundary: only the approval apply path (tools/admin/entity-field-approval.ts, utils/entity-management.ts) may waive an escalation. DORMANT because packages/server/** is biome-excluded; the live gate is scripts/check-security-patterns.sh. Rationale lives in the module's own doc."
-              },
-              "../../authz/entity-row-validation": {
-                "importNames": [
-                  "validateEntityRowPatchGrantingApprovedFields",
-                  "validateEntityRowInsertGrantingApprovedFields"
-                ],
-                "message": "GRANTING boundary: only the approval apply path (tools/admin/entity-field-approval.ts, utils/entity-management.ts) may waive an escalation. DORMANT because packages/server/** is biome-excluded; the live gate is scripts/check-security-patterns.sh. Rationale lives in the module's own doc."
-              },
-              "./entity-row-validation": {
-                "importNames": [
-                  "validateEntityRowPatchGrantingApprovedFields",
-                  "validateEntityRowInsertGrantingApprovedFields"
-                ],
-                "message": "GRANTING boundary: only the approval apply path (tools/admin/entity-field-approval.ts, utils/entity-management.ts) may waive an escalation. DORMANT because packages/server/** is biome-excluded; the live gate is scripts/check-security-patterns.sh. Rationale lives in the module's own doc."
-              }
-            }
-          }
-        }
+        "noNonNullAssertion": "off"
       },
       "suspicious": {
         "noAsyncPromiseExecutor": "error",
@@ -172,19 +144,6 @@
     }
   },
   "overrides": [
-    {
-      "includes": [
-        "**/tools/admin/entity-field-approval.ts",
-        "**/utils/entity-management.ts"
-      ],
-      "linter": {
-        "rules": {
-          "style": {
-            "noRestrictedImports": "off"
-          }
-        }
-      }
-    },
     {
       "includes": ["**/*.json"],
       "json": {

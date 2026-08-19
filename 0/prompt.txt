@@ -1,0 +1,1 @@
+ok i did 1 but forget it now. just save memory so a new session can get the context. for 2 explain if our design is worse and we need to change something

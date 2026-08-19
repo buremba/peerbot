@@ -1,0 +1,1 @@
+there is three panes in a single window, could they be seperate windows but don't kill running things

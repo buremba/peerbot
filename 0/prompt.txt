@@ -1,0 +1,1 @@
+where do i access those? devices are under connectors right, the api as well. also the recent api covers the mcp clients. we don't have dead pages or api in the back

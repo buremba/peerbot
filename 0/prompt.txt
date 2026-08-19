@@ -1,0 +1,1 @@
+is this overengineered feature? do you think we could be more agentic instead of these guardrails and agents figure things out?

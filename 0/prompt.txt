@@ -1,0 +1,1 @@
+hmm, what's the best way to approach it? we don't want to mess up with the prompt caching for new convos in the new system. the previous conversations are ok

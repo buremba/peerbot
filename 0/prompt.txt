@@ -1,0 +1,1 @@
+from chatgpt when i click do i go the relevant mcp_client page? also i don't see the client id and client's name (ideally the logged in user as entity link there as well)

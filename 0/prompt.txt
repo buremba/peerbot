@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhw3p1286</task-id>
+<tool-use-id>toolu_011DgTYY31C2s11oXGNZwnrS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/bhw3p1286.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr and unit tests" completed (exit code 0)</summary>
+</task-notification>

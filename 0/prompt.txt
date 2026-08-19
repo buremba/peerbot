@@ -1,0 +1,64 @@
+<task-notification>
+<task-id>ac7eb3ee96264771d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/ac7eb3ee96264771d.output</output-file>
+<status>completed</status>
+<summary>Agent "Track A: modelsDevId + snapshot" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Committed locally, not pushed, no PR, `make review` not run.
+
+## Ground truth
+
+`git status`: clean. `git diff --name-only origin/main...HEAD`: **18 files** — the previous 17 plus `.github/workflows/models-dev-snapshot.yml`. Two commits on the branch.
+
+## The workflow
+
+`.github/workflows/models-dev-snapshot.yml`, following `providers-live.yml` for scheduling/permissions/setup and `build-pgvector-embedded.yml` for the skip-PR pattern.
+
+```yaml
+on:
+  schedule:
+    - cron: "0 7 * * 1"    # Mondays 07:00 UTC
+  workflow_dispatch: {}
+concurrency: {group: models-dev-snapshot, cancel-in-progress: true}
+permissions: {contents: write, pull-requests: write}
+```
+
+07:00 UTC deliberately sits an hour after `providers-live`'s 06:00 so the two weekly provider jobs don't contend. Steps: checkout → setup-submodule → setup-bun 1.3.5 → `bun install` → regenerate → **re-run the coverage guard** → open PR if changed. The guard re-runs inside the job so an upstream key rename fails the job loudly instead of opening a PR that quietly empties a picker.
+
+## The no-change-week verification — this found a real bug
+
+Checking the property you asked me to verify is what exposed it. `generatedAt` was stamped with today's date on **every** run, so an unchanged upstream still rewrote that line:
+
+```
+-  "generatedAt": "2026-07-27",
++  "generatedAt": "2026-08-03",
+```
+
+That's an empty churn PR every Monday — which trains reviewers to rubber-stamp exactly the diffs that need reading, defeating the point of using a PR. I fixed it at the root (the generator now preserves the previous stamp when nothing but the date would change) rather than working around it in the workflow with a fragile one-line `git checkout` dance.
+
+Verified four ways:
+1. **Live re-fetch against the real API** → byte-identical, `git status` clean, no PR.
+2. **Simulated upstream change** (dropped a model from the committed file) → model restored, date re-stamped to today.
+3. **Both PR-step branches executed for real** — extracted the shell from the YAML, ran it against a throwaway git repo with a stubbed `gh`: unchanged exits 0 without calling `gh`; changed creates the branch, commits, pushes, invokes `gh pr create` with a correctly de-indented body.
+4. **`sameModelData` unit tests** (5 new, 12 total in the file), mutation-tested by making it compare the stamp again — the churn test failed as expected.
+
+`actionlint` is clean apart from the `blacksmith-4vcpu-ubuntu-2404` runner-label warning that every workflow in this repo emits (confirmed identical on `providers-live.yml`).
+
+I kept the suggestions-not-permissions property intact — added no validation, and the PR body says so explicitly so a future reviewer doesn't "helpfully" make the snapshot authoritative.
+
+## Confidence
+
+- **Generator date-stamp fix — 95.** Verified against a live re-fetch in both directions; mutation-tested.
+- **Workflow shell logic — 90.** Both branches actually executed against a real git repo with stubbed `gh`, not just eyeballed.
+- **Workflow-as-GitHub-Actions — 75.** YAML parses, actionlint clean, steps copied from working precedents — but **I have not run it on GitHub**, so runner availability, the submodule deploy key, and `github.token` push permission are unproven in situ.
+- **Gates — high.** `make pre-pr` green, `make test-unit` exits 0.
+
+## Needs a human
+
+1. **Branch protection may block the bot push.** If `main` requires PRs from non-bot actors or restricts branch creation, the `git push` fails. Worth a manual `workflow_dispatch` as the first run to find out cheaply.
+2. **`GITHUB_TOKEN` PR creation must be enabled** — Settings → Actions → "Allow GitHub Actions to create and approve pull requests". Off by default in many orgs; `gh pr create` fails with a 403 if unset.
+3. **`OWLETTO_WEB_DEPLOY_KEY`** is reused from the existing workflows; no new secret needed. The generator itself needs no API key — models.dev is public.
+4. **The first scheduled run won't fire until the workflow is on `main`** — scheduled triggers are ignored on branches.</result>
+<usage><subagent_tokens>217213</subagent_tokens><tool_uses>33</tool_uses><duration_ms>427535</duration_ms></usage>
+</task-notification>

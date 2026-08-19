@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b9np2su3a</task-id>
+<summary>Monitor event: "CI checks on PR 2283 (drift guard)"</summary>
+<event>format-lint: pass
+migrations: pass</event>
+</task-notification>

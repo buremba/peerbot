@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7ia7uz0r</task-id>
+<tool-use-id>toolu_01URRE5AxzbSXGn9N5aUnnDc</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/b7ia7uz0r.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the affected suites including the connector path" completed (exit code 0)</summary>
+</task-notification>

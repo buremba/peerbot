@@ -28,10 +28,28 @@ function fields(card: ReturnType<typeof buildKindCard>): string[] {
 	return out;
 }
 
+/** URLs of link buttons in the card's Actions row. */
 function links(card: ReturnType<typeof buildKindCard>): string[] {
-	return (card?.children ?? [])
-		.filter((c) => c.type === "link")
-		.map((c) => (c as { url: string }).url);
+	const out: string[] = [];
+	for (const child of card?.children ?? []) {
+		if (child.type !== "actions") continue;
+		for (const a of child.children) {
+			if ("url" in a && typeof a.url === "string") out.push(a.url);
+		}
+	}
+	return out;
+}
+
+/** `id|label` of each decision button. */
+function buttons(card: ReturnType<typeof buildKindCard>): string[] {
+	const out: string[] = [];
+	for (const child of card?.children ?? []) {
+		if (child.type !== "actions") continue;
+		for (const a of child.children) {
+			if ("id" in a && typeof a.id === "string") out.push(`${a.id}|${a.label}`);
+		}
+	}
+	return out;
 }
 
 const schema = (properties: Record<string, unknown>) => ({
@@ -169,5 +187,37 @@ describe("chat platform limits", () => {
 		const value = fields(card)[0]?.split("=")[1] ?? "";
 		expect(value.length).toBeLessThanOrEqual(1800);
 		expect(value.endsWith("…")).toBe(true);
+	});
+});
+
+describe("decision buttons", () => {
+	/**
+	 * The ids are the contract with `interaction-bridge`'s `run-approval:` click
+	 * handler — it parses runId and decision straight out of them, so a rename
+	 * here silently produces buttons that do nothing.
+	 */
+	it("renders Approve/Reject bound to the run", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND?.metadataSchema,
+			data: { operation: "Run shell command", connection: "Mac Shell", input: { command: "ls" } },
+			title: 'Action "run" needs approval',
+			url: "https://app.lobu.dev/o/acme/runs/4821",
+			decisionRunId: 4821,
+		});
+		expect(buttons(card)).toEqual([
+			"run-approval:4821:approve|Approve",
+			"run-approval:4821:reject|Reject",
+		]);
+		expect(links(card)).toEqual(["https://app.lobu.dev/o/acme/runs/4821"]);
+	});
+
+	it("omits buttons when there is no run to decide", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND?.metadataSchema,
+			data: { operation: "x", connection: "y", input: {} },
+			url: "https://app.lobu.dev/o/acme/events/7",
+		});
+		expect(buttons(card)).toEqual([]);
+		expect(links(card)).toEqual(["https://app.lobu.dev/o/acme/events/7"]);
 	});
 });

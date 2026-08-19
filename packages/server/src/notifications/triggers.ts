@@ -585,6 +585,7 @@ export async function notifyActionApprovalNeeded(params: {
 							connection: params.connectionName ?? null,
 							input: params.operationInput ?? null,
 						},
+						decisionRunId: params.runId,
 					}
 				: {}),
 			resourceType: "event",

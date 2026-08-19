@@ -40,6 +40,13 @@ interface CreateNotificationParams {
 	semanticType?: string;
 	/** Structured payload bound to the event kind's render template. */
 	payloadData?: Record<string, unknown>;
+	/**
+	 * Run this notification's card may decide, rendering Approve/Reject on the
+	 * chat card. The click is authorized in the interaction bridge against a
+	 * chat identity that maps to an org admin/owner — setting this does not by
+	 * itself grant anyone the decision.
+	 */
+	decisionRunId?: number | null;
 	resourceType?: string | null;
 	resourceId?: string | null;
 	resourceUrl?: string | null;
@@ -478,6 +485,7 @@ async function resolveNotificationKindCard(
 			title: params.title,
 			subtitle: params.body ?? undefined,
 			url: params.resourceUrl,
+			decisionRunId: params.decisionRunId,
 		});
 	} catch (err) {
 		logger.warn(

@@ -165,6 +165,23 @@ async function resolveSlackActionReviewer(params: {
 	return { userId, role };
 }
 
+/**
+ * Look up a run this Slack card is allowed to decide.
+ *
+ * Two families qualify, and NOTHING else — the query is the allowlist:
+ *
+ * 1. Entity field/entity changes (`run_type = 'internal'`, one of
+ *    ENTITY_CHANGE_ACTION_KEYS). Their proposal lives in `action_input`.
+ * 2. Connector operations (`run_type = 'action'`). The card now names the
+ *    operation, connection and input, so the decision is informed — which is
+ *    what previously made deciding from chat unsafe, not the execution path:
+ *    the click already runs through `manage_operations approve|reject` with a
+ *    Slack identity verified against an org admin/owner and real `process.env`,
+ *    exactly as the web approval does.
+ *
+ * A run outside both families reports `not_found`, so its card falls back to
+ * the "Review in Lobu" link rather than acting on something unrecognised.
+ */
 async function resolveEntityApprovalRun(
 	runId: number,
 	organizationId: string,
@@ -183,8 +200,10 @@ async function resolveEntityApprovalRun(
     FROM runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
-      AND run_type = 'internal'
-      AND action_key = ANY(${actionKeys}::text[])
+      AND (
+        (run_type = 'internal' AND action_key = ANY(${actionKeys}::text[]))
+        OR run_type = 'action'
+      )
     LIMIT 1
   `;
 	if (rows.length !== 1) return { state: "not_found", ownerUserId: null };
@@ -895,9 +914,8 @@ export function registerActionHandlers(
 
 		if (!thread || !actionId) return;
 
-		// Handle durable run approvals from notification cards. This path is
-		// intentionally scoped to entity_field_change: approving connector actions
-		// from chat needs a separate env-safe execution path.
+		// Handle durable run approvals from notification cards. Scope is enforced
+		// by resolveEntityApprovalRun's query, not here.
 		if (actionId.startsWith("run-approval:")) {
 			const [, runIdPart, decisionPart] = actionId.split(":");
 			const runId = Number(runIdPart);
@@ -921,7 +939,7 @@ export function registerActionHandlers(
 						? "This change was already approved."
 						: runState === "rejected"
 							? "This change was already rejected."
-							: "This approval can’t be completed from Slack yet. Use the Review in Lobu link.";
+							: "I couldn’t find a pending approval for this card in this workspace. Use the Review in Lobu link.";
 				try {
 					await thread.post(message);
 				} catch {

@@ -25,12 +25,14 @@
  */
 import { formatValue } from "@lobu/core/json-template";
 import {
+	Actions,
+	Button,
 	Card,
 	type CardChild,
 	type CardElement,
-	CardLink,
 	Field,
 	Fields,
+	LinkButton,
 } from "chat";
 import { orderedSchemaFields } from "../utils/default-entity-template";
 
@@ -56,6 +58,13 @@ export function buildKindCard(params: {
 	subtitle?: string;
 	/** Permalink to the event, so the full rendering is always one click away. */
 	url?: string | null;
+	/**
+	 * Run this card can decide. When set, the card carries Approve/Reject; the
+	 * click is authorized in `interaction-bridge` against a Slack identity that
+	 * maps to an org admin/owner, and executes through the same
+	 * `manage_operations approve|reject` the web review uses.
+	 */
+	decisionRunId?: number | null;
 }): CardElement | null {
 	if (params.jsonTemplate) return null;
 
@@ -77,9 +86,36 @@ export function buildKindCard(params: {
 	if (fields.length === 0) return null;
 
 	const children: CardChild[] = [Fields(fields.slice(0, MAX_FIELDS))];
-	if (params.url) {
-		children.push(CardLink({ url: params.url, label: "Open in Lobu" }));
+
+	// Buttons and the link share one Actions row: a decision card should offer
+	// the decision first and the full record second, not bury Approve under a
+	// paragraph of fields.
+	const actions = [];
+	if (params.decisionRunId) {
+		actions.push(
+			Button({
+				id: `run-approval:${params.decisionRunId}:approve`,
+				label: "Approve",
+				style: "primary",
+				value: "approve",
+			}),
+			Button({
+				id: `run-approval:${params.decisionRunId}:reject`,
+				label: "Reject",
+				style: "danger",
+				value: "reject",
+			}),
+		);
 	}
+	if (params.url) {
+		actions.push(
+			LinkButton({
+				url: params.url,
+				label: params.decisionRunId ? "Review in Lobu" : "Open in Lobu",
+			}),
+		);
+	}
+	if (actions.length > 0) children.push(Actions(actions));
 
 	return Card({ title: params.title, subtitle: params.subtitle, children });
 }

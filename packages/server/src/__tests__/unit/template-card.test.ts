@@ -307,3 +307,134 @@ describe("platform limits", () => {
 		for (const row of table.rows) expect(row).toHaveLength(width);
 	});
 });
+
+describe("template-declared controls", () => {
+	const bound = (props: Record<string, unknown>) => ({ type: "button", props });
+
+	it("renders a bound button, and drops one that cannot do anything", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					bound({ label: "Retry sync", style: "primary", onClick: "@retry_sync" }),
+					bound({ label: "Dead button" }),
+				],
+			},
+			data: {},
+		});
+		expect(buttons(card).map((b) => b.label)).toEqual(["Retry sync"]);
+		expect(buttons(card)[0].id).toBe("template-action:retry_sync");
+		expect(buttons(card)[0].style).toBe("primary");
+	});
+
+	it("resolves {{path}} interpolation in a button label", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [bound({ label: "Approve {{customer.name}} ({{items[0].qty}})", onClick: "@go" })],
+			},
+			data: { customer: { name: "Acme" }, items: [{ qty: 12 }] },
+		});
+		expect(buttons(card)[0].label).toBe("Approve Acme (12)");
+	});
+
+	it("drops a select with no options and keeps one with them", () => {
+		const withOpts = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "select", props: { label: "Reason", onChange: "@set_reason", options: [{ label: "Safe", value: "safe" }] } },
+					{ type: "select", props: { label: "Empty", onChange: "@x", options: [] } },
+				],
+			},
+			data: {},
+		});
+		expect(buttons(withOpts)).toHaveLength(1);
+		expect(buttons(withOpts)[0].id).toBe("template-action:set_reason");
+	});
+
+	it("clamps the actions row to what Slack accepts", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: Array.from({ length: 30 }, (_, i) =>
+					bound({ label: `B${i}`, onClick: `@a${i}` }),
+				),
+			},
+			data: {},
+		});
+		expect(buttons(card)).toHaveLength(25);
+	});
+
+	it("puts template controls before the decision buttons", () => {
+		const card = buildKindCard({
+			jsonTemplate: { type: "card", children: [bound({ label: "Retry", onClick: "@retry" })] },
+			data: {},
+			url: "https://app.lobu.ai/events/1",
+			decisionRunId: 9001,
+		});
+		expect(buttons(card).map((b) => b.label)).toEqual([
+			"Retry",
+			"Approve",
+			"Reject",
+			"Review in Lobu",
+		]);
+	});
+});
+
+describe("structural edge cases", () => {
+	it("takes the else branch when the condition path is missing", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "if", condition: "nope.deep.path", then: { type: "text", content: "THEN" }, else: { type: "text", content: "ELSE" } }],
+			},
+			data: {},
+		});
+		expect(texts(card)).toEqual(["ELSE"]);
+	});
+
+	it("emits no table at all for an empty each", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "No rows." },
+					{ type: "table", children: [{ type: "tbody", children: [{ type: "each", items: "none", as: "x", render: { type: "tr", children: [{ type: "td", children: [{ type: "data", path: "x" }] }] } }] }] },
+				],
+			},
+			data: { none: [] },
+		});
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+	});
+
+	it("pads ragged rows so Slack accepts the table", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "table", children: [{ type: "tbody", children: [
+					{ type: "tr", children: [{ type: "td", children: [{ type: "text", content: "a" }] }, { type: "td", children: [{ type: "text", content: "b" }] }, { type: "td", children: [{ type: "text", content: "c" }] }] },
+					{ type: "tr", children: [{ type: "td", children: [{ type: "text", content: "d" }] }] },
+				] }] }],
+			},
+			data: {},
+		});
+		expect(rows(card)).toEqual([["a", "b", "c"], ["d", "", ""]]);
+	});
+
+	it("nests each inside each with both scopes in view", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "table", children: [{ type: "tbody", children: [
+					{ type: "each", items: "groups", as: "g", render: { type: "each", items: "g.rows", as: "r", render: { type: "tr", children: [
+						{ type: "th", children: [{ type: "data", path: "g.name" }] },
+						{ type: "td", children: [{ type: "data", path: "r" }] },
+					] } } },
+				] }] }],
+			},
+			data: { groups: [{ name: "G1", rows: ["x", "y"] }, { name: "G2", rows: ["z"] }] },
+		});
+		expect(rows(card)).toEqual([["G1", "x"], ["G1", "y"], ["G2", "z"]]);
+	});
+});

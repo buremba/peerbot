@@ -24,12 +24,20 @@ import {
 import {
 	Actions,
 	Button,
+	type ButtonElement,
 	Card,
 	type CardChild,
 	type CardElement,
 	CardText,
 	Divider,
+	Field,
+	Fields,
+	Image,
 	LinkButton,
+	type LinkButtonElement,
+	Select,
+	type SelectElement,
+	SelectOption,
 	Table,
 } from "chat";
 import { resolveEntityRender } from "../utils/default-entity-template";
@@ -73,7 +81,27 @@ type Frag =
 	| { kind: "text"; text: string }
 	| { kind: "cell"; text: string }
 	| { kind: "row"; cells: string[] }
+	| { kind: "field"; label: string; value: string }
+	| { kind: "action"; element: ActionElement }
 	| { kind: "block"; child: CardChild };
+
+/** Anything Slack accepts inside an `actions` block. */
+type ActionElement = ButtonElement | LinkButtonElement | SelectElement;
+
+/**
+ * Slack caps an actions block at 25 elements and rejects the whole message
+ * past it. A template authors its buttons freely, so nothing upstream bounds
+ * this.
+ */
+const MAX_ACTIONS = 25;
+/** Prefix marking a button whose click routes to a template-declared action. */
+export const TEMPLATE_ACTION_PREFIX = "template-action";
+
+const str = (value: unknown, fallback = ""): string =>
+	value === undefined || value === null ? fallback : String(value);
+
+const buttonStyle = (value: unknown): "primary" | "danger" | undefined =>
+	value === "primary" || value === "danger" ? value : undefined;
 
 /** Layout-only wrappers: they carry no content of their own, so pass through. */
 const PASSTHROUGH = new Set([
@@ -99,8 +127,80 @@ const textOf = (frags: Frag[]): string =>
 const cardVisitor: TemplateVisitor<Frag> = {
 	text: (content) => [{ kind: "text", text: content }],
 	value: (rendered) => [{ kind: "text", text: rendered }],
-	component: (type, _props, children) => {
+	component: (type, props, children, { actions }) => {
 		if (PASSTHROUGH.has(type)) return children;
+		if (type === "button") {
+			const action = actions.onClick ?? actions.onPress ?? actions.onSubmit;
+			// A button with no bound action cannot do anything when clicked, and a
+			// dead control in an approval card is worse than an absent one.
+			if (!action) return [];
+			return [
+				{
+					kind: "action",
+					element: Button({
+						id: `${TEMPLATE_ACTION_PREFIX}:${action}`,
+						label: clamp(str(props.label) || textOf(children) || action, 75),
+						style: buttonStyle(props.style),
+						value: str(props.value, action),
+					}),
+				},
+			];
+		}
+		if (type === "link-button" || type === "link" || type === "a") {
+			const url = str(props.url || props.href);
+			if (!url) return [];
+			return [
+				{
+					kind: "action",
+					element: LinkButton({
+						url,
+						label: clamp(str(props.label) || textOf(children) || url, 75),
+						style: buttonStyle(props.style),
+					}),
+				},
+			];
+		}
+		if (type === "select") {
+			const action = actions.onChange ?? actions.onSelect;
+			if (!action || !Array.isArray(props.options)) return [];
+			const options = (props.options as unknown[])
+				.map((opt) => {
+					const o = (opt ?? {}) as Record<string, unknown>;
+					const value = str(o.value ?? o.label);
+					return value
+						? SelectOption({ label: clamp(str(o.label, value), 75), value })
+						: null;
+				})
+				.filter((o): o is NonNullable<typeof o> => o !== null);
+			if (options.length === 0) return [];
+			return [
+				{
+					kind: "action",
+					element: Select({
+						id: `${TEMPLATE_ACTION_PREFIX}:${action}`,
+						label: clamp(str(props.label) || str(props.placeholder) || action, 75),
+						placeholder: str(props.placeholder) || undefined,
+						options,
+					}),
+				},
+			];
+		}
+		if (type === "image" || type === "img") {
+			const url = str(props.url || props.src);
+			return url
+				? [{ kind: "block", child: Image({ url, alt: str(props.alt, "Image") }) }]
+				: [];
+		}
+		if (type === "field") {
+			return [
+				{
+					kind: "field",
+					label: clamp(str(props.label), MAX_CELL_CHARS),
+					value: clamp(str(props.value) || textOf(children), MAX_CELL_CHARS),
+				},
+			];
+		}
+		if (type === "fields") return children;
 		if (type === "th" || type === "td") {
 			return [{ kind: "cell", text: clamp(textOf(children), MAX_CELL_CHARS) }];
 		}
@@ -139,33 +239,93 @@ const cardVisitor: TemplateVisitor<Frag> = {
 		if (type === "divider" || type === "hr") {
 			return [{ kind: "block", child: Divider() }];
 		}
+		// Text-ish leaves the chat card can carry faithfully as prose.
+		if (type === "code" || type === "pre") {
+			const body = textOf(children) || str(props.value);
+			return body ? [{ kind: "text", text: `\`\`\`\n${body}\n\`\`\`` }] : [];
+		}
+		if (
+			type === "markdown" ||
+			type === "badge" ||
+			type === "heading" ||
+			type === "h1" ||
+			type === "h2" ||
+			type === "h3" ||
+			type === "strong" ||
+			type === "em" ||
+			type === "label"
+		) {
+			const body = textOf(children) || str(props.children) || str(props.value);
+			return body ? [{ kind: "text", text: body }] : [];
+		}
 		// Unknown component. Returning nothing marks it unsupported so the caller
 		// can link out rather than present a partial record as complete.
 		return [];
 	},
 };
 
-function fragsToChildren(frags: Frag[]): CardChild[] {
+function fragsToChildren(frags: Frag[]): {
+	children: CardChild[];
+	actions: ActionElement[];
+} {
 	const children: CardChild[] = [];
-	let pending: string[] = [];
-	const flush = () => {
-		const text = pending.join("\n").trim();
-		pending = [];
+	const actions: ActionElement[] = [];
+	let pendingText: string[] = [];
+	let pendingFields: Array<{ label: string; value: string }> = [];
+
+	const flushText = () => {
+		const text = pendingText.join("\n").trim();
+		pendingText = [];
 		if (text) children.push(CardText(clamp(escapeSlackText(text), MAX_TEXT_CHARS)));
 	};
+	const flushFields = () => {
+		const batch = pendingFields;
+		pendingFields = [];
+		if (batch.length === 0) return;
+		children.push(
+			Fields(
+				// Slack rejects the message past 10 fields per section, and applies
+				// its 2000-char cap to the RENDERED `*label*\nvalue`, so the two
+				// share one budget.
+				batch.slice(0, 10).map((f) => {
+					const label = escapeSlackText(f.label);
+					return Field({
+						label,
+						value:
+							clamp(escapeSlackText(f.value), MAX_TEXT_CHARS - label.length) || "—",
+					});
+				}),
+			),
+		);
+	};
+	const flush = () => {
+		flushText();
+		flushFields();
+	};
+
 	for (const frag of frags) {
+		if (frag.kind === "action") {
+			actions.push(frag.element);
+			continue;
+		}
+		if (frag.kind === "field") {
+			flushText();
+			pendingFields.push(frag);
+			continue;
+		}
+		flushFields();
 		if (frag.kind === "block") {
-			flush();
+			flushText();
 			children.push(frag.child);
 			continue;
 		}
 		// A stray row/cell outside a table still carries data; keep it readable
 		// rather than dropping it.
-		if (frag.kind === "row") pending.push(frag.cells.join(": "));
-		else pending.push(frag.text);
+		if (frag.kind === "row") pendingText.push(frag.cells.join(": "));
+		else pendingText.push(frag.text);
 	}
 	flush();
-	return children;
+	return { children, actions };
 }
 
 export function buildKindCard(params: {
@@ -191,10 +351,10 @@ export function buildKindCard(params: {
 	if (!template) return null;
 
 	const unsupported = new Set<string>();
-	const children = fragsToChildren(
+	const { children, actions: templateActions } = fragsToChildren(
 		walkTemplate(template, params.data, cardVisitor, unsupported),
 	);
-	if (children.length === 0) return null;
+	if (children.length === 0 && templateActions.length === 0) return null;
 
 	if (unsupported.size > 0) {
 		children.push(
@@ -204,7 +364,7 @@ export function buildKindCard(params: {
 		);
 	}
 
-	const actions = [];
+	const actions: ActionElement[] = [...templateActions];
 	if (params.decisionRunId) {
 		actions.push(
 			Button({
@@ -229,7 +389,7 @@ export function buildKindCard(params: {
 			}),
 		);
 	}
-	if (actions.length > 0) children.push(Actions(actions));
+	if (actions.length > 0) children.push(Actions(actions.slice(0, MAX_ACTIONS)));
 
 	return Card({
 		title: params.title,

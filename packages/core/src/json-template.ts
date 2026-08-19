@@ -210,6 +210,77 @@ export function getValueByPath(
 }
 
 /**
+ * Keys the node shape itself owns, so they are never treated as props. Matches
+ * owletto's renderer exactly (`renderer.tsx`), which is what lets a template
+ * use the flat DSL (`{"type":"metric","label":"…"}`) as well as an explicit
+ * `props` bag — the bag wins on conflict.
+ */
+const RESERVED_KEYS = new Set([
+  "type",
+  "children",
+  "props",
+  "path",
+  "fallback",
+  "key",
+]);
+
+/** Resolve one prop value: `{{path}}` binding, `{{a}}/b` interpolation, or literal. */
+function resolveBinding(
+  value: unknown,
+  data: Record<string, unknown>
+): unknown {
+  if (typeof value !== "string") return value;
+  if (
+    value.startsWith("{{") &&
+    value.endsWith("}}") &&
+    value.indexOf("}}") === value.length - 2
+  ) {
+    return getValueByPath(data, value.slice(2, -2).trim());
+  }
+  if (value.includes("{{")) {
+    return value.replace(/\{\{(.+?)\}\}/g, (_, path: string) => {
+      const resolved = getValueByPath(data, path.trim());
+      return resolved !== undefined ? String(resolved) : "";
+    });
+  }
+  return value;
+}
+
+function resolveProps(
+  node: TemplateNode,
+  data: Record<string, unknown>
+): { props: Record<string, unknown>; actions: Record<string, string> } {
+  const raw: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (!RESERVED_KEYS.has(key)) raw[key] = value;
+  }
+  if (
+    node.props &&
+    typeof node.props === "object" &&
+    !Array.isArray(node.props)
+  ) {
+    Object.assign(raw, node.props as Record<string, unknown>);
+  }
+
+  const props: Record<string, unknown> = {};
+  const actions: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    // `"@name"` is the DSL's action binding. On the web it resolves to a
+    // function; a chat card has no such context, so keep the NAME.
+    if (
+      typeof value === "string" &&
+      value.startsWith("@") &&
+      value.length > 1
+    ) {
+      actions[key] = value.slice(1);
+      continue;
+    }
+    props[key] = resolveBinding(value, data);
+  }
+  return { props, actions };
+}
+
+/**
  * What a surface must supply to render a template. `walkTemplate` owns every
  * structural decision — path resolution, `if` truthiness, `each` scoping and
  * the string-shorthand — so a visitor only decides how a leaf or a component
@@ -224,12 +295,18 @@ export interface TemplateVisitor<T> {
   /**
    * Any non-structural node. `type` is open — a visitor that cannot render one
    * should say so rather than guess; see `walkTemplate`'s `unsupported`.
+   *
+   * `props` arrive RESOLVED: `{{path}}` yields the bound value with its type
+   * intact, `"a/{{b}}"` interpolates to a string. Handler props (`onClick` and
+   * friends) are split into `actions` as bare action names, because a surface
+   * without a JS context — a chat card — still needs to know which action a
+   * button invokes.
    */
   component(
     type: string,
     props: Record<string, unknown>,
     children: T[],
-    node: TemplateNode
+    ctx: { actions: Record<string, string>; node: TemplateNode }
   ): T[];
 }
 
@@ -292,13 +369,16 @@ export function walkTemplate<T>(
     });
   }
 
-  const props = (n.props ?? {}) as Record<string, unknown>;
+  const { props, actions } = resolveProps(n, data);
   const children = Array.isArray(n.children)
     ? (n.children as unknown[]).flatMap((child) =>
         walkTemplate(child, data, visitor, unsupported)
       )
     : [];
-  const emitted = visitor.component(type, props, children, n);
+  const emitted = visitor.component(type, props, children, {
+    actions,
+    node: n,
+  });
   if (emitted.length === 0 && children.length === 0 && type)
     unsupported?.add(type);
   return emitted;

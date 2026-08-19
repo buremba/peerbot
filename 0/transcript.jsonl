@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:17:44.312Z","content":[{"text":"New message in #sales:\n\ndave: @lobu who owns the Globex account these days?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:17:47.902Z","id":"5de5792d","input_tokens":194,"output_tokens":122,"content":[{"type":"tool_use","id":"call_1f5b6a40d71644838425992e","name":"send_message","input":{"text":"Hey Dave — let me look that up for you."},"result":{"output":"","status":"success"}}]}

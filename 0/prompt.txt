@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8802by35</task-id>
+<tool-use-id>toolu_01QYoPUvQXiH8BisnUoCnyB4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/b8802by35.output</output-file>
+<status>completed</status>
+<summary>Background command "Full suite on PR head" completed (exit code 0)</summary>
+</task-notification>

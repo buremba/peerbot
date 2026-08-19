@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bklbyxoec</task-id>
+<summary>Monitor event: "CI check results on PR 2218"</summary>
+<event>cli-smoke: pass
+sdk-e2e: pass
+typecheck: pass</event>
+</task-notification>

@@ -1,0 +1,22 @@
+<task-notification>
+<task-id>bgarl67ia</task-id>
+<summary>Monitor event: "make review-fix result"</summary>
+<event>REVIEW_FIX_EXIT=0
+- src/components/connectors/connector-scope-lists.tsx:207 — corrected rail lifecycle and connector-run scope claims.
+- src/lib/api/runs.ts:1 — documented the newly supported connector scope accurately.
+Needs the driving agent
+- Run `make pre-pr` after resolving the scope issues below.
+- Visually exercise empty and populated connector pages against a live backend.
+Not fixed
+- App-install proxy work is unrelated to `connector-empty-ui`: `app-install.tsx`, `app-install.test.ts`, `vite-env.d.ts`, and `vite.config.ts`.
+- That proxy path also risks GitHub App installs: the session cookie is rewritten as localhost-only, but the install URL navigates directly to the remote gateway, so its session-required start route may receive no cookie. Split/drop it, or proxy `/lobu` same-origin.
+- Settings/about/uninstall and connector-wide run-history additions are separate concerns mixed into this branch. The driving agent should split them or explicitly confirm the broader scope.
+Residual risk
+- No live browser verification. Configured Vitest suite passed 899/899, production build passed, TypeScript passed, and diff checks are clean.
+- Parent has no commits ahead of `origin/main`; `packages/owletto` remains dirty with 8 tracked files (+531/−143) and one untracked test. No commit or push was made.
+===================================
+&gt;&gt; working-tree changes made by the fixer (staged + unstaged; verify before committing):
+m packages/owletto
+packages/owletto | 0
+1 file changed, 0 insertions(+), 0 deletions(-)</event>
+</task-notification>

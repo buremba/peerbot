@@ -1,0 +1,2 @@
+2. latter is good
+1. ok but you need to test e2e connecting opencode runnning it and seeing it being generated in the ui etc

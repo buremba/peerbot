@@ -1,0 +1,217 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+This session continued a design conversation about implementing write-time entity invariants ("transitions") in Lobu. The user's requests, chronologically:
+   - Propose reusing reactions with a sync/async marker + optional instructions (msg 1) — **this became the core architecture**
+   - Confirm projects can bring their own code (msg 2)
+   - Confirm x-transitions is removed in favor of code (msgs 3, 5)
+   - Explain the design end to end (msg 4)
+   - Honest comparison against Convex (msg 6)
+   - **Decision: human edits are not treated separately** (msg 7)
+   - Suggest escalation-to-human via the approval flow (msg 8)
+   - Consolidate/simplify/make efficient (msg 9)
+   - Review with codex and finalize (msg 10)
+   - Guide me: what's wrong, why can't automation primitives work, where's the gap (msg 11)
+   - Dig in, identify gaps, brainstorm (msg 12)
+   - Tradeoffs + reliability (msg 13)
+   - **Pushback: plpgsql doesn't scale; isolate-vm was the point** (msg 14)
+   - What was wrong with the mutation concept (msg 15)
+   - **"ok let's do it"** — implement (msg 16)
+   - **"is this slop?"** (msg 17)
+   - Do the recommendation; is the hook automation-based now (msg 18)
+   - SDK/API changes (msg 19)
+   - Settle: write-rule vs mutation-hook, compare with Convex (msg 20)
+   - **Pushback: I thought we'd have code; isn't transitions bespoke; we want to scale easier** (msg 21)
+   - Did you discover this; how should the API look (msg 22)
+   - Why didn't you go with this first (msg 23)
+   - Explain different APIs, gotchas, tradeoffs (msg 24)
+   - Project-wide hook or under entity type definition (msg 25)
+   - How do other ontologies do it (msg 26)
+   - Verify and find the best model (msg 27)
+   - What's the watches (msg 28)
+   - What's the gotcha, we compile and run a single script anyway (msg 29)
+   - **Think of use-cases, see where we fall short; update memory as I will compact** (msg 30)
+
+2. **Key Technical Concepts:**
+   - **Permission vs Validation split**: `runMutationGate` answers "may this principal write this field" (keyed on `principalKind`/ownership/approval); validation answers "is the resulting state legal" (principal-free)
+   - **Validate-then-transform bug** (found by codex): gate validates a proposal, then approval-stripping and ownership-merge rewrite it, then the transformed patch commits
+   - **Branded type enforcement**: `ValidatedEntityRowPatch` with `declare const validatedBrand: unique symbol` — skipping validation becomes a compile error
+   - **"The funnel funnels SQL, not policy"**: `check-entity-write-funnel.mjs` proves no entity SQL outside `entity-management.ts`, but that file has 3 writers
+   - **Approval laundering hole**: `entity-field-approval.ts` writes via 4 paths, called `runMutationGate` zero times
+   - **Measured isolate cost**: 4.53ms p50 / 5.32ms p95 / 7.18ms max; declarative 0.08µs (~54,000×)
+   - **#2818 pool deadlock**: never `getDb()` inside `withEntityWriteTransaction`
+   - isolated-vm create-per-run; `copy: true` means functions don't cross the boundary; `error.details` survives to host
+   - Verified ontology models: Palantir Foundry Action Types, Salesforce Validation Rules + Apex, ServiceNow Business Rules, Dataverse plugins, Odoo `@api.constrains`, SHACL + `sh:sparql`
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/authz/entity-transition-rules.ts`** (NEW, 206 lines) — pure validation engine, no DB, no clock, **no principal**. Exports `parseTransitionSpec`, `evaluateTransition`, `specFromMetadataSchema`, `MalformedSpecError`, `TransitionSpec`. Uses `Object.create(null)` + `Object.hasOwn` (prototype pollution) and `isDeepStrictEqual` for no-op tolerance.
+   ```ts
+   export function evaluateTransition(args: {
+     spec: TransitionSpec;
+     committed: Record<string, unknown>;
+     patch: Record<string, unknown>;
+   }): string | null
+   ```
+
+   - **`packages/server/src/authz/entity-row-validation.ts`** (NEW, 204 lines) — the branded seam.
+   ```ts
+   declare const validatedBrand: unique symbol;
+   export type ValidatedEntityRowPatch = EntityRowPatch & {
+     readonly [validatedBrand]: true;
+   };
+   export class EntityRowValidationError extends Error {}
+
+   const UNGOVERNED_COLUMNS: ReadonlySet<string> = new Set([
+     "currentViewTemplateVersionId", "fieldControls",
+     "enabledClassifiers", "embedding", "contentHash",
+   ]);
+   const RESERVED_COLUMN_NAMES: Readonly<Record<string, string>> = {
+     name: "$name", slug: "$slug", parentId: "$parent_id",
+     content: "$content", softDelete: "$deleted",
+   };
+
+   export async function validateEntityRowPatch(params: {
+     tx: DbClient; ids: number[]; patch: EntityRowPatch;
+   }): Promise<ValidatedEntityRowPatch> {
+     const { tx, ids, patch } = params;
+     const branded = patch as ValidatedEntityRowPatch;
+     if (ids.length === 0) return branded;
+     if (!touchesGovernedColumn(patch)) return branded;   // fast path, no DB read
+     const rows = await tx<CommittedRow>`
+       SELECT e.id, e.metadata, e.name, e.slug, e.parent_id, e.content,
+              e.deleted_at, et.metadata_schema
+       FROM entities e
+       JOIN entity_types et ON et.id = e.entity_type_id
+       WHERE e.id = ANY(${pgBigintArray(ids)}::bigint[])
+     `;
+     // ... per-row spec parse + evaluate, throw EntityRowValidationError
+   }
+
+   export function unvalidatedEntityRowPatch(params: {
+     patch: EntityRowPatch; reason: string;
+   }): ValidatedEntityRowPatch { return params.patch as ValidatedEntityRowPatch; }
+   ```
+
+   - **`packages/server/src/utils/entity-management.ts`** (MODIFIED, +50) — branded the writer:
+   ```ts
+   export async function patchEntityRows(params: {
+     tx: DbClient;
+     ids: number[];
+     /** Only a validated patch may be written. ... The brand has no public
+      * constructor, so a caller that skips validation fails to compile ... */
+     patch: ValidatedEntityRowPatch;
+   ```
+   Three call sites routed: `mergeEntityFields` (:640, validates), `updateEntity` (:1118, validates — with the comment "Validate the EFFECTIVE patch, not the caller's proposal"), `deleteEntity` (:1552, `unvalidatedEntityRowPatch` with a KNOWN GAP comment about pool-handle TOCTOU).
+   **Critical: `createEntity` uses `insertEntityRow` at :828, NOT `patchEntityRows` — creates bypass validation entirely.**
+
+   - **`packages/server/src/tools/admin/entity-field-approval.ts`** (+26) — approval application now revalidates; comment: "A human blessing a field cannot bless an illegal state."
+
+   - **`packages/server/src/utils/entity-link-upsert.ts`** (+21), **`packages/server/src/utils/member-entity.ts`** (+19) — validated; member deprovisioning softDelete exempt with reason "removing a user must never be blockable by a tenant state rule"
+
+   - **6 files flipped from exempt to validated** in the amend: `automations/classifier-extraction.ts`, `tools/admin/manage_view_templates.ts`, `authz/access-graph.ts`, `runs/eval-cases.ts`, `runs/eval-scores.ts`, `runs/eval-suite.ts`
+
+   - **`packages/server/src/authz/__tests__/entity-transition-rules.test.ts`** (NEW, 211 lines, 34 tests)
+   - **`packages/server/src/__tests__/integration/authz/entity-row-validation.test.ts`** (NEW, 275 lines, 9 tests) — includes the key architectural test:
+   ```ts
+   it("denies a HUMAN editing a frozen document, with the gate carve-out untouched", ...)
+   ```
+
+   - **`packages/server/src/sandbox/run-script.ts`** (READ) — `new ivm.Isolate` :903, `createContext` :904, bridges :910/:1099/:1126, `isolate.compileScript` :1141, `isolate.dispose()` :1268. `GUEST_RUNNER` at :646:
+   ```js
+   const __result = await __entry(ctx, client, ...__extra);
+   ...
+   catch (error) { return JSON.stringify({ ok: false, error: {
+     name, message, stack,
+     ...(error?.details === undefined ? {} : { details: error.details }) }}); }
+   ```
+
+   - **`packages/core/src/contracts/tools/manage-automations.ts:184`** — public trigger union (event/workspace-event/schedule)
+   - **`packages/cli/src/config/define.ts`** — `AutomationTriggerConfig` :572, `ReactionHandler` :490, `reactionFromFile` :526, `prompt?: string` :600
+   - **`packages/cli/src/commands/_lib/apply/desired-state.ts`** — `reactionScript?: { sourcePath: string; sourceCode: string }` (RAW source, no local bundling); `schemaExtras` carries only `x-lobu-resolution`
+   - **Memory files written:** `reference_entity_write_validation_seam_state.md`, `reference_isolate_per_write_costs_4_5ms.md`, `reference_ontology_write_rule_models_verified.md`, `feedback_built_the_unblocked_alternative_not_the_ask.md`, plus MEMORY.md index lines
+
+4. **Errors and fixes:**
+   - **`malformed array literal: "9"`** — 9/9 integration tests failed; bound a raw JS array to `ANY(${ids}::bigint[])` with `fetch_types: false`. Fixed with existing `pgBigintArray(ids)` helper.
+   - **Claimed "the metadata write path is genuinely funneled"** — WRONG. I counted where the gate *is*, not where writes are. Self-corrected: `patchEntityRows` has 15 callers, `transitionEntityMergeRows` 7.
+   - **Claimed "reaction-only LLM-free automations already ship"** — codex refuted: window execution dispatches an agent (`automation.ts:1084`), executors required (`executors.ts:75`).
+   - **Claimed "reactions get a READ-ONLY SDK"** — refuted: `buildClientSDK` defaults `mode: "full"` (`client-sdk.ts:180`); `reaction-executor.ts:77` passes no mode.
+   - **Claimed "the fold is monotonic"** — true only for updates; create/delete have `allow|deny|defer` and short-circuit.
+   - **Claimed the engine was unreachable "slop"** — WRONG; `manage_entity_schema` stores `metadata_schema` verbatim (:493, :607).
+   - **7 invented exemption reasons** — user asked "is this slop?"; fixed to 2 defensible ones. The two clearest errors: `enabledClassifiers` and `currentViewTemplateVersionId` are already in `UNGOVERNED_COLUMNS` so validation fast-paths them free.
+   - **Proposed plpgsql trigger** — user pushed back on scaling; conceded (#2818 was a pool deadlock; trigger burns CPU on the unscalable primary).
+   - **Proposed `writeRuleFromFile`/`WriteRuleHandler`/`WriteRuleContext`** — user challenged; retracted as my invention and the exact drift I'd warned against.
+   - **Argued declarative-primary for six messages on an unmeasured number** — user pushed back ("isn't this transition implementation bespoke"); ran the benchmark, 4.5ms, reversed the recommendation.
+   - **Proposed Odoo-style `watches`** — self-corrected: wrong granularity (cost is per-module isolate, not per-rule; a `watches:"*"` freeze rule defeats it).
+   - **Described the seam as "the single place every write converges"** — it's every UPDATE; creates bypass via `insertEntityRow`.
+
+5. **Problem Solving:**
+   - Diagnosed the category error: the mutation gate is a *permission* gate; I'd been making it a *validation* gate, which explained four separate contradictions (monotonic fold vs allow, human carve-out, escalation-as-laundering, validate-then-transform)
+   - Established the seam at `patchEntityRows` with compile-time enforcement — 16 tsc errors surfaced all bypasses mechanically
+   - Measured the isolate at 4.5ms, settling code-vs-declarative with data
+   - Verified the industry model from primary docs: everyone binds per-type; cross-row validation is excluded everywhere (Palantir: "for performance reasons")
+   - **Verification totals:** 225/225 tests across 24 files, tsc clean, biome clean, funnel guard passes (995 files, 0 pinned bypasses). Commit `b56dcd2a1`, 14 files, 1031 insertions, UNPUSHED.
+
+6. **All user messages:**
+   - "maybe the behavior can be marked as async sync and the reaction script could be used and we have this by making the instructions optional no?"
+   - "ok if we do this the projects can bring in their code no"
+   - "so no transitions stuff in the code right? or x-transitions? it will be in the code"
+   - "yes explain how will it work end to end"
+   - "ok good, we will remove the transitions stuff right"
+   - "are we similar to context in this artchitecture or less superior or better be honest"
+   - "human edits are not gonna be treated sepertely"
+   - "this could be part of the approval flow in a way, the code can escale to human or enable etc"
+   - "what's the best way to consolidate simplify and make it efficient"
+   - "ok review with codex as well and finalize the design"
+   - "so guide me, what's wrong, why can't we use the automation primitives where is the gap"
+   - "yes dig in identify gaps and we can brainstomr"
+   - "what are the tradeoffs and how can we make it reliable"
+   - "plpgsql why, we can't scale the postgresql the point of isolate-vm was to do it in a scalalble way no"
+   - "what was wrong with mutration concept you hav"
+   - "ok let's do it"
+   - "is this slop? what did you implement now"
+   - "do your recommendation. also isn't our mutration hook system based on automation work now"
+   - "how does the sdk api etc changes look like"
+   - "why you have write rule stuff, the mutation hook api or this one is better let me know? compare with convex or similar tools and let's settle on an approach"
+   - "i thought we will have code in there, isn't this transition implementation bespoke, we want to be able to scale easier"
+   - "did you discover this approach, how should the api look like"
+   - "why did you not go with this approach in the first place"
+   - "explain different apis and brainstom tell me gotchas tradeoffs issues etc"
+   - "hmm, should that be a project wide hook you think or under the entity type definion"
+   - "how does other ontologies doing it"
+   - "yes verify and let's find the best model for us"
+   - "what's the watches"
+   - "ok what's the gotcha here, we compile things and run a single script in all cases anyway no"
+   - "ok think of use-cases and see if we would fall short on anything. also update memory as i will compact"
+
+7. **Pending Tasks:**
+   - **Deliver the use-case shortfall analysis** (msg 30, first half — not yet answered)
+   - Open decisions the user still owns: **merge semantics** (is folding B into frozen A a write to A?); whether `frozen` blocks connector-written fields like `metadata.aliases`; whether to strip the bespoke engine from the branch
+   - Surface A (`rules` on `EntityType`) proposal needs writing + sign-off; Surface B (`entity_write` trigger) needs sign-off before touching `packages/core/src/contracts`
+   - New SDK exports `deny` / `forEachRow` need sign-off
+   - Unmeasured: added lock hold under concurrent same-row writes
+   - Branch `b56dcd2a1` is unpushed; `make review-fix` and `make pre-pr-remote` not run
+
+8. **Current Work:**
+
+   The user asked two things in msg 30: think of use-cases and find shortfalls, and update memory before compacting. I did memory first (4 files + MEMORY.md index lines, all written successfully), and verified one shortfall en route:
+
+   ```
+   === does createEntity go through patchEntityRows (the validated seam)? ===
+   828:			return insertEntityRow({
+   ```
+
+   I stated: "Confirmed a significant gap in what I committed: **creates go through `insertEntityRow` (`:828`), not `patchEntityRows`.** The seam covers UPDATE only. I described it as 'the single place every write converges' — it's the single place every *update* converges."
+
+   The settled design at this point: one rule script per entity type, bound on the type; `deny` imported from `@lobu/connector-sdk` (not a ctx method, since `copy: true` means functions don't cross the isolate boundary); `forEachRow` SDK helper for bulk (since `GUEST_RUNNER` calls the entry exactly once); throwing client stub; `LobuDeny` as the deny-vs-crash discriminator via `error.details`; sync only; `committed` + `patch` only; deny-only (no escalation, no transform); fail closed; no `watches`.
+
+   The use-case analysis I had begun assembling but not yet delivered found these shortfalls: **creates entirely uncovered** (biggest — no "must have X" or "must start in state Y" rules possible); cross-row rules (sequential numbering, credit limits, period close, referential checks) out of scope though industry-validated; no transform (normalization, derived totals); no escalation ("over $50k needs approval" — a top ERP requirement); delete and merge uncovered so "frozen" doesn't mean frozen; no principal so "only the controller may post" belongs in the permission pass.
+
+9. **Optional Next Step:**
+
+   Deliver the use-case shortfall analysis that was the first half of the user's most recent request: *"ok think of use-cases and see if we would fall short on anything. also update memory as i will compact"*. Memory is done; the use-case answer is owed. It should lead with the newly-verified gap — that `createEntity` uses `insertEntityRow` at `entity-management.ts:828` and therefore bypasses the seam entirely, making every create-time invariant unenforceable — then walk ERP/CRM/support use cases against the design's constraints (sync, committed+patch only, deny-only, per-type, update-only) and name each shortfall.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

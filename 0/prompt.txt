@@ -1,0 +1,1 @@
+maybe we can enable the mcp clients to call an sdk to update the title? don't we have the title for the conversations mcp clients and all

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>baoyk745l</task-id>
+<tool-use-id>toolu_01Phi51zMGyPoo4J9bVVjgNa</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/baoyk745l.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI then review with local-build escape hatch" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs0glkl7z</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/bs0glkl7z.output</output-file>
+<status>completed</status>
+<summary>Background command "Push attribution fix and verify landed" completed (exit code 0)</summary>
+</task-notification>

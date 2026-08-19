@@ -1,0 +1,143 @@
+<task-notification>
+<task-id>a0e7e3a5aa73a5f43</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/a0e7e3a5aa73a5f43.output</output-file>
+<status>completed</status>
+<summary>Agent "Plan $skill entity migration" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have now verified all the relevant surfaces. One important correction to the established context up front: the local checkout is 27 commits behind `origin/main`, so I read all skill-touching files from `origin/main` (which includes PR #2218, commit `f9771ab15`) and the owletto submodule at the `origin/main` pointer `8303c01f`.
+
+---
+
+# Plan: Promote Skills to a `$skill` entity type
+
+## 0. Verified current state (what the plan builds on)
+
+- **Skill blob**: `SkillConfigSchema` at `packages/core/src/contracts/agent-settings.ts:102` (repo, name, description, instructions, enabled, system, content, contentFetchedAt, nixPackages, providers, modelPreference, thinkingLevel, guardrails["pre-tool"]). Stored whole in `agents.skills_config` jsonb (baseline DDL line 471-501; mapped in `rowToSettings`/`saveSettings` in `packages/server/src/lobu/stores/postgres-stores.ts:89,174`).
+- **Write path today**: owletto PATCHes the full blob via `routes.patch("/:agentId/config")` in `packages/server/src/lobu/agent-routes.ts:1668` — no skill-field validation, no role gate (any member can currently write nixPackages; the create UI at owletto `agent-skills-create.tsx` even offers a nixPackages field to everyone).
+- **Consumers of `settings.skillsConfig.skills`** (all on origin/main): `platform-helpers.ts` `resolveAgentOptions` (nix union, PR #2218), `instruction-service.ts` `SkillsInstructionProvider.buildInstructions`, `gateway/gateway/index.ts:712-724` (worker `.skills/` sync — wire shape is only `{name, content}[]`), guardrail resolution via `resolveAgentGuardrails(settings, enabledSkills, …)` in `guardrails/aggregator.ts:86` called from `orchestration/message-consumer.ts:~613`, `auth/mcp/proxy.ts:~455`, `guardrails/output-scan.ts:75,174,217`, plus `catalog/installed.ts` `listAgentInstalled`, `routes/public/agent-config.ts:283,400`, `commands/built-in-commands.ts:72`, `services/declared-agent-registry.ts:137` (config-declared agents — inline, not DB).
+- **Entity layer**: `entities` (org_id, entity_type_id NOT NULL, name, slug, parent_id, metadata, content, content_tsv, embedding, deleted_at) with unique `entities_slug_parent_unique (organization_id, COALESCE(parent_id,0), slug)`; `entity_types` (org_id, slug, metadata_schema, event_kinds, current_view_template_version_id) unique `(organization_id, slug) WHERE deleted_at IS NULL`. All user-facing entity writes funnel through `manageEntity` (`packages/server/src/tools/admin/manage_entity.ts`) — owletto calls it as tool `manage_entity` (`packages/owletto/src/lib/api/entities.ts:219,891,927`), the ClientSDK delegates in `packages/server/src/sandbox/namespaces/entities.ts:100`.
+- **Validation hooks that exist today**: `validateEntityMetadata` (AJV vs `entity_types.metadata_schema`) called at `manage_entity.ts:271` (create) and `:431` (update); lifecycle hooks registry `registerEntityHooks` in `packages/server/src/utils/entity-hooks.ts` (beforeCreate/afterCreate/beforeDelete only — **no beforeUpdate**); the mutation gate `runMutationGate` in `packages/server/src/authz/entity-mutation-gate.ts` — but on update it runs **only for non-human edits** (`entity-management.ts:654 if (!isHumanEdit)`), so it alone cannot enforce a trust tier against human members.
+- **System-type precedents**: `ensureMemberEntityType` (`utils/member-entity-type.ts:230`, `$member` with metadata_schema), `ensureCanvasEntity` (`utils/canvas-events.ts:76`, `$canvas`, identity claim), and the backfill precedent `db/migrations/20260722010000_canvas_entity_type_backfill.sql`. `$`-slugs are creatable only by server code (`isReservedEntityTypeSlug` in `packages/core/src/reserved.ts:102` blocks user type-create; entity *instances* of `$` types are allowed — `entity-management.ts:406-416` checks only the name denylist).
+- **Board**: type default rendering = instance override → type default template → auto-default from metadata_schema (`utils/default-entity-template.ts`, honors `x-table-label`/`x-table-column`/`x-hidden`). `$member` already renders on the memory board (`memory-home-pane.tsx:70`), so `$skill` at `/$owner/memory?type=%24skill` is a proven path.
+- **CLI**: apply resources = agents/settings, entityTypes, relationshipTypes, watchers, connectorDefinitions, authProfiles, connections (`desired-state.ts:264`); mutations go through org-scoped tool endpoints like `POST /api/:org/manage_entity_schema` (`apply/client.ts:585`). Skill→agent nix baking is `mergeAgentDirArtifacts` in `apply/map-config.ts:282-306`; `skillsConfig` is diffed as a settings field (`apply/diff.ts:331`). No server capability negotiation exists in the apply client.
+
+---
+
+## Phase 1 — Contracts + `$skill` type definition (lobu PR 1, packages/core + server)
+
+### 1a. Core contracts (`packages/core/src/contracts/agent-settings.ts` + new `skill-entity.ts`)
+
+- New `SkillEntityMetadataSchema` (TypeBox) — the entity-side shape: `repo` (stable key, e.g. `bundled/x`, `system/x`, `custom/x`), `description?`, `instructions?` (the short "when to use" line), `source` (`"catalog" | "user" | "apply"`), privileged tier: `nixPackages?`, `guardrails?` (reuse `SkillPreToolGuardrailSchema`), plus `providers?`, `modelPreference?`, `thinkingLevel?`. **Not** on the entity: `enabled`, `content` (goes to `entities.content` → free FTS + embeddings), `contentFetchedAt` (metadata is fine actually — keep as optional metadata for catalog-refresh bookkeeping). Export a derived plain-JSON-Schema constant (TypeBox schemas *are* JSON Schema) used as the seeded `entity_types.metadata_schema` with `additionalProperties: false` and `x-table-column` annotations, so AJV validation and the board's auto template both come for free.
+- Extend `SkillConfigSchema` **additively** with `entityId: Type.Optional(Type.Number())`. Define `SkillRefSchema = { entityId, enabled, instructions? }` and the eventual slim `SkillsConfigSchema`; during transition the stored array stays `SkillConfig[]` where an entry carrying `entityId` is treated as a reference (inline fields = migration residue/per-agent override).
+- Export `PRIVILEGED_SKILL_FIELDS = ['nixPackages', 'guardrails'] as const` — the trust-tier boundary ("nothing touching provisioning"; modelPreference/thinkingLevel/providers are unprivileged).
+
+### 1b. Type seeding + validation + trust tier (server)
+
+- New `packages/server/src/utils/skill-entity-type.ts`: `ensureSkillEntityType(organizationId)` mirroring `ensureMemberEntityType` — upsert `entity_types` row `slug='$skill'`, name "Skill", icon "sparkles", `metadata_schema` from core, `ON CONFLICT (organization_id, slug) … DO NOTHING/UPDATE`. Add `SKILL_ENTITY_TYPE_SLUG = '$skill'` to `packages/server/src/tools/constants.ts`.
+- **Typed-shape enforcement point**: already exists — `validateEntityMetadata` at `manage_entity.ts:271/431` with the seeded `metadata_schema` (`additionalProperties: false`). No new chokepoint needed for shape.
+- **Trust-tier enforcement point**: new `packages/server/src/utils/skill-entity.ts` exporting `assertSkillWriteAllowed(before: metadata|null, proposed: metadata, ctx: ToolContext)` called from `manage_entity.ts` `handleCreate` (next to line 271) and `handleUpdate` (next to line 431), keyed on `entity_type === '$skill'`. Rules: changes to `PRIVILEGED_SKILL_FIELDS` require `ctx.memberRole in ('owner','admin')` **and** a human session (`ctx.userId &amp;&amp; !ctx.agentId`), OR a server-internal trusted call (catalog install path passes `skipHooks`-style internal flag / calls `createEntity` directly with a system context). This is the right place because manage_entity is the funnel for UI, SDK, agents, and CLI apply — and because the mutation gate skips human edits (verified `entity-management.ts:654`). Belt-and-braces: a small `MutationInterceptor` (`skillPromotionInterceptor`) appended to `BUILTIN_INTERCEPTORS` in `authz/entity-mutation-gate.ts` denying `$skill` creates/updates from `principalKind === 'watcher'` — covers the promotion path (`promote-keyed-entities.ts`) that bypasses manage_entity.
+- **Deletion**: soft-delete via existing `deleteEntity`; refs to a deleted entity resolve to nothing (resolver filters `deleted_at IS NULL`) — the agent-side ref becomes a dangling toggle surfaced as "skill removed" in the UI.
+- **Versioning/history**: `manage_entity` already records per-field change events (`recordChangeEvent`, `manage_entity.ts:544`) — append-only audit for free. Full content snapshots (canvas-style supersede chain) deferred; see open questions.
+
+### 1c. Resolver — the one new hot-path service
+
+New `packages/server/src/gateway/services/skill-resolution.ts`:
+
+```
+resolveEnabledSkills(agentId, organizationId): Promise&lt;SkillConfig[]&gt;
+```
+
+Single query (PK-anchored, per GOTCHAS "read the actual SQL" — microseconds):
+
+```sql
+SELECT a.skills_config, e.id, e.name, e.content, e.metadata
+FROM agents a
+LEFT JOIN LATERAL jsonb_array_elements(a.skills_config-&gt;'skills') r(ref) ON true
+LEFT JOIN entities e
+  ON e.id = (r.ref-&gt;&gt;'entityId')::bigint
+ AND e.organization_id = a.organization_id
+ AND e.deleted_at IS NULL
+WHERE a.id = $1 AND a.organization_id = $2
+```
+
+Materializes legacy `SkillConfig` objects: entity fields win; ref supplies `enabled` + per-agent `instructions` override; entries **without** `entityId` pass through inline (permanent fallback — required by `declared-agent-registry.ts` config-declared agents and by mid-rollout old rows). Org scoping is structural (entities are org-scoped), preserving the cross-tenant guards the current code comments insist on.
+
+Consumer switch (all become `resolveEnabledSkills(...)` instead of `settings.skillsConfig.skills`): `platform-helpers.resolveAgentOptions`, `instruction-service.ts` `SkillsInstructionProvider`, `gateway/index.ts` worker skills sync (wire shape `{name, content}` unchanged — **no agent-worker changes needed**), `message-consumer.ts`, `auth/mcp/proxy.ts`, `output-scan.ts` (three sites), `catalog/installed.ts` `listAgentInstalled` (add `entity_id`/`entity_slug` to `detail` so the UI can link to the board), `agent-config.ts` config view, `built-in-commands.ts` count.
+
+### 1d. Write-path compat on `PATCH /:agentId/config` (`agent-routes.ts:1668`)
+
+- Accept both shapes. On receiving a legacy full-blob `skillsConfig` (old owletto build — the pinned submodule guarantees a window where this happens): **auto-promote** — `ensureSkillEntityType`, upsert `$skill` entities by `(org, slugified repo)` (`ON CONFLICT` on `entities_slug_parent_unique`), stamp `entityId` back into each entry before persisting. Privileged-field changes vs. the existing entity by a non-admin → 400 (`skill_privileged_fields`, modeled on the `LEGACY_MODEL_FIELDS` rejection pattern at `agent-routes.ts:1734`).
+- Slim refs `{entityId|repo, enabled, instructions}` accepted and resolved server-side (accepting `repo` keeps the CLI/config declarative without knowing DB ids).
+
+### 1e. Migration (one squawk-clean DML migration, modeled on `20260722010000_canvas_entity_type_backfill.sql`)
+
+`db/migrations/2026MMDD..._skill_entities_backfill.sql`:
+
+1. `INSERT INTO entity_types (slug,'$skill',…, metadata_schema) SELECT DISTINCT organization_id FROM agents WHERE jsonb_array_length(skills_config-&gt;'skills') &gt; 0 ON CONFLICT … DO NOTHING`.
+2. Insert one entity per distinct `(org, repo, name)`: **canonical copy = the entry with the greatest `contentFetchedAt`, tiebreak newest `agents.updated_at`** (`DISTINCT ON` over a lateral unnest). `created_by` from a lateral pick on `member` ordered owner→admin→createdAt (the `resolveCanvasCreator` pattern, in SQL); orgs with no member are skipped — their agents simply stay on the inline fallback forever (resolver handles it). Slug = `lower(regexp_replace(repo||'-'||name,'[^a-zA-Z0-9]+','-','g'))`, `ON CONFLICT DO NOTHING` + re-resolve.
+3. Stamp `entityId` into every matching `agents.skills_config` entry (jsonb rebuild via `jsonb_agg` join on repo+name), **keeping** all inline fields (old replicas mid-rollout keep working unmodified — this is the two-phase pattern from GOTCHAS).
+4. `-- migrate:down`: `SELECT 1` (irreversible-by-design like the canvas backfill; inline blobs still present makes code rollback safe).
+
+**Divergent-copy policy (recommended: canonical + per-agent override, not fork).** Rationale: `content` is a fetched snapshot of upstream (staleness, not intent) and privileged fields must converge to one trusted value anyway; the only genuinely per-agent authored field observed in the UI flow is `instructions` (and `enabled`). So: per-agent `instructions` differing from canonical is kept as the ref's override; divergent `content`/`nixPackages`/`guardrails` collapse to canonical. Exception: `custom/…` repos where `content` itself diverges across agents get forked into `-2`-suffixed entities (these are genuinely user-authored). Ship a pre-migration audit query in the PR body enumerating divergences per org.
+
+## Phase 2 — Owletto (paired PRs 2+3)
+
+- **Delete** (all verified at pointer `8303c01f`): routes `src/app/$owner/agents/$agentId/skills.tsx` + `skills/{index,create,$skillKey}.tsx`; components `agent-skill-context.tsx`, `agent-skill-detail{,-form}.tsx`, `agent-skills-{create,index,route}.tsx`, `skill-config-editors.tsx`, `skill-editor.tsx`; libs `agent-skill-save.ts`, `skill-catalog.ts(+test)`, `skill-index-cards.ts(+test)`, `skill-route-key.ts(+test)`.
+- **Org skill library** = the generic board: `/$owner/memory?type=%24skill` list (auto columns from metadata_schema `x-table-column`) and the `/$owner/$` catch-all detail page (auto key-value card from `buildDefaultEntityTemplate` + `content` as the SKILL.md body). **json_template views needed: none mandatory** — seed only the metadata_schema; optionally later a curated type-default template (tabs: Overview / Instructions / Used-by) via `manage_view_templates`, applied through the existing type-default mechanism (`entity_types.current_view_template_version_id`).
+- **Per-agent enable/disable** (the reference lives on the agent): keep the sidebar "Skills" item (`src/components/sidebar/app-sidebar.tsx:222`) but repoint it to a new *thin* panel under the agent: list = org `$skill` entities (`useEntitiesByType`) ∪ agent refs from `useAgentSkillsCatalog`'s installed endpoint (now carrying `entity_id`); controls = enable toggle + per-agent instructions override, saved as slim refs via the existing `updateAgentConfig` PATCH; "edit skill" links jump to the entity detail page; "create skill" opens the generic `create-entity-form.tsx` with type `$skill` (instructions-only fields for non-admins — the server enforces regardless). Catalog picks call the same PATCH with `{repo, enabled:true}` and let the server auto-create the entity from the catalog entry (server-mediated, so bundled privileged fields are trusted without requiring the member to be admin).
+- Update `src/lib/api/agents.ts` types (slim refs + entity ids in the installed response).
+
+## Phase 3 — CLI (PR 4)
+
+- `desired-state.ts`: new resource family `skills: DesiredSkill[]` (from `defineSkill`/`skillFromFile`), applied via `POST /api/:org/manage_entity` (create/update by slug — same style as the `manage_entity_schema` calls in `apply/client.ts:585ff`); agent `skillsConfig` maps to refs by `repo`. Diff row kind `skill` keyed by repo; `SETTINGS_FIELDS` keeps `skillsConfig` but normalizes to refs.
+- **Keep `mergeAgentDirArtifacts` baking the nix union for now.** Rationale: no capability negotiation exists in the apply client, and a new CLI against a pre-#2218 self-hosted server would silently lose skill packages (the tracked follow-up). The baked union is harmless against new servers (`resolveAgentOptions` dedupes the union). Stop baking only in a later CLI release gated on a minimum-server check (add a version/capability probe to `apply/client.ts` as part of that follow-up).
+
+## Phase 4 — Cleanup (later lobu release)
+
+- Slim writes: `saveSettings` persists refs only; a healer migration strips residual inline fields from entries that carry `entityId`; reject legacy full-blob PATCH bodies (the `LEGACY_MODEL_FIELDS` pattern). Only after the owletto pointer bump has shipped for ≥1 release.
+
+## Rollout order (submodule-safe, per AGENTS.md/GOTCHAS)
+
+1. **PR 1 (lobu)**: core contracts + server (type seed, resolver, trust check, migration, PATCH compat, consumer switch). Fully backward-compatible with the *currently pinned* owletto — old UI writes full blobs, auto-promote keeps entities in sync. `make build-packages` before typecheck (core contract change — stale-dist gotcha).
+2. **PR 2 (owletto repo)**: UI swap + deletions. **PR 3 (lobu)**: submodule pointer bump. Land per the pairing recipe: merge owletto squash first, re-point PR 3 at the squash SHA, `git merge origin/main` (never rebase) on the pointer branch.
+3. **PR 4 (cli)**: desired-state skills resource; nix baking unchanged.
+4. **PR 5 (lobu, next release)**: cleanup/strict rejection.
+
+## Risks
+
+- **Hot-path resolve**: every message now touches `entities`. Mitigated: one lateral-join query replacing (not adding to) the settings read in the resolver's callers that already fetch settings; PK-anchored jsonb extraction; measure with `EXPLAIN ANALYZE` before adding any cache (GOTCHAS explicitly warns against assumed jsonb-scan claims). If needed later: short-TTL read-through cache invalidated by `updated_at` — never required shared state, so multi-replica-safe.
+- **Divergent-copy reconciliation**: canonical-wins can silently change an agent's effective content where copies diverged. Mitigation: audit query in the PR body; per-agent `instructions` override preserved; `custom/` fork rule.
+- **Mid-rollout replicas**: solved by additive `entityId` + retained inline fields until Phase 4 (old code reads the blob verbatim; new code prefers the entity).
+- **Trust-tier regression surface**: today any member can set nixPackages; after PR 1 that becomes admin-only, a visible behavior change for non-admins using the current UI (they'll get 400s on privileged edits until PR 2/3 land). Flag in release notes.
+- **Cross-org catalog type shadowing**: the type resolver's public-catalog search path (`entity-management.ts:432-458`) means a public org's `$skill` type could shadow… it cannot — tenant-local wins by `ORDER BY`, and `$` types can't be user-created. Low risk, but the seeded type should exist per-org before any instance write (`ensureSkillEntityType` at every entry point).
+- **Guardrail fail-open**: guardrail call sites currently fail-open on settings errors; the resolver must preserve each site's existing failure posture (e.g. instruction provider falls back to generic blurb, mcp proxy's documented behavior) — do not introduce a new throw on entity-load failure.
+
+## Open product questions
+
+1. Cross-org **sharing**: is the public-visibility catalog-org mechanism (types today) intended to extend to `$skill` *entities*, or do catalog manifests remain the only cross-org channel? (Plan assumes the latter.)
+2. Full **content version history** (canvas-style supersede chain / `skill_content` events) vs. the existing field-change audit events — needed for v1?
+3. "Used by N agents" on the skill detail page requires a reverse jsonb containment query over `agents` — worth an endpoint in v1?
+4. Should `system/` skills (repo prefix drives the "System" badge in `skill-catalog.ts`) be materialized as entities at all, or stay catalog-virtual with entities only for org-customized ones?
+
+### Critical Files for Implementation
+- /Users/burakemre/Code/lobu/packages/core/src/contracts/agent-settings.ts
+- /Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_entity.ts
+- /Users/burakemre/Code/lobu/packages/server/src/lobu/agent-routes.ts
+- /Users/burakemre/Code/lobu/packages/server/src/gateway/services/platform-helpers.ts (plus the new sibling `skill-resolution.ts`)
+- /Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/desired-state.ts
+
+### Confidence (0–100, with basis)
+- **Current-state mapping / consumer inventory: 92** — every listed call site read from origin/main; small residual risk of a consumer I didn't grep for (e.g. a test-only or plugin path).
+- **Entity-layer hook points (validation, gate, hooks, seeding): 90** — all read directly (`schema-validation.ts`, `manage_entity.ts:271/431`, `entity-mutation-gate.ts`, `entity-hooks.ts`, `member-entity-type.ts`); the "human edits bypass the update gate" finding is verified at `entity-management.ts:654`, which is what anchors the trust-tier placement.
+- **Migration SQL sketch: 75** — pattern verified against the canvas backfill and the real constraints/indexes; the jsonb rebuild + lateral member pick is designed, not executed; divergence-volume in prod data is assumed, not measured.
+- **Owletto plan: 80** — file inventory and board rendering path verified at the pointer SHA; the thin per-agent panel and create-form fit are design judgment; exact board UX affordances (content editing on detail page) were not exhaustively traced.
+- **CLI/rollout sequencing: 85** — apply client mechanics, diff fields, nix baking and the absence of capability negotiation all read; the skew-risk recommendation follows directly, but the tracked follow-up's exact intent is assumed from the task brief.
+
+### Next actions
+1. Run the divergence audit against prod (read-only): count per-org distinct `(repo,name)` groups whose entries differ in `content`/`nixPackages`/`instructions`, to validate the canonical-wins policy before writing the migration.
+2. Decide the two flagged product questions that block PR 1 scope: system-skill materialization (Q4) and whether `instructions` is the only per-agent override field.
+3. `EXPLAIN ANALYZE` the resolver's lateral-join query on a prod-shaped dataset to close the hot-path risk before switching guardrail call sites.
+4. Start PR 1 in a worktree (`make task-setup NAME=skill-entities`), beginning with core contracts + `ensureSkillEntityType` + the resolver behind the inline fallback, since everything else layers on those.</result>
+<usage><subagent_tokens>167660</subagent_tokens><tool_uses>102</tool_uses><duration_ms>734595</duration_ms></usage>
+</task-notification>

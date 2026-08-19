@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:16:16.900Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:16:28.476Z","id":"3bfcf029","input_tokens":205,"output_tokens":591,"content":[{"type":"text","text":"Want me to reply in #sales? Options:\n- I’m in for 12:30!\n- 12:30 works—where are we meeting?\n- Can’t today, thanks!\nOr tell me what to say and I’ll post it."}]}

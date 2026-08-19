@@ -1,0 +1,25 @@
+You are reviewing a DESIGN document (not code) before any implementation begins. The design is at:
+
+/private/tmp/claude-501/-Users-burakemre-Code-lobu/be3008ba-304c-41dc-a7e2-686c16cc1fdc/scratchpad/design-public-read-consolidation.md
+
+Read it first. Then VERIFY its factual claims against the actual repo source — do not take the document's file:line citations or its characterisation of the code on trust. Key files to read yourself:
+  packages/server/src/workspace/multi-tenant.ts  (resolveAuth, lines ~124-621)
+  packages/server/src/auth/tool-access.ts        (PUBLIC_READ_ACTIONS, isPublicReadable)
+  packages/server/src/rest-api.ts                (withPublicOrg, publicToolContext, public* handlers)
+  packages/server/src/lobu/agent-routes.ts       (router-level mcpAuth at ~156-170, GET / and /system-agent)
+  packages/server/src/utils/organization-access.ts (canReadOrg / requireOrgReadAccess)
+  packages/server/src/tools/execute.ts           (~184)
+  packages/server/src/mcp-handler.ts             (~1092)
+  packages/server/src/index.ts                   (org-scoped route registrations, ~1074-2360)
+
+Your job is to find design flaws NOW, while they are cheap. Be adversarial and concrete.
+
+Report on, in priority order:
+1. FACTUAL ERRORS. Any claim in the design that the source contradicts. Especially: is 'REST handlers have no execution-time gate' actually true for all 7 proposed routes, or do some gate themselves? Does canReadOrg really pass anonymous? Are the 7 claimed tool-equivalences correct (same data, same shape, same scoping) or do the REST handlers return MORE than their tool counterpart? That last one is the critical one: if GET /api/{org}/agents returns strictly more than manage_agents.list does, then declaring them equivalent silently widens exposure beyond the allow-list.
+2. SECURITY. Ways the proposal opens something it should not. Enumerate what actually becomes anonymously reachable. Check whether any of the 7 handlers leaks member-only data, credentials, or cross-org rows. Check the private-org and authenticated-non-member paths specifically.
+3. Section 4 (where the declaration lives). Give a verdict on options (i)/(ii)/(iii). Verify empirically what Hono's c.req.routePath returns inside a router mounted via app.route('/api/:orgSlug/agents', routes) at this Hono version — check node_modules or a test if needed. If (i) is unviable say so and propose the seam you would actually use.
+4. Question 2 in section 8: is coupling a REST route to a (tool, action) pair the right abstraction, or does it weld two things that drift independently?
+5. Deleting the /api/{org}/public/* namespace. Is it genuinely redundant? Check every public* handler for behavioural differences from its authed sibling beyond context construction — different params, different projection, different limits. /public/events is SSE; assess separately. Any external/non-SPA consumer that makes removal breaking?
+6. The test plan in section 7 — what is missing that would let a regression through?
+
+Do not write code and do not modify files. Output a prioritised list of findings, each with file:line evidence and a concrete recommendation. State clearly at the end whether the design is sound enough to implement, needs specific revisions (list them), or should be reconsidered.

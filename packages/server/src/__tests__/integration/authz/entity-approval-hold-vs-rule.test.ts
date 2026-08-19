@@ -115,8 +115,23 @@ export default (row) => {
 };
 `;
 
+/**
+ * Two escalations on ONE row, for DIFFERENT fields. This is the shape that
+ * exposed the runner's assign-not-union bug end to end: the card recorded only
+ * the last field, so approving it waived the earlier field too — the approver
+ * consented to `vendor` and `amount` rode along in the same write.
+ */
+const ESCALATE_TWICE_RULE = `
+export default (row) => {
+  if (row.op === "create") return;
+  if (row.changed("amount")) row.escalate(["amount"], "amount needs sign-off");
+  if (row.changed("vendor")) row.escalate(["vendor"], "vendor needs sign-off");
+};
+`;
+
 const TEST_ENV = {} as Env;
 let invoiceCompiled: string;
+let escalateTwiceCompiled: string;
 let escalateResidualCompiled: string;
 let escalateVendorCompiled: string;
 let denyResidualCompiled: string;
@@ -192,6 +207,7 @@ describe("approval hold vs a frozen-state rule", () => {
 				compileEntityRule(ESCALATE_VENDOR_RULE),
 			]);
 		denyResidualCompiled = await compileEntityRule(DENY_RESIDUAL_RULE);
+		escalateTwiceCompiled = await compileEntityRule(ESCALATE_TWICE_RULE);
 	}, 60_000);
 
 	beforeEach(async () => {
@@ -332,6 +348,66 @@ describe("approval hold vs a frozen-state rule", () => {
 			user.id,
 		);
 		expect((await readMetadata(invoice.id)).amount).toBe(90000);
+	}, 60_000);
+
+	it("puts EVERY field a rule escalated on the card, not just the last one", async () => {
+		// End-to-end blast radius of the assign-not-union bug. With assignment the
+		// card named only `vendor`; approving it re-ran the rule, which again
+		// reported only `vendor`, so the grant covered the verdict and the WHOLE
+		// patch landed — `amount` written on a human's say-so they never gave.
+		const { org, user, agent, invoice } = await seed(escalateTwiceCompiled);
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+
+		const result = await updateEntity(
+			invoice.id,
+			{ metadata: { amount: 90000, vendor: "ACME" } },
+			TEST_ENV,
+			agentCtx,
+		);
+
+		// Nothing lands before approval: an escalation holds the whole write.
+		const before = await readMetadata(invoice.id);
+		expect(before.amount ?? null).toBeNull();
+		expect(before.vendor ?? null).toBeNull();
+
+		await result.deferred?.queue(agentCtx, TEST_ENV);
+
+		const sql = getTestDb();
+		const [queued] = await sql<{ action_input: unknown }[]>`
+      SELECT action_input FROM runs
+      WHERE organization_id = ${org.id}
+      ORDER BY id DESC LIMIT 1
+    `;
+		const input = (
+			typeof queued.action_input === "string"
+				? JSON.parse(queued.action_input)
+				: queued.action_input
+		) as { escalated_fields?: string[]; reason?: string };
+
+		// Both fields, first-seen order, and both reasons — this is the text and
+		// the scope the approver actually sees.
+		expect(input.escalated_fields).toEqual(["amount", "vendor"]);
+		// entity-management appends the escalated field list to the reason, so the
+		// union is visible in the approver-facing text as well as the scope.
+		expect(input.reason).toBe(
+			"amount needs sign-off; vendor needs sign-off (amount, vendor)",
+		);
+
+		// Apply with exactly what the CARD carried, never a hand-built list.
+		await applyEntityFieldChangeProposal(
+			{
+				entity_id: invoice.id,
+				fields: result.deferred?.display.fields ?? {},
+				current: result.deferred?.display.current ?? {},
+				escalated_fields: input.escalated_fields ?? [],
+				reason: "approved in test",
+			} as Parameters<typeof applyEntityFieldChangeProposal>[0],
+			user.id,
+		);
+
+		const after = await readMetadata(invoice.id);
+		expect(after.amount).toBe(90000);
+		expect(after.vendor).toBe("ACME");
 	}, 60_000);
 
 	it("applies a card carrying an ATTRIBUTE key alongside metadata", async () => {

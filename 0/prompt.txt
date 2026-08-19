@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Although the existing focused tests and build pass, reproduced event sequences can cross-bind a snapshot capability to another host card and leak expired-card view state into a subsequent result.
+
+Full review comments:
+
+- [P1] Correlate late host info before attaching it — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:908-912
+  When a capability-only result has restored `query_sdk` and the reused iframe later emits `toolInfo` for `query_sql`, `previousHostIdentity` is null, so `switchedCards` stays false and the other card's ID is attached. On the next view-state edit, `save_lobu_app_state` binds the `query_sdk` capability to that `query_sql` ID; a detached reused ID can similarly be reattached. Retain superseded identities and verify late tool info belongs to the current result before assigning it.
+
+- [P2] Reset card state when restoration reports missing — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:571-577
+  When a cached card is visible and the user changes disclosure or pagination before restoration returns `found:false`, this branch clears the data but leaves `viewStateRef` and its revision intact. A later capability-less result is accepted after the fingerprint was nulled without triggering a boundary reset, so it inherits the expired card's UI state. Reset the per-card view state when marking the snapshot unavailable.
+  </results>
+  </user_action>

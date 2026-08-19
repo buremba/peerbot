@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new restoration state machine loses saved view state under two supported compatibility-event orderings. Both failures were reproducible with focused host tests despite the committed test suite passing.
+
+Full review comments:
+
+- [P2] Retry restores after duplicate live-result delivery — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:341-342
+  When a host emits the same non-empty result through both `toolresult` and `openai:set_globals` before the restore RPC settles, the second delivery increments `dataRevision` but joins this existing promise. The promise then rejects its response because the revision changed, and both callers receive `false`, so saved pagination/disclosure state is never applied or persisted. Avoid incrementing the revision for duplicate data or queue another restore after an invalidated joined request.
+
+- [P2] Restore state when metadata arrives after cached data — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:539-540
+  When a card initially hydrates data from `widgetState` and its snapshot capability arrives later in a metadata-only `openai:set_globals` update, `hasData.current` is already true and this condition skips restoration. The cached result remains visible, but its saved pagination/disclosure state is lost and the first interaction can overwrite it; trigger an `allowDataPresent` restore when a new capability arrives without `toolOutput`.
+  </results>
+  </user_action>

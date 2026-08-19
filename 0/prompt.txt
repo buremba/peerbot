@@ -1,0 +1,1 @@
+don't need for that durable external agent identity for now but we should not arthictecture in a way it won't in the future.

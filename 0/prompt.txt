@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b08sd7o17</task-id>
+<tool-use-id>toolu_01XezdZYx1fmCqFffUAeFf9A</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/b08sd7o17.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review to clear the sandbox blocker" completed (exit code 0)</summary>
+</task-notification>

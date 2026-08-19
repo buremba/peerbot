@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1wt8u0i7</task-id>
+<tool-use-id>toolu_01YDU4mjjL6uk4UKUUgkkY7h</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/b1wt8u0i7.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the pre-PR remote gate" completed (exit code 0)</summary>
+</task-notification>

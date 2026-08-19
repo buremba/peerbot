@@ -1,0 +1,1 @@
+how can we do it properly. remember agents also have their own identity but we need to make sure our approach is reliable and consistent

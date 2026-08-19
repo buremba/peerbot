@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:18:57.502Z","content":[{"text":"New message in #sales:\n\nmike: @dave can you grab the projector for the 3pm?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:19:00.389Z","id":"32a6f6e5","input_tokens":175,"output_tokens":108,"content":[{"type":"tool_use","id":"call_61f834c3b1d9404ab498cf73","name":"skip_reply","input":{},"result":{"output":"","status":"success"}}]}

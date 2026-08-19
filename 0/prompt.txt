@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>btdrxcuv3</task-id>
+<summary>Monitor event: "PR #2299 fourth pi-review"</summary>
+<event>PR2299 state=MERGED
+PR2299 watch ended</event>
+</task-notification>

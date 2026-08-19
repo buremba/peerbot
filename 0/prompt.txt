@@ -1,0 +1,2 @@
+Stop hook feedback:
+[do those use workflows make sure we reviewed and merged all]: The stopping condition is incomplete and unanswerable. The text 'do those use workflows make sure we reviewed and merged all' appears to be truncated or malformed — it lacks a clear object (merged all *what*?). The transcript shows that 21 PRs were merged and the PR queue is drained, but without knowing what 'all' refers to in the condition, I cannot confirm whether it has been satisfied.

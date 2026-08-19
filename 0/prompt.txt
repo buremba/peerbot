@@ -1,0 +1,1 @@
+why would they delete the customer? should we do the full technical spec and plan this properly now. for concurrency etc we need to find solutions as well

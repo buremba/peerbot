@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxgxqcjd9</task-id>
+<tool-use-id>toolu_01Qiqw547wB14ZzFEFioJ47a</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1eebddbf-4c2c-4bd1-9494-4a0bad73b495/tasks/bxgxqcjd9.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix pass on worktree diff" completed (exit code 0)</summary>
+</task-notification>

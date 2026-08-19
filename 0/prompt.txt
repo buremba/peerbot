@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>behjilmu3</task-id>
+<tool-use-id>toolu_011Me24pHpYgsNF2tWu85oVK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/behjilmu3.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr after review-fix changes" completed (exit code 0)</summary>
+</task-notification>

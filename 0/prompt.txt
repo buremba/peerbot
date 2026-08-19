@@ -1,0 +1,40 @@
+CONTEXT INJECTED BY OPERATOR — session purpose and agreed plan. Absorb this and keep it in memory. Do NOT make any file edits in this session turn; just confirm you have the full context.
+
+## Goal
+Close the authorization hole where an unbound, session-authenticated MCP connection can approve/reject runs (bypassing the human-only approval gate), without breaking any legitimate human approval path.
+
+## What was verified (two read-only codex traces + operator review)
+1. `requireHumanApprovalContext` (packages/server/src/tools/admin/manage_operations.ts, ~line 2338) rejects `ctx.agentId || ctx.clientId` and requires `userId`. It does NOT consider `mcpSessionId`.
+2. An MCP session authenticated via a Better Auth web session (local CLI `/api/local-init` session token used as bearer, or a signed-in browser on an allowed Lobu origin) yields `tokenType: "session"`, `userId` set, `agentId: null`, `clientId: null` — and therefore PASSES the gate today. This is reachable, not synthetic: the local embedded CLI (`packages/cli/src/internal/credentials.ts:86`, `packages/cli/src/commands/memory/_lib/mcp.ts:107,152`) exercises exactly this shape, and `lobu memory run` accepts an arbitrary tool name.
+3. That context can reach approve/reject two ways:
+   - Direct `tools/call manage_operations`: `manage_operations` is in `ADMIN_TOOLS` → `INTERNAL_DISPATCH_TOOLS` (registry.ts:413), omitted from `tools/list` but callable by name; mcp-handler.ts:443 dispatches any registered name via `executeTool`.
+   - `run_sdk` → `client.operations.approve/reject/manage`: packages/server/src/sandbox/namespaces/operations.ts wraps `manageOperations` with the SAME ToolContext (no new human context; sdk_run.ts:163 closes over the full ctx). No test covers either path today.
+4. `mcpSessionId` is the clean discriminator: present iff MCP transport (stamped in mcp-handler.ts:1063, preserved in execute.ts:388; REST extractAuthContext never sets it — rest-api.ts:299 — and Slack's interaction bridge builds a context with it null — interaction-bridge.ts:933,950). Owletto web UI approves via credentialed REST `/api/:slug/manage_operations` with no mcpSessionId. So blocking `mcpSessionId` preserves every legitimate human path.
+5. Not intended behavior: comments assert approvals are a "verified human decision, never non-human" (manage_operations.ts:2325) and reviewer attribution assumes "web-session only" (manage_operations.ts:1794). No test pins the hole-y behavior.
+
+## Agreed minimal fix (two paired changes)
+1. In `requireHumanApprovalContext`, change the condition to reject `ctx.agentId || ctx.clientId || ctx.mcpSessionId`.
+2. In `resolveLobuApprovalImpl` (packages/server/src/tools/mcp_app.ts, humanContext at ~line 632), ALSO add `mcpSessionId: null` AFTER full capability validation, so the capability path keeps working.
+
+Do NOT allow approval merely because `ctx.mcpAppApprovalCapability` is present — only `resolveLobuApproval` validates the capability (run/org/user/client/session/event-id/expiry/pending), and nothing else may clear `mcpSessionId`.
+
+## Blast radius (verified)
+- MCP direct approve/reject: BLOCKED (correct)
+- MCP run_sdk approve/reject: BLOCKED (correct)
+- Owletto/native REST, `lobu call` REST, Slack interaction bridge: still work
+- `resolve_lobu_approval`: still works after the mcpSessionId clear
+- Worker MCP: still blocked by agentId/clientId
+
+## Tests to add (red first)
+- Cookie / Better Auth session-token MCP session calling direct `manage_operations` approve/reject → human-session denial
+- Same session via `run_sdk` `client.operations.approve/reject` → denial
+- A batch action (`approve_batch`/`reject_batch`) with only `mcpSessionId` on an otherwise-valid human ctx → denial
+- Native web approval still succeeds
+- Slack bridge approve/reject still succeeds
+- `mcp-app-resources.test.ts:705-864` still succeeds (proves the resolver's context clearing)
+- Keep the exact message phrase "human web session" (asserted in agent-ask-e2e.test.ts:1001 and operations-approval-batch-scope.test.ts:359)
+
+## Constraints
+- packages/server is biome-excluded: edit surgically, match file style, never run biome on it.
+- All implementation must happen in a worktree via `make task-setup NAME=<slug>`, NEVER directly in ~/Code/lobu. Current cwd is the main checkout — do not edit here.
+- Gate sequence when implementing: reproduce the hole (red test) → fix → green → `make pre-pr` (build/typecheck/knip/lint) → stage explicit paths → commit.

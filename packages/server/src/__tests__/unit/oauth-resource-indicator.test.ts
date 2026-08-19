@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
   buildMcpBearerChallenge,
   canonicalizeMcpResource,
+  getMcpResourceForRequest,
   getProtectedResourceMetadataUrl,
   publicMcpRequestUrl,
 } from '../../auth/oauth/resource-indicator.js';
@@ -175,12 +176,10 @@ describe('MCP OAuth resource indicators', () => {
     expect(publicMcpRequestUrl(request)).toBe('https://lobu.ai/mcp');
   });
 
-  // Prod chain: the lobu.ai Cloudflare Pages worker proxies to app.lobu.ai and
-  // sets both `x-forwarded-host: lobu.ai` and `x-forwarded-for-origin`, but
-  // Traefik in front of the pod overwrites `x-forwarded-host` with its own
-  // request host. Only the non-standard header survives, so a token bound to
-  // `https://lobu.ai/mcp` is compared against `https://app.lobu.ai/mcp` and
-  // every MCP call 401s.
+  // Prod chain: only `x-forwarded-for-origin` survives the edge → Traefik hop
+  // (see `forwardedPublicOrigin`), so the audience check must resolve the same
+  // origin the client called — otherwise a token bound to `https://lobu.ai/mcp`
+  // is compared against `https://app.lobu.ai/mcp` and every MCP call 401s.
   test('publicMcpRequestUrl honours x-forwarded-for-origin when a proxy rewrote the forwarded host', () => {
     process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
     process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
@@ -195,6 +194,8 @@ describe('MCP OAuth resource indicators', () => {
       },
     });
     expect(publicMcpRequestUrl(request)).toBe('https://lobu.ai/mcp');
+    // The resource the audience check compares the token's `resource` against.
+    expect(getMcpResourceForRequest(publicMcpRequestUrl(request))).toBe('https://lobu.ai/mcp');
     expect(buildMcpBearerChallenge(publicMcpRequestUrl(request))).toContain(
       'resource_metadata="https://lobu.ai/.well-known/oauth-protected-resource/mcp"'
     );
@@ -205,7 +206,9 @@ describe('MCP OAuth resource indicators', () => {
     process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
     __resetPublicOriginCachesForTests();
 
-    for (const spoofed of ['https://evil.example', 'not-a-url', 'http://lobu.ai']) {
+    // `file:///` parses but yields the opaque origin string `null`, which is
+    // not itself a URL — it must be rejected, not thrown on.
+    for (const spoofed of ['https://evil.example', 'not-a-url', 'http://lobu.ai', 'file:///']) {
       const request = new Request('https://app.lobu.ai/mcp', {
         headers: {
           host: 'app.lobu.ai',
@@ -216,6 +219,21 @@ describe('MCP OAuth resource indicators', () => {
       });
       expect(publicMcpRequestUrl(request)).toBe('https://app.lobu.ai/mcp');
     }
+  });
+
+  test('publicMcpRequestUrl falls back when a forwarded proto yields an opaque origin', () => {
+    process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
+    __resetPublicOriginCachesForTests();
+
+    const request = new Request('https://app.lobu.ai/mcp', {
+      headers: {
+        host: 'app.lobu.ai',
+        'x-forwarded-host': 'lobu.ai',
+        'x-forwarded-proto': 'file',
+      },
+    });
+    expect(publicMcpRequestUrl(request)).toBe('https://app.lobu.ai/mcp');
   });
 
   test('publicMcpRequestUrl ignores x-forwarded-for-origin when no zone is configured', () => {

@@ -10,7 +10,7 @@ import {
   getConfiguredPublicOrigin,
   getConfiguredSubdomainZone,
 } from '../../utils/public-origin';
-import { resolveBaseUrl } from '../base-url';
+import { resolveBaseUrl, safeParseUrl } from '../base-url';
 import { DEFAULT_SCOPES_STRING } from './scopes';
 
 /**
@@ -54,30 +54,30 @@ export function publicMcpRequestUrl(request: Request): string {
  *
  * A request that skips the edge can set the header itself, so it is honoured
  * only after `isTrustedPublicOrigin` — the same gate the standard forwarded
- * host clears. That confines it to the configured zone, which is one resource
- * server under one operator, so it can never name a foreign resource server.
+ * host clears. With an origin or zone configured, that gate confines it to one
+ * operator's hosts, so it can never name a foreign resource server; a
+ * deployment that configures neither trusts this header exactly as much as it
+ * already trusts `x-forwarded-host`.
  */
 function forwardedPublicOrigin(request: Request): string | null {
   const raw = request.headers.get('x-forwarded-for-origin')?.trim();
-  if (!raw) return null;
-  let origin: string;
-  try {
-    const parsed = new URL(raw);
-    // Origin only: a path, query, or fragment means this is not a bare origin
-    // and we should not guess at what the client called.
-    if (parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
-    origin = parsed.origin;
-  } catch {
-    return null;
-  }
-  return isTrustedPublicOrigin(origin) ? origin : null;
+  const parsed = raw ? safeParseUrl(raw) : null;
+  if (!parsed) return null;
+  // Origin only: a path, query, or fragment means this is not a bare origin
+  // and we should not guess at what the client called.
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
+  return isTrustedPublicOrigin(parsed.origin) ? parsed.origin : null;
 }
 
 function isTrustedPublicOrigin(
   candidateOrigin: string,
   configuredOrigin = getConfiguredPublicOrigin()
 ): boolean {
-  const candidate = new URL(candidateOrigin);
+  // Client-supplied headers reach here: `x-forwarded-proto: file` makes
+  // `resolveBaseUrl` return the opaque origin string `null`, which is not a
+  // parseable URL. Fail closed instead of throwing a 500 on every such call.
+  const candidate = safeParseUrl(candidateOrigin);
+  if (!candidate) return false;
   const zone = getConfiguredSubdomainZone();
   if (!configuredOrigin) {
     return !zone || candidate.hostname === zone || candidate.hostname.endsWith(`.${zone}`);

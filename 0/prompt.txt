@@ -1,0 +1,1 @@
+you say two connectors but they feed the same events etc right? do all these things and test the tweet action on mac mini

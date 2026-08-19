@@ -1,0 +1,1 @@
+should we show the number of notifications instead comign from that session

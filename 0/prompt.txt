@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxbrfh2bd</task-id>
+<tool-use-id>toolu_01MoXVkF5noZZ8yaDKcnN3NX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bxbrfh2bd.output</output-file>
+<status>completed</status>
+<summary>Background command "Worktree for complete_window discard signal" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs00pxfd1</task-id>
+<tool-use-id>toolu_01VajQCHjMphiHqhVJ5HYT51</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bs00pxfd1.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the semantic review gate once on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

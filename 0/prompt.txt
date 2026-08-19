@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The primary capability-only flow works and passes focused validation, but late host identity can race an in-flight capability-backed state save and break subsequent persistence.
+
+Review comment:
+
+- [P2] Serialize late host binding with capability-backed saves — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:341-341
+  When `toolInfo` arrives while a capability-only `setViewState` save is still in flight, this starts an ID-binding `save_lobu_app_state` concurrently. If the ID-binding request commits first, the older capability-only request can move the snapshot back to the capability key while the successful binding clears `snapshotCapability.current`; later ID-only saves then target a missing row and silently stop persisting view state. Serialize these save paths, or preserve already-bound keys before clearing the capability.
+  </results>
+  </user_action>

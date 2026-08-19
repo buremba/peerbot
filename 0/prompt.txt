@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b63usn1p4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/b63usn1p4.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr on settled diff" completed (exit code 0)</summary>
+</task-notification>

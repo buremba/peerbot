@@ -1,0 +1,1 @@
+can you confirm with me where the chrome extension mac app etc shows up? i thought in the connector. only the known agents and mcp clients show up in agents?

@@ -1,0 +1,1 @@
+when i click it doesn't take me to the page, did you just remove the feature

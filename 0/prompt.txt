@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6t42nhsz</task-id>
+<tool-use-id>toolu_01KqMMTvbiK3yi4wnxBjoXjW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/b6t42nhsz.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on the dry-run feature" completed (exit code 0)</summary>
+</task-notification>

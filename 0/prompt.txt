@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx9db9ruw</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e5d3e591-b895-4f46-92bd-8ceb1300593c/tasks/bx9db9ruw.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for green build then squash merge" completed (exit code 0)</summary>
+</task-notification>

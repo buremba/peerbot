@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx1c5xg0p</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bx1c5xg0p.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on PR B after fix" completed (exit code 0)</summary>
+</task-notification>

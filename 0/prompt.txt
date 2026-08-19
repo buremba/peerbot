@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b0oh3l3mx</task-id>
+<summary>Monitor event: "2335 required checks"</summary>
+<event>base-branch-guard: pass
+check-drift: fail</event>
+</task-notification>

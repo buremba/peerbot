@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzuwzh3ao</task-id>
+<tool-use-id>toolu_012dHcu3aPTbP2fJpwoSkJkt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/bzuwzh3ao.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for re-run CI to settle on 2292 and 2295" completed (exit code 0)</summary>
+</task-notification>

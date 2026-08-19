@@ -1,0 +1,1 @@
+can youi check all local memory and update the repo docs properly. i'm runing another agent on other computers and it's dumber because the local memory is not available

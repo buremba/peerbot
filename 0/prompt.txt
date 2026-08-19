@@ -1,0 +1,1 @@
+you need to delete existing and move to the new connector and e2e all feature and make sure all works

@@ -53,25 +53,42 @@ DEFAULT_JOBS=(
 
 # ── provider resolution ────────────────────────────────────────────────────
 
-daytona_ready() {
-  command -v daytona >/dev/null 2>&1 || return 1
+# Daytona provider state: "ready" (usable), "absent" (CLI/jq not on PATH),
+# or "faulty" (CLI present but not usable — e.g. not logged in). The caller
+# decides: absent is a legitimate not-set-up case (fall back to local), but
+# faulty is a misconfiguration/regression that must not be silently masked.
+daytona_probe() {
+  command -v daytona >/dev/null 2>&1 || { echo absent; return; }
   # Sandbox polling pipes `daytona list --format json` through jq; without
-  # jq the run would fail mid-way, so fall back to local instead.
-  command -v jq >/dev/null 2>&1 || return 1
+  # jq the run would fail mid-way, so treat a missing jq as faulty too.
+  command -v jq >/dev/null 2>&1 || { echo faulty; return; }
   # `daytona list` fails when not logged in — that's the readiness probe.
-  daytona list >/dev/null 2>&1
+  if daytona list >/dev/null 2>&1; then echo ready; else echo faulty; fi
+}
+
+daytona_ready() {
+  [ "$(daytona_probe)" = "ready" ]
 }
 
 PROVIDER="${REMOTE_CI_PROVIDER:-auto}"
 case "$PROVIDER" in
   auto)
-    if daytona_ready; then
-      PROVIDER=daytona
-      echo ">> provider: daytona (ephemeral sandbox)"
-    else
-      PROVIDER=local
-      echo ">> provider: local (Daytona CLI not available — fallback; GitHub CI is canonical)"
-    fi
+    case "$(daytona_probe)" in
+      ready)
+        PROVIDER=daytona
+        echo ">> provider: daytona (ephemeral sandbox)"
+        ;;
+      absent)
+        PROVIDER=local
+        echo ">> provider: local (Daytona CLI not available — fallback; GitHub CI is canonical)"
+        ;;
+      faulty)
+        echo "Daytona CLI is installed but not usable (not logged in?) — refusing to silently" >&2
+        echo "fall back to local. Run 'daytona login', or force the local fallback with" >&2
+        echo "REMOTE_CI_PROVIDER=local." >&2
+        exit 2
+        ;;
+    esac
     ;;
   daytona)
     daytona_ready || {

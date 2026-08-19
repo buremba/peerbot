@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bvxsz3zvh</task-id>
+<summary>Monitor event: "release publish run"</summary>
+<event>RELEASE RUN: completed|success</event>
+</task-notification>

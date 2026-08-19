@@ -1,0 +1,1 @@
+we want ideally agentid, behaviorid, conversationid etc and the gateway url and how to populate config change in agent, new connector connection feed generation explain how the system works with run_sdk query_sdk etc. let's review the prompts and go through examples. also main is updated and some relevant code is changed so base on that

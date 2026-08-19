@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bz1erqjx0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/bz1erqjx0.output</output-file>
+<status>failed</status>
+<summary>Background command "Gate naming branch on Depot" failed with exit code 1</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+why new table, do we really need it? is it actually tested e2e and make sure it works

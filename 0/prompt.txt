@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2jr522wr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b495caea-80b1-4ed4-9dcf-1726b2bc90e1/tasks/b2jr522wr.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for image build 2128 and Flux rollout" completed (exit code 0)</summary>
+</task-notification>

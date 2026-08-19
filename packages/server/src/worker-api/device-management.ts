@@ -198,10 +198,12 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     platform?: string;
     label?: string;
     /**
-     * Optional: the sibling's existing worker_id. When the Mac bridge forwards
-     * the extension's already-stored id we reuse that device identity (re-mint
-     * the bound PAT, keep the same row) instead of minting a fresh one, so
-     * native re-pairs don't churn the device id and accumulate orphaned
+     * Optional: the caller's previously-stored worker_id — the Mac bridge
+     * forwarding the extension's id, or a headless daemon re-registering after
+     * a restart. Reused only when that id already belongs to this user on the
+     * SAME platform being requested, in which case we keep the device identity
+     * (re-mint the bound PAT, keep the same row) instead of minting a fresh
+     * one, so a re-register doesn't churn the device id and accumulate orphaned
      * `device_workers` rows. See the reuse branch below.
      */
     worker_id?: string;
@@ -220,9 +222,9 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     return c.json({ error: `platform '${platform}' is not eligible for child-token mint` }, 400);
   }
   const label = body.label?.toString().trim() || null;
-  // The sibling's previously-stored worker_id, if the Mac bridge forwarded it.
-  // Trimmed; validated against ownership + platform in the reuse branch below,
-  // so a stale/garbage value just falls through to a fresh mint.
+  // The caller's previously-stored worker_id, if it forwarded one. Trimmed;
+  // validated against ownership + the requested platform in the reuse branch
+  // below, so a stale/garbage value just falls through to a fresh mint.
   const requestedWorkerId = (body.worker_id ?? '').trim();
 
   try {
@@ -244,22 +246,26 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       );
     }
 
-    // Identity reuse: when the sibling forwards its existing worker_id AND it
-    // already belongs to this user as a chrome-extension device, keep that
-    // identity stable — re-mint the PAT bound to the same worker_id (revoking
-    // the previous child PAT first) and reuse the existing device_workers row.
-    // This is what stops each Mac-bridge re-pair from minting a fresh uuid and
-    // orphaning the previous row (the source of the duplicate "chrome" entries
-    // on the Devices page). Falls through to a fresh mint for the first-ever
-    // pair, a stale/garbage id, or an id owned by another user/platform — i.e.
-    // any case where reuse would be unsafe or a no-op.
+    // Identity reuse: when the caller forwards its existing worker_id AND it
+    // already belongs to this user as a device of the SAME platform being
+    // requested, keep that identity stable — re-mint the PAT bound to the same
+    // worker_id (revoking the previous child PAT first) and reuse the existing
+    // device_workers row. This is what stops each re-register (Mac-bridge
+    // re-pair, headless daemon restart) from minting a fresh uuid and orphaning
+    // the previous row plus its still-live PAT (the source of the duplicate
+    // "chrome" entries on the Devices page). Matching on the requested platform
+    // rather than a fixed one keeps cross-platform reuse refused: a
+    // chrome-extension worker_id cannot be re-minted as headless or vice versa.
+    // Falls through to a fresh mint for the first-ever register, a
+    // stale/garbage id, or an id owned by another user/platform — i.e. any case
+    // where reuse would be unsafe or a no-op.
     let workerId: string;
     if (requestedWorkerId) {
       const existing = (await sql`
         SELECT worker_id FROM device_workers
         WHERE user_id = ${userId}
           AND worker_id = ${requestedWorkerId}
-          AND platform = 'chrome-extension'
+          AND platform = ${platform}
         LIMIT 1
       `) as unknown as Array<{ worker_id: string }>;
       workerId = existing[0]?.worker_id ?? crypto.randomUUID();

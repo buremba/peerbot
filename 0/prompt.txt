@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bb8k4o4me</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/bb8k4o4me.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-review PR 2306 after hermetic change" completed (exit code 0)</summary>
+</task-notification>

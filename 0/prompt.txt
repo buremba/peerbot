@@ -1,0 +1,1 @@
+interesting, so 2 manual ones makes sense? or 2 schedule considering we support cron? does it make more sense if we were to allow multiple events to be picked under on connection maybe?

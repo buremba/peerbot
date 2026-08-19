@@ -1,0 +1,73 @@
+<task-notification>
+<task-id>a76b0433e1faf23a6</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/a76b0433e1faf23a6.output</output-file>
+<status>completed</status>
+<summary>Agent "Codex connector edge proposal" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Verified. Codex did real work — the file exists, is substantive, and its non-obvious claims hold up against my independent reads.
+
+## `git -C &lt;worktree&gt; status --short` (verbatim)
+
+```
+?? _proposal/
+```
+
+Nothing else. No source file modified, no commit, no push. `_proposal/connector-declared-edges.md` — **406 lines**, 39,372 bytes.
+
+Path: `/Users/burakemre/Code/lobu/.claude/worktrees/connector-edge-proposal/_proposal/connector-declared-edges.md`
+
+## Item 2 — does `feed` appear in `relationship-validation.ts`? (quoted from the proposal)
+
+&gt; **Confirmed.** `feed` is one of the four exact allowed values quoted above (`packages/server/src/utils/relationship-validation.ts:13-15`).
+&gt;
+&gt; ```ts
+&gt; const RELATIONSHIP_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;
+&gt; ```
+&gt;
+&gt; No checked-in production caller on current `origin/main` was found passing `{ source: 'feed' }` through `client.entities.link`/`manage_entity`. That absence does **not** mean `feed` is unused in stored edges: three direct SQL writers pass it today without going through `validateSource`: auto-linker `:125-134`; GitHub team graph `:311-323`; access graph `:482-495`.
+&gt;
+&gt; So the schema did anticipate feed-derived relationships, but only as a stored provenance string and imperative validation value. It did not build a connector manifest declaration or generic feed materializer.
+
+That is a **refinement of your framing, not a plain confirmation** — `feed` is not a dormant enum value waiting for a surface; it is live and written today by three server-side materializers that bypass `validateSource` entirely. The missing thing is the declaring surface, exactly as you framed it, but the "schema anticipated this" reading is only half right.
+
+## Item 6 — new table / migration / API change (quoted)
+
+&gt; **NEW TABLE: YES — owner sign-off required before implementation.** Add internal durable materialization state (`connector_declared_edge_state`). No suitable existing table stores unresolved/reconciled connector edge assertions.
+&gt;
+&gt; **DB MIGRATION: YES — owner sign-off required before implementation.** A new migration under `db/migrations/` is required to create the state table, indexes, checks, and foreign keys.
+&gt;
+&gt; **CONNECTOR SDK / MANIFEST SURFACE CHANGE: YES — owner sign-off required before implementation.** Additive public fields/types in `@lobu/connector-sdk`: `eventKinds[kind].entity` and `eventKinds[kind].relationships`.
+&gt;
+&gt; **CLIENTSDK / MCP MUTATION API CHANGE: NO.** `client.entities.link` remains unchanged. This proposal adds no `linkMany` or other imperative SDK method.
+
+Three of the four gates in your AGENTS.md "never without sign-off" list are tripped. This cannot proceed to implementation without your explicit approval.
+
+## Confidence per claim
+
+**98 — codex produced real work, not a phantom run.** Basis: I read all 406 lines myself and independently re-derived its core citations before it finished.
+
+**97 — `feed` is in `RELATIONSHIP_SOURCES`.** Basis: I read `relationship-validation.ts` directly; line 14 is `const RELATIONSHIP_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;`. Codex cites the range as `:13-15` (line 13 is the comment) — trivial off-by-one, not material.
+
+**95 — the writer inventory is correct and more complete than your brief.** Basis: my own `grep -n "INSERT INTO|UPDATE|DELETE FROM entity_relationships"` returned exactly the sites codex lists. Your brief's three-writer list missed `entity-merge.ts:291,320,666` (repointing on merge) and `entity-management.ts:1246` (hard DELETE on forced tree delete). Codex caught both.
+
+**92 — the `attributions` shape and its sync-path consumption are correctly described.** Basis: I read `connector-types.ts:554,579-620` and `run-lifecycle.ts:317-333` → `applyEventAttributions` in `entity-link-upsert.ts:638`. The file's own header confirms it resolves against `entity_identities` and never writes relationships.
+
+**90 — the "new table required" conclusion is sound.** Basis: I read the baseline `CREATE TABLE public.entity_relationships` (`db/migrations/00000000000000_baseline.sql:1204-1218`) myself. Columns are id, organization_id, from/to_entity_id, relationship_type_id, metadata, confidence, source, created_by, updated_by, deleted_at, created_at, updated_at. **There is no `connection_id` and no `origin_id`** — so there is nowhere to key a connector-declared edge on stable source identity, and no place to park an unresolved assertion. The conclusion follows from the schema.
+
+**88 — the connection-scoped namespace design is correct.** Basis: I verified `idx_entity_identities_live_unique` is `(organization_id, namespace, identifier)` — it excludes `connection_id`. Codex's point that raw origin ids in one global namespace would collide across two ERP installations is right, and embedding `connection_id` in the namespace is the correct workaround given that index.
+
+**85 — codex found a real inconsistency I had missed.** Basis: I verified `channel-about.ts:25-26` exports `ABOUT_EDGE_SOURCE_CONFIG = "config"` and `ABOUT_EDGE_SOURCE_MANUAL = "manual"` — **neither is in `RELATIONSHIP_SOURCES`**, and that writer bypasses `validateSource`. The `source` column has no DB check constraint, so this is silently tolerated today. That is a genuine latent defect independent of this proposal.
+
+**80 — citation accuracy generally.** Basis: I spot-checked 8 citations (relationship-validation, baseline table + live-triple index + identity unique index, channel-about insert, seed-cmd:394, and all four cited migration filenames). All resolved to real content matching the description. I did **not** verify every one of the ~90 line references.
+
+**60 — the proposed design is actually workable.** Basis: this is design judgment, not something I can verify by reading. The `afterPersist`-hook placement and the pending-drain-on-target-arrival mechanic are plausible and consistent with the repo's materialize-on-write rule, but nothing was built or tested. Treat as a starting point for your review, not a validated plan.
+
+## Suggested next actions
+
+1. **Decide the three sign-off gates before anything else** — new table, migration, SDK manifest surface. Everything downstream is blocked on this and the proposal is explicit that it should be.
+2. **File the `channel-about` source-enum violation separately.** `"config"`/`"manual"` are written to `entity_relationships.source` but rejected by `validateSource`, and the column has no DB constraint. That is a pre-existing bug on `origin/main`, unrelated to this feature, and shouldn't get bundled into an ERP branch.
+3. **Pressure-test open question 6 (cross-connection targets) and 3 (connection deletion semantics) first.** Those two constrain the table shape more than the rest — getting them wrong means a second migration.
+4. **Reconcile this against the `$links` gate decision** in `project_links_gate_vs_edge_provenance_open_decision.md`. That decision rejected edge-provenance-as-a-separate-table and settled on a chokepoint gate; a new `connector_declared_edge_state` table plus a generic materializer adds a **sixth** agent-reachable write path to the five that decision enumerated. Worth confirming the two designs don't contradict before approving.</result>
+<usage><subagent_tokens>101001</subagent_tokens><tool_uses>46</tool_uses><duration_ms>1076783</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,2 @@
+is lobu skill all good? i'm getting Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills
+  or plugins to leave more room for the rest.

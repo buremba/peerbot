@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdm1r9gug</task-id>
+<tool-use-id>toolu_01E9TUYgEPNHaKK5jaeWWKTn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bdm1r9gug.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr with both fixes" completed (exit code 0)</summary>
+</task-notification>

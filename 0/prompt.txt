@@ -1,0 +1,1 @@
+why in addFeed i don't see the tabs

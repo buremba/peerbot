@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b32984pz6</task-id>
+<tool-use-id>toolu_016Ph4SPEt967mBmwDnKGnFt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b32984pz6.output</output-file>
+<status>failed</status>
+<summary>Background command "Run the full Depot gate on the rebased branch" failed with exit code 2</summary>
+</task-notification>

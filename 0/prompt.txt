@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7qriex1o</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/b7qriex1o.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot before-worktree dev server" was stopped</summary>
+</task-notification>

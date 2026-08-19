@@ -1,0 +1,189 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Two user messages this session, both following on from the merged Behavior-failure work (#2326, #2332, #2335):
+
+   - **"explain the best next steps and why we need it and if we don't do it would we bring bug into the system"** — asked for prioritization reasoning across the four remaining items I'd listed, with an explicit risk question: does skipping each one *introduce a bug*?
+   - **"fix all properly one by one"** — instruction to actually implement all four remaining items sequentially. Since I had earlier said item 1 (`permission_mode`) needed the user's design decision (DB lookup vs signed claim), and the user then said "fix all", I treated that as authorization to pick the DB-lookup approach myself and flagged it as my call.
+
+2. **Key Technical Concepts:**
+   - **MCP tool-approval gate**: `evaluateToolApproval` in `gateway/auth/mcp/proxy.ts` — requires approval for non-read-only tools unless `grantStore.hasGrant(agentId, "/mcp/{mcpId}/tools/{toolName}")`.
+   - **Dead-config class**: `permission_mode` and `min_cooldown_seconds` — both validated, role-gated/persisted, surfaced in CLI/SDK/UI, and read by **no** runtime code. "False affordance."
+   - **Two id spaces that are NOT interchangeable**: `tokenData.runId` = the `chat_message` QUEUE row (`buildRunJobToken` stamps `data.runId`); the `_watcher_<id>_run_<id>` suffix of `conversationId` = the parent `behavior` run id.
+   - **Signed ≠ trustworthy**: the worker token is encrypted server-side, so claims can't be tampered with *after* minting — but the gateway minted them from the request body, so the signature attests transport integrity, not provenance.
+   - **Two independent Behavior firing paths**: `materializeDueWatcherRuns` (schedule, `automation.ts:761`) and `findMatchingBehaviorActivations` (event, `activation.ts:101`).
+   - **Chokepoint serialization**: `pg_advisory_xact_lock(hashtext('behavior_event_run'), watcherId)` inside `createBehaviorEventRun` (`runs/queue-service.ts:623`).
+   - **Rollout gate**: `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` with `MERGE_SHA` from `gh pr view <n> --json mergeCommit`; deployed SHA from `/health` `revision` (NOT `/lobu/health`).
+   - **Mutation testing**: commit before mutating; distinguish genuine coverage gaps from semantically equivalent mutants.
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/gateway/permissions/unattended-run-policy.ts`** (NEW, PR #2340 — now draft)
+     Final form after I rewrote it (review-fix's version was discarded as over-engineered):
+     ```ts
+     const BEHAVIOR_CONVERSATION_SUFFIX = /_watcher_(\d+)_run_(\d+)$/;
+
+     export interface UnattendedRunScope {
+       conversationId: string | undefined;
+       organizationId: string | undefined;
+       agentId: string | undefined;
+     }
+
+     export async function runAllowsUnattendedToolUse(
+       scope: UnattendedRunScope,
+       db?: DbClient,
+     ): Promise<boolean> {
+       if (!scope.conversationId || !scope.organizationId || !scope.agentId) return false;
+       const match = BEHAVIOR_CONVERSATION_SUFFIX.exec(scope.conversationId);
+       if (!match) return false;
+       const watcherId = Number(match[1]);
+       const behaviorRunId = Number(match[2]);
+       if (!Number.isSafeInteger(watcherId) || !Number.isSafeInteger(behaviorRunId)) return false;
+       try {
+         const sql = db ?? getDb();
+         const rows = await sql`
+           SELECT w.execution_config->>'permission_mode' AS permission_mode
+           FROM watchers w
+           JOIN runs behavior_run ON behavior_run.watcher_id = w.id
+           WHERE w.id = ${watcherId}
+             AND w.organization_id = ${scope.organizationId}
+             AND w.agent_id = ${scope.agentId}
+             AND behavior_run.id = ${behaviorRunId}
+             AND behavior_run.run_type = 'behavior'
+             AND behavior_run.organization_id = ${scope.organizationId}
+           LIMIT 1
+         `;
+         const mode = rows[0]?.permission_mode as string | null | undefined;
+         return mode != null && UNATTENDED_PERMISSION_MODES.has(mode);
+       } catch (error) {
+         logger.warn({ error, conversation_id: scope.conversationId },
+           "[mcp] Could not read a Behavior's permission_mode — requiring tool approval");
+         return false;
+       }
+     }
+     ```
+     **This file is the blocked one** — the conversationId suffix is client-forgeable.
+
+   - **`packages/server/src/tools/admin/behavior-execution-config.ts`** (PR #2340)
+     Renamed private `ELEVATED_PERMISSION_MODES` to exported `UNATTENDED_PERMISSION_MODES` so the write gate and read gate cannot drift:
+     ```ts
+     export const UNATTENDED_PERMISSION_MODES: ReadonlySet<string> = new Set([
+       'bypassPermissions', 'dontAsk',
+     ]);
+     ```
+     Also `SERVER_ONLY_EXECUTION_CONFIG_KEYS = ['finalize_nudges']` and `stripServerOnlyExecutionConfig` live here.
+
+   - **`packages/server/src/gateway/auth/mcp/proxy.ts`** (PR #2340) — added after the grant check in `evaluateToolApproval`:
+     ```ts
+     const pattern = `/mcp/${mcpId}/tools/${toolName}`;
+     if (await this.grantStore.hasGrant(agentId, pattern)) return "allow";
+
+     if (await runAllowsUnattendedToolUse({
+       organizationId: tokenData.organizationId,
+       agentId,
+       conversationId: tokenData.conversationId,
+     })) {
+       logger.info({ agentId, mcpId, toolName, pattern, conversationId: tokenData.conversationId },
+         "Tool call allowed without approval: Behavior is configured for unattended execution");
+       return "allow";
+     }
+     ```
+
+   - **`packages/core/src/contracts/tools/manage-behaviors.ts`** (PR #2340) — corrected the lying description (was `"Tool permission mode (claude only: --permission-mode)."`, a CLI flag nothing reads) to describe the actual gate semantics.
+
+   - **`packages/server/src/__tests__/integration/mcp/unattended-permission-mode.test.ts`** (NEW, PR #2340) — 11 tests through the real JSON-RPC path (`proxy.getApp().fetch`). Key fidelity detail: every token carries a real `chat_message` queue-row id that is NOT the Behavior run id, so re-deriving the policy from `runId` turns them red.
+
+   - **`packages/server/src/behaviors/activation.ts`** (PR #2341 — now draft) — added to `findMatchingBehaviorActivations`:
+     ```sql
+     AND (
+       w.min_cooldown_seconds = 0
+       OR NOT EXISTS (
+         SELECT 1
+         FROM runs recent
+         WHERE recent.watcher_id = w.id
+           AND recent.run_type = 'behavior'
+           AND recent.created_at >
+               now() - make_interval(secs => w.min_cooldown_seconds)
+       )
+     )
+     ```
+
+   - **`packages/server/src/__tests__/integration/behaviors/event-trigger-cooldown.test.ts`** (NEW, PR #2341) — 6 tests. Fixture asserts the contract actually persisted `min_cooldown_seconds` so assertions can't pass vacuously.
+
+   - **`packages/server/src/gateway/routes/public/agent.ts`** (READ ONLY — the evidence for the #2340 blocker):
+     - `:79-83` `BehaviorRunIntentSchema = { kind: "behavior_run", runId: Integer, behaviorId: Integer }`
+     - `:85-96` `CreateAgentRequestSchema` accepts `intent`, `userId`, `thread` — all client-supplied
+     - `:877` `userId = behaviorIntent ? \`watcher_${behaviorIntent.behaviorId}\` : ...`
+     - `:888` `effectiveThread = behaviorIntent ? \`run_${behaviorIntent.runId}\` : thread`
+     - `:1530` existing comment: *"client-supplied via CreateAgentRequestSchema.userId (an agent owner could stamp a session with another member's id and siphon their notifications)"*
+     - `:1618` `source: session.intent?.kind === "behavior_run" ? "watcher-run" : "direct-api"` — so `source` is forgeable too
+
+   - **`packages/server/src/utils/runtime-info.ts`** (READ ONLY) — `getRuntimeInfo` already returns `revision` from `APP_GIT_SHA`. This disproved my earlier claim.
+
+   - **`packages/server/src/gateway/connections/message-handler-bridge.ts:717`** (READ ONLY) — `replyBehaviors = behaviorPlan.replyTargets` routed through chat transport, never `createBehaviorEventRun`.
+
+4. **Errors and fixes:**
+
+   - **Wrong id: joined on `tokenData.runId`.** My first policy did `JOIN runs ON id = tokenData.runId` then read `watcher_id`. That matches nothing in production — `runId` is the `chat_message` queue row. `make review-fix` caught it; I verified independently via `message-consumer.ts:585`, `agent-run-input.ts:184`, and #2335's merged `listPendingToolsForRun`. Rewrote to parse `conversationId`.
+   - **Test passed against the broken implementation.** My first test manufactured a `behavior` row and pointed the token at it — the shape production never emits. Fixed by minting a real `chat_message` queue-row id in every token.
+   - **Claimed `/health` has no `revision`.** Wrong — I had been reading `/lobu/health`. `/health` returns `revision: 84b3bc59...`. Corrected, removed the unnecessary worktree, ran the rollout gate.
+   - **`run_type='chat'` violated `runs_run_type_check`.** Valid values include `chat_message`; fixed.
+   - **Assertion on `/Failed to connect/` failed** — SSRF guard returned "Upstream URL resolves to a blocked internal network". Switched to structural assertion (`reachedForwardPath`: top-level `error` and no `result`).
+   - **Entity slug collision** (`entities_slug_parent_unique`) when two scenarios shared a workspace. Made entity name unique per scenario.
+   - **`seedOwnerContext({organizationId})`** — no such parameter. Restructured to carry a `Workspace` object with the original `ctx`.
+   - **Backtick inside a SQL comment** in a postgres.js tagged template terminated the JS template literal → esbuild failure showing "Tests no tests". Removed the backticks.
+   - **Cross-org mutation survivor**: my cross-org test used a *different* agent slug, so the agent predicate caught it before the org predicates. Sharpened to same-agent-slug-different-org. Result: each org predicate individually survives (redundant), both together kill — documented as deliberate defense-in-depth.
+   - **Unscoped-cooldown mutant survived**: the sibling Behavior had cooldown 0 and short-circuited before reaching `recent.watcher_id = w.id`. Gave the sibling a non-zero cooldown; mutant now killed.
+   - **Fresh worktree**: `@lobu/pgvector-embedded` unresolvable → `make build-packages` first.
+   - **Meta-error (twice)**: put a policy decision at a read seam rather than the durable chokepoint. Recorded as `feedback_put_the_check_at_the_chokepoint.md`.
+
+5. **Problem Solving:**
+
+   - **Rollout verification unblocked**: all three merged PRs confirmed live — `#2326 4527ebe8`, `#2335 ce4725e0`, `#2332 5efb9e5c` are ancestors of deployed `84b3bc59bee10dbe33656cd0bd9388560b34cddd`.
+   - **Prod health confirmed live**: `canvas_windows` showed completions at 19:17, 21:01, 22:00, 23:00Z — hourly, sustained ~6h; Behavior 5's `next_run_at` at `2026-07-30T00:00Z`. Original outage genuinely over.
+   - **Item 2 dissolved into item 1**: the blanket `mcp_tool` grant was the workaround; `permission_mode` is the proper per-Behavior, role-gated, revocable fix.
+   - **Item 3 evaporated**: not a task; my earlier claim was wrong.
+   - **Prod API probing abandoned after 3 attempts** (`/lobu/api/v1/orgs/buremba/agents` returning 200 is a catch-all root response, not a real route). `grants`/`agents` are not in the Lobu MCP queryable allowlist. So the "atlas-curator / personal-finance have no grant" claim remains **yesterday's observation, not today's**.
+
+6. **All user messages:**
+   - "explain the best next steps and why we need it and if we don't do it would we bring bug into the system"
+   - "fix all properly one by one"
+
+   (All other inbound content this session was automated background-task notifications, explicitly marked NOT user input.)
+
+   **Standing constraints still in force (from AGENTS.md / CLAUDE.md):** Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup NAME=<slug>`; never `git switch` in the main checkout. Never bulk-delete prod `organization` rows. `events` is append-only — never `DELETE FROM events`. Workers never receive real credentials (only placeholders/proxied access; exceptions are device-pinned connectors and short-lived provider-derived leases). Stage by explicit path (`git add -- <paths>`, never `-A`); after commit, `git diff --name-only origin/main...HEAD` must equal the intended file list. Never `git stash`. Never resolve merge conflicts in the GitHub web UI. Never `--admin` past a check that has not reported. No Co-Authored-By / "Generated with Claude Code" in commits. Absence must be proven with `git fetch -q origin && git grep <pattern> origin/main`. No backwards-compat shims / `@deprecated` aliases — delete the old thing. `make review-fix` before the first `make review`; `make review` runs ONCE on settled HEAD. Bug fixes require red→fix→green evidence pasted into the PR body. Mutation-test new tests, committing before mutating. Multi-replica correctness is mandatory. Fail closed on durable dispatch/delivery state. Do not create `*.md` unless asked. Prefer `bun`, never npm/yarn/pnpm. Prohibited regardless of authorization: entering credentials/API keys/tokens into fields; modifying system/security settings.
+
+7. **Pending Tasks:**
+   - **#2340 (`permission_mode`) — DRAFT, blocked.** Prerequisite: `/agent` must verify `intent` server-side at session creation (named run must exist, be an active `behavior` run of that `behaviorId` in the caller's org, and have been dispatched by the server), then carry an unforgeable minted claim the gate reads.
+   - **#2341 (`min_cooldown_seconds`) — DRAFT, blocked.** Rework: move the cooldown into the serialized claim inside `createBehaviorEventRun` under the existing per-Behavior advisory lock, plus coverage for two concurrent unique deliveries. The `reply_to_source` gap needs a product call: record firing history for reply targets, or reject `min_cooldown_seconds` at write time for `reply_to_source` Behaviors.
+   - **Re-check `atlas-curator` / `personal-finance` grants** from a session with real prod DB access.
+   - **Optional**: land the salvageable parts of #2340 separately (shared `UNATTENDED_PERMISSION_MODES` drift protection, corrected contract description, integration suite).
+
+8. **Current Work:**
+
+   Immediately before this summary I had finished processing the `make review` verdict for PR #2341 (`bug_free 28, bugs 2, 1 blockers, tests_adequate: false`) and verified both blockers were real:
+   - Race: `findMatchingBehaviorActivations` is an unlocked SELECT; the actual serializer is `pg_advisory_xact_lock(hashtext('behavior_event_run'), watcherId)` at `runs/queue-service.ts:623`, which runs later.
+   - `reply_to_source`: `message-handler-bridge.ts:717` routes reply targets through the chat transport, so no `behavior` run row with `watcher_id` is written and those Behaviors accumulate no cooldown history.
+
+   I converted #2341 to draft (`gh pr ready 2341 --undo`) and posted an analysis comment. I stopped the checks monitor (`TaskStop b7mzfdrfh`).
+
+   I then wrote memory: appended the two blockers to `project_min_cooldown_seconds_event_only.md`, created `feedback_put_the_check_at_the_chokepoint.md` (recording that I made the same structural error twice — policy at a read seam instead of the chokepoint), and updated `MEMORY.md`:
+   ```
+   - [min_cooldown_seconds](project_min_cooldown_seconds_event_only.md) - #2341 DRAFT; event path only; race + reply_to_source gaps
+   - [Put the check at the chokepoint](feedback_put_the_check_at_the_chokepoint.md) - who authored the value? what already serializes it?
+   ```
+
+   Net session outcome: **#2335 merged and live**; **items 2 and 3 dissolved** (item 3 was my error); **items 1 and 4 built, reviewed, and both blocked on real defects — neither merged.**
+
+9. **Optional Next Step:**
+
+   The last completed action was drafting #2341 and recording the lesson in memory. Both remaining PRs are blocked on issues that need decisions I explicitly flagged as the user's:
+
+   From my last report to the user: *"**Decide #2340's prerequisite**: verify `intent` server-side in `/agent` and carry a minted claim. This also hardens the pre-existing forgeable `source: \"watcher-run\"`, so it's worth doing regardless of `permission_mode`."* and for #2341: *"The reply path needs a product call first — either record firing history for reply targets too, or reject `min_cooldown_seconds` at write time for `reply_to_source` Behaviors rather than accepting a value that does nothing."*
+
+   I should report the #2341 outcome to the user (it arrived after my last summary) and wait for direction on those two decisions rather than starting the reworks unilaterally — the `/agent` intent-verification change is a security design touching a public route, and the `reply_to_source` cooldown semantics is a product decision.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

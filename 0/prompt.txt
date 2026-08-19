@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bo2oj9b71</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bo2oj9b71.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on clean HEAD" completed (exit code 0)</summary>
+</task-notification>

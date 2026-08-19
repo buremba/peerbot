@@ -1,0 +1,1 @@
+in this apge add member is not primary button, why http://127.0.0.1:9208/local-install/memory?type=%24member also why doesn't it appear as table but board?

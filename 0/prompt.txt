@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8lz5m6y2</task-id>
+<tool-use-id>toolu_019JiSenR66QqCtdQVMrRvUR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b8lz5m6y2.output</output-file>
+<status>completed</status>
+<summary>Background command "Stage and gate 2715 blocker fix" completed (exit code 0)</summary>
+</task-notification>

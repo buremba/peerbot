@@ -1,0 +1,1 @@
+if we were doing it from scratch how would we design it? we can manually migrate the data and cleanup simplify if that makes sense

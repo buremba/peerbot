@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>brb6rwm2i</task-id>
+<summary>Monitor event: "post-release publish run outcome"</summary>
+<event>PUBLISH RUN: completed|failure</event>
+</task-notification>

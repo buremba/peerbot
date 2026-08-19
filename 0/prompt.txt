@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_AwUmDUyJXf/CleanShot 2026-08-16 at 04.56.32@2x.png">
+
+</image>
+
+it also doens't seem to work, check it [Image #1]  also should we do lobu approval or just approval let's think the best way. you need to confirm with mcp inspector end to end review and merge and also e2e in prod

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbyskl8ts</task-id>
+<tool-use-id>toolu_015C6GAnrcMwy47nGFCFMUCP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/bbyskl8ts.output</output-file>
+<status>completed</status>
+<summary>Background command "Rebuild bundle after embeddings" completed (exit code 0)</summary>
+</task-notification>

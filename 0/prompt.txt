@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bg4u38can</task-id>
+<summary>Monitor event: "check-drift on lobu PR #2210 after submodule repoint"</summary>
+<event>check-drift: PASS</event>
+</task-notification>

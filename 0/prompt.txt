@@ -1,0 +1,1 @@
+remove all the legact stuff to simplify the codebase properly. get rid of all the watcher references

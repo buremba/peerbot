@@ -1,0 +1,1 @@
+also the behavior icon in the sidebar is wrong. we want to use use what we have under agents

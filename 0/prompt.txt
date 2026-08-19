@@ -1,0 +1,1 @@
+still old but that's fine. what's the remaining work, check the downloads folder, there is two photos downloaded from chatgpt, we need to replace the photos in the dwh post accordingly. also the event sourcing post embeds our mock app pages instead of screenshots right

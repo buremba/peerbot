@@ -312,6 +312,7 @@ describe('automation event trigger matching', () => {
     };
     const event = {
       semanticType: 'risk_detected',
+      auditEventType: null,
       entityTypeSlugs: ['account'],
       metadata: { severity: 'high', reviewed: false, score: 92 },
     };
@@ -326,6 +327,78 @@ describe('automation event trigger matching', () => {
       matchesWorkspaceEventTrigger(trigger, {
         ...event,
         metadata: { ...event.metadata, severity: 'low' },
+      })
+    ).toBe(false);
+  });
+
+  test('matches platform audit rows by stamped type or by semantic type', () => {
+    // Every audit row shares the `change` semantic type, so the stamp is the
+    // only way to name one kind of change. Both names must work: dropping the
+    // semantic arm would silently unsubscribe anyone already listening to
+    // `change`, and dropping the stamped arm is the whole point of the stamp.
+    const auditRow = {
+      semanticType: 'change',
+      auditEventType: 'device.online',
+      entityTypeSlugs: [] as string[],
+      metadata: {},
+    };
+    const bySubject = {
+      kind: 'event',
+      source: 'workspace',
+      event_types: ['device.online'],
+    } satisfies AutomationWorkspaceEventTrigger;
+    const bySemanticType = {
+      kind: 'event',
+      source: 'workspace',
+      event_types: ['change'],
+    } satisfies AutomationWorkspaceEventTrigger;
+    expect(matchesWorkspaceEventTrigger(bySubject, auditRow)).toBe(true);
+    expect(matchesWorkspaceEventTrigger(bySemanticType, auditRow)).toBe(true);
+    expect(
+      matchesWorkspaceEventTrigger(
+        {
+          kind: 'event',
+          source: 'workspace',
+          event_types: ['device.offline'],
+        },
+        auditRow
+      )
+    ).toBe(false);
+    // A plain Automation output carries no stamp, so a `<subject>.<op>`
+    // subscription must not pick it up on the semantic arm alone.
+    expect(
+      matchesWorkspaceEventTrigger(bySubject, {
+        ...auditRow,
+        auditEventType: null,
+      })
+    ).toBe(false);
+  });
+
+  test('an audit row still honors entity-type and metadata narrowing', () => {
+    const trigger: AutomationWorkspaceEventTrigger = {
+      kind: 'event',
+      source: 'workspace',
+      entity_type: 'account',
+      event_types: ['entity.updated'],
+      match: { field: 'owner' },
+    };
+    const event = {
+      semanticType: 'change',
+      auditEventType: 'entity.updated',
+      entityTypeSlugs: ['account'],
+      metadata: { field: 'owner' },
+    };
+    expect(matchesWorkspaceEventTrigger(trigger, event)).toBe(true);
+    expect(
+      matchesWorkspaceEventTrigger(trigger, {
+        ...event,
+        entityTypeSlugs: ['contact'],
+      })
+    ).toBe(false);
+    expect(
+      matchesWorkspaceEventTrigger(trigger, {
+        ...event,
+        metadata: { field: 'stage' },
       })
     ).toBe(false);
   });

@@ -18,10 +18,8 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
-import {
-  formatAuditEventType,
-  insertConnectionlessAuditEvent,
-} from '../../../utils/insert-event';
+import { formatAuditEventType } from '../../../utils/audit-event-type';
+import { insertConnectionlessAuditEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { createTestOrganization } from '../../setup/test-fixtures';
 

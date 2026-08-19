@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bh883ytff</task-id>
+<tool-use-id>toolu_013Payt2YtBzy6mL9X1ZdBnn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/bh883ytff.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2208 CI to settle" completed (exit code 0)</summary>
+</task-notification>

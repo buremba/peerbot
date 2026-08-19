@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The implementation is covered by focused tests, but it changes a ChatGPT-cached MCP bundle without versioning its immutable resource URI, preventing the fix from reliably reaching existing clients.
+
+Review comment:
+
+- [P1] Bump the MCP resource URI before shipping this bundle — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-chatgpt-rehydrate/packages/owletto/src/mcp-apps/_shared/host.tsx:14-14
+  For ChatGPT clients that already cached `ui://lobu/interaction/v5.html`, this new persistence code remains unreachable. `lobu/packages/server/src/tools/mcp_app.ts:19-21` explicitly requires a new URI whenever the shipped HTML changes, while `scripts/check-mcp-app-bundle.mjs:51` still identifies this as v5; coordinate a v6 URI, compatibility alias, and verifier update with the parent pointer release.
+  </results>
+  </user_action>

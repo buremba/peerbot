@@ -1,0 +1,1 @@
+ok no need to implement hook stuff right? also the funnel agent is it working properly? is this doing it the right way, should we merge it as well? your confidence needs to be better if you need to do spikes do it

@@ -1,0 +1,1 @@
+you say bulk upload but if connectors was able to generate edges we wouldn't need the bulk

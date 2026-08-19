@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import {
   buildProofBody,
   findProofComment,
-  isDeployOnlyRange,
+  isUnhostedRange,
+  UNHOSTED_PREFIXES,
   isHttpsArtifact,
   permittedFluxTailParent,
   type OwlettoPullRequest,
@@ -308,25 +309,25 @@ function main(): number {
     files?: Array<{ filename: string; previous_filename?: string }>;
   }>(`repos/${owlettoRepo}/compare/${basePointer}...${headPointer}`);
   const rangeFiles = comparison.files ?? [];
-  if (comparison.status === "ahead" && isDeployOnlyRange(rangeFiles)) {
+  if (comparison.status === "ahead" && isUnhostedRange(rangeFiles)) {
     const parentComment = findComment(lobuRepo, parentPr.number, PARENT_MARKER);
     if (parentComment) {
       ghApi(`repos/${lobuRepo}/issues/comments/${parentComment.id}`, "PATCH", {
         body: `${PARENT_MARKER}
 **UI review not applicable** for Lobu head \`${localHead}\`.
 
-\`${basePointer}...${headPointer}\` changes only \`deploy/\` (${rangeFiles.length} files, through Owletto #${owlettoPr.number}).`,
+\`${basePointer}...${headPointer}\` touches no hosted surface (${rangeFiles.length} files under ${UNHOSTED_PREFIXES.join(", ")}, through Owletto #${owlettoPr.number}).`,
       });
     }
     postStatus(
       lobuRepo,
       localHead,
       "success",
-      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} is deploy-only; no UI to prove`,
+      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} ships no hosted surface; no URL to prove`,
       owlettoPr.html_url
     );
     console.log(
-      `ui-review: not applicable; Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} changes only deploy/ (${rangeFiles.length} files)`
+      `ui-review: not applicable; Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} touches no hosted surface (${rangeFiles.length} files)`
     );
     if (options.open) openPullRequest(owlettoPr.html_url);
     return 0;

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8i4uhs7w</task-id>
+<tool-use-id>toolu_013NMQ58UAMrNKtj5gU2rg3Y</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b8i4uhs7w.output</output-file>
+<status>failed</status>
+<summary>Background command "Start local dev server with the worker fix" failed with exit code 144</summary>
+</task-notification>

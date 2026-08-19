@@ -1,0 +1,1 @@
+how can we create a single pr that does it the right and consolidated and simplified way? if we need to change the architecture we can also do that

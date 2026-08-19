@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2u9f31if</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/b2u9f31if.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for every 2208 check to report" completed (exit code 0)</summary>
+</task-notification>

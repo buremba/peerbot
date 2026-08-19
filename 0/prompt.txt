@@ -1,0 +1,1 @@
+how come save_cntent doesn't have interactivity and action buttons etc?

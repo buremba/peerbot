@@ -1,0 +1,1 @@
+also in the cli etc should we create skills as behavior

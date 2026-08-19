@@ -1,0 +1,154 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+   - **Triage GitHub issues #2504 and #2503** in lobu-ai/lobu (both `bug`, opened by buremba).
+   - **"yes try those and confirm they're fixed and then we can close them"** — run the verification next-actions I had proposed (Swift test suite, prod query on the #2350 failure counts), confirm the fixes, then close both issues.
+   - **"do you think we should do these fixes?"** — give an opinionated recommendation on whether the residual follow-ups were worth doing.
+   - **"ok let's do next steps"** — execute the agreed next steps: investigate the unclaimed device runs, file the issue, and ship the `agent_kind` write-time validation PR.
+   - **"check"** — report rollout status.
+   - **"2538 let's discuss"** — a design discussion on issue #2538 rather than implementation.
+   - **"1. why need to differentiate gone? 2. check it should work 3. agreed"** — challenge my "device gone for N days" premise; verify empirically whether a deferred run would actually cover the gap; agree to no new run status.
+   - **"ask the question properly in html artifact so we can brainstom. save memory so i can compact"** (most recent) — produce an HTML artifact framing the open window-cursor design question for brainstorming, and save memory so the session can be compacted.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace, `packages/*`, `packages/owletto` git submodule (contains the Swift Mac app under `apps/mac/Owletto/`).
+   - Behaviors (agent-facing name) vs `watchers` (internal DB vocabulary); two execution lanes — agent lane (`agent_id`) and device lane (`device_worker_id` + `agent_kind`).
+   - TypeBox contracts in `packages/core/src/contracts/tools/`, compiled and enforced by `packages/server/src/tools/validate-args.ts` (TypeCompiler) — the write chokepoint.
+   - Generated client (`packages/client/src/generated/types.gen.ts`) regenerated via `@hey-api/openapi-ts` against a booted server's OpenAPI JSON; CI `client-regen` gate.
+   - **Two independent cursors on a Behavior**: schedule cursor (`watchers.next_run_at`, now-based) and window cursor (`max(canvas_windows.window_start)`, +1 period per successful run).
+   - `idx_runs_pending_non_event_per_behavior` — partial unique index capping pending non-event behavior runs at one per Behavior.
+   - Swift `AgentSpec` / `SpecExecutor` registry in the Mac app; `AgentKind` enum (claude-code, codex, opencode, pi, agy).
+   - Gates: `make pre-pr` (6 gates), `make review-fix`, `make review` (posts `pi-review`), `make ui-review`.
+   - Prod: CNPG cluster `lobu-ai-prod-db`, DB named `owletto`, namespace `summaries-prod`; image tags are `date-time-runNumber`; pods carry `APP_GIT_SHA`.
+
+3. **Files and Code Sections:**
+
+   - **`packages/owletto/apps/mac/Owletto/BehaviorDispatcher.swift`** — verified #2503 already fixed. Current contract (lines 165-171):
+     ```
+     The script is compiled as a module, so it must `export default` an async function
+     — a top-level `return` or `await` is a compile error, not a runtime one:
+       lobu memory exec 'export default async (ctx, client) => { const r = await client.knowledge.read({ behavior_id: N }); return r; };'
+       lobu memory exec 'export default async (ctx, client) => { await client.behaviors.completeWindow({ … }); return { ok: true }; };'
+     ```
+     Also line 949: `guard let executor = selectExecutor(for: job.payload) else {` — proves claim happens *before* executor selection, so a bad kind yields `failed`, not `pending`. Specs at lines 388-464.
+
+   - **`packages/owletto/apps/mac/Owletto/AppState.swift:1722-1723`** — #2504 auto-pick now filtered:
+     ```swift
+     let preference: [AgentKind] = [.claudeCode, .agy, .codex, .opencode, .pi]
+     if let pick = preference.first(where: { next[$0] != nil && runnable.contains($0) }) {
+     ```
+
+   - **`packages/core/src/contracts/tools/manage-behaviors.ts`** — the PR's main change. Added before the "Typebox Schema (Flattened for MCP)" banner:
+     ```ts
+     /**
+      * Local CLI runtimes a device-pinned Behavior can name in `agent_kind`.
+      * ... (comment explaining the Mac-app half of the contract, #2504)
+      */
+     const DEVICE_AGENT_KIND_LITERALS = [
+       Type.Literal("claude-code"),
+       Type.Literal("codex"),
+       Type.Literal("opencode"),
+       Type.Literal("pi"),
+       Type.Literal("agy"),
+     ];
+     ```
+     And the field itself changed from `Type.Union([Type.String(), Type.Null()], {...'e.g. "background", "notifier"'...})` to:
+     ```ts
+     agent_kind: Type.Optional(
+       Type.Union([...DEVICE_AGENT_KIND_LITERALS, Type.Null()], {
+         description:
+           "[create/update] Which local CLI a device-pinned Behavior runs on. Only meaningful alongside device_worker_id. Null (the default) uses whatever agent the device itself is set to. A kind the device has no executor for fails at dispatch, so this is validated here rather than accepted and discovered later.",
+       })
+     ),
+     ```
+
+   - **`packages/server/src/__tests__/unit/behavior-executors.test.ts`** — new test block (+45 lines), imports `getTool`, `validateToolArgs`, `ToolUserError`:
+     ```ts
+     describe("manage_behaviors agent_kind", () => {
+       // Validate the schema the registry actually serves, not a direct import —
+       // this is the copy every write lane (MCP, run_sdk, REST) resolves.
+       const schema = getTool("manage_behaviors")?.inputSchema;
+       if (!schema) throw new Error("manage_behaviors is not in the tool registry");
+       const write = (agentKind: unknown) =>
+         validateToolArgs("manage_behaviors", schema, {
+           action: "create", slug: "s", name: "n", prompt: "p",
+           device_worker_id: "device-1", agent_kind: agentKind,
+         });
+       test.each(["claude-code", "codex", "opencode", "pi", "agy"])("accepts %s", ...);
+       test("accepts null — the device's own default agent", ...);
+       test("rejects a kind no executor implements", () => {
+         expect(() => write("gemini-cli")).toThrow(ToolUserError);
+         expect(() => write("background")).toThrow(ToolUserError);
+         expect(() => write("claude_code")).toThrow(ToolUserError);
+       });
+     });
+     ```
+
+   - **`packages/client/src/generated/types.gen.ts`** — regenerated (+13/−2): `agent_kind?: string | null;` → `agent_kind?: "claude-code" | "codex" | "opencode" | "pi" | "agy" | null;` plus an unrelated `sources_page` hunk (pre-existing drift from `origin/main`).
+
+   - **`packages/server/src/watchers/automation.ts`** — `finalizeStalePendingWatcherRuns` at line 604 sets `status='timeout'` and advances `next_run_at`; due-watcher SELECT at ~line 762 has `AND NOT EXISTS (SELECT 1 FROM runs r WHERE ... r.status = ANY(ACTIVE_RUN_STATUSES))`.
+
+   - **`packages/server/src/utils/window-utils.ts:172-193`** — `nextBehaviorWindowStart`, the decisive function:
+     ```js
+     const nextStart = addBehaviorPeriod(align(lastWindowStart), granularity);
+     return nextStart > alignedNow ? alignedNow : nextStart;   // caps, does NOT skip
+     ```
+     Lines 179-181: with no last window, "start one aligned period back" — the semantic Option A would reuse.
+
+   - **`packages/server/src/runs/queue-service.ts:647`** — catches `idx_runs_pending_non_event_per_behavior` violation and returns the existing pending run (`created: false`).
+
+   - **`packages/server/src/watchers/schedule-cursor.ts:230`** — `nextTick = nextRunAt(schedule, new Date(), timezone);` (now-based).
+
+   - **Memory files written:**
+     - `reference_run_sdk_finalize_misses_are_agent_lane.md` — the 367 finalize misses are 100% agent-lane; later given a "Closure 2026-08-06" section recording #2539 merged+prod-verified and #2538 open.
+     - `project_behavior_window_cursor_lag.md` (new) — the two-cursor mechanism, prod evidence, established facts not to re-derive, and the open question.
+     - `MEMORY.md` — compacted 19.6KB → 16.9KB (all 251 links verified resolvable), then given pointer lines for both.
+
+   - **`/private/tmp/.../scratchpad/window-cursor-question.html`** — the brainstorming artifact. Design plan: petrol/brass/rust palette on cool neutrals (not the cream+terracotta AI default), display face `Iowan Old Style`/Palatino serif, body `system-ui`, `ui-monospace` for data/labels; token-based theming with `@media (prefers-color-scheme: dark)` plus `:root[data-theme]` overrides in both directions; measured prose column with a full-width inline-SVG timeline showing the wall clock at Aug 6 vs the window cursor frozen at Jun 17 with a hatched 50-day lag band. Sections: mechanism (two cursor cards + code), the SVG figure, prod table, four options (A skip / B drain / C widen / D per-Behavior), four open questions, and an "already settled" list.
+
+4. **Errors and fixes:**
+   - **Bun test failed with `Cannot find module '@lobu/connector-sdk/identity-normalize'`** — the worktree had no built dist. Fixed by running `make build-packages`.
+   - **`make review-fix` failed: codex hit its usage limit** ("try again at Aug 10th"). Fixed by rerunning with `REVIEWER_CLI=claude make review-fix` **in the foreground**, per memory `reference_review_harness_claude_needs_foreground` (a backgrounded claude reviewer dies with a 15-byte "Execution error").
+   - **Prod cleanup call used the wrong param**: `client.behaviors.delete({ behavior_id: id })` → `behavior_ids is required and cannot be empty`. Fixed with `{ behavior_ids: [80] }`.
+   - **`client.query({sql})` inside run_sdk threw `rawSql.trim is not a function`**, and `query_sql` rejected `watchers` ("not in the queryable allowlist... query 'behaviors' instead"). Fixed by querying the `behaviors` view via `query_sql`.
+   - **Rollout gate detour (self-corrected)**: I built a run-number→headSha mapping because image tags aren't SHAs, then found `APP_GIT_SHA` directly in the pod env — already documented in memory `feedback_post_merge_prod_verify_wakeup`. I stated plainly that I should have read memory first.
+   - **Count correction**: I said 15 unclaimed runs, then corrected to 17 after recounting.
+   - **My own #2538 framing was wrong** (self-corrected on investigation): thundering herd and "which occurrences do we owe" don't exist — the partial unique index, the reuse path, the anti-join, and now-based schedule advancement already handle them.
+   - **User feedback that changed direction:** "1. why need to differentiate gone?" — I conceded the "device gone for N days" TTL was unnecessary; the real trigger is a pin change (device pin frozen into `approved_input`), an event to handle at the write, not a timer. "2. check it should work" — checking proved my deferral proposal would NOT deliver current results, because I had verified the schedule cursor but not the window cursor.
+
+5. **Problem Solving:**
+   - Both #2503 and #2504 were already fixed at the pinned Owletto SHA `b69f7020` (via `92dcedfd` and `e6efee23`); closed with evidence, and #2503's incorrect #2350 attribution was disproved with prod data and corrected on the issue.
+   - Filed **#2538** for unclaimed device runs (17 of 31 died at the 2h TTL).
+   - Shipped and prod-verified **PR #2539** (`agent_kind` literal union), merge SHA `e82584fb`, live-verified: `gemini-cli`/`background` rejected with `/agent_kind: Expected union value`, `codex` accepted, test row archived.
+   - **Discovered the deeper defect**: the window cursor advances one period per successful run and never jumps to today, so downtime becomes permanent lag. Behavior 2 is 50 days behind (newest window `2026-06-17`, 22 windows vs ~60 expected); its successful 07-15 run analyzed June 17 data. Healthy Behaviors: 70 = 2 days, 71 = 1, 5 = 0. This makes the #2538 deferral fix unobservable on its own.
+   - **Also surfaced but unfiled**: repin freeze — a pending run with a stale device pin blocks a repinned Behavior forever via the anti-join.
+
+6. **All user messages:**
+   - "triage these Status: Open. #2504 In lobu-ai/lobu;· buremba opened 10h ago / Device Behaviors: the completion contract's lobu memory exec examples cannot compile / bug / Something isn't working // Status: Open. #2503 In lobu-ai/lobu;· buremba opened 10h ago"
+   - "yes try those and confirm they're fixed and then we can close them"
+   - "do you think we should do these fixes?"
+   - "ok let's do next steps"
+   - "check"
+   - "2538 let's discuss"
+   - "1. why need to differentiate gone? 2. check it should work 3. agreed"
+   - "ask the question properly in html artifact so we can brainstom. save memory so i can compact"
+   - (Via AskUserQuestion) selected **"Literal union in the contract (Recommended)"** for how `agent_kind` should be validated.
+
+7. **Pending Tasks:**
+   - **The window-cursor policy decision is open** — Option A (skip to current, recommended), B (drain fast), C (widen one window), or D (per-Behavior setting); plus whether it's global or per-Behavior.
+   - Update **#2538** to lead with the window-cursor finding once the policy is chosen, then implement (cursor first, unclaimed-run TTL second).
+   - **Behavior 2** needs a one-off decision — 50 days behind today; self-heals only under Option A.
+   - File the **repin-freeze** gap (pending run's frozen device pin blocks a repinned Behavior).
+   - The **Swift contract assertion** is deferred to the next owletto pointer bump (merging an owletto PR ahead of the lobu pointer turns `check-drift` red across the open PR queue).
+
+8. **Current Work:**
+   Responding to "ask the question properly in html artifact so we can brainstom. save memory so i can compact". I completed both halves:
+   - **Memory saved** (so the user can compact): created `project_behavior_window_cursor_lag.md` capturing the two-cursor mechanism with the `window-utils.ts:188-192` snippet, the prod lag table, the "established while analyzing — do NOT re-derive" list (unique index, reuse path, anti-join, read-time sources, now-based schedule advancement, event runs excluded, repin freeze, and the rejected "device gone" TTL), and the open question. Updated `reference_run_sdk_finalize_misses_are_agent_lane.md` with a Closure section, and added a MEMORY.md pointer line: `- [Window cursor never catches up](project_behavior_window_cursor_lag.md) - DECISION OPEN; +1 period per SUCCESSFUL run, so downtime = permanent lag; prod Behavior 2 is 50 days behind`.
+   - **Artifact published**: loaded the `artifact-design` skill, wrote `window-cursor-question.html` to the scratchpad, and published it to **https://claude.ai/code/artifact/5bae1c04-259d-41df-ac9f-cbd4bb250d4c** (favicon ⏳). The publish call returned success immediately before this summary request, so **I have not yet told the user the artifact URL or summarized what's in it.**
+
+9. **Optional Next Step:**
+   Report the published artifact URL to the user and briefly describe how it frames the decision (the two-cursor mechanism, the prod lag evidence, the four options A–D, and the four open questions), confirm memory is saved so they can safely compact, and await their choice of cursor policy. This follows directly from their most recent request: "ask the question properly in html artifact so we can brainstom. save memory so i can compact" — both actions are complete but unreported. No implementation should begin until they pick a policy, since the immediately preceding exchange established that the decision is theirs: "which of the three, and whether that choice should be global or a per-Behavior setting."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

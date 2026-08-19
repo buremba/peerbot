@@ -1,0 +1,75 @@
+<task-notification>
+<task-id>aa55e5e0d2ede2a6c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/aa55e5e0d2ede2a6c.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix connections slug tenant scoping" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>STOPPED — no fix shipped. The finding is a **false positive**, and the reproducer proved it. `git diff --stat origin/main...HEAD` is empty; the worktree is clean with no commits and no PR.
+
+## What killed it
+
+`db/migrations/20260630000020_connections_chat_slug_unique.sql` (merged in #1623, present on `origin/main`, verified live in a migrated DB):
+
+```sql
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS connections_chat_slug_unique
+    ON public.connections (slug)
+    WHERE credential_mode IS NOT NULL AND deleted_at IS NULL;
+```
+
+There are **two** unique indexes on `connections`, not one. Live `pg_indexes` dump:
+
+```
+connections_org_slug_unique  ON (organization_id, slug) WHERE (deleted_at IS NULL)
+connections_chat_slug_unique ON (slug) WHERE (credential_mode IS NOT NULL AND deleted_at IS NULL)
+```
+
+`getConnection`'s query filters on `credential_mode IS NOT NULL AND deleted_at IS NULL` — which is *exactly* the partial-index predicate of `connections_chat_slug_unique`. Over that row set, slug is **globally** unique. The unscoped branch can therefore match at most one row across the whole table, so there is no arbitrary winner and no cross-tenant read. `LIMIT 1` with no `ORDER BY` is harmless because the candidate set has cardinality ≤ 1.
+
+Critically, the migration comment shows this branch is **load-bearing by design**, not an oversight:
+
+&gt; Orgless runtime paths depend on that: the public webhook URL `/api/v1/webhooks/:connectionId`, exclusive-transport restart, and the connection-claims lease all resolve a connection by its runtime id ALONE, with no org in hand. […] This partial unique index re-establishes the prior guarantee at the slug level.
+
+So the org-less branch has legitimate callers, and step 4's "delete the unscoped branch outright" would have broken the public webhook route, exclusive-transport restart, and the claims lease.
+
+## How the reproducer disproved it
+
+My RED test tried to seed slug `agentconn-telegram-main` in `org-A` and `org-B`. Postgres refused the second insert:
+
+```
+PostgresError: duplicate key value violates unique constraint "connections_chat_slug_unique"
+  detail: "Key (slug)=(agentconn-telegram-main) already exists."
+```
+
+The premise state is **unrepresentable**. Per AGENTS.md ("If you cannot reproduce, stop and report the dead end — do not ship a speculative fix"), I stopped. A test asserting `getConnection` returns null with no ambient org would have been green-by-construction against a state the schema forbids, while breaking three production paths.
+
+## Where the original analysis went wrong
+
+Fact 1 was verified against only *one* index. `connections_org_slug_unique` is real and does say per-org — but it's the weaker of two constraints. Fact 3 (no production `orgContext.run` under `gateway/connections/`) is true, and the reachability path is real: `POST /api/v1/webhooks/:connectionId` in `packages/server/src/gateway/routes/public/connections.ts:40` is unauthenticated with an attacker-controlled id. It's reachable — it just isn't ambiguous, which is the whole point of that migration. The `agents` analogy from #2284 doesn't transfer: `agents` genuinely has only `(organization_id, id)` keying with no global backstop.
+
+## `deleteConnection` — same verdict, and note the near-miss
+
+`softDeleteChatConnectionProjection` (`connections-projection.ts:448`) looked *worse* — its unscoped `UPDATE` has no `LIMIT`, so it reads as "soft-delete every tenant's row with this slug":
+
+```sql
+UPDATE connections SET deleted_at = now(), updated_at = now()
+WHERE slug = ${slug} AND deleted_at IS NULL
+```
+
+It's protected by the same index, since only live chat rows are targeted and those are globally slug-unique. Safe, left alone. Worth flagging though: the `WHERE` clause here omits `credential_mode IS NOT NULL`, so it's protected only because live chat rows are the only ones that can collide — a data-connector row (`credential_mode` NULL, org-scoped slugs) sharing a slug *would* be caught by this unscoped UPDATE. That's a latent edge, not the reported bug, and I didn't chase it.
+
+## Confidence
+
+- **The finding is a false positive — 95.** Verified the index definition three independent ways: the migration file on `origin/main` via `git cat-file`, a live `pg_indexes` dump from a migrated embedded Postgres, and an actual Postgres constraint violation when I tried to create the colliding state.
+- **The org-less branch has legitimate callers — 85.** Based on the migration's own rationale naming three paths, plus tracing the webhook route. I did not individually exercise exclusive-transport restart or the claims lease.
+- **`deleteConnection` is safe — 85.** Same index reasoning, same reproducer. Not separately e2e'd.
+- **No production impact assessed beyond these two functions — n/a.** I did not re-audit the twelve sites you already swept.
+
+## Next actions
+
+1. If you want a regression guard, the durable one is a **schema test** asserting `connections_chat_slug_unique` exists — that index is the sole thing making three org-less runtime paths correct, and a future migration dropping it would silently reintroduce exactly the bug you suspected. That's a real gap worth a small PR.
+2. Add a comment at `postgres-stores.ts:361` naming `connections_chat_slug_unique` as the reason the unscoped branch is sound. It cost this session a full investigation, and it'll trip the next reader and every diff-scoped reviewer.
+3. Consider tightening `softDeleteChatConnectionProjection`'s unscoped `UPDATE` with `credential_mode IS NOT NULL` to match the index predicate it depends on — closes the latent data-connector edge above.
+4. Worth re-checking whether any of the twelve "safe" sites were cleared using the same single-index reasoning, since `connections` has two.</result>
+<usage><subagent_tokens>87692</subagent_tokens><tool_uses>28</tool_uses><duration_ms>176991</duration_ms></usage>
+</task-notification>

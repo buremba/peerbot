@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhgmp6b9o</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c506dbd0-1702-4b1b-b3dd-2cfbe4d75ff3/tasks/bhgmp6b9o.output</output-file>
+<status>completed</status>
+<summary>Background command "Worktree for the event-catalog guard fix" completed (exit code 0)</summary>
+</task-notification>

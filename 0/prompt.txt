@@ -1,0 +1,1 @@
+let's brainstorm. isn't events suited for this use-case, the watcher versions generate events and reaction scrtipt calls are etc all tracked which version and what changed etc

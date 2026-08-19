@@ -1,0 +1,120 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Continuing from a compacted session about Lobu Behavior run failures. User messages in order:
+   - **"we are fine we can merge you can do admin merge if needed"** — authorize merging #2326.
+   - **"cant you do admin merge"** — push on why admin merge isn't working.
+   - **"ok that gh api returns 404"** — report my branch-protection command failed.
+   - **"ok i did, this feature was recently introduced remove it"** — user disabled `enforce_admins`; remove the `behavior_change_risk` gate.
+   - **"ok back in, did you merge all and are we done in this session?"** — status check.
+   - **"if the agent does admin merge it will work right? still needing admin flag?"** — mechanics question.
+   - **"we just wanted the codex to review your code before merging, no need for this thing. you can remove and let me know if our fix is right so we can merge"** — remove gate, verdict on the fix.
+   - **"we can merge when make review passes, try to do all these in the same pr amkes ure they work and we can merge"** — consolidate into one PR.
+   - **"explain the open ones, fix the problems that are obvious to do it . let's merge all and eventually be done here"** — explain open items, fix the mechanical ones.
+   - **"there is another agent working on that evidence stuff it will fix it's shit you focus on your shit"** — don't touch the owletto `evidence_change` defect.
+
+2. **Key Technical Concepts:**
+   - **MCP tool-approval gate**: `gateway/auth/mcp/proxy.ts:evaluateToolApproval` — requires approval for non-read-only tools unless `grantStore.hasGrant(agentId, "/mcp/{mcpId}/tools/{toolName}")`. Wildcard parents expand (`/mcp/x/tools/*` covers `/mcp/x/tools/run_sdk`).
+   - **Two independent cursors**: `watchers.next_run_at` (cron, advanced on terminal run) vs `canvas_windows.window_end` (window watermark, read by `computePendingWindow`, advances ONLY on completion).
+   - **Grant write path**: only `POST /api/v1/agents/approve` with `decision:"always"` (or interaction-bridge card). Pending invocations live in `oauth_states` scope `pending-tool`.
+   - **Prod URL traps**: endpoint is under `/lobu` prefix (`https://app.lobu.ai/lobu/api/v1/...`); plain `/api/v1/` returns `Organization 'v1' not found`. Bare urllib → Cloudflare 1010; needs a real User-Agent via curl.
+   - **`enforce_admins` vs `--admin`**: `enforce_admins:false` *permits* bypass; `--admin` *requests* it. Both needed while a check fails. Endpoint verbs: `DELETE` disables, `POST` enables (**PUT 404s**).
+   - **`pi-review` gates** (post-#2332, six): `bugs`, `blockers`, `bug_free`, `slop`, `simplicity`, `tests_adequate`. `behavior_change_risk` now reported in headline only.
+   - **Dead config class**: `permission_mode`, `min_cooldown_seconds` — stored, surfaced, read by nothing.
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/watchers/schedule-cursor.ts`** (#2326 merged, extended in #2335)
+     Parse-vs-DB split — DB errors propagate (transient, caller rolls back); unparseable cron parks (permanent):
+     ```ts
+     let nextTick: string;  // nextRunAt returns an ISO string, not a Date
+     try {
+       nextTick = nextRunAt(schedule, new Date(), timezone);
+     } catch (error) {
+       logger.error({ error, watcherId, schedule, timezone },
+         "[watchers] Behavior schedule is unparseable — parking it (next_run_at = NULL). ...");
+       await sql`UPDATE watchers SET next_run_at = NULL, updated_at = NOW() WHERE id = ${watcherId}`;
+       return;
+     }
+     ```
+     #2335 adds:
+     ```ts
+     export async function advanceScheduleAfterTerminalFailure(
+       sql: DbClient,
+       watcherId: number | null | undefined,
+       dispatchSource: string | null | undefined
+     ): Promise<void> {
+       if (dispatchSource === "event") return;
+       await advanceWatcherSchedule(sql, watcherId);
+     }
+     ```
+
+   - **`packages/server/src/watchers/run-completion.ts`** (#2335) — new `describeFinalizeMiss` replaces the misleading message; checks `listPendingToolsForRun`, wrapped in try/catch so diagnostics never change the outcome. Emits `Behavior run blocked on tool approval…: lobu-memory/run_sdk queued for human approval… grant the agent standing access to /mcp/lobu-memory/tools/run_sdk`. Fallback says "No tool approval was pending".
+
+   - **`packages/server/src/gateway/auth/mcp/pending-tool-store.ts`** (#2335) — `listPendingToolsForRun(runId, sql)` queries `oauth_states` scope `pending-tool` with `payload->>'conversationId' LIKE '%_run_<runId>'`. Conversation shape: `{agentId}_watcher_{id}_run_{runId}`.
+
+   - **`packages/server/src/watchers/automation.ts`** — `markWatcherRunFailedIdempotent` now uses shared helper + `ACTIVE_RUN_STATUSES` (was hardcoded `IN ('running','claimed','pending')` — identical set).
+
+   - **`packages/server/src/worker-api/run-lifecycle.ts`** — `failRun` uses shared helper with narrowing: `typeof approved.dispatch_source === "string" ? approved.dispatch_source : null`.
+
+   - **`docs/REVIEW_SCHEMA.md:195-210`** — the rubric I missed. **high** = "hot path, migrations, auth, billing, data integrity, or anything with cross-system consequences (queue, scheduler, retry)". #2332 changed 3 references; rubric kept, gate removed.
+
+   - **`scripts/review.sh:410`** — gate line removed in #2332; `HEADLINE` now includes `, risk $RISK`.
+
+   - **`scripts/lib/__tests__/review-reviewer.test.sh`** — gate-matrix test extracting the block with `sed -n '/^HEADLINE="bug_free /,/^fi$/p'` and executing 7 cases.
+
+4. **Errors and fixes:**
+   - **Claimed `knowledge.read` exceeded 1MB** → measured the wrong call (omitted `behavior_id`/`template_version_id`). Real call = 600,385 bytes, succeeds. Theory dead.
+   - **Claimed the fix was "self-healing"** → `computePendingWindow` reads `canvas_windows.window_end`, not `next_run_at`. Cursors are independent.
+   - **Claimed `validateSchedule` had no write-boundary callers** → grepped `isValidSchedule|assertValidSchedule`, names that don't exist. It IS at `behaviors/triggers.ts:127`.
+   - **Claimed `behavior_change_risk` had no rubric** → never grepped `docs/`. Full rubric at `docs/REVIEW_SCHEMA.md:195`. Codex blocked the removal (`bugs 1, bug_free 35`) for changing policy without docs.
+   - **Gave wrong branch-protection commands** (`PUT` to disable, `DELETE` to enable) → user got 404. Correct: `DELETE` disables, `POST` enables.
+   - **TS2322** `nextRunAt` returns ISO string not `Date`; **TS2345** `approved.dispatch_source` is `unknown`. Both caught by `pre-pr` after tests passed green — twice.
+   - **Fresh worktree**: stale core dist + missing `@lobu/pgvector-embedded` → ran `make build-packages` first.
+   - **Vacuous/surviving mutants**: DB-error test only failed the 2nd query (SELECT-swallow survived) → parametrized over both queries.
+
+5. **Problem Solving:**
+   - **Root cause of 2,100 failed runs**: the agent WAS calling `completeWindow`; the MCP proxy gated it ("Tool call requires approval… Your session will end") and no human exists in a scheduled run. `personal-agent` had no `mcp_tool` grant; `crm` did. The agent had self-diagnosed correctly in note 4668582.
+   - **PROD FIX VERIFIED**: granted `/mcp/lobu-memory/tools/run_sdk`. Run 800199 completed in 83s; runs at 20:00/21:00/22:00 UTC all completed; windows caught Jul 27→28→29; `next_run_at` future-dated. Org-wide, no Behavior had completed since Jul 20.
+   - **Latent outage found in #2326**: `dispatchWatcherRun` calls `failWatcherRun` from inside its own `catch`, and `dispatchPendingWatcherRuns` has no per-run guard — a throw would abort dispatch for every org permanently. Fixed by parking instead of throwing.
+
+6. **All user messages:**
+   - "we are fine we can merge you can do admin merge if needed"
+   - "cant you do admin merge"
+   - "ok that gh api returns 404"
+   - "ok i did, this feature was recently introduced remove it"
+   - "ok back in, did you merge all and are we done in this session?"
+   - "if the agent does admin merge it will work right? still needing admin flag?"
+   - "we just wanted the codex to review your code before merging, no need for this thing. you can remove and let me know if our fix is right so we can merge"
+   - "we can merge when make review passes, try to do all these in the same pr amkes ure they work and we can merge"
+   - "explain the open ones, fix the problems that are obvious to do it . let's merge all and eventually be done here"
+   - "there is another agent working on that evidence stuff it will fix it's shit you focus on your shit"
+
+   **Standing constraints from AGENTS.md/CLAUDE.md still in force:** Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup NAME=<slug>`; never bulk-delete prod `organization` rows; `events` is append-only — never `DELETE FROM events`; workers never receive real credentials (only placeholders/proxied access; exceptions are device-pinned connectors and short-lived provider-derived leases); stage by explicit path (`git add -- <paths>`, never `-A`); never `git stash`; never resolve merge conflicts in the GitHub web UI; never `--admin` past a check that has not reported; no Co-Authored-By/Claude attribution in commits; absence must be proven with `git fetch -q origin && git grep <pattern> origin/main`; no backwards-compat shims/deprecated aliases; `make review` runs ONCE on settled HEAD, `review-fix` before it; bug fixes require red→fix→green evidence in the PR body; mutation-test new tests. Prohibited regardless of authorization: entering credentials/API keys/tokens into fields; modifying system/security settings (I declined to flip `enforce_admins` myself).
+
+7. **Pending Tasks:**
+   - **Merge #2335** once CI + `pi-review` report on the rebased head.
+   - **`permission_mode` is inert** — highest-value remaining fix; needs user's design decision (DB lookup at gate vs signed token claim) because it ships a switch disabling human approval for write tools.
+   - **`atlas-curator` and `personal-finance`** have no `mcp_tool` grant — still blocked; user scoped the last grant narrowly on purpose.
+   - **Prod rollout verification of #2326** — blocked: `/health` returns `version: 2.3.0` but no `revision` field, so the SHA-ancestry gate can't run.
+
+8. **Current Work:**
+   Immediately before this summary: the repo-wide `check-drift` failure resolved itself — someone bumped the owletto pin to `0563609593`, ahead of my `7aa12703`. I **closed #2336** as superseded ("Superseded — `main` now pins `05636095`…"), then **rebased #2335** onto `origin/main` (clean, still exactly the 6 intended files), force-pushed with `--force-with-lease`, and started `make review` (task `brndeel0j`) plus a checks monitor (`bmk01jc6y`).
+
+   Latest notifications confirm on the rebased head: **`base-branch-guard: pass`, `check-drift: pass`, `format-lint: pass`, `migrations: pass`** — `check-drift` passing is the key result, since it was the sole blocker.
+
+   Prior to rebase, #2335's review was clean: `bug_free 86, simplicity 92, slop 0, bugs 0, 0 blockers, risk medium, tests_adequate: true`, with 176 tests across 19 files and both mutants biting (ignore-pending-approvals → 1 fail; drop-event-carve-out → 1 fail).
+
+   Session merges so far: **#2326** squash `4527ebe809f4900815bf0035bf73b0c952f1553e`; **#2332** squash `5efb9e5c8ccf647fb7e50a300fb43666b5e2bb91`. `enforce_admins` restored to `true`.
+
+9. **Optional Next Step:**
+   Wait for the remaining checks on #2335 (`typecheck`, `unit`, `frontend`, `integration`, `pi-review`) to report, then merge with a plain `gh pr merge 2335 --squash` (no `--admin`, since the risk gate no longer fails clean code) and confirm the squash commit landed rather than assuming.
+
+   This follows directly from the user's instruction **"explain the open ones, fix the problems that are obvious to do it . let's merge all and eventually be done here"**, and from my last stated position: *"`check-drift` should pass now, and the last review on this diff was `0 bugs, 0 blockers, tests_adequate: true`, so I expect it to merge without any bypass. I'll confirm the squash commit rather than assume, then this is done."*
+
+   Per the user's **"you focus on your shit"**, I will not touch the owletto `evidence_change` defect.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

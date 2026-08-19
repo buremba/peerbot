@@ -1,0 +1,57 @@
+<task-notification>
+<task-id>aab9f05c81e3cc21a</task-id>
+<tool-use-id>toolu_0168oXt1dFmmpGurLSY1X6wb</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/aab9f05c81e3cc21a.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify per-user Telegram DM isolation" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Every link is verified against committed source. Here is the verdict.
+
+## Verdict: your public answer was wrong for this scenario. Correct it.
+
+**10 Telegram users DMing one bot all route to the SAME agent and all run on the AGENT OWNER's connections.** There is no per-DM-sender credential isolation on a single Telegram bot. A per-user Gmail connection can be *created*, but it is structurally *unreachable* during those DM runs.
+
+### 1. Routing: same agent, not distinct
+
+The DM key `{platform}-{userId}` in `platformAgentId` looks like per-user routing, and that's almost certainly what misled the earlier answer — but **it is not on the message path**. It has exactly one caller, the slash-command dispatcher:
+- `packages/server/src/gateway/spaces/space-resolver.ts:9-17` — the per-user ID function
+- `packages/server/src/gateway/commands/command-dispatcher.ts:7,110` — its only call site (commands only)
+
+The real inbound message path resolves agent via a different `resolveAgentId`:
+- `packages/server/src/gateway/connections/message-handler-bridge.ts:580-615` — Behavior planner first, else fallback seeded with `agentId: this.connection.agentId` (line 603)
+- `packages/server/src/gateway/services/platform-helpers.ts:178-243` — returns `subscription.agentId` (source `"subscription"`) or the connection's owning agent (`source: "connection"`, line ~238, logged "Routing to connection's owning agent")
+
+Neither branch takes the sender's user id as input. One connection → one agent (or one Behavior's agent) for all 10 senders.
+
+### 2. Principal = agent owner, NOT the DM sender — prior verification CONFIRMED
+
+`packages/server/src/workspace/multi-tenant.ts:284-303`: the direct-auth path selects `owner_user_id FROM agents WHERE id = tokenData.agentId`, and sets `directAuthUserId` to that owner. The only override is a builder-admin turn (`tokenData.adminTools?.length`), which uses the verified per-turn admin — still never the chat sender. Header stamped at `packages/server/src/gateway/auth/mcp/proxy-shared.ts:171-173`.
+
+`chat_user_identities` maps chat users → Lobu users, but only for approval attribution/notification targeting (`gateway/connections/interaction-bridge.ts:129-147`, `notifications/service.ts:184`). **No path makes it the credential-resolution principal.**
+
+### 3. Answer to the scenario: NO
+
+The trap is precise. `resolveConnectionVisibility` (`tools/admin/helpers/connection-helpers.ts:577-590`) forces any `oauth_account` personal credential to `visibility='private'` regardless of role — a DB trigger even rejects org-visible personal creds (line 614). Private connections are visible only to their creator:
+
+`packages/server/src/authz/connection-visibility.ts:53` and `:67-78` —
+```
+AND (vc.visibility = 'org' OR (userParam IS NOT NULL AND vc.created_by = userParam))
+```
+
+So user #7 connects their Gmail → row is `private`, `created_by = user7`. At run time the principal is `agents.owner_user_id` (the operator). `created_by = principal` never matches. The connection exists and is invisible. Worse, the failure is *silent* — not an error, just zero rows. And whatever the operator's own `org`-visible Gmail is, **all 10 users' turns read through that one inbox.** That's the leak direction that matters.
+
+### 4. What would actually be required
+
+Isolation is per-agent-owner, so genuine isolation needs a **distinct agent per end user, each owned by that user** — `manage_agents.ts:359-383` supports exactly this (`owner_platform='external'` + an `agent_users` mapping, without which the agent is unreachable via chat). Your DM agent-onboarding flow is the closest existing pattern. Per-user org is the stronger variant. What does *not* work is any amount of connection configuration under one shared bot agent.
+
+### Corrected public-safe phrasing
+
+&gt; Credentials are scoped to the agent's owner, not to the chat sender. When several Telegram users DM the same bot, every message routes to that connection's single agent, and tool calls resolve connections as that agent's owner — so a personal Gmail one of those users connects (personal OAuth connections are forced private to their creator) won't be reachable from those runs, and everyone's turns would read through the owner's own connection instead. For genuine per-user credentials you need a separate agent owned by each user, rather than one shared bot.
+
+Confidence **88/100**. Basis: read the full routing chain, the multi-tenant principal derivation, the visibility compiler, and the personal-credential default — all committed source in the main checkout, no working-tree edits. Deductions: I traced the primary handler but did not exhaustively enumerate every alternate entry (webhook-ingest, preview/claim, device-pinned connectors) for a sender-principal override; and I read the visibility compiler rather than observing a live run.
+
+Worth a live check before posting if you want 95+: one Telegram bot, two DM senders, one with their own private Gmail connection — confirm both turns hit the same `agent_id` and that the private connection returns zero rows. That would also confirm the failure is silent rather than an error, which is the one behavioral claim I inferred from the SQL rather than observed.
+
+result: Refuted the public answer — one Telegram bot routes all DM senders to the same agent (message-handler-bridge.ts:603 → platform-helpers.ts:178; the per-user platformAgentId is commands-only) and resolves credentials as agents.owner_user_id (multi-tenant.ts:284-303), so per-user Gmail connections are forced private/created_by and unreachable (connection-visibility.ts:53); per-user agents are required.</result>
+<usage><subagent_tokens>57701</subagent_tokens><tool_uses>24</tool_uses><duration_ms>99110</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,171 @@
+## Context Usage
+
+**Model:** claude-opus-5  
+**Tokens:** 320.6k / 400k (80%)
+
+### Estimated usage by category
+
+| Category | Tokens | Percentage |
+|----------|--------|------------|
+| System prompt | 4k | 1.0% |
+| System tools | 18.8k | 4.7% |
+| MCP tools (deferred) | 67k | 16.7% |
+| System tools (deferred) | 18.4k | 4.6% |
+| Custom agents | 1.6k | 0.4% |
+| Memory files | 12.4k | 3.1% |
+| Skills | 2.7k | 0.7% |
+| Messages | 281k | 70.2% |
+| Free space | 46.5k | 11.6% |
+| Autocompact buffer | 33k | 8.3% |
+
+### MCP Tools
+
+| Tool | Server | Tokens |
+|------|--------|--------|
+| mcp__claude_ai_Gmail__apply_sensitive_message_label | claude_ai_Gmail | 358 |
+| mcp__claude_ai_Gmail__apply_sensitive_thread_label | claude_ai_Gmail | 363 |
+| mcp__claude_ai_Gmail__create_draft | claude_ai_Gmail | 1.5k |
+| mcp__claude_ai_Gmail__create_label | claude_ai_Gmail | 1.4k |
+| mcp__claude_ai_Gmail__delete_label | claude_ai_Gmail | 129 |
+| mcp__claude_ai_Gmail__get_message | claude_ai_Gmail | 962 |
+| mcp__claude_ai_Gmail__get_thread | claude_ai_Gmail | 910 |
+| mcp__claude_ai_Gmail__label_message | claude_ai_Gmail | 431 |
+| mcp__claude_ai_Gmail__label_thread | claude_ai_Gmail | 468 |
+| mcp__claude_ai_Gmail__list_drafts | claude_ai_Gmail | 1k |
+| mcp__claude_ai_Gmail__list_labels | claude_ai_Gmail | 180 |
+| mcp__claude_ai_Gmail__mark_message_spam | claude_ai_Gmail | 175 |
+| mcp__claude_ai_Gmail__mark_thread_spam | claude_ai_Gmail | 208 |
+| mcp__claude_ai_Gmail__search_threads | claude_ai_Gmail | 2.2k |
+| mcp__claude_ai_Gmail__trash_message | claude_ai_Gmail | 199 |
+| mcp__claude_ai_Gmail__trash_thread | claude_ai_Gmail | 208 |
+| mcp__claude_ai_Gmail__unlabel_message | claude_ai_Gmail | 383 |
+| mcp__claude_ai_Gmail__unlabel_thread | claude_ai_Gmail | 366 |
+| mcp__claude_ai_Gmail__unmark_message_spam | claude_ai_Gmail | 178 |
+| mcp__claude_ai_Gmail__unmark_thread_spam | claude_ai_Gmail | 173 |
+| mcp__claude_ai_Gmail__untrash_message | claude_ai_Gmail | 180 |
+| mcp__claude_ai_Gmail__untrash_thread | claude_ai_Gmail | 173 |
+| mcp__claude_ai_Gmail__update_draft | claude_ai_Gmail | 1.3k |
+| mcp__claude_ai_Gmail__update_label | claude_ai_Gmail | 1.3k |
+| mcp__claude_ai_Google_Calendar__create_event | claude_ai_Google_Calendar | 2.9k |
+| mcp__claude_ai_Google_Calendar__delete_event | claude_ai_Google_Calendar | 323 |
+| mcp__claude_ai_Google_Calendar__get_event | claude_ai_Google_Calendar | 170 |
+| mcp__claude_ai_Google_Calendar__list_calendars | claude_ai_Google_Calendar | 219 |
+| mcp__claude_ai_Google_Calendar__list_events | claude_ai_Google_Calendar | 1.1k |
+| mcp__claude_ai_Google_Calendar__respond_to_event | claude_ai_Google_Calendar | 498 |
+| mcp__claude_ai_Google_Calendar__search_events | claude_ai_Google_Calendar | 235 |
+| mcp__claude_ai_Google_Calendar__suggest_time | claude_ai_Google_Calendar | 585 |
+| mcp__claude_ai_Google_Calendar__update_event | claude_ai_Google_Calendar | 2.5k |
+| mcp__claude_ai_Google_Drive__authenticate | claude_ai_Google_Drive | 175 |
+| mcp__claude_ai_Google_Drive__complete_authentication | claude_ai_Google_Drive | 229 |
+| mcp__claude_ai_Lobu__authenticate | claude_ai_Lobu | 162 |
+| mcp__claude_ai_Lobu__complete_authentication | claude_ai_Lobu | 219 |
+| mcp__claude_ai_PostHog__exec | claude_ai_PostHog | 11.7k |
+| mcp__claude_ai_Slack__slack_add_reaction | claude_ai_Slack | 262 |
+| mcp__claude_ai_Slack__slack_create_canvas | claude_ai_Slack | 2.7k |
+| mcp__claude_ai_Slack__slack_create_conversation | claude_ai_Slack | 744 |
+| mcp__claude_ai_Slack__slack_get_reactions | claude_ai_Slack | 361 |
+| mcp__claude_ai_Slack__slack_list_channel_members | claude_ai_Slack | 628 |
+| mcp__claude_ai_Slack__slack_read_canvas | claude_ai_Slack | 162 |
+| mcp__claude_ai_Slack__slack_read_channel | claude_ai_Slack | 517 |
+| mcp__claude_ai_Slack__slack_read_file | claude_ai_Slack | 492 |
+| mcp__claude_ai_Slack__slack_read_thread | claude_ai_Slack | 593 |
+| mcp__claude_ai_Slack__slack_read_user_profile | claude_ai_Slack | 304 |
+| mcp__claude_ai_Slack__slack_schedule_message | claude_ai_Slack | 483 |
+| mcp__claude_ai_Slack__slack_search_channels | claude_ai_Slack | 568 |
+| mcp__claude_ai_Slack__slack_search_emojis | claude_ai_Slack | 350 |
+| mcp__claude_ai_Slack__slack_search_public | claude_ai_Slack | 1.7k |
+| mcp__claude_ai_Slack__slack_search_public_and_private | claude_ai_Slack | 1.8k |
+| mcp__claude_ai_Slack__slack_search_users | claude_ai_Slack | 546 |
+| mcp__claude_ai_Slack__slack_send_message | claude_ai_Slack | 809 |
+| mcp__claude_ai_Slack__slack_send_message_draft | claude_ai_Slack | 889 |
+| mcp__claude_ai_Slack__slack_update_canvas | claude_ai_Slack | 3.7k |
+| mcp__computer-use__computer_batch | computer-use | 896 |
+| mcp__computer-use__cursor_position | computer-use | 114 |
+| mcp__computer-use__double_click | computer-use | 293 |
+| mcp__computer-use__hold_key | computer-use | 227 |
+| mcp__computer-use__key | computer-use | 281 |
+| mcp__computer-use__left_click | computer-use | 278 |
+| mcp__computer-use__left_click_drag | computer-use | 345 |
+| mcp__computer-use__left_mouse_down | computer-use | 177 |
+| mcp__computer-use__left_mouse_up | computer-use | 158 |
+| mcp__computer-use__list_granted_applications | computer-use | 103 |
+| mcp__computer-use__middle_click | computer-use | 287 |
+| mcp__computer-use__mouse_move | computer-use | 230 |
+| mcp__computer-use__open_application | computer-use | 162 |
+| mcp__computer-use__read_clipboard | computer-use | 80 |
+| mcp__computer-use__request_access | computer-use | 902 |
+| mcp__computer-use__right_click | computer-use | 295 |
+| mcp__computer-use__screenshot | computer-use | 267 |
+| mcp__computer-use__scroll | computer-use | 309 |
+| mcp__computer-use__switch_display | computer-use | 274 |
+| mcp__computer-use__triple_click | computer-use | 293 |
+| mcp__computer-use__type | computer-use | 169 |
+| mcp__computer-use__wait | computer-use | 90 |
+| mcp__computer-use__write_clipboard | computer-use | 87 |
+| mcp__computer-use__zoom | computer-use | 383 |
+| mcp__context7__query-docs | context7 | 672 |
+| mcp__context7__resolve-library-id | context7 | 1.1k |
+| mcp__isorun__checkpoint | isorun | 101 |
+| mcp__isorun__create_sandbox | isorun | 255 |
+| mcp__isorun__destroy_sandbox | isorun | 99 |
+| mcp__isorun__exec | isorun | 155 |
+| mcp__isorun__hibernate | isorun | 103 |
+| mcp__isorun__list_sandboxes | isorun | 77 |
+| mcp__isorun__restore | isorun | 107 |
+| mcp__isorun__resume | isorun | 96 |
+| mcp__isorun__url | isorun | 145 |
+| mcp__pencil__browser | pencil | 1.2k |
+| mcp__pencil__execute | pencil | 628 |
+| mcp__pencil__export_html | pencil | 475 |
+| mcp__pencil__export_nodes | pencil | 476 |
+| mcp__pencil__get_app_state | pencil | 369 |
+| mcp__pencil__get_guidelines | pencil | 412 |
+| mcp__pencil__get_screenshot | pencil | 372 |
+
+### Custom Agents
+
+| Agent Type | Source | Tokens |
+|------------|--------|--------|
+| frontend-typescript-tailwind | User | 516 |
+| mvp-architect-k8s | User | 645 |
+| qa-tester-validator | User | 485 |
+
+### Memory Files
+
+| Type | Path | Tokens |
+|------|------|--------|
+| User | /Users/burakemre/.claude/CLAUDE.md | 1.3k |
+| Project | /Users/burakemre/Code/lobu/CLAUDE.md | 14 |
+| Project | /Users/burakemre/Code/lobu/AGENTS.md | 2.9k |
+| AutoMem | /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/MEMORY.md | 8.2k |
+
+### Skills
+
+| Skill | Source | Tokens |
+|-------|--------|--------|
+| correct | User | ~20 |
+| find-skills | User | ~110 |
+| herdr-operator | User | ~150 |
+| lobu | User | ~60 |
+| lobu-operator | User | ~60 |
+| mute | User | < 20 |
+| remotion-best-practices | User | ~30 |
+| sentry-fix-issues | User | ~90 |
+| commit-and-pr | Project | ~40 |
+| tech-debt | Project | ~40 |
+| triage-pr | Project | ~30 |
+| dataviz | Built-in | ~380 |
+| artifact-design | Built-in | ~20 |
+| artifact-diagramming | Built-in | ~70 |
+| artifact-capabilities | Built-in | ~140 |
+| update-config | Built-in | ~240 |
+| keybindings-help | Built-in | ~80 |
+| code-review | Built-in | ~270 |
+| simplify | Built-in | ~60 |
+| fewer-permission-prompts | Built-in | ~60 |
+| loop | Built-in | ~120 |
+| schedule | Built-in | ~130 |
+| claude-api | Built-in | ~360 |
+| run | Built-in | ~120 |
+| init | Built-in | ~20 |
+| security-review | Built-in | ~30 |

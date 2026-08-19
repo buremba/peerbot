@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T18:29:37.403Z","content":[{"text":"say OK"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T18:29:39.093Z","id":"e618957c","input_tokens":13353,"output_tokens":5,"content":[{"type":"text","text":"OK"}]}

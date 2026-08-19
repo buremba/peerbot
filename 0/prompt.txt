@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b506yqdj7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/b506yqdj7.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for all ten required checks to report" completed (exit code 0)</summary>
+</task-notification>

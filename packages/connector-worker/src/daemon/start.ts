@@ -1,0 +1,120 @@
+/**
+ * Shared device-daemon bootstrap: flag validation + worker registration + the
+ * poll loop. Both the `connector-worker` binary and the `lobu daemon` command
+ * call this, so the two cannot drift on validation or registration semantics.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { hostname } from 'node:os';
+import { isKnownPlatform } from '@lobu/core';
+import { assertExternalDepsResolvable } from '../compile/index.js';
+import { buildConnectorWorkerEnv } from '../env.js';
+import { DEVICE_MANIFESTS_BY_PLATFORM } from './device-manifests.js';
+import { startDaemon, type WorkerDaemon } from './index.js';
+import { log, setDebug } from './log.js';
+
+/**
+ * Accepted `--worker-id` shape. Deliberately narrow: the default is
+ * `<platform>:<short-hostname>`, and anything a shell, a URL path, or a JSON
+ * payload would mangle has no business being a durable device identity.
+ */
+const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export interface DaemonStartOptions {
+  apiUrl: string;
+  workerId?: string;
+  version?: string;
+  /** Host platform for device registration (macos, headless, …). */
+  platform?: string;
+  label?: string;
+  /** Declared capability names (already comma-split). */
+  capabilities?: string[];
+  /** Durable `owl_pat_…` personal access token for device mode. */
+  workerApiToken?: string;
+  debug?: boolean;
+}
+
+/**
+ * Validate the options and boot the daemon. Throws a user-facing `Error` on
+ * bad input; the caller prints it and exits non-zero.
+ */
+export async function startDaemonCommand(
+  opts: DaemonStartOptions
+): Promise<WorkerDaemon> {
+  setDebug(opts.debug === true);
+  const { platform, capabilities = [] } = opts;
+
+  if (platform && !isKnownPlatform(platform)) {
+    throw new Error(`unknown device platform '${platform}'`);
+  }
+  // `worker_id` is the device's identity: the server upserts on
+  // (user_id, worker_id) and Automation pins resolve the device row through it.
+  // An unusable value therefore does not fail loudly — it mints a second device
+  // and the pinned Automations go quiet on this one. Reject it at boot instead.
+  if (opts.workerId !== undefined && !WORKER_ID_PATTERN.test(opts.workerId)) {
+    throw new Error(
+      `invalid --worker-id '${opts.workerId}': expected 1-128 characters of ` +
+        'letters, digits, dot, underscore, colon or hyphen'
+    );
+  }
+  if (capabilities.length > 0 && !platform) {
+    throw new Error(
+      '--capabilities requires --platform so the server can authorize the device capability set'
+    );
+  }
+  // A device daemon runs for weeks; its bearer is snapshotted once at startup.
+  // `lobu whoami --json` returns `workerToken ?? accessToken`, so a user without
+  // a durable agent token silently gets the OAuth SESSION token — which expires
+  // in 24h. The daemon would then poll 401 forever and every scheduled run
+  // would stop with no failure anywhere the user looks. Fail closed at boot.
+  if (platform && !opts.workerApiToken?.startsWith('owl_pat_')) {
+    throw new Error(
+      'device mode requires a durable personal access token in WORKER_API_TOKEN.\n' +
+        "       `lobu whoami --json` falls back to your session's OAuth access token, which\n" +
+        '       expires within 24h and would leave this daemon polling 401 indefinitely.\n' +
+        '       Mint a device token and pass it as WORKER_API_TOKEN (expects an owl_pat_ prefix).'
+    );
+  }
+
+  // Fleet workers advertise the DB-egress contract by default. Device workers
+  // advertise only their declared, server-authorized capabilities.
+  const workerCapabilities: Record<string, boolean> = platform
+    ? Object.fromEntries(capabilities.map((name) => [name, true]))
+    : { db_egress_hardening: true };
+  // Auto-discover device identity from the host when not passed: a device
+  // worker defaults to `<platform>:<short-hostname>` and a hostname label.
+  const shortHostname = hostname().split('.')[0] || hostname();
+  const workerId =
+    opts.workerId ??
+    (platform ? `${platform}:${shortHostname}` : `worker-${randomUUID().slice(0, 8)}`);
+  const label = opts.label ?? (platform ? shortHostname : undefined);
+
+  // Crash loud at boot if the runtime image is missing a connector dep.
+  assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
+  log.info(`[cli] Starting worker daemon (ID: ${workerId}, API: ${opts.apiUrl})`);
+  const env = buildConnectorWorkerEnv();
+  const maxConcurrentJobs = process.env.WORKER_MAX_CONCURRENT_JOBS
+    ? Math.max(1, Number.parseInt(process.env.WORKER_MAX_CONCURRENT_JOBS, 10))
+    : undefined;
+  if (platform) {
+    log.info(
+      `[cli] device mode: platform=${platform} capabilities=${capabilities.join(',') || '(none)'}`
+    );
+  }
+
+  return startDaemon(
+    {
+      apiUrl: opts.apiUrl,
+      workerId,
+      version: opts.version ?? '1.0.0',
+      workerApiToken: opts.workerApiToken,
+      capabilities: workerCapabilities,
+      ...(platform ? { platform } : {}),
+      ...(label ? { label } : {}),
+      ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
+      ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
+    },
+    env
+  );
+}

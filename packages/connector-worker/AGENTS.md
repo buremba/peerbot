@@ -33,7 +33,10 @@ pipeline also used by `@lobu/cli` and `@lobu/server`.
   IPC. `redact.ts` removes recognized secret patterns from child output before
   it reaches logs.
 - `daemon/` — the poll loop (`worker.ts`, `executor.ts`) that claims and runs
-  jobs from the worker API.
+  jobs from the worker API. `automation.ts` is the device-only Automation arm:
+  it spawns the user's local agent CLI per its `AgentSpec` (from
+  `@lobu/core/contracts/worker/device-automation`) with the user's own
+  environment minus `WORKER_API_TOKEN` — not the connector-child env allowlist.
 - `self-check/` — connector-runtime parity assertions (packaging only; no
   network or DB).
 - `embeddings*.ts` — local/remote embedding generation for emitted content and

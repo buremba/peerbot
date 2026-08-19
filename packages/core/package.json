@@ -81,6 +81,12 @@
       "import": "./dist/contracts/worker/protocol.js",
       "require": "./dist/contracts/worker/protocol.js"
     },
+    "./contracts/worker/device-automation": {
+      "types": "./dist/contracts/worker/device-automation.d.ts",
+      "bun": "./src/contracts/worker/device-automation.ts",
+      "import": "./dist/contracts/worker/device-automation.js",
+      "require": "./dist/contracts/worker/device-automation.js"
+    },
     "./contracts/tools/manage-agents": {
       "types": "./dist/contracts/tools/manage-agents.d.ts",
       "bun": "./src/contracts/tools/manage-agents.ts",

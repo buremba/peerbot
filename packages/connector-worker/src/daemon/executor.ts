@@ -6,11 +6,14 @@
  */
 
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
+import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
 import { batchGenerateEmbeddings } from '../embeddings.js';
 import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
+import { executeAutomationRun } from './automation.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
+import { log } from './log.js';
 
 /**
  * Resolve the executable compiled code for a job.
@@ -62,6 +65,12 @@ export interface ExecutorConfig {
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;
+  /**
+   * Explicit per-agent binary paths for the automation arm (else PATH lookup).
+   * Lets an operator point the daemon at a non-PATH CLI install, and is the
+   * injection seam the automation e2e test uses to drive a fake binary.
+   */
+  binaryOverrides?: Partial<Record<AgentKind, string>>;
 }
 
 const DEFAULT_CONFIG: ExecutorConfig = {
@@ -125,14 +134,13 @@ export async function executeRun(
     case 'action':
       return executeActionRun(client, job, env, cfg);
     case 'automation':
-      // Automation reactions execute inline in the API process (complete_window) and
-      // the poll endpoint's run_type allowlist should never hand an automation run to
-      // this daemon. If one slips through (deploy skew, regression), do NOT mark
-      // it success — that would stomp a live automation run and prevent any retry.
-      console.error(
-        `[executor] Refusing to handle automation run ${job.run_id} — automation runs must not reach the connector-worker daemon`
-      );
-      return { itemsCollected: 0, error: 'automation run not handled by daemon' };
+      // Device workers (user-scoped auth) may be handed an automation run when
+      // the automation is pinned to their device. Spawn the local agent CLI and
+      // report the process exit via /complete-automation. Trusted fleet workers
+      // never reach this arm — the poll endpoint's automation claim branch is
+      // unreachable for them — but if a run does slip through (deploy skew), the
+      // dispatcher reports the failure rather than stomping the run.
+      return executeAutomationRun(client, job, cfg);
     case 'embed_backfill':
       return executeEmbedBackfillRun(client, job, env, cfg);
     case 'auth':
@@ -172,7 +180,7 @@ async function executeSyncRun(
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) {
     const errorMessage = `Run ${run_id} (${connector_key}): ${codeResult.error}`;
-    console.error('[executor]', errorMessage);
+    log.info('[executor]', errorMessage);
     await client.complete({
       run_id,
       worker_id: client.id,
@@ -184,7 +192,7 @@ async function executeSyncRun(
   }
   const compiled_code = codeResult.code;
 
-  console.error(`[executor] Starting sync run ${run_id} (${connector_key}/${feed_key})`);
+  log.info(`[executor] Starting sync run ${run_id} (${connector_key}/${feed_key})`);
 
   // Set up heartbeat interval
   let heartbeatInterval: NodeJS.Timeout | undefined;
@@ -197,7 +205,7 @@ async function executeSyncRun(
           items_collected_so_far: itemsCollectedSoFar,
         });
       } catch (err) {
-        console.error('[executor] Heartbeat failed:', err);
+        log.debug('[executor] Heartbeat failed:', err);
       }
     }, cfg.heartbeatIntervalMs);
   };
@@ -228,7 +236,7 @@ async function executeSyncRun(
         });
       } catch (streamErr) {
         const batchIds = batch.map((b) => b.id);
-        console.error(
+        log.debug(
           `[executor] Stream batch failed for run ${run_id} (${batchIds.length} items lost: ${batchIds.join(', ')}):`,
           streamErr
         );
@@ -269,7 +277,7 @@ async function executeSyncRun(
               checkpoint: lastCheckpoint,
             });
           } catch (err) {
-            console.error('[executor] Checkpoint flush failed:', err);
+            log.debug('[executor] Checkpoint flush failed:', err);
           }
         },
         onEventChunk: async (events) => {
@@ -318,13 +326,13 @@ async function executeSyncRun(
       error_message: partialFetchFailureMessage(result.metadata),
     });
 
-    console.error(`[executor] Sync run ${run_id} completed: ${itemsCollectedSoFar} items`);
+    log.info(`[executor] Sync run ${run_id} completed: ${itemsCollectedSoFar} items`);
     return { itemsCollected: itemsCollectedSoFar };
   } catch (error) {
     stopHeartbeat();
 
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[executor] Sync run ${run_id} failed:`, errorMessage);
+    log.info(`[executor] Sync run ${run_id} failed:`, errorMessage);
 
     const diag = extractSubprocessDiagnostics(error);
 
@@ -412,7 +420,7 @@ async function executeActionRun(
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${codeResult.error}`;
-    console.error('[executor]', errorMessage);
+    log.info('[executor]', errorMessage);
     await client.completeAction({
       run_id,
       worker_id: client.id,
@@ -423,7 +431,7 @@ async function executeActionRun(
   }
   const compiled_code = codeResult.code;
 
-  console.error(`[executor] Starting action run ${run_id} (${connector_key}/${action_key})`);
+  log.info(`[executor] Starting action run ${run_id} (${connector_key}/${action_key})`);
 
   // Heartbeat so the gateway's stale-run reaper doesn't write us off
   // mid-action. Action runs can legitimately take minutes (LLM calls,
@@ -436,7 +444,7 @@ async function executeActionRun(
     try {
       await client.heartbeat(run_id);
     } catch (err) {
-      console.error('[executor] Action heartbeat failed:', err);
+      log.debug('[executor] Action heartbeat failed:', err);
     }
   }, cfg.heartbeatIntervalMs);
 
@@ -489,11 +497,11 @@ async function executeActionRun(
       action_output: actionOutput,
     });
 
-    console.error(`[executor] Action run ${run_id} completed`);
+    log.info(`[executor] Action run ${run_id} completed`);
     return { itemsCollected: 0 };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[executor] Action run ${run_id} failed:`, errorMessage);
+    log.info(`[executor] Action run ${run_id} failed:`, errorMessage);
 
     await client.completeAction({
       run_id,
@@ -533,7 +541,7 @@ async function executeAuthRun(
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) {
     const errorMessage = `Auth run ${run_id} (${connector_key}): ${codeResult.error}`;
-    console.error('[executor]', errorMessage);
+    log.info('[executor]', errorMessage);
     await client.completeAuth({
       run_id,
       worker_id: client.id,
@@ -544,14 +552,14 @@ async function executeAuthRun(
   }
   const compiled_code = codeResult.code;
 
-  console.error(`[executor] Starting auth run ${run_id} (${connector_key})`);
+  log.info(`[executor] Starting auth run ${run_id} (${connector_key})`);
 
   // Heartbeat so the API doesn't time us out while the user is scanning.
   const heartbeatInterval = setInterval(async () => {
     try {
       await client.heartbeat(run_id);
     } catch (err) {
-      console.error('[executor] Auth heartbeat failed:', err);
+      log.debug('[executor] Auth heartbeat failed:', err);
     }
   }, cfg.heartbeatIntervalMs);
 
@@ -575,7 +583,7 @@ async function executeAuthRun(
               artifact,
             });
           } catch (err) {
-            console.error('[executor] emitAuthArtifact failed:', err);
+            log.debug('[executor] emitAuthArtifact failed:', err);
           }
         },
         onAwaitAuthSignal: async (name, opts) => {
@@ -616,12 +624,12 @@ async function executeAuthRun(
       metadata: result.auth.metadata,
     });
 
-    console.error(`[executor] Auth run ${run_id} completed`);
+    log.info(`[executor] Auth run ${run_id} completed`);
     return { itemsCollected: 0 };
   } catch (error) {
     clearInterval(heartbeatInterval);
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[executor] Auth run ${run_id} failed:`, errorMessage);
+    log.info(`[executor] Auth run ${run_id} failed:`, errorMessage);
 
     const diag = extractSubprocessDiagnostics(error);
 
@@ -634,7 +642,7 @@ async function executeAuthRun(
         ...(diag ?? {}),
       });
     } catch (completeErr) {
-      console.error('[executor] completeAuth after failure errored:', completeErr);
+      log.debug('[executor] completeAuth after failure errored:', completeErr);
     }
     return { itemsCollected: 0, error: errorMessage };
   }
@@ -667,7 +675,7 @@ async function executeEmbedBackfillRun(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const errorMessage = `Invalid action_input JSON: ${msg}`;
-      console.error(`[executor] Embed backfill run ${run_id}: invalid action_input JSON:`, msg);
+      log.info(`[executor] Embed backfill run ${run_id}: invalid action_input JSON:`, msg);
       await client.complete({
         run_id,
         worker_id: client.id,
@@ -682,7 +690,7 @@ async function executeEmbedBackfillRun(
   const eventIds: number[] = (input?.event_ids as number[]) ?? [];
 
   if (eventIds.length === 0) {
-    console.error(`[executor] Embed backfill run ${run_id}: no event_ids`);
+    log.info(`[executor] Embed backfill run ${run_id}: no event_ids`);
     await client.complete({
       run_id,
       worker_id: client.id,
@@ -692,7 +700,7 @@ async function executeEmbedBackfillRun(
     return { itemsCollected: 0, error: 'No event_ids' };
   }
 
-  console.error(`[executor] Starting embed_backfill run ${run_id} for ${eventIds.length} events`);
+  log.info(`[executor] Starting embed_backfill run ${run_id} for ${eventIds.length} events`);
 
   // Heartbeat so the gateway's stale-run reaper doesn't time us out.
   // Embed backfills can run for minutes on large batches (each embedding
@@ -704,7 +712,7 @@ async function executeEmbedBackfillRun(
     try {
       await client.heartbeat(run_id);
     } catch (err) {
-      console.error('[executor] Embed backfill heartbeat failed:', err);
+      log.debug('[executor] Embed backfill heartbeat failed:', err);
     }
   }, cfg.heartbeatIntervalMs);
 
@@ -713,7 +721,7 @@ async function executeEmbedBackfillRun(
     const events = await client.fetchEventsForEmbedding(eventIds);
 
     if (events.length === 0) {
-      console.error(`[executor] Embed backfill run ${run_id}: all events already have embeddings`);
+      log.info(`[executor] Embed backfill run ${run_id}: all events already have embeddings`);
       await client.completeEmbeddings({
         run_id,
         worker_id: client.id,
@@ -763,7 +771,7 @@ async function executeEmbedBackfillRun(
       // must mark the run FAILED so the same events get re-queued and the
       // failure is visible — otherwise the batch is silently dropped forever.
       batchError = err instanceof Error ? err.message : String(err);
-      console.error(`[executor] Batch embedding failed for run ${run_id}:`, err);
+      log.debug(`[executor] Batch embedding failed for run ${run_id}:`, err);
     }
 
     // Submit embeddings back to the API. When the batch produced nothing because
@@ -781,13 +789,13 @@ async function executeEmbedBackfillRun(
       return { itemsCollected: 0, error: batchError };
     }
 
-    console.error(
+    log.info(
       `[executor] Embed backfill run ${run_id} completed: ${results.length}/${events.length} embeddings`
     );
     return { itemsCollected: results.length };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[executor] Embed backfill run ${run_id} failed:`, errorMessage);
+    log.info(`[executor] Embed backfill run ${run_id} failed:`, errorMessage);
 
     await client.complete({
       run_id,
@@ -892,7 +900,7 @@ async function processEventChunk(
       }
     }
   } catch (err) {
-    console.error('[executor] Batch embedding generation failed for chunk:', err);
+    log.debug('[executor] Batch embedding generation failed for chunk:', err);
   }
 
   return contentItems;

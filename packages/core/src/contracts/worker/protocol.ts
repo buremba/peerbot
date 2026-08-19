@@ -105,6 +105,80 @@ export const PollRequestSchema = Type.Object({
   app_version: Type.Optional(Type.String()),
   label: Type.Optional(Type.String()),
   connector_manifests: Type.Optional(Type.Unknown()),
+  /**
+   * Agent kinds this device can run for Automations (e.g. `["claude-code"]`).
+   * Advertised by device executors that ship a local CLI spawner. Advisory
+   * until the gateway persists it per-device — it is the eventual replacement
+   * for the hand-synced `DEVICE_AGENT_KIND_LITERALS` list on the write side.
+   */
+  agent_kinds: Type.Optional(Type.Array(Type.String())),
+});
+
+/**
+ * Per-automation device-worker CLI execution settings. Mirrors the server's
+ * `automations.execution_config` jsonb column; a missing key means "use the
+ * dispatcher/CLI default". Field names are snake_case to match the wire payload.
+ */
+export const AutomationExecutionConfigSchema = Type.Object({
+  /** Wall-clock cap in seconds; the dispatcher enforces it by SIGTERM. */
+  timeout_seconds: Type.Optional(Type.Integer()),
+  /** Per-run dollar ceiling (claude-only today). */
+  max_budget_usd: Type.Optional(Type.Number()),
+  /** Model alias/id (`--model` / `-m`). */
+  model: Type.Optional(Type.String()),
+  /** Tool permission mode (`--permission-mode`). */
+  permission_mode: Type.Optional(Type.String()),
+  /** Reasoning effort: low|medium|high (`--effort` / `--variant` / `--thinking`). */
+  effort: Type.Optional(Type.String()),
+});
+
+/**
+ * Automation metadata in the poll envelope. `prompt` is the version-pinned
+ * instructions (author prompt + frozen skill snapshots, composed server-side by
+ * `formatDeviceAutomationInstructions`); `extraction_schema` is the derived
+ * output contract the CLI must satisfy (null for untyped Automations).
+ */
+export const AutomationPollMetaSchema = Type.Object({
+  id: Type.String(),
+  name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  agent_kind: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  notification_channel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  notification_priority: Type.Optional(
+    Type.Union([Type.String(), Type.Null()])
+  ),
+  execution_config: Type.Optional(AutomationExecutionConfigSchema),
+  prompt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  extraction_schema: Type.Optional(
+    Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])
+  ),
+});
+
+/** Trigger event in the automation poll envelope (`approved_input` verbatim). */
+export const AutomationPollEventSchema = Type.Object({
+  trigger_event_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  fired_at: Type.String(),
+  payload: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+});
+
+/** Identity context for a device automation run. */
+export const AutomationPollContextSchema = Type.Object({
+  device: Type.Object({ worker_id: Type.Optional(Type.String()) }),
+  user: Type.Object({
+    user_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  }),
+});
+
+/**
+ * `payload` of an automation poll response — the envelope a device-local CLI
+ * executor passes to the spawned agent. Built ad hoc by `poll.ts` and
+ * hand-decoded by the Mac app's `AutomationDispatcher`; typed here so the TS
+ * daemon can express the same job.
+ */
+export const AutomationPollPayloadSchema = Type.Object({
+  automation: AutomationPollMetaSchema,
+  event: AutomationPollEventSchema,
+  context: AutomationPollContextSchema,
 });
 
 /** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
@@ -159,6 +233,15 @@ export const PollResponseSchema = Type.Object({
       metadata: Type.Record(Type.String(), Type.Unknown()),
     })
   ),
+  /** Owning org of a claimed automation run; sent on the automation lane only. */
+  organization_id: Type.Optional(Type.String()),
+  /**
+   * Automation-run envelope. Present only when `run_type === 'automation'`: the
+   * gateway composes the payload a device-local CLI executor needs to build a
+   * prompt, and the device returns its process exit via `/complete-automation`.
+   * No connector code, credentials, or compiled_code are shipped on this lane.
+   */
+  payload: Type.Optional(AutomationPollPayloadSchema),
 });
 
 export const ActivatePageRequestSchema = Type.Object({
@@ -292,6 +375,41 @@ export const CompleteAuthRequestSchema = Type.Composite([
   WorkerExitDiagnosticsSchema,
 ]);
 
+/**
+ * `POST /api/workers/me/runs/:runId/complete-automation` (device-side EXIT
+ * REPORT). The run id travels in the URL, not the body. Reports process exit
+ * metadata for an automation run executed by a local CLI agent; `finalize_attempt`
+ * is the finalize round the reporting spawn ran under (0 for the first), which
+ * makes the report replayable across a lost response.
+ */
+export const CompleteAutomationRequestSchema = Type.Object({
+  worker_id: Type.String(),
+  output: Type.Optional(Type.String()),
+  error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  duration_ms: Type.Optional(Type.Integer()),
+  exit_code: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  exit_signal: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  exit_reason: Type.Optional(WorkerExitReasonSchema),
+  finalize_attempt: Type.Optional(Type.Integer()),
+});
+
+/**
+ * Response from `complete-automation`. `status: "resume"` means the run is
+ * still claimed and the device should re-spawn its CLI with `nudge` appended
+ * (bounded by `max_attempts`). Other statuses are terminal.
+ */
+export const CompleteAutomationResponseSchema = Type.Object({
+  ok: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
+  status: Type.String(),
+  reason_code: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  attempt: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  max_attempts: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  nudge: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  window_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  idempotent: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
+});
+
 // ── auth signalling ─────────────────────────────────────────────────────────
 
 /** `POST /api/workers/emit-auth-artifact`. */
@@ -355,6 +473,19 @@ export type WorkerExitDiagnostics = Static<typeof WorkerExitDiagnosticsSchema>;
 export type OAuthCredentials = Static<typeof OAuthCredentialsSchema>;
 export type PollRequest = Static<typeof PollRequestSchema>;
 export type PollResponse = Static<typeof PollResponseSchema>;
+export type AutomationExecutionConfig = Static<
+  typeof AutomationExecutionConfigSchema
+>;
+export type AutomationPollMeta = Static<typeof AutomationPollMetaSchema>;
+export type AutomationPollEvent = Static<typeof AutomationPollEventSchema>;
+export type AutomationPollContext = Static<typeof AutomationPollContextSchema>;
+export type AutomationPollPayload = Static<typeof AutomationPollPayloadSchema>;
+export type CompleteAutomationRequest = Static<
+  typeof CompleteAutomationRequestSchema
+>;
+export type CompleteAutomationResponse = Static<
+  typeof CompleteAutomationResponseSchema
+>;
 export type ActivatePageRequest = Static<typeof ActivatePageRequestSchema>;
 export type ActivatePageResponse = Static<typeof ActivatePageResponseSchema>;
 export type ContentItem = Static<typeof ContentItemSchema>;

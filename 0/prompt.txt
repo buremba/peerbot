@@ -1,0 +1,1 @@
+ok can we try using lobu under /tmp with opencode and see if the slack etc all gonna work, and there is no gap

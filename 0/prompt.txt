@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bvn9takua</task-id>
+<summary>Monitor event: "required CI on lobu PR 2388"</summary>
+<event>typecheck: pass</event>
+</task-notification>

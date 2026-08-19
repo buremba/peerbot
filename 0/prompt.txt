@@ -1,0 +1,1 @@
+there is an agent here http://localhost:9283/sidebar-agents-empty/agents/test-research-agent/chat

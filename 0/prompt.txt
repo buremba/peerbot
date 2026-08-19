@@ -1,0 +1,9 @@
+You are advising on CI/repo architecture for a Bun monorepo (lobu) that also carries a git submodule 'owletto' holding k8s manifests and frontend. Multiple autonomous coding agents plus one human share the repo concurrently.
+
+Observed failure modes over one night:
+1. A GitHub Actions concurrency block 'group: ci-${{ github.ref }}' with cancel-in-progress, combined with 'depot ci run' dispatches that supply NO ref, collapsed every local dispatch into one group named 'ci-'. Any new dispatch cancelled any in-flight run org-wide. Just fixed with a '|| github.run_id' fallback.
+2. 'check-drift' is a REQUIRED check asserting the lobu repo's owletto submodule pin is current. Every human commit to owletto/main turns check-drift red on EVERY open lobu PR. Clearing it needs 'gh pr update-branch' (a rerun replays the stale merge commit and reports the old pin). Each update-branch invalidates both the Depot tree attestation and the pi-review status, costing a full gate (~6 min) + LLM review cycle per PR.
+3. PRs merged out from under the session that owned them, while that session was still waiting on its own checks. Merges are indistinguishable by API because every agent uses the human's gh token.
+4. Every gate is tree-hash-bound, so any rebase invalidates it.
+
+Question: what is the best LONG-TERM structural fix? Consider GitHub merge queue, making check-drift non-blocking or moving it to a scheduled bump-PR bot, decoupling the submodule, and any agent-coordination/lease protocol. Rank by leverage vs cost. Be concrete and opinionated, name the tradeoffs you would accept. Answer in under 450 words.

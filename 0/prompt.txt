@@ -1,0 +1,1 @@
+in activity there is still margin, also move the search after the first combobox. make it consistent with models. also is models a good name? people might be confused no? maybe entities or graph or ontology?

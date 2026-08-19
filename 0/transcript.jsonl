@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:32:39.483Z","content":[{"text":"New message in #sales:\n\nmike: @dave can you grab the projector for the 3pm?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:32:40.664Z","id":"d99ad5e4","input_tokens":3420,"output_tokens":19,"content":[{"type":"text","text":"I can’t act on Telegram messages or access your sales channel from here."}]}

@@ -1,0 +1,1 @@
+for slack github etc all use-cases does it make sense. for slack dm we don't need multiple behaviors for a slack bot talking to multiple peoople as dm right

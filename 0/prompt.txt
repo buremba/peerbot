@@ -1,0 +1,1 @@
+ok that's good, same for all and the agent can discover somehow no? do we require people to login to discover? maybe if they're required to login lobu managed stuff can trigger the email stuff, so the user enters their email and get an email to login using our auth. if the agent already knows the user email it can do that autonomously as well

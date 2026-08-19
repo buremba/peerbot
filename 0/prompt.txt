@@ -1,0 +1,1 @@
+dig in the codebase and understand how it works end to end. also for autmations reaction scripts can send notifications right? it can either be dm or a channel etc

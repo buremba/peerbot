@@ -1,0 +1,1 @@
+can we rename the connect to connectors in the landing page?

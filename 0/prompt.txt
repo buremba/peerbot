@@ -1,0 +1,3 @@
+ok on agents page i see No agents match this filter
+
+Try another filter. and there is no filter there. in agents page we should always show the MCP client there no? under connectors also this is a bit off. we should have the normal table and add connector button is on the top right. we just list what people can install easily out of the box. [Image #1]

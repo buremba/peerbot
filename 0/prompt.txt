@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>biu0ip6dx</task-id>
+<summary>Monitor event: "final dry run terminal"</summary>
+<event>DRY TERMINAL: completed|20</event>
+</task-notification>

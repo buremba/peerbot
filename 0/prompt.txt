@@ -1,0 +1,1 @@
+why don't you use api to trigger cli what's wrong

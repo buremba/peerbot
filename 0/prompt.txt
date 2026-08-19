@@ -1,0 +1,1 @@
+there is margin for workspace visibility, we don't need it. also why multple save changes stuff, simplify this page. also remove the label Rename this workspace, set agent write defaults, change visibility, or delete it.

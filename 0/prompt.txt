@@ -1,0 +1,18 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new restoration state machine can resurrect explicitly cleared cards, mix state across host card identities, and erase untouched persisted view-state keys during hydration races. These are functional correctness issues despite the focused tests passing.
+
+Full review comments:
+
+- [P2] Reset retained state when host card identity changes — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:446-450
+  When `toolInfo` changes from one card ID to another after the first restore completes, this branch updates only the ID and name. `hasData`, `viewStateRef`, and their revisions still describe the old card, so the new restore skips replacing its data and may persist the old view state under the new ID. Reset or replace all per-card state before restoring the new identity.
+
+- [P2] Preserve explicit clears across late metadata — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:482-485
+  When ChatGPT sends `toolOutput: null` and then delivers the result capability in a separate metadata event, this assignment clears `resultExplicitlyCleared`; the connected branch then restores the historical snapshot and resurrects content the host explicitly removed. A capability-only update should not supersede an explicit clear without non-empty output or a new card identity.
+
+- [P2] Merge restored keys with edits made during hydration — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:374-375
+  When a result has several saved pagination, sorting, or disclosure keys and the user changes one before the restore RPC returns, this revision mismatch discards the entire restored map. The debounced save then writes only the locally changed keys, erasing all untouched saved state; merge restored state beneath the newer local values instead of rejecting it wholesale.
+  </results>
+  </user_action>

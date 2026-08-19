@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bb9o31ua8</task-id>
+<summary>Monitor event: "pre-pr-remote gate outcome"</summary>
+<event>&gt;&gt; Depot run d9szwqj0kg: finished=10 queued=3 running=5</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8g1nd3yt</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/b8g1nd3yt.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll dev server readiness with explicit failure detection" completed (exit code 0)</summary>
+</task-notification>

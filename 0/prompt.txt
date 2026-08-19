@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b760rlq9x</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/b760rlq9x.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI checks on PR 2219" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>botmo0oi0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/botmo0oi0.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2406 rollout to verify tenancy live" completed (exit code 0)</summary>
+</task-notification>

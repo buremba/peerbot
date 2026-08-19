@@ -1,0 +1,1 @@
+https://chatgpt.com/share/6a81ccd1-f8d0-83eb-85ca-c2880fbd2eae check this it's not actually working multiple bugs. if elicirtations will will fix these bugs we might consider now. apprve button didn't continue the conversation, dropdown is not shown because iframe cuts it. i see loading.. indicator for one but it's not fully loading

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bkb3v0h43</task-id>
+<summary>Monitor event: "prod rollout of merge 32ab462af"</summary>
+<event>DEPLOYED: 32ab462af3d57ec0e3146274e0c0ba4dd58813b4 is live in prod (revision e1a15948607bb1761d157111deedfd60baae22db)</event>
+</task-notification>

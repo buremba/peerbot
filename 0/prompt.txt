@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btn1ilibc</task-id>
+<tool-use-id>toolu_018SrofZTWeKhESNYUrcobti</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/btn1ilibc.output</output-file>
+<status>killed</status>
+<summary>Background command "Relaunch owletto vite dev server on freed port 9160" was stopped</summary>
+</task-notification>

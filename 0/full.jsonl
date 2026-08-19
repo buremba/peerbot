@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"b7059399-f87e-48bf-805c-cfa79aabc023","timestamp":"2026-07-31T16:31:38.373Z","cwd":"/Users/burakemre/Code/lobu"}
+{"type":"model_change","id":"131e1dcb","parentId":null,"timestamp":"2026-07-31T16:31:38.986Z","provider":"openai","modelId":"gpt-5.6-luna"}
+{"type":"thinking_level_change","id":"0cc8f0b3","parentId":"131e1dcb","timestamp":"2026-07-31T16:31:38.986Z","thinkingLevel":"off"}
+{"type":"message","id":"be3ad3e2","parentId":"0cc8f0b3","timestamp":"2026-07-31T16:31:38.987Z","message":{"role":"user","content":[{"type":"text","text":"New message in #sales:\n\nsarah: ok cool, sounds good 👍"}],"timestamp":1785515498986}}
+{"type":"message","id":"db96763d","parentId":"be3ad3e2","timestamp":"2026-07-31T16:31:39.966Z","message":{"role":"assistant","content":[{"type":"text","text":"👍","textSignature":"msg_0c3131f2edf4cc67006a6ccdebcc2c819eb649fd516326cb2d"}],"api":"openai-responses","provider":"openai","model":"gpt-5.6-luna","usage":{"input":3437,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":3442,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1785515498986}}

@@ -139,7 +139,7 @@ for smoke in sdk-lifecycle-e2e sdk-error-taxonomy-e2e cli-command-smoke; do
     fail "$smoke does not restore the built distributions"
 done
 sdk_gate="$(workflow_job "$workflow" sdk-cli-e2e)"
-grep -q '^    needs: \[sdk-lifecycle-e2e, sdk-error-taxonomy-e2e, cli-command-smoke\]$' <<<"$sdk_gate" ||
+grep -q '^    needs: \[sdk-cli-build, sdk-lifecycle-e2e, sdk-error-taxonomy-e2e, cli-command-smoke\]$' <<<"$sdk_gate" ||
   fail "sdk-cli-e2e does not aggregate every deep smoke"
 dead_code="$(workflow_job "$workflow" dead-code-report)"
 [ -n "$dead_code" ] || fail "advisory dead-code report was dropped during SDK fan-out"

@@ -1,0 +1,161 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+This session continued a design exploration of Lobu's "Connect" surface and moved it into implementation. The requests in order:
+
+- **"also the models will live in the agent settings? the model providers can maybe be a dropdown, where we have connect item so the user can see the new providers in a dropdown or select existing, we can even use peek panel for this? that way only connectors and runtime and models under the settings. let's identify all the gaps"**
+- Mid-turn: **"so add models becomes provider select and when the user clicks we can load the models in the new dropdown next to it"** — chained provider→model dropdowns.
+- **"understand it all and identify all the gaps"**
+- **"we don't want to keep legacy stuff and simplify and make sure all works, how hard it is to implement and where the gap is"**
+- **"how about using https://models.dev/"**
+- **"how will the pages look like let's finalize it and use html artifacts"**
+- **"no need to use sliders, why not embedded form"**
+- **"maybe we can switch to models dev id, does it make sense?"** → then **"maybe modelsdevid can be an attribute in the providers so we can optionally pull"**
+- **"what gaps do we have, identify them so we can parallize the work and get it done. interview me if something is needed"**
+- **"don't we require the agent from mcp and if not set use the default agent? so agents become stable, like branches"**
+- **"hmm, maybe this can just be a category?"** → **"like data chat, can't we do like inference?"**
+- **"if we do this, is the architecture gonna simplify dramatically or are we ducktaping more"**
+- **"ok go do the work"** / **"fix it properly make sure it will work. i also need to review in the ui"**
+- **"i don't understand. the whole point was to get rid of the models tab no?"**
+- **"why infrastucture new stuff? can't it be shown just like a connection creation when visiting the connector page"**
+- **FINAL: "the provider page needs to be like the other normal connector page you're diverging and duplicating"**
+
+2. **Key Technical Concepts:**
+   - Bun workspace monorepo (`packages/*`), `owletto` git submodule frontend
+   - TanStack Router file-based routes; `routeTree.gen.ts` is GENERATED, never hand-edited
+   - `models` allow-list as a **fail-closed access gate** enforced at three layers (validation, enqueue gate, dispatch resolver), NOT a preference
+   - Derived-never-stored connection facets (`data`/`chat`/`actions`/`audience`)
+   - models.dev (MIT, sst-maintained) as a build-time data source, joined on `modelsDevId`
+   - jsdom verification harnesses + mutation testing (break code, confirm test fails, restore)
+   - `make task-setup NAME=<slug>` worktree isolation; two writing agents must NEVER share a worktree
+   - GitHub Actions scheduled workflow opening a PR (not direct commit)
+
+3. **Files and Code Sections:**
+
+   **`packages/owletto/src/lib/connect-tabs.ts`** — was FOUR tabs, now TWO:
+   ```
+   label: "Connectors",
+   label: "Runtime",
+   ```
+
+   **`packages/server/src/lobu/model-config.ts`** — the validator. Line 52: sentinels *"round-trip untouched (they are deliberate non-routable placeholders)"*. Line 80: rejects `auto` — `'"auto" is not a model; pick a concrete model'`. Validates ref SHAPE and resolves PROVIDER SLUG only; never checks the model exists.
+
+   **`packages/server/src/auth/builder-provisioning.ts:43`** — `export const BUILDER_AGENT_ID = "lobu-builder"`, `organization.system_agent_id` pointer, set only when NULL, self-healing.
+
+   **`packages/server/src/mcp-handler.ts:817`** — `authCtx.agentId = null` in `syncAgentBinding`; no default agent resolution exists.
+
+   **`db/migrations/20260702170000_inference_providers.sql`** — SEVEN DDL CHECK constraints described as *"the UNCONDITIONAL security floor under the app-layer validator"*. This is why `inference_providers` must NOT merge into `connections`.
+
+   **`packages/owletto/src/components/connectors/facet-chips.tsx`** — the chip change (committed):
+   ```
+   - import { Database, MessagesSquare, Users, Zap } from "lucide-react";
+   + import { Cpu, Database, MessagesSquare, Users, Zap } from "lucide-react";
+   + { key: "inference", label: "Inference", icon: Cpu },
+   ```
+
+   **`packages/owletto/src/components/connectors/connector-page-shell.tsx`** — CRITICAL for the final user feedback. Docstring: *"Page chrome shared by the connector-detail and connection-detail routes... Both routes grew the same shape independently and drifted — three different width rules (max-w-3xl / unconstrained / max-w-6xl) and two header spacings across two files. Centralising the chrome makes that drift impossible; the routes still own their own tabs, rails and content."* Takes `header`, `tabs`, `value`, `onValueChange`, `rail`, `children`.
+
+   **`packages/server/src/utils/url-builder.ts`** — committed change closing the Slack split-brain:
+   ```
+   - const url = new URL(`/${encodeURIComponent(slug)}/infrastructure/models`, `${webOrigin}/`);
+   + const url = new URL(`/${encodeURIComponent(slug)}/connectors/providers`, `${webOrigin}/`);
+   ```
+
+   **`config/providers.json`** — track A change:
+   ```
+   + "modelsDevId": "anthropic",
+   - "models": ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5"]
+   ```
+
+   **`/private/tmp/.../scratchpad/model-picker-spec.html`** — published artifact at `https://claude.ai/code/artifact/831d9073-ba1a-418d-84fa-95c8572636f7`, 66 jsdom assertions passing.
+
+   **Memory file created/edited: `project_inference_facet_connect_surface.md`** — final edit corrected the provider-page decision to use the SAME detail page via `ConnectorPageShell`, noting the blocker: `/connectors/$connectorKey` resolves keys against `useInstallableConnectorCatalog` and dead-ends on provider keys.
+
+4. **Errors and fixes:**
+
+   - **Claimed "no revoke route" (from prior session)** — codex proved `DELETE /mcp/:clientId` exists at `client-routes.ts:302`. Corrected.
+   - **Artifact mutation escaped (splitRef lastIndexOf)** — my test asserted the stored string, not that parsing worked. Strengthened to assert the resolved provider name; the stronger test then caught a real bug in my own render path.
+   - **Briefed track E to delete `/inference-providers/new` as frontend-only** — WRONG. It's a server-rendered Slack/Telegram CTA target. Agent stopped correctly. I had traced the frontend and stopped.
+   - **Briefed `provider-connect` → `#models`** — WRONG. That fires when NO provider is connected; `#models` is an allow-list picker over existing models. Agent stopped again.
+   - **Claimed MCP has no default agent** — user pushed back ("don't we have the default builder agent setup"), and they were right: `BUILDER_AGENT_ID` exists.
+   - **Proposed a hardcoded alias map** — user proposed `modelsDevId` as a provider attribute, which is better.
+   - **Proposed three bad options for "where does leftover UI go"** — user proposed the `inference` facet, better than all three.
+   - **Over-split the work** (user: *"i don't understand. the whole point was to get rid of the models tab no?"*) — I deferred tab removal as a follow-up when the precondition was met by the same branch.
+   - **FINAL, unresolved: page-level fork** (user: *"the provider page needs to be like the other normal connector page you're diverging and duplicating"*) — I let a form-level difference (provider auth doesn't fit `auth_schema`) justify a separate provider detail page. Corrected in memory; NOT yet corrected in any brief or code.
+   - **Port confusion** — checked health on 9054 while the facet server was on 9057 (task-setup allocates per worktree). A stale poller failed with exit 7; false alarm.
+   - **`make review-fix` reverted deliberate work on THREE separate branches** — track A (restored curated `models` arrays), track E (restored old CTA destination), facet branch (re-inlined a magic string it had been told to pin). Each time the agent kept the genuine catches and reverted the rest.
+
+5. **Problem Solving:**
+   - Established `models` is a security policy, not a setting — so the picker must append into the ordered allow-list, never replace it.
+   - Verified the models.dev join 17/17 with 7 aliases (product-vs-vendor naming).
+   - Determined a stale snapshot never blocks anyone: freeform escape hatch at `models-list-editor.tsx:195` + validator never checks model existence.
+   - Read the migration to answer "simplify or ducktape" — facet good, table merge bad.
+   - Verified GitHub settings so two of three "needs a human" workflow items were non-issues.
+   - Recovered a session-limit-interrupted agent by verifying its partial state, running gates, and committing.
+
+6. **All user messages:**
+   - "also the models will live in the agent settings? the model providers can maybe be a dropdown, where we have connect item so the user can see the new providers in a dropdown or select existing, we can even use peek panel for this? that way only connectors and runtime and models under the settings. let's identify all the gaps"
+   - "so add models becomes provider select and when the user clicks we can load the models in the new dropdown next to it"
+   - "understand it all and identify all the gaps"
+   - "we don't want to keep legacy stuff and simplify and make sure all works, how hard it is to implement and where the gap is"
+   - "how about using https://models.dev/"
+   - "how will the pages look like let's finalize it and use html artifacts"
+   - "no need to use sliders, why not embedded form"
+   - "maybe we can switch to models dev id, does it make sense?"
+   - "ok how big is this change, should we start implementing? it will become a new chip like data chat etc right?" (note: this came later, after the facet discussion)
+   - "what gaps do we have, identify them so we can parallize the work and get it done. interview me if something is needed"
+   - "agent settings are where the creds are shown and we still have the ordering right?why snapshot can we do backend migration use their id etc or you don't recommend it? maybe modelsdevid can be an attribute in the providers so we can optionally pull"
+   - "ok sounds good. identigy yhe gaps and confirm the work with me"
+   - "don't we require the agent from mcp and if not set use the default agent? so agents become stable, like branches. the request needs to just set which agent it is so we can redirect to the agents settings models for the user to connect"
+   - "hmm, maybe this can just be a category?"
+   - "like data chat, can't we do like inference?"
+   - "if we do this, is the architecture gonna simplify dramatically or are we ducktaping more"
+   - "ok go do the work"
+   - "why do we generate snapshot? instead of pulling from models dev at runtime"
+   - "what's rescheduled regen? a public workspace we have on lobu or git commit etc via github actions let me know"
+   - "does this mean people can't use a model for a week if we don't release a new version"
+   - "ok sounds good let's do it. anything left for the session/"
+   - "fix it properly make sure it will work. i also need to review in the ui"
+   - "hmm, why infrasturcture, didnd'we we do it under connect page?"
+   - "we don't have explicit infarstucture tab etc no?"
+   - "what's the url so i can test"
+   - "still seeing the models tab?"
+   - "i don't understand. the whole point was to get rid of the models tab no?"
+   - "why infrastucture new stuff? can't it be shown just like a connection creation when visiting the connector page"
+   - "the provider page needs to be like the other normal connector page you're diverging and duplicating"
+
+7. **Pending Tasks:**
+   - **Correct the provider-page design** per the final user feedback — providers use the SAME `/connectors/$connectorKey` detail page via `ConnectorPageShell`, not a parallel page. Blocker: that route resolves keys against `useInstallableConnectorCatalog` and dead-ends on provider keys.
+   - Delete `/inference-providers/new` once provider keys resolve on the connector detail page.
+   - Open three PRs — nothing has been pushed.
+   - Browser verification: nothing has been visually verified all session (confidence numbers of 60–75 all stem from this).
+   - Decide whether MCP should resolve `system_agent_id` when no `x-lobu-agent-id` header arrives.
+
+8. **Current Work:**
+
+   Immediately before the summary request, the user gave feedback: **"the provider page needs to be like the other normal connector page you're diverging and duplicating"**.
+
+   I read `packages/owletto/src/components/connectors/connector-page-shell.tsx` and found its docstring proves the user's point: the shell exists *because* connector-detail and connection-detail routes *"grew the same shape independently and drifted"*. I acknowledged that I let a form-level difference (provider auth uses `supportedAuthTypes`/OAuth-paste/device-code, which doesn't fit the generic `auth_schema` that `DynamicConnectorForm` renders) justify a page-level fork.
+
+   I then edited `project_inference_facet_connect_surface.md` to replace the wrong decision with:
+   > "**Providers use the SAME detail page as every other connector** — `/connectors/$connectorKey`, rendered through `ConnectorPageShell`. Not a parallel provider page... The ONLY provider-specific piece is the form in the content slot: `CreateProviderForm` where connectors render `DynamicConnectorForm`... But a form-level difference must not justify a page-level fork — header, tabs, rail, status and chips all come from the shared shell. Blocker to solve: `/connectors/$connectorKey` currently resolves its key against `useInstallableConnectorCatalog`, finds no provider, and dead-ends with 'this connector isn't installed'. Provider keys must resolve there."
+
+   Three branches are committed locally, none pushed:
+   - `models-dev-snapshot` — 18 files, `modelsDevId` + snapshot + weekly regen workflow
+   - `connect-tabs-cta` — `provider-management` CTA repoint + `#models` anchor
+   - `inference-facet` — `inference` facet + provider rows + two-tab collapse + `infrastructure/` route rename (final commit `67115ab21` made by me after the agent hit a session limit)
+
+   Dev server running on **http://127.0.0.1:9057** from the `inference-facet` worktree, DB `lobu_feat_inference_facet`, org slug `local-install`, with two seeded provider rows (claude, groq) using fake credential refs.
+
+9. **Optional Next Step:**
+
+   The user's final message was feedback identifying a design flaw, not a request to implement. I have corrected the memory record but have NOT changed any code or brief.
+
+   The natural next step is to confirm with the user how to act on **"the provider page needs to be like the other normal connector page you're diverging and duplicating"** — specifically whether to fold the fix into the next branch (the connect-flow branch the user already scheduled as "Next branch, after this lands") and how to handle the blocker I identified: `/connectors/$connectorKey` resolves its key against `useInstallableConnectorCatalog` and dead-ends on provider keys, which the earlier agent verified and which I had explicitly told it not to bend.
+
+   Since the user's last input was a correction rather than a new instruction, I should confirm scope before dispatching work.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

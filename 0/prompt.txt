@@ -1,0 +1,1 @@
+on slack, do we automatically create the member users when joined and scrape the data? in lobusandbox it doesnt seem to know

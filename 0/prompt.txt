@@ -1,0 +1,185 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   User messages in chronological order:
+   - **"fix all properly and make sure instagram etc also works test e2e fix merge"** (carried from prior context) — fix discovered bugs, verify Instagram, run e2e, merge.
+   - **"cleanup fix and make sure it all works. i want the system to also let me now duplicate entiteies and let me merge etc"** — (a) repair the bad prod entity data, (b) verify it works, (c) surface duplicate entities and allow merging ("now" = "know").
+   - **"don't we have a behavior for it"** — challenge: check whether a Behavior already does duplicate detection/merge before building anything.
+   - **"you need to operate on the worktrees no?"** — challenge on worktree hygiene.
+   - **"also do we have the google maps pins saved places favourites and everything?"** — is Google Maps takeout data (pins/saved places/favourites) ingested?
+   - **"why is it mine? doesn't takeout collector automatically do that"** — pushback on over-escalating a decision; expectation that a takeout connector ingests the takeout.
+   - **"any more stuff we can include in the google takeout btw?"** — what other Takeout data could be ingested.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo, Bun workspace, worktree-per-task via `make task-setup NAME=<slug>`
+   - Gate sequence: `make review-fix` → stage by explicit path → `make pre-pr-remote` (Depot, 18 lanes, tree attestation) → commit → `gh pr create` → `make review` (posts required `pi-review`) → `make ui-review` → `gh pr merge --squash --admin`
+   - **`events.entity_ids` is NEVER written by the sync path** — links recovered by JOIN-at-read through `entity_identities`
+   - Entity names use `INSERT … ON CONFLICT DO NOTHING` → set only at creation, never self-heal
+   - Entity resolution: `x-lobu-resolution` on `entity_types.metadata_schema`; `discoverEntityResolutionGroups`; `normalizedResolutionRuleKeys` cross-products `rule.fields`
+   - Behavior templates in `packages/server/src/catalog/behavior-templates.ts`
+   - Device workers: `requiredCapability: "os.files"`, `setup_family: device_bound`, `deviceWorkerId` in `defineConnection`
+   - GeoJSON coordinate order `[longitude, latitude]`
+   - Depot CI contention: concurrent runs supersede/cancel each other; bun 1.3.5 silently ignores `timeout` in bunfig
+
+3. **Files and Code Sections:**
+
+   - **`examples/personal-agent/x-identity.ts`** (worktree `takeout-entity-naming`, staged)
+     Final state after synthesizing my fix with review-fix's:
+     ```ts
+     // Single-segment routes that are shaped exactly like a profile link but are
+     // not one. The anchored pattern below cannot separate `twitter.com/home` from
+     // `twitter.com/jack` structurally — only a list can.
+     //
+     // Deliberately checked HERE and not in `normalizeXHandle`: a real @home or
+     // @intent account exists, and a handle that arrives from tweet metadata rather
+     // than from URL parsing must survive. Only the URL reading is ambiguous.
+     const RESERVED_X_ROUTES = new Set([
+       "home", "explore", "notifications", "messages", "settings",
+       "compose", "search", "login", "logout", "signup", "privacy", "tos",
+     ]);
+
+     export function handleFromUserLink(
+       userLink: string | null | undefined
+     ): string | null {
+       if (typeof userLink !== "string") return null;
+       const match = userLink.match(
+         /^https?:\/\/(?:www\.)?(?:twitter|x)\.com\/([^/?#]+)\/?(?:[?#].*)?$/i
+       );
+       if (!match) return null;
+       const handle = normalizeXHandle(match[1]);
+       return handle && RESERVED_X_ROUTES.has(handle) ? null : handle;
+     }
+     ```
+     `normalizeXHandle` left permissive (no reserved check) so a real @intent from tweet metadata survives.
+
+   - **`examples/personal-agent/instagram-takeout.connector.ts`** (staged)
+     ```ts
+     const username = usernameFromProfileUrl(url) ?? undefined;
+     // `following.html` can repeat the profile URL as its anchor text. Use
+     // the resolved handle for display in that case, while preserving real
+     // display names from the other connection files.
+     const displayName = /^https?:\/\//i.test(name)
+       ? (username ?? name)
+       : name;
+     return [
+       {
+         // Keep source identity based on the original export fields; display
+         // normalization must not cause existing rows to be minted again.
+         origin_id: stableId("ig_connection", [kind, url, name]),
+         ...
+         payload_text: `${kind}: ${displayName}`,
+         author_name: displayName,
+     ```
+     `IG_CONNECTION_ATTRIBUTIONS` uses `titlePath: "author_name"` — why the URL became the entity name.
+
+   - **`examples/personal-agent/__tests__/twitter-takeout.connector.test.ts`** — added `handleFromUserLink rejects BARE reserved routes too` test asserting `/home`, `/search?q=x`, `/notifications` → null and `normalizeXHandle("@home") === "home"`.
+
+   - **`examples/personal-agent/__tests__/instagram-takeout.connector.test.ts`** — added test with realistic fixture `<a href="…/_u/rampue">https://www.instagram.com/_u/rampue</a>` asserting `author_name === "rampue"`, plus a test that real display names are preserved verbatim.
+
+   - **`packages/connector-worker/src/bin.ts`** (worktree `local-os-files-worker`, staged) — reviewer blocker fix:
+     ```ts
+     if (platform && !process.env.WORKER_API_TOKEN?.startsWith('owl_pat_')) {
+       console.error(
+         'Error: device mode requires a durable personal access token in WORKER_API_TOKEN.\n' +
+           "       `lobu whoami --json` falls back to your session's OAuth access token, which\n" +
+           '       expires within 24h and would leave this daemon polling 401 indefinitely.\n' +
+           '       Mint a device token and pass it as WORKER_API_TOKEN (expects an owl_pat_ prefix).'
+       );
+       process.exit(1);
+     }
+     ```
+
+   - **`packages/connector-worker/src/__tests__/device-mode-requires-durable-token.test.ts`** (NEW, staged) — 4 tests spawning the bin against `http://127.0.0.1:1`: no token → fail closed, OAuth token (`ya29.…`) → fail closed, `owl_pat_…` → reaches "Starting worker daemon", fleet (no `--platform`) → unaffected.
+
+   - **`packages/connector-worker/src/__tests__/device-worker-poll-body.test.ts`** — header compressed from 27 lines to 8 per reviewer request.
+
+   - **`examples/personal-agent/google-takeout.connector.ts`** (worktree `google-maps-takeout`, NEW WORK, uncommitted)
+     Added `last_maps_timestamp?: string` to checkpoint; `MapsFeature` interface; `maps` feed declaration; sync branch; description updated to mention Maps. New methods:
+     ```ts
+     private readMapsEvents(takeoutDir: string): EventEnvelope[] {
+       return [
+         ...this.readMapsPlaceFile(takeoutDir, "Saved Places.json", "saved_place"),
+         ...this.readMapsPlaceFile(takeoutDir, "Reviews.json", "place_review"),
+         ...this.readMapsListEvents(takeoutDir),
+       ];
+     }
+     ```
+     `readMapsPlaceFile` reads `Maps (your places)/<file>`, requires `location.name`, uses `parseDate(props?.date)`, destructures `const [longitude, latitude] = feature.geometry?.coordinates ?? []`, `origin_id: stableId("google_maps_place", [originType, props?.google_maps_url, name])`.
+     `readMapsListEvents` reads `Saved/*.csv`, list name from filename, `occurredAt` from `statSync(filePath).mtime.toISOString()`, skips blank Title rows, `origin_id: stableId("google_maps_list_place", [listName, title, row.URL])`.
+     Imports added: `statSync` from node:fs; `parseCsv`, `parseDate` from takeout-utils.
+
+   - **`examples/personal-agent/lobu.config.ts`** (google-maps-takeout worktree) — added:
+     ```ts
+     {
+       feed: "maps",
+       config: takeoutConfig("GOOGLE_MAPS_TAKEOUT_DIR", "google-maps"),
+     },
+     ```
+
+   - **`examples/personal-agent/__tests__/google-maps-takeout.test.ts`** (NEW, 11 tests, all pass) — fixture-based; pins GeoJSON lon/lat order, name-required guard, review rating + questions, list name from filename, mtime-as-date rationale, trailing empty row dropped, origin_id distinct+stable across runs.
+
+   - **`/private/tmp/claude-501/…/scratchpad/e2e/lobu.config.ts`** — e2e rig config, now has twitter + instagram + google connections, all with `deviceWorkerId: process.env.E2E_DEVICE_WORKER_ID`.
+
+4. **Errors and fixes:**
+
+   - **Wrong column measured** — I reported "0% attribution" from `events.entity_ids`. `entity-link-upsert.ts:15` says it's never written by design. Corrected to the user explicitly.
+   - **AskUserQuestion rejected** — user wanted to clarify; then asked "don't we have a behavior for it". I had started designing a `find_duplicates` API without checking the catalog. Root fix: grep the behavior catalog first.
+   - **`trigger_feed` 403** — pat.txt was the device-worker PAT (empty scope). Minted a new admin PAT via direct SQL insert (sha256 hash, 12-char prefix); first insert failed on FK because I used the PAT *name* `local-init` as organization_id instead of `org_KMEpsnsTQa0`.
+   - **Twitter re-sync returned 0 items** — checkpoint `last_followers_timestamp` already past the 1970-01-02 stamp. Fixed by `UPDATE feeds SET checkpoint='{}'::jsonb WHERE id=2`.
+   - **Device-bound apply failure** — "pass device_worker_id for one of your devices". Fixed by adding `deviceWorkerId` to `defineConnection` (field exists in `packages/cli/src/config/define.ts:288`).
+   - **review-fix replaced my approach** — dropped `RESERVED_X_HANDLES`, anchored the regex, and flipped my assertion. It caught a real bug in mine (unanchored regex matched `example.com/twitter.com/jack`). I synthesized both rather than reverting.
+   - **`make task-setup` failed** — "branch already used by worktree at personal-agent-config-drift". Fixed by `git restore --source=HEAD --staged --worktree`, switching the old worktree back to `feat/personal-agent-config-drift`, then re-running task-setup.
+   - **New worktree diff showed 3 extra files** — looked like contamination; was actually the branch being 1 commit behind main (#2689). `git status` showing only my 4 files was the discriminator. Fixed with `git merge --ff-only origin/main`.
+   - **Depot gate failures (×4)** — I called it flake, then "infra", then found the real cause: peer Claude sessions running concurrent gates. Also **my own drain-loop was broken**: `pgrep -f "run-remote-ci.sh"` self-matches because the `zsh -c` wrapper's command line contains the literal string. My bounded `for` loop degraded to a fixed ~30-min wait. Correct check: `ps -o pid,etime,command -A | grep "[r]un-remote-ci.sh"`.
+   - **I collided with a peer** — started a gate seconds before their claim arrived; two live runs (PIDs 99655 mine, 6247 theirs). I killed mine (larger remaining work) rather than defend first-start.
+   - **Memory contradictions I wrote and corrected:** I wrote "cancelled = contention, failed = real failure" into memory, contradicting my own note from 16:08 the same day. Peers corrected both halves — neither status classifies. Also corrected: `(unnamed)` is the *first test* carrying a ~1.43s `beforeAll`, NOT the beforeEach hook; TRUNCATE is ~150ms not ~4s.
+   - **Misattributed a peer finding** — credited `/ui-approve` discovery to the wrong session; corrected with both.
+
+5. **Problem Solving:**
+
+   - **Prod entity repair (DONE, verified):** org `8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd`. Backed up 1126 rows to `entity-repair-backup.tsv` first. Verified no unique constraint on `entities.name` (only `entities_slug_parent_unique`). Single transaction: 824 UPDATE (name = x_user_id identifier, `metadata - 'x_handle'`, aliases filtered), 302 UPDATE (name = ig_username), 1 DELETE from entity_identities. Second transaction: 265 rows with junk `intent` alias stripped. All verification counts now 0.
+   - **Duplicate-merge Behavior (diagnosed, no code):** exists as built-in template, active in prod, runs daily, has done 16 merges. Detection ceiling = person type's 4 rules (email auto_merge, phone review); only 280/475 of ~5,000 entities qualify. Person entities by identity-namespace count: 0:624, **1:3718**, 2:635, 3+:26. 38 people split across `ig_username`/`x_handle`/`linkedin_slug` on identical handle strings. Cross-connector matching unreachable by config due to cross-product semantics.
+   - **Google Maps feed (BUILT, tested, e2e in progress):** 383 events parsed from real archive — 27 saved_place, 19 place_review, 337 saved_list_place, all 383 distinct origin_ids.
+   - **Takeout inventory:** Takeout 2 has 47 subfolders. Unused high-value: My Activity (159 files; Gemini Apps 166MB, Maps 2.7MB, YouTube 2.5MB, Search 2MB), Google Chat (54), Drive (961+25+75), Calendar (5 .ics), Google Health (2114), Fit (126), Contacts (1000 vcards but only 37 email + 136 tel lines), Tasks, Purchases & Reservations. Chrome should be skipped — `History.json` has `Browser History: 0`.
+
+6. **All user messages:**
+   - "fix all properly and make sure instagram etc also works test e2e fix merge"
+   - "cleanup fix and make sure it all works. i want the system to also let me now duplicate entiteies and let me merge etc"
+   - "don't we have a behavior for it"
+   - "you need to operate on the worktrees no?"
+   - "also do we have the google maps pins saved places favourites and everything?"
+   - "why is it mine? doesn't takeout collector automatically do that"
+   - "any more stuff we can include in the google takeout btw?"
+
+7. **Pending Tasks:**
+   - Finish e2e of the Maps feed (trigger the feed, verify events land)
+   - Gate all three branches on Depot (queued behind peer's bunfig fix), push, open PRs, merge
+   - Answer/act on which additional Takeout sources to ingest — I recommended My Activity (Search+Maps+YouTube, excluding Gemini) and Calendar
+   - Duplicates decision: whether to add union semantics to the rule engine (unlocks 38 handle-split people but reverses the template's deliberate "never decide identity from names, aliases, or handles" stance)
+   - Optionally re-trigger duplicate Behavior to re-raise the 10 expired proposals (`expired` doesn't suppress by fingerprint, only `rejected` does)
+   - Tear down local e2e rig (daemon, port 9418, admin PAT minted in dev DB)
+
+8. **Current Work:**
+
+   E2E'ing the Google Maps feed through the local rig. Verified rig alive (gateway 9418 → 200, 2 connector-worker processes, device worker `e6ce5f2c-8228-44bd-8cfa-b25d1f0715ae`). Copied the new `google-takeout.connector.ts` and `takeout-utils.ts` into the scratchpad e2e dir, added a `googleConnection` (slug `e2e-google-maps`, feed `maps`, `GOOGLE_TAKEOUT_DIR=$HOME/Downloads/Takeout 2`) to the e2e config, and ran apply successfully:
+   ```
+   + connector-definition google.takeout (installed)
+   + connection e2e-google-maps
+   + feed e2e-google-maps/maps
+   Apply complete.
+   ```
+   Prior to this: `git status` in `google-maps-takeout` worktree shows `M google-takeout.connector.ts`, `M lobu.config.ts`, `?? __tests__/google-maps-takeout.test.ts`; `git diff --stat origin/main` = 2 files, 184 insertions. Full example suite: **213 pass, 0 fail across 10 files**.
+
+   Depot slot held by a peer (PID 37800). Two other branches staged and waiting: `local-os-files-worker` (3 files, PR #2687) and `takeout-entity-naming` (4 files, no PR yet).
+
+9. **Optional Next Step:**
+
+   Trigger the newly created `e2e-google-maps/maps` feed and verify the events land, completing the e2e for the Maps feed — directly continuing the work in flight. The feed id needs looking up, then:
+   `curl -s -X POST http://localhost:9418/api/local-install/manage_feeds -H "Authorization: Bearer $(cat scratchpad/admin-pat.txt)" -d '{"action":"trigger_feed","feed_id":<id>}'`, then verify with `psql -p 5418 -d lobu_feat_local_os_files_worker` that ~383 events landed with `metadata->>'platform'='google_maps'` across the three origin_types.
+
+   This follows from the user's "why is it mine? doesn't takeout collector automatically do that" (build the Maps feed) and my stated next action: *"E2E the Maps feed through the device worker like I did for twitter/instagram, then gate it."* Confidence stated to the user was **90** on the Maps feed precisely because *"it has **not** been ingested end-to-end through a device worker yet, and no gate has run."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

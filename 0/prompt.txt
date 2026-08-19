@@ -1,0 +1,48 @@
+<task-notification>
+<task-id>a5f26caf44f9ac647</task-id>
+<tool-use-id>toolu_01VBabFEoCBSB7z3KuVzRT3q</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/a5f26caf44f9ac647.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix agents org-less lookup" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Verdict: you were right. Confirmed independently, and it is reachable — not latent-only.
+
+**PR #2287** — https://github.com/lobu-ai/lobu/pull/2287 (I did not run `make review`.)
+
+### Verification against `origin/main` (run, not assumed)
+Dumped `pg_indexes` on a freshly-initdb'd Postgres with the baseline DDL — **exactly 2 indexes**, only `agents_pkey UNIQUE (organization_id, id)` is unique. Grepped every migration: no other unique constraint on `agents.id` was ever added. Inserted `lobu-builder` into two orgs — accepted, and the unscoped `WHERE id = …` returned **2 rows**.
+
+### Reachability — one concrete external chain (the comment's own claim is what's false)
+`createLobuAuthBridge` only recognizes PAT bearers and Better Auth sessions. The `lobu_settings_session` cookie is invisible to it, so `c.get("user")` is null and `createLobuOrgContextMiddleware` hits `if (!user?.id) { await next(); return; }` — **no orgContext**. Meanwhile `GET /api/v1/agents/:agentId/config` authenticates *purely* on that cookie. Bot posts `/connect/claim` link → cookie set → 302 to `/config` → `getSettings(agentId)` unscoped. So "HTTP request paths always have an org context" is false, and so is "agent IDs are globally unique."
+
+**Strongest corroboration, which I did not expect:** a pre-existing test `worker-path-org-scope-e2e.test.ts` (from incident #1779) *asserted the leak as correct behavior*, pinning `unscoped?.models?.[0]` to the wrong org's model. My fix necessarily broke it; I updated it to assert fail-closed.
+
+### Red → green → mutation
+RED returned Tenant A's `soulMd: "secret soul for A"`, `models`, `preApprovedTools: ["tool_A"]` to a caller with no tenant identity. GREEN 4/4 + 18/18 bun:test. Mutation (fix reverted to `origin/main`) → 2 red on vitest **and** 1 red on bun:test; restored → green. Full outputs in the PR body.
+
+### `git diff --stat origin/main...HEAD`
+```
+ .../__tests__/agent-config-org-scope.test.ts       |  86 +++++++++++++++++
+ .../__tests__/worker-path-org-scope-e2e.test.ts    |  19 ++--
+ .../src/gateway/routes/public/agent-config.ts      |  98 +++++++++++++------
+ .../__tests__/agents-orgless-cross-tenant.test.ts  | 107 +++++++++++++++++++++
+ packages/server/src/lobu/stores/postgres-stores.ts |  82 ++++++++--------
+ 5 files changed, 307 insertions(+), 85 deletions(-)
+```
+Chose refuse-on-no-org over `rows.length &gt; 1`: the latter passes silently on a single-tenant deployment and only throws the day a second org provisions the same agent — a time-bomb, not a guard. No legitimate caller regresses (all gateway callers already pass `{organizationId}`; `catalog/installed.ts` is org-gated by router middleware).
+
+**Two things I did beyond the brief, flagging for your judgment:** `make review-fix` rewrote `agent-config.ts`'s auth path so the settings-cookie route resolves its tenant explicitly — without it the store guard would have made that config page return empty. I verified its three API assumptions (`createOwnershipResolver`, `listGrants(agentId, orgId)`, `isDeclaredAgent`) all exist with matching signatures, and kept it. It also deleted my schema-proof test and the "why" comments; I restored both.
+
+### Confidence
+- **Store fix (`postgres-stores.ts`) — 93.** Ran the DDL/index dump, the collision insert, red→green→mutation→green on a real DB.
+- **Premise that the comment was false — 97.** Empirical index dump plus successful two-org insert; independently corroborated by `tool-cache.ts` and the #1779 test.
+- **Reachability chain — 85.** Traced in source end-to-end and confirmed the middleware early-return and the cookie-only auth by reading both files. I did **not** boot the server and drive `/connect/claim` in a browser — that is the gap.
+- **`agent-config.ts` route change — 72.** Typechecks, 18/18 targeted tests pass including the new org-scope test, APIs verified. But it is a fixer-authored auth rewrite I reviewed rather than wrote, and I never exercised the real cookie flow against a booted server.
+
+### Next actions
+1. **Boot and drive the real `/connect/claim` → `/config` flow** — the one owed verification. It closes the gap on both the reachability claim and the `agent-config.ts` rewrite (my lowest-confidence surface).
+2. Run `make test-integration` in full — I ran the store suites and targeted gateway suites, not the whole DB-backed gate.
+3. Decide whether the `agent-config.ts` auth rewrite should split into its own PR; it is a defensible second concern and would make review cleaner if you'd rather keep this one purely to the store guard.
+4. Sweep the class outside this file — the trace flagged `cli/gateway.ts:401` and `agent-ownership.ts:165` as still deciding ownership from org-less metadata reads. My guard makes them fail closed rather than leak, but their surrounding logic still assumes a row comes back.</result>
+<usage><subagent_tokens>146387</subagent_tokens><tool_uses>78</tool_uses><duration_ms>1669522</duration_ms></usage>
+</task-notification>

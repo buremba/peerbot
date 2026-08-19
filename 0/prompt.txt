@@ -1,0 +1,19 @@
+Review the design document at /private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/scratchpad/design-connection-wide-behaviors.md against this repository.
+
+It proposes deleting the `connections.agent_id` column (the chat 'fallback agent') and replacing its function with Behavior message.created triggers whose `match` omits `channel_id`, meaning 'every channel on this connection'.
+
+Verify the design's factual claims against the actual code, especially:
+- packages/server/src/gateway/services/platform-helpers.ts (resolveAgentId two-tier routing)
+- packages/server/src/gateway/channels/behavior-subscription-service.ts (createChatBehavior, loadChatBehaviorSubscriptions, materializeConnectionFallbackLink)
+- packages/server/src/gateway/services/agent-thread-list.ts (resolveChannelVisibility, isConversationVisible)
+- packages/server/src/gateway/connections/message-handler-bridge.ts (the DM-vs-group materialization branch)
+- the behavior_message_subscriptions view definition and its channel_id discriminator
+
+I want you to be adversarial. Specifically:
+1. Is any factual claim in the design WRONG about this codebase?
+2. What consumer, code path, or invariant does the design MISS entirely? I found four consumers that index connections by agent - are there more?
+3. Is the proposed wildcard discriminator (D1) actually sound, or does removing the channel_id NOT NULL predicate from the view break something else that relies on it?
+4. Does deleting materializeConnectionFallbackLink lose any property that the connection-wide binding does NOT reproduce?
+5. Is the PR sequencing safe - is there a step where routing is broken in between?
+
+Be concrete and cite file:line. Do not rewrite the design; report defects.

@@ -1,0 +1,11 @@
+<task-notification>
+<task-id>b2he3v451</task-id>
+<summary>Monitor event: "2326 required checks all reporting"</summary>
+<event>base-branch-guard: pass
+check-drift: pass
+format-lint: pass
+frontend: pass
+migrations: pass
+typecheck: pass
+unit: pass</event>
+</task-notification>

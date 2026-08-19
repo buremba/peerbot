@@ -1,0 +1,1 @@
+is our jira integration support creating issues changing stuff and all? does confluence have mcp we can just use it in the connector?

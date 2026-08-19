@@ -1,0 +1,1 @@
+this is weird. why can't we make the device page similar to how a connector page is http://localhost:5180/buremba/connectors/device%3A2e8a0557-ddd9-48a9-913e-f476163c0cd2 also why not connectors/device/[]

@@ -1,0 +1,1 @@
+is it you that i'm getting 💥 Worker crashed: Provider finish_reason: function_call_filter: MALFORMED_FUNCTION_CALL

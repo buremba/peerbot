@@ -1,0 +1,1 @@
+what's the best long term here? we can fix things if it will help. you say ingest time scoring but isn't classification a way for the agents to on demand classify and test and iterate etc

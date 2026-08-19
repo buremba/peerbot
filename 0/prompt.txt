@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzmnn9dhu</task-id>
+<tool-use-id>toolu_01HHpEyfkBaDqEa4dy3Hd3hm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bzmnn9dhu.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the unit test suite" completed (exit code 0)</summary>
+</task-notification>

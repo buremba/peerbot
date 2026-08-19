@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bium8fm9c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bium8fm9c.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run gate on rebased tree" completed (exit code 0)</summary>
+</task-notification>

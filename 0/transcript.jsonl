@@ -1,0 +1,1 @@
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"assistant","ts":"2026-08-11T00:44:12.182Z","content":[{"text":"The capability argument is consistently forwarded in both snapshot-save paths and matches the paired server contract. Focused tests, TypeScript compilation, and the MCP App bundle build pass.","type":"text"}]}

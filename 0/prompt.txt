@@ -1,0 +1,7 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The capability argument is consistently forwarded in both snapshot-save paths and matches the paired server contract. Focused tests, TypeScript compilation, and the MCP App bundle build pass.
+  </results>
+  </user_action>

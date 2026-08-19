@@ -1,0 +1,1 @@
+hmm, doesn't connectors support extending from existing mcp

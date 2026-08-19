@@ -1,0 +1,1 @@
+how is it working really? when a new connector is being installed, the user can also select mcp or url etc we used to have no? after instaleld we show the connector page

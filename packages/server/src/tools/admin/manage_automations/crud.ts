@@ -739,6 +739,11 @@ export async function handleDelete(
           recordChangeEvent({
             entityIds: entityIds.map(Number),
             organizationId: automation.organization_id as string,
+            subject: 'automation',
+            // `deleted`, not `archived`: the lifecycle and config writers for
+            // this same action below already stamp `automation.deleted`, and
+            // one action must not fork the shared vocabulary.
+            op: 'deleted',
             title: `Automation archived: ${automation.name || automationId}`,
             content: `Automation "${automation.name || automationId}" (id: ${automationId}) was archived.`,
             metadata: {

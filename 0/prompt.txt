@@ -1,0 +1,1 @@
+launch 10 20 teammates to see high value things we can do, check all historical sessions across claude codex grok etc and see the best way to be more bug free prod ready and token efficient

@@ -1,0 +1,1 @@
+can you install the tailscale and k3s then if all good

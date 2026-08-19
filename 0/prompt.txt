@@ -1,0 +1,1 @@
+we want to get rid of tech debt, simplify consolidate. i don't understand how telegram might be broken, dont we use chat adapter?

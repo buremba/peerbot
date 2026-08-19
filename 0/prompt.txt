@@ -1,0 +1,3 @@
+<bash-input>POD=summaries-app-lobu-app-5ff447d87f-m742z; DBURL=$(kubectl exec -n summaries-prod "$POD" -- printenv DATABASE_URL); PW=$(echo "$DBURL" | sed -E
+  's|.*://[^:]+:([^@]+)@.*|\1|'); kubectl exec -n summaries-prod lobu-db-prod-1 -- env PGPASSWORD="REDACTED" psql -U summaries -h 127.0.0.1 -d owletto -tA -F'|' -c
+  "SELECT acl_support, freshness_state, count(*) FROM authz_source_acl_state GROUP BY 1,2 ORDER BY 3 DESC;"</bash-input>

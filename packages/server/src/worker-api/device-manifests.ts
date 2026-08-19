@@ -203,6 +203,8 @@ function normalizeManifest(raw: unknown): DeviceConnectorManifest {
   if (platforms.length === 0) throw new Error('runtime.platforms cannot be empty');
   const feedsSchema = optionalRecord(raw, 'feeds_schema') ?? {};
   rejectRemovedEntityLinks(feedsSchema);
+  const actionsSchema = optionalRecord(raw, 'actions_schema');
+  rejectReservedActionKeys(actionsSchema);
   return {
     key,
     version,
@@ -216,10 +218,29 @@ function normalizeManifest(raw: unknown): DeviceConnectorManifest {
     } as DeviceConnectorManifest['runtime'],
     auth_schema: optionalRecord(raw, 'auth_schema'),
     feeds_schema: feedsSchema,
-    actions_schema: optionalRecord(raw, 'actions_schema'),
+    actions_schema: actionsSchema,
     options_schema: optionalRecord(raw, 'options_schema'),
     manifest_hash: optionalStringField(raw, 'manifest_hash'),
   };
+}
+
+/**
+ * Namespace the gateway reserves for its own device-protocol action keys (e.g.
+ * the virtual-feed live read). A manifest may not claim one: the server
+ * dispatches these keys itself, so a connector declaring the same string would
+ * shadow a protocol seam with a public operation.
+ */
+export const RESERVED_ACTION_KEY_PREFIX = '__lobu_';
+
+function rejectReservedActionKeys(actionsSchema: Record<string, unknown> | null): void {
+  if (!actionsSchema) return;
+  for (const actionKey of Object.keys(actionsSchema)) {
+    if (actionKey.startsWith(RESERVED_ACTION_KEY_PREFIX)) {
+      throw new Error(
+        `actions_schema key '${actionKey}' uses the reserved '${RESERVED_ACTION_KEY_PREFIX}' prefix`
+      );
+    }
+  }
 }
 
 function rejectRemovedEntityLinks(feedsSchema: Record<string, unknown>): void {

@@ -12,6 +12,7 @@ import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
 import { dbEgressConfig } from '../utils/cloud-mode';
+import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
@@ -21,6 +22,10 @@ import {
   normalizeMcpProxyConfig,
   readAtlassianMcpVirtualFeed,
 } from '../operations/atlassian-mcp-feed';
+import {
+  isMetadataOnlyDeviceConnector,
+  readDeviceVirtualFeed,
+} from './device-virtual-feed';
 
 interface ConnectorQueryParams {
   /** The ACL gate — tenant + principal. Its `organizationId`/`principal` drive
@@ -152,6 +157,14 @@ export interface ReadVirtualFeedParams {
   limit?: number;
   offset?: number;
   sort?: { column: string; order: 'asc' | 'desc' };
+  /**
+   * Caller's deadline for this read. Honoured by the device seam, which stops
+   * waiting AND terminalizes + scrubs its transport run rather than leaving it
+   * in flight. The compiled path has no in-subprocess cancellation, so a caller
+   * that must bound wall clock (ambient recall) races this promise too — see
+   * `readVirtualFeedWithinRecallBudget` in tools/search.ts.
+   */
+  signal?: AbortSignal;
 }
 
 /** Result from {@link readVirtualFeed} — live rows, never persisted. */
@@ -183,17 +196,42 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     `SELECT f.id, f.feed_key, f.config, f.virtual,
             c.id AS connection_id, c.connector_key,
             c.auth_profile_id, c.app_auth_profile_id,
+            c.device_worker_id,
             COALESCE(c.config, '{}'::jsonb) AS connection_config,
-            cd.mcp_config
+            cd.mcp_config, cd.runtime, cd.required_capability, cd.has_compiled_code
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
      LEFT JOIN LATERAL (
-       SELECT mcp_config
-       FROM connector_definitions
-       WHERE key = c.connector_key
-         AND status = 'active'
-         AND organization_id = $2
-       ORDER BY updated_at DESC
+       SELECT cd0.mcp_config, cd0.runtime, cd0.required_capability,
+              EXISTS (
+                -- Does the SELECTED version ship code THIS path can execute?
+                --
+                -- Mirrors resolveConnectorCodeForKey's own resolution: the
+                -- definition's version, org artifact preferred over the shared
+                -- one. source_path is deliberately NOT part of it, and that is
+                -- not an oversight — resolveConnectorCode() reads only
+                -- compiled_code (recompiling from source_code when the config
+                -- hash moved) and otherwise falls through to the bundled file;
+                -- it never loads source_path. queue-service's
+                -- resolveActiveConnectorVersion DOES accept source_path, but
+                -- that is a laxer readiness gate, and device manifests set it to
+                -- device-manifest://... precisely as a non-executable marker.
+                -- Adopting that union here would classify every device connector
+                -- as having code and break this routing outright.
+                SELECT 1
+                FROM connector_versions cv
+                WHERE cv.connector_key = cd0.key
+                  AND cv.version = cd0.version
+                  AND (cv.organization_id = cd0.organization_id
+                       OR cv.organization_id IS NULL)
+                  AND cv.compiled_code IS NOT NULL
+                  AND cv.compiled_code <> ''
+              ) AS has_compiled_code
+       FROM connector_definitions cd0
+       WHERE cd0.key = c.connector_key
+         AND cd0.status = 'active'
+         AND cd0.organization_id = $2
+       ORDER BY cd0.updated_at DESC
        LIMIT 1
      ) cd ON TRUE
      WHERE f.id = $1
@@ -214,8 +252,12 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     connector_key: string;
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
+    device_worker_id: string | null;
     connection_config: Record<string, unknown>;
     mcp_config: Record<string, unknown> | null;
+    runtime: Record<string, unknown> | null;
+    required_capability: string | null;
+    has_compiled_code: boolean | null;
   }>;
 
   if (feedRows.length === 0) {
@@ -253,6 +295,47 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
       limit: p.limit,
       offset: p.offset,
       sort: p.sort,
+    });
+  }
+
+  // Native device connectors (whatsapp.local, apple.*, os.shell, …) are
+  // metadata-only on the server: there is no compiled bundle to run, so
+  // `resolveConnectorCodeForKey` below would throw. Their live reads are served
+  // natively by the paired device over the device action queue.
+  //
+  // The discriminator is runtime metadata AND the absence of compiled code, not
+  // `runtime != null` on its own: `runtime` is descriptive (platforms, nix
+  // inputs) and a compiled connector may legitimately carry it while still
+  // having a bundle. Such a connector keeps the compiled pushdown, which is a
+  // strictly better read path than a device round-trip. A pin is not part of
+  // this either — it says which machine executes, not whether server code
+  // exists.
+  //
+  // "Has code" is deliberately BROADER than the stored artifact: a BUNDLED
+  // connector ships as source in the image and legitimately has
+  // `connector_versions.compiled_code IS NULL` (resolveConnectorCode falls
+  // through to `findBundledConnectorFile`). Reading only the column would route
+  // every bundled connector that declares a runtime onto the device queue.
+  const hasConnectorCode =
+    feed.has_compiled_code === true || findBundledConnectorFile(feed.connector_key) !== null;
+  if (isMetadataOnlyDeviceConnector(feed.runtime, hasConnectorCode)) {
+    return readDeviceVirtualFeed({
+      organizationId: p.scope.organizationId,
+      feedId: Number(feed.id),
+      feedKey: feed.feed_key,
+      // Same precedence as the compiled path below: connection config first,
+      // feed config wins. No credentials — a device connector authenticates as
+      // the logged-in desktop app, and the worker never receives secrets.
+      feedConfig: mergeExecutionConfig(feed.connection_config, feedConfig),
+      connectionId: Number(feed.connection_id),
+      connectorKey: feed.connector_key,
+      deviceWorkerId: feed.device_worker_id,
+      requiredCapability: feed.required_capability,
+      terms: p.terms,
+      limit: p.limit,
+      offset: p.offset,
+      sort: p.sort,
+      signal: p.signal,
     });
   }
 

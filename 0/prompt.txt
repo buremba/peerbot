@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5339uutr</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/25855ca6-1129-4b4d-ba7a-9d72acb13600/tasks/b5339uutr.output</output-file>
+<status>killed</status>
+<summary>Background command "Reinstall chromium with progress logging" was stopped</summary>
+</task-notification>

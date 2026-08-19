@@ -1,0 +1,1 @@
+launch opencode to do the refactoring for different pieces, use opencode as subagent. also update the html artifact to show folders and structures so i know them properly

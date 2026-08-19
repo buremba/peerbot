@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcwxl2on7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/bcwxl2on7.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on the thread_id PR" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bbu032dpd</task-id>
+<summary>Monitor event: "PRs 2292 and 2299 required checks"</summary>
+<event>PR 2299 SETTLED: pi-review:fail</event>
+</task-notification>

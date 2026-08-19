@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:19:23.546Z","content":[{"text":"New message in #sales:\n\nmike: does anyone know the current MRR for Acme Corp?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:19:29.873Z","id":"bf775d6f","input_tokens":173,"output_tokens":564,"content":[{"type":"tool_use","id":"call_2eda287b8a6140bd90363bc7","name":"skip_reply","input":{},"result":{"output":"","status":"success"}}]}

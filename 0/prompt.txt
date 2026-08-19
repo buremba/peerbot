@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3rzya1e1</task-id>
+<tool-use-id>toolu_01Txtmd8g1ijCKasQmZF4u8x</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20859076-1eb6-464c-9b1c-dae2360fe186/tasks/b3rzya1e1.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for typecheck and frontend" completed (exit code 0)</summary>
+</task-notification>

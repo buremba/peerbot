@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b68qu5w6a</task-id>
+<tool-use-id>toolu_017r2odF75zHstqj4ksqxpNt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/b68qu5w6a.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2412 CI properly" completed (exit code 0)</summary>
+</task-notification>

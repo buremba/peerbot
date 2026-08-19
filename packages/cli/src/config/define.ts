@@ -131,6 +131,8 @@ export interface EntityWriteRow<Fields = Record<string, unknown>> {
   /**
    * Hold the write for human approval. The whole write is held, never part of
    * it — `fields` names what triggered the review, for the approver to read.
+   * May be called more than once per row: the field sets are unioned and the
+   * reasons joined, so every call's fields are recorded. A later `deny` wins.
    */
   escalate: (fields: string | string[], reason: string) => void;
 }

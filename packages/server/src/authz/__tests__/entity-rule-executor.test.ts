@@ -144,6 +144,70 @@ describe("compileEntityRule + runEntityRules", () => {
 		]);
 	});
 
+	it("unions repeated escalate calls on the same row", async () => {
+		// The defect: the runner ASSIGNED the verdict on every `escalate`, so a
+		// rule that escalated `a` and then `b` reported only `b` — and `a` rode
+		// along in the same write without review, because the granting validator
+		// only ever sees the verdict's surviving field list.
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a"], "r1");
+				row.escalate("b", "r2");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: { a: 1, b: 2 } }],
+		});
+
+		expect(verdict).toEqual({
+			outcome: "escalate",
+			fields: ["a", "b"],
+			reason: "r1; r2",
+		});
+	});
+
+	it("dedupes a field escalated twice, keeping first-seen order", async () => {
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a", "b"], "r1");
+				row.escalate(["b", "c"], "r1");
+				row.escalate("a", "r3");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: {} }],
+		});
+
+		expect(verdict).toEqual({
+			outcome: "escalate",
+			fields: ["a", "b", "c"],
+			reason: "r1; r3",
+		});
+	});
+
+	it("deny wins over an earlier escalate on the same row", async () => {
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a"], "needs review");
+				row.deny("illegal");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: { a: 1 } }],
+		});
+
+		expect(verdict).toEqual({ outcome: "deny", reason: "illegal" });
+	});
+
 	it("fails closed when the rule throws an untagged error", async () => {
 		const compiled = await compileEntityRule(
 			`export default () => { throw new Error("boom"); };`,

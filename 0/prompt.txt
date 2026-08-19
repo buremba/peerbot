@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>be7vyelgp</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/be7vyelgp.output</output-file>
+<status>killed</status>
+<summary>Background command "Block until gate exits" was stopped</summary>
+</task-notification>

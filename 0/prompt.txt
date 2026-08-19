@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw4y338mo</task-id>
+<tool-use-id>toolu_01JS3Mx98SW2LWr1Rm7X7raX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e8ae611f-3800-43ed-836d-8de4d4fb9fe5/tasks/bw4y338mo.output</output-file>
+<status>completed</status>
+<summary>Background command "Review round four" completed (exit code 0)</summary>
+</task-notification>

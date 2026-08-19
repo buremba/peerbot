@@ -1,0 +1,1 @@
+since we use chat sdk do we do workarounds? is out queueing model overengineered? what's the chat_state_cache?

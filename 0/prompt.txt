@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4e7ay2ne</task-id>
+<tool-use-id>toolu_013MeBeP6qEcL3EVar8De6Nn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/b4e7ay2ne.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the real review with a parseable schema" completed (exit code 0)</summary>
+</task-notification>

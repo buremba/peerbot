@@ -1,0 +1,1 @@
+we want to remove tech debt etc. our ideal way connectors also exposing the env etc and nixpackage so we can inform the agents what they can use

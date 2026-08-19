@@ -1,0 +1,2 @@
+wheni click the social stuff in the needs attention i see list of random tweets. when i go to the behavior page i only see the prompt not the agent runs
+  content

@@ -1,0 +1,15 @@
+<task-notification>
+<task-id>bkzabdlqe</task-id>
+<summary>Monitor event: "PR 2374 checks on final HEAD"</summary>
+<event>integration: pass
+ALL REQUIRED CHECKS REPORTED
+base-branch-guard: pass
+check-drift: pass
+format-lint: pass
+frontend: pass
+integration: pass
+migrations: pass
+pi-review: pass
+typecheck: pass
+unit: pass</event>
+</task-notification>

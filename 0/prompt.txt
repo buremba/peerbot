@@ -1,0 +1,1 @@
+is moving things to connector sdk will make it more reliable? evaulate it and see the best long term way. also yes rebuild the app, is it still in the pervios version? identify the issues and fix them and make it work

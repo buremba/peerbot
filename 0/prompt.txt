@@ -1,0 +1,2 @@
+Stop hook feedback:
+[ok build all close issues review test e2e and merge when all done]: PR #2299 remains open and unmerged. The condition requires 'merge when all done', but the last message states '#2299 at 3beaf2472, remote verified, 11/11 across both suites' with no subsequent merge action. The PR is ready (tests passing, code corrected) but not yet merged. Additionally, issue #2288 remains open, as it was stated earlier that '#2288 closes when #2299 lands'.

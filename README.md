@@ -91,7 +91,7 @@ Instead of every agent rebuilding the same state through per-session tool calls,
 flowchart TD
     Sources["Connectors / webhooks / devices / APIs"] --> Log[("append-only log")]
     Log -->|"resolve identities<br/>attach provenance"| Graph["context graph<br/>entities + links<br/>current + history"]
-    Graph -->|"query"| Agents["agents + behaviors"]
+    Graph -->|"query"| Agents["agents + specialists"]
     Graph -->|"watch / subscribe"| Agents
     Agents -->|"sandbox + scoped tools / MCP<br/>policy + approvals"| Actions["actions on systems"]
     Actions -->|"action events"| Log

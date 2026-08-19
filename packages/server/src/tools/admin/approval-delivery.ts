@@ -6,9 +6,9 @@
  * module resolves the one legitimate chat destination, in precedence order:
  *
  *   1. The conversation that ASKED — the turn's `sourceContext`, when the caller
- *      came in through a chat trigger and the acting agent is authorized to post
- *      there. Same trust check the scheduled-delivery path uses, so a turn can
- *      never name a channel its agent may not reach.
+ *      came in through a chat trigger and the acting agent is bound to that
+ *      channel. Resolved through `resolveBoundChannelRows`, so a turn can never
+ *      name a channel its agent may not reach.
  *   2. The requesting human's DM — handled downstream by the notification
  *      service's `ownerUserId` tier; the trigger passes the user id.
  *   3. Nothing. The durable inbox already targets the org's admins and the run
@@ -18,10 +18,14 @@
  * is why tier 2 exists: those approvals used to fall through to the org-wide
  * broadcast.
  */
+import { getDb } from "../../db/client";
+import {
+	resolveBoundChannelRows,
+	stripPlatformPrefix,
+} from "../../gateway/channels/bound-channels";
 import {
 	isDeliverableChatPlatform,
 	type ScheduledDeliveryContext,
-	validateDeliveryAuthorization,
 } from "../../scheduled/scheduled-jobs-service";
 import type { ToolContext, ToolSourceContext } from "../registry";
 import logger from "../../utils/logger";
@@ -68,35 +72,54 @@ export function sourceToDeliveryContext(
 
 /**
  * Tier 1 of the precedence above: the originating conversation, if the acting
- * agent is authorized to deliver there. Returns all-nulls otherwise — the
- * caller pairs this with `requesterUserId` so tier 2 takes over.
+ * agent can actually reach it. Returns all-nulls otherwise — the caller pairs
+ * this with `requesterUserId` so tier 2 takes over.
  *
- * Authorization is NOT optional: `sourceContext` is stamped from a verified
- * worker token, but the binding it names can be revoked between the trigger and
- * the approval, so the live connection + binding rows are re-checked here
- * exactly as the scheduled fire-time path does.
+ * Re-checking is NOT optional: `sourceContext` is stamped from a verified worker
+ * token, but the binding it names can be revoked between the trigger and the
+ * approval, so the live binding rows decide.
+ *
+ * The check runs through `resolveBoundChannelRows` — THE single source of truth
+ * for "which channels can this org/agent reach", and the same resolver the
+ * delivery plan itself uses. That matters for a case a connection-scoped check
+ * gets wrong: a hosted-preview binding is served by a connection living in a
+ * DIFFERENT org, so any lookup scoped to the notifying org's `connections` finds
+ * no row and reports the channel unreachable. Every preview-served org would
+ * silently lose tier 1 and answer a channel question in a DM instead.
+ * `resolveBoundChannelRows` covers the own-connection AND preview branches, and
+ * is still scoped to `agentId` so an agent cannot address another agent's
+ * channel.
  */
 export async function resolveApprovalChatOrigin(
 	ctx: ToolContext,
 ): Promise<ApprovalDeliveryTarget> {
 	const delivery = sourceToDeliveryContext(ctx.sourceContext);
 	if (!delivery) return NO_APPROVAL_DELIVERY_TARGET;
-	// No acting agent means no binding to validate against — an agentless turn
+	// No acting agent means no binding to check against — an agentless turn
 	// (a human in the web app) has no channel it "belongs" to.
 	if (!ctx.agentId) return NO_APPROVAL_DELIVERY_TARGET;
 
-	const result = await validateDeliveryAuthorization({
+	const rows = await resolveBoundChannelRows(getDb(), {
 		organizationId: ctx.organizationId,
 		agentId: ctx.agentId,
-		delivery,
+		connectionId: delivery.connectionId,
 	}).catch((err) => {
 		logger.warn(
 			{ err, organizationId: ctx.organizationId, agentId: ctx.agentId },
-			"[Approvals] Chat-origin authorization check failed — falling back to requester DM",
+			"[Approvals] Chat-origin binding check failed — falling back to requester DM",
 		);
-		return { authorized: false as const, reason: "connection-missing" as const };
+		return [];
 	});
-	if (!result.authorized) return NO_APPROVAL_DELIVERY_TARGET;
+
+	// Bindings store either the bare id or the platform-prefixed one, so compare
+	// on the native id — a legacy row must not read as "unreachable".
+	const wanted = stripPlatformPrefix(delivery.platform, delivery.channelId);
+	const reachable = rows.some(
+		(row) =>
+			row.platform === delivery.platform &&
+			stripPlatformPrefix(row.platform, row.channel_id) === wanted,
+	);
+	if (!reachable) return NO_APPROVAL_DELIVERY_TARGET;
 
 	return {
 		connectionId: delivery.connectionId,

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bug64t2mn</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bug64t2mn.output</output-file>
+<status>completed</status>
+<summary>Monitor "control run reaches terminal state" stream ended</summary>
+</task-notification>

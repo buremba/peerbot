@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgkojpgxf</task-id>
+<tool-use-id>toolu_012HAJS26DHM8jGwHwtgZ6jZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5b3a8fb5-1a3b-47a3-a6e5-aa4b52e14cb0/tasks/bgkojpgxf.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on the three updated PRs" completed (exit code 0)</summary>
+</task-notification>

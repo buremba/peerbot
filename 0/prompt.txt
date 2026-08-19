@@ -1,0 +1,1 @@
+i think it's best to show still no? the link can just take the user to the events page with right filter maybe and we can just make the page live updating every 10 seconds eetc

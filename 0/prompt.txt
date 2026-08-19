@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8m3odm34</task-id>
+<tool-use-id>toolu_016SKLodfRNAuHKR7ZxY4pKe</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b8m3odm34.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run Fable review" completed (exit code 0)</summary>
+</task-notification>

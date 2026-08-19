@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc40ir2p9</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bc40ir2p9.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the simplification" completed (exit code 0)</summary>
+</task-notification>

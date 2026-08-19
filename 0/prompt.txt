@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b29ju2its</task-id>
+<tool-use-id>toolu_01NFKfw4rausLFm9boS1Z3AA</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b29ju2its.output</output-file>
+<status>failed</status>
+<summary>Background command "Re-run full Depot gate on rebased staged tree" failed with exit code 2</summary>
+</task-notification>

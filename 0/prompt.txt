@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new restoration state machine has two reproducible ordering bugs: a fresh capability can be resolved against a stale host identity, and delayed widget-state echoes can resurrect explicitly unavailable results. Both can display the wrong historical card despite the expanded test coverage.
+
+Full review comments:
+
+- [P1] Prefer the new capability over an unresolved host ID — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:676-681
+  When a reused iframe receives a capability-only result for the next card while the previous card's ID restore is still pending, `displayedDataFingerprint.current` is null, so this predicate leaves the old `toolCallId` attached. `restoreSnapshot` then sends the old ID with the new capability; the server's ID-first lookup returns the previous card, and a subsequent save can bind or expire the new snapshot under that ID. Restore by capability alone until the host identity is correlated.
+
+- [P2] Keep delayed widget echoes from reviving cleared cards — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:1005-1009
+  When `toolOutput: null` explicitly clears a card and a previously queued `setWidgetState` echo arrives afterward, the clear path has set both `hasLiveToolOutput` and `hasAuthoritativeResultData` to false. This condition therefore accepts the widget-only snapshot and repopulates the stale card, undoing the explicit clear; the same can happen after a completed `found:false` restore. Preserve an authoritative absent/cleared marker in this gate so delayed cache echoes remain ignored.
+  </results>
+  </user_action>

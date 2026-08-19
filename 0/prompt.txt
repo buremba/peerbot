@@ -1,0 +1,1 @@
+on daytona can you run lobu and give me the lobu url so i can login there. copy what we have in our landing page, copy our claude code oauth token install claude in daytona as well and run tmux and copy the prompt in there and let me ssh in there so i can lead the way

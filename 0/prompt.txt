@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bz0f0r3zk</task-id>
+<tool-use-id>toolu_016LLW6kGqLzsMocQAwWQ4w5</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bz0f0r3zk.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix on slack-revocation" completed (exit code 0)</summary>
+</task-notification>

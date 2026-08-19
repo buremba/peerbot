@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bh759n1pg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/872c1f9c-d1ae-4139-93a5-3ed7b02ede10/tasks/bh759n1pg.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot API server" was stopped</summary>
+</task-notification>

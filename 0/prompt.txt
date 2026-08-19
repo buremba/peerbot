@@ -1,0 +1,1 @@
+fix 4 and 2 and 3 and also tell me, if the events can have multiple embeddings, the agents can generate them on the fly test them and understand how to make them work. there is no gap in there right?

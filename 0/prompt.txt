@@ -1,0 +1,1 @@
+permissions borders background etc, you can reduce the paddings in the permissions as well. make all pages consistent

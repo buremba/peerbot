@@ -1,0 +1,1 @@
+should we do a seperate blog post about this ETL for autonomous agents?

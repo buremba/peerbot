@@ -1,0 +1,1 @@
+yes i think prod smoke can be the best approach, we can do the cli test after a version is released for example. same with mac app and chrome extension as well

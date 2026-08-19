@@ -1,0 +1,1 @@
+what's the vault there, is it a new table? check all the potential issues so we can become prod ready

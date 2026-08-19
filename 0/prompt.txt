@@ -1,0 +1,1 @@
+can you pull from main and then run a dev server. we need to look up each app pages one by one, identify design gotchas, update our design guidelines and make sure all pages are consistent with each other

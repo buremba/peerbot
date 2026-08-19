@@ -1,0 +1,1 @@
+under connector page why don't we have the add account etc there? http://127.0.0.1:5261/local-install/connectors/google.calendar [Image #7]

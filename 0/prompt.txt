@@ -1,0 +1,1 @@
+save to memory so i can compact. all these takeout stuff existed before btw. for connectors if there is bun node etc we can possibly run it but the capabilities and permissions should be preserved. the mac mini has these accesses i don't get your question

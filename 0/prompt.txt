@@ -1,0 +1,227 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The conversation began with a bug report and evolved into a design program. In order:
+   - **Initial:** "why don't i see recent here? is it broken? https://app.lobu.ai/buremba/agents/lobu-builder/chat i'm talking to this via telegram" — diagnose why the Recent list is missing.
+   - **Pushback:** User asserted the surface lists conversations, watchers, and MCP clients with icons, and asked why it was deleted.
+   - **Build request:** "run the frontend in prod api, bring it back, so i can see them" — restore the deleted Recent list and run the SPA against the prod API so the user can see their Telegram threads.
+   - **Design inquiry:** A series of questions probing the architecture — what "agent owning connection" means, why `connections.agent_id` exists, whether it's needed, and what the point of a fallback agent is.
+   - **Proposal:** User proposed removing `connections.agent_id` entirely and letting Behaviors optionally listen to ALL messages from a connection.
+   - **Final scope:** "we want to do it the right way, both sidebar and this specific fix we want and getting rid of ducktaped agent_id in connections" — a three-part program: sidebar restore + visibility fix + removal of `connections.agent_id`.
+   - **Last:** "save memory so i can compress" — persist session findings to memory files.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace under `packages/*`; `owletto` is a private frontend submodule (React + TanStack Router + TanStack Query + Vite + biome)
+   - Two-tier inbound chat routing: Behavior channel binding, then `connections.agent_id` "fallback agent"
+   - `behavior_message_subscriptions` — a Postgres VIEW over `watchers` JSONB triggers, not a table
+   - Channel visibility fence: per-agent bound channels ∩ per-user channel ACL, fail-closed on ambiguity
+   - Conversation kinds: `owned` (web) vs `platform` (Slack/Telegram); scopes `user` / `shared` / `admin`
+   - Slack Grid enterprise installs (`external_tenant_id` = `E…`) spanning multiple workspaces
+   - Advisory-lock-based uniqueness (`pg_advisory_xact_lock`) rather than DB constraints
+   - CNPG Postgres on k8s, prod cluster `lobu-ai-prod-db`, database named `owletto`
+   - Vite dev proxy via `LOBU_API_PROXY` with Set-Cookie rewriting (drops `Domain`, `SameSite=None→Lax`)
+   - Worktree-based development via `make task-setup NAME=<slug>`
+
+3. **Files and Code Sections:**
+
+   - **`packages/owletto/src/lib/api/agents.ts`** (MODIFIED)
+     - Restores the API layer deleted by #628. Necessary because `useRecentAgentThreads` was the SPA's only `?scope=all` caller.
+     - Changes: `useQueries` re-added to the `@tanstack/react-query` import; `scope?: "all"` restored on both `fetchAgentThreads` and `agentThreadsQueryOptions`; scope restored to the query key; `useRecentAgentThreads` hook restored before `useAgentConfig`.
+     ```typescript
+     async function fetchAgentThreads(
+     	agentId: string,
+     	orgSlug: string | null | undefined,
+     	options?: { strict?: boolean; scope?: "all" },
+     ): Promise<AgentThreadItem[]> {
+     	// `?scope=all` widens the list past the caller's own web threads to every
+     	// conversation the agent has across platforms (Slack, Telegram, …) plus its
+     	// Behavior activity. The server ACL-gates the platform rows.
+     	const path = options?.scope === "all" ? "/threads?scope=all" : "/threads";
+     	const res = await fetchWithTimeout(agentHistoryUrl(agentId, path), {
+     		credentials: "include",
+     		headers: orgScopedHeaders(orgSlug),
+     	});
+     ```
+     ```typescript
+     /** Recent threads across all agents in a workspace (sidebar). */
+     export function useRecentAgentThreads(
+     	orgSlug?: string | null,
+     	agentIds?: string[],
+     	options?: { enabled?: boolean; limit?: number },
+     ) {
+     	const limit = options?.limit ?? 8;
+     	const enabled =
+     		!!orgSlug && (agentIds?.length ?? 0) > 0 && (options?.enabled ?? true);
+
+     	const queries = useQueries({
+     		queries: (agentIds ?? []).map((agentId) => ({
+     			...agentThreadsQueryOptions(orgSlug, agentId, {
+     				strict: false,
+     				scope: "all" as const,
+     			}),
+     			enabled,
+     		})),
+     	});
+
+     	const isLoading = enabled && queries.some((q) => q.isLoading);
+     	const threads = queries
+     		.flatMap((q, index) => {
+     			const agentId = agentIds?.[index];
+     			if (!agentId) return [];
+     			return (q.data ?? []).map((thread) => ({ agentId, ...thread }));
+     		})
+     		.sort((a, b) => b.updatedAt - a.updatedAt)
+     		.slice(0, limit);
+
+     	return { threads, isLoading };
+     }
+     ```
+     - Query key after biome formatting:
+     ```typescript
+     queryKey: [
+     	"agent-threads",
+     	orgSlug,
+     	agentId,
+     	options?.scope ?? "user",
+     ] as const,
+     ```
+
+   - **`packages/owletto/src/components/sidebar/app-sidebar.tsx`** (MODIFIED)
+     - Restores the `Recent` section deleted by #614.
+     - Added icons `Eye, MessageCircle, MessageSquare, Send, Slack` to the lucide import; `agentThreadLink` to the `@/lib/agent-chat-routes` import; `useRecentAgentThreads` from `@/lib/api`.
+     ```typescript
+     /** Icon for a conversation's source platform / system. */
+     function platformIcon(platform: string | undefined): IconComponent {
+     	switch (platform) {
+     		case "slack":     return Slack;
+     		case "telegram":  return Send;
+     		case "whatsapp":
+     		case "discord":   return MessageCircle;
+     		case "behavior":  return Eye;
+     		default:          return MessageSquare;
+     	}
+     }
+     ```
+     - `useParams` now destructures `threadId` as well as `agentId`.
+     - Hook wiring (deliberate difference from the original: feeds off `rosterAgents` because `useWorkingAgents` no longer returns `workingAgents` to this component):
+     ```typescript
+     const rosterAgentIds = useMemo(
+     	() => rosterAgents.map((agent) => agent.agentId),
+     	[rosterAgents],
+     );
+     const { threads: recentThreads } = useRecentAgentThreads(
+     	owner, rosterAgentIds,
+     	{ enabled: !!owner && rosterAgentIds.length > 0, limit: 12 },
+     );
+     const recentConversations = useMemo(
+     	() => [...recentThreads]
+     		.sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt))
+     		.slice(0, 12),
+     	[recentThreads],
+     );
+     ```
+     - The `Recent` section renders after the agent roster with three branches: `platform === "behavior"` → `/$owner/agents/$agentId/behaviors/$watcherId`; non-web → `/$owner/agents/$agentId/conversations/$conversationId`; web → `agentThreadLink`.
+
+   - **`packages/server/src/gateway/services/platform-helpers.ts:186-265`** (READ) — `resolveAgentId`, the two-tier router. Central to the whole diagnosis.
+     ```
+     *   1. an existing channel-subscribed Behavior wins;
+     *   2. otherwise fall back to the connection's owning `agentId`.
+     ```
+
+   - **`packages/server/src/gateway/services/agent-thread-list.ts`** (READ) — `resolveChannelVisibility` (68-105) and `isConversationVisible` (118-133). The read gate that implements only tier 1. Line 221 comment explains `conversations` deliberately has no `connection_id`: "the connection that delivered it is routing, not identity."
+
+   - **`packages/server/src/gateway/connections/message-handler-bridge.ts:849-870`** (READ) — the smoking gun:
+     ```
+     // Group channels only (DMs stay out of the bound set)
+     if (resolved.source === "connection" && isGroup && !isPreview && …) {
+       await behaviorSubscriptionService.materializeConnectionFallbackLink(…)
+     ```
+
+   - **`packages/server/src/gateway/channels/behavior-subscription-service.ts`** (READ) — `createChatBehavior` (373+), the single writer into the bound set, serialized by `pg_advisory_xact_lock(hashtext('behavior_chat_link'), hashtext("<org>:<conn>:<channel>"))`. `loadChatBehaviorSubscriptions` (155+) matches exact native channel id with no wildcard.
+
+   - **`packages/server/src/gateway/channels/bound-channels.ts:46-127`** (READ) — `resolveBoundChannelRows`, queries `behavior_message_subscriptions`.
+
+   - **`packages/server/src/gateway/agent-tooling/resolver.ts:369-373`** (READ) — the comment I initially misread: "`connections.agent_id` is **not** an attachment boundary for data connectors; it is the fallback agent for chat connections, so it must not scope this resolver."
+
+   - **`/private/tmp/.../scratchpad/design-connection-wide-behaviors.md`** (CREATED, then twice EDITED) — the design doc. Contains: problem statement, why `agent_id` exists, target model, decisions D1-D5, five consumers, migration surface, 5-PR sequence, risks.
+
+   - **`/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/reference_chat_inbound_routing_two_tiers.md`** (CREATED) — durable reference: two-tier routing, DM/group materialization asymmetry, `createChatBehavior` as sole writer, no DB uniqueness on watchers, 9 view consumers, `agent_users` as DM key.
+
+   - **`/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/memory/project_connections_agent_id_removal.md`** (CREATED) — the in-flight program: three symptoms, prod evidence, target model, D1-D5, five consumers, migration surface, PR sequence, state at save time.
+
+   - **`MEMORY.md`** (EDITED) — two index lines added.
+
+4. **Errors and fixes:**
+
+   - **Located "Recent" on the chat page instead of the sidebar.** My first answer analyzed `chat.tsx`'s `HomeAttentionTimeline` empty state. User pushed back: "what? we list all the conversation watcher and mcp clients there with their icons no?" Per the user's global rule to stop and re-investigate on pushback, I found the actual deleted code in `app-sidebar.tsx` — `platformIcon()` and `SectionHeader label="Recent"`. Corrected: the list was in the sidebar, workspace-wide. Also corrected that MCP clients were never in Recent (they're in `ClientSessionsTimeline` behind the "Client apps" filter, gated on `isSystemAgent`).
+
+   - **Claimed `connections.agent_id` was a data-connector attachment boundary.** I paraphrased `resolver.ts:372` backwards. Reading lines 360-395 showed the comment says the opposite. Prod confirmed it's chat-only: `is_chat=f, has_agent=f → 58` and `is_chat=t, has_agent=t → 3`. This materially strengthened the user's removal proposal, and I said so plainly.
+
+   - **PreToolUse hook blocked a truncated schema query.** I ran `SELECT indexname FROM pg_indexes WHERE tablename='watchers' | head -20` to prove no unique index existed. Hook: "BLOCKED: truncated schema-catalog query… If you are about to conclude 'there is no other constraint' — the row that would refute you is the one being cut off." Fixed by re-running with `count(*)` plus every row for both `pg_indexes` and `pg_constraint` — 12 indexes, 20 constraints, only `idx_watchers_org_slug` and pkey unique.
+
+   - **Design draft called D2 (uniqueness) the biggest risk.** Wrong premise — I assumed a DB constraint enforced binding uniqueness. It doesn't. Rewrote D2 as RESOLVED: use the same advisory lock with a sentinel channel key; same invariant strength as today.
+
+   - **Design draft proposed relaxing the view's `channel_id NOT NULL` predicate (D1).** Then found `behavior_message_subscriptions` has **nine** consumers including `authz/channel-about.ts:592`. Reversed D1: keep the existing view inert, add a separate view, opt consumers in individually.
+
+   - **Design draft listed four consumers to rederive.** Found a fifth: `agent-routes.ts:1297-1304`, the agent *detail* endpoint's connection counts, ~900 lines from the list query.
+
+   - **AskUserQuestion rejected.** I offered a 3-option ACL policy menu; the user declined and asked to clarify. I then asked what they wanted to clarify and answered their conceptual questions instead of forcing a decision.
+
+5. **Problem Solving:**
+
+   Fully diagnosed root cause chain:
+   1. owletto #614 (`93a493ae`) deleted the sidebar `Recent` section as collateral in a "sidebar becomes the site map" restructure; nothing re-homed it.
+   2. #628 (`68ba48a0`) swept the orphaned hooks, removing `useRecentAgentThreads` — the SPA's only `?scope=all` caller.
+   3. Even restored, it renders empty: `isConversationVisible` fails closed because `behavior_message_subscriptions` has 0 rows org-wide.
+   4. Deeper cause: routing has two tiers; visibility implements only tier 1. The write path *deliberately* excludes DMs from the bound set ("Group channels only (DMs stay out of the bound set)"), and the read gate computes permissions *from* that set. DMs are invisible by construction, not by policy.
+
+   Prod evidence gathered (org `buremba` = `8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd`): 2 platform conversations both on `personal-agent` (NOT `lobu-builder`); 54 `channel_messages` over Jul 29-30; 0 rows in `behavior_message_subscriptions`; 0 telegram rows in `entity_identities`; `agent_users` has both telegram user ids; migration surface is 3 live chat connections across 2 orgs with no Grid enterprise install.
+
+   Ongoing: an adversarial codex design review was launched in background (task `bue7jnnws`) and **returned nothing** — its output file was empty at every check. Its findings are NOT reflected in the design and must be reconciled before PR 1.
+
+6. **All user messages:**
+   - "why don't i see recent here? is it broken? https://app.lobu.ai/buremba/agents/lobu-builder/chat i'm talking to this via telegram"
+   - "what? we list all the conversation watcher and mcp clients there with their icons no? why is it deleted?"
+   - "run the frontend in prod api, bring it back, so i can see them"
+   - "do you need api changes btw?" (sent mid-turn)
+   - "seems empty?"
+   - "what does agent owning connection mean? agent doesn't work telegram connection but owns the binding no? how does this work properly? i thought behavior is in the agent and it can link to connections"
+   - "why connection has agent_id, do we need it"
+   - "why do we need fallback agent, what's the point?"
+   - "i was thinking we can get rid of this agent_id in connections and the behaviors can optionally listen all messages if we want an agent to take in all messages from a connection etc"
+   - "we want to do it the right way, both sidebar and this specific fix we want and getting rid of ducktaped agent_id in connections"
+   - "save memory so i can compress"
+
+   Standing constraints from project `AGENTS.md` that remain in force: **Never write to `~/Code/lobu` directly — work in a worktree.** **Never bulk-delete prod `organization` rows.** **`events` is append-only; never `DELETE FROM events`.** **Workers never receive real credentials.** **Stage by explicit path (`git add -- <paths>`, never `-A`).** **Absence is never proven by a grep on a working tree — run `git fetch -q origin && git grep <pattern> origin/main`.** Never `git stash`. No dynamic imports without measured justification. No backwards-compatibility shims or `@deprecated` tags. Do not create `*.md` files in the repo unless asked. From the user's global CLAUDE.md: no Co-Authored-By or "Generated with Claude Code" in commits; when the user pushes back, stop and re-investigate the real root cause rather than wiring a workaround; always show the actual git diff rather than a prose summary; end work with a confidence score and 2-4 concrete next actions.
+
+7. **Pending Tasks:**
+   - Reconcile the adversarial codex design review (task `bue7jnnws`) once it returns — it had produced no output at last check.
+   - Decide **D4 (DM audience)** — the only genuinely user-owned decision: agent-scoped now, or block on identity linking.
+   - PR 1: wildcard support (new separate view + loader precedence + `resolveForConnection`) — additive and inert.
+   - PR 2: backfill 3 connection-wide Behaviors; drop tier 2 from `resolveAgentId`; delete `materializeConnectionFallbackLink`.
+   - PR 3: rederive the 5 consumers; drop `connections.agent_id` in a separate squawk-gated migration.
+   - PR 4: visibility — fence understands connection-wide bindings (D3 Grid handling), DM audience (D4).
+   - PR 5: sidebar Recent restore (already built) — lands LAST.
+   - Open side question: the user's Telegram traffic is on `personal-agent`, not `lobu-builder`. If they expected it on the builder, that is a separate routing issue.
+
+8. **Current Work:**
+
+   Immediately before the summary request, I was completing the user's instruction "save memory so i can compress". I:
+   - Checked for overlapping memories (`project_connection_visibility_default_exposure.md` — different concern, credential exposure; `project_lobu_chat_platform_routing.md` — different concern, CLI `--user` flag). No overlap, so new files were correct.
+   - Created `reference_chat_inbound_routing_two_tiers.md` — the durable mechanical model, including the verbatim `// Group channels only (DMs stay out of the bound set)` comment, the fact that `createChatBehavior` is the sole writer, that there is no DB uniqueness on chat bindings, the 9 view consumers, and that `agent_users` records DM senders even though the bound set does not.
+   - Created `project_connections_agent_id_removal.md` — the in-flight program with all five decisions, five consumers, migration surface, 5-PR sequence, and an explicit note that the codex review "was still running and had returned NOTHING — its findings are NOT reflected above and must be reconciled before PR 1."
+   - Added two lines to `MEMORY.md`.
+   - Re-checked the codex output file one final time: still empty.
+
+   Branch state: worktree `.claude/worktrees/restore-recent-list`, owletto branch `feat/restore-recent-list`, 2 files changed, +157/-7, `tsc --noEmit` clean, biome clean. Vite running on `localhost:5173` proxying to `https://app.lobu.ai` (verified `/api/auth-config → 200`). Nothing committed, nothing merged.
+
+9. **Optional Next Step:**
+
+   Check whether the background codex review (task `bue7jnnws`) has produced output, and reconcile its findings against my own independent verification before writing any code. This was explicitly flagged as blocking: from my last substantive message — *"An adversarial codex review is running against the repo — it hasn't returned yet, so I have no findings from it to report. I'll fold in whatever it finds before any code gets written."* — and recorded in the saved memory as *"an adversarial codex design review was still running and had returned NOTHING — its findings are NOT reflected above and must be reconciled before PR 1."*
+
+   If codex has failed or returned nothing usable, report that plainly rather than fabricating findings, and ask the user whether to proceed to PR 1 (wildcard support, additive and inert) on the design as it stands, or to re-run the review first.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

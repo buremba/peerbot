@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bez5b8zq0</task-id>
+<summary>Monitor event: "lobu PR 2228 CI checks until all report"</summary>
+<event>fails=[;] pending=0
+ALL_REPORTED: Analyze: (actions);Analyze: (javascript-typescript);Analyze: (python);Security: tests;Security: tests;Static: security;Trivy: (vuln;bun: audit;[code]smith: skipping;connector-parity-smoke: skipping;</event>
+</task-notification>

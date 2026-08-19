@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdj5dve1f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bdj5dve1f.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the deletion branch" completed (exit code 0)</summary>
+</task-notification>

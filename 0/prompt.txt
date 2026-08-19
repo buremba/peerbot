@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4fbrki0j</task-id>
+<tool-use-id>toolu_0122ogaLURJTDxzfBUzkN8Th</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/ade9313d-7bc8-4d25-972f-4c0a997354b8/tasks/b4fbrki0j.output</output-file>
+<status>completed</status>
+<summary>Background command "Prod rollout gate for PR 2525" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+why isn't events could represent the relationships? also we have acl could we potentially consolidate? we want to simplify the system ultrathink

@@ -55,15 +55,25 @@ chmod +x "$STUBS/gh" "$STUBS/kubectl"
 teardown_verdict() {
   local log
   log="$(mktemp)"
+  local outfile
+  outfile="$(mktemp)"
   FAKE_PR_STATE="$1" FAKE_PR_LABELED="$2" \
-  KUBECTL_LOG="$log" PATH="$STUBS:$PATH" \
+  KUBECTL_LOG="$log" PATH="$STUBS:$PATH" GITHUB_OUTPUT="$outfile" \
   REPO="lobu-ai/lobu" PR_NUMBER="123" PREVIEW_NS="lobu-preview-123" \
     bash -e -c "$teardown_script" >/dev/null 2>&1 ||
-    { rm -f "$log"; echo "error"; return; }
+    { rm -f "$log" "$outfile"; echo "error"; return; }
+  # The step's `wanted` output gates the "Preview environment ready" comment,
+  # so it must agree with the delete decision or we announce a preview we just
+  # deleted. Fold a disagreement into a distinct verdict rather than ignoring it.
+  local wanted
+  wanted="$(sed -n 's/^wanted=//p' "$outfile")"
+  rm -f "$outfile"
   if grep -q 'delete namespace lobu-preview-123 --ignore-not-found' "$log"; then
-    rm -f "$log"; echo deleted
+    rm -f "$log"
+    [ "$wanted" = "false" ] && echo deleted || echo "deleted-but-announced"
   else
-    rm -f "$log"; echo kept
+    rm -f "$log"
+    [ "$wanted" = "true" ] && echo kept || echo "kept-but-suppressed"
   fi
 }
 
@@ -83,7 +93,9 @@ assert_teardown deleted closed true
 # Label pulled mid-deploy — same window, different trigger.
 assert_teardown deleted open false
 assert_teardown deleted closed false
-# `merged` is not `open`: a PR merged mid-deploy must not keep its namespace.
-assert_teardown deleted merged true
+# Defensive: `.state` only ever reads `open` or `closed` (a merged PR reads
+# `closed`), so this stands in for any unexpected non-open value rather than a
+# real API response — the branch must fail closed and delete.
+assert_teardown deleted unexpected-state true
 
 echo "ok - preview mid-deploy teardown decides correctly"

@@ -1,0 +1,1 @@
+it can be mcp no? we can have an static connector called mcp clients and we can show the connections feeds under there? and the recent can also redirect the user to the events. if the user clicks the icon they can do the feed of that session

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b72tybbsf</task-id>
+<tool-use-id>toolu_011Rc5eQx7vecRGTrHxMviZH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab/tasks/b72tybbsf.output</output-file>
+<status>killed</status>
+<summary>Background command "Block until build finishes" was stopped</summary>
+</task-notification>

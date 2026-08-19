@@ -1,0 +1,152 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The user's overarching goal: **eliminate the standalone MCP-clients and devices pages by folding both into the Connectors surface**, so devices and connected apps are discoverable where users already look.
+
+   Requests in sequence:
+   - **Initial (ultrathink):** "could we get rid of the mcp clients and devices page. in the connectors we can put lobu cli, owletto chrome extension and owletto macos app and just give them the instructions. and when they're connected chrome extension and mac shows up as a connector/connection no? let's ultrathink plan what's the best dx here"
+   - **Design review + single PR:** Run the design through codex before coding; attempt one PR; MCP clients under connectors with a clickable detail page.
+   - **API consolidation:** Question whether client sessions belong under Recent, and why there are so many API surfaces.
+   - **`/simplify` the architecture as much as possible.**
+   - **No hacks (stated twice, emphatically):** "wtf is this why there is so much hacks there?" / "we don't want these hacks" — and later "is this the best way, don't we return the array to frontend nicely, get rid of this hack across all the codebase" and "ok don't make same mistake again."
+   - **No dead pages or APIs left behind:** "devices are under connectors right, the api as well… we don't have dead pages or api in the back"
+   - **Remove both user-menu dropdown items** ("My devices", "Connected apps").
+   - **Screenshots in an HTML artifact** showing remaining gaps.
+   - **Merge the work and provide a test URL.**
+   - **Final:** Device page must look like a connector page, and the URL must be `/connectors/device/{id}` rather than the percent-encoded `device%3A...`.
+
+2. **Key Technical Concepts:**
+   - Bun workspace monorepo; `packages/owletto` is a **git submodule** of `github.com/lobu-ai/owletto.git` (makes single-PR impossible)
+   - TanStack Router file-based routing; `routeTree.gen.ts` regeneration; `$connectorKey` catch-all vs static nested segments
+   - Read-layer union: connectors list synthesizes rows from `connector_definitions` + `inference_providers` + `sandboxes` (+ now devices/clients)
+   - Prefixed connector keys (`inference-provider:`, `sandbox:`, `sandbox-provider:`) in `@lobu/core/reserved`
+   - `ConnectorPageShell` / `ConnectorPageColumn` / `DetailHeader` / `PageSection` — **there is no tab bar** (`connector-tabs.ts` was deleted)
+   - postgres.js with `fetch_types: false` → `text[]` columns return as raw literal strings
+   - `device_workers` table, `PLATFORM_ALLOWLIST` (`macos`, `ios`, `chrome-extension` only), `connector_manifests`, `ensureDeviceConnectorWired`
+   - OAuth dynamic client registration (DCR); `oauth_clients` identity signals
+   - AGENTS.md invariants: worktree-only writes, one branch = one concern, red→fix→green, "request paths never aggregate history", stage by explicit path, fix the class not the instance
+   - `make task-setup` / `make pre-pr` / `make review-fix` / `make review` (REVIEWER_CLI=claude CLAUDE_REVIEW_MODEL=fable, since codex quota is exhausted until Aug 5 2026)
+   - agent-browser CLI; `LOBU_API_PROXY` vite proxy for running local SPA against prod API
+
+3. **Files and Code Sections:**
+
+   **`packages/server/src/lobu/client-routes.ts`** (PR #2380, MERGED)
+   - Identity fix — the core change:
+   ```ts
+   // Identity is what the client REGISTERED as. `clientInfo.name` is
+   // rewritten on every MCP `initialize` and names the process
+   // driving the connection, not the app — an Owletto Mac build
+   // driven by the Claude Code SDK reports `claude-code`. Letting it
+   // win renamed every row on prod (19/19 mismatched, 2026-07-30).
+   // It stays available as `drivenBy`, which is a real question.
+   const registeredName = asNonEmptyString(client.client_name);
+   const drivenBy = asNonEmptyString(clientInfo?.name);
+   const title = registeredName || drivenBy;
+   const softwareId = asNonEmptyString(client.software_id);
+   ```
+   - Deleted entirely: `LOBU_FIRST_PARTY_SOFTWARE_IDS` Set, `isFirstPartyLobuClient()`, `firstParty` on both mcp and messaging records. Net −29 source lines.
+
+   **`packages/server/src/auth/oauth/clients.ts`** (PR #2381, MERGED)
+   ```ts
+   // `text[]` columns arrive as the raw literal `{a,b}` because the pool
+   // runs `fetch_types: false`. Parse at this boundary — it is the single
+   // read path for both getClient() and listClientsByOrganization(), and
+   // callers do membership tests (`redirect_uris.includes(...)`) that
+   // silently degrade to substring matching against a string.
+   redirect_uris: parsePgTextArray(stored.redirect_uris),
+   grant_types: parsePgTextArray(stored.grant_types),
+   response_types: parsePgTextArray(stored.response_types),
+   contacts: stored.contacts ? parsePgTextArray(stored.contacts) : undefined,
+   ```
+
+   **`packages/core/src/reserved.ts`** (owletto PR, via lobu worktree) — replaced the two prefixes with:
+   ```ts
+   export const CONNECTOR_SUBROUTE_SEGMENTS = ["device", "client"] as const;
+   export function isReservedConnectorKey(key: string): boolean {
+     return (CONNECTOR_SUBROUTE_SEGMENTS as readonly string[]).includes(key);
+   }
+   ```
+
+   **`packages/owletto/src/lib/connectors/device-rows.ts`** (NEW) — `buildDeviceConnectorRows()` producing `{connector, facets, device}` with `key: \`device-row:${device.id}\`` (React key only, not routable), `status: device.online ? "active" : "inactive"` (deliberately NOT `error` — an offline laptop isn't a fault), `RUNTIME_ONLY_FACETS`, plus `deviceRowMeta()` → `"macOS · 6 connectors · offline"`.
+
+   **`packages/owletto/src/lib/connectors/client-rows.ts`** (NEW) — `groupClients()` moved out of the deleted route file; `ClientGroup` now carries `clientId` (routable, stable) and `drivenBy`; `clientRowMeta()` appends `via ${drivenBy}` when it differs from the title.
+
+   **`packages/owletto/src/lib/connectors/row-kinds.ts`** (NEW) — `resolveConnectorRowKind()`, reduced from 5 kinds to 3 after the rework; `isRealConnectorKey()` used by the route loader's prefetch guard.
+
+   **`packages/owletto/src/lib/connectors/facets.ts`** — added explicit flag instead of key-sniffing:
+   ```ts
+   isDevice?: boolean;
+   // ...
+   if (filter === "device") {
+     return item.isDevice === true || connectorIsDeviceBound(connector);
+   }
+   ```
+
+   **`packages/owletto/src/app/$owner/connectors/device.$deviceId.tsx`** and **`client.$clientId.tsx`** (NEW routes) — give clean URLs; client routes on `oauth_clients.id`, not the group key (which embeds attacker-controlled `client_name`, may contain `/`, and changes on re-registration).
+
+   **`packages/owletto/src/components/devices/device-detail.tsx`** and **`components/clients/client-detail.tsx`** — both rebuilt on `ConnectorPageShell` + `DetailHeader` + `DetailBreadcrumb` + `PageSection`; loading/not-found on `ConnectorPageColumn`. Device sections: Runs / Permissions / Browser auth profiles / Settings. Delete copy now says un-pinning happens "across EVERY workspace, not just this one."
+
+   **Deleted:** `$owner/connectors/apps.tsx`, `-apps.test.tsx`, `runtime.tsx`, `runtime/devices.tsx`, `runtime/index.tsx`, `components/devices/devices-body.tsx`, both sidebar dropdown items.
+
+4. **Errors and fixes:**
+   - **codex quota exhausted** (until Aug 5 2026) → switched to `claude -p --model fable` for both design review and `make review`/`make review-fix`.
+   - **Stale workspace dist in worktree** (`Cannot find module '@lobu/connector-sdk/identity-normalize'`) → `make build-packages`.
+   - **Python string replacements silently no-op'd** — file used tabs, my patterns used spaces → read raw bytes with `repr()` before patching.
+   - **`memory-scope-bar.tsx` TS7006 implicit any** — a *cascade* from deleting routes: `to` is a variable prop so Link's generics stopped inferring → typed handlers `(e: React.MouseEvent)` / `(e: React.PointerEvent)`. Initially mis-diagnosed as pre-existing; verified against the main checkout that it was not.
+   - **Over-deleted `const owner` in `app-sidebar.tsx`** — used `str.replace()` without a count so it removed a second occurrence in a different function → restored the declaration.
+   - **`redirectUris.join is not a function`** — found by actually loading the client detail page. I first wrote a `normalizeRedirectUris` parser in the UI. **User pushback: "is this the best way, don't we return the array to frontend nicely, get rid of this hack across all the codebase."** Removed the UI parser and fixed at the DB read boundary; discovered `parsePgTextArray` already existed in `db/client.ts` and was used correctly in 17 other places — I should have grepped before writing one.
+   - **`isFirstPartyLobuClient` hack** — I added three strings to a stale allowlist and three more name-prefix checks. **User pushback: "wtf is this why there is so much hacks there?" / "we don't want these hacks."** Deleted `firstParty` entirely rather than repairing it (only two cosmetic consumers).
+   - **Blanket `to="/$owner/connectors/$connectorKey"` replace broke 4 legitimate connector links** → regex-restored any link whose params still carried `connectorKey`.
+   - **Route smoke test failures (twice)** — first for stale ROUTES entries after deleting routes, then for missing entries after adding two. Both times the guard was correct; added/removed entries and added `clientId: "mcp_client_test"` to PARAMS.
+   - **`token-routes.test.ts` 4 failures** — verified pre-existing by checking out base commit `7f826a420` and reproducing.
+   - **A local test run connected to `lobu-ai-prod-db-pooler`** — the worktree env points at prod; flagged as an environment hazard, CI is the reliable signal.
+
+5. **Problem Solving:**
+   - Established the real taxonomy: Mac/Chrome create `device_workers` rows (runtimes that *provide* connectors); the CLI creates only an `oauth_clients` row (it never polls `/api/workers/poll` — the allowlist governs capabilities, not row creation).
+   - Discovered via prod screenshots that the identity bug is worse than cosmetic: **two rows both titled `claude-code`** (2 registrations = Claude, 5 = Owletto for Mac) make Revoke unattributable.
+   - Corrected memory: `software_id` is populated on 11 of 19 prod rows (not NULL as recorded), so Fable's premise for the dedup finding was wrong — though its "link, don't suppress" conclusion survives because the field is self-asserted.
+   - Found the Recent "bug" is not a regression: `#614` (`93a493ae`) deliberately deleted the sidebar section; `#628` GC'd the hooks; `/workspace/recent` was designed but never built.
+   - Confirmed no server code emits `/connectors/runtime` or `/connectors/apps` links, making reserved-segment handling optional.
+   - Resolved the sequencing trap: moving Revoke onto the client detail is what allows `/connectors/apps` to be deleted in the same PR rather than waiting on Recent.
+
+6. **All user messages:**
+   - "could we get rid of the mcp clients and devices page. in the connectors we can put lobu cli, owletto chrome extension and owletto macos app and just give them the instructions. and when they're connected chrome extension and mac shows up as a connector/connection no? let's ultrathink plan what's the best dx here"
+   - "1 and for 2 try to do it in a single pr. 3. maybe we have mcp clients under connectors and when clicked we will show?"
+   - "hmm, should that clients sessions be under the recent? why do we have many api surfaces"
+   - "/simplify the architecure as much as possible"
+   - "ok let's try this and i will confirm it's good. also mcp clients can be under connectors maybe?"
+   - "wtf is this why there is so much hacks there?" (mid-turn)
+   - "we don't want these hacks" (mid-turn)
+   - "where do i access those? devices are under connectors right, the api as well. also the recent api covers the mcp clients. we don't have dead pages or api in the back"
+   - "ok good. any more gaps, take screenshots and show it to me in html artifact"
+   - "where do people now go to devices page? i thought it was from connectors and the devices page is like a connector page so people can follow easily. we remove the my devices dropdown item and the connected app from the dropdown below"
+   - "ok don't make same mistake again. and merge that and for the device and mcp clients/agents ui change show me the url so i can test"
+   - "do all next steps" (mid-turn)
+   - "is this the best way, don't we return the array to frontend nicely, get rid of this hack across all the codebase" (mid-turn)
+   - "this is weird. why can't we make the device page similar to how a connector page is http://localhost:5180/buremba/connectors/device%3A2e8a0557-ddd9-48a9-913e-f476163c0cd2 also why not connectors/device/[]"
+
+7. **Pending Tasks:**
+   - Run `make pre-pr` and `make review` on the owletto branch, then **merge owletto PR #663**, then **bump the submodule pointer in a lobu PR** (owletto must merge first per the merge-order rule).
+   - **Cleanup** (explicitly requested): three worktrees (`mcp-client-identity`, `pg-array-boundary`, `connect-merge`), dev servers on ports 5180/5273/9198/9201, four seeded `mcp_client_devseed_*` rows + tokens in `lobu_feat_mcp_client_identity`, the `devseed-verify` PAT, `/tmp/pat.txt`, `/tmp/clients.json`, and the prod PAT `REDACTED`.
+   - Prod-verify #2380 and #2381 after rollout.
+   - Optional/deferred: sweep the 11 remaining ARRAY columns; the "Chrome appears twice" unnamed-device issue; rebuilding Recent; test clients in prod.
+
+8. **Current Work:**
+
+   Immediately before the summary request I had just completed the user's final two complaints in the `connect-merge` worktree and pushed them:
+
+   - **URL fix:** replaced the `device:` / `client:` prefixed keys with real nested routes `/connectors/device/{id}` and `/connectors/client/{id}`, verified live in the browser returning `"/buremba/connectors/device/2e8a0557-ddd9-48a9-913e-f476163c0cd2"` (no `%3A`), and confirmed the detail page renders with breadcrumb "Connectors", title "Burak Mac mini Chrome", "Online" badge, and its Runs panel.
+   - **Chrome fix:** rebuilt both `device-detail.tsx` and `client-detail.tsx` on `ConnectorPageShell` + `DetailHeader` + `PageSection`. Critically, I discovered `connector-tabs.ts` **no longer exists** and `ConnectorPageShell` documents "There is no tab bar" — so Fable's earlier tab-mapping advice was based on a stale tree and I nearly built to a deleted contract.
+
+   Both server PRs merged: **#2380 → `e08636f1`**, **#2381 → `5cdb5552`** (the latter after the user pushed two commits to the branch, including a genuine bug fix to `parsePgTextArray` that stopped it splitting on commas inside quoted elements — a defect I'd adopted without auditing).
+
+   Owletto commit `49890500` ("refactor(connect): give devices and clients real routes and connector chrome") was pushed to PR #663; build clean, **1134/1134 tests pass**, and `gh pr view 663` reported `mergeStateStatus: CLEAN`.
+
+9. **Optional Next Step:**
+
+   Run the gates on the owletto branch and complete the merge chain, which is directly what the user asked with "ok don't make same mistake again. and merge that…" and "do all next steps". Specifically: `make pre-pr` + `REVIEWER_CLI=claude CLAUDE_REVIEW_MODEL=fable make review` on `connect-merge`, merge owletto#663, then create and merge the lobu submodule-pointer-bump PR — per the flow I stated: *"Merge order remaining: **#2381 → owletto#663 → pointer bump**."* Then perform the cleanup the user requested, and report the final diff evidence.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/872c1f9c-d1ae-4139-93a5-3ed7b02ede10.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

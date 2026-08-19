@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b1fwnf0ro</task-id>
+<summary>Monitor event: "prod rollout containing fix 63c7dd519"</summary>
+<event>deploy moved to 2df9eb5fbc59f287e8151875cfd227308c96fc66 (still without the fix)</event>
+</task-notification>

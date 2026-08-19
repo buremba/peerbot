@@ -1,0 +1,1 @@
+don't we require the agent from mcp and if not set use the default agent? so agents become stable, like branches. the request needs to just set which agent it is so we can redirect to the agents settings models for the user to connect

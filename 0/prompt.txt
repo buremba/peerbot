@@ -1,0 +1,1 @@
+also in activity if there is no activity we can make the background placeholder opacity: 0.2; also /connectors?filter=agents link should be set form the sidebar item connect your agent

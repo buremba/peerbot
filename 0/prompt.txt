@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw3o69fgf</task-id>
+<tool-use-id>toolu_01PYiDLxAfEVLoLhNmviuFPV</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bw3o69fgf.output</output-file>
+<status>completed</status>
+<summary>Background command "Rebuild after rename and comment fix" completed (exit code 0)</summary>
+</task-notification>

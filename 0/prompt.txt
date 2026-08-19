@@ -1,0 +1,1 @@
+publish as claude html artifact. also check data and list most high value token saving approaches, check when the claude settings changed recently (yesterday) and show proofs on how much token will it save. another agent will implement tham later so put implementation spec

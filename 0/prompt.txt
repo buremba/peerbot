@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9b3p4gbc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/07e7c33a-4508-4f40-803f-08696f5f646a/tasks/b9b3p4gbc.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr on the new pointer" completed (exit code 0)</summary>
+</task-notification>

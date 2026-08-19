@@ -1,0 +1,1 @@
+what are better values for there? also we can get rid of the advanced thing, and by default show the selected filters and the search one and put show all filters accordion to show the ones that are not selected maybe?

@@ -1,0 +1,1 @@
+i'm thinking of the duplicate answers but what if the user wants to make two agents working on the same channel, it can be like one works only when referenced or if there are two agents they can post under the same thread maybe so the user can see them both. that's useful for cases like different persfective agent wokring on the same data

@@ -1,0 +1,22 @@
+You are reviewing a DESIGN, not a diff. Be adversarial and concrete. Do not be agreeable.
+
+Read the design at:
+/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/scratchpad/write-rules-design.md
+
+Then verify its claims against the real code in this repo (cwd is a git worktree of the Lobu monorepo). Specifically check:
+- packages/server/src/authz/entity-mutation-gate.ts (the fold, the decision unions)
+- packages/server/src/authz/approval-interceptor.ts
+- packages/server/src/utils/entity-management.ts (around line 900-1100, the isHumanEdit carve-out)
+- packages/server/src/automations/reaction-executor.ts
+- packages/server/src/sandbox/run-script.ts (CAN it pool/reuse isolates, or does it assume create-per-run?)
+- packages/server/src/sandbox/client-sdk.ts
+- packages/cli/src/config/define.ts
+
+Answer these, with file:line evidence:
+1. Which factual claims in the design are WRONG or overstated?
+2. Open question 2 in the design: audit it. Which human-reachable entity write paths BYPASS runMutationGate today? Be specific. This determines whether the whole "humans are not special" decision is implementable.
+3. Can run-script.ts pool isolates across invocations, or is it structurally create-per-run? Quote the code.
+4. What is the strongest argument AGAINST this design that the author has not considered? Not a nitpick - an architectural objection.
+5. Is removing the declarative x-transitions engine in favour of code actually correct, or was that a mistake?
+
+Be blunt. If the design is sound say so briefly, but lead with what is wrong.

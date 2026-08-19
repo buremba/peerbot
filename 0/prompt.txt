@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi8l39h2e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/bi8l39h2e.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after fixer changes" completed (exit code 0)</summary>
+</task-notification>

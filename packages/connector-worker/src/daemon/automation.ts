@@ -315,16 +315,17 @@ async function runCli(
 
     // A SIGKILLed child gets a short flush window; a clean exit gets a long one.
     const drainDeadlineMs = killedSignal === 'SIGKILL' ? 2000 : 60_000;
-    const { data: stdoutData, truncated: stdoutTruncated } = await awaitDrain(
-      stdoutPromise,
-      proc.stdout,
-      drainDeadlineMs
-    );
-    const { data: stderrData } = await awaitDrain(
-      stderrPromise,
-      proc.stderr,
-      drainDeadlineMs
-    );
+    // Both pipes must race the SAME clock. Awaiting them in sequence gave
+    // stderr a fresh deadline only after stdout's had expired, so a grandchild
+    // holding both ends cost 2x the deadline (measured: 120s for a child that
+    // had already exited cleanly), not the one window the constant describes.
+    const [
+      { data: stdoutData, truncated: stdoutTruncated },
+      { data: stderrData },
+    ] = await Promise.all([
+      awaitDrain(stdoutPromise, proc.stdout, drainDeadlineMs),
+      awaitDrain(stderrPromise, proc.stderr, drainDeadlineMs),
+    ]);
 
     const label = spec.binaryName;
     const exitCode = proc.exitCode;
@@ -344,11 +345,17 @@ async function runCli(
       errorMessage = `${label} exited via signal (status=${proc.signalCode})`;
     } else {
       exitReason = 'error_message';
-      const stderr = stderrData.toString('utf8').trim();
+      // Prefer stderr, but fall back to the tail of stdout. `claude` prints its
+      // fatal there ("Credit balance is too low") and leaves stderr empty, so
+      // reading stderr alone reported the most likely real failure as a bare
+      // "exited with non-zero status 1" with the cause only in output_tail.
+      const detail =
+        stderrData.toString('utf8').trim() ||
+        stdoutData.toString('utf8').trim().slice(-500);
       errorMessage =
-        stderr === ''
+        detail === ''
           ? `${label} exited with non-zero status ${exitCode}`
-          : `${label} exited with status ${exitCode}: ${stderr}`;
+          : `${label} exited with status ${exitCode}: ${detail}`;
     }
 
     let output = stdoutData.toString('utf8');

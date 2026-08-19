@@ -170,8 +170,17 @@ describe('automation arm e2e', () => {
  */
 describe('automation arm drain deadline', () => {
   const hangBinary = path.join(tmp, 'pi-orphan-pipe');
+  const bothPipesBinary = path.join(tmp, 'pi-orphan-both');
 
   beforeAll(() => {
+    writeFileSync(
+      bothPipesBinary,
+      // Same as above, but the grandchild inherits stderr too — the only shape
+      // that can tell a shared deadline apart from two sequential ones.
+      `#!/bin/sh\ntrap '' TERM\nsleep 20 &\necho "PARTIAL_OUTPUT"\nsleep 20\n`
+    );
+    chmodSync(bothPipesBinary, 0o755);
+
     writeFileSync(
       hangBinary,
       // Ignore SIGTERM so the run reaches the SIGKILL arm, and leave a
@@ -200,4 +209,57 @@ describe('automation arm drain deadline', () => {
     // Well under the 15s the grandchild holds the pipe: the deadline fired.
     expect(elapsedMs).toBeLessThan(12_000);
   }, 30_000);
+
+  /**
+   * The two pipes must race one clock. Awaiting stdout's deadline and *then*
+   * stderr's gave each a full window, so a grandchild holding both cost twice
+   * the deadline. Measured on the 60s clean-exit path that was 120s, not 60s.
+   */
+  test('a grandchild holding BOTH pipes costs one deadline, not two', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const both = cfg();
+    both.timeoutMs = 500;
+    both.binaryOverrides = { pi: bothPipesBinary };
+
+    const startedAt = Date.now();
+    await executeAutomationRun(client(), automationJob(), both);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('timeout');
+    // ~3.5s to SIGTERM→SIGKILL→reap, then ONE 2s post-SIGKILL flush window.
+    // Serialized deadlines spent two of them and landed past 7.5s.
+    expect(elapsedMs).toBeLessThan(6_500);
+  }, 30_000);
+});
+
+/**
+ * A CLI that reports its fatal on stdout must still be diagnosable. `claude`
+ * prints "Credit balance is too low" to stdout and leaves stderr empty, which
+ * a stderr-only error message reduced to "exited with non-zero status 1".
+ */
+describe('automation arm failure diagnosis', () => {
+  const stdoutFatalBinary = path.join(tmp, 'pi-stdout-fatal');
+
+  beforeAll(() => {
+    writeFileSync(
+      stdoutFatalBinary,
+      `#!/bin/sh\necho "Credit balance is too low"\nexit 1\n`
+    );
+    chmodSync(stdoutFatalBinary, 0o755);
+  });
+
+  test('falls back to stdout when the CLI leaves stderr empty', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const failing = cfg();
+    failing.binaryOverrides = { pi: stdoutFatalBinary };
+
+    await executeAutomationRun(client(), automationJob(), failing);
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('error_message');
+    expect(completions[0].body.error).toContain('Credit balance is too low');
+  });
 });

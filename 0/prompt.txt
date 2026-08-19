@@ -1,0 +1,11 @@
+<task-notification>
+<task-id>be604zsxp</task-id>
+<summary>Monitor event: "re-run CI when eligible, then required checks on PR 2558"</summary>
+<event>base-branch-guard: pass
+format-lint: pass
+frontend: pass
+pi-review: pass
+typecheck: fail
+ui-review: pass
+unit: cancel</event>
+</task-notification>

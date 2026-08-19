@@ -1,0 +1,1 @@
+yes there won't be any empty activity in that page, we can get rid of that hack. this will be like a deployment event right

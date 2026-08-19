@@ -1,0 +1,1 @@
+ok let's think through then, i don't want to force on the sdk design we want the agnts to be able to generate templates on the fly and interactive forms

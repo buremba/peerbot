@@ -228,7 +228,13 @@ export async function validateEntityRowPatch(params: {
  * enforcement, and the script's allowlist/exemption list can be edited.
  *
  * Same handle/#2818 contract as {@link validateEntityRowPatch}: only the
- * caller's transaction handle, never `getDb()`.
+ * caller's transaction handle, never `getDb()` — because a read on one pooled
+ * connection followed by a write on another can be overtaken in between.
+ *
+ * The single exception is a caller that WRITES NOTHING: `deleteEntity`'s dry
+ * run passes the pool deliberately, because a preview enforces nothing and so
+ * has no check for a concurrent write to overtake. If a call can commit, it
+ * owes this function a transaction.
  *
  * Rows are grouped by their type's compiled rule so each distinct rule runs in
  * ONE isolate over its whole group. Per-row isolates do not scale — measured at

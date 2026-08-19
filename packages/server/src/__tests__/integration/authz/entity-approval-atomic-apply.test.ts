@@ -356,12 +356,15 @@ describe("an approved DELETE card is honoured despite the rule that escalated it
 		expect(proposal.entity_id).toBe(invoice.id);
 		expect(proposal.operation).toBe("delete");
 
-		await applyEntityChangeProposal(
-			proposal as never,
-			ctx,
-			TEST_ENV,
-			sql,
-		);
+		// Apply INSIDE a transaction, because that is what production does:
+		// approvals.ts wraps the whole claim+confirm+apply in `sql.begin` and
+		// hands `completeApproval` the tx. Passing the pool here would skip the
+		// one shape worth proving — `deleteEntity` opens its OWN transaction on a
+		// SECOND pooled connection while this one is still open, and takes
+		// `FOR UPDATE` on a row the outer tx has not locked.
+		await sql.begin(async (tx) => {
+			await applyEntityChangeProposal(proposal as never, ctx, TEST_ENV, tx);
+		});
 
 		const [row] = await sql<{ deleted_at: Date | null }[]>`
       SELECT deleted_at FROM entities WHERE id = ${invoice.id}

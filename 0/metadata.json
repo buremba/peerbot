@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.10.1",
+  "checkpoint_id": "78e6d6084d9a",
+  "session_id": "019fb96f-259a-7519-bc96-94873cbf9897",
+  "strategy": "import",
+  "created_at": "2026-07-31T18:28:19.92Z",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Pi",
+  "model": "gpt-5.6-terra",
+  "checkpoint_transcript_start": 3,
+  "transcript_lines_at_start": 3,
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 27176,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 62976,
+    "output_tokens": 1162,
+    "api_call_count": 4
+  },
+  "kind": "imported"
+}

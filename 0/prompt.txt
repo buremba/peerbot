@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b274kj7pr</task-id>
+<tool-use-id>toolu_01GUPzsD16LLs4vBMse77cWP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/b274kj7pr.output</output-file>
+<status>failed</status>
+<summary>Background command "Boot dev server" failed with exit code 2</summary>
+</task-notification>

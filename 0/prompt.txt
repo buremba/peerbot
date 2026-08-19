@@ -1,0 +1,1 @@
+just to understand how does the agents know it's lobu-cloud, do we have this info where, can you try end to end after merge?

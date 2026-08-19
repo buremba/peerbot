@@ -1,0 +1,1 @@
+showing connector info like the source, also we should have the back icon before the icons. any more gaps or should we do this design and simplify and run dev server so i can test

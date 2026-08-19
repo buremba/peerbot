@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b164s5xoe</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e5d3e591-b895-4f46-92bd-8ceb1300593c/tasks/b164s5xoe.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI and get the new preview URL" completed (exit code 0)</summary>
+</task-notification>

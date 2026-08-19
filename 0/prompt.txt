@@ -1,0 +1,1 @@
+do you think we need that layer, or get rid of the clients stuff and consolidate on the conversations

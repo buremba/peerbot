@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8b3f8zyr</task-id>
+<tool-use-id>toolu_01SHwApR2TUyPLotLRSidpnW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b8b3f8zyr.output</output-file>
+<status>completed</status>
+<summary>Background command "Commit correction and re-run preflight" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+why do we still have the {{, doesn't markdown work in the same way? or when people do @ we replace it with {{ or what? use html artifact to ask me questions

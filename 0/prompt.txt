@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmyi68zby</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/07e7c33a-4508-4f40-803f-08696f5f646a/tasks/bmyi68zby.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full Swift suite then rebuild the app" completed (exit code 0)</summary>
+</task-notification>

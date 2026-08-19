@@ -1,0 +1,1 @@
+is this architecture best or could we just give the agent postgresql sql access and it can do everthing? go through usecases how it's useful and why and let's guide me

@@ -1,0 +1,1 @@
+should the scren time etc only show under the device

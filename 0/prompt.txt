@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bib6p6z0r</task-id>
+<tool-use-id>toolu_011o57aDvLztG9X2aqqcETtR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bib6p6z0r.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run make review on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

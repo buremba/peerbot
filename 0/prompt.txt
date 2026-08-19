@@ -1,0 +1,1 @@
+why infrastucture new stuff? can't it be shown just like a connection creation when visiting the connector page

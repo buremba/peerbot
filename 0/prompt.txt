@@ -1,0 +1,1 @@
+the entity page add member button is not primary, overall follow our design guideline and solve these problems http://127.0.0.1:5261/local-install/memory?type=%24member same with http://127.0.0.1:5261/local-install/memory page

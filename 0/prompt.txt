@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3almz4bu</task-id>
+<tool-use-id>toolu_0116mVATckwgQFa1qWoV5QMD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059/tasks/b3almz4bu.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-gate Maps after version fix" completed (exit code 0)</summary>
+</task-notification>

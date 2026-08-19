@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bjpx8noa2</task-id>
+<tool-use-id>toolu_01HMQyPj3LiGdoT13hN8yPP7</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/bjpx8noa2.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the unposted fixer pass" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b3axfjlyk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/b3axfjlyk.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on PR 2395" completed (exit code 0)</summary>
+</task-notification>

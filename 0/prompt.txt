@@ -1,0 +1,28 @@
+the chatgpt agent said this. ## Summary
+
+The GitHub App is active in `lobu-team`, but an MCP session scoped to `buremba` reports GitHub as disconnected and repeatedly returns `setup_required → install_app`.
+
+The installation is not broken. The setup flow hides that connections are workspace-scoped and that a usable GitHub connection already exists in another workspace the user can access.
+
+## Reproduction
+
+1. User belongs to `buremba` and `lobu-team`.
+2. `lobu-team` has active GitHub connection `385`.
+3. Session is scoped to `buremba`.
+4. `connections.list({ connector_key: "github" })` returns `[]`.
+5. `connections.connect({ connector_key: "github" })` returns `install_app`.
+6. GitHub shows the App is already installed with all repositories selected.
+
+## Expected
+
+Return a structured `connected_in_other_workspace` result showing:
+- current workspace
+- accessible workspace containing the connection
+- `switch_workspace` action
+- explicit admin-controlled `link_installation_here` action
+
+Do not share credentials or data across workspaces implicitly.
+
+## Additional bug
+
+The generated approval URL `/lobu-team/memory?run_ids=757649` shows “No results found”, although run `757649` exists with `status=pending` and `approval_status=pending`. The run has `created_by_user_id = null`, which may be excluded by the approval UI. why?

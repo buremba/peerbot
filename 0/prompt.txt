@@ -1,0 +1,1 @@
+what's the best fix here long term? i thought we have the message history in the db as well and support pulling all conversations across everywhere

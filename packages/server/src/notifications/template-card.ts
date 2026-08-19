@@ -1,69 +1,57 @@
 /**
  * Build the chat card for a kind-bearing notification.
  *
- * WHY NOT RENDER THE `json_template`: the DSL's component vocabulary is
- * deliberately open — `validate-json-template` refuses to allowlist it because
- * "the renderer's component set is extended app-side (entity-board,
- * entity-table, charts, …)". Walking it here would be a second renderer that
- * can never be faithful, that drifts every time the DSL grows, and that no
- * visual test covers. So chat reads the one input it CAN handle completely:
- * the kind's `metadataSchema`, a closed shape of properties + annotations.
+ * ONE PIPELINE: kind -> json_template -> card. `resolveEntityRender` already
+ * yields a template for every kind — the authored `json_template` when there is
+ * one, otherwise the default synthesized from `metadataSchema` — so chat reads
+ * the same tree the web and MCP surfaces render. Nothing here looks at
+ * `metadataSchema`; deriving a second layout from it is what made chat and web
+ * disagree by construction.
  *
- * That is also the common case. `jsonTemplate` is optional and, per its own
- * docs, "when absent, rendering falls back to a default synthesized from
- * `metadataSchema`" — the schema-derived field table. A kind that DOES author a
- * template usually did so to get a component chat has no equivalent for, which
- * is exactly when guessing is worse than linking out.
+ * `walkTemplate` (in `@lobu/core/json-template`) owns every structural decision
+ * — path resolution, `if` truthiness, `each` scoping, the string shorthand — so
+ * this file only decides how a node BECOMES Slack/Teams/GChat card content.
  *
- * Ordering, hiding (`x-hidden`) and labelling (`x-table-label` / `title`) come
- * from `orderedSchemaFields`, the same helper the web/MCP default template
- * uses, so the surfaces agree by construction rather than by convention.
- *
- * Anything chat cannot show — an authored template, fields past the platform
- * cap, a truncated value — resolves the same way: show what fits and link to
- * the event.
+ * A template may invoke components chat has no equivalent for (entity-board,
+ * charts). Those are collected as `unsupported` rather than guessed at, and the
+ * card links out to the full record instead of quietly showing a subset.
  */
-import { formatValue } from "@lobu/core/json-template";
+import {
+	type TemplateNode,
+	type TemplateVisitor,
+	walkTemplate,
+} from "@lobu/core/json-template";
 import {
 	Actions,
 	Button,
 	Card,
 	type CardChild,
 	type CardElement,
-	Field,
-	Fields,
+	CardText,
+	Divider,
 	LinkButton,
+	Table,
 } from "chat";
-import { orderedSchemaFields } from "../utils/default-entity-template";
+import { resolveEntityRender } from "../utils/default-entity-template";
+
+/** Slack degrades a table past these to an ASCII code fence; keep it native. */
+const MAX_ROWS = 100;
+const MAX_COLS = 20;
+/** No documented cap on a table cell; stay well inside the 2000 mrkdwn limit. */
+const MAX_CELL_CHARS = 400;
+const MAX_TEXT_CHARS = 1900;
 
 /**
- * Slack rejects the ENTIRE message when a section carries more than 10 fields
- * or a field longer than 2000 characters, so an unclamped card costs the
- * notification its delivery, not just its formatting. A schema is authored
- * freely, so nothing upstream bounds this.
- */
-const MAX_FIELDS = 10;
-/**
- * Slack's 2000-char cap is on the RENDERED field — `*label*\nvalue` — not on
- * label and value separately, so the two share one budget. Clamping them
- * independently is how a long label plus a long value silently produced a
- * 3600-char field and lost the whole message.
- */
-const MAX_FIELD_CHARS = 1900;
-/** Labels are schema titles; capping them keeps the budget for the value. */
-const MAX_LABEL_CHARS = 200;
-
-/**
- * Escape user/agent-controlled text before it lands in Slack mrkdwn.
+ * Escape text bound for Slack **mrkdwn**.
  *
- * Load-bearing here: this card renders a connector operation's INPUT, which the
- * agent controls. Without this, an input containing `<!channel>` pings the room
- * from inside a trusted approval card, and `<https://evil|Review in Lobu>`
- * renders as a link that spoofs the real review link right next to the genuine
- * one.
+ * Load-bearing: a card renders a connector operation's INPUT, which the agent
+ * controls. Unescaped, `<!channel>` pings the room from inside a trusted
+ * approval card and `<https://evil|Review in Lobu>` renders a link spoofing the
+ * genuine one.
  *
- * Slack-only, matching the in-app body's separate treatment: the persisted body
- * is Markdown source, not Slack mrkdwn.
+ * NOT applied to table cells: the Slack adapter emits those as `raw_text`,
+ * which is not parsed for entities, so escaping there would render a literal
+ * `&lt;` to the reader.
  */
 export function escapeSlackText(value: string): string {
 	return value
@@ -76,9 +64,112 @@ function clamp(value: string, max: number): string {
 	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
+/**
+ * What the walk emits. Cells and rows are intermediate: a `td` cannot know
+ * whether it is inside a table until its `tr`, and a `tr` cannot become a card
+ * child on its own.
+ */
+type Frag =
+	| { kind: "text"; text: string }
+	| { kind: "cell"; text: string }
+	| { kind: "row"; cells: string[] }
+	| { kind: "block"; child: CardChild };
+
+/** Layout-only wrappers: they carry no content of their own, so pass through. */
+const PASSTHROUGH = new Set([
+	"card",
+	"card-content",
+	"card-header",
+	"card-body",
+	"div",
+	"span",
+	"p",
+	"section",
+	"tbody",
+	"thead",
+	"fragment",
+]);
+
+const textOf = (frags: Frag[]): string =>
+	frags
+		.map((f) => (f.kind === "text" || f.kind === "cell" ? f.text : ""))
+		.join("")
+		.trim();
+
+const cardVisitor: TemplateVisitor<Frag> = {
+	text: (content) => [{ kind: "text", text: content }],
+	value: (rendered) => [{ kind: "text", text: rendered }],
+	component: (type, _props, children) => {
+		if (PASSTHROUGH.has(type)) return children;
+		if (type === "th" || type === "td") {
+			return [{ kind: "cell", text: clamp(textOf(children), MAX_CELL_CHARS) }];
+		}
+		if (type === "tr") {
+			const cells = children
+				.filter((c): c is Extract<Frag, { kind: "cell" }> => c.kind === "cell")
+				.map((c) => c.text);
+			return cells.length > 0 ? [{ kind: "row", cells }] : [];
+		}
+		if (type === "table") {
+			const rows = children
+				.filter((c): c is Extract<Frag, { kind: "row" }> => c.kind === "row")
+				.map((c) => c.cells)
+				.slice(0, MAX_ROWS);
+			if (rows.length === 0) return [];
+			const width = Math.min(
+				rows.reduce((w, r) => Math.max(w, r.length), 0),
+				MAX_COLS,
+			);
+			// Slack's native table always renders its first row as the header, and
+			// the default entity template has no `thead` — its `th` is a per-row
+			// label in column 0. Blank headers keep the shape rectangular without
+			// inventing column names the template never declared.
+			return [
+				{
+					kind: "block",
+					child: Table({
+						headers: Array.from({ length: width }, () => ""),
+						rows: rows.map((r) =>
+							Array.from({ length: width }, (_, i) => r[i] ?? ""),
+						),
+					}),
+				},
+			];
+		}
+		if (type === "divider" || type === "hr") {
+			return [{ kind: "block", child: Divider() }];
+		}
+		// Unknown component. Returning nothing marks it unsupported so the caller
+		// can link out rather than present a partial record as complete.
+		return [];
+	},
+};
+
+function fragsToChildren(frags: Frag[]): CardChild[] {
+	const children: CardChild[] = [];
+	let pending: string[] = [];
+	const flush = () => {
+		const text = pending.join("\n").trim();
+		pending = [];
+		if (text) children.push(CardText(clamp(escapeSlackText(text), MAX_TEXT_CHARS)));
+	};
+	for (const frag of frags) {
+		if (frag.kind === "block") {
+			flush();
+			children.push(frag.child);
+			continue;
+		}
+		// A stray row/cell outside a table still carries data; keep it readable
+		// rather than dropping it.
+		if (frag.kind === "row") pending.push(frag.cells.join(": "));
+		else pending.push(frag.text);
+	}
+	flush();
+	return children;
+}
+
 export function buildKindCard(params: {
 	metadataSchema?: Record<string, unknown> | null;
-	/** Presence means the kind authored its own template — chat links out. */
 	jsonTemplate?: Record<string, unknown> | null;
 	data: Record<string, unknown>;
 	title?: string;
@@ -93,34 +184,26 @@ export function buildKindCard(params: {
 	 */
 	decisionRunId?: number | null;
 }): CardElement | null {
-	if (params.jsonTemplate) return null;
+	const template = resolveEntityRender(
+		params.jsonTemplate ?? null,
+		params.metadataSchema,
+	) as TemplateNode | null;
+	if (!template) return null;
 
-	const schemaFields = orderedSchemaFields(params.metadataSchema);
-	if (!schemaFields) return null;
+	const unsupported = new Set<string>();
+	const children = fragsToChildren(
+		walkTemplate(template, params.data, cardVisitor, unsupported),
+	);
+	if (children.length === 0) return null;
 
-	// No format directive, matching the default template's bare `data` bindings:
-	// the point is that chat shows what the Memory view shows, so chat must not
-	// reformat what the web leaves raw. Objects still get formatValue's compact
-	// line-item text, which is how an operation's input becomes readable.
-	const fields = schemaFields
-		// Clamp AFTER escaping, so the budget covers what Slack actually receives
-		// and an escaped entity is never cut in half into a broken sequence.
-		.map(({ key, label }) => {
-			const safeLabel = clamp(escapeSlackText(label), MAX_LABEL_CHARS);
-			// `.trim() ||` so a whitespace-only value reads as unset rather than
-			// rendering a blank field the reader cannot interpret.
-			const raw = escapeSlackText(formatValue(params.data[key])).trim();
-			return Field({
-				label: safeLabel,
-				value: clamp(raw, MAX_FIELD_CHARS - safeLabel.length) || "—",
-			});
-		});
+	if (unsupported.size > 0) {
+		children.push(
+			CardText(
+				`_This view uses ${[...unsupported].sort().join(", ")}, which chat cannot render — open it in Lobu for the full record._`,
+			),
+		);
+	}
 
-	const children: CardChild[] = [Fields(fields.slice(0, MAX_FIELDS))];
-
-	// Buttons and the link share one Actions row: a decision card should offer
-	// the decision first and the full record second, not bury Approve under a
-	// paragraph of fields.
 	const actions = [];
 	if (params.decisionRunId) {
 		actions.push(
@@ -148,5 +231,9 @@ export function buildKindCard(params: {
 	}
 	if (actions.length > 0) children.push(Actions(actions));
 
-	return Card({ title: params.title, subtitle: params.subtitle, children });
+	return Card({
+		title: params.title,
+		subtitle: params.subtitle,
+		children,
+	});
 }

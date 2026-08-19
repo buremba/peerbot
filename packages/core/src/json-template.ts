@@ -185,3 +185,121 @@ export function formatValue(value: unknown, format?: ValueFormat): string {
       return value;
   }
 }
+
+/** A json_template node. Open by design — `type` is extended app-side. */
+export type TemplateNode = Record<string, unknown>;
+
+/**
+ * Resolve a `data` path against the render scope.
+ *
+ * Byte-for-byte the rule owletto's renderer uses (`renderer.tsx:434`), so a
+ * path resolves identically on every surface: bracket indices are rewritten to
+ * dots, then walked, short-circuiting to `undefined` on the first nullish hop.
+ */
+export function getValueByPath(
+  obj: Record<string, unknown>,
+  path: string
+): unknown {
+  const parts = path.replace(/\[(\d+)\]/g, ".$1").split(".");
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current === null || current === undefined) return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+/**
+ * What a surface must supply to render a template. `walkTemplate` owns every
+ * structural decision — path resolution, `if` truthiness, `each` scoping and
+ * the string-shorthand — so a visitor only decides how a leaf or a component
+ * BECOMES its output type. That split is the point: adding a surface must not
+ * mean re-deriving the DSL's semantics.
+ */
+export interface TemplateVisitor<T> {
+  /** A literal `text` node. */
+  text(content: string): T[];
+  /** A resolved `data` node, already formatted. */
+  value(rendered: string, raw: unknown): T[];
+  /**
+   * Any non-structural node. `type` is open — a visitor that cannot render one
+   * should say so rather than guess; see `walkTemplate`'s `unsupported`.
+   */
+  component(
+    type: string,
+    props: Record<string, unknown>,
+    children: T[],
+    node: TemplateNode
+  ): T[];
+}
+
+/**
+ * Walk a template against `data`, emitting whatever the visitor builds.
+ *
+ * `unsupported` collects the component types the visitor refused, so a caller
+ * can tell "rendered everything" from "rendered part of it" and degrade
+ * honestly — the chat card links out to the full record instead of quietly
+ * showing a subset.
+ */
+export function walkTemplate<T>(
+  node: unknown,
+  data: Record<string, unknown>,
+  visitor: TemplateVisitor<T>,
+  unsupported?: Set<string>
+): T[] {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return [];
+  const n = node as TemplateNode;
+  const type = typeof n.type === "string" ? n.type : "";
+
+  if (type === "text") {
+    return typeof n.content === "string" ? visitor.text(n.content) : [];
+  }
+
+  if (type === "data") {
+    const path = typeof n.path === "string" ? n.path : "";
+    const raw = path ? getValueByPath(data, path) : undefined;
+    if (raw === undefined || raw === null || raw === "") {
+      const fallback = typeof n.fallback === "string" ? n.fallback : "";
+      return fallback ? visitor.value(fallback, raw) : [];
+    }
+    const format = isValueFormat(n.format) ? n.format : undefined;
+    return visitor.value(formatValue(raw, format), raw);
+  }
+
+  if (type === "if") {
+    const condition = typeof n.condition === "string" ? n.condition : "";
+    const branch =
+      condition && getValueByPath(data, condition) ? n.then : n.else;
+    return branch === undefined
+      ? []
+      : walkTemplate(branch, data, visitor, unsupported);
+  }
+
+  if (type === "each") {
+    const itemsPath = typeof n.items === "string" ? n.items : "";
+    const items = itemsPath ? getValueByPath(data, itemsPath) : undefined;
+    if (!Array.isArray(items)) return [];
+    const as = typeof n.as === "string" ? n.as : "";
+    return items.flatMap((item, index) => {
+      // String shorthand ("- {{t}}"), matching owletto's renderer: the loop
+      // variable is substituted textually and the result is a text leaf.
+      if (typeof n.render === "string") {
+        const value = typeof item === "string" ? item : JSON.stringify(item);
+        return visitor.text(n.render.split(`{{${as}}}`).join(value));
+      }
+      const scope = { ...data, [as]: item, [`${as}Index`]: index };
+      return walkTemplate(n.render, scope, visitor, unsupported);
+    });
+  }
+
+  const props = (n.props ?? {}) as Record<string, unknown>;
+  const children = Array.isArray(n.children)
+    ? (n.children as unknown[]).flatMap((child) =>
+        walkTemplate(child, data, visitor, unsupported)
+      )
+    : [];
+  const emitted = visitor.component(type, props, children, n);
+  if (emitted.length === 0 && children.length === 0 && type)
+    unsupported?.add(type);
+  return emitted;
+}

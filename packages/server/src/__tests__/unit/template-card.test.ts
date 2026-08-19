@@ -1,16 +1,19 @@
 /**
  * Chat cards for kind-bearing notifications.
  *
- * Chat builds its card from the kind's `metadataSchema` — a closed shape —
- * rather than walking the open-ended `json_template`, so the tests that matter
- * are: the fields match what the web default template shows (same order, same
- * labels, same values), the platform's hard limits are respected, and anything
- * chat cannot render resolves to a link instead of a guess.
+ * There is ONE pipeline: kind -> `resolveEntityRender` -> `walkTemplate` ->
+ * card. So the tests that matter are: the template's structure survives the
+ * walk (a `tr` becomes a row, `if`/`each` behave as the web renderer does), the
+ * platform's escaping rules are applied per destination, and a component chat
+ * cannot draw resolves to a link instead of a silent partial record.
+ *
+ * There is deliberately no "chat matches web" parity test any more: both read
+ * the same `resolveEntityRender` output, so agreement is structural rather than
+ * something an assertion could drift away from.
  */
 
 import { describe, expect, it } from "bun:test";
 import { buildKindCard } from "../../notifications/template-card";
-import { resolveEntityRender } from "../../utils/default-entity-template";
 import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	PLATFORM_EVENT_KINDS,
@@ -18,339 +21,289 @@ import {
 
 const APPROVAL_KIND = PLATFORM_EVENT_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
 
-/** `label=value` for each field, in card order. */
-function fields(card: ReturnType<typeof buildKindCard>): string[] {
-	const out: string[] = [];
-	for (const child of card?.children ?? []) {
-		if (child.type === "fields") {
-			for (const f of child.children) out.push(`${f.label}=${f.value}`);
-		}
-	}
-	return out;
-}
+type Card = NonNullable<ReturnType<typeof buildKindCard>>;
+const kids = (card: Card | null) =>
+	(card?.children ?? []) as Array<Record<string, unknown>>;
 
-/** URLs of link buttons in the card's Actions row. */
-function links(card: ReturnType<typeof buildKindCard>): string[] {
-	const out: string[] = [];
-	for (const child of card?.children ?? []) {
-		if (child.type !== "actions") continue;
-		for (const a of child.children) {
-			if ("url" in a && typeof a.url === "string") out.push(a.url);
-		}
-	}
-	return out;
+/**
+ * Data rows of the first table. The card AST keeps `headers` separate from
+ * `rows` — it is the Slack adapter that prepends the header row — so these are
+ * already the data rows.
+ */
+function rows(card: Card | null): string[][] {
+	const table = kids(card).find((c) => c.type === "table");
+	return (table?.rows as string[][]) ?? [];
 }
-
-/** `id|label` of each decision button. */
-function buttons(card: ReturnType<typeof buildKindCard>): string[] {
-	const out: string[] = [];
-	for (const child of card?.children ?? []) {
-		if (child.type !== "actions") continue;
-		for (const a of child.children) {
-			if ("id" in a && typeof a.id === "string") out.push(`${a.id}|${a.label}`);
-		}
-	}
-	return out;
-}
+const texts = (card: Card | null) =>
+	kids(card)
+		.filter((c) => c.type === "text")
+		.map((c) => c.content as string);
+const buttons = (card: Card | null) =>
+	kids(card)
+		.filter((c) => c.type === "actions")
+		.flatMap((c) => c.children as Array<Record<string, unknown>>);
 
 const schema = (properties: Record<string, unknown>) => ({
 	type: "object",
 	properties,
 });
 
-describe("the connector-operation approval kind", () => {
-	it("shows the operation, connection and input a decision needs", () => {
+describe("default template (no authored json_template)", () => {
+	it("renders one row per schema field, label then value", () => {
 		const card = buildKindCard({
-			metadataSchema: APPROVAL_KIND?.metadataSchema,
-			jsonTemplate: APPROVAL_KIND?.jsonTemplate,
+			metadataSchema: APPROVAL_KIND.metadataSchema,
 			data: {
-				operation: "Run shell command",
-				connection: "Mac Shell",
-				input: { command: "git status --porcelain", cwd: "/Users/burakemre" },
+				operation: "create_issue",
+				connection: "GitHub",
+				input: { title: "Fix it" },
 			},
-			title: 'Action "run" needs approval',
 		});
-
-		// The reported bug: the chat post named neither the operation nor its
-		// arguments, so the approver could not decide from the notification.
-		expect(fields(card)).toEqual([
-			"Operation=Run shell command",
-			"Connection=Mac Shell",
-			"Input=Command: git status --porcelain; Cwd: /Users/burakemre",
-		]);
-		expect(card?.title).toBe('Action "run" needs approval');
-	});
-
-	it("orders fields by x-table-column, not object order", () => {
-		const card = buildKindCard({
-			metadataSchema: schema({
-				last: { type: "string", title: "Last", "x-table-column": 9 },
-				first: { type: "string", title: "First", "x-table-column": 1 },
-			}),
-			data: { last: "b", first: "a" },
-		});
-		expect(fields(card)).toEqual(["First=a", "Last=b"]);
-	});
-
-	it("uses the schema's label rules", () => {
-		const card = buildKindCard({
-			metadataSchema: schema({
-				operation_key: { type: "string" },
-				b: { type: "string", title: "Titled" },
-				c: { type: "string", "x-table-label": "Override", title: "Ignored" },
-			}),
-			data: { operation_key: "1", b: "2", c: "3" },
-		});
-		expect(fields(card)).toEqual([
-			"Operation Key=1",
-			"Titled=2",
-			"Override=3",
+		expect(rows(card)).toEqual([
+			["Operation", "create_issue"],
+			["Connection", "GitHub"],
+			["Input", "Title: Fix it"],
 		]);
 	});
 
-	it("skips x-hidden fields", () => {
+	it("honours x-table-column order, x-table-label, title and x-hidden", () => {
 		const card = buildKindCard({
 			metadataSchema: schema({
-				shown: { type: "string" },
-				secret: { type: "string", "x-hidden": true },
+				later: { type: "string", "x-table-column": 2, title: "Later" },
+				first: { type: "string", "x-table-column": 1, title: "First" },
+				secret: { type: "string", "x-hidden": true, title: "Secret" },
+				renamed: { type: "string", "x-table-column": 3, "x-table-label": "Renamed" },
 			}),
-			data: { shown: "a", secret: "b" },
+			data: { first: "a", later: "b", secret: "nope", renamed: "c" },
 		});
-		expect(fields(card)).toEqual(["Shown=a"]);
+		expect(rows(card)).toEqual([
+			["First", "a"],
+			["Later", "b"],
+			["Renamed", "c"],
+		]);
 	});
 
-	it("marks a missing value rather than dropping the field", () => {
+	it("falls back to the template's placeholder for a missing value", () => {
 		const card = buildKindCard({
-			metadataSchema: schema({ a: { type: "string" }, b: { type: "string" } }),
-			data: { a: "set" },
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "x", connection: null, input: undefined },
 		});
-		expect(fields(card)).toEqual(["A=set", "B=—"]);
-	});
-});
-
-describe("linking out", () => {
-	it("appends the event link when a url is given", () => {
-		const card = buildKindCard({
-			metadataSchema: schema({ a: { type: "string" } }),
-			data: { a: "1" },
-			url: "https://lobu.dev/o/acme/runs/42",
-		});
-		expect(links(card)).toEqual(["https://lobu.dev/o/acme/runs/42"]);
+		expect(rows(card)).toEqual([
+			["Operation", "x"],
+			["Connection", "—"],
+			["Input", "—"],
+		]);
 	});
 
-	it("does not render an authored jsonTemplate — chat links out instead", () => {
-		// An authored template usually exists to get a chart or entity board,
-		// which has no chat equivalent. Guessing at it is worse than the body +
-		// its link, so the card is declined entirely.
-		const card = buildKindCard({
-			metadataSchema: schema({ a: { type: "string" } }),
-			jsonTemplate: { type: "bar-chart" },
-			data: { a: "1" },
-			url: "https://lobu.dev/o/acme/events/7",
-		});
-		expect(card).toBeNull();
-	});
-
-	it("declines when the schema has no usable fields", () => {
+	it("returns null when there is no template to render", () => {
 		expect(buildKindCard({ metadataSchema: null, data: {} })).toBeNull();
 		expect(buildKindCard({ metadataSchema: schema({}), data: {} })).toBeNull();
 	});
 });
 
-describe("chat platform limits", () => {
-	/**
-	 * Slack rejects the ENTIRE message when a section carries more than 10
-	 * fields or a field longer than 2000 chars — so an unclamped card costs the
-	 * notification its delivery, not just its formatting.
-	 */
-	const wide = (count: number, chars: number) => {
-		const properties: Record<string, unknown> = {};
-		const data: Record<string, unknown> = {};
-		for (let i = 1; i <= count; i++) {
-			properties[`f${i}`] = { type: "string", "x-table-column": i };
-			data[`f${i}`] = "x".repeat(chars);
-		}
-		return buildKindCard({
-			metadataSchema: schema(properties),
-			data,
-			url: "https://lobu.dev/o/acme/events/7",
+describe("authored json_template", () => {
+	it("is rendered rather than skipped", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Deploy approval" },
+					{
+						type: "table",
+						children: [
+							{
+								type: "tbody",
+								children: [
+									{
+										type: "tr",
+										children: [
+											{ type: "th", children: [{ type: "text", content: "Service" }] },
+											{ type: "td", children: [{ type: "data", path: "operation" }] },
+										],
+									},
+								],
+							},
+						],
+					},
+				],
+			},
+			data: { operation: "deploy" },
 		});
-	};
-
-	it("caps fields at 10 and still links to the whole thing", () => {
-		const card = wide(15, 3);
-		expect(fields(card).length).toBe(10);
-		expect(links(card).length).toBe(1);
+		expect(texts(card)).toEqual(["Deploy approval"]);
+		expect(rows(card)).toEqual([["Service", "deploy"]]);
 	});
 
-	it("truncates an oversized value within the shared field budget", () => {
-		const card = wide(1, 4000);
-		const [label, value] = (fields(card)[0] ?? "").split("=");
-		expect((label?.length ?? 0) + (value?.length ?? 0)).toBeLessThanOrEqual(1900);
-		expect(value?.endsWith("…")).toBe(true);
+	it("takes the if branch matching the data, like the web renderer", () => {
+		const template = {
+			type: "card",
+			children: [
+				{
+					type: "if",
+					condition: "urgent",
+					then: { type: "text", content: "URGENT" },
+					else: { type: "text", content: "routine" },
+				},
+			],
+		};
+		expect(
+			texts(buildKindCard({ jsonTemplate: template, data: { urgent: true } })),
+		).toEqual(["URGENT"]);
+		expect(
+			texts(buildKindCard({ jsonTemplate: template, data: { urgent: false } })),
+		).toEqual(["routine"]);
+	});
+
+	it("iterates each with the loop variable in scope", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{
+						type: "table",
+						children: [
+							{
+								type: "each",
+								items: "lines",
+								as: "r",
+								render: {
+									type: "tr",
+									children: [
+										{ type: "th", children: [{ type: "data", path: "r.name" }] },
+										{ type: "td", children: [{ type: "data", path: "r.qty" }] },
+									],
+								},
+							},
+						],
+					},
+				],
+			},
+			data: { lines: [{ name: "Widgets", qty: 12 }, { name: "Gadgets", qty: 3 }] },
+		});
+		expect(rows(card)).toEqual([
+			["Widgets", "12"],
+			["Gadgets", "3"],
+		]);
+	});
+
+	it("substitutes the loop variable in the each string shorthand", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "each", items: "tags", as: "t", render: "- {{t}}" },
+				],
+			},
+			data: { tags: ["alpha", "beta"] },
+		});
+		expect(texts(card)).toEqual(["- alpha\n- beta"]);
+	});
+
+	it("names components it cannot draw and links out instead of guessing", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Rollup" },
+					{ type: "entity-board", props: { boardId: "q3" } },
+					{ type: "bar-chart", props: {} },
+				],
+			},
+			data: {},
+			url: "https://app.lobu.ai/events/1",
+		});
+		const note = texts(card).at(-1) ?? "";
+		expect(note).toContain("bar-chart, entity-board");
+		expect(note).toContain("open it in Lobu");
+		expect(buttons(card)).toHaveLength(1);
 	});
 });
 
-describe("decision buttons", () => {
-	/**
-	 * The ids are the contract with `interaction-bridge`'s `run-approval:` click
-	 * handler — it parses runId and decision straight out of them, so a rename
-	 * here silently produces buttons that do nothing.
-	 */
-	it("renders Approve/Reject bound to the run", () => {
+describe("Slack escaping is per destination", () => {
+	const hostile = "<!channel> & <https://evil.example|Review in Lobu>";
+
+	it("leaves table cells unescaped — the adapter emits them as raw_text", () => {
 		const card = buildKindCard({
-			metadataSchema: APPROVAL_KIND?.metadataSchema,
-			data: { operation: "Run shell command", connection: "Mac Shell", input: { command: "ls" } },
-			title: 'Action "run" needs approval',
-			url: "https://app.lobu.dev/o/acme/runs/4821",
-			decisionRunId: 4821,
+			metadataSchema: schema({ v: { type: "string", title: "V" } }),
+			data: { v: hostile },
 		});
-		expect(buttons(card)).toEqual([
-			"run-approval:4821:approve|Approve",
-			"run-approval:4821:reject|Reject",
-		]);
-		expect(links(card)).toEqual(["https://app.lobu.dev/o/acme/runs/4821"]);
+		// Escaping here would show the reader a literal `&lt;`.
+		expect(rows(card)).toEqual([["V", hostile]]);
 	});
 
-	it("omits buttons when there is no run to decide", () => {
+	it("escapes free text, which the adapter emits as mrkdwn", () => {
 		const card = buildKindCard({
-			metadataSchema: APPROVAL_KIND?.metadataSchema,
-			data: { operation: "x", connection: "y", input: {} },
-			url: "https://app.lobu.dev/o/acme/events/7",
+			jsonTemplate: { type: "card", children: [{ type: "text", content: hostile }] },
+			data: {},
+		});
+		expect(texts(card)[0]).toBe(
+			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
+		);
+	});
+});
+
+describe("decision actions", () => {
+	it("carries Approve/Reject bound to the run, plus the review link", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "run" },
+			url: "https://app.lobu.ai/events/1",
+			decisionRunId: 77,
+		});
+		expect(buttons(card).map((b) => b.id ?? b.url)).toEqual([
+			"run-approval:77:approve",
+			"run-approval:77:reject",
+			"https://app.lobu.ai/events/1",
+		]);
+		expect(buttons(card).map((b) => b.style)).toEqual([
+			"primary",
+			"danger",
+			undefined,
+		]);
+	});
+
+	it("offers only the link when there is no run to decide", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "run" },
+			url: "https://app.lobu.ai/events/1",
+		});
+		expect(buttons(card).map((b) => b.label)).toEqual(["Open in Lobu"]);
+	});
+
+	it("omits the actions row entirely with no run and no url", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "run" },
 		});
 		expect(buttons(card)).toEqual([]);
-		expect(links(card)).toEqual(["https://app.lobu.dev/o/acme/events/7"]);
 	});
 });
 
-describe("Slack mrkdwn injection", () => {
-	/**
-	 * This card renders a connector operation's INPUT, which the agent controls.
-	 * Unescaped, `<!channel>` pings the room from inside a trusted approval card
-	 * and `<https://evil|Review in Lobu>` renders a link that spoofs the real
-	 * review link sitting right next to it.
-	 */
-	const injected = (value: string) =>
-		fields(
-			buildKindCard({
-				metadataSchema: { type: "object", properties: { a: { type: "string", title: "A" } } },
-				data: { a: value },
+describe("platform limits", () => {
+	it("clamps a cell so a huge value cannot cost the message its delivery", () => {
+		const card = buildKindCard({
+			metadataSchema: schema({ v: { type: "string", title: "V" } }),
+			data: { v: "x".repeat(6000) },
+		});
+		const cell = rows(card)[0][1];
+		expect(cell.length).toBeLessThanOrEqual(400);
+		expect(cell.endsWith("…")).toBe(true);
+	});
+
+	it("keeps every row rectangular so Slack accepts the table", () => {
+		const card = buildKindCard({
+			metadataSchema: schema({
+				a: { type: "string", title: "A" },
+				b: { type: "string", title: "B" },
 			}),
-		)[0] ?? "";
-
-	it("neutralises a channel-wide ping", () => {
-		expect(injected("ping <!channel> now")).toBe("A=ping &lt;!channel&gt; now");
-	});
-
-	it("neutralises a spoofed review link", () => {
-		expect(injected("<https://evil.example|Review in Lobu>")).toBe(
-			"A=&lt;https://evil.example|Review in Lobu&gt;",
-		);
-	});
-
-	it("escapes ampersands before angle brackets, not after", () => {
-		// `&` first, else `<` → `&lt;` would be re-escaped into `&amp;lt;`.
-		expect(injected("a & <b>")).toBe("A=a &amp; &lt;b&gt;");
-	});
-
-	it("escapes the label too", () => {
-		const card = buildKindCard({
-			metadataSchema: { type: "object", properties: { a: { type: "string", title: "<!here>" } } },
-			data: { a: "v" },
+			data: { a: "1", b: "2" },
 		});
-		expect(fields(card)[0]).toBe("&lt;!here&gt;=v");
-	});
-});
-
-describe("the field budget is shared, not per-part", () => {
-	/**
-	 * Slack's 2000-char cap applies to the RENDERED field (`*label*\nvalue`).
-	 * Clamping label and value independently is how a long label plus a long
-	 * value produced a 3600-char field and lost the entire message.
-	 */
-	const rendered = (labelChars: number, valueChars: number) => {
-		const card = buildKindCard({
-			metadataSchema: { type: "object", properties: { a: { type: "string", title: "L".repeat(labelChars) } } },
-			data: { a: "v".repeat(valueChars) },
-		});
-		const f = fields(card)[0] ?? "";
-		// `label=value` in the helper; Slack renders `*label*\nvalue` — same budget.
-		return f.length;
-	};
-
-	it("keeps a long label AND long value inside one field budget", () => {
-		expect(rendered(2000, 4000)).toBeLessThanOrEqual(2000);
-	});
-
-	it("still gives a short label the full remaining budget", () => {
-		expect(rendered(5, 4000)).toBeGreaterThan(1500);
-	});
-
-	it("renders a whitespace-only value as unset", () => {
-		const card = buildKindCard({
-			metadataSchema: { type: "object", properties: { a: { type: "string", title: "A" } } },
-			data: { a: "   \t " },
-		});
-		expect(fields(card)).toEqual(["A=—"]);
-	});
-});
-
-describe("chat and web agree", () => {
-	/**
-	 * These are two DIFFERENT constructions of the same content: web synthesizes
-	 * a json_template from the schema (`resolveEntityRender` →
-	 * `buildDefaultEntityTemplate`) and renders that; chat reads the schema
-	 * straight into Fields. They agree only because both go through
-	 * `orderedSchemaFields`. If someone re-implements ordering, hiding or
-	 * labelling on either side, this is what catches it.
-	 */
-	const schema = {
-		type: "object",
-		properties: {
-			later: { type: "string", title: "Later", "x-table-column": 2 },
-			first: { type: "string", title: "First", "x-table-column": 1 },
-			renamed: { type: "string", title: "Ignored", "x-table-label": "Renamed", "x-table-column": 3 },
-			hidden: { type: "string", title: "Hidden", "x-hidden": true },
-		},
-	};
-
-	/** `label=boundKey` pairs from the web template's generated rows. */
-	function webFields(root: unknown): string[] {
-		const out: string[] = [];
-		const walk = (n: Record<string, unknown> | undefined) => {
-			if (!n) return;
-			if (n.type === "tr") {
-				const [th, td] = (n.children as Record<string, unknown>[]) ?? [];
-				const label = ((th?.children as Record<string, unknown>[]) ?? [])[0]?.content;
-				const key = ((td?.children as Record<string, unknown>[]) ?? [])[0]?.path;
-				out.push(`${label}=${key}`);
-			}
-			for (const c of (n.children as Record<string, unknown>[]) ?? []) walk(c);
+		const table = kids(card).find((c) => c.type === "table") as {
+			headers: string[];
+			rows: string[][];
 		};
-		walk(root as Record<string, unknown>);
-		return out;
-	}
-
-	it("renders the same fields, in the same order, with the same labels", () => {
-		const web = webFields(resolveEntityRender(undefined, schema));
-		const chat = fields(
-			buildKindCard({
-				metadataSchema: schema,
-				data: { first: "1", later: "2", renamed: "3", hidden: "secret" },
-			}),
-		);
-		// Web binds by key, chat by value — compare the label sequence, which is
-		// the part both must agree on, and confirm the hidden field is in neither.
-		expect(web.map((f) => f.split("=")[0])).toEqual(["First", "Later", "Renamed"]);
-		expect(chat.map((f) => f.split("=")[0])).toEqual(["First", "Later", "Renamed"]);
-		expect(chat.join()).not.toContain("secret");
-	});
-
-	it("diverges only when a kind authors its own template", () => {
-		// Web renders the authored design; chat declines and links out. This is
-		// the deliberate trade — pinned so it stays deliberate.
-		const authored = { type: "bar-chart" };
-		expect(resolveEntityRender(authored, schema)).toEqual(authored);
-		expect(buildKindCard({ metadataSchema: schema, jsonTemplate: authored, data: { first: "1" } })).toBeNull();
+		const width = table.headers.length;
+		expect(width).toBe(2);
+		for (const row of table.rows) expect(row).toHaveLength(width);
 	});
 });

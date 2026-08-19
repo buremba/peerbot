@@ -1,0 +1,215 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+The session continued work on MCP App result rendering in the Lobu/Owletto codebase. The user's requests, in order:
+
+- **"Show 4 more fields looks too big. also open link is on the right by itself"** — two visual defects in the entity card.
+- **"what are these things btw ...?case=generic-nested-object they don't see very useful but you think this is the best way still? also for query_sql we don't need to show the query by default, we can have a sub accordion called show query there. also does the agents have the ability to provide json_template etc for the query_sql to actually let the user see chart or custom ui instead of raw table?"** — three questions: what the generic cases are, hide the SQL by default behind a "Show query" accordion, and whether agents can supply a chart spec to `query_sql`.
+- **"so can you tell me if for each run_sdk we get these previews or chatgpt etcc needs to call that render_lobu view to actually show something to user? i see it's flooded and many lobu views"** — how the widget binding works.
+- **"if we don't need it why is it still there? we would rather simplify consolidate"** — push to remove `render_lobu_view`.
+- **"what's the best long term way?"** — architecture direction.
+- **"this is a new feature btw, that's why you don't see many. we are still building it and we need to know the best ux and architecture"** — correction that low prod volume is pre-adoption, not disuse.
+- **"we don't want to complicate btw, and ok with not being backwards compabible."** — explicit permission to break compatibility and a mandate to simplify.
+- **"ok show me how it will look like all variations in our dev server so i can confirm"** — execute the trim and present all variations in the running harness.
+- **"explain the cases like ...?case=generic-allowlist-error where is it used and how and are they useful"** (sent mid-turn) — still owed a full answer.
+
+2. **Key Technical Concepts:**
+   - MCP Apps / widgets in ChatGPT and Claude via `openai/outputTemplate` + `ui.resourceUri`; **binding is static per tool, declared at `tools/list`, so a widget cannot be conditionally suppressed** — the only way to not render one is to not declare it.
+   - Versioned host-cached resource URI `ui://lobu/interaction/v12.html` (bumped v11→v12 in earlier work); ChatGPT caches successful *and* failed fetches.
+   - Three coexisting presentation systems: json-template node language (charts/metrics/tables), LobuView blocks (`{title, tone, blocks[text|code|diff|form], actions}` — the only one with actions), and result-view duck-typing heuristics.
+   - `@actionName` host-resolved action references (`json-template-view.tsx:53`) — a script can *name* an action but cannot inject a handler.
+   - The declared-presentation envelope: `{payload_type: "json_template", payload_template: {root}, payload_data}`.
+   - Result model collapsed this session from **four tiers to three**: 1=declared, 2=known shape, 3=undeclared.
+   - Bun workspace, vitest + jsdom, biome (owletto CI runs `biome lint`, **not** a format check).
+   - Red→green + mutation testing discipline; jsdom cannot observe painted size or CSS line-clamp, only class names and DOM position.
+
+3. **Files and Code Sections:**
+
+   - **`packages/owletto/src/mcp-apps/interaction/result-view.tsx`** — the primary file. Changes this session:
+
+     Added `InlineLink` (replaces three floated `size="sm"` ghost Buttons):
+     ```tsx
+     /**
+      * A card's link belongs on its subtitle line, not floated to the far right at
+      * control size. A lone `size="sm"` Button opposite a two-line heading reads as
+      * a primary action on a card that has none, and it introduces a second type
+      * scale beside the 12px meta text it sits next to.
+      */
+     const InlineLink: FC<{ href: string; label: string; openLink: (href: string) => void }>
+       = ({ href, label, openLink }) => (
+       <button type="button"
+         className="cursor-pointer font-medium text-primary hover:underline"
+         onClick={() => openLink(href)}>
+         <ExternalLink className="mr-0.5 inline h-3 w-3" />
+         {label}
+       </button>
+     );
+     ```
+     Applied in `EventView` (label "Source"), `EntityView` ("Open"), `SaveReceiptView` ("Open") — each now inside the `text-muted-foreground text-xs` meta line preceded by `{" · "}`, with the `justify-between` wrapper deleted.
+
+     `EntityMetadataPreview` toggles gained `text-xs`:
+     ```tsx
+     {/* text-xs, not the inherited text-sm: this control belongs to the field
+         list above it and must not out-typeset the values it reveals. */}
+     className="mt-1 cursor-pointer font-medium text-primary text-xs"
+     ```
+
+     `SqlQueryView` rewritten (was inert without host view-state):
+     ```tsx
+     // useDisclosure, not a bare viewState read: without the local fallback this
+     // toggle is inert in any host that does not persist view state back to us.
+     const [open, setOpen] = useDisclosure("details.sql-query.open", viewState, onViewStateChange);
+     const trimmed = query.trim();
+     return (
+       <div className="mt-2 text-xs">
+         {/* The SQL is provenance, not the answer. It opens on demand rather than
+             taking the top of the card ahead of the rows it produced. */}
+         <button type="button" aria-expanded={open}
+           className="flex cursor-pointer items-center gap-1 font-medium text-primary"
+           onClick={() => setOpen(!open)}>
+           <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+           {open ? "Hide query" : "Show query"}
+         </button>
+         {open ? (
+           <code className="mt-1 block min-w-0 whitespace-pre-wrap break-words font-mono text-foreground/80">
+             {trimmed}
+           </code>
+         ) : null}
+     ```
+
+     `SqlResult` restructured — `failed` and `noTable` replace `emptyResult`; `queryView` hoisted; the results disclosure only renders when rows exist, and `queryView` moved *below* `DataTable`:
+     ```tsx
+     const failed = typeof value.error === "string";
+     // No rows means no table worth disclosing — whether the query matched
+     // nothing or failed outright. Same reason an empty array is stated inline
+     // rather than hidden behind a toggle that opens on nothing.
+     const noTable = rows.length === 0;
+     ```
+
+     **Deleted** (~241 lines): `HEADLINE_KEYS`/`SUMMARY_FACT_LIMIT`/`HEADLINE_MIN_LENGTH`, `readsAsSentence()`, `PEEK_LINE_CLAMP`, `PeekText`, `TopLevelValue`, `SCALAR_LIST_SUBSTANCE_MAX`, `hasSubstance()`, `ThinResult`.
+
+     **Added** `UndeclaredResult` (replaces tiers 3 and 4):
+     ```tsx
+     /**
+      * The undeclared fallback.
+      *
+      * Nothing said what this result means, so the card does not pretend to know.
+      * One line stating what came back, with the fields one click away. Guessing a
+      * headline or promoting a "probably the answer" field is how a renderer makes
+      * an arbitrary bag look intentional — and every hour spent perfecting that is
+      * an hour that makes declaring a template less attractive.
+      */
+     const UndeclaredResult: FC<{...}> = ({ value, meta, openLink, viewState, onViewStateChange }) => {
+       // A bare string or number is already its own summary — wrapping it in an
+       // "N fields" line would state a field count it does not have. ValueView
+       // already collapses one that runs long.
+       if (value !== undefined && !isRecord(value)) {
+         return <ValueView value={value} openLink={openLink} stateKey="undeclared" .../>;
+       }
+       const fieldCount = isRecord(value) ? Object.keys(value).length : 0;
+       const summary = [fieldCount > 0 ? `${fieldCount} ${fieldCount === 1 ? "field" : "fields"}` : "No return value", meta]
+         .filter(Boolean).join(" · ");
+       return (
+         <PersistentDetails summary={<span className="text-muted-foreground">
+             <CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-green-600" />{summary}</span>}
+           stateKey="details.undeclared-result.open" ... className="px-1 py-0.5 text-xs">
+           <div className="mt-2 text-foreground">
+             <ValueView value={value} openLink={openLink} depth={1} stateKey="undeclared" .../>
+           </div>
+         </PersistentDetails>
+       );
+     };
+     ```
+     Note: view-state keys changed from `result.*` / `details.thin-result.open` to `undeclared.*` / `details.undeclared-result.open`.
+
+   - **`packages/owletto/src/mcp-apps/interaction/result-view.test.tsx`** — added 3 tests: `"keeps the metadata toggle and the card link at meta-line scale"` (asserts `toggle.className` contains `text-xs` and `metaLine?.textContent` is exactly `"Company · #41 · Open"`), `"toggles the query open in a host that never echoes view state back"` (renders with no `viewState`/`onViewStateChange`), `"states a failed query without a disclosure onto an empty table"`. Updated 4 existing tests for the new contract (extra click on the summary line, no peek, new view-state keys).
+
+   - **`packages/owletto/src/mcp-apps/interaction/result-view.collapse-matrix.test.tsx`** — removed all `expectPeek` fixtures/assertions; the allowlist and multiline cases now assert `expectCollapsed: [/Tables · Unknown table/]` and `[/Body · Line one of the report/]`. Fixed `noNonNullAssertion` lint by switching `find` + `toggle!` to destructured `filter` + `expect(toggle).toBeDefined()`.
+
+   - **`packages/owletto/src/mcp-apps/review/main.tsx`** — `type ResultTier = 1 | 2 | 3`, `TIER_LABEL = {1:"declared", 2:"known shape", 3:"undeclared"}`, all `tier: 4` rewritten to `tier: 3`. Doc comment now reads: *"There is deliberately no fourth state. A renderer that tries to make an arbitrary bag look intentional is competing with the declared path we want producers to take."*
+
+   - **`packages/server/src/tools/registry.ts`** (read only) — `RICH_RESULT_MCP_META` at line 240 declared by `search_memory`, `save_memory`, `query_sdk`, `query_sql`, `run_sdk`, `render_lobu_view`.
+
+   - **`packages/server/src/tools/mcp_app.ts`** (read only) — `RenderLobuViewSchema = Type.Union([RenderActionSchema, ReviewApprovalActionSchema])`; `renderLobuViewImpl` returns `buildApprovalView(args.run_id, ...)` for `review_approval` and otherwise `{version:1, title?, tone?, blocks: sanitizeBlocks(args.blocks), actions: []}`.
+
+   - **`packages/server/src/tools/admin/query_sql.ts`** (read only) — `QuerySqlSchema` has **no** presentational parameter.
+
+4. **Errors and fixes:**
+   - **`getByText("SELECT ...")` failed** after moving SQL behind the accordion — the test encoded the old contract. Updated it to assert the SQL is absent until `Show query` is clicked.
+   - **6 test failures after the T3 trim** — all encoded the deleted contract. Fixed by removing `expectPeek`, adding one summary-line click to 3 tests, and updating view-state keys.
+   - **Python `str.replace` assertions failing** (`AssertionError: viewState keys unchanged`) due to tab-indentation mismatch (3 vs 4 tabs). Fixed by reading the file and using the Edit tool with exact strings.
+   - **Dump-test harness failed twice**: `main.tsx` throws at import if the root element is missing; I first forgot to create it, then used the wrong id (`mcp-app-review-root` instead of `root`).
+   - **`noNonNullAssertion` biome error** in the new collapse-matrix test — fixed via destructuring instead of `toggle!`.
+   - **Weak assertion caught by mutation testing**: `expect(metaLine?.textContent).toContain("Company")` still passed while the button was floated, because its parent was then the whole article. Tightened to an exact string match.
+   - **Chrome extension not connected** — could not screenshot; stated explicitly and fell back to DOM/class assertions rather than claiming visual verification.
+   - **User feedback that changed my approach:** *"this is a new feature btw, that's why you don't see many"* — I had used "7 calls/month" as evidence `render_lobu_view` was redundant and claimed "the model has largely figured out it isn't needed." I corrected this: pre-adoption volume is not a usage signal, and the repo's own rule is that low usage is never a delete signal. The structural argument (it's a passthrough that adds no data) survives; the usage argument does not. I also flagged that the `run_sdk` duration measurements used earlier to justify the sync/spinner decision should be re-read as build-phase noise.
+
+5. **Problem Solving:**
+
+   Solved: the oversized metadata toggle (missing size class); the orphaned right-floated card links (three sites); the **inert `SqlQueryView` toggle** (bare `viewState` read with no local fallback — broken in any host that doesn't echo state back); the SQL error branch opening a disclosure onto an empty table; the four-tier model collapsed to three, deleting ~241 lines of substance/headline/peek machinery.
+
+   Established by reading source: the widget binds statically per tool, so `render_lobu_view` is never required and calling it after a result produces two cards; `query_sql` cannot carry a chart spec but `query_sdk`/`run_sdk` can via the declared-template envelope; `render_lobu_view` is two tools in one name — `render` is a redundant passthrough, `review_approval` is the sole entry point to `buildApprovalView` and the capability minting.
+
+   **Unresolved and not yet surfaced to the user:** `generic-allowlist-error` is a *real* captured return (the error text lists actual Lobu table names) whose payload is `{EntityTypes: null, Tables: <long error>, ok: true, count: 0}` — note `ok: true` on a failed query. Under the trim it now renders as `Completed 1 SDK call · 86 ms ▸4 fields`, hiding a genuine error message. The architecturally-correct fix is producer-side (the SDK should return `{error: ...}`), but this is a real regression that needs the user's call.
+
+   Also identified but unfixed: the renderer discards `toolName` and duck-types instead (root cause of 5 latent collisions).
+
+6. **All user messages:**
+   - "Show 4 more fields looks too big. also open link is on the right by itself"
+   - "what are these things btw http://127.0.0.1:4181/mcp-app-harness.html?case=generic-nested-object they don't see very useful but you think this is the best way still? also for query_sql we don't need to show the query by default, we can have a sub accordion called show query there. also does the agents have the ability to provide json_template etc for the query_sql to actually let the user see chart or custom ui instead of raw table?"
+   - "so can you tell me if for each run_sdk we get these previews or chatgpt etcc needs to call that render_lobu view to actually show something to user? i see it's flooded and many lobu views"
+   - "if we don't need it why is it still there? we would rather simplify consolidate"
+   - (AskUserQuestion rejected) "The user wants to clarify these questions."
+   - "what's the best long term way?"
+   - "this is a new feature btw, that's why you don't see many. we are still building it and we need to know the best ux and architecture"
+   - "we don't want to complicate btw, and ok with not being backwards compabible."
+   - "ok show me how it will look like all variations in our dev server so i can confirm"
+   - "explain the cases like http://127.0.0.1:4181/mcp-app-harness.html?case=generic-allowlist-error where is it used and how and are they useful"
+
+7. **Pending Tasks:**
+   - **Answer the `generic-allowlist-error` question in full** (asked mid-turn, only partially addressed) — where it's used, how, and whether these cases are useful; including the regression it now exposes.
+   - **Present the three-state harness walkthrough** so the user can confirm all variations (the explicit turn-9 ask).
+   - Relabel/demote the shape-probe group below the five priority tools in the harness nav (offered, not yet done).
+   - Document the declaration channel — `search_sdk` entry, worked `query_sdk` chart example, mentions in `run_sdk`/`query_sdk` descriptions. Identified as the highest-leverage remaining item.
+   - Settle the public MCP surface while breaking changes are free: delete `action:"render"` + `sanitizeBlocks`, move approval onto the result envelope, drop `render_lobu_view`.
+   - `toolName` dispatch consolidation (deletes the collision class).
+   - UI proof capture → artifact → `ARTIFACT=<url> make ui-review`; parent PR (pointer + `search_sdk` removal + v12) → `make pre-pr-remote`.
+   - PR #812 remains **held and unpushed** per the user's earlier instruction.
+
+8. **Current Work:**
+
+   I had just finished executing the trim the user authorised with *"we don't want to complicate btw, and ok with not being backwards compabible"* and *"ok show me how it will look like all variations in our dev server so i can confirm."*
+
+   Final verified state: **173 tests pass, tsc clean, biome lint clean** on all four changed files. The trim itself was `64 insertions, 291 deletions`; total branch diff vs `origin/main` is `1758 insertions, 360 deletions` across:
+   ```
+   src/mcp-apps/interaction/result-view.collapse-matrix.test.tsx
+   src/mcp-apps/interaction/result-view.test.tsx
+   src/mcp-apps/interaction/result-view.tsx
+   src/mcp-apps/review/main.tsx
+   ```
+   Committed via `git commit --amend --no-edit`, still **not pushed**.
+
+   I ran a temporary dump harness over all 31 cases and cleaned it up afterward. Representative verified output:
+   ```
+   T1 declared-run-sdk    :: Completed 4 SDK calls · 2410 ms Renewal sweep complete
+                             Accounts touched 12 Flagged 3 Account/Owner/Renewal ...
+   T1 declared-query-sdk  :: Completed 1 SDK call · 88 ms Events per day Bar chart Mon: 18 ...
+   T2 sql-error           :: relation "informaton_schema.tables" does not exist — ... 0 rows · 3 ms ▸Show query
+   T2 sql-zero-rows       :: No rows matched. 0 rows · 8 ms ▸Show query
+   T2 single-entity       :: Northwind Company · #41 · Open Stage customer Owner Ada Region EMEA Show 4 more fields
+   T3 generic-allowlist-error :: Completed 1 SDK call · 86 ms ▸4 fields
+   T3 generic-nested-object   :: Completed 1 SDK call · 12 ms ▸3 fields
+   T3 thin-run-sdk            :: Completed 3 SDK calls · 640 ms ▸3 fields
+   ```
+   The harness is serving at `http://127.0.0.1:4181/mcp-app-harness.html` (HTTP 200 confirmed; background vite task `bv78ad4ec`).
+
+9. **Optional Next Step:**
+
+   Answer the user's outstanding mid-turn question and present the walkthrough — no further code changes until they respond.
+
+   Specifically: explain that `generic-allowlist-error` is a **real captured `query_sdk` return** (unlike `generic-nested-object`, which is a synthetic probe I authored), that its payload is `{EntityTypes: null, Tables: <long allowlist error>, ok: true, count: 0}` — with `ok: true` on a failed query — and that **the trim makes this case worse**: the error text is now hidden behind `▸4 fields`. Present that as a genuine tension for the user to call, since the architecturally-consistent fix is producer-side (`{error: ...}`) rather than a new renderer heuristic. Then walk the three states across the five priority tools in the harness so they can confirm, per: *"ok show me how it will look like all variations in our dev server so i can confirm"* and *"explain the cases like http://127.0.0.1:4181/mcp-app-harness.html?case=generic-allowlist-error where is it used and how and are they useful"*.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

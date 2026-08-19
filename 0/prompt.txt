@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwzga9bbx</task-id>
+<tool-use-id>toolu_01JYoySy56sJEbUsRMFbqTk9</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bwzga9bbx.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for integration check on 2382" completed (exit code 0)</summary>
+</task-notification>

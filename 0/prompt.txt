@@ -1,0 +1,65 @@
+<task-notification>
+<task-id>a9ee79face03c2191</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/a9ee79face03c2191.output</output-file>
+<status>completed</status>
+<summary>Agent "Audit skills prod data shape" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I reached prod and got the data. The answer is blunt: **the duplication premise is false — there is nothing to migrate.**
+
+## How I queried
+
+`mcp__claude_ai_Lobu__query_sql` was unusable — `agents` is not in its allowlist (only `canvas_windows, channel_messages, connections, connector_definitions, entities, entity_relationship_types, entity_relationships, event_classifications, events, feeds, oauth_clients, oauth_tokens, user, watcher_versions, watchers`). I went via kubectl to the prod primary instead, read-only:
+
+```
+kubectl -n summaries-prod exec lobu-ai-prod-db-1 -- psql -U postgres -d owletto -c "&lt;SELECT&gt;"
+```
+
+Verified first that this is the real source of truth: `pg_is_in_recovery() = f` (primary, not a replica), newest agent row `2026-07-27`, and the `app` database is a 5-table scaffold with no `agents` table. Only SELECTs were run.
+
+## 1. Duplication scale
+
+| Metric | Value |
+|---|---|
+| Total agents (all orgs) | 54 |
+| Agents with non-empty `skills_config` | **2** |
+| Orgs with any skills | **2** of 66 |
+| Total skill copies | **2** |
+| Distinct (repo, name) identities | **2** |
+| Duplication factor | **1.00** |
+| Orgs with divergent copies | **0** |
+
+The two rows in full:
+
+| org | agent | repo/name | enabled | instructions | content |
+|---|---|---|---|---|---|
+| `lobu-team` | food-ordering | `file/deliveroo-order` | true | absent | 2771 chars |
+| `lobu-crm` | crm | `local/crm-ops` | true | absent | 3615 chars |
+
+One agent per org, one skill per agent. Median and max are both 1 across every axis. Divergence is not merely rare — it is **arithmetically impossible**, since no (repo, name) identity appears twice anywhere in prod.
+
+## 2. Feature usage
+
+Of 2 total skill entries: **0** have `enabled: false`, **0** have an `instructions` override, **0** are `system` skills. Both have `content`. So there is no evidence for or against the per-agent override model — it has simply never been exercised in production.
+
+## 3. Churn check (the thing that could have rescued the premise)
+
+A low live count can hide heavy add/remove activity, so I checked all history. Across **2,665,083** events, only **13** ever mention `skillsConfig`/`skills_config`, from exactly **2** orgs (`buremba` ×8, `lobu-crm` ×2). No dormant population, no churn.
+
+I also confirmed `agents.skills_config` is the only home for this data — it is the sole skills-related column in the entire schema, so nothing is hiding in a versions or history table.
+
+All three orgs that ever touched skills are yours: **Lobu Team**, **Lobu Marketing** (lobu-crm), and **buremba**. Zero external customers have ever used the feature.
+
+## Verdict
+
+**Do not migrate.** The premise — "duplication causes divergence" — is not a theoretical risk that hasn't bitten yet; it is currently unreachable. With a duplication factor of exactly 1.00 and no repeated skill identity anywhere in prod, there is no copy to diverge from. A migration to a `$skill` entity type would move 2 rows, need no merge strategy, and eliminate a problem that has never occurred in 2.67M events of history. The honest framing is that skills are a **pre-product-market-fit feature with two internal dogfood users**, and the real open question is not "one canonical copy vs. per-agent copies" but whether anyone outside your own orgs wants skills at all. Deciding the storage model now means designing against zero usage signal — including the `enabled`/`instructions` override question, which no user has ever touched, so there is no data saying org-wide is the wrong model either. If you want the entity model for *other* reasons (a skills catalog UI, agent-initiated installs, the `$entity` surface work in flight), argue it on those merits — but the duplication argument does not survive contact with prod.
+
+Two caveats on confidence. High (95) on the numbers themselves — direct SELECTs against the verified prod primary, cross-checked against full event history. Lower (70) on the forward-looking read: this is a snapshot of a young feature, and if a skills catalog ships and usage grows, per-agent copies could start diverging fast. The data says "not a problem today", not "will never be a problem".
+
+Suggested next steps, pick as you like:
+1. Shelve the migration and revisit only when a third org (external) adopts skills.
+2. If the `$skill` entity is still wanted for catalog/install UX, re-scope the PR to lead with that rationale and drop duplication from the justification.
+3. Add a cheap prod check (a metric or weekly query) on distinct-identities-vs-copies so divergence surfaces on its own rather than needing another investigation.
+4. Decide the `enabled`/`instructions` override semantics deliberately rather than inferring from usage — there is none to infer from.</result>
+<usage><subagent_tokens>54864</subagent_tokens><tool_uses>22</tool_uses><duration_ms>143969</duration_ms></usage>
+</task-notification>

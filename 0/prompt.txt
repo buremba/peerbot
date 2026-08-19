@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpcmcushm</task-id>
+<tool-use-id>toolu_0172W7e3AbtfAC7dSQH3QG41</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/bpcmcushm.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for integration re-run" completed (exit code 0)</summary>
+</task-notification>

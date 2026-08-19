@@ -1,0 +1,1 @@
+just to undestand, is there a good way to save the values in a way like a snapshot so we can query the real data to find out, instead of putting previews and raw results

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bptt7bg93</task-id>
+<tool-use-id>toolu_01FNQViusVNYqbr4Rhjy7tyi</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bptt7bg93.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on deterministic tag fix" completed (exit code 0)</summary>
+</task-notification>

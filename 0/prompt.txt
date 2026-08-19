@@ -1,0 +1,1 @@
+ok what's the gotcha here, we compile things and run a single script in all cases anyway no

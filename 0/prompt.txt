@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buaigqot1</task-id>
+<tool-use-id>toolu_016pAqmvrPMoVrT4e1SWkrpj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/34004f74-20ed-439c-908b-fd1a4b248251/tasks/buaigqot1.output</output-file>
+<status>completed</status>
+<summary>Background command "Typecheck slice 2" completed (exit code 0)</summary>
+</task-notification>

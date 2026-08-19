@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9j3k45r9</task-id>
+<tool-use-id>toolu_01C6FomufBbf356oN4eLjAys</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/b9j3k45r9.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for CI on 2412" was stopped</summary>
+</task-notification>

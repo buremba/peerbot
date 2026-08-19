@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpj9s8b2w</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bpj9s8b2w.output</output-file>
+<status>killed</status>
+<summary>Background command "Confirm no posted review for HEAD, then rerun make review" was stopped</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bp4ms1n3y</task-id>
+<tool-use-id>toolu_01Ax6ac1XdY7dA4oZBtj1ivg</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bp4ms1n3y.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after fixer edits" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:58:27.946Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:58:37.162Z","id":"ff85a1fa","input_tokens":3405,"output_tokens":569,"content":[{"type":"text","text":"Want me to reply in #sales? Here are quick options:\n- “I’m in for 12:30 — where to?”\n- “12:30 works for me; how about [place]?”\n- “Can’t today, enjoy!”\n\nTell me which one (or edit), and I’ll post it."}]}

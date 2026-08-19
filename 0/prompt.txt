@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The packed bundle builds and boots in modern Chromium, but it introduces an unsupported runtime API across part of the repository's declared browser matrix. Affected browsers can no longer render any interactive MCP card.
+
+Review comment:
+
+- [P2] Keep the unpacker compatible with supported browsers — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-prod-fetch/packages/owletto/scripts/pack-mcp-app-bundle.mjs:41-41
+  On Firefox 90–112 and Safari 15–16.3, `DecompressionStream` is unavailable, so this branch always falls through to “Unable to load Lobu.” The repository explicitly declares those versions as supported in `vite.config.ts`, and the packed file is also embedded by Lobu's own SPA, meaning every interactive card breaks for those users. Add a compatible decompression fallback or otherwise preserve the existing browser floor.
+  </results>
+  </user_action>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvm3s5bv7</task-id>
+<tool-use-id>toolu_012AarqrDkoM6gvxMj6zCrTw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/afefd035-322c-40f6-9e43-03775bf94ae8/tasks/bvm3s5bv7.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on PR 2316" completed (exit code 0)</summary>
+</task-notification>

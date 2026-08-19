@@ -1,0 +1,1 @@
+i don't understand where the gap is. we wanted the default mode to not run any nix no? unless the user just whitelist tool calls calling a native command. for sandbox, nix should be installed so the user can do anything they want we just use the connectors packages to be installed no?

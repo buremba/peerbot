@@ -1,0 +1,1 @@
+entity selector is seperate, doesn't part of skill definion. so we remove goal and it's the skill definion and it's managed under behavior right. no seperate skills tab?

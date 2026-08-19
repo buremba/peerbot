@@ -1,0 +1,1 @@
+you can fix it properly test e2e and make sure it works. but launch a teammate to do it so we don't get distracted here. now how can you test the behaviors end to end

@@ -1,0 +1,1 @@
+oh you say we don't put the data in there? can you tell me how will that work when the agent writes memory with interactibity, the approval etc?

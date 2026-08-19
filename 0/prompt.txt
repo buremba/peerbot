@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9kfoq97e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b495caea-80b1-4ed4-9dcf-1726b2bc90e1/tasks/b9kfoq97e.output</output-file>
+<status>completed</status>
+<summary>Background command "Review the repinned head" completed (exit code 0)</summary>
+</task-notification>

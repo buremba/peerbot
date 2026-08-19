@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbl2drxbe</task-id>
+<tool-use-id>toolu_01L6PutwufUCBjPk4wRtbAnS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/bbl2drxbe.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review capturing full output and exit code" completed (exit code 0)</summary>
+</task-notification>

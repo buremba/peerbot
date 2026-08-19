@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bryrk1xim</task-id>
+<tool-use-id>toolu_017WenyMKReRjJmNFWo5fzFr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/bryrk1xim.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 2312 checks until all report" completed (exit code 0)</summary>
+</task-notification>

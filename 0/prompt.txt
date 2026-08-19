@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bo0ikrczs</task-id>
+<tool-use-id>toolu_01YR4RDMYDXeZGa1Y1aRJHtF</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/248c9845-4453-4be5-a7aa-36baff5ca5d5/tasks/bo0ikrczs.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch required CI checks" completed (exit code 0)</summary>
+</task-notification>

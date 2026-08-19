@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6n8e79l8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/279de3ab-0acd-4e7e-8c0b-0774e773be4a/tasks/b6n8e79l8.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for release PR CI" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+it can discover and all right? can you do that and do e2e layer. people need to login right? we want to use a new account like emre.kabakci@gmail.com so we can test new accounts.

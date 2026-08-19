@@ -1,0 +1,1 @@
+if we quarantee that for a single row there is only one isolate-vm works we can also do that no

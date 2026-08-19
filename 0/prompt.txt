@@ -1,0 +1,80 @@
+# Design question: make MCP-client conversations appear in the web sidebar
+
+Repo: /Users/burakemre/Code/lobu (bun workspace, TS, Postgres). Read the real files before answering.
+
+## Goal
+A user connects an MCP client (ChatGPT, Claude Desktop) to Lobu and calls tools like
+`search_memory`. Those sessions should show up in the web app's conversation sidebar
+("Recent") and be openable, the same way Slack threads already do.
+
+## What just shipped (PR #2205, commit 7e79027eb)
+`conversations.thread_id` now stores the ROUTABLE id explicitly instead of the reader
+re-parsing it out of `conversation_id`. A `BEFORE INSERT` trigger
+(`conversations_fill_thread_id`, db/migrations/20260727150000_conversations_thread_id.sql)
+fills it for packed web ids, which made it rolling-deploy safe.
+
+Deliberately left out of that PR: opaque owned ids (an MCP session id) still store
+`thread_id = NULL` and stay unlisted. See the NOTE on `threadIdFromApiConversationId`
+in packages/server/src/gateway/services/api-conversation-id.ts.
+
+## The two facts that define the problem
+
+**1. Nothing writes a conversations row for MCP.**
+`upsertConversation` has exactly ONE caller: packages/server/src/gateway/orchestration/
+message-consumer.ts:477 — the queue consumer. MCP tool calls never enqueue a message,
+so they never produce a row. (Verified by grep; mcp-handler.ts has no reference.)
+
+**2. The read path RE-PACKS the id, so an opaque id can't be read even if a row existed.**
+Two sites rebuild the conversation id from parts instead of using a stored value:
+  - packages/server/src/gateway/services/agent-thread-list.ts:353 (`readThreadMessages`)
+  - packages/server/src/gateway/routes/public/agent-history.ts:667 (interactions replay)
+Both call `buildApiConversationId({agentId, userId, organizationId, threadId})`, which
+produces `{agentId}_{userId}_{orgId}_{threadId}`. Feed it an opaque id like
+`mcp-session-42` and you get `agent_user_org_mcp-session-42` — a conversation id no row
+has. So the thread would list in the sidebar and then render empty.
+
+Note a SECURITY property of the current re-pack: because `userId` is baked into the
+constructed id, a user can only ever address their OWN conversations. Any replacement
+must preserve that. `getAuthorizedAgentScope` (agent-history.ts:412) supplies an
+authenticated `agentId`/`organizationId`/`userId`.
+
+Relevant existing index: `conversations_listing` on
+(organization_id, agent_id, last_activity_at DESC) WHERE archived_at IS NULL.
+There is no index on thread_id.
+
+## Also relevant
+MCP sessions are ~1hr sliding TTL (`SESSION_MAX_AGE_MS`, packages/server/src/mcp-handler.ts:52).
+The transcript for a conversation lives in `agent_transcript_snapshot`, addressed by
+conversation_id. Behaviors/watchers deliberately get NO conversations row — the sidebar
+derives one entry per behavior by aggregating snapshots
+(agent-thread-list.ts:259, `regexp_match(conversation_id, '_watcher_([0-9]+)_run_')`).
+
+## What I want from you
+The user's words: "what's the best fix ... we can cut the corners and make it work properly."
+I read that as: minimum work that is genuinely correct, not a hack that needs undoing later.
+
+Please answer concretely:
+
+1. **Read path.** Which is right, and why?
+   (a) Look the row up by (organization_id, agent_id, user_id, thread_id) and use its
+       stored `conversation_id`. Kills the re-pack; one code path for packed + opaque.
+       Costs an indexed lookup per read and needs a new index.
+   (b) Keep the re-pack, fall back to treating threadId as a raw conversation id when
+       no transcript exists. No new query on the common path, but two paths and a
+       fallback shaped like the one already rejected in #2205.
+   (c) Something better.
+
+2. **Write path.** Where should the MCP conversations row be created? The MCP tool
+   handler? A shared helper both the queue consumer and MCP call? Something else?
+   What should `agent_id` be, given MCP tool calls are not bound to an agent the way a
+   chat dispatch is? (Prod orgs all have `system_agent_id = lobu-builder`.)
+
+3. **Is one row per MCP SESSION the right grain**, given the 1hr TTL — or should it be
+   per OAuth client, or something else? What actually makes a good sidebar entry?
+
+4. **Scope.** Can this be one PR, or must the write and read sides be split? What is the
+   smallest change that is genuinely correct rather than a shim?
+
+5. **What am I missing?** Be adversarial. Point out anything in the above I have wrong.
+
+Be specific and cite file:line. Prefer the simplest correct design over the most general.

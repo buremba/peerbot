@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqe3w7ot8</task-id>
+<tool-use-id>toolu_01LJR5fLgfkjuY8MLoEkrK4s</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bqe3w7ot8.output</output-file>
+<status>completed</status>
+<summary>Background command "Run spike 4 balance measurement" completed (exit code 0)</summary>
+</task-notification>

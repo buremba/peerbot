@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bou4dsqhh</task-id>
+<summary>Monitor event: "pre-pr gate outcome for 2326"</summary>
+<event>✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:&lt;file&gt;',</event>
+</task-notification>

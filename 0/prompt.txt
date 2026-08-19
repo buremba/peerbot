@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0l4lovjv</task-id>
+<tool-use-id>toolu_01FMhgoqGcWPqwjCvr3V3wuK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9/tasks/b0l4lovjv.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for the two triggered runs to finish" completed (exit code 0)</summary>
+</task-notification>

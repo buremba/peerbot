@@ -191,6 +191,57 @@ describe("compileEntityRule + runEntityRules", () => {
 		});
 	});
 
+	it("keeps a later reason that matches a segment of an earlier joined reason", async () => {
+		// Reasons are joined with "; ", so deduping by re-splitting the joined
+		// string tears a reason that itself contains "; " into segments — and
+		// then drops a genuinely distinct later reason that happens to equal
+		// one of them. Both reasons here are real and must both survive.
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a"], "needs sign-off; see policy 4");
+				row.escalate(["b"], "see policy 4");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: {} }],
+		});
+
+		expect(verdict).toEqual({
+			outcome: "escalate",
+			fields: ["a", "b"],
+			reason: "needs sign-off; see policy 4; see policy 4",
+		});
+	});
+
+	it("accumulates escalations per row, not across the batch", async () => {
+		// The accumulators are locals inside the row loop. If they were hoisted
+		// out, row 2 would inherit row 1's fields and reason and escalate a
+		// field its own rule never named.
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				if (row.patch.a !== undefined) row.escalate(["a"], "r1");
+				if (row.patch.b !== undefined) row.escalate(["b"], "r2");
+			};`,
+		);
+
+		const verdicts = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [
+				{ committed: {}, patch: { a: 1 } },
+				{ committed: {}, patch: { b: 2 } },
+			],
+		});
+
+		expect(verdicts).toEqual([
+			{ outcome: "escalate", fields: ["a"], reason: "r1" },
+			{ outcome: "escalate", fields: ["b"], reason: "r2" },
+		]);
+	});
+
 	it("deny wins over an earlier escalate on the same row", async () => {
 		const compiled = await compileEntityRule(
 			`export default (row) => {

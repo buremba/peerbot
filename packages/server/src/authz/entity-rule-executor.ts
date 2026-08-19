@@ -117,6 +117,8 @@ export default async (ctx) => {
   const verdicts = [];
   for (const row of ctx.rows) {
     let verdict = { outcome: "allow" };
+    const escalatedFields = [];
+    const escalatedReasons = [];
     const next = { ...row.committed, ...row.patch };
     const api = {
       committed: row.committed,
@@ -134,18 +136,21 @@ export default async (ctx) => {
         // different field sets; overwriting would keep only the last set, and
         // the earlier fields would ride through the same write unreviewed,
         // because the granting validator only ever sees this list.
-        const prior = verdict.outcome === "escalate" ? verdict : null;
-        const seen = new Set(prior ? prior.fields : []);
-        const merged = prior ? [...prior.fields] : [];
+        //
+        // Both accumulators are per-row locals, never re-parsed out of the
+        // verdict: deduping reasons by splitting the joined string on "; "
+        // would tear a reason that itself contains "; " into segments, and
+        // then silently drop a later distinct reason equal to one segment.
         for (const f of Array.isArray(fields) ? fields : [fields]) {
-          if (seen.has(f)) continue;
-          seen.add(f);
-          merged.push(f);
+          if (!escalatedFields.includes(f)) escalatedFields.push(f);
         }
         const r = String(reason);
-        const reasons = prior ? prior.reason.split("; ") : [];
-        if (!reasons.includes(r)) reasons.push(r);
-        verdict = { outcome: "escalate", fields: merged, reason: reasons.join("; ") };
+        if (!escalatedReasons.includes(r)) escalatedReasons.push(r);
+        verdict = {
+          outcome: "escalate",
+          fields: escalatedFields.slice(),
+          reason: escalatedReasons.join("; "),
+        };
       },
     };
     try {

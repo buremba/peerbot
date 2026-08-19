@@ -1,0 +1,1 @@
+isn't raid1 slower than raid0

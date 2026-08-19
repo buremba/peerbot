@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/Users/burakemre/Library/Application Support/CleanShot/media/media_o4dmlUUT7T/CleanShot 2026-08-14 at 14.47.33@2x.png">
+
+</image>
+
+i still see mcp apps like this but i thought we actually moved to a more user friendly representation. wtf is going on [Image #1]

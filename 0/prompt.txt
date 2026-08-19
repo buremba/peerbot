@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btieqwyup</task-id>
+<tool-use-id>toolu_01YLxTpMFjYTh2GUDDLX1dVh</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/btieqwyup.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 2691 mergeability after rebase" stream ended</summary>
+</task-notification>

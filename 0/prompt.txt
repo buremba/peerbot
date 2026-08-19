@@ -1,0 +1,3 @@
+i'm getting Failed to apply entity merge: Merge evidence or resolution policy changed after review was requested. The approval is back to pending — approve again after fixing the blocker, or reject it.
+
+ on here when merging users https://buremba.lobu.ai/agents/lobu-builder/chat

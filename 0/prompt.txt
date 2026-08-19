@@ -1,0 +1,1 @@
+ultrathink is our slack bot fully working? you can use browser owletto to open slack and test in slackbot and test by talking to @lobu and also do the same for telegram end to end you can use workflows to udnerstand ifw e have any issues

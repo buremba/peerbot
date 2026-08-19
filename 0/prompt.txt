@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqfifw2h3</task-id>
+<tool-use-id>toolu_01BQw9gfxpLdhQpBC9dXwjGi</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/bqfifw2h3.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run make review to recover blocker detail" completed (exit code 0)</summary>
+</task-notification>

@@ -689,7 +689,12 @@ export async function mergeEntityFields(params: {
 	return merge;
 }
 
-function parseEntityJsonObject(value: unknown): Record<string, unknown> {
+/**
+ * Tolerant metadata/controls parse. Exported for `promote-keyed-entities`,
+ * which reads live metadata inside a rule-containment catch — a throw there
+ * would escape the catch and roll back the window completion it exists to save.
+ */
+export function parseEntityJsonObject(value: unknown): Record<string, unknown> {
 	if (value == null) return {};
 	if (typeof value === "string") {
 		try {
@@ -724,8 +729,11 @@ function parseEntityJsonObject(value: unknown): Record<string, unknown> {
  *
  * A rule that crashes or times out reads as a deny, so a broken rule surfaces as
  * an error rather than an unanswerable approval.
+ *
+ * Exported for automation promotion, whose merge strips human-owned and
+ * policy-gated fields before validating and so faces the same split.
  */
-async function fullProposalVerdict(params: {
+export async function fullProposalVerdict(params: {
 	tx: DbClient;
 	entityId: number;
 	patch: EntityRowPatch;

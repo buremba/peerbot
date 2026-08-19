@@ -24,6 +24,7 @@ import type { AuthContext } from '../../../tools/execute';
 import { executeTool } from '../../../tools/execute';
 import { createAutomationRun } from '../../../runs/queue-service';
 import { computePendingWindow } from '../../../utils/window-utils';
+import { compileEntityRule } from '../../../authz/entity-rule-executor';
 import { promoteAutomationEntityOutput } from '../../../utils/promote-keyed-entities';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
@@ -1323,5 +1324,507 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect((feedback[0].metadata as Record<string, unknown>).reason).toBe(
       'severity should stay high'
     );
+  });
+
+  /**
+   * A write rule is a per-ROW verdict. Every case that mints a card ends the
+   * same way — approve, and the change lands — because that round trip is the
+   * only thing that proves the card is CLEARABLE. A card can be minted, carry
+   * the right fields, and still be dead: the apply path replays the write, so a
+   * grant that does not cover what the rule escalates makes the write throw and
+   * `applyFailure` resets the run to pending, forever. The last case mints no
+   * card at all, for the same reason: a write the rule denies has no approval
+   * that could rescue it.
+   */
+  describe('a rule escalate is contained to its row', () => {
+    const escalatingType = async (ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>, source: string) => {
+      const compiled = await compileEntityRule(source);
+      await ctx.sql`
+        UPDATE entity_types SET rules_compiled = ${compiled}
+        WHERE organization_id = ${ctx.workspace.org.id} AND slug = 'topic'
+      `;
+    };
+
+    const metaFor = async (ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>, stableKey: string) => {
+      const [row] = await ctx.sql`
+        SELECT e.metadata FROM entities e
+        JOIN entity_identities ei ON ei.entity_id = e.id
+        WHERE ei.namespace = 'automation_key'
+          AND ei.identifier = ${topicIdentity(ctx.automationId, stableKey)}
+      `;
+      return row.metadata as Record<string, unknown>;
+    };
+
+    const pendingCard = async (ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>) => {
+      const rows = await ctx.sql`
+        SELECT id, action_input FROM runs
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND run_type = 'internal'
+          AND action_key = 'entity_field_change'
+          AND approval_status = 'pending'
+      `;
+      return rows;
+    };
+
+    const approve = async (ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>, runId: number) => {
+      const res = (await executeTool(
+        'manage_operations',
+        { action: 'approve', run_id: runId },
+        TEST_ENV,
+        ownerAuthCtx(ctx.workspace.org.id, ctx.workspace.users.owner.id)
+      )) as { approved?: boolean };
+      expect(res.approved).toBe(true);
+      const [settled] = await ctx.sql`
+        SELECT status, approval_status FROM runs WHERE id = ${runId}
+      `;
+      expect(settled.status).toBe('completed');
+      expect(settled.approval_status).toBe('approved');
+    };
+
+    it('holds the escalating row only, and the card clears', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing and loading slowly.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', severity: 'low' },
+            { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+          ],
+        },
+      });
+
+      // The rule is deployed AFTER the automation is already promoting rows.
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update" && row.next.severity === "critical") {
+    row.escalate(["severity"], "a critical topic needs sign-off");
+  }
+};`
+      );
+
+      let windowError: unknown = null;
+      try {
+        await ctx.api.automations.completeWindow({
+          automation_id: String(ctx.automationId),
+          window_token: token,
+          run_metadata: { automation_run_id: runId },
+          extracted_data: {
+            problems: [
+              { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+              { category: 'Performance', name: 'Slow Loading', severity: 'medium' },
+            ],
+          },
+        });
+      } catch (err) {
+        windowError = err;
+      }
+
+      // Letting a per-row verdict escape rolls back the WHOLE completion — every
+      // promoted row and every declared output — and it recurs on every retry.
+      expect(windowError).toBeNull();
+      expect((await metaFor(ctx, SLOW_LOADING_KEY)).severity).toBe('medium');
+      expect((await metaFor(ctx, APP_CRASHES_KEY)).severity).toBe('low');
+
+      const cards = await pendingCard(ctx);
+      expect(cards.length).toBe(1);
+      const proposal = cards[0].action_input as {
+        escalated_fields?: string[];
+        fields: Record<string, unknown>;
+      };
+      expect(proposal.escalated_fields).toEqual(['severity']);
+      expect(proposal.fields.severity).toBe('critical');
+
+      await approve(ctx, Number(cards[0].id));
+      expect((await metaFor(ctx, APP_CRASHES_KEY)).severity).toBe('critical');
+    });
+
+    it('holds the row whole when the rule gates on COMMITTED state', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', owner: 'ops', summary: 'first' },
+          ],
+        },
+      });
+
+      // `row.next` is `{...committed, ...patch}`, so this reads the MERGED owner
+      // and keeps firing however much a write drops. Anything that tried to
+      // satisfy it by shrinking the patch would never terminate — or would fail
+      // the row closed with no card at all.
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update" && row.next.owner) {
+    row.escalate(["owner", "reviewed_by"], "an owned topic needs sign-off");
+  }
+};`
+      );
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', owner: 'security', summary: 'second' },
+          ],
+        },
+      });
+
+      // Nothing applies: the rule judged this write as one unit, so no subset of
+      // it may commit on its own.
+      expect(await metaFor(ctx, APP_CRASHES_KEY)).toMatchObject({
+        owner: 'ops',
+        summary: 'first',
+      });
+
+      const cards = await pendingCard(ctx);
+      expect(cards.length).toBe(1);
+      const proposal = cards[0].action_input as {
+        escalated_fields?: string[];
+        fields: Record<string, unknown>;
+      };
+      // The grant is the rule's OWN list — including `reviewed_by`, which this
+      // row never proposes. The replay demands the grant cover every field the
+      // VERDICT names, so trimming it to the proposed subset mints a dead card.
+      expect(proposal.escalated_fields).toEqual(['owner', 'reviewed_by']);
+      expect(proposal.fields).toMatchObject({ owner: 'security', summary: 'second' });
+
+      await approve(ctx, Number(cards[0].id));
+      expect(await metaFor(ctx, APP_CRASHES_KEY)).toMatchObject({
+        owner: 'security',
+        summary: 'second',
+      });
+    });
+
+    it('clears when the rule escalates from more than one branch', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            {
+              category: 'Stability',
+              name: 'App Crashes',
+              severity: 'low',
+              owner: 'ops',
+            },
+          ],
+        },
+      });
+
+      // Two branches both fire. The executor UNIONS repeated `escalate()` calls
+      // (#2910), so one verdict carries both field sets and both reasons — and
+      // because the card replays the same write the verdict judged, the replay
+      // agrees with it.
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update" && row.changed("severity")) {
+    row.escalate(["severity"], "a severity change needs sign-off");
+  }
+  if (row.op === "update" && row.changed("owner")) {
+    row.escalate(["owner"], "reassigning an owner needs sign-off");
+  }
+};`
+      );
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            {
+              category: 'Stability',
+              name: 'App Crashes',
+              severity: 'critical',
+              owner: 'security',
+            },
+          ],
+        },
+      });
+
+      const cards = await pendingCard(ctx);
+      expect(cards.length).toBe(1);
+      const proposal = cards[0].action_input as {
+        escalated_fields?: string[];
+        reason?: string;
+      };
+      expect([...(proposal.escalated_fields ?? [])].sort()).toEqual(['owner', 'severity']);
+      // Every field the card holds is explained: a grant naming a field whose
+      // reason was dropped tells the approver nothing about why it is held.
+      expect(proposal.reason).toContain('reassigning an owner needs sign-off');
+      expect(proposal.reason).toContain('a severity change needs sign-off');
+
+      // The decisive assertion: BOTH fields land. Approving replays the whole
+      // write, so the severity branch is satisfied by the same grant.
+      await approve(ctx, Number(cards[0].id));
+      expect(await metaFor(ctx, APP_CRASHES_KEY)).toMatchObject({
+        severity: 'critical',
+        owner: 'security',
+      });
+    });
+
+    it('grants what the rule says about the CARD, not about the residual write', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', owner: 'ops', summary: 'first' },
+          ],
+        },
+      });
+
+      // A human owns `owner`, so the automation's proposal for it is held by
+      // FIELD OWNERSHIP before any rule runs — the write the rule sees is a
+      // strict subset of the write the card will replay.
+      const [row] = await ctx.sql`
+        SELECT e.id FROM entities e
+        JOIN entity_identities ei ON ei.entity_id = e.id
+        WHERE ei.namespace = 'automation_key'
+          AND ei.identifier = ${topicIdentity(ctx.automationId, APP_CRASHES_KEY)}
+      `;
+      await ctx.workspace.owner.entities.update({
+        entity_id: Number(row.id),
+        metadata: { owner: 'sec-team' },
+        field_note: 'assigned by hand',
+      });
+
+      // Two branches, and only the FIRST can fire on the residual: the held
+      // `owner` never reaches `row.next`, so the residual answers about
+      // `summary` while the card's own write answers about `owner`.
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update" && row.next.summary) {
+    row.escalate(["summary"], "a summary needs sign-off");
+  }
+  if (row.op === "update" && row.next.owner === "ops") {
+    row.escalate(["owner"], "handing a topic back to ops needs sign-off");
+  }
+};`
+      );
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', owner: 'ops', summary: 'second' },
+          ],
+        },
+      });
+
+      const cards = await pendingCard(ctx);
+      expect(cards.length).toBe(1);
+      const proposal = cards[0].action_input as {
+        escalated_fields?: string[];
+        fields: Record<string, unknown>;
+      };
+      expect(proposal.fields).toMatchObject({ owner: 'ops', summary: 'second' });
+      // The residual's verdict names only `summary` — the held `owner` never
+      // reaches `row.next`, so its branch cannot fire there. The card replays
+      // `owner` too, so a grant copied off the residual is short by exactly the
+      // field the replay escalates on, and approval could never clear it.
+      expect([...(proposal.escalated_fields ?? [])].sort()).toEqual(['owner', 'summary']);
+
+      await approve(ctx, Number(cards[0].id));
+      expect(await metaFor(ctx, APP_CRASHES_KEY)).toMatchObject({
+        owner: 'ops',
+        summary: 'second',
+      });
+    });
+
+    it('fails the row closed when the rule denies the write the card would replay', async () => {
+      const ctx = await setupKeyedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', owner: 'ops', summary: 'first' },
+          ],
+        },
+      });
+
+      const [row] = await ctx.sql`
+        SELECT e.id FROM entities e
+        JOIN entity_identities ei ON ei.entity_id = e.id
+        WHERE ei.namespace = 'automation_key'
+          AND ei.identifier = ${topicIdentity(ctx.automationId, APP_CRASHES_KEY)}
+      `;
+      await ctx.workspace.owner.entities.update({
+        entity_id: Number(row.id),
+        metadata: { owner: 'sec-team' },
+        field_note: 'assigned by hand',
+      });
+
+      // The residual only ever reaches the escalate; the write the card would
+      // replay hits the deny. Carding it would mint a proposal that throws the
+      // moment anyone approves it.
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update" && row.next.owner === "ops") {
+    row.deny("a topic cannot be handed back to ops");
+  }
+  if (row.op === "update" && row.next.summary) {
+    row.escalate(["summary"], "a summary needs sign-off");
+  }
+};`
+      );
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', owner: 'ops', summary: 'second' },
+          ],
+        },
+      });
+
+      expect(await pendingCard(ctx)).toEqual([]);
+      expect(await metaFor(ctx, APP_CRASHES_KEY)).toMatchObject({
+        owner: 'sec-team',
+        summary: 'first',
+      });
+    });
+
+    it('cards with NO grant when the rule escalates the residual but allows the whole write', async () => {
+      const ctx = await setupKeyedAutomation();
+      const { sql, workspace } = ctx;
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: workspace.org.id,
+        content: 'Users report the app crashing.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', severity: 'low', summary: 'first' },
+          ],
+        },
+      });
+
+      // A human owns `severity`, so the merge strips it and the rule sees a
+      // residual with no severity at all.
+      const [entity] = await sql`
+        SELECT e.id FROM entities e
+        JOIN entity_identities ei ON ei.entity_id = e.id
+        WHERE ei.namespace = 'automation_key'
+          AND ei.identifier = ${topicIdentity(ctx.automationId, APP_CRASHES_KEY)}
+      `;
+      await sql`
+        UPDATE entities
+        SET field_controls = ${sql.json({ severity: { set_by: workspace.users.owner.id } })}
+        WHERE id = ${entity.id}
+      `;
+
+      // `changed()` is what separates the residual from the whole write:
+      // `row.next` merges committed state, so severity LOOKS present either way,
+      // but only the whole write actually changes it. The rule therefore
+      // escalates the residual and allows the whole write — `fullProposalVerdict`
+      // returns null and the card is held by OWNERSHIP, not by the rule.
+      await escalatingType(
+        ctx,
+        `export default (row) => {
+  if (row.op === "update" && !row.changed("severity")) {
+    row.escalate(["summary"], "a topic that leaves severity alone needs sign-off");
+  }
+};`
+      );
+
+      await ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        run_metadata: { automation_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', severity: 'high', summary: 'second' },
+          ],
+        },
+      });
+
+      const cards = await pendingCard(ctx);
+      expect(cards.length).toBe(1);
+      // No grant and no rule reason: neither describes why THIS card exists —
+      // the rule is satisfied by the write the card replays.
+      const proposal = cards[0].action_input as { escalated_fields?: string[] };
+      expect(proposal.escalated_fields ?? []).toEqual([]);
+
+      // And it still clears, which is the point: a grantless card is only safe
+      // because the replayed write is one the rule allows.
+      await approve(ctx, Number(cards[0].id));
+      expect((await metaFor(ctx, APP_CRASHES_KEY)).severity).toBe('high');
+    });
   });
 });

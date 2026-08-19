@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzmeu914u</task-id>
+<tool-use-id>toolu_01GjmHHkjVXTHkDLLoL7WV6z</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b495caea-80b1-4ed4-9dcf-1726b2bc90e1/tasks/bzmeu914u.output</output-file>
+<status>completed</status>
+<summary>Background command "Run ui-review with artifact proof" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgsjkhmv7</task-id>
+<tool-use-id>toolu_01Qv1Jd1RnAiuhjAU5zBaBHq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bgsjkhmv7.output</output-file>
+<status>completed</status>
+<summary>Background command "Boot merged main" completed (exit code 0)</summary>
+</task-notification>

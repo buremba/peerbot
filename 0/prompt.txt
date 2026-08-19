@@ -1,0 +1,18 @@
+Review the STAGED diff in this worktree (`git diff --cached`). It is PR A1 of an ACL hardening change. Read the surrounding code before asserting anything.
+
+## What it is trying to do
+`member_of` is simultaneously an ACL primitive and ordinary domain vocabulary. `ensureMemberOfType` upserts on (organization_id, slug) — it ADOPTS a pre-existing row rather than create-or-failing — so an org defining `member_of` in its own `lobu apply` schema would have that type silently promoted into the access path.
+
+This PR adds a system-controlled `purpose='authorization'` classification, stamps it on the ACL type (repairing on adopt), and refuses caller mutation of any classified type.
+
+Deliberately NOT in this PR: the three ACL read predicates (`AND rt.purpose='authorization'` in channel-visibility.ts, resource-visibility.ts, channel-messages-visibility.ts). They ship in a follow-up so a rolling deploy cannot have new readers demanding a stamp that old pods are not yet writing.
+
+## Verify specifically
+1. Is the guard set COMPLETE? Find any remaining path by which a caller (not the platform ACL syncs) can create, modify, soft-delete, or otherwise influence an edge on a classified type, or change/archive/rename the classified type itself. Include the CLI/apply path, any HTTP route, MCP surfaces, bulk/import paths, and entity merge. Name file:line.
+2. Is `assertNotAuthorizationType` placed at genuine chokepoints, or can a handler reach the mutation without passing it?
+3. Does the `COALESCE(EXCLUDED.purpose, entity_relationship_types.purpose)` upsert have a failure mode? Consider `mentions` and `member_of` sharing `ensureRelationshipType`, and the archived/status='active' partial index.
+4. Is the migration safe? It classifies ALL active `member_of` rows. Consider public/cross-org visibility types, archived rows, and orgs where `member_of` was created by apply rather than the platform.
+5. Does the two-deploy split actually remove the rolling-deploy hazard, or is there still a window?
+6. Anything in the tests that passes for the wrong reason, or a guard asserted only via the helper rather than the real surface.
+
+Be concrete and cite file:line. Rank by severity. If something is fine, say so briefly rather than padding.

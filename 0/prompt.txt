@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>boq4i5b81</task-id>
+<summary>Monitor event: "prod ancestry gate for #2374 (waits until the merge SHA is actually deployed)"</summary>
+<event>prod api images: ghcr.io/lobu-ai/lobu-app:20260730-225912-001765</event>
+</task-notification>

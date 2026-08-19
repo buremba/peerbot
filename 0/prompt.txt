@@ -1,0 +1,1 @@
+http://localhost:5180/commercial-lender-demo/settings/organization i'm checking. the identity has a border remove that and the background and padding. the page needs to have the same width as our agents connectors page and be centered. also put the organization name in there. the dev server is not running you can bring it alive.

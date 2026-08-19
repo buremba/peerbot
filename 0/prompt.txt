@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9cgwn9vp</task-id>
+<tool-use-id>toolu_01X3aErFGKHe55woE6hZAFLX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1eebddbf-4c2c-4bd1-9494-4a0bad73b495/tasks/b9cgwn9vp.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for workflow progress" completed (exit code 0)</summary>
+</task-notification>

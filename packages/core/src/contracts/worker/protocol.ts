@@ -107,9 +107,13 @@ export const PollRequestSchema = Type.Object({
   connector_manifests: Type.Optional(Type.Unknown()),
   /**
    * Agent kinds this device can run for Automations (e.g. `["claude-code"]`).
-   * Advertised by device executors that ship a local CLI spawner. Advisory
-   * until the gateway persists it per-device — it is the eventual replacement
-   * for the hand-synced `DEVICE_AGENT_KIND_LITERALS` list on the write side.
+   * Advertised by the connector-worker daemon, derived from the binaries
+   * actually resolvable on that machine — not the build's static kind table,
+   * which would make the gate below inert. The gateway
+   * persists it on `device_workers.agent_kinds` and withholds device-pinned
+   * runs whose `agent_kind` the device did not advertise. Omit the field
+   * entirely when the client runs no CLIs and should stay unrestricted; send
+   * `[]` to claim no Automation runs at all.
    */
   agent_kinds: Type.Optional(Type.Array(Type.String())),
 });

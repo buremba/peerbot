@@ -36,7 +36,7 @@ import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
-import { normalizeAdvertisedCapabilities } from './shared';
+import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
 import { storedManifestMap, validateDeviceConnectorManifests } from './device-manifests';
 import type { RunOutcome } from '../runs/run-outcome';
 
@@ -157,6 +157,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let label: string | null = null;
   let connectorManifestsProvided = false;
   let connectorManifestsRaw: unknown;
+  // Agent CLIs this device can spawn. `null` is NOT the same as `[]`: null means
+  // the client never told us (today that is every client except the
+  // connector-worker daemon — the Mac app, the Chrome bridge, older daemons)
+  // and must stay as claimable as it is today, while `[]` means it told us and
+  // can run nothing.
+  let agentKinds: string[] | null = null;
   try {
     const body = await c.req.json<PollRequest>();
     worker_id = body.worker_id;
@@ -166,9 +172,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     label = body.label ?? null;
     connectorManifestsProvided = Object.hasOwn(body, 'connector_manifests');
     connectorManifestsRaw = body.connector_manifests;
+    agentKinds = normalizeAgentKinds(body.agent_kinds);
   } catch {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
+
+  // postgres.js renders a bound JS array as a bare comma list, which Postgres
+  // rejects for text[]; the repo's array params go through pgTextArray. NULL
+  // must stay NULL — that's the "never advertised" case the lane keys on.
+  const agentKindsParam = agentKinds === null ? null : pgTextArray(agentKinds);
   const sql = getDb();
   // Capability set the worker advertised, used to filter on
   // connector_definitions.required_capability.
@@ -336,7 +348,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       // registration from a routine poll-update so we only emit the
       // `device:created` lifecycle event once per device.
       const upserted = (await sql`
-        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id, connector_manifests)
+        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id, connector_manifests, agent_kinds)
         VALUES (
           ${registrationUserId}, ${worker_id}, ${platform}, ${app_version},
           ${sql.json(incomingCaps)}, ${label},
@@ -344,7 +356,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             ${registrationOrgId}::text,
             (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${registrationUserId} LIMIT 1)
           ),
-          ${sql.json(connectorManifestMap ?? {})}
+          ${sql.json(connectorManifestMap ?? {})},
+          ${agentKindsParam}::text[]
         )
         ON CONFLICT (user_id, worker_id) DO UPDATE SET
           -- platform is set-once: COALESCE preserves the original value,
@@ -361,6 +374,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             WHEN ${connectorManifestsAccepted} THEN EXCLUDED.connector_manifests
             ELSE device_workers.connector_manifests
           END,
+          -- Only overwrite when the device actually advertised. A client that
+          -- stops sending the field (a downgraded build) must not erase what a
+          -- capable client already told us.
+          agent_kinds = COALESCE(EXCLUDED.agent_kinds, device_workers.agent_kinds),
           last_seen_at = now()
         RETURNING id, organization_id, (xmax = 0) AS inserted
       `) as unknown as Array<{
@@ -611,11 +628,24 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             )
             -- (2) Automation lane: an automation run with approved_input.device_worker_id
             --     matching this device. Automations don't carry a connection_id and
-            --     don't gate on capabilities — the matching device's local CLI
-            --     executor handles the work (Owletto's AutomationDispatcher routes
-            --     by approved_input.agent_kind). The server-side dispatcher
-            --     (#802) already refuses to claim rows with this pin set, so
-            --     this branch is the only legal claim path for them.
+            --     don't gate on the connector capability set — the matching device's
+            --     local CLI executor handles the work, routing by
+            --     approved_input.agent_kind. The server-side dispatcher (#802)
+            --     already refuses to claim rows with this pin set, so this branch
+            --     is the only legal claim path for them.
+            --
+            --     It DOES gate on the agent kinds the device advertised on this
+            --     poll, which the daemon derives from the CLIs it can actually
+            --     resolve on the machine. Without that, a run pinned to a device
+            --     with no claude binary on PATH is still claimed and then fails with
+            --     "binary not found on PATH" — which reads as a broken Automation
+            --     rather than a machine missing a CLI. Leaving it unclaimed keeps
+            --     it queued until a device that can run it polls.
+            --     A device that advertised nothing (agentKinds IS NULL: the Mac
+            --     app and Chrome bridge today, or an older daemon) is deliberately
+            --     unrestricted, and
+            --     so is a run that names no agent_kind — the device resolves that
+            --     one against its own default.
             OR (
               ${isUserScopedWorker}
               AND r.run_type = 'automation'
@@ -623,6 +653,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND r.approved_input ? 'device_worker_id'
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+              AND (
+                ${agentKindsParam}::text[] IS NULL
+                OR NULLIF(r.approved_input->>'agent_kind', '') IS NULL
+                OR r.approved_input->>'agent_kind' = ANY(${agentKindsParam}::text[])
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM runs active

@@ -5,8 +5,8 @@
  * complete-automation, complete-action, and complete-auth to verify the caller
  * owns the run it's acting on.
  *
- * `normalizeAdvertisedCapabilities` — sanitises the raw capabilities map the
- * device sends on poll.
+ * `normalizeAdvertisedCapabilities` / `normalizeAgentKinds` — sanitise the raw
+ * capabilities map and agent-kind list the device sends on poll.
  */
 
 import type { Context } from 'hono';
@@ -25,6 +25,34 @@ export function normalizeAdvertisedCapabilities(capabilities: Record<string, boo
         .map(([key]) => key)
     )
   );
+}
+
+/**
+ * Agent CLI kinds a device advertised on poll, or `null` when it advertised
+ * nothing at all.
+ *
+ * The null/empty distinction is load-bearing and must survive to the DB: a
+ * client that never sends the field (the Mac app and the Chrome bridge today,
+ * or an older daemon) has to stay exactly as claimable as it is today, while a
+ * client that sends `[]` is telling us it can run nothing.
+ * Collapsing the two would either strand every legacy device or hand runs to
+ * devices that cannot execute them.
+ *
+ * Values are client-supplied, so this trims, de-duplicates, and caps length
+ * and count — but does not validate them against the gateway's own `AgentKind`
+ * union, because that list ships with the device client's core build and may
+ * legitimately run ahead of the server.
+ */
+export function normalizeAgentKinds(kinds: unknown): string[] | null {
+  if (!Array.isArray(kinds)) return null;
+  return Array.from(
+    new Set(
+      kinds
+        .filter((kind): kind is string => typeof kind === 'string')
+        .map((kind) => kind.trim())
+        .filter((kind) => kind.length > 0 && kind.length <= 64)
+    )
+  ).slice(0, 32);
 }
 
 /**

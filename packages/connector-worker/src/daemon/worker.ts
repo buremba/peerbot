@@ -7,6 +7,7 @@
 import type { Env } from '@lobu/connector-sdk';
 import { type WorkerCapabilities, WorkerClient } from './client.js';
 import { type ExecutorConfig, executeRun } from './executor.js';
+import { log } from './log.js';
 
 export interface DaemonConfig {
   apiUrl: string;
@@ -72,7 +73,7 @@ export class WorkerDaemon {
    */
   async start(): Promise<void> {
     if (this.running) {
-      console.error('[daemon] Already running');
+      log.info('[daemon] Already running');
       return;
     }
 
@@ -82,7 +83,7 @@ export class WorkerDaemon {
       throw new Error('Backend health check failed');
     }
 
-    console.error('[daemon] Starting worker daemon...');
+    log.info('[daemon] Starting worker daemon...');
     this.running = true;
 
     // Main poll loop
@@ -90,21 +91,21 @@ export class WorkerDaemon {
       try {
         await this.pollAndExecute();
       } catch (err) {
-        console.error('[daemon] Poll error:', err);
+        log.info('[daemon] Poll error:', err);
       }
 
       // Wait before next poll
       await this.sleep(this.config.pollIntervalMs);
     }
 
-    console.error('[daemon] Stopped');
+    log.info('[daemon] Stopped');
   }
 
   /**
    * Stop the daemon
    */
   stop(): void {
-    console.error('[daemon] Stopping...');
+    log.info('[daemon] Stopping...');
     this.running = false;
   }
 
@@ -115,7 +116,7 @@ export class WorkerDaemon {
   async waitForActiveJobs(timeoutMs = 30000, pollMs = 500): Promise<boolean> {
     if (this.activeJobs === 0) return true;
 
-    console.error(`[daemon] Waiting for ${this.activeJobs} active job(s) to finish...`);
+    log.debug(`[daemon] Waiting for ${this.activeJobs} active job(s) to finish...`);
     const deadline = Date.now() + timeoutMs;
 
     while (this.activeJobs > 0 && Date.now() < deadline) {
@@ -123,13 +124,13 @@ export class WorkerDaemon {
     }
 
     if (this.activeJobs > 0) {
-      console.error(
+      log.info(
         `[daemon] Timed out after ${timeoutMs}ms waiting for ${this.activeJobs} active job(s)`
       );
       return false;
     }
 
-    console.error('[daemon] All active jobs completed');
+    log.debug('[daemon] All active jobs completed');
     return true;
   }
 
@@ -148,7 +149,7 @@ export class WorkerDaemon {
     // No run available
     if (!job.run_id) {
       const nextPoll = job.next_poll_seconds ?? 30;
-      console.error(`[daemon] No runs available, next poll in ${nextPoll}s`);
+      log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);
       return;
     }
 
@@ -156,7 +157,7 @@ export class WorkerDaemon {
     this.activeJobs++;
     executeRun(this.client, job, this.env, this.config.executor)
       .catch((err) => {
-        console.error(`[daemon] Run ${job.run_id} crashed:`, err);
+        log.info(`[daemon] Run ${job.run_id} crashed:`, err);
       })
       .finally(() => {
         this.activeJobs--;
@@ -182,11 +183,11 @@ export async function startDaemon(config: DaemonConfig, env: Env): Promise<Worke
       process.exit(130);
     }
     shuttingDown = true;
-    console.error(`\n[daemon] Received ${signal}, shutting down...`);
+    log.info(`\n[daemon] Received ${signal}, shutting down...`);
     daemon.stop();
     const allDone = await daemon.waitForActiveJobs();
     if (!allDone) {
-      console.error('[daemon] Forcing exit with active jobs still running');
+      log.info('[daemon] Forcing exit with active jobs still running');
     }
     process.exit(allDone ? 0 : 1);
   };

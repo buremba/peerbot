@@ -42,6 +42,7 @@ import type {
 import type { ExecutorClient } from "./client.js";
 import { WorkerDecodeError, WorkerHttpError } from "./client.js";
 import type { ExecutorConfig } from "./executor.js";
+import { log } from "./log.js";
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 interface ExecutorResult {
@@ -380,12 +381,12 @@ export async function executeAutomationRun(
   const spec = kind != null ? DEVICE_AGENT_SPECS_BY_KIND.get(kind as AgentKind) : undefined;
   if (!spec) {
     const message = `no local agent executor configured for agent_kind='${kind ?? "(unset)"}'`;
-    console.error(`[executor] Automation run ${runId}: ${message}`);
+    log.info(`[executor] Automation run ${runId}: ${message}`);
     await completeAutomationWithError(client, runId, message, "error_message");
     return { itemsCollected: 0, error: message };
   }
 
-  console.error(
+  log.info(
     `[executor] Starting automation run ${runId} (agent=${spec.binaryName})`
   );
 
@@ -399,7 +400,7 @@ export async function executeAutomationRun(
   // can distinguish a live turn from an abandoned one.
   const heartbeat = setInterval(() => {
     client.heartbeat(runId).catch((err) => {
-      console.error("[executor] Automation heartbeat failed:", err);
+      log.debug("[executor] Automation heartbeat failed:", err);
     });
   }, cfg.heartbeatIntervalMs ?? 30_000);
 
@@ -457,7 +458,7 @@ export async function dispatchAutomationResumeLoop(
       // Outcome unknown after the retry budget. Leave the run claimed and say
       // nothing: heartbeats stop when we return, so the server's heartbeat-stale
       // reaper reclaims it in minutes if the report never landed.
-      console.error(
+      log.info(
         `[executor] Automation run exit report undelivered — leaving the run to the server sweep`
       );
       return { itemsCollected: 0 };
@@ -502,7 +503,7 @@ export async function deliverExitReport(
       });
     } catch (err) {
       const retriable = isRetriableDeliveryFailure(err);
-      console.error(
+      log.debug(
         `[executor] Automation run=${runId} exit report delivery failed ` +
           `(try ${attempt + 1}/${EXIT_REPORT_DELIVERY_ATTEMPTS}, retriable=${retriable ? "yes" : "no"}): ` +
           (err instanceof Error ? err.message : String(err))

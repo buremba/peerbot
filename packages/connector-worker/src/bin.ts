@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { isKnownPlatform } from '@lobu/core';
 import { startDaemon } from './daemon/index.js';
 import { DEVICE_MANIFESTS_BY_PLATFORM } from './daemon/device-manifests.js';
+import { setDebug } from './daemon/log.js';
 import { buildConnectorWorkerEnv } from './env.js';
 import { assertExternalDepsResolvable } from './compile/index.js';
 import { printSelfCheckResult, runConnectorRuntimeSelfCheck } from './self-check/index.js';
@@ -43,6 +44,7 @@ Options:
                      e.g. os.files. The server drops anything the platform's
                      allowlist does not grant.
   --label <name>     Human-readable device name shown on the Devices page
+  --debug            Log poll/heartbeat/retry detail (default: one line per run)
   --json             (self-check) Emit machine-readable JSON to stdout
   --help             Show this help message
 
@@ -134,6 +136,7 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'daemon': {
+      setDebug(options.debug === 'true');
       const platform = (options.platform || process.env.WORKER_PLATFORM)?.trim() || undefined;
       const label = (options.label || process.env.WORKER_LABEL)?.trim() || undefined;
       const declared = (options.capabilities || process.env.WORKER_CAPABILITIES || '')

@@ -1,0 +1,1 @@
+so let me know, what's the value of skills? shouldn't we move the nix config to connectors? so github for example installs gh using nix and map the authentification etc

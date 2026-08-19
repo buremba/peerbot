@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>birgqma0b</task-id>
+<tool-use-id>toolu_01HfyoA13jeQ2Zc3fvU3TGsS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/birgqma0b.output</output-file>
+<status>failed</status>
+<summary>Background command "Boot owletto SPA vite in background" failed with exit code 144</summary>
+</task-notification>

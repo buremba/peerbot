@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bl063zqe7</task-id>
+<tool-use-id>toolu_014Zhu9dfhAa6ctFH3FBZdgg</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/07e7c33a-4508-4f40-803f-08696f5f646a/tasks/bl063zqe7.output</output-file>
+<status>completed</status>
+<summary>Background command "Compile the full Mac app locally" completed (exit code 0)</summary>
+</task-notification>

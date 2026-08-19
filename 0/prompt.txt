@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bj24e60g5</task-id>
+<summary>Monitor event: "PR #2229 CI outcome (pass/fail)"</summary>
+<event>CI GREEN on PR 2229 — all checks passed</event>
+</task-notification>

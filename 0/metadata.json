@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.10.1",
+  "checkpoint_id": "150ca1152012",
+  "session_id": "01a00d51-a8b4-7309-8b50-618e184727bc",
+  "strategy": "import",
+  "created_at": "2026-08-17T01:24:26.65Z",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Pi",
+  "model": "deepseek-v4-flash",
+  "checkpoint_transcript_start": 5,
+  "transcript_lines_at_start": 5,
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 3669,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 69376,
+    "output_tokens": 1186,
+    "api_call_count": 4
+  },
+  "kind": "imported"
+}

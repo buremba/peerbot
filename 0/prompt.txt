@@ -1,0 +1,11 @@
+[Skill conflicts]
+  ~/Code/lobu/skills/lobu-operator/SKILL.md
+    Nested mappings are not allowed in compact mappings at line 2, column 14:
+
+description: Contribute safely to the Lobu monorepo: worktrees, package rules, …
+             ^
+
+  ~/.pi/agent/skills/herdr-operator/SKILL.md
+    Nested mappings are not allowed in compact mappings at line 2, column 14:
+
+description: Drive herdr (terminal workspace manager) from inside an agent pane… i see this in pi

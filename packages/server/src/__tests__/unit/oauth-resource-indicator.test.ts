@@ -207,8 +207,20 @@ describe('MCP OAuth resource indicators', () => {
     __resetPublicOriginCachesForTests();
 
     // `file:///` parses but yields the opaque origin string `null`, which is
-    // not itself a URL — it must be rejected, not thrown on.
-    for (const spoofed of ['https://evil.example', 'not-a-url', 'http://lobu.ai', 'file:///']) {
+    // not itself a URL — it must be rejected, not thrown on. The trailing four
+    // cover the bare-origin guard (path/query/fragment) and the port arm, so
+    // removing either check fails here rather than silently widening what the
+    // audience comparison will accept.
+    for (const spoofed of [
+      'https://evil.example',
+      'not-a-url',
+      'http://lobu.ai',
+      'file:///',
+      'https://lobu.ai/mcp',
+      'https://lobu.ai?x=1',
+      'https://lobu.ai#f',
+      'https://lobu.ai:444',
+    ]) {
       const request = new Request('https://app.lobu.ai/mcp', {
         headers: {
           host: 'app.lobu.ai',

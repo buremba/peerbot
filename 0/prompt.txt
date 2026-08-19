@@ -1,0 +1,17 @@
+<task-notification>
+<task-id>bm1tzs3v6</task-id>
+<summary>Monitor event: "make pre-pr gate result"</summary>
+<event>PRE_PR_EXIT=0
+warnings: 0, errors: 0
+warnings: 0, errors: 0
+{"level":"warn","time":1785163005738,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/connector-identity-module.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+{"level":"warn","time":1785163005759,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/db-egress-guard.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+{"level":"warn","time":1785163006082,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/github-behavior-events.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+{"level":"warn","time":1785163006099,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/github-identity.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+{"level":"warn","time":1785163007771,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/slack-behavior-events.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+{"level":"warn","time":1785163007787,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/slack-identity.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+{"level":"warn","time":1785163008481,"pid":5864,"hostname":"Mac.lan","file_path":"/Users/burakemre/Code/lobu/.claude/worktrees/connector-empty-ui/packages/connectors/src/x-identity.ts","error":"Metadata extraction failed: No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.","msg":"Skipping connector catalog entry after metadata extraction failed"}
+dist/assets/_watcherId-Bwi3u2sB.js                       1.16 kB │ gzip:   0.60 kB
+dist/
+...(truncated)</event>
+</task-notification>

@@ -1,0 +1,1 @@
+behavior under platform is a bit weird no? chould we call it something like trigger or kind etc?

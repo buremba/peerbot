@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b306uh6v1</task-id>
+<tool-use-id>toolu_01QDL7ab9vDqzCb9mqB9Tdqb</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/b306uh6v1.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for rollout and verify the repair on prod" completed (exit code 0)</summary>
+</task-notification>

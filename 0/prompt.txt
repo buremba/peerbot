@@ -1,0 +1,77 @@
+# Design review 2: project-defined entity write hooks running INSIDE the write transaction
+
+You reviewed an earlier version and correctly demolished it. Key corrections you made,
+all verified since:
+- The gate is NOT uniformly outside the write transaction. create/delete pass a pool
+  client (manage_entity.ts:320); update passes `tx` (entity-management.ts ~700), as does
+  Behavior promotion. So "gate runs outside" was never a property to rely on.
+- Splitting rules by refuse-vs-mutate is a false dichotomy. Refusals can depend on
+  transactional state (your draft/posted race), so an outside predicate is unsafe.
+- Entity writes have no chokepoint: entity-merge.ts, entity-link-upsert.ts,
+  classifier-extraction.ts, member-entity.ts all write directly.
+- Approval and invariants are folded into one interceptor list; merge-as-delete breaks.
+
+## The new proposal (from the user, and I think it is better than mine)
+
+Run project-authored hooks in a V8 isolate INSIDE the write transaction.
+
+Verified facts that make this plausible:
+- The repo already ships `isolated-vm` (v6 for Node 22-24, v7 aliased for Node 26+),
+  in-process V8 isolates.
+- run-script.ts: "terminates the run by disposing the isolate (uncatchable by the guest)".
+  So the timeout is a HARD, guest-uncatchable kill, not cooperative.
+- The guest gets no ambient async I/O; the host injects capabilities explicitly.
+
+The claim: with (a) an in-process isolate, (b) a hard uncatchable CPU budget of a few ms,
+and (c) NO async I/O available to the guest, execution time is bounded BY CONSTRUCTION.
+So the historic objection to untrusted code in a transaction — unbounded runtime pinning a
+connection — no longer applies. And because the hook then runs after row locks, TOCTOU
+disappears and the versioned-precondition/CAS scheme I previously proposed is unnecessary.
+
+Shape:
+
+```ts
+defineEntityType({
+  key: "invoice",
+  properties: { ... },
+  onWrite: (ctx) => {                     // ctx.op: create | update | delete | merge
+    if (ctx.op === "update" && FROZEN.has(ctx.current.status)) return ctx.deny("frozen");
+  },
+})
+```
+
+Core would provide only: a write funnel, this hook (locked `current` + normalized final
+`candidate` + `deny` + `patch`), a declared read set the platform pre-fetches inside the
+same transaction, and a platform-owned gapless-ordinal allocation capability the hook can
+request. No `lifecycle` / `periodClose` / `numbering` concepts in core.
+
+## Questions — be adversarial, I would rather be wrong now
+
+1. Is "bounded by construction" actually true? Enumerate what can still stall or abort a
+   transaction from inside an isolate: host-callback reentrancy, ArrayBuffer/ExternalCopy
+   transfer cost proportional to payload size, GC pauses, isolate creation/warmup, snapshot
+   deserialization, OOM handling, a host function that itself blocks. Does a CPU-time budget
+   actually bound WALL-CLOCK transaction hold time?
+2. What is the realistic per-write cost (isolate acquire + copy-in + execute + copy-out)?
+   What must be cached/pooled for this to be viable, and what does pooling break
+   (cross-tenant isolate reuse, state leakage between runs)?
+3. Postgres specifics: holding a transaction open a few extra ms per write — what actually
+   degrades first? Connection pool saturation, lock queue depth, vacuum/bloat, prepared
+   statement churn, idle-in-transaction limits? At what write rate does this bite?
+4. Where should the hook be DECLARED? Entity types currently ship as pure DATA
+   (`defineEntityType` returns a plain object; apply sends `memorySchema.entityTypes`).
+   Hooks are CODE and need a compile/install rail like connectors
+   (`installConnectorDefinitionFromSource` takes source_code, compiles, org-scopes, versions).
+   Co-locating hook with type is better cohesion but mixes data and code, and forces
+   duplication for cross-cutting rules (period close over every posting type). What is the
+   right split, concretely?
+5. Design the write funnel. What is the minimal correct `EntityWriter` interface given the
+   existing bypassers? How do you migrate incrementally without a big-bang rewrite, and how
+   do you keep merge as a first-class operation rather than delete+update?
+6. What should NOT be a hook at all — which of these invariants belong in Postgres
+   (constraints, partial unique indexes, triggers, generated columns) instead?
+7. Failure semantics: hook throws, times out, OOMs, or the org ships a hook that denies
+   everything. What happens to writes? Fail-open or fail-closed, and how does an org recover
+   from a bad hook without a deploy?
+
+Be concrete, cite tradeoffs, and say plainly if this is still wrong.

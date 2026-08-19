@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>b23j77r4o</task-id>
+<summary>Monitor event: "Final CI settle on lobu#2204 after repoint"</summary>
+<event>SETTLED:
+fail: pi-review
+pass: mac-build-smoke, CodeQL, unit, migrations, connector-parity-smoke-filter, mac-build-smoke-filter, integration, frontend, sdk-e2e, cli-smoke, format-lint, typecheck, bun audit, Trivy (vuln + secret + misconfig), check-drift, Security tests (bun:test), Security tests (vitest), Static security guards, Analyze (javascript-typescript), Analyze (python), Analyze (actions), CodeRabbit
+skipping: connector-parity-smoke, [code]smith</event>
+</task-notification>

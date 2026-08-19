@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bjqtibgjq</task-id>
+<tool-use-id>toolu_01KtK4R9HU8GFv8yp4xRNxgo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/bjqtibgjq.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr after the rework" completed (exit code 0)</summary>
+</task-notification>

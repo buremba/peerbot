@@ -1,0 +1,49 @@
+i see this for example. Success
+true
+Skipped Calls
+0
+Side Effect Preview
+None
+Dry Run
+false
+
+▾
+Return Value · 4 fields
+Action
+execute
+Run Id
+948606
+Status
+completed
+
+▾
+Output · 7 fields
+
+▾
+Stderr · Sourcemap for "/Users/burakemre/Code/lobu-ai/lobu/packages/c…
+Sourcemap for "/Users/burakemre/Code/lobu-ai/lobu/packages/connector-sdk/dist/identity-types.js" points to missing source files
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/integration/operations-scope-aware-readiness.test.ts [ src/__tests__/integration/operations-scope-aware-readiness.test.ts ]
+Error: Failed to load url @lobu/core/refs (resolved id: @lobu/core/refs) in /Users/burakemre/Code/lobu-ai/herdr-worktrees/calendar-oauth-resume/packages/server/src/watchers/source-refs.ts. Does the file exist?
+ ❯ loadAndTransform ../../../../lobu/node_modules/vitest/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:51969:17
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+
+▸
+Stdout · import { hasAllScopes } from "../auth/oauth/scopes";
+Success
+false
+Exit Code
+1
+Timed Out
+false
+Duration Ms
+4932
+Operation Key
+run
+
+▸
+Debug can you create a html artifact showing me different variations on how we can make this better ux. the previous agent earlier today even show me some examples in html artifact and i thought it tapped on this problem. find the relevant session and understand where the gap is

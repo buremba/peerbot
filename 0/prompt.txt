@@ -1,0 +1,10 @@
+<task-notification>
+<task-id>bmcvzx9m6</task-id>
+<summary>Monitor event: "required checks on PR 2292 after rework"</summary>
+<event>check-drift: fail
+format-lint: pass
+frontend: pass
+migrations: pass
+typecheck: pass
+unit: pass</event>
+</task-notification>

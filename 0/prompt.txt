@@ -1,0 +1,1 @@
+could you do some stress test? we want to see the limits of this server? is our kubernetes fully healthy connected to everything etc?

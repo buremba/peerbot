@@ -1,0 +1,1 @@
+how about allowing the agents to run anything. we control everything outbound what's the point of this restriction. the cache etc we can be smarter

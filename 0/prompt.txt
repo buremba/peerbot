@@ -1,0 +1,1 @@
+is this the best long term architecture? why does agents have card stuff and json element seperately?

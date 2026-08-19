@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b03pck2k0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/259b2997-9a73-4761-987d-67f0a02cf9fe/tasks/b03pck2k0.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for integration to finish" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+2817 if we can bypass and merge we can do it. i don't understand why pi review fails. for 3 explain to me don't we do it in a transactional way. do 1 and then 2

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buc8pds0h</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/buc8pds0h.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and re-review the coordinated fix" completed (exit code 0)</summary>
+</task-notification>

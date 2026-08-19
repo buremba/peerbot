@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi50ozhvs</task-id>
+<tool-use-id>toolu_018Ueo5Z8jFsSMfBe2aeqFuZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bi50ozhvs.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for peer gate to clear" completed (exit code 0)</summary>
+</task-notification>

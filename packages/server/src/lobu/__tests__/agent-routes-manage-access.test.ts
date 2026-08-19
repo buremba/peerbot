@@ -5,7 +5,8 @@
  * role must be owner/admin regardless of auth source. A plain org MEMBER must
  * get 403 on all three surfaces — and on the sibling mutations in the same
  * router: agent create and every inference-provider mutation (org-level
- * credentials).
+ * credentials) — and the sandbox mutations, which are the same tier of
+ * org-level credential on a neighbouring router.
  *
  * Regression for the decision-brief finding: `requireSessionOrAdminPat` alone
  * lets any member rewrite/delete another member's agent (and change its
@@ -55,6 +56,11 @@ async function seedOrgAndAgent(): Promise<void> {
 async function importAgentRoutes() {
   const mod = await import("../agent-routes.js");
   return mod.agentRoutes;
+}
+
+async function importSandboxRoutes() {
+  const mod = await import("../sandbox-routes.js");
+  return mod.sandboxRoutes;
 }
 
 /** Every `authStash` field this file overwrites, as found on entry. */
@@ -335,6 +341,67 @@ describe("agent management mutations — role gate", () => {
     authStash.memberRole = "member";
     const app = await importAgentRoutes();
     const res = await app.request(`/${AGENT}/config`);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("sandbox mutations — same org-credential role gate", () => {
+  // A sandbox binds an org vault credential to a runtime provider, and deleting
+  // one drops every dependent agent back to the built-in runtime. That is the
+  // same blast radius as an inference provider, so it sits on the same tier —
+  // `requireSessionOrAdminPat` alone let any member create, re-key or delete
+  // one.
+  test("member: POST / is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "sb", provider_kind: "daytona" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /:id/credential is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1/credential", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credential: { api_key: "k" } }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: DELETE /:id is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1", { method: "DELETE" });
+    expect(res.status).toBe(403);
+  });
+
+  test("member + PAT with mcp:admin is still denied on a sandbox mutation", async () => {
+    authStash.memberRole = "member";
+    authStash.authSource = "pat";
+    authStash.mcpAuthInfo = { scopes: ["mcp:admin"] };
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1", { method: "DELETE" });
+    expect(res.status).toBe(403);
+  });
+
+  test("owner: DELETE /:id clears the gate and reaches the handler", async () => {
+    authStash.memberRole = "owner";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1", { method: "DELETE" });
+    // 404 (no such sandbox) proves the role gate passed; a 403 would mean the
+    // owner was wrongly blocked.
+    expect(res.status).toBe(404);
+  });
+
+  test("member: GET / stays readable (read is org-wide, as on agents)", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/");
     expect(res.status).toBe(200);
   });
 });

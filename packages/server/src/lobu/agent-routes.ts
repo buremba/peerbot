@@ -213,9 +213,10 @@ export function requireSessionOrAdminPat(c: any): Response | null {
 }
 
 /**
- * Gate agent management mutations (create/update/delete/config) and every
+ * Gate agent management mutations (create/update/delete/config), every
  * inference-provider mutation (create/update/key/default/capabilities/
- * delete/OAuth) to org owner/admin. Inference providers are ORG-level
+ * delete/OAuth) and every sandbox mutation (create/credential/delete) to org
+ * owner/admin. Inference providers and sandboxes are both ORG-level
  * credentials shared by every agent, so they sit on the same admin tier as
  * agent administration (`manage_agents` in auth/tool-access.ts).
  * `requireSessionOrAdminPat` alone only proves an authenticated caller — any
@@ -230,9 +231,11 @@ export function requireSessionOrAdminPat(c: any): Response | null {
  * owner's stale admin token stays denied. The eval routes
  * (`POST /evals/cases`, `POST /automations/:automationId/evals/run`) are out
  * of this gate's scope: they keep the weaker session-or-admin-PAT tier, so a
- * plain member can still run them.
+ * plain member can still run them. So are the deployment routes, whose POST
+ * already runs a finer-grained check of its own (a member may file a
+ * non-authorizing `blocked` report but not a `succeeded` baseline).
  */
-function requireManageAgentAccess(c: any): Response | null {
+export function requireManageAgentAccess(c: any): Response | null {
 	const denied = requireSessionOrAdminPat(c);
 	if (denied) return denied;
 
@@ -242,7 +245,7 @@ function requireManageAgentAccess(c: any): Response | null {
 			{
 				error: "forbidden",
 				error_description:
-					"Agent and inference-provider management requires owner or admin access.",
+					"Agent, inference-provider and sandbox management requires owner or admin access.",
 			},
 			403
 		);

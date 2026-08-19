@@ -1,0 +1,1 @@
+i will retire later, for now let's go ahead and start the installation. explain your plan first. the tailscale will be in k3s or is it seperate?

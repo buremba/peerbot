@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:17:33.127Z","content":[{"text":"New message in #sales:\n\nmike: @dave can you grab the projector for the 3pm?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:17:46.307Z","id":"4790ba33","input_tokens":209,"output_tokens":978,"content":[{"type":"text","text":"Want me to reply in #sales or set a reminder for Dave? If yes, tell me what to say and the reminder time."}]}

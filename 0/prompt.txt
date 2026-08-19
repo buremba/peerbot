@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>br7c9syrp</task-id>
+<summary>Monitor event: "Remaining substantive checks on lobu#2204"</summary>
+<event>cli-smoke: pass
+typecheck: pass</event>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>botv61rww</task-id>
+<tool-use-id>toolu_01XXXz6z8yGQctpF9XGE84Dt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/7ba1ff82-f964-4ade-8808-0ed38b90d913/tasks/botv61rww.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix pass" completed (exit code 0)</summary>
+</task-notification>

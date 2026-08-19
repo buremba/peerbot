@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bq74b9pjs</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/92626692-978b-4702-9fbd-4012912a59f9/tasks/bq74b9pjs.output</output-file>
+<status>completed</status>
+<summary>Monitor "full vitest integration suite result" stream ended</summary>
+</task-notification>

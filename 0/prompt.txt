@@ -1,0 +1,1 @@
+let's dig in all usecases, built html artifact how it will look show flows to me, before ultrathink on the code so we don't miss a gap

@@ -1,0 +1,183 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+User messages in this segment, in order:
+- **(Session continuation prompt)** — resume the merge sequence for task #16 (`acl_managed` edge surface) without acknowledgement, picking up as if the break never happened. Standing prior instruction still in force: *"yes lets go ahead one by one, i feel like were very slow and not making progress fast."*
+- **AskUserQuestion answer: `Opus reviews it, recorded on the PR`** — how to unblock #2843 when both `make review` quota pools were dry.
+- **AskUserQuestion answer: `Per-namespace scope on the connector's identity declaration (Recommended)`** — sign-off on the SDK surface for #2798, with the previewed shape `scope?: 'organization' | 'connection'` on `EntityIdentitySpec`.
+- **AskUserQuestion answer: `New nullable scope_connection_id + COALESCE in the unique index (Recommended)`** — sign-off on the DB storage mechanism (separate from the SDK sign-off, per AGENTS' "never change DB design without confirmation").
+- **"ok if we're should that's the right design and we know all, we want to use opencode to do alll the work and then maybe come back and get a review from you. confident we are about the design being proper and how close are you to finish"** — asking two direct questions (design confidence; distance to completion) and signalling intent to hand remaining work to opencode with me reviewing later.
+- **AskUserQuestion answer: `Merge as-is, accept the window`** — on the rollout version-skew risk for #2846.
+- **"3"** — selecting option 3 of three I offered: *merge #2846 **and** write the three design gaps up as issues*, so the handoff starts from landed code rather than a staged worktree.
+
+2. **Key Technical Concepts:**
+- **Reviewer quota topology:** `pi` is codex-backed, so `REVIEWER_CLI` has only **two** real pools (codex-backed, Anthropic-backed). Both were dry all session. Codex resets Aug 20; Fable 5 at its limit. A quota failure **does** post `pi-review` = **fail** on the PR (correcting an earlier memory note that said it posts nothing).
+- **`ON CONFLICT` inference on an expression index** compares parse trees: a bound `Param` never equals the index's `Const`, so the sentinel must be a **SQL literal** `0`, not `${ORG_SCOPE_SENTINEL}`.
+- **Index-change blast radius:** changing a unique index breaks *every* `ON CONFLICT` naming the old column list — 10 sites for `entity_identities`.
+- **`packages/server/tsconfig` excludes `__tests__`** — a required-field change compiles clean and dies in CI.
+- **Two guard asymmetry (from prior work):** type surface `assertNotAuthorizationType` = purpose only; edge surface `assertNotAclManagedEdge` = purpose **OR** slug. `ACL_MANAGED_TYPE_SQL` = `(rt.purpose IS NOT DISTINCT FROM 'authorization' OR rt.slug IS NOT DISTINCT FROM 'member_of')`.
+- **Prod deployment reality:** `charts/lobu/values.yaml:30` sets `strategy.type: Recreate`, but prod **overrides** it — live `summaries-app-lobu-app` is `RollingUpdate` with 2 replicas.
+- **Prod SHA resolution:** image tag `YYYYMMDD-HHMMSS-NNNNNN`, where `NNNNNN` = "Build and Push Images" workflow run number; join via `gh run list`.
+- **Prod DB recipe:** DB is `owletto`, pod `lobu-db-prod-1`, `-h 127.0.0.1` load-bearing, password from an app pod's `DATABASE_URL`.
+- **squawk lock-safety lint** runs in CI (`.github/workflows/ci.yml:1195`): `npx squawk-cli@2.58.0 --exclude=ban-drop-column,require-timeout-settings`.
+- **Migration pattern for concurrent index swaps:** `-- migrate:up transaction:false` + inlined INVALID-carcass heal `DO` block + `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS`.
+- vitest suites need `bun run scripts/build-packages.mjs` first, then `node ../../node_modules/.bin/vitest`.
+- A `PreToolUse` hook blocks truncated schema-catalog queries (`head`/`tail`/`LIMIT` near `pg_indexes`); needs full output or an explicit `# TRUNCATION-OK:` comment.
+
+3. **Files and Code Sections:**
+
+**MERGED — #2843, squash `d7274409835a894335e276e1b88a6b19d90c0edb`** (4 files, +98):
+- `packages/core/src/contracts/tools/manage-entity.ts` — `acl_managed: Type.Boolean()` added to `RelationshipRowSchema` (required, fail-closed).
+- `packages/server/src/tools/admin/manage_entity.ts` — `${ACL_MANAGED_TYPE_SQL} as acl_managed,` in `RELATIONSHIP_SELECT`.
+- `packages/server/src/__tests__/integration/authz/authorization-type-guards.test.ts` — 3 tests.
+- `packages/client/src/generated/types.gen.ts` — regenerated, 3 sites.
+
+**MERGED — #2844, squash `976b68aa6172c108f9c3b82aec8ce4f1cba3da3c`** (2 files):
+- `packages/server/src/utils/workspace-instructions.ts` — inverse-pair collapse now conditional:
+```ts
+    const emittedRelAclManaged = new Map<string, boolean>();
+    const relTypeLines: string[] = [];
+    for (const rt of relationshipTypes) {
+      const slug = rt.slug as string;
+      const inverseSlug = rt.inverse_type_slug as string | null;
+      const aclManaged = Boolean(rt.acl_managed);
+      if (inverseSlug && emittedRelAclManaged.get(inverseSlug) === aclManaged) continue;
+      emittedRelAclManaged.set(slug, aclManaged);
+      ...
+      if (aclManaged) parts.push('read-only: access control');
+```
+- `packages/server/src/__tests__/integration/tools/workspace-instructions.test.ts` — 2 tests + fixture with `has_report`/`reports_to` (disagreeing) and `shipped_from`/`ships_to` (agreeing); pairing ordered **before** classification because `resolveInverseType` refuses an already-classified type.
+
+**IN FLIGHT — PR #2846, branch `feat/identity-scope`, worktree `/Users/burakemre/Code/lobu/.claude/worktrees/identity-scope`.** Three commits: `303cc05fe` (feat), `a638f86f7` (test), `0713d0cac` (fix(db) concurrent migration). 16 files.
+
+- `db/migrations/20260818000000_entity_identity_connection_scope.sql` — **rewritten** to satisfy squawk:
+```sql
+-- migrate:up transaction:false
+ALTER TABLE entity_identities
+  ADD COLUMN IF NOT EXISTS scope_connection_id bigint;
+
+DO $heal$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'idx_entity_identities_live_unique_scoped'
+      AND NOT i.indisvalid
+  ) THEN
+    EXECUTE 'DROP INDEX public.idx_entity_identities_live_unique_scoped';
+  END IF;
+END
+$heal$;
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_entity_identities_live_unique_scoped
+  ON public.entity_identities (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+  WHERE deleted_at IS NULL;
+
+DROP INDEX CONCURRENTLY IF EXISTS public.idx_entity_identities_live_unique;
+```
+  Down section mirrors it (heal → `CREATE ... CONCURRENTLY` old 3-col name → `DROP ... CONCURRENTLY` scoped → `DROP COLUMN`). Comments record: no FK is deliberate (SET NULL would promote a connection-scoped identity to org-wide; CASCADE would delete attribution); COALESCE sentinel because NULLs are distinct in a UNIQUE index; behaviour-preserving since all existing rows are NULL.
+
+- `packages/connector-sdk/src/connector-types.ts` — `EntityIdentitySpec` gains:
+```ts
+  scope?: 'organization' | 'connection';
+```
+  with a long doc comment distinguishing it from the deleted `uniquePerOrg` (cardinality vs scope).
+
+- `packages/server/src/utils/entity-link-upsert.ts` — the core:
+```ts
+export type ResolvedIdentity = {
+  namespace: string;
+  identifier: string;
+  matchOnly: boolean;
+  primary: boolean;
+  scopeConnectionId?: number | null;   // optional; undefined ≡ org scope
+};
+
+const ORG_SCOPE_SENTINEL = 0;
+
+function scopeKeyOf(identity: { scopeConnectionId?: number | null }): number {
+  return identity.scopeConnectionId ?? ORG_SCOPE_SENTINEL;
+}
+
+function identityKey(identity: {
+  namespace: string; identifier: string; scopeConnectionId?: number | null;
+}): string {
+  return `${identity.namespace}\u0000${identity.identifier}\u0000${scopeKeyOf(identity)}`;
+}
+
+type AttachedIdentity = { namespace: string; identifier: string; scopeConnectionId: number | null; };
+
+function extractLink(item, rule, connectionId: number | null): ExtractedLink | null {
+  ...
+      scopeConnectionId: spec.scope === 'connection' ? connectionId : null,
+}
+```
+  `lookupMatches` now builds a `wanted` Map keyed by `identityKey`, passes 3 arrays (`pgTextArray`, `pgTextArray`, `pgBigintArray`) and filters `(ei.namespace, ei.identifier, COALESCE(ei.scope_connection_id, 0)) IN (...)`, selecting `COALESCE(..., 0) AS scope_key`. `insertIdentities` writes `scope_connection_id`, uses `ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL`, `RETURNING namespace, identifier, scope_connection_id`, and maps scopes with `i.scopeConnectionId ?? null`.
+
+- `packages/server/src/gateway/connections/sender-identity.ts` — added `scopeConnectionId: null` with a comment that a Slack user id already carries its workspace.
+- `packages/server/src/gateway/connections/__tests__/sender-identity.test.ts` — `toEqual` assertion updated with `scopeConnectionId: null`.
+- Eight further files got the `ON CONFLICT` rewrite and/or index-name comment updates: `tools/save_content.ts`, `auth/subject-identities.ts`, `utils/canvas-events.ts`, `utils/promote-keyed-entities.ts`, `utils/member-entity.ts`, `runs/eval-cases.ts`, `utils/entity-merge.ts`, `__tests__/setup/test-fixtures.ts`, `__tests__/integration/events/save-content-member-claim-heal.test.ts`, `gateway/__tests__/slack-claim-http-authority.test.ts`.
+- `packages/server/src/__tests__/integration/connectors/identity-connection-scope.test.ts` — **new**, 4 tests: connection-scoped stays split; org-scoped still collapses; re-sync idempotent (the `DO UPDATE` path with non-NULL scope); no-connection falls back to org scope.
+
+**Memory written:** `reference_inverse_type_id_is_display_only_not_an_edge_write_path.md`, `reference_both_review_quota_pools_dry_owner_chose_opus_disclosure.md`, `reference_on_conflict_cannot_infer_a_parameterized_expression_index.md`; updated `project_authorization_purpose_ui_program_state.md` and `MEMORY.md`.
+
+**Issues filed:** #2847 (scope declared per usage, not per namespace — conflicting declarations silently fork an entity), #2848 (no story for changing scope after rows exist), #2849 (reconnect re-mints every connection-scoped entity because scope keys on `connections.id`). All cross-linked from #2798.
+
+4. **Errors and fixes:**
+- **`make review` blocked, both quota pools dry** — asked the user; they chose opus + disclosure. Applied the same resolution to #2844 and #2846 without re-asking (same session, same state), stating so plainly.
+- **`make review-fix` failed silently on codex** — `(no summary emitted)`, exit 1, **zero edits** (diffstat byte-identical). Easy to misread as "found nothing." Retried with opus.
+- **`make review-fix` killed mid-pass on #2846** — left a partially applied tree. Reviewed every unstaged hunk myself instead of trusting it.
+- **Bash heredoc rejected literal NUL** — `InputValidationError: command contains control characters`. Wrote python patch scripts to the scratchpad instead. Also discovered the source used the *escape sequence* `\u0000`, not NUL bytes.
+- **`PostgresError: there is no unique or exclusion constraint matching the ON CONFLICT specification`** — root cause was the parameterized sentinel; **it failed non-deterministically across suites**, which sent me chasing test-isolation flake first. Fixed by inlining literal `0`.
+- **Only fixed one `ON CONFLICT` site initially** — a later suite failed the same way. Grepped repo-wide and found **10** sites; fixed all in one pass.
+- **Gate misread as green** — the task notification's "exit code 0" was my trailing `echo`, not `make`. The log's true ending said `make: *** [pre-pr-remote] Error 1`. I corrected this to the user explicitly. My own memory warns about exactly this.
+- **Two defects the gate caught that 1772 local vitest tests did not**: (a) `buildSenderIdentity` `toEqual` shape assertion — a **bun** test my vitest-only sweep never ran; (b) `invalid input syntax for type bigint: "undefined"` from `scopeConnectionId: undefined` (not `null`), uncaught by tsc because server tsconfig excludes `__tests__`. Fixed by making the field optional with `?? null` normalization.
+- **246 spurious bun failures** from my ad-hoc `bun test <dirs>` — recognized as harness-less invocation, since the gate's own bun job showed exactly one failure.
+- **`make review` returned 1 BLOCKER on #2846** — `migrations` CI red: squawk rejected the plain DROP+CREATE with 6 findings. Rewrote the migration to the repo's `20260721120020_connector_versions_org_unique.sql` pattern; verified locally with `npx squawk-cli@2.58.0` → **0 issues**.
+- **Verified a reviewer premise was wrong** — it claimed the skew window was bounded by `Recreate`; live prod is `RollingUpdate` with 2 replicas. This raised severity and prompted the AskUserQuestion.
+
+5. **Problem Solving:**
+- Landed three PRs (#2843, #2844, and #2846 in flight) with prod-level verification for the first.
+- Established that #2798 was **falsely closed** by release-please and reopened it with evidence.
+- Used live prod data to *reject* the issue's own option 1 — `slack_channel_id`/`slack_user_id` shared across connections must stay collapsed, so indexing `connection_id` would be a live regression.
+- Proved `inverse_type_id` is display-only (no edge-write path reads it), downgrading #22 from a suspected ACL bypass to a listing defect.
+- Honestly flagged that on #2846 I wrote the fix before the test, so red was demonstrated by **mutation** (neutralizing `spec.scope` reproduces the exact #2798 collision) rather than by ordering.
+
+6. **All user messages:**
+- (Session continuation prompt instructing resume without acknowledgement)
+- AskUserQuestion selection: **"Opus reviews it, recorded on the PR"**
+- AskUserQuestion selection: **"Per-namespace scope on the connector's identity declaration (Recommended)"** with preview showing `scope?: 'organization' | 'connection'`
+- AskUserQuestion selection: **"New nullable scope_connection_id + COALESCE in the unique index (Recommended)"** with the previewed migration SQL
+- **"ok if we're should that's the right design and we know all, we want to use opencode to do alll the work and then maybe come back and get a review from you. confident we are about the design being proper and how close are you to finish"**
+- AskUserQuestion selection: **"Merge as-is, accept the window"**
+- **"3"**
+- Final instruction: "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+
+**Standing constraints (from CLAUDE.md/AGENTS.md — remain in effect verbatim):** **Never write to `~/Code/lobu` directly** — run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout. **Stage by explicit path (`git add -- <paths>`, never `-A`)**; after commit/rebase `git diff --name-only origin/main...HEAD` must equal the intended file list. **`events` is append-only** — never `DELETE FROM events`. **Never bulk-delete prod `organization` rows.** **Never resolve merge conflicts in the GitHub web UI.** **Two writing agents must never share a worktree.** **Never add a table or change DB design, API surface, or SDK surface without surfacing the proposal and receiving confirmation first.** **Never auto-submit an interactive browser draft.** **Workers never receive real credentials.** No backwards-compat shims, no `@deprecated`. No "Co-Authored-By" or Claude attribution in commits. No new `*.md` unless asked. Always show the diff. End with a confidence score + 2–4 next actions. Never `git stash`. **Never `--admin` past a check that has not reported.** Check for a peer gate before dispatching (note: `pgrep -f "make pre-pr-remote"` matches itself). Absence needs `origin/main` grep after `git fetch`. Prefer `bun`, never npm/yarn/pnpm. Do not use workflows/deep-research or the Agent tool unless requested. Computer-use: browsers are tier "read"; **never use AppleScript/System Events/shell to send clicks or keystrokes to a read-tier app**; **never use `screencapture` as a screenshot fallback** (it captured a peer session's terminal). Never quietly use opus for `make review` when I am opus — surface it (owner has now chosen opus + PR disclosure for the dry-pool case).
+
+7. **Pending Tasks:**
+- **#7 / #2846 (in progress)** — merge identity scope, then prod-verify.
+- **#23-equivalent for #2846** — prod-verify the migration applied and the index is the 4-column `idx_entity_identities_live_unique_scoped`.
+- **Owletto consuming `acl_managed`** — server ships the flag; UI still renders unlink buttons blind. Last piece of the authorization-purpose program.
+- **#2849** — decide before any connection-scoped connector ships (produces bad prod data, not a bad test).
+- Board items: **#2** #2812 edge audit orphan; **#4** spike-derived-edges branches; **#6** sign-off valid-time on edges (#2801); **#9** re-scope after #2824; **#12** PR B connector relationships SDK; **#13** PR C; **#14** PR D assertion ledger; **#18** three conflicting PRs; **#19** device-action-wait mirror; **#21** LOW vitest fork-propagation flake.
+- **Handoff brief for opencode** — #12/#13 + Owletto `acl_managed`, with the four gotchas as explicit constraints (ON CONFLICT blast radius; SQL literal vs bound param; tsconfig excludes `__tests__`; local green is not evidence, read `make`'s own exit code).
+
+8. **Current Work:**
+Executing the user's **"3"** — merge #2846 *and* file the design gaps. The issues (#2847, #2848, #2849) are **filed and cross-linked from #2798**; the accepted-risk + reviewer-disclosure comment is **posted on #2846**.
+
+Immediately before the summary request I had resolved the `make review` blocker on #2846: squawk rejected the migration with 6 lock-safety findings (`require-concurrent-index-deletion` ×2, `require-concurrent-index-creation` + `prefer-robust-stmts` ×2), making the required `migrations` check a completed failure. I rewrote `db/migrations/20260818000000_entity_identity_connection_scope.sql` to the repo's established pattern from `db/migrations/20260721120020_connector_versions_org_unique.sql`, renamed the index to `idx_entity_identities_live_unique_scoped`, and updated 7 code-comment references. Verification done: scope tests **4/4** against the rewritten migration (which also proves the 4-column arbiter exists, since `ON CONFLICT` would otherwise fail to infer); `npx --yes squawk-cli@2.58.0 --exclude=ban-drop-column,require-timeout-settings` → **"Found 0 issues in 1 file 🎉"**; pre-commit biome + tsc clean.
+
+Committed as `0713d0cac fix(db): build the identity-scope arbiter concurrently`, pushed to `feat/identity-scope`, and dispatched the fourth gate run in the background (task `bmayggz04`, log `/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/scratchpad/gate-idscope4.log`, invoked as `make pre-pr-remote > <log> 2>&1; echo "MAKE_EXIT=$?"`).
+
+9. **Optional Next Step:**
+Read `MAKE_EXIT` from `/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bmayggz04.output` (**not** the task-notification exit code — that reports my trailing `echo`) plus the log's true ending for `Depot run ... passed` and absence of `failed=`. On green: re-run `REVIEWER_CLI=claude CLAUDE_REVIEW_MODEL=opus make review` (the new commit `0713d0cac` invalidated the previous `pi-review`), confirm the `migrations` check is now green, run `make ui-review`, diff all 10 required contexts against branch protection, then `gh pr merge 2846 --squash --admin`, and prod-verify after rollout.
+
+This follows directly from the user's **"3"** and my stated plan at the point of interruption: *"Merging as-is with the window accepted. I added a test after the gate ran, so the tree changed — that invalidates both the preflight and `pi-review`, and I need a fresh cycle before merge."* and, on the squawk blocker: *"Following the repo's established pattern (`transaction:false` + INVALID-carcass heal + `CONCURRENTLY`), with a new index name since the same name can't be built while the old exists."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

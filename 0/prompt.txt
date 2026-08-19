@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>brdh1cs1s</task-id>
+<tool-use-id>toolu_018S6P2pvxSrWpTtoJS1F2V2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/brdh1cs1s.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on PR 2274" completed (exit code 0)</summary>
+</task-notification>

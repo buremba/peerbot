@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  Two reused-iframe transitions retain or bind identity from a preceding result, mixing displayed data with another card's state and potentially persisting changes to the wrong snapshot. These correctness issues remain despite the focused tests and builds passing.
+
+Full review comments:
+
+- [P1] Reset restored cards before accepting metadata-less live data — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:556-559
+  When a page lifetime restores a card from preloaded compatibility metadata, `hasCurrentLifetimeToolResult` remains false. If the reused iframe then receives a different non-empty `toolresult` with capability metadata stripped, this condition keeps `startsNewResult` false, so the new data inherits the historical card's capability, tool identity, and view state; subsequent disclosure or pagination saves update the old snapshot. The equivalent guard in `applyOpenAiGlobals` has the same failure, so different live data after a restore must establish a result boundary.
+
+- [P1] Keep app-initiated results detached from later host cards — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:627-629
+  After `callTool` installs an app-initiated result, it clears `toolCallId` while retaining that result's snapshot capability. If the host later reuses the iframe for a different card, `previousId` is null here, making `identityChanged` true but `switchedCards` false; the code can then combine the new card's restored view state with the authoritative app data and save the app capability against the new card ID. Treat a host identity different from `supersededHostIdentity` as a card switch while an app result is active.
+  </results>
+  </user_action>

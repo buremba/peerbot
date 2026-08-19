@@ -1,0 +1,1 @@
+how big is this cahnge? also do we support mcpConfig.auth? i thought from upstreamurl we can discover that

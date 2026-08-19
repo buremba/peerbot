@@ -1,0 +1,1 @@
+where do people now go to devices page? i thought it was from connectors and the devices page is like a connector page so people can follow easily. we remove the my devices dropdown item and the connected app from the dropdown below

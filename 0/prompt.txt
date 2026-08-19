@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b26p6dsey</task-id>
+<tool-use-id>toolu_01YaZmz4ozhxF4twqFYFzuW4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/b26p6dsey.output</output-file>
+<status>failed</status>
+<summary>Background command "Restart dev server" failed with exit code 2</summary>
+</task-notification>

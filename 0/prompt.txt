@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>b1zyiyrcr</task-id>
+<summary>Monitor event: "PRs 2292, 2299, 2300 required checks"</summary>
+<event>PR 2292 settled — non-pass: none</event>
+</task-notification>

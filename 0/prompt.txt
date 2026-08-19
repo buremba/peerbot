@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bb7d51mci</task-id>
+<tool-use-id>toolu_01SNBASzA4hzrJ5jsexzDcp4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bb7d51mci.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot dev server" was stopped</summary>
+</task-notification>

@@ -15,9 +15,11 @@ permissions:
   pull-requests: write
   packages: write
 
-concurrency:
-  group: preview-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+# Concurrency is declared PER JOB below, not here: a workflow-level group with
+# cancel-in-progress covered the cleanup job too, so a `synchronize`/`labeled`
+# event landing while teardown was running cancelled the teardown and leaked
+# the namespace — the accumulation this workflow's opt-in label was added to
+# stop. Deploys still supersede each other; teardown is never cancelled.
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -31,6 +33,9 @@ jobs:
   preview:
     runs-on: ubuntu-24.04
     if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'preview')))
+    concurrency:
+      group: preview-deploy-${{ github.event.pull_request.number || inputs.pr_number }}
+      cancel-in-progress: true
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -69,8 +74,10 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Setup kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
 
       - name: Create preview namespace
         run: |
@@ -251,7 +258,46 @@ jobs:
             -n "$PREVIEW_NS" \
             --timeout=600s
 
+      # Deploy and cleanup run in disjoint concurrency groups (so teardown is
+      # never cancelled), which opens the reverse window: a close/unlabel that
+      # lands mid-deploy no longer cancels this run, and the surviving deploy
+      # would recreate the namespace cleanup just deleted. Re-check the PR's
+      # state after deploying and tear down if the preview is no longer wanted.
+      # This runs BEFORE the comment step so we never announce a preview we are
+      # about to delete in this same run.
+      - name: Tear down if the PR closed or lost the preview label mid-deploy
+        id: preview-wanted
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # ONE fetch, both answers read from it. Two calls can straddle a
+          # close landing between them and return state=open with the label
+          # still attached, which keeps a namespace cleanup already deleted —
+          # the exact permanent leak this step exists to prevent.
+          pr=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          state=$(jq -r '.state' <<<"$pr")
+          labeled=$(jq -r '[.labels[].name] | index("preview") != null' <<<"$pr")
+          echo "PR state=$state preview-labeled=$labeled"
+          # `.state` is only ever `open` or `closed` (a merged PR reads
+          # `closed`, with `.merged` carrying that distinction), so any
+          # non-open value means the preview is no longer wanted.
+          if [ "$state" != "open" ] || [ "$labeled" != "true" ]; then
+            echo "Preview no longer wanted; deleting namespace $PREVIEW_NS"
+            kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
+            echo "wanted=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "wanted=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      # Suppressed when the re-check above tore the preview down: announcing
+      # "Status: Running" on a PR whose namespace this same run just deleted is
+      # worse than saying nothing. A skipped re-check (workflow_dispatch) leaves
+      # the output empty, which still posts.
       - name: Comment on PR
+        if: steps.preview-wanted.outputs.wanted != 'false'
         uses: actions/github-script@v7
         with:
           script: |
@@ -303,13 +349,20 @@ jobs:
   cleanup:
     runs-on: ubuntu-24.04
     if: (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview')) && github.event.pull_request.head.repo.full_name == github.repository
+    # Own group, never cancelled: teardown must run to completion even if a
+    # deploy for the same PR is queued behind or ahead of it.
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
     steps:
       - name: Setup kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
 
       - name: Delete preview namespace
         run: |

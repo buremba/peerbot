@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b00v27omx</task-id>
+<tool-use-id>toolu_019uutFsdmUv7gRBJcRy7kqp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/b00v27omx.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch remaining checks" completed (exit code 0)</summary>
+</task-notification>

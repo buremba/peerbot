@@ -1,0 +1,1 @@
+does the agents know their conversation id and in which url the user can access? we had the view in lobu but might delete that workaround if the agent knows

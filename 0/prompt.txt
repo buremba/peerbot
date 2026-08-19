@@ -1,0 +1,1 @@
+hmm why do you need new tables etc? doesn't haviors have the agent pinning? maybe we add the external mcp clients one item for client?

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b11auiyjj</task-id>
+<tool-use-id>toolu_01KDEKsbxa2kKMaX7akT4jBt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b11auiyjj.output</output-file>
+<status>completed</status>
+<summary>Background command "Dispatch full Depot gate for toolchain branch" completed (exit code 0)</summary>
+</task-notification>

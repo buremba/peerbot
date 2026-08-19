@@ -1,0 +1,1 @@
+don't we have virtual scroll already? also we can even do things like approve all, reject all kinda stuff based on the interactions in the events

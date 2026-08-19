@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6c7stu47</task-id>
+<tool-use-id>toolu_01C6AcyE3K4SLLtKdYyWVV4D</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b6c7stu47.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full remote gate (final tree)" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcy52eksn</task-id>
+<tool-use-id>toolu_01DDYpQcFtfPQfQ8f1zCFegW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bcy52eksn.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait then check the review gate" completed (exit code 0)</summary>
+</task-notification>

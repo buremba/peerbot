@@ -1,0 +1,40 @@
+<task-notification>
+<task-id>ac7eb3ee96264771d</task-id>
+<tool-use-id>toolu_01KCXyDEPjcWEKxAFxsKLhVy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/ac7eb3ee96264771d.output</output-file>
+<status>completed</status>
+<summary>Agent "Track A: modelsDevId + snapshot" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Committed locally, tree clean, exactly 17 intended files. Not pushed, no PR, `make review` not run, as instructed.
+
+## What was done
+
+**Ground truth** — `git status`: clean. `git diff --stat origin/main...HEAD`: 17 files, +9699/−96 (8819 of those insertions are the generated snapshot artifact).
+
+**New files**
+- `scripts/gen-models-dev-snapshot.ts` — fetches models.dev, joins on `modelsDevId`, writes `config/models-dev-snapshot.json`. Keeps id/name/context/output/costs/tool_call/reasoning/release_date, sorted newest-first (undated last, ties break on id → byte-stable output). Exports a pure `buildSnapshot` for tests.
+- `config/models-dev-snapshot.json` — the committed artifact.
+- `config/models-dev-LICENSE` — upstream MIT notice (vendored data needs it).
+- `packages/server/src/gateway/services/models-dev-snapshot.ts` — memoized disk loader mirroring `resolveProviderRegistryPath`. Never fetches; missing file degrades to empty lists rather than throwing.
+- `scripts/check-models-dev-coverage.ts` + fixtures test — the CI guard.
+
+**Changed** — `modelsDevId`/`modelsDevExempt` added to `ProviderConfigEntry` and threaded to `ProviderCatalogEntry` (plus new `modelDetails`); all 15 hand-maintained `models` arrays, `ProviderConfigEntry.models`, and the parallel `catalogModels` field removed outright (no shims); guard wired into CI and `make pre-pr`; snapshot+license copied into the CLI bundle (docker already copies all of `config/`).
+
+**Join: 17/17.** `cerebras=3 chatgpt=47 claude=15 cohere=14 deepseek=4 fireworks=16 gemini=41 groq=15 mistral=30 nvidia=84 openai=47 opencode-zen=85 openrouter=341 perplexity=4 together-ai=33 xai=10 z-ai=13`. Many-to-one verified: `chatgpt` and `openai` lists are identical. The staleness case is fixed — `claude-opus-5` now sorts first.
+
+**One thing you should know:** `make review-fix` reverted the core of the task — it restored all 15 curated `models` arrays and `catalogModels`, redefining models.dev as metadata-only enrichment, and hand-added `claude-opus-5` to the Claude list. That fixes today's instance while restoring the mechanism that caused it. I reverted that and kept its two genuinely good findings (the MIT LICENSE file and its `buildSnapshot` unit test). Flagging it because it's a real design disagreement, not a mistake — if you *want* a curated allowlist enriched by models.dev, that's a different (defensible) design, but it isn't what was asked for and it doesn't fix the staleness class.
+
+**Confidence**
+- Snapshot generation + join — **95**: ran it live against the real API; verified counts, ordering, many-to-one, and `claude-opus-5` presence.
+- CI guard — **92**: all 3 failure branches mutation-tested (each confirmed to exit 1), 7 fixture tests pass.
+- Catalog wiring — **80**: `make pre-pr` green and 9 catalog tests pass, mutation-tested. But this is unit-level only — **I never booted the server or loaded the actual model picker in the UI**, so the rendered end state is unverified.
+- Bundle/prod shipping — **70**: confirmed the file lands in `packages/cli/dist/` and read the Dockerfile's `COPY config/`; did not run a container or the published CLI.
+- `make test-unit` exits 0. Worth noting the 15 failures I saw pre-build were reproduced identically on clean `origin/main` (stale dist), so they're not mine.
+
+**Next actions**
+1. Boot the server and open the inference-providers page — confirm the picker lists snapshot models and that `modelDetails` renders (the one gap in my verification).
+2. Decide the curated-vs-snapshot question before `make review`, since the reviewer already argued the other side once and will likely raise it again.
+3. Consider a scheduled job or release-time step to regenerate the snapshot — nothing currently refreshes it, so it will drift as a build artifact.
+4. Check whether the owletto `InferenceCatalogItem` client type should surface `modelDetails`; I left the frontend untouched.</result>
+<usage><subagent_tokens>215705</subagent_tokens><tool_uses>203</tool_uses><duration_ms>2225351</duration_ms></usage>
+</task-notification>

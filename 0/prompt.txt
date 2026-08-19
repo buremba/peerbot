@@ -1,0 +1,1 @@
+yeah compare all, our interceptor can run embedded in isolate vm right

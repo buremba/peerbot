@@ -1,0 +1,4 @@
+any more gaps? we will get rid of Sources
+Add source
+Add SQL
+Data handed to the agent alongside its instructions. Behavior-owned — skills never add or remove sources. riht

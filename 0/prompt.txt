@@ -1,0 +1,1 @@
+are we able to launch the local cli for behavior and get it working e2e?

@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:18:48.136Z","content":[{"text":"New message in #sales:\n\ndave: 😂😂 that deck though"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:18:51.004Z","id":"148e5611","input_tokens":167,"output_tokens":130,"content":[{"type":"tool_use","id":"call_a0db9d4b53ae4337ad937afa","name":"skip_reply","input":{},"result":{"output":"","status":"success"}}]}

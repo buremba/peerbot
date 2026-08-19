@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi9ud1rfm</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bi9ud1rfm.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for prod rollout of the squash commit" completed (exit code 0)</summary>
+</task-notification>

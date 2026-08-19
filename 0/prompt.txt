@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bhg7hjkva</task-id>
+<summary>Monitor event: "owletto PR 655 checks"</summary>
+<event>owletto#655 checks settled: success</event>
+</task-notification>

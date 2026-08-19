@@ -1,0 +1,6 @@
+also find a better description than Behaviors define when and where the agent acts autonomously. Add one triggered by an event, schedule, or explicit call.
+
+same with Skills teach the agent reusable ways of working — in chat or from Behaviors. Drag to set priority; skills higher in the list are preferred when the agent picks tools and capabilities.
+
+also add skill button should be big as new guardrail button.
+also in this page http://127.0.0.1:9208/local-install/agents/lobu-builder/guardrails/create why there is no model selector we already have in the agent settings.

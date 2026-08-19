@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bopysz68l</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/07e7c33a-4508-4f40-803f-08696f5f646a/tasks/bopysz68l.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr and push the advanced pointer" completed (exit code 0)</summary>
+</task-notification>

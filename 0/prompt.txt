@@ -1,0 +1,1 @@
+the page looks like this, not convenient how can we make it show the edges in a nicer way? we can also cluster relevant stuff and show it on the right. left top side we can list the entities without relations. also what's 12f 11f etc in the card? [Image #1]

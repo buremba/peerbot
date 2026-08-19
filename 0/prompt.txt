@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfckgigy6</task-id>
+<tool-use-id>toolu_01YTubCWnuwDrRZkfRtde6YN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bfckgigy6.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for Flux to roll image 2182" completed (exit code 0)</summary>
+</task-notification>

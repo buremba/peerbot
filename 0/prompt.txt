@@ -1,0 +1,228 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+The user drove a launch-readiness programme with these explicit requests in order:
+
+1. **"2. does it really make sense? ok go do all the work test it but make sure we're doing the right way"** — Question whether item 2 (wiring `dry_run` into `lobu connector run`) made sense; do all remaining work and test it properly.
+
+2. **"why doing short term? we don't want tech debt and we dont care backwards compatibility, is there a gap in how we implementing? it feel like ducktaping"** — The pivotal design challenge. Explicitly stated: no tech debt, backwards compatibility does not matter. This triggered a full re-architecture of the dry_run implementation.
+
+3. **"ok go ahead"** — proceed with listed next actions.
+
+4. **"should dry run insert? why? is there anything else left did we merge and review al"** — three questions: justify the insert-then-rollback design; status of remaining work; confirm merge/review completion.
+
+5. **"1 skip 2 and explain 3 and 4 and 5"** — execute item 1 (cut the release), skip item 2 (promote Fable to default reviewer), explain items 3 (exec-sandbox task #10), 4 (CLI project-variant matrix), 5 (MCP OAuth token).
+
+6. **"go do that and let's finish it all what's remaining"** — finish all remaining work.
+
+7. **Scheduled wakeup (self-authored gate carrying prod-verify instructions for #2390).**
+
+## 2. Key Technical Concepts
+
+- **Open set vs closed set enumeration** — the core design insight. Enumerating "everything a dry run must not do" grows forever; enumerating "what it must keep" (preview + run row lifecycle) is closed and lets a transaction cover the rest.
+- **Transaction-rollback dry run** — dry path runs identical ingest code against a tx that always rolls back via a `DRY_RUN_ROLLBACK` Symbol sentinel; postgres.js rolls back when the `begin` callback throws.
+- **"Escapes the tx" guard category** — only non-Postgres effects need explicit guards: ArtifactStore blob upload, Behavior run dispatch, detached auto-linking, transcription.
+- **`insertEvent` advisory-lock contract** — `insert-event.ts:481`: `if (options?.onConflictUpdate && !options.sql && ...)`. Supplying `sql` at all SKIPS the advisory-lock dedup that serializes concurrent ingests of the same `(connection_id, origin_id)`.
+- **Credential invariant** (`packages/server/AGENTS.md:28-31`) — workers never receive real credentials; only device-pinned connectors and short-lived provider-derived leases. This is why `lobu connector run` only supports `browser_session`.
+- **Sequence non-transactionality** — `events.id` defaults to `nextval('public.content_id_seq')`; rolled-back nextval values are permanently consumed, so a dry run leaves id gaps (harmless, but "persists nothing" is imprecise — no rows persist, the counter moves).
+- **release-please flow** — release-please PR bumps files + creates `lobu-vX.Y.Z` tag/release, which auto-dispatches `publish-packages.yml` with `bump=skip`. `publish-packages.yml` has `contents: read` and never commits, so a manual `bump=<level>` publishes to npm and silently desyncs the repo.
+- **Squash merges break ancestry** — rollout gates must use the squash commit, merge commit first in `git merge-base --is-ancestor`.
+- **Subprocess error channel** — `CONNECTOR_RUNNER_CODE` runs in a subprocess reporting via `process.send({ success: false, error: error.message })`; a string is the only channel, so typed errors aren't available.
+- **bwrap / uid_map** — `charts/lobu/values.yaml:84-125` records that bubblewrap cannot be enabled on the managed cluster because uid_map is runtime-restricted; contributed CLIs exiting 127 is intended and documented ("Do not re-open this as a bug").
+
+## 3. Files and Code Sections
+
+### `packages/server/src/worker-api/run-lifecycle.ts` (heavily rewritten, MERGED in #2390)
+The core of the dry_run feature. Restructured into an `ingestBatch(db)` closure parameterised on a DB handle:
+
+```ts
+const ingestBatch = async (db: DbClient) => {
+  // ESCAPES THE TX: uploads a blob to ArtifactStore
+  if (!isDry) {
+    const { items: materializedItems, pendingTranscriptions: pending } =
+      await materializeInlineAttachments(batch.items);
+    batch.items = materializedItems as typeof batch.items;
+    pendingTranscriptions = pending;
+  }
+  // Runs on dry too, against `db` — rolls back with everything else
+  await applyEventAttributions({...}, db);
+  ...
+  const inserted = await insertEvent({...}, {
+    onConflictUpdate: true,
+    // Dry path only. The real path must NOT pass `db` even though it equals
+    // the singleton: a caller-supplied `sql` makes insertEvent skip its
+    // advisory-lock dedup transaction.
+    sql: isDry ? db : undefined,
+    afterPersist: async (persisted, tx) => {...},
+  });
+  // ESCAPES THE TX: dispatches real Behavior runs
+  if (!isDry) { await dispatchBehaviorRunsBestEffort(activations); }
+  if (inserted) {
+    totalItems++;
+    // ESCAPES THE TX: detached, writes through getDb() singleton
+    if (entityIds.length > 0 && !isDry) { autoLinkEvent({...}).catch(() => {}); }
+    if (isDry && dryPreview.length < DRY_RUN_PREVIEW_LIMIT) { dryPreview.push({...}); }
+  }
+  ...
+  if (!isDry) { triggerAudioTranscriptions(run.organization_id, pendingTranscriptions); }
+  // No dry guard: checkpoint writes go to the tx and vanish with it
+  if (batch.checkpoint) { await db`UPDATE feeds SET checkpoint = ...`; await db`UPDATE runs SET checkpoint = ...`; }
+  return { totalItems, rejectedItems };
+};
+
+const DRY_RUN_ROLLBACK = Symbol("dry-run-rollback");
+let outcome: Awaited<ReturnType<typeof ingestBatch>> | null = null;
+if (isDry) {
+  try {
+    await sql.begin(async (tx) => {
+      outcome = await ingestBatch(tx);
+      throw DRY_RUN_ROLLBACK;
+    });
+  } catch (err) {
+    if (err !== DRY_RUN_ROLLBACK) throw err;
+  }
+} else {
+  outcome = await ingestBatch(sql);
+}
+if (outcome === null) {
+  throw new Error("[stream] batch completed without an outcome");
+}
+```
+
+Preview write moved AFTER rollback, on the singleton, with SQL-side re-cap using ordinality slice.
+
+`completeWorkerJob` deliberately KEEPS an explicit `if (feedId && !isDry)` guard — documented reasons: its write set is closed (one run row, one feed row) and keep/discard sets interleave (a dry run must still finalize its own run row atomically via `finalizeRun`).
+
+### `packages/server/src/utils/entity-link-upsert.ts` (MERGED)
+`applyEventAttributions` gained an optional `sql?: DbClient` second param forwarding to `resolveLinksByKind`, matching the contract the webhook path already used.
+
+### `packages/server/src/scheduled/check-stalled-executions.ts` (MERGED)
+Reaper guards: `AND NOT t.dry_run` in the `retries` CTE and `finalized_pending_feeds` CTE. I added the same predicate to the `sync_eligible` counter so a reaped dry run doesn't inflate `skippedRetries` under a log line falsely blaming "another active sync run exists".
+
+### `db/migrations/20260731020000_runs_dry_run.sql` (MERGED)
+`ALTER TABLE public.runs ADD COLUMN IF NOT EXISTS dry_run boolean DEFAULT false NOT NULL, ADD COLUMN IF NOT EXISTS dry_run_preview jsonb;` plus extensive design commentary. Codesmith bot added the missing `-- migrate:up` / `-- migrate:down` directives.
+
+### `packages/server/src/__tests__/integration/feed-dry-run-persists-nothing.test.ts` (MERGED)
+6 tests: negative assertions + controls + "surfaces a database-level failure instead of reporting success" (uses `occurred_at: 'definitely-not-a-timestamp'`, expects status 500).
+
+### `packages/server/src/utils/connector-compiler.ts` (MERGED in #2393)
+```ts
+export const NO_CONNECTOR_RUNTIME_ERROR =
+  "No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.";
+// used inside CONNECTOR_RUNNER_CODE template literal as:
+//   throw new Error(${JSON.stringify(NO_CONNECTOR_RUNTIME_ERROR)});
+```
+
+### `packages/server/src/utils/connector-catalog.ts` (MERGED in #2393)
+Routes "not a connector" to `debug`, real failures stay `warn`:
+```ts
+const notAConnector = message.includes(NO_CONNECTOR_RUNTIME_ERROR);
+if (notAConnector) { logger.debug({ file_path: filePath }, "Skipping catalog entry: file exports no ConnectorRuntime"); }
+else { logger.warn({ file_path: filePath, error: message }, "Skipping connector catalog entry after metadata extraction failed"); }
+```
+
+### `packages/agent-worker/src/embedded/exec-sandbox.ts` (CURRENT WORK, uncommitted)
+Task #10 implementation in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/exec-sandbox-report`:
+- `type BwrapProbe = { isolated: true } | { isolated: false; reason: "not_found" } | { isolated: false; reason: "unshare_denied"; detail: string }`
+- `const BWRAP_ISOLATION_PROBE_ARGS = [...]` — extracted so predicate and reporting probe can't drift
+- `function probeBwrap(): BwrapProbe` — uses `stdio: "pipe"`, captures stderr, truncates to 2 lines / 300 chars
+- `export function describeNoSandbox(): string` — gathers facts, delegates
+- `export function formatNoSandboxReport(platform: string, observed: { sandboxExecPath?: string; bwrap?: BwrapProbe }): string` — pure formatter so all branches are testable on any host
+- Warn site now: ``console.warn(`[exec-sandbox] ${describeNoSandbox()}`)``
+
+### `packages/agent-worker/src/__tests__/exec-sandbox.test.ts` (CURRENT WORK, uncommitted)
+5 new deterministic tests in `describe("describeNoSandbox / formatNoSandboxReport")` covering: platform naming, install-advice only on not_found, userns refusal reported as policy (asserts `"setting up uid map: Permission denied"`, `"not a missing package"`, `"charts/lobu/values.yaml"`, and NOT `"Installing it enables"`), macOS branch, unsupported platform.
+
+### `.github/workflows/ci.yml` (CURRENT WORK, uncommitted)
+New `exec-sandbox-backend-probe` job, `continue-on-error: true`, inserted before `pgvector-glibc-floor`. Reports bwrap status, `systemd-run --user` viability, and `kernel.unprivileged_userns_clone` into `$GITHUB_STEP_SUMMARY`.
+
+### `packages/cli/src/commands/_lib/connector-run-cmd.ts` (MERGED in #2390)
+Header comment and OAuth-refusal error message updated to point at `manage_feeds` `trigger_feed` with `dry_run: true`.
+
+## 4. Errors and Fixes
+
+1. **Backticks inside a SQL comment in a template literal** broke parsing (`Expected ")" but found "retries"`). Fixed by removing backticks from the comment text.
+
+2. **I introduced an advisory-lock bypass regression** — passed `sql: db` unconditionally to `insertEvent`, reasoning it was a no-op since `db` IS the singleton on the real path. WRONG: `insert-event.ts:481` guards on `!options.sql`, so passing the handle at all disables the dedup lock. Caught by `make review-fix`. Fixed to `sql: isDry ? db : undefined`. **I had twice told the user the real path was "unchanged by construction."**
+
+3. **Preview cap unbounded across batches** — JS-side `DRY_RUN_PREVIEW_LIMIT` bounded one request; SQL concatenated without limit. Caught by review-fix; fixed with an ordinality slice in the UPDATE.
+
+4. **Migration missing dbmate directives** — my migration had neither `-- migrate:up` nor `-- migrate:down` while all recent migrations have both. Caught by the Codesmith bot (commit `f3703fc8c`). This falsified my claim that the migration was "verified through the production migration path" — `make dev`'s runner is more lenient than dbmate.
+
+5. **Vacuous test shipped then removed** — an "entity rollback" test passed even with the rollback removed, because no attribution rules existed for the seeded connector (asserted 0 == 0). Deleted rather than shipped.
+
+6. **Tautological sentinel test** — first mutation (rewording the constant) kept all 6 green because thrower and test both read the same constant. Corrected the test's docstring to state precisely what it buys; the meaningful mutation (hardcoding a literal in the runner) does go red.
+
+7. **Failed mutation that silently didn't apply** — a perl one-liner left the phrase count unchanged, so the "36 pass" result proved nothing. Redone with python; correctly went 35 pass / 1 fail.
+
+8. **Mischaracterized `--provider` behaviour twice**: first claimed "no trace anywhere" (case-sensitive grep missed `ANTHROPIC_API_KEY`); then claimed the empty value was a silent bug — reading the code showed `envVarsToFill` writes it deliberately as a placeholder (line 683) and line 698 overwrites with the real key. Caught BEFORE writing a fix.
+
+9. **Wrong prediction about the red publish run** — predicted "already published" collision; it actually failed on the app-image-smoke preflight (`build-images for 618193fd... is still 'queued'`), and the script skips published versions gracefully anyway (`→ ... already on npm, skipping`).
+
+10. **Dev server boot failures** — external DB isn't migrated by the server (`relation "public.schema_migrations" does not exist`); vitest test DBs lack that table; port collisions (8128 EADDRINUSE) and stale postmasters. Resolved by wiping `.lobu-dev` and using embedded Postgres.
+
+11. **Release plumbing desync I caused** — dispatched `bump=minor` without checking for an existing release-please PR (#2323 was open proposing exactly 14.8.0). Result: npm at 14.8.0, repo at 14.7.1, no tag. Reconciled by merging #2323 after posting the missing `pi-review`.
+
+12. **`@lobu/promptfoo-provider` left at 14.7.1** — my `bump=minor` run didn't bump it, so it was skipped as already-published. Nearly dismissed the re-run as cosmetic; enumerating packages caught it. Fixed via `bump=skip` re-run, verified `+ @lobu/promptfoo-provider@14.8.0` in the log.
+
+## 5. Problem Solving
+
+- **Re-architected dry_run from guards to rollback** after user pushback. This fixed a functional bug (the old version never ran the INSERT, so it would report success on rows the DB would reject) and eliminated the growing-guard-count problem.
+- **Established that item 2 was unnecessary** — `lobu connector run` already persists nothing.
+- **Discovered a scope fact**: only `manage_feeds` passes `dryRun`; the REST/ClientSDK `feeds.trigger` path calls `createSyncRun` without options, so `dry_run` is unreachable from the SDK.
+- **E2E verified dry_run** with real rss connector + real worker: 20 items fetched, `events` 0→0, checkpoint frozen, `preview_total=20`; control run wrote 20 events, advanced checkpoint, 20 distinct origin_ids (no duplicates).
+- **Prod-verified #2390**: deployed revision == merge SHA; both columns present with correct types; `schema_migrations` row `20260731020000`; 0 dry runs (no test data).
+- **CLI variant matrix**: 6 variants scaffold and boot against published 14.8.0; all HTTP surfaces 200.
+
+## 6. All User Messages
+
+1. "2. does it really make sense? ok go do all the work test it but make sure we're doing the right way"
+2. "why doing short term? we don't want tech debt and we dont care backwards compatibility, is there a gap in how we implementing? it feel like ducktaping"
+3. "ok go ahead"
+4. "should dry run insert? why? is there anything else left did we merge and review al"
+5. "1 skip 2 and explain 3 and 4 and 5"
+6. "go do that and let's finish it all what's remaining"
+7. (Scheduled wakeup, self-authored): "Prod-verify PR #2390 (runs.dry_run). Rollout gate: MERGE_SHA=8811a765403344a97021013baa9f866d5be1ef8f. Poll the deployed SHA from prod /health.revision, then `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` (merge commit FIRST — reversed accepts a stale deploy)... Then write the result to memory and clean up any test data."
+
+**Standing constraints from CLAUDE.md/AGENTS.md still in force:** Never write to `~/Code/lobu` directly — use `make task-setup NAME=<slug>`. No "Co-Authored-By" or "Generated with Claude Code" in commits. Prefer `bun`; never npm/yarn/pnpm. **Workers never receive real credentials** — only placeholders/proxied access; never widen to a durable stored credential. **`events` is append-only** — never `DELETE FROM events`. **Never bulk-delete prod `organization` rows.** Absence must be proven with `git fetch -q origin && git grep <pattern> origin/main`. Stage by explicit path (`git add -- <paths>`, never `-A`). Show the diff, not a summary. End work with a confidence score and 2-4 next actions. Do not use the Agent tool or Workflows unless requested. Never `--admin` past a check that has not reported.
+
+## 7. Pending Tasks
+
+- **Task #10 (in flight)**: finish the exec-sandbox reporting PR — `review-fix` is running; then commit by explicit path, PR, review, merge.
+- **Blocked**: prod `manage_feeds` `trigger_feed` `dry_run` schema verification — needs an agent-facing MCP client or prod `tools/list` token. The claude.ai Lobu connector exposes only `query_sdk`/`run_sdk`.
+- **Optional follow-up identified**: making `dry_run` reachable from the ClientSDK/REST `feeds.trigger` path.
+- **User's to do**: refresh the codex MCP OAuth refresh token (`invalid_grant`) — this was codex's client, not the user's claude.ai connector.
+- **Deferred by user**: promoting Fable to default reviewer (explicitly "skip 2").
+
+## 8. Current Work
+
+Working in `/Users/burakemre/Code/lobu/.claude/worktrees/exec-sandbox-report` on **task #10** ("Report (not assert) exec-sandbox state; probe systemd-run in CI").
+
+The defect found: `bwrapDeliversIsolation`'s own comment says *"we should surface it rather than silently degrade"* but its `catch {}` discards the reason. So on the managed cluster (bwrap installed, `unshare(CLONE_NEWUSER)` denied), the warning said *"Install bubblewrap (Linux) or check sandbox-exec (macOS)"* — wrong twice: the package is present, and installing it cannot help.
+
+Completed this session:
+- Added `BwrapProbe` discriminated union and `probeBwrap()` capturing stderr
+- Extracted `BWRAP_ISOLATION_PROBE_ARGS` shared constant
+- Added `describeNoSandbox()` and pure `formatNoSandboxReport(platform, observed)`
+- Replaced the prescriptive warn with `console.warn(\`[exec-sandbox] ${describeNoSandbox()}\`)`
+- Replaced host-conditional tests with 5 deterministic branch tests
+- Mutation-verified: reverting to the old message → 35 pass / 1 fail; restored → 36 pass / 0 fail
+- Added `exec-sandbox-backend-probe` CI job (`continue-on-error: true`)
+- `make pre-pr` exit 0
+
+Immediately before the summary request: **#2393 was merged** (squash `d8a22a96`, all 9 required checks pass, pi-review 88/92/slop 5/0 bugs), and `REVIEWER_CLI=claude make review-fix` was launched on the exec-sandbox change (background task `bdkc7nrdi`), with monitor `bx4xojdu5` watching for `RFEXIT=`.
+
+Also completed this session: PR **#2390** (dry_run) merged `8811a765` and prod-verified; release **14.8.0** published with all packages reconciled (npm, `package.json`, manifest, tag `lobu-v14.8.0`); PR **#2323** merged `618193fd`; Published-artifact smoke green 4/4.
+
+## 9. Optional Next Step
+
+Read the `review-fix` output for the exec-sandbox change, verify its diff (per AGENTS: "it edits the working tree, so re-read the files before trusting them"), then commit by explicit path, push, `gh pr create`, `make review` once, and merge when CI reports.
+
+Direct quote from my last message describing the state: *"`pre-pr` came back clean on the exec-sandbox work — running the fixer on it now"* and from the message before: *"**Confidence:** 88 — 36 tests green, guard mutation-verified, typecheck clean; `pre-pr` still running, and the CI probe's output is by definition unknown until it runs on a real runner."*
+
+This is directly in line with the user's "go do that and let's finish it all what's remaining" — task #10 is the last unstarted tracked item and is now implemented but not yet shipped.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

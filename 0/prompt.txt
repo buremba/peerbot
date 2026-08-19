@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  A late host-identity update can leave capability-only replay cards permanently blank, and app-initiated results discard their newly issued restore capability. These regressions affect the restoration behavior this patch is intended to provide.
+
+Full review comments:
+
+- [P1] Retry empty replay restoration after late toolInfo — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:629-630
+  When an empty capability-only `toolresult` arrives before `toolInfo`, it sets `hasCurrentLifetimeToolResult` but not `hasLiveToolOutput`. If `toolInfo` arrives while restoration is in flight, this branch does nothing; the original restore is then discarded by the changed id/name checks, leaving the card permanently blank. Retry restoration when identity is enriched even when the replay had no live output.
+
+- [P2] Preserve capabilities from app-initiated tool results — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:903-906
+  When `resolve_lobu_approval` succeeds, the paired server returns the new result's snapshot capability in `result._meta`. This branch clears both capability refs without reading that metadata, so hosts without `toolInfo` cannot save state for or server-restore the newly displayed result after reload. Extract and associate the returned capability instead of unconditionally nulling it.
+  </results>
+  </user_action>

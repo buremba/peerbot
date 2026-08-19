@@ -1,0 +1,1 @@
+i will compact so save memory and then we can do the remamining work here

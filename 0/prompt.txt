@@ -1,0 +1,1 @@
+the provider page needs to be like the other normal connector page you're diverging and duplicating

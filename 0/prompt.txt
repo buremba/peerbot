@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>brord47mp</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/brord47mp.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix pass" completed (exit code 0)</summary>
+</task-notification>

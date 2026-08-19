@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bpyny56h8</task-id>
+<summary>Monitor event: "final CI checks on PR 2218"</summary>
+<event>ALL REPORTED. Non-passing:
+check-drift: fail</event>
+</task-notification>

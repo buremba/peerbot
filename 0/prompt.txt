@@ -1,0 +1,135 @@
+# Design review request: org-scoped ACL generation counter
+
+Branch `feat/acl-generation-counter` in lobu. 11 files, +437/-68, not yet committed.
+Review the DESIGN, not the style. Be adversarial. I want defects and objections,
+not a score.
+
+## The bug being fixed
+
+`markAclFresh` gated its "bless this connection as fresh" stamp on
+`authz_source_acl_state.updated_at < syncStartedAt`. That compares STATEMENT
+timestamps, not commit visibility.
+
+An unmerge (or any ACL invalidation) can stamp `updated_at` at T1 and commit at
+T3. A sync starting at T2, where T1 < T2 < T3, never saw the unmerge in its
+snapshot, yet the fence reads T1 < T2 and blesses the connection `fresh` on
+membership that predates the revocation. Result: the gate serves access the
+provider already revoked.
+
+Second, narrower hole: the timestamp fence lives in an `ON CONFLICT ... WHERE`
+clause, which never runs when there is no conflicting row. A sync that began
+before an invalidation can INSERT a brand-new `fresh` row afterward. A per-row
+counter cannot guard a row that did not exist to be bumped.
+
+## The change
+
+New column, on `organization` rather than on `authz_source_acl_state`:
+
+```sql
+ALTER TABLE public.organization
+  ADD COLUMN IF NOT EXISTS acl_generation bigint NOT NULL DEFAULT 0;
+```
+
+Org-scoped because an entity-graph invalidation can affect every connection, and
+because only an org-scoped counter fences the INSERT path.
+
+New module `authz/acl-generation.ts`:
+
+```ts
+export async function bumpAclGeneration(tx: DbClient, orgId: string): Promise<void> {
+  await tx`UPDATE organization SET acl_generation = acl_generation + 1 WHERE id = ${orgId}`;
+}
+
+export async function invalidateOrgAcl(tx: DbClient, orgId: string): Promise<void> {
+  // Lock the generation before ACL-state rows; markAclFresh uses the same order.
+  await bumpAclGeneration(tx, orgId);
+  await tx`
+    UPDATE authz_source_acl_state
+    SET freshness_state = 'stale', updated_at = clock_timestamp()
+    WHERE organization_id = ${orgId}
+  `;
+}
+```
+
+Sync start captures cutoff and generation in ONE statement so an invalidation
+cannot land between the two observations:
+
+```sql
+SELECT clock_timestamp()::text AS sync_started_at,
+       (SELECT o.acl_generation::text FROM organization o WHERE o.id = $1) AS acl_generation
+```
+
+`markAclFresh(orgId, connectionId, syncStartedAt, aclGeneration)` now, inside its
+existing transaction, after locking the connection rows:
+
+```ts
+const generationRows = await tx`
+  SELECT acl_generation::text AS acl_generation
+  FROM organization WHERE id = ${orgId} FOR SHARE
+`;
+const currentGeneration = generationRows[0]?.acl_generation ?? null;
+if (currentGeneration !== aclGeneration) return;   // skip the stamp
+```
+
+Both fences are kept. The generation covers commit visibility and the INSERT
+path. The timestamp fence stays for the same-generation case: two concurrent
+syncs of ONE connection, where a later-starting sync must not be overwritten by
+an older snapshot that finishes after it.
+
+Claimed lock order, uniform across every writer: `connections` (where
+applicable) -> `organization` -> `authz_source_acl_state`.
+
+## The five invalidation sites, all bumping in the SAME transaction as their mutation
+
+1. `invalidateSlackConnectionAcl` (authz/slack-acl-sync.ts) — was a bare upsert,
+   now wrapped in `begin()` with the bump first.
+2. `markConnectionAclFailed` (authz/acl-observability.ts) — the `'failed'` path,
+   not just `'stale'`.
+3. `applyUnmerge` (utils/entity-merge.ts)
+4. `applyMergeInTransaction` (utils/entity-merge.ts)
+5. `deleteEntity` (utils/entity-management.ts)
+
+## Specific things to attack
+
+1. **Does `FOR SHARE` actually close the race?** `markAclFresh` reads the
+   generation under `FOR SHARE`; invalidators take a row-exclusive lock via
+   `UPDATE`. Is the read-then-compare sound under READ COMMITTED, which is the
+   isolation level here? Any interleaving that still blesses a stale snapshot?
+
+2. **Deadlock.** Is the claimed `connections -> organization ->
+   authz_source_acl_state` order genuinely uniform? `invalidateOrgAcl` skips the
+   connections lock entirely. Does a lock-order subset introduce a cycle against
+   a writer that takes them in full?
+
+3. **`organization` as a hot write row — the objection I most want tested.**
+   `deleteEntity` is a COMMON operation, not admin-initiated. Every entity delete
+   now UPDATEs the org row. That (a) serializes all concurrent entity deletes in
+   an org behind one row lock, (b) generates row versions on a table read
+   constantly on request paths, (c) fails the WHOLE org's ACL closed on any
+   entity deletion, however unrelated to ACL. Is the org-scoped counter the wrong
+   granularity? Would a separate `org_acl_generation(org_id, generation)` table
+   avoid the bloat on `organization` at equal correctness? Should `deleteEntity`
+   bump only when the deleted subtree actually intersects ACL-relevant entities —
+   and can that predicate be evaluated safely, given the whole point is that the
+   dangerous case is when the drop finds NOTHING?
+
+4. **Null generation.** A missing `organization` row yields `null`, and
+   `null !== null` is false in JS, so the stamp PROCEEDS. Justified as keeping
+   historical semantics for standalone graph tests with a synthetic org. Is
+   letting a test convenience weaken a production authorization fence acceptable?
+   What is the failure mode if a real org row is missing or unreadable?
+
+5. **Fail-closed availability.** Any invalidation now stales EVERY connection in
+   the org. On a busy org with frequent merges/deletes, can the ACL projection be
+   kept permanently stale, so no sync ever gets to stamp fresh — a livelock where
+   the gate denies indefinitely?
+
+6. **Counter overflow / wraparound**: bigint, presumably a non-issue, confirm.
+
+7. **Missed sites.** Five invalidators were found by grepping beyond `'stale'`
+   (which misses `'failed'` and the three entity-graph drops). Is there a sixth
+   class — anything that mutates identity resolution or the entity graph in a way
+   that changes ACL outcomes, without going through these five?
+
+Answer with concrete defects ranked by severity, each with the interleaving or
+scenario that triggers it. If a concern above is wrong, say so and why.

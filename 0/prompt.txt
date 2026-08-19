@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0oaapnlv</task-id>
+<tool-use-id>toolu_019fMPzzJ1TAiSav9L222tyT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/3e39685c-bd75-4a35-95b4-d589bc12af41/tasks/b0oaapnlv.output</output-file>
+<status>failed</status>
+<summary>Background command "Restart make dev (SPA + API on one port)" failed with exit code 144</summary>
+</task-notification>

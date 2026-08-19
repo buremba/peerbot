@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbby2a36c</task-id>
+<tool-use-id>toolu_01P7FG4x6Tcm3GTnwSVPPZTK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bbby2a36c.output</output-file>
+<status>killed</status>
+<summary>Background command "Run make review on final settled HEAD (background)" was stopped</summary>
+</task-notification>

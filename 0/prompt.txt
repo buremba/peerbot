@@ -1,0 +1,51 @@
+<task-notification>
+<task-id>a1925f7a98ff984e9</task-id>
+<tool-use-id>toolu_01GXoBEfXnN7bxshwhwz84rN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/a1925f7a98ff984e9.output</output-file>
+<status>completed</status>
+<summary>Agent "Track E: tabs + error CTAs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I'm stopping before making changes, per the brief's instruction. Decision 3 does not hold up, and the reason is structural rather than a detail I can route around.
+
+## Why I stopped
+
+The brief scoped `provider-connect` as a frontend-only repoint plus deleting one route file. It is neither.
+
+**`/inference-providers/new` is a live server-rendered CTA target, not just a frontend route.** `packages/server/src/utils/url-builder.ts:130` hardcodes the path in `buildProviderConnectUrl`, and that string is duplicated as documentation-of-record in `packages/core/src/errors.ts:201`. It is reached from two independent server call sites:
+
+- `packages/server/src/gateway/connections/chat-response-bridge.ts:609`
+- `packages/server/src/gateway/connections/message-handler-bridge.ts:1326`
+
+Those emit Slack/Telegram LinkButtons. Deleting `new.tsx` without changing the server builder ships a 404 into every Slack provider-error button. So decision 3 is a lobu+owletto paired change, not an owletto-only one, and the brief's file list does not cover it.
+
+**The bigger problem: `new.tsx` carries a payload the proposed destination cannot render.** The server builder sets four params — `provider`, `model`, `reason`, `agentId` (lines 131-134) — and `new.tsx:38-66` renders `reason`/`agentId` as a specific amber explainer ("This agent needs a model provider before it can reply… Connect the provider below, then retry the Slack message."). The brief only asked me to preserve `?provider=`/`?model=`. Landing on Connect → Runtime drops the `reason`/`agentId` explainer, which is the part that tells a Slack user why they were sent to a web page at all. That is user-visible regression, not a refactor.
+
+**And the proposed destination is the surface being deleted.** The brief says land `provider-connect` on "Connect → Runtime with the provider-connect form opened." But `CreateProviderForm` is the *Models* surface — it is mounted by `InferenceProvidersBody` (`inference-providers/index.tsx:141`), which is exactly what `infrastructure/models.tsx` renders and what decision 1 removes from the tab bar. Runtime is Sandboxes + Devices, which have nothing to do with connecting an inference provider. Putting the provider-connect form there means Runtime hosts provider config, which contradicts decision 1's stated rationale that model config is moving into agent settings.
+
+There is also a live redirect that the brief did not mention: `inference-providers/index.tsx:36-44` redirects `/$owner/inference-providers` → `/$owner/infrastructure/models`. Removing the Models tab strands that too, along with `packages/owletto/src/app/$owner/environments/index.tsx:33` and the smoke test at `packages/owletto/src/app/__smoke__/all-routes.test.tsx:200,229,234`.
+
+## The unresolved question
+
+`provider-connect` fires with **no agent in scope** — the brief correctly identified this. But the only surface that can actually service it is the provider-connect form, and every candidate home for that form is either being deleted (Models) or semantically wrong (Runtime). So the real question is one the brief cannot answer from inside its own constraints: **where does org-level "connect an inference provider" live once Models stops being a Connect tab?**
+
+Three options, none of which I should pick unilaterally:
+
+1. **Keep `/inference-providers/new` alive** as a standalone non-tab route. Smallest diff, keeps the `reason`/`agentId` explainer, no server change, no Slack 404. Models leaves the tab bar but the org-level connect flow keeps its own URL. This is what I'd recommend.
+2. **Move provider config into agent settings wholesale** and give `provider-connect` an org-scoped fallback page. Coherent, but that is the "separate work" the brief explicitly told me not to build.
+3. **Put the form on Runtime** as briefed — requires also repointing `buildProviderConnectUrl`, dropping or re-homing the `reason`/`agentId` explainer, and accepting that Runtime hosts provider config.
+
+## What I did not touch
+
+No files modified, nothing staged, no commits. Both trees are clean at `fc62394d3` (superproject) / `56046ad0` (owletto). I ran no gates, since there is no diff to gate.
+
+Decisions 1, 2, and 4 look sound and independently implementable — the two-tab collapse, the `provider-management` → `/agents/$agentId/settings#models` repoint, and the anchor-plus-highlight are all fine as briefed. Only decision 3 is blocked. If you want, I can land 1, 2, and 4 now and leave `provider-connect` pointing at `/inference-providers/new` untouched; that yields a coherent shippable branch and defers the one genuinely open question.
+
+**Confidence: 90** that decision 3 as written would ship a broken Slack CTA — basis: I read the two server call sites and the hardcoded path in `url-builder.ts:130`, not just the frontend route. I have not booted the app or exercised a live Slack provider error, so the runtime behavior is inferred from the code path rather than observed.
+
+Next actions you can pick from:
+1. Confirm option 1 (keep `/inference-providers/new`, drop only the Models tab) and I'll implement 1, 2, 4 plus that.
+2. Or confirm option 3 and expand scope to include `url-builder.ts` + `errors.ts` and a decision on the `reason`/`agentId` explainer.
+3. Either way, tell me whether `/$owner/inference-providers` → Models redirect should now point somewhere else or be deleted.
+4. Check whether the parallel model-picker work already plans an org-level provider-connect home — that would settle this question directly.</result>
+<usage><subagent_tokens>76003</subagent_tokens><tool_uses>17</tool_uses><duration_ms>67546</duration_ms></usage>
+</task-notification>

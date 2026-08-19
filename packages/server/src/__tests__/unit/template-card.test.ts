@@ -16,6 +16,7 @@ import { describe, expect, it } from "bun:test";
 import { buildKindCard } from "../../notifications/template-card";
 import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
+	ENTITY_CHANGE_APPROVAL_KIND,
 	PLATFORM_EVENT_KINDS,
 } from "../../utils/platform-event-kinds";
 
@@ -465,5 +466,112 @@ describe("structural edge cases", () => {
 			data: { groups: [{ name: "G1", rows: ["x", "y"] }, { name: "G2", rows: ["z"] }] },
 		});
 		expect(rows(card)).toEqual([["G1", "x"], ["G1", "y"], ["G2", "z"]]);
+	});
+});
+
+describe("entity change approvals render through their kind", () => {
+	const KIND = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+	const build = (data: Record<string, unknown>) =>
+		buildKindCard({
+			metadataSchema: KIND.metadataSchema,
+			jsonTemplate: KIND.jsonTemplate,
+			data,
+			title: "Approval needed",
+			url: "https://app.lobu.ai/runs/991",
+			decisionRunId: 991,
+		});
+
+	it("shows a field update as field / current / proposed rows", () => {
+		const card = build({
+			entityTypeLabel: "Person",
+			entityName: "Ada Lovelace",
+			requestedBy: "nightly-triage",
+			why: "Changing a verified field needs approval.",
+			action: null,
+			proposal: [],
+			diffs: [
+				{ label: "Email", current: "ada@old.example", proposed: "ada@lovelace.dev" },
+				{ label: "Location", current: null, proposed: "London, UK" },
+			],
+		});
+		expect(rows(card)).toEqual([
+			["Email", "ada@old.example", "ada@lovelace.dev"],
+			["Location", "—", "London, UK"],
+		]);
+	});
+
+	it("shows a create as one row per proposed field", () => {
+		const card = build({
+			entityTypeLabel: "Company",
+			entityName: "Acme Robotics",
+			action: "Create this entity",
+			diffs: null,
+			why: null,
+			requestedBy: null,
+			proposal: [
+				{ label: "Name", value: "Acme Robotics" },
+				{ label: "Domain", value: "acme.example" },
+			],
+		});
+		expect(rows(card)).toEqual([
+			["Name", "Acme Robotics"],
+			["Domain", "acme.example"],
+		]);
+	});
+
+	it("omits the optional header fields that have no value", () => {
+		const card = build({
+			entityTypeLabel: "Deal",
+			entityName: null,
+			requestedBy: null,
+			why: null,
+			action: null,
+			proposal: [],
+			diffs: [{ label: "Amount", current: "$1,200", proposed: "$18,400" }],
+		});
+		const fieldLabels = kids(card)
+			.filter((c) => c.type === "fields")
+			.flatMap((c) => (c.children as Array<{ label: string }>).map((f) => f.label));
+		expect(fieldLabels).toEqual(["Type"]);
+	});
+
+	it("escapes the mrkdwn header fields but not the raw_text table cells", () => {
+		const hostile = "<!channel> & <https://evil.example|Review in Lobu>";
+		const card = build({
+			entityTypeLabel: "Person",
+			entityName: hostile,
+			requestedBy: null,
+			why: null,
+			action: null,
+			proposal: [],
+			diffs: [{ label: "Bio", current: null, proposed: hostile }],
+		});
+		const entityField = kids(card)
+			.filter((c) => c.type === "fields")
+			.flatMap((c) => c.children as Array<{ label: string; value: string }>)
+			.find((f) => f.label === "Entity");
+		expect(entityField?.value).toBe(
+			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
+		);
+		// Cells go out as raw_text, which Slack never parses — escaping here would
+		// show the reader a literal `&lt;`.
+		expect(rows(card)[0][2]).toBe(hostile);
+	});
+
+	it("still carries the decision buttons the bridge already routes", () => {
+		const card = build({
+			entityTypeLabel: "Person",
+			entityName: "Ada",
+			action: null,
+			why: null,
+			requestedBy: null,
+			proposal: [],
+			diffs: [{ label: "Email", current: "a", proposed: "b" }],
+		});
+		expect(buttons(card).map((b) => b.id ?? b.url)).toEqual([
+			"run-approval:991:approve",
+			"run-approval:991:reject",
+			"https://app.lobu.ai/runs/991",
+		]);
 	});
 });

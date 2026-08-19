@@ -20,6 +20,7 @@
 import type { EventKindDefinition } from "./event-kind-validation";
 
 export const CONNECTOR_OPERATION_APPROVAL_KIND = "connector_operation_approval";
+export const ENTITY_CHANGE_APPROVAL_KIND = "entity_change_approval";
 
 export const PLATFORM_EVENT_KINDS: Readonly<
 	Record<string, EventKindDefinition>
@@ -51,6 +52,126 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 					"x-table-column": 3,
 				},
 			},
+		},
+	},
+	/**
+	 * An entity create / update / delete / merge waiting for a decision.
+	 *
+	 * This kind authors a `jsonTemplate` rather than leaning on the schema
+	 * default, because the interesting content is a LIST — the proposed fields,
+	 * or the before/after of each changed one — and a list is what `each`
+	 * exists for. The alternative was a second bespoke formatter, which is the
+	 * thing this pipeline replaced.
+	 */
+	[ENTITY_CHANGE_APPROVAL_KIND]: {
+		description: "An entity change waiting for a human decision.",
+		metadataSchema: {
+			type: "object",
+			properties: {
+				action: { type: "string", title: "Action" },
+				entityTypeLabel: { type: "string", title: "Type" },
+				entityName: { type: "string", title: "Entity" },
+				requestedBy: { type: "string", title: "Requested by" },
+				why: { type: "string", title: "Why approval is needed" },
+				diffs: { type: "array", title: "Changes", "x-hidden": true },
+				proposal: { type: "array", title: "Proposal", "x-hidden": true },
+			},
+		},
+		/**
+		 * `text` nodes are literals — the DSL interpolates `{{path}}` in component
+		 * PROPS only, matching owletto's renderer — so every value here is bound
+		 * with a `data` node. Scalars go in a `fields` block (Slack lays them out
+		 * side by side) and the list goes in the table, which is the one thing a
+		 * field list cannot show well.
+		 */
+		jsonTemplate: {
+			type: "card",
+			children: [
+				{
+					type: "fields",
+					children: [
+						{
+							type: "if",
+							condition: "action",
+							then: {
+								type: "field",
+								props: { label: "Action" },
+								children: [{ type: "data", path: "action" }],
+							},
+						},
+						{
+							type: "field",
+							props: { label: "Type" },
+							children: [{ type: "data", path: "entityTypeLabel", fallback: "—" }],
+						},
+						{
+							type: "if",
+							condition: "entityName",
+							then: {
+								type: "field",
+								props: { label: "Entity" },
+								children: [{ type: "data", path: "entityName" }],
+							},
+						},
+						{
+							type: "if",
+							condition: "requestedBy",
+							then: {
+								type: "field",
+								props: { label: "Requested by" },
+								children: [{ type: "data", path: "requestedBy" }],
+							},
+						},
+						{
+							type: "if",
+							condition: "why",
+							then: {
+								type: "field",
+								props: { label: "Why approval is needed" },
+								children: [{ type: "data", path: "why" }],
+							},
+						},
+					],
+				},
+				{
+					type: "table",
+					props: { caption: "Proposed change" },
+					children: [
+						{
+							type: "tbody",
+							children: [
+								// An update: one row per changed field, current then proposed.
+								{
+									type: "each",
+									items: "diffs",
+									as: "d",
+									render: {
+										type: "tr",
+										children: [
+											{ type: "th", children: [{ type: "data", path: "d.label" }] },
+											{ type: "td", children: [{ type: "data", path: "d.current", fallback: "—" }] },
+											{ type: "td", children: [{ type: "data", path: "d.proposed", fallback: "—" }] },
+										],
+									},
+								},
+								// A create / delete / merge: one row per proposed field.
+								{
+									type: "each",
+									items: "proposal",
+									as: "p",
+									render: {
+										type: "tr",
+										children: [
+											{ type: "th", children: [{ type: "data", path: "p.label" }] },
+											{ type: "td", children: [{ type: "data", path: "p.value", fallback: "—" }] },
+										],
+									},
+								},
+							],
+						},
+					],
+				},
+			],
 		},
 	},
 };

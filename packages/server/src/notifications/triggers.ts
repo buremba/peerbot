@@ -2,7 +2,10 @@ import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
-import { CONNECTOR_OPERATION_APPROVAL_KIND } from "../utils/platform-event-kinds";
+import {
+	CONNECTOR_OPERATION_APPROVAL_KIND,
+	ENTITY_CHANGE_APPROVAL_KIND,
+} from "../utils/platform-event-kinds";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
@@ -537,6 +540,12 @@ export async function notifyActionApprovalNeeded(params: {
 	} | null;
 }): Promise<void> {
 	const operation = params.operation ?? null;
+	// The render model is already the shape a template wants — a couple of
+	// scalars plus `diffs` / `proposal` lists — so the kind's `each` walks it
+	// directly rather than a formatter flattening it into one paragraph.
+	const entityChange = params.details
+		? (buildApprovalRenderModel(params.details) as unknown as Record<string, unknown>)
+		: null;
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
 		// Run-scoped, via the shared permalink resolver — same reasoning as the
 		// approval_url: the pending event is superseded on approve→complete, but the
@@ -550,6 +559,12 @@ export async function notifyActionApprovalNeeded(params: {
 			type: "action_approval_needed",
 			title: formatActionApprovalTitle(params.actionKey, params.details),
 			body: formatActionApprovalBody(params),
+			// An entity change renders through its kind (below), so the hand-built
+			// card is skipped for it — passing both would win the `card` branch in
+			// the notification service and the kind would never be consulted.
+			...(entityChange
+				? {}
+				: {
 			card: buildActionApprovalCard({
 				runId: params.runId,
 				approvalUrl: params.approvalUrl,
@@ -562,11 +577,10 @@ export async function notifyActionApprovalNeeded(params: {
 					details: params.details,
 				}),
 			}),
-			// A connector operation renders through its platform event kind, so the
-			// chat post, the Memory view and MCP apps all show the SAME operation /
-			// connection / input table from one declaration. Entity approvals keep
-			// their hand-built card (it carries the field diff and the buttons)
-			// until they have a kind of their own.
+					}),
+			// Both approval families render through a platform event kind, so the
+			// chat post, the Memory view and MCP apps all show the SAME table from
+			// one declaration instead of each surface formatting the payload again.
 			...(operation
 				? {
 						semanticType: CONNECTOR_OPERATION_APPROVAL_KIND,
@@ -575,6 +589,13 @@ export async function notifyActionApprovalNeeded(params: {
 							connection: params.connectionName ?? null,
 							input: operation.input,
 						},
+						decisionRunId: params.runId,
+					}
+				: {}),
+			...(entityChange
+				? {
+						semanticType: ENTITY_CHANGE_APPROVAL_KIND,
+						payloadData: entityChange,
 						decisionRunId: params.runId,
 					}
 				: {}),

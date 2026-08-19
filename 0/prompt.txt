@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmw21i4d3</task-id>
+<tool-use-id>toolu_01H2ue4p7VoHVZ6efDySmpqR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/bmw21i4d3.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run make review with full timeout" completed (exit code 0)</summary>
+</task-notification>

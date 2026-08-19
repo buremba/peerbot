@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9np2su3a</task-id>
+<tool-use-id>toolu_01FY8sEKDNsMxyNr1Fm1fMGn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/b9np2su3a.output</output-file>
+<status>completed</status>
+<summary>Monitor "CI checks on PR 2283 (drift guard)" stream ended</summary>
+</task-notification>

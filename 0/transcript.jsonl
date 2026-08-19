@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:21:34.092Z","content":[{"text":"New message in #sales:\n\nmike: @dave can you grab the projector for the 3pm?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:21:40.780Z","id":"c180a1c6","input_tokens":196,"output_tokens":449,"content":[{"type":"text","text":"That message is Mike asking Dave — not something directed at me. I'll leave it for them unless you'd like me to do something specific with it."}]}

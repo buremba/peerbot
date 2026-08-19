@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b01cggmwd</task-id>
+<summary>Monitor event: "PR 2715 required checks after base refresh"</summary>
+<event>2715 migrations: pass
+2715 typecheck: pass</event>
+</task-notification>

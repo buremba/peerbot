@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The capability-only restoration path can erase previously persisted view state when a standard host replays a full historical result. This breaks the state-preservation behavior the patch is intended to provide.
+
+Review comment:
+
+- [P2] Restore replay state before saving it — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:423-423
+  When a host without `toolInfo` replays a historical card with normal non-empty `structuredContent` and its snapshot capability, this branch immediately persists the still-empty `viewStateRef`. `save_lobu_app_state` then overwrites the capability's previously saved pagination/disclosure state before any restore is attempted. Restore through the capability before saving, as the compatibility-globals path already does.
+  </results>
+  </user_action>

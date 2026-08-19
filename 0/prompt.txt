@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bn6mtvqws</task-id>
+<tool-use-id>toolu_01MAPJdJt1vkY58KDWgtUmVu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/bn6mtvqws.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 2239 checks until settled" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw3kq8cn6</task-id>
+<tool-use-id>toolu_01X87G17xco1ZBuo5vi15RkN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bw3kq8cn6.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch the first live audit run" completed (exit code 0)</summary>
+</task-notification>

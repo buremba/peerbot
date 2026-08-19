@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4lb97xyz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/b4lb97xyz.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and review the condensed commit" completed (exit code 0)</summary>
+</task-notification>

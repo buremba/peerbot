@@ -1,0 +1,1 @@
+what's the long term best approach here? we will be able to link telegram users to slack users and have the identity graph proper right? also same as jira linear all connectors

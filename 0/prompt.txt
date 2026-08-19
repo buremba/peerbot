@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bq7ejq990</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bq7ejq990.output</output-file>
+<status>failed</status>
+<summary>Background command "Boot dev server after rebase" failed with exit code 2</summary>
+</task-notification>

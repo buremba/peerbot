@@ -1,4 +1,4 @@
-import { getInferenceProviderBySlug } from '../../lobu/stores/provider-secrets';
+import { listOrgModelProviderSlugs } from '../../lobu/model-config';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
 
@@ -68,8 +68,11 @@ export function assertValidExecutionConfig(value: unknown, caller: ExecutionConf
  * (see `getAutomationModelOverride` in automations/automation.ts). A
  * device-pinned Automation passes the ref verbatim to a local CLI as `--model`,
  * so it must name a provider THAT CLI has registered; a server-dispatched one
- * resolves it against the org's `inference_providers`, where a server-lane ref
- * is `<provider slug>/<model>` (`modelRefFromDefaultRow` builds it that way).
+ * resolves it against the org's model providers — registry modules with a
+ * system key UNION its own `inference_providers` rows, which is exactly the set
+ * `listOrgModelProviderSlugs` returns and the same one the agent `models`
+ * allow-list is validated against. A server-lane ref is `<provider slug>/<model>`
+ * (`modelRefFromDefaultRow` builds it that way).
  *
  * Only the server lane is policed, because only its registry lives here — the
  * CLI's provider list is on the user's machine and the server cannot see it.
@@ -109,10 +112,10 @@ export async function assertServerLaneModelResolves(params: {
   const slash = model.indexOf('/');
   if (slash <= 0) return;
   const slug = model.slice(0, slash);
-  if (await getInferenceProviderBySlug(organizationId, slug)) return;
+  if ((await listOrgModelProviderSlugs(organizationId)).has(slug)) return;
   throw new ToolUserError(
-    `execution_config.model '${model}' names inference provider '${slug}', which this organization has not registered. ` +
-      `Register it first, use a model from a provider you have, or pass 'auto'. ` +
+    `execution_config.model '${model}' names model provider '${slug}', which this organization cannot route to. ` +
+      `Register it under Providers, use a model from a provider you have, or pass 'auto'. ` +
       `Note: a device-pinned Automation (device_worker_id set) instead resolves this ref against the local CLI's own providers, which are not interchangeable with these.`,
     400
   );

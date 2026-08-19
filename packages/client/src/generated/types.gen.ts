@@ -4480,7 +4480,7 @@ export type ManageAutomationsData = {
        */
       max_budget_usd?: number;
       /**
-       * Model override for this Automation. ONE field, two namespaces, resolved by where the Automation runs: a device-pinned Automation (device_worker_id set) passes this verbatim to the local CLI as --model, so it must name a provider that CLI has registered (e.g. 'opencode-go/deepseek-v4-flash'); a server-dispatched Automation resolves it against the org's inference providers (e.g. 'deepseek/deepseek-v4-flash'), or 'auto'. The two are NOT interchangeable — a CLI ref on the server lane fails at the provider, and a server ref on a device lane fails at the CLI.
+       * Model override for this Automation. ONE field, two namespaces, resolved by where the Automation runs: a device-pinned Automation (device_worker_id set) passes this verbatim to the local CLI as --model, so it must name a provider that CLI has registered (e.g. 'opencode-go/deepseek-v4-flash'); a server-dispatched Automation resolves it against the org's model providers -- the built-in providers plus any you have registered under Providers (e.g. 'openai/gpt-4.1', 'deepseek/deepseek-v4-flash') -- or 'auto'. The two are NOT interchangeable — a CLI ref on the server lane fails at the provider, and a server ref on a device lane fails at the CLI.
        */
       model?: string;
       /**

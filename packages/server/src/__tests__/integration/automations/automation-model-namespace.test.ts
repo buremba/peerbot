@@ -2,7 +2,7 @@
  * `execution_config.model` is ONE stored field with TWO resolution namespaces
  * (see the comment on `getAutomationModelOverride`): a device-pinned Automation
  * hands the ref verbatim to a local CLI as `--model`, while a server-dispatched
- * one resolves it against the org's `inference_providers`. Nothing checked which
+ * one resolves it against the org's model providers. Nothing checked which
  * lane a ref belonged to, so both directions failed silently at run time. In
  * prod on 2026-08-19 both happened within eight minutes:
  *
@@ -10,11 +10,24 @@
  *   15:09  #5  (server)  OpenRouter 400: opencode-go/deepseek-v4-flash is not a valid model ID
  *
  * The server can only police the lane whose registry it holds. A provider-
- * qualified ref on the SERVER lane must name a live `inference_providers.slug`;
- * the device lane is left alone because the CLI's provider registry lives on
- * the user's machine and the server cannot see it.
+ * qualified ref on the SERVER lane must name a slug in
+ * `listOrgModelProviderSlugs` — registry modules with a system key UNION the
+ * org's `inference_providers` rows; the device lane is left alone because the
+ * CLI's provider registry lives on the user's machine and the server cannot
+ * see it.
+ *
+ * NOTE: this harness never boots the gateway, so `getModelProviderModules()`
+ * is `[]` by default and the union would collapse to the rows inserted below.
+ * That is exactly how an `inference_providers`-only guard passed every test in
+ * this file while falsely rejecting `openai/gpt-4.1` in production. The
+ * registry half is therefore covered by registering a real module into
+ * `moduleRegistry` (its own doc comment sanctions this for tests) rather than
+ * by mocking: `mock.module` in bun is process-GLOBAL, so stubbing
+ * `provider-secrets` to fake the union broke every sibling suite that imports
+ * `readSandboxSecret` from it.
  */
 
+import { moduleRegistry } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   addUserToOrganization,
@@ -151,5 +164,38 @@ describe('execution_config.model namespace guard', () => {
         execution_config: { model: 'opencode-go/deepseek-v4-flash' },
       })
     ).rejects.toThrow(/opencode-go/);
+  });
+  it('accepts a system-key registry provider that has no inference_providers row', async () => {
+    // The other half of `listOrgModelProviderSlugs`. Registered here because
+    // this harness never boots the gateway, so the real 17 providers from
+    // config/providers.json (openai, claude, deepseek, …) are absent. Without
+    // this arm the guard could regress to inference_providers-only and every
+    // test above would still pass, while a valid `openai/gpt-4.1` server-lane
+    // Automation got rejected at the write.
+    moduleRegistry.register({
+      name: 'test-system-provider-module',
+      isEnabled: () => true,
+      init: async () => {},
+      registerEndpoints: () => {},
+      providerId: 'test-system-provider',
+      getSecretEnvVarNames: () => [],
+    } as never);
+
+    const sql = getTestDb();
+    const [row] = (await sql`
+      SELECT 1 AS present FROM inference_providers
+      WHERE organization_id = ${orgId} AND slug = 'test-system-provider'
+    `) as Array<{ present: number }>;
+    expect(row).toBeUndefined();
+
+    const created = (await owner.automations.create({
+      slug: 'server-lane-system-provider',
+      name: 'Server Lane System Provider',
+      prompt: 'Do a thing.',
+      triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
+      agent_id: agentId,
+      execution_config: { model: 'test-system-provider/some-model' },
+    })) as { automation_id: string };
+    expect(created.automation_id).toBeDefined();
   });
 });

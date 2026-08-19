@@ -1,0 +1,25 @@
+<task-notification>
+<task-id>bcf2woino</task-id>
+<summary>Monitor event: "make review-fix on UI tests branch"</summary>
+<event>REVIEW_FIX_EXIT=0
+Fixed
+- `connector-overview.test.tsx:12` — replaced invalid `href="#"`, which failed Biome lint.
+- `connector-overview.test.tsx:46` — replaced the stale, cast-masked connector fixture with the current API contract.
+- `connector-overview.test.tsx:77` — removed redundant Testing Library cleanup already handled globally.
+- `connector-remove-state.test.ts:25` — corrected the stale `installed` claim and removed duplicate coverage.
+- `$connectorKey.index.tsx:686` — reduced the helper’s oversized restatement comment to a concise rationale.
+- `connector-scope-lists.test.ts:8` — fixed the same obsolete `config_schema` fixture class-wide.
+Needs the driving agent
+- Commit and push the four Owletto paths, then update the parent submodule pointer.
+- Run the full `make pre-pr` gate after committing.
+Not fixed
+- Package-wide `bun run lint` still fails on unrelated baseline diagnostics, including `src/app/auth/login.tsx` and `src/app/connector/$name/connection.tsx`. Changed-file lint is clean.
+Residual risk
+- No live browser exercise or full `make pre-pr`.
+- Focused validation passed: 25/25 connector tests, Owletto TypeScript build, changed-file Biome lint/format, and whitespace checks.
+===================================
+&gt;&gt; working-tree changes made by the fixer (staged + unstaged; verify before committing):
+m packages/owletto
+packages/owletto | 0
+1 file changed, 0 insertions(+), 0 deletions(-)</event>
+</task-notification>

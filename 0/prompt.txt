@@ -1,0 +1,196 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+The user began disoriented about a parallel Claude session and the overall ERP effort, asking for an honest assessment of whether bad architecture or real gaps had stalled them. The conversation then progressively narrowed:
+   - Diagnose the state of the ERP program and whether the architecture was wrong (msg 1)
+   - Understand what use cases exist for Lobu besides ERP (msg 2)
+   - Understand how transitions would be implemented (msg 3)
+   - Reconcile that with the earlier Automation-based plan (msg 4)
+   - Determine whether isolate hooks are still needed (msg 5)
+   - Get a concrete explanation of transition mechanics (msg 6)
+   - Confirm the interceptor lives in the ERP project's `lobu apply`, not core (msg 7)
+   - Research how Neon/others run TypeScript transactionally and pick the best approach (msgs 8–10)
+   - **Implement it**, and coordinate with the peer session to avoid collisions (msg 11)
+   - Compare against Convex (msgs 12–13)
+   - "do it properly" and confirm all SDK/API surface changes (msg 14)
+   - Investigate what the codex session is doing (msg 15)
+   - Explain SDK changes and how mutation hooks work (msg 16)
+   - **Repeatedly probe whether users can plug in their own functions** (msgs 17, 19) and push back on `x-transitions` being data rather than code (msg 18)
+
+2. **Key Technical Concepts:**
+   - Entity write funnel (closed + CI-enforced as of 2026-08-16, PRs #2794–#2815, gate #2792)
+   - Entity mutation gate: `MutationInterceptor` pipeline, `runMutationGate`, deny short-circuit, `requireApproval` union
+   - Value-blindness: permissions answer "may this principal write this field"; transitions answer "may this value become that value"
+   - Automation-as-writer (can enforce, in-tx) vs reaction (post-commit, `SET TRANSACTION READ ONLY`, can only compensate)
+   - `x-transitions` declarative state machine on `entity_types.metadata_schema`; `x-link-entity-type` precedent; AJV `strict: false`
+   - isolated-vm V8 isolates (`run-script.ts`), esbuild compile, connector subprocess vs reaction isolate
+   - Comparative research: plv8 (deprecated on Neon), Neon Compute Functions (HTTP, not transactional), Shopify Functions (WASM, 11M instruction fuel, declared input query), Convex (OCC + retry, V8 isolate, no network I/O, read-set tracking by interception), Postgres SSI
+   - #2818 pool deadlock: never call `getDb()` inside `withEntityWriteTransaction`
+   - ACL lock ordering: organization → children → ACL state
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/authz/transition-interceptor.ts`** (NEW, ~228 lines) — the generic state-machine engine. Exports `parseTransitionSpec`, `evaluateTransition`, `transitionInterceptor`. Uses `Object.create(null)` + `Object.hasOwn` (prototype-pollution fix), `isDeepStrictEqual` for no-op tolerance, and queries only `req.sql` (never `getDb()`).
+   ```ts
+   export const transitionInterceptor: MutationInterceptor = {
+     name: "transitions",
+     evaluate: async (req): Promise<UpdateDecision | null> => {
+       if (req.action !== "update") return null;
+       let spec: TransitionSpec | null;
+       try {
+         spec = await loadSpec(req.sql, req.entityId, req.organizationId);
+       } catch (err) {
+         if (err instanceof MalformedSpecError) {
+           return { outcome: "deny", reason: `invalid x-transitions: ${err.message}` };
+         }
+         throw err;
+       }
+       if (!spec) return null;
+       const reason = evaluateTransition({ spec, current: req.current, proposed: req.proposed });
+       return reason === null ? null : { outcome: "deny", reason };
+     },
+   };
+   ```
+
+   - **`packages/server/src/authz/entity-mutation-gate.ts`** (MODIFIED) — the value-blindness fix. Added to `UpdateMutationRequest`:
+   ```ts
+   current: Record<string, unknown>;
+   proposed: Record<string, unknown>;
+   ```
+   Plus `import { transitionInterceptor } from "./transition-interceptor";` and:
+   ```ts
+   const BUILTIN_INTERCEPTORS: readonly MutationInterceptor[] = [
+     approvalInterceptor,
+     transitionInterceptor,
+   ];
+   ```
+   The interceptor contract (unchanged, read for reference):
+   ```ts
+   export interface MutationInterceptor {
+     name: string;
+     evaluate: (req: EntityMutationRequest) =>
+       Promise<CreateOrDeleteDecision | UpdateDecision | null>;
+   }
+   export type UpdateDecision =
+     | { outcome: "deny"; reason: string }
+     | { outcome: "fields"; requireApproval: Set<string> };
+   ```
+
+   - **`packages/server/src/utils/entity-management.ts`** (MODIFIED) — two edits: exported `parseEntityJsonObject` (was module-private, line ~636), and at the `runMutationGate` call site (~:1024):
+   ```ts
+   // Data-dependent rules (state machines, balance checks) need the
+   // VALUES, not just who owns each field. Both come from the row this
+   // transaction already locked `FOR UPDATE` above, so an interceptor
+   // reading them cannot race a concurrent writer.
+   current: existing,
+   proposed: { ...metadataUpdates, ...attributeProposals },
+   ```
+   Critical context: `const isHumanEdit = !!ctx.userId && !ctx.agentId;` (:908) and `if (!isHumanEdit) {` (:968) wraps the entire gate block — this is why humans bypass.
+
+   - **`packages/server/src/utils/promote-keyed-entities.ts`** (MODIFIED) — the second construction site tsc found. Added a locked read before the gate:
+   ```ts
+   const currentRows = await tx<{ metadata: unknown }>`
+     SELECT metadata FROM entities
+     WHERE id = ${entityId} AND deleted_at IS NULL
+     FOR UPDATE
+   `;
+   const currentMetadata = parseEntityJsonObject(currentRows[0]?.metadata);
+   ```
+   plus `current: currentMetadata, proposed: params.fieldValues` in the gate call.
+
+   - **`packages/server/src/__tests__/integration/authz/entity-transitions.test.ts`** (NEW, 11 tests) — real-PG coverage including the restored `runs unchanged on a non-ERP domain (support ticket lifecycle)` and `KNOWN GAP: a human edit is not gated` tests.
+
+   - **`packages/server/src/authz/__tests__/transition-interceptor.test.ts`** (NEW, 34 tests) — pure-function unit tests.
+
+   - **`packages/cli/src/config/define.ts`** (READ, not modified) — the crux of the final exchange. `EntityType` fields are: `kind, key, name, description, required, properties, eventKinds, resolutionPolicy, viewTemplate, metadata, backing, eventSets, measures, dimensions, segments`. **No `metadataSchema`** — that belongs to `EntityEventKind`. Also contains the file-mapping precedent at :526-530:
+   ```ts
+   export function reactionFromFile<
+     _Handler extends ReactionHandler = ReactionHandler,
+   >(path: string): ReactionSource {
+     return { kind: "reactionSource", path };
+   }
+   ```
+
+   - **`examples/lobu-crm/lobu.config.ts` and `inbound-triage.reaction.ts`** (READ) — the real authoring style: `field("Stage", { enum: [...] })`, `reactionFromFile`, `skillFromFile`, and reaction files shaped as `export default async (ctx: ReactionContext, client: ReactionClient): Promise<void>` with an exported `input` JSON Schema.
+
+   - **`packages/server/src/sandbox/run-script.ts`** (READ) — `DEFAULT_LIMITS = { memoryMb: 64, timeoutMs: 60_000, sdkCallQuota: 200, outputBytes: 1_048_576, ... }`, `MAX_SCRIPT_TIMEOUT_MS = 180_000`, async `ivm.Reference` bridges at :907/:1096/:1123.
+
+4. **Errors and fixes:**
+
+   - **Described the superseded architecture.** I walked the user through the isolate-hook design; the user asked "weren't we gonna do this with automations, didn't it work". Automation-as-writer (2026-08-16) is *newer* than the hook design (2026-08-15) and explicitly chose it "rather than build a large interceptor framework". I stated the correction plainly and re-derived from there.
+
+   - **Claimed exactly one `UpdateMutationRequest` construction site.** `git grep 'action: "update"'` matched return-value shapes, not gate requests. Making `current`/`proposed` required (not optional) made tsc surface `promote-keyed-entities.ts:313`. Fixed by threading both fields plus a locked read there.
+
+   - **Wrong postgres.js generic:** `sql<{ metadata_schema: unknown }[]>` → `sql<{ metadata_schema: unknown }>`.
+
+   - **Build cascade:** vitest failed resolving `@lobu/core`, then `@lobu/pgvector-embedded`, `@lobu/connector-sdk`, `@lobu/connector-worker`. Fixed with `bun run build` at root plus per-package `bun run build`.
+
+   - **`make review-fix` orphan destroyed work three times.** The peer warned it deletes modules and writes after TaskStop. It deleted two tests and gutted ~50 lines of rationale comments. I killed 64710/64705/64703 and verified with `ps` — but missed the actual worker. `lsof +D .` revealed `codex exec --sandbox workspace-write --output-last-message /tmp/lobu-review-fix.cNJ7Bn` (PID 64802, **PPID 1** — reparented to init), which kept rewriting files at 05:23 and 05:24. Killed 65077/64835/64803/64802. **Lesson: kill by `lsof +D <worktree>`, not by process name.** Staging by explicit path beforehand is what made recovery possible.
+
+   - **review-fix found 4 real defects in my code** (kept): prototype pollution via `spec.states[fromRaw]` where state names are tenant data; `state.writableOnExit ?? {}` silently accepting `null`; non-string proposed state being *ignored* rather than denied (would have written null over a state field); `writableOnExit` naming a non-transition target.
+
+   - **Told the user x-transitions could be declared in `lobu.config.ts`.** Wrong — I misread `metadataSchema?: Record<string, unknown>` at define.ts:94 as belonging to `EntityType` when it belongs to `EntityEventKind`. `EntityType` has no such field, and apply passes `Omit<DesiredEntityType, "metadata">`. Corrected in msg 18's reply: **there is no config path today**; only `manage_entity_schema` at runtime or a direct DB write.
+
+5. **Problem Solving:**
+   - Established the memory board was stale: the write funnel (the blocker for all ERP steps 2–6) closed 08-16 and is CI-enforced with an empty allowlist.
+   - Reproduced the prod spike locally (posted invoice mutable) and closed it for agents/automations.
+   - Identified the value-blind gate as the actual blocker nobody had noted.
+   - Established three enforcement models and why reactions cannot enforce (post-commit + READ ONLY).
+   - Researched four external systems; concluded Convex validates the ingredients (isolate, no I/O, determinism, read-set tracking) but its OCC move requires owning the database.
+   - Verified compliance with the peer's #2818 rule (`req.sql` only, never `getDb()`).
+   - Diagnosed two distinct codex processes: the user's 25-hour session (main checkout, `run_sdk --org buremba`, 576,964,466 tokens, 236MB transcript, likely owner of the orphaned preview-env changes) versus my own review-fix orphan.
+
+6. **All user messages:**
+   - "there is another claude session running but i feel like i'm lost with it. many different surface of errors and i don't know what we're trying to archive. we wanted to build an erp and either bad architecture caught us or there were gaps we need to address. be honest"
+   - "so we're aiming for hard i guess, apart from erp what are the use-cases?"
+   - "in the plan how are we gonna implement the transitions etc"
+   - "hmm, weren't we gonna do this with automations, didn't it work"
+   - "so do we still need the hooks"
+   - "how will the trnasitiona work explain"
+   - "that interceptor willl be in the erp lobu apply not in the core codebase right"
+   - "hmm, so you say from project code we can't do our hooks that will be run in the transaction? how does neon run typescript for example let's dig in and think of the best appraoch"
+   - "this one https://neon.com/docs/compute/functions/overview"
+   - "yeah compare all, our interceptor can run embedded in isolate vm right"
+   - "yes let's do it. you took this responsibility away from that claude i suppose? maybe send a message to it so you don't step into each others toes. it didn't start the work right"
+   - "how does convex do for example"
+   - "should our design be similar to that"
+   - "ok let's do it properly. confirm the sdk api etc changes"
+   - "hmm, what's that codex session doing"
+   - "yes actaully tell me our sdk changes how the mutations hooks work"
+   - "can't users plug in their own functions"
+   - "how is it defined, show me. i thught the transitions feature can be code based not like x-transitions"
+   - "ah ok what if the user wants to map its own function"
+
+7. **Pending Tasks:**
+   - Answer msg 19: how a user maps their own function (evidence gathered, answer not yet written)
+   - Rebase onto `30e506c7e` (branch is 1 commit behind)
+   - Verify the `promote-keyed-entities` `FOR UPDATE` doesn't invert the peer's organization → children → ACL lock order
+   - Dispatch `make pre-pr-remote` (Depot is free), then open the PR
+   - Open decisions for the user: frozen = "no change" vs "no write at all"; must create start at `initial`; whether to build the typed `transitions()` builder and/or `writeRule()` hook (both are `@lobu/cli` surface changes needing sign-off)
+   - Memory corrections owed: the board claims transitions are declarable via `schemaExtras` (they aren't); `make review-fix` orphans a `codex exec` child surviving the make-wrapper kill
+   - Unresolved: the 25-hour codex session holding uncommitted changes (including an owletto submodule pointer) in the shared main checkout
+
+8. **Current Work:**
+
+   The committed branch is `feat/entity-transitions`, commit **`4f06e9ee3`** ("feat(server): enforce declarative entity state transitions"), 8 files, working tree clean, pre-commit biome + tsc passed, **49/49 tests green** (11 integration + 34 unit + 3 promotion-path).
+
+   Immediately before the cutoff I was answering the user's question "ah ok what if the user wants to map its own function". I had just discovered `reactionFromFile` at `define.ts:526-530` — the existing precedent for pointing config at a user's own code file:
+   ```ts
+   export function reactionFromFile<
+     _Handler extends ReactionHandler = ReactionHandler,
+   >(path: string): ReactionSource {
+     return { kind: "reactionSource", path };
+   }
+   ```
+   and had read `examples/lobu-crm/inbound-triage.reaction.ts` showing the real file shape (exported `input` JSON Schema + `export default async (ctx: ReactionContext, client: ReactionClient): Promise<void>`). I had gathered the evidence but had not yet composed the answer.
+
+   The answer taking shape: a `writeRuleFromFile("./hooks/invoice-rules.ts")` would follow the identical `{ kind, path }` pattern, with the file exporting `export default (ctx) => { ... ctx.deny(reason) }`, run through the existing `runScript` isolate harness but with **no SDK/client** and a single-digit-ms timeout instead of the 60s default. This is a `@lobu/cli` SDK surface change requiring explicit sign-off, and the unmeasured blocker remains per-write isolate create/compile/run/dispose cost.
+
+9. **Optional Next Step:**
+
+   Answer the user's question — "ah ok what if the user wants to map its own function" — by showing the concrete `writeRuleFromFile` design built on the `reactionFromFile` precedent I just read, contrasted with the typed `transitions()` builder from the previous message, and naming the sign-off required plus the isolate-cost blocker. I should also carry forward the correction I owe: as I stated in my previous message, "**So there is no way to declare transitions from `lobu.config.ts` today.** The only paths are `manage_entity_schema` at runtime, or a direct DB write. My server-side commit stands — it reads whatever is on `metadata_schema` — but making it usable from config needs an SDK surface, which I said it didn't." I should not start implementing any CLI surface until the user picks a shape, since AGENTS.md requires sign-off for SDK surface changes and I explicitly told the user "I'm not writing it until you say which shape."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

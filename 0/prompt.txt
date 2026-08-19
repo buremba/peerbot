@@ -1,0 +1,1 @@
+do you think it's worth pursuint this path for long term reliability? we have been struggling with bugs all along

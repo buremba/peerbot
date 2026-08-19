@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bez5b8zq0</task-id>
+<tool-use-id>toolu_01TAeAA1dgV3bEkPRAgX9SJe</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a7285fe4-b9be-4896-b328-534b9acbb52b/tasks/bez5b8zq0.output</output-file>
+<status>completed</status>
+<summary>Monitor "lobu PR 2228 CI checks until all report" stream ended</summary>
+</task-notification>

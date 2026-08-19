@@ -1,0 +1,137 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+User messages in this segment, in order:
+- **(Session continuation prompt)** — resume the merge sequence for #2779 → owletto#881 → pointer bump, and continue "do all next steps… list remaining work… save to memory so i can compact."
+- **"explain 2 to me so we can discuss"** — explain next-action item 2, the edge-surface sign-off (task #16), as a discussion rather than a build.
+- **"what do you thing next steps are for all the programs"** — a strategic judgment call across every program, not a re-listing.
+- **"yes lets go ahead one by one, i feel like were very slow and not making progress fast"** — stop planning, execute sequentially, with explicit impatience about pace.
+- **AskUserQuestion answer: `acl_managed (Recommended)`** — sign-off on the field name for the #16 contract change. This is the ONLY explicit approval given for an API surface change in this segment.
+
+2. **Key Technical Concepts:**
+- **`make ui-review` has exactly two passing paths** (`scripts/ui-review.ts`): "not applicable" when the owletto range is `ahead` AND `isDeployOnlyRange(files)`; or `ARTIFACT=<https url>` recorded as a comment on the **merged** owletto PR. No third path. `make bump` fails at its LAST step for src-touching ranges, after already posting the PR and `pi-review`.
+- **`scripts/lib/ui-review-proof.ts`** proof body asserts: *"The comparison is captured from one booted instance against the same data on both sides."*
+- **A force-push invalidates `pi-review` and `ui-review`** — `make pre-pr-remote` does not post them.
+- **Two guard asymmetry (central to #16/#17):** type surface `assertNotAuthorizationType` → `refuseAclManaged(type, action, false)` = **purpose only**; edge surface `assertNotAclManagedEdge` → `refuseAclManaged(type, action, true)` = **purpose OR slug**.
+- **`ACL_MANAGED_TYPE_SQL`** = `(rt.purpose IS NOT DISTINCT FROM 'authorization' OR rt.slug IS NOT DISTINCT FROM 'member_of')` — static text, expects the type table aliased `rt`, safe through `sql.unsafe`. Uses `IS NOT DISTINCT FROM` so negation is sound against NULL purpose.
+- **Local dev**: Vite runs in **middleware mode on the same port** (no separate vite port); `/` 404s for curl unless `Accept: text/html`; auto-signin via `src/lib/use-local-install-auto-signin.ts`; API auth = `POST /api/local-init` with header `X-Lobu-Client: owletto-web`, then `POST /api/<orgSlug>/<tool_name>`.
+- **vitest suites need packages built first**: `bun run scripts/build-packages.mjs`, then `node ../../node_modules/.bin/vitest` (bunx vitest fails with `Failed to resolve entry for package "@lobu/core"`).
+- **computer-use tiers**: browsers granted at tier **"read"** — screenshots only, no scroll/click/type. `save_to_disk` does not surface a file path.
+- Client generation: `packages/client` `openapi-ts.config.ts`, input `process.env.LOBU_OPENAPI_URL ?? http://localhost:8787/lobu/api/docs/openapi.json`, script `bun run generate`.
+
+3. **Files and Code Sections:**
+
+**MERGED — #2779, squash `2ea1e6c4`**: `charts/lobu/values.yaml`, `imagePullSecrets: []` (2 lines). Review noted prod's `packages/owletto/deploy/k8s/apps/lobu/base/helmrelease.yaml:68` already overrides to `[]`.
+
+**MERGED — owletto#881, squash `90c55a88`**: 4 files. `relationship-types-tab.tsx` splits `ownedTypes` into `localTypes` / `accessManagedTypes` with a "Managed by access control" `readOnly` section; `new-relationship-form.tsx` adds `rt.purpose !== PURPOSE_AUTHORIZATION &&` to the `activeTypes` filter.
+
+**MERGED — #2839, squash `a5e818dc`**: pointer bump `a25f5a7c → 90c55a88`. `origin/main` now pins `90c55a88`.
+
+**MERGED — #2840, squash `9ffbefc9`**: 3 files, +55/−1.
+- `packages/server/src/utils/workspace-instructions.ts`:
+```ts
+import { ACL_MANAGED_TYPE_SQL } from './relationship-validation';
+...
+      // `acl_managed` reuses the mutation guard's own predicate rather than a
+      // second copy of it: `link`/`unlink` refuse these types through
+      // assertNotAclManagedEdge, which is purpose-OR-slug, so a purpose-only
+      // test here would still promise the agent a write it cannot make during
+      // the window between a config declaring `member_of` and the first ACL
+      // sync classifying it. ACL_MANAGED_TYPE_SQL is static text expecting the
+      // type table aliased `rt`, which is the alias used here.
+      sql.unsafe(
+        `SELECT rt.slug, rt.name, rt.description, rt.is_symmetric, inv.slug as inverse_type_slug,
+                ${ACL_MANAGED_TYPE_SQL} AS acl_managed
+         FROM entity_relationship_types rt ...`
+      ),
+...
+      // Kept in the list rather than filtered out: reading these edges is
+      // legitimate and useful, so hiding the type would just make the agent
+      // blind to real schema. Only the WRITE is refused, so say exactly that.
+      if (rt.acl_managed) parts.push('read-only: access control');
+```
+- `packages/server/src/utils/relationship-validation.ts` — comment-only widening by review-fix ("for statements that classify by relationship type — selecting edges, or listing the types themselves").
+- `packages/server/src/__tests__/integration/tools/workspace-instructions.test.ts` — fixtures `grants_role` (classified, non-ACL slug) and `member_of` (ACL slug, unclassified), plus 3 tests. 29/29 green.
+
+**IN PROGRESS (uncommitted, staged) — `feat/edge-acl-managed` worktree, task #16:** 4 files, +98.
+- `packages/core/src/contracts/tools/manage-entity.ts` — in `RelationshipRowSchema` after `is_symmetric`:
+```ts
+  // Server-derived: this edge cannot be created or removed through this
+  // surface — `unlink`/`update_link`/`link` all refuse it via
+  // assertNotAclManagedEdge, because ACL edges are what the access gates read.
+  // A client without this renders an unlink control that is guaranteed to 403.
+  //
+  // A derived flag rather than the raw `purpose`: the edge guard tests
+  // purpose OR slug, so an unclassified `member_of` (declared by a config
+  // before its first ACL sync) reads `purpose: null` and is still refused.
+  // Only the server can evaluate that pair, so it ships the answer.
+  //
+  // Required, not optional: an absent flag reads as writable, which is the
+  // dead affordance this exists to remove. Every producer projects it from
+  // the one shared RELATIONSHIP_SELECT, so no path needs to omit it.
+  acl_managed: Type.Boolean(),
+```
+- `packages/server/src/tools/admin/manage_entity.ts` — added `ACL_MANAGED_TYPE_SQL` to the import block, and line 1475 in `RELATIONSHIP_SELECT`: `  ${ACL_MANAGED_TYPE_SQL} as acl_managed,`
+- `packages/server/src/__tests__/integration/authz/authorization-type-guards.test.ts` — 3 tests appended: "reports acl_managed on LIST_LINKS…", "reports acl_managed BEFORE classification — purpose alone would say writable", "reports acl_managed false for ordinary domain vocabulary". All use `expect(edge).toHaveProperty("acl_managed", <bool>)`.
+- `packages/client/src/generated/types.gen.ts` — regenerated, `acl_managed: boolean;` at lines 1205, 1233, 1266.
+
+**Memory written/updated:** NEW `reference_ui_review_artifact_requires_a_hosted_before_after.md`; updated `project_authorization_purpose_ui_program_state.md` (Landed section), `project_erp_gap_branches_status.md` (new "RE-CUT 2026-08-17" section at top), `MEMORY.md`.
+
+4. **Errors and fixes:**
+- **Background watcher grep pattern wrong** — `grep -qiE 'succeeded|failed|cancelled|complete'` never matches Depot's "finished". Killed (TaskStop) and replaced with a process-based wait.
+- **`pi-review`/`ui-review` missing on #2779** — I had told the user it was "ready to merge once the gate went green"; corrected myself: the gate doesn't post those, and the force-push invalidated them. Ran both before merging.
+- **`make bump` failed at ui-review** with `error: UI proof is required` — expected behavior for a src-touching owletto range; finished manually with `make ui-review ARTIFACT=`.
+- **computer-use denied Chrome** ("Google Chrome" and "com.google.Chrome" both `not_installed`); Safari granted at tier "read" — scroll blocked. Did not work around it.
+- **`screencapture -x -R…` captured a peer Claude session's terminal instead of Safari.** Deleted the file immediately and abandoned the approach — `screencapture` has no app filtering unlike the MCP tool. Recorded in memory as a hard rule.
+- **Two statements in one prepared statement** — `PostgresError: cannot insert multiple commands into a prepared statement`. Fixed with `sql.begin`; then review-fix removed the `set_config` ceremony entirely, which I **verified** against `db/migrations/20260816030000_acl_edge_chokepoint.sql` (trigger is `ON entity_relationships`, not the type table) rather than accepting on faith.
+- **Two bad greps during the #10 re-cut**: `--include=*.ts` fails in zsh; `from '.*relationship-validation'` missed double-quoted import paths. Both caught and corrected before trusting output.
+- **Nonsense ternary in my own test**: `expect(edge).toHaveProperty("acl_managed", false === true ? true : true)` → fixed to `true`.
+- **I relayed a false review-fix finding to the user (#21)** — claimed the vitest DATABASE_URL race "turns load into a silent pass". Verified and corrected: no live `skipIf` gates, no vacuous early-returns, `getTestDb()` throws → failed suite → non-zero exit → RED. Told the user plainly I'd passed it on without checking. Also downgraded half of #22 (the public-catalog part is a product question, not the same bug).
+
+5. **Problem Solving:**
+- Landed a 4-PR chain in dependency order (#2779 → owletto#881 → #2839 → #2840) with zero `check-drift` breakage.
+- Produced a genuine UI proof under severe tooling constraints (no browser automation, no screenshot export) by extracting rendered DOM structure from both SHAs against one booted server, plus a red/green run of the merged spec.
+- **Re-cut the ERP board's headline verdict**: the "funnel first / six bypassers / 22 bypass sites" framing measures against a single-funnel model the code deliberately rejected. `edge-writes.ts` documents it is NOT a replacement for `relationship-validation.ts` and NOT a general edge kernel. Two intentional surfaces exist (caller-facing guarded vs platform materializers privileged); the useful question is "which writers are reachable by a caller" = two.
+- Detected a live peer session on `feat/entity-transitions` (staged work, mtime 21:26) and stayed out of both write-policy blockers.
+
+6. **All user messages:**
+- (Session continuation prompt instructing resume without acknowledgement)
+- "explain 2 to me so we can discuss"
+- "what do you thing next steps are for all the programs"
+- "yes lets go ahead one by one, i feel like were very slow and not making progress fast"
+- AskUserQuestion selection: **"acl_managed (Recommended)"** for the `RelationshipRowSchema` derived field name
+- Final instruction: "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+
+**Standing constraints (from CLAUDE.md/AGENTS.md — remain in effect verbatim):** **Never write to `~/Code/lobu` directly** — run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout. **Stage by explicit path (`git add -- <paths>`, never `-A`)**; after commit/rebase `git diff --name-only origin/main...HEAD` must equal the intended file list. **`events` is append-only** — never `DELETE FROM events`. **Never bulk-delete prod `organization` rows.** **Never resolve merge conflicts in the GitHub web UI.** **Two writing agents must never share a worktree.** **Never add a table or change DB design, API surface, or SDK surface without surfacing the proposal and receiving confirmation first.** **Never auto-submit an interactive browser draft.** **Workers never receive real credentials.** No backwards-compat shims, no `@deprecated`. No "Co-Authored-By" or Claude attribution in commits. No new `*.md` unless asked. Always show the diff. End with a confidence score + 2–4 next actions. Never `git stash`. **Never `--admin` past a check that has not reported.** Check for a peer gate before dispatching. Absence needs `origin/main` grep after `git fetch`. Prefer `bun`, never npm/yarn/pnpm. Do not use workflows/deep-research or the Agent tool unless requested. Computer-use: browsers are tier "read" — **never use AppleScript, System Events, shell commands, or any other method to send clicks or keystrokes to a read-tier app.** Never use `screencapture` as a screenshot fallback (no app filtering; it captured a peer session's terminal).
+
+7. **Pending Tasks:**
+- **#16 (in progress)** — finish and merge the `acl_managed` edge-surface PR.
+- **#2** #2812 edge audit orphan; **#4** spike-derived-edges branches; **#6** sign-off valid-time on edges (#2801); **#7** sign-off identity scope (#2798, flagged as highest-leverage for the Prodma milestone); **#9** re-scope after #2824 (blocked by #2); **#12** PR B connector relationships SDK; **#13** PR C (blocked by #12, and in unresolved tension with #14); **#14** PR D assertion ledger; **#18** three conflicting PRs; **#19** device-action-wait test mirror; **#20** prod-verify #2839/owletto#881; **#21** LOW vitest fork-propagation flake; **#22** inverse-pair dedup can drop the ACL hint.
+- Two write-policy blockers (approval hold all-or-nothing; durable denial audit) — **currently owned by a peer session on `feat/entity-transitions`**.
+
+8. **Current Work:**
+Building task #16 in `/Users/burakemre/Code/lobu/.claude/worktrees/edge-acl-managed` (branch `feat/edge-acl-managed`, base `a5e818dc3`, PORT 9536), after the user signed off on the field name `acl_managed`.
+
+Completed: contract field added (required `Type.Boolean()`, fail-closed, justified because all three `sql.unsafe<RelationshipRow>` producers at lines 1662/1779/1890 share `RELATIONSHIP_SELECT` + `RELATIONSHIP_JOINS` which aliases `rt`); SQL projection added; 3 tests added and 17/17 green; both mutations killed by distinct tests (purpose-only → "BEFORE classification" test fails; `true as acl_managed` → "ordinary domain vocabulary" test fails) and the file restored IDENTICAL; client regenerated against a live booted server on port 9536 (3 sites); dev server stopped; `make review-fix` run (only rewrote my contract comment and test comments — generated client verified untouched by diff).
+
+The very last actions were staging by explicit path and checking for a peer gate:
+```
+M  packages/client/src/generated/types.gen.ts
+M  packages/core/src/contracts/tools/manage-entity.ts
+M  packages/server/src/__tests__/integration/authz/authorization-type-guards.test.ts
+M  packages/server/src/tools/admin/manage_entity.ts
+=== peer gate? ===
+(none)
+```
+
+9. **Optional Next Step:**
+Run `make pre-pr-remote` in `/Users/burakemre/Code/lobu/.claude/worktrees/edge-acl-managed` (tree is staged and clean, no peer gate running), then commit, push, `gh pr create`, `make review`, `make ui-review`, verify all 10 required contexts individually, and merge — the same sequence used for #2840.
+
+This is directly in line with the user's "yes lets go ahead one by one, i feel like were very slow and not making progress fast" and their `acl_managed` sign-off. My stated plan immediately before the summary request was: *"Clean, additive-only. Running `review-fix` then the gate."* and before that: *"Signed off: `acl_managed: boolean`. Building it now."*
+
+Note for the follow-up report: `review-fix` caveated *"Low-medium on the generated client: verified by equivalence, not by running the generator against a booted server"* — that caveat does **not** apply, because I did run `bun run generate` against a live server on port 9536 and confirmed `acl_managed` was present in the served OpenAPI spec first.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

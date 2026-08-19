@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxb8fx4ap</task-id>
+<tool-use-id>toolu_01FN3qUxJJH1ftoPftw3wVmK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bxb8fx4ap.output</output-file>
+<status>completed</status>
+<summary>Background command "review-fix on 2770" completed (exit code 0)</summary>
+</task-notification>

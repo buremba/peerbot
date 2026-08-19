@@ -1,0 +1,1 @@
+when bubblewrap is not available it works right? also when is bubblewrap used, not in the sandboxes like vercel right? bubblewrap is only used locally if the user allowed some local commands mapped to theirs i believe

@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bljmkmmnu</task-id>
+<summary>Monitor event: "release PR #2276 integration check"</summary>
+<event>PR2276 all required checks reported and GREEN
+PR2276 watch ended</event>
+</task-notification>

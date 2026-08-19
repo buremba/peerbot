@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bj24e60g5</task-id>
+<tool-use-id>toolu_01TsyUwsECVcvcV2boWnSW8U</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/bj24e60g5.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR #2229 CI outcome (pass/fail)" stream ended</summary>
+</task-notification>

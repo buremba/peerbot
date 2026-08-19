@@ -1,0 +1,189 @@
+<task-notification>
+<task-id>a2e57f9b5427ad28a</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9423cecc-fd80-4d65-849a-4ac8a447f5b7/tasks/a2e57f9b5427ad28a.output</output-file>
+<status>completed</status>
+<summary>Agent "Map skills plumbing core/cli/apply" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have a complete map. Here's the report.
+
+---
+
+# Skills plumbing map — issue #2320 triage
+
+## 1. Declarative API (`packages/cli/src/config/define.ts`, 681 lines)
+
+All four factories live in one file. Note: these are **plain TS interfaces + identity-ish factory functions — there is no TypeBox/zod schema in the CLI declarative layer at all.** Validation happens later (loader throws `ValidationError`; server validates with TypeBox).
+
+| Symbol | Location |
+|---|---|
+| `defineAgent` | `packages/cli/src/config/define.ts:576` (interface `Agent` at `:544`) |
+| `defineSkill` | `packages/cli/src/config/define.ts:622` (interface `Skill` at `:600`) |
+| `skillFromFile` | `packages/cli/src/config/define.ts:633` |
+| `defineBehavior` | `packages/cli/src/config/define.ts:449` (interface `Behavior` at `:398`) |
+| `defineConfig` | `packages/cli/src/config/define.ts:679` (interface `Project` at `:641`) |
+
+**`Skill` (define.ts:600-619)** — accepts exactly 5 fields:
+```
+kind: "skill"        (readonly literal)
+name?: string        // dedup key; required for inline, derived from frontmatter/folder for file
+description?: string
+content?: string     // markdown body
+nixPackages?: string[]
+path?: string        // set by skillFromFile; mutually exclusive with inline fields
+```
+
+`defineSkill` narrows to `Omit&lt;Skill, "kind"|"path"&gt; &amp; { name: string }`. `skillFromFile(path, opts?: { name?: string })`.
+
+**`Agent.skills?: Skill[]`** at `define.ts:560`; **`Agent.nixPackages?: string[]`** at `define.ts:567`.
+
+## 2. `skills_config` — shape and read/write sites
+
+**The DB shape is much wider than the CLI's `Skill`.** Canonical TypeBox schema:
+
+- `packages/core/src/contracts/agent-settings.ts:119-131` — `SkillConfigSchema`:
+  ```
+  repo: string            (REQUIRED)
+  name: string            (REQUIRED)
+  description?: string
+  instructions?: string
+  enabled: boolean        (REQUIRED)
+  system?: boolean
+  content?: string
+  nixPackages?: string[]
+  modelPreference?: string
+  thinkingLevel?: "off"|"low"|"medium"|"high"
+  ```
+- `agent-settings.ts:133-136` — `SkillsConfigSchema = { skills: SkillConfig[] }`
+- `agent-settings.ts:157` — `skillsConfig` slot on `AgentSettingsStoredSchema`
+- Re-exported: `packages/core/src/types.ts:415`, `packages/core/src/index.ts:120`
+
+**DB column**: `db/migrations/00000000000000_baseline.sql:489` — `skills_config jsonb DEFAULT '{"skills": []}'::jsonb` on `agents`.
+
+**Persistence**: `packages/server/src/lobu/stores/postgres-stores.ts:89` (read → `skillsConfig`), `:150` (select list), `:172` (write `sql.json(settings.skillsConfig ?? { skills: [] })`), `:201` (reset to `'{"skills": []}'`).
+
+**Write-boundary validation**: `packages/server/src/lobu/agent-routes.ts:1753-1778` (`validateSkillsConfig`), called at `:1804-1812` returning `invalid_skills_config`.
+
+**Read/consumption**:
+- `packages/server/src/gateway/services/instruction-service.ts:99` — filters `enabled &amp;&amp; content`, builds the progressive-disclosure summary block (`:110-140`), pointing the agent at `cat .skills/*/SKILL.md`.
+- `packages/server/src/gateway/gateway/index.ts:717-724` — session-context endpoint emits `skillsConfig: {name, content}[]` (drops everything else).
+- `packages/agent-worker/src/runtime/session-runner.ts:711-748` — writes each skill to `&lt;workspace&gt;/.skills/&lt;name&gt;/SKILL.md`, prunes stale dirs. Name sanitized to `/^[a-zA-Z0-9._-]+$/`.
+- `packages/agent-worker/src/runtime/session-context.ts:82, 91, 102, 302, 406` — `SkillContent[]` transport type.
+- `packages/server/src/gateway/routes/public/agent-config.ts:291` (public read) and `:454-468` (strips `integrations`, `modelPreference`, `thinkingLevel` on the sanitized read path).
+- `packages/server/src/gateway/services/declared-agent-registry.ts:137` — passes `skillsConfig` through for code-declared agents.
+- `packages/server/src/gateway/commands/built-in-commands.ts:72-73` — count for a slash command.
+
+## 3. `lobu apply` flow
+
+**Load/resolve** (`packages/cli/src/commands/_lib/apply/desired-state.ts`):
+- `parseSkillFrontmatter` `:323` — YAML frontmatter regex; `SkillFrontmatter` interface at `:317` accepts only `name`, `description`, `nixPackages`.
+- `skillToConfig` `:348-364` — synthesizes `repo: \`${source}/${name}\`` (`"inline/foo"` or `"file/foo"`) and hardcodes `enabled: true`.
+- `readSkillFile` `:367`, `resolveSkill` `:394`, `resolveAgentSkills` `:428` (dedup-by-name, throws on duplicate).
+- Wired in at `:1012-1024` — `resolveAgentSkills(agent.skills ?? [], …)` → `mergeAgentDirArtifacts(settings, markdown, localSkills)`.
+
+**Union + merge** (`packages/cli/src/commands/_lib/apply/map-config.ts`):
+- `mergeAgentDirArtifacts` `:282-306` — sets `settings.skillsConfig = { skills }` at `:292`, then unions nix: agent packages first, then `localSkills.flatMap(s =&gt; s.nixPackages ?? [])`, deduped via `Set` (`:295-305`).
+- Agent-level nix laid down at `:370-371`.
+- `mapBehavior` `:537-629` — `prompt: watcher.prompt` at `:607`. **Yes, apply sends a `prompt` for behaviors, and it is required.**
+- Validation pass at `:872-898` (unique slugs, agent-exists, connection-exists).
+- `skillsConfig: "post-load"` marker at `map-config.ts:46`.
+
+**Diffing** (`packages/cli/src/commands/_lib/apply/diff.ts`):
+- `deepEqual` `:182` — key-sorted JSON stringify.
+- Agent settings: `SETTINGS_FIELDS` `:328-339` includes `"skillsConfig"` and `"nixConfig"`; `diffSettings` `:341-358` does whole-field `deepEqual`. **A skill content change ⇒ full `patchAgentSettings` PATCH, no versioning.**
+- Behavior: `diffWatcher` `:467-579`. Scalar fields (`:482-530`): triggers, agent_id, device_worker_id, scheduler_client_id, notification_channel/priority, min_cooldown_seconds, tags, agent_kind. **Version-bound** (`:532-563`): `prompt` (`:533`), `sources`, `reactions_guidance`, `keying_config`, `classifiers`. Returns `versionBoundFields` at `:576`.
+
+**Execution** (`packages/cli/src/commands/_lib/apply/apply-cmd.ts`):
+- Agent settings PATCH: `:788` `ctx.client.patchAgentSettings(row.id, desired.settings)`.
+- Behaviors: `applyBehaviors` `:832-959`. Create at `:851-869`; scalar update → `updateBehavior` `:886`; version-bound → `createBehaviorVersion` `:924-941`; reaction script → `setReactionScript` `:947` (always re-pushed, no drift signal).
+
+**Where behavior `skills?: string[]` would slot in**: add the field to `Behavior` (`define.ts:398-447`), resolve against the owning agent's already-resolved `SkillConfigEntry[]` inside `desired-state.ts` near `:1012-1024` (skills are resolved per-agent there, so the join is naturally available), then either (a) compile into the behavior's `prompt` before `mapBehavior` at `map-config.ts:607`, or (b) add a new version-bound field in `diffWatcher` `:532` + `createBehaviorVersion` `:924`. Option (a) requires no server change and rides the existing `prompt` version-bound path; option (b) needs a new column + `manage_behaviors` field.
+
+## 4. `nixPackages` class-wide inventory (every file to change to strip it)
+
+**Declarative / CLI (5)**
+- `packages/cli/src/config/define.ts:567` (agent-level, likely stays), **`:612` (skill-level)**, doc-comment at `:596`
+- `packages/cli/src/commands/_lib/apply/desired-state.ts:320` (`SkillFrontmatter`), `:353`, `:362`, `:409`, `:420`; doc `:344-345`
+- `packages/cli/src/commands/_lib/apply/map-config.ts:296-305` (skill nix union), `:370-371` (agent nix), doc `:277-280`
+- `packages/cli/src/commands/_lib/init-from-org/bootstrap.ts:371-373` (agent), **`:423-426` (skill emit — `lobu pull` codegen)**
+- `packages/cli/src/templates/README.md.tmpl:50`
+
+**Contracts / core (4)**
+- `packages/core/src/contracts/agent-settings.ts:127` (`SkillConfigSchema.nixPackages`)
+- `packages/core/src/api-types.ts:35`
+- `packages/core/src/worker/auth.ts:126, 168-169, 208, 355-365` (signed token claim + validator)
+- `packages/core/src/types.ts:415`, `packages/core/src/index.ts:120` (re-exports of `SkillConfig`)
+
+**Server — resolve-time union (PR #2218) + runtime (10)**
+- `packages/server/src/gateway/services/platform-helpers.ts:99-125` — **the PR #2218 union**: `settings.skillsConfig.skills.filter(enabled).flatMap(nixPackages)` merged with request nix + `settings.nixConfig`
+- `packages/server/src/gateway/services/declared-agent-registry.ts:116-117`
+- `packages/server/src/gateway/orchestration/agent-run-input.ts:44, 104`
+- `packages/server/src/gateway/orchestration/deployment-manager.ts`, `message-consumer.ts`, `worker-token-claims.ts` (grep-confirmed hits)
+- `packages/server/src/gateway/routes/internal/runtime.ts`, `packages/server/src/gateway/routes/public/agent-config.ts:293`
+- `packages/server/src/gateway/runtime/packages.ts` (`sanitizeNixPackages`, `nixPackageSetHash`), `runtime/types.ts`, `runtime/providers/vercel.ts:260-291`, `gateway/config/index.ts`, `gateway/gateway/index.ts`
+- `packages/server/src/worker-api/poll.ts:932, 941` (connector runtime nix — **separate lineage, not skill nix**)
+
+**Catalog (4)**
+- `packages/server/src/catalog/installed.ts:143` (`nix_packages: skill.nixPackages`)
+- `packages/owletto/src/lib/skill-catalog.ts:13, 17, 66`
+- `packages/owletto/src/lib/api/agents.ts:85, 667, 685` (`AgentSkillsCatalogItem`)
+
+**Owletto UI (5)**
+- `agent-skill-context.tsx:25, 129-130`; `agent-skill-detail-form.tsx:51-55`; `agent-skills-create.tsx:71`; `skill-config-editors.tsx:12, 16`; `skill-editor.tsx:12, 35, 54`
+
+**Worker deny-list (#2259) (2)**
+- `packages/agent-worker/src/runtime/tool-policy.ts:17` (`DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES`), `:321`, `:343`, `:361`, `:463`
+- `packages/agent-worker/src/runtime/tools.ts:268` (the "declare it in nixPackages" error string)
+
+**Connector-worker (separate nix lineage, 4)** — `connector-worker/src/daemon/executor.ts`, `executor/interface.ts`, `executor/runtime.ts`, `executor/subprocess.ts`; validator `packages/connector-sdk/src/nix-package.ts`
+
+**Docs / examples (4)**
+- `docs/SECURITY.md:18, 27, 29, 87` (`:87` is specifically "Review skill `nixPackages` declarations")
+- `examples/sales/skills/account-brief/SKILL.md:4` — **the only example with skill-level frontmatter nix**
+- `examples/personal-finance/lobu.config.ts:33` + `INGESTION.md:31` — **agent-level, not skill-level**
+
+**Tests (10)**
+- `packages/cli/src/__tests__/cli-ux.test.ts`, `packages/cli/src/config/__tests__/define.test.ts`
+- `apply/__tests__/load-config.test.ts:199`, `map-config.test.ts:1008, 1247`, `diff.test.ts`, `apply-cmd-dryrun.test.ts`
+- `packages/core/src/__tests__/worker-auth.test.ts:357-390`
+- `packages/server/src/gateway/__tests__/platform-helpers-nix-union.test.ts` (**the #2218 test**), `enqueue-nix-config.test.ts`, `agent-tooling-resolver.test.ts`, `declared-agent-registry.test.ts`, `runtime-route.test.ts`, `vercel-network-policy.test.ts`, `worker-token-*.test.ts`, `durable-replay-claim-parity.test.ts`
+- `packages/owletto/src/lib/skill-catalog.test.ts:14`
+- `packages/server/src/__tests__/unit/nix-package-attr-ref.test.ts`, `packages/connector-worker/src/__tests__/nix-package-attr-ref.test.ts`
+
+**Also**: `config/knip.ts:110` allowlists the config DSL exports.
+
+## 5. Behavior `prompt` — yes, it already exists
+
+`packages/cli/src/config/define.ts:408` — `prompt: string` on `Behavior`, **required, not optional**. No `goal` field anywhere. Flows: `map-config.ts:607` → `DesiredWatcher.prompt` (`desired-state.ts:99`) → `apply-cmd.ts:856` (create) / `:926` (create_version). Diffed as version-bound at `diff.ts:533`.
+
+## Seams and surprises
+
+1. **`SkillConfig` (DB) is a strict superset of `Skill` (declarative).** `repo`, `enabled`, `system`, `instructions`, `modelPreference`, `thinkingLevel` exist in the stored schema but have **no declarative expression**. `repo` is synthesized as `"inline/&lt;name&gt;"` / `"file/&lt;name&gt;"` (`desired-state.ts:356`) and `enabled` is hardcoded `true` (`:359`). Any "thin skills" reshape has to decide the fate of the six UI/catalog-only fields — and `agent-config.ts:454-468` already actively *strips* `modelPreference`/`thinkingLevel` on one read path, so the schema is already partly vestigial.
+
+2. **No TypeBox/zod in the declarative layer.** The issue may assume a schema to edit; there isn't one on the CLI side — only the interfaces in `define.ts` and the loader's throw sites. The TypeBox schema is server-side only.
+
+3. **Skill-level nix has *two* independent union points, not one.** Apply-time bake into `nixConfig` (`map-config.ts:296-305`) *and* resolve-time re-union in `platform-helpers.ts:99-125` (PR #2218). They overlap by design (the comment at `:99-107` explains: UI/catalog-enabled skills write only `skills_config` so nothing recomputes `nixConfig`). Stripping skill nix must remove both, and #2218's test file is a dedicated regression guard that will need deleting, not editing.
+
+4. **`agent.nixPackages` and `skill.nixPackages` are entangled but separable.** Only `examples/sales/skills/account-brief/SKILL.md:4` uses skill-level frontmatter nix in-repo; `examples/personal-finance` uses agent-level. The blast radius for skill-only stripping is smaller than the raw grep count suggests.
+
+5. **Three unrelated nix lineages share the grep.** Connector runtime nix (`worker-api/poll.ts:932`, all of `connector-worker/`, `connector-sdk/nix-package.ts`) and per-request nix (`baseOptions.nixConfig`) are *not* skill nix. Roughly half the ~60 hit files are out of scope.
+
+6. **Behaviors do not carry skills today, and there is no join/compile step.** Skills reach the agent only via `skillsConfig` → session-context → `.skills/` filesystem sync + a progressive-disclosure prompt block. There is no place where skill content is concatenated into any prompt — `instruction-service.ts:110-140` emits only names/descriptions and tells the agent to `cat` the file. A behavior-scoped `skills` join would be the first such compile step in the codebase.
+
+7. **Version-diffing asymmetry.** Agent settings (incl. `skillsConfig`) are a flat PATCH with no version chain; behaviors have a `watcher_versions` chain. If behavior skills compile into `prompt`, a skill edit would silently bump *every* behavior version referencing it — potentially large version churn on apply. `reaction_script` (`diff.ts:463-465, 565`) already has the opposite pathology (no drift signal, always re-pushed).
+
+8. **Frontmatter parser is minimal.** `desired-state.ts:327` uses a single regex + `yaml.parse`, and `SkillFrontmatter` (`:317`) silently ignores unknown keys — adding frontmatter fields is cheap, but there is no unknown-key rejection today.
+
+---
+
+**Confidence: 88/100**
+
+**Not verified:**
+- Issue #2320's actual text (no network fetch made) — the "issue's assumptions" section is inferred from your prompt's framing only.
+- PR #2218 / #2259 diffs directly; I identified them by matching the code/comments to your descriptions (`platform-helpers.ts:99-125` for #2218, `tool-policy.ts:17` for #2259).
+- `dist/` build artifacts (`packages/connector-sdk/dist/nix-package.*`) — excluded as generated.
+- Server-side `manage_behaviors` handler internals (`create_version` semantics for field inheritance) — only read the CLI's calling convention and the comment at `apply-cmd.ts:920-922`.
+- Whether `packages/server/src/gateway/orchestration/{deployment-manager,message-consumer,worker-token-claims}.ts` and `routes/internal/runtime.ts` touch *skill* nix vs. only agent/request nix — grep-confirmed hits, line-level inspection not done.
+- Whether any migration beyond the baseline touches `skills_config`.</result>
+<usage><subagent_tokens>63767</subagent_tokens><tool_uses>38</tool_uses><duration_ms>193562</duration_ms></usage>
+</task-notification>

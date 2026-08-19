@@ -1,0 +1,1 @@
+one question, can postgresql take like 700gb data in here, is tht possible

@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The restore flow can persist empty local state after a skipped or failed restore, violating the intended restore-before-save ordering and losing durable card state. Focused tests and builds pass, but they do not cover this race.
+
+Review comment:
+
+- [P2] Persist only after the restore actually completes — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:527-528
+  When a replay carries a snapshot capability, `restoreSnapshot()` resolves without applying state when the same key is already in flight and also catches RPC failures. This caller then runs `persistSnapshotState()` because `hasLiveToolOutput` is true even for an empty preloaded `toolOutput`, so a `hostcontextchanged` restore racing `connect()` or a transient restore error can save the initial `{}` view state and erase stored pagination/disclosure state. Join the active restore and gate persistence on successful completion.
+  </results>
+  </user_action>

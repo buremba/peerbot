@@ -1,0 +1,25 @@
+why are they failing all  MCP client for `codex_apps` failed to start: MCP startup failed: handshaking with MCP server failed: Send message error Transport
+  [rmcp::transport::worker::WorkerTransport<rmcp::transport::streamable_http_client::StreamableHttpClientWorker<codex_rmcp_client::http_client_adapter::StreamableH
+  ttpClientAdapter>>] error: unexpected server response: HTTP 401: {
+    "error": {
+      "message": "Provided authentication token is expired.",
+      "type": null,
+      "code": "token_expired",
+      "param": null
+    },
+    "status": 401,
+    "detail": {
+      "code": "token_expired",
+      "message": "Provided authentication token is expired."
+    }
+  }, when send initialize request
+
+⚠ MCP client for `lobu` failed to start: MCP startup failed: failed to refresh OAuth tokens for server lobu: OAuth token refresh failed: Server returned error
+  response: invalid_grant: Invalid or expired refresh token
+
+⚠ MCP client for `lobu-local` failed to start: MCP startup failed: handshaking with MCP server failed: Send message error Transport
+  [rmcp::transport::worker::WorkerTransport<rmcp::transport::streamable_http_client::StreamableHttpClientWorker<codex_rmcp_client::http_client_adapter::StreamableH
+  ttpClientAdapter>>] error: Client error: HTTP request failed: http/request failed: error sending request for url
+  (https://buraks-macbook-pro-1.brill-kanyu.ts.net:8443/mcp), when send initialize request
+
+⚠ MCP startup incomplete (failed: codex_apps, lobu, lobu-local)

@@ -1,0 +1,1 @@
+ok you say we need to use smarter models? how can we quarantee durability and consistency

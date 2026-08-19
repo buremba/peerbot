@@ -97,11 +97,12 @@ describe('device virtual feed — outcome mapping', () => {
   });
 
   // Only reachable in production after the full 60s queue budget, so it is
-  // pinned here rather than waited for.
-  it('reports a timeout as a timeout, with the budget that elapsed', () => {
+  // pinned here rather than waited for. The phase-specific budget travels in
+  // `error_message` (the waiter's job), not in `deliver`'s prefix.
+  it('reports a timeout as a timeout', () => {
     expect(() =>
       deliver(params, { status: 'timeout', error_message: 'no device claimed the run' })
-    ).toThrow(/timed out after 60s: no device claimed the run/);
+    ).toThrow(/timed out: no device claimed the run/);
   });
 });
 

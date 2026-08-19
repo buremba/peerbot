@@ -35,7 +35,6 @@
  * means uncopied, not un-transmitted.
  */
 
-import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import { getDb, pgTextArray } from '../db/client';
 import { createConnectorOperationRun } from '../runs/queue-service';
 import { classifyRunOutcome } from '../runs/run-outcome';
@@ -450,8 +449,8 @@ async function scrubVirtualFeedRunPayload(
 
 /**
  * Turn a finished device action into the caller's result, or an error. Exported
- * for test: the timeout branch is otherwise only reachable after the full
- * 60s queue budget.
+ * for test: short of an aborted wait, the timeout branch is otherwise only
+ * reachable after a full queue budget has elapsed.
  */
 export function deliver(
   p: DeviceVirtualFeedParams,
@@ -460,18 +459,23 @@ export function deliver(
   if (outcome.status === 'timeout') {
     // An ABORTED wait is not a device timeout, and must not be reported as one:
     // the device may be perfectly healthy and simply slower than the deadline
-    // this particular caller could afford. Quoting the 60s queue budget here
-    // would send the reader diagnosing a device that was never given 60s.
+    // this particular caller could afford. Reporting a queue budget here would
+    // send the reader off diagnosing a device that was never given one.
     if (p.signal?.aborted) {
       throw new Error(
         `Live read of feed '${p.feedKey}' was cut short by the caller's read deadline ` +
           'before the paired device answered.'
       );
     }
+    // No duration is quoted here: `waitForDeviceActionRun` already names the
+    // phase-specific budget in `error_message` (60s pre-claim, 95s post-claim),
+    // and this caller cannot tell which phase it lost. Quoting the 60s queue
+    // budget would mislabel a run a device CLAIMED and then hung on as a 60s
+    // timeout when it actually waited 95s.
     throw new Error(
-      `Live read of feed '${p.feedKey}' timed out after ${Math.round(
-        DEVICE_ACTION_QUEUE_BUDGET_MS / 1000
-      )}s: ${outcome.error_message ?? 'the paired device did not respond'}`
+      `Live read of feed '${p.feedKey}' timed out: ${
+        outcome.error_message ?? 'the paired device did not respond'
+      }`
     );
   }
   if (outcome.status === 'failed') {

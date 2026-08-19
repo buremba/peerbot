@@ -1,0 +1,188 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The overarching program (established pre-compaction) is to stop hacking pi's system prompt with regexes and instead have Lobu own the agent system prompt properly, while preserving per-agent identity. Agreed 3-PR plan:
+   - **PR1**: stop pi discovering resources from the agent-writable workspace (security) — now MERGED as #2313
+   - **PR2**: gateway returns `identityMd`/`soulMd`/`userMd`/`unconfigured` separately instead of a welded blob — now OPEN as #2317
+   - **PR3**: worker owns the system prompt document (builder + `before_agent_start` delivery + tests); delete `replaceBasePromptIdentity`, `PI_CODING_AGENT_OPENER_RE`
+
+   In this session the user's explicit messages were:
+   - "why is it failing" — asking about test failures observed in my output
+   - "go ahead do those. if there is any simplification we can do" — authorizing my listed next actions (merge #2313, live prompt diff verification, start PR2, investigate the review-fix orphan) plus a simplification pass
+
+2. **Key Technical Concepts:**
+   - `@mariozechner/pi-coding-agent` v0.73.1; `AgentSession`, `createAgentSession`, `DefaultResourceLoader`, `ResourceLoader` interface (9 members), `LoadExtensionsResult`, `createExtensionRuntime`
+   - pi resource discovery from `cwd`: `.pi/extensions/*.ts` (jiti.import → EXECUTED in-process), `.pi/prompts/*.md`, `.pi/SYSTEM.md`, `.pi/APPEND_SYSTEM.md`, `.pi/skills`, ancestor `.agents/skills`, `AGENTS.md`/`CLAUDE.md`
+   - Agent workspace is agent-writable (`write`/`bash`) and pod-persistent (`app.workspaces` is pod-local, not a PVC)
+   - `collectSkillEntries` recurses into subdirs and follows symlinks — flags discard results only AFTER `reload()` walks the tree
+   - Gateway↔worker session-context wire contract; convention is to declare the type on BOTH sides (`McpStatus` already duplicated)
+   - Mutation testing as evidence that a test bites; byte-for-byte prompt comparison via SHA-256
+   - Squash-merge breaks ancestry — gate prod rollout on `gh pr view --json mergeCommit`, argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`
+   - macOS SysV shared-memory exhaustion from orphaned embedded-postgres
+
+3. **Files and Code Sections:**
+
+   **PR1 — `/Users/burakemre/Code/lobu/.claude/worktrees/pi-loader-hardening/` (branch `feat/pi-loader-hardening`, MERGED as #2313, squash `99b50cc65`)**
+
+   - `packages/agent-worker/src/runtime/pi-resources.ts` (NEW) — zero-I/O `ResourceLoader`:
+     ```ts
+     export function createLobuResourceLoader(): ResourceLoader {
+       // Built once, not per call: `AgentSession._buildRuntime` reads this result and
+       // writes extension flag values onto `runtime`, which a fresh object per call
+       // would silently discard.
+       const extensions: LoadExtensionsResult = {
+         extensions: [], errors: [], runtime: createExtensionRuntime(),
+       };
+       return {
+         getExtensions: () => extensions,
+         getSkills: () => ({ skills: [], diagnostics: [] }),
+         getPrompts: () => ({ prompts: [], diagnostics: [] }),
+         getThemes: () => ({ themes: [], diagnostics: [] }),
+         getAgentsFiles: () => ({ agentsFiles: [] }),
+         getSystemPrompt: () => undefined,
+         getAppendSystemPrompt: () => [],
+         extendResources: () => {
+           // pi calls this when an extension's `resources_discover` hook returns
+           // paths. With no extensions loaded it never fires; ignoring the paths
+           // keeps the "nothing is read from disk" property even if one is added.
+         },
+         reload: async () => {
+           // Nothing to re-read: every getter above is a constant.
+         },
+       };
+     }
+     ```
+     Note: comments had to go INSIDE the empty braces to satisfy biome `noEmptyBlockStatements`.
+
+   - `packages/agent-worker/src/runtime/session-runner.ts` — sealed loader (the fixer's contribution, verified by me):
+     ```ts
+     type BuildAgentSessionOptions = Omit<
+       CreateAgentSessionOptions,
+       "resourceLoader"
+     > & {
+       /** Resource isolation is a Lobu invariant, not a caller override. */
+       resourceLoader?: never;
+       ...
+     };
+     // inside buildAgentSession:
+     const cwd = options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd();
+     const settingsManager = options.settingsManager ?? SettingsManager.inMemory();
+     const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
+     const authStorage = options.authStorage ?? options.modelRegistry?.authStorage ?? AuthStorage.inMemory();
+     const modelRegistry = options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
+     const resourceLoader = createLobuResourceLoader();
+     const result = await createAgentSession({ ...options, cwd, settingsManager, sessionManager, authStorage, modelRegistry, resourceLoader });
+     ```
+     `resourceLoader` is placed AFTER `...options` so it always wins.
+
+   - `packages/agent-worker/src/__tests__/pi-resource-discovery.test.ts` — 9 tests: extension not executed, prompt template not registered, SYSTEM.md not used, APPEND_SYSTEM.md not appended, AGENTS.md not loaded, TMPDIR-boot regression, loader-contract unit test, sealed-loader test, skill not registered, hostile-skill-tree timing test.
+
+   **PR2 — `/Users/burakemre/Code/lobu/.claude/worktrees/agent-instruction-layers/` (branch `feat/agent-instruction-layers`, PR #2317, commit `448cc8b80`)**
+
+   - `packages/server/src/gateway/services/instruction-service.ts`:
+     ```ts
+     interface AgentInstructionLayers {   // NOT exported (knip) — fixer un-exported it
+       identityMd: string;
+       soulMd: string;
+       userMd: string;
+       unconfiguredNotice: string;
+     }
+     const EMPTY_AGENT_LAYERS: AgentInstructionLayers = {
+       identityMd: "", soulMd: "", userMd: "", unconfiguredNotice: "",
+     };
+     interface SessionContextData {
+       agentLayers: AgentInstructionLayers;
+       platformInstructions: string; networkInstructions: string;
+       skillsInstructions: string; mcpStatus: McpStatus[];
+     }
+     // replaced the welding block:
+     let agentLayers: AgentInstructionLayers = EMPTY_AGENT_LAYERS;
+     if (this.agentSettingsStore && context.agentId && context.orgScoped !== false) {
+       try {
+         const settings = await this.agentSettingsStore.getSettings(context.agentId, { organizationId: context.organizationId });
+         const identityMd = settings?.identityMd?.trim() ?? "";
+         const soulMd = settings?.soulMd?.trim() ?? "";
+         const userMd = settings?.userMd?.trim() ?? "";
+         const unconfigured = !identityMd && !soulMd && !userMd;
+         agentLayers = { identityMd, soulMd, userMd,
+           unconfiguredNotice: unconfigured ? buildUnconfiguredAgentNotice(options?.settingsUrl) : "" };
+         logger.info(`Read agent layers (identity ${identityMd.length} chars, soul ${soulMd.length} chars, user ${userMd.length} chars${unconfigured ? ", unconfigured" : ""})`);
+       } catch (error) { logger.error("Failed to read agent instruction layers:", error); }
+     }
+     ```
+
+   - `packages/server/src/gateway/gateway/index.ts` — response now `agentLayers: contextData.agentLayers`; log now `${...identityMd.length}/${...soulMd.length}/${...userMd.length} chars identity/soul/user`
+
+   - `packages/agent-worker/src/runtime/session-context.ts` — exports `AgentInstructionLayers` + `EMPTY_AGENT_LAYERS`; `SessionContextResponse.agentLayers?`; `const agentLayers = data.agentLayers ?? EMPTY_AGENT_LAYERS;`
+
+   - `packages/agent-worker/src/runtime/session-runner.ts`:
+     ```ts
+     function composeAgentInstructions(layers: AgentInstructionLayers): string {
+       const sections: string[] = [];
+       if (layers.identityMd.trim()) sections.push(`## Agent Identity\n\n${layers.identityMd.trim()}`);
+       if (layers.soulMd.trim()) sections.push(`## Agent Instructions\n\n${layers.soulMd.trim()}`);
+       if (layers.userMd.trim()) sections.push(`## User Context\n\n${layers.userMd.trim()}`);
+       const composed = sections.join("\n\n");
+       return composed || layers.unconfiguredNotice;
+     }
+     export function resolveAgentIdentity(layers: AgentInstructionLayers | undefined): string {
+       const composed = layers ? composeAgentInstructions(layers).trim() : "";
+       return composed.length > 0 ? composed : LOBU_DEFAULT_IDENTITY;
+     }
+     // call site: const identity = resolveAgentIdentity(context.agentLayers);
+     ```
+
+   - Test files updated: `replace-base-prompt-identity.test.ts` (12 pass, byte-exact composition assertions), `prompt-assembly-smoke.test.ts` (3 pass), `embedded-tools.test.ts`, `instruction-service.test.ts` (added `"keeps identity, soul and user in their own fields (no welded blob)"`), `session-context-cross-tenant.test.ts`, `worker-gateway-session-context.test.ts`, `worker-response-liveness.test.ts`, `worker-session-context-model-fallback.test.ts`, `worker-token-refresh-route.test.ts`
+
+4. **Errors and fixes:**
+
+   - **biome `noEmptyBlockStatements`** on `extendResources: () => {}` / `reload: async () => {}` → fixed by moving explanatory comments INSIDE the braces.
+   - **Merge-conflict markers appeared mid-run** — an interactive rebase was in progress replaying `8bf5c4d5f` onto `1e80f2533`. I initially blamed an orphaned `make review-fix`; **I later proved that wrong** — `scripts/review-fix.sh` contains no `git rebase`/`git commit` and there are no custom git hooks. The rebase came from my own pre-compaction lost tool calls. I corrected this to the user explicitly.
+   - **`7 pass / 2 fail` the user asked about** — I could not name the failing tests because I had piped output through `tail -4`. Honest answer given: torn read during the in-flight rebase; every run since is 0 fail. I flagged discarding the output as my mistake.
+   - **I wrongly proposed dropping the timing test** as a CI flake risk. Measured: boot 0.5ms, `delta=-0.1` over six runs, budget 250ms. Mutation back to flags-based `DefaultResourceLoader` → 627ms and it was the ONLY failing test (the 5 containment tests still passed). Withdrew the suggestion; kept the test.
+   - **`bun test src/__tests__/` from worktree root → 340 fail** — bun treats the arg as a FILTER, so it ran the entire repo (live-provider, DB, isolated-vm suites). Re-ran scoped from `packages/agent-worker` → 797 pass, 0 fail.
+   - **Gateway DB tests: `could not create shared memory segment: No space left on device`** — 29 orphaned embedded-postgres processes (all `ppid 1`), none from my worktrees, with a live `make review` running in another worktree. I refused a blanket kill; killed only the 26 orphans older than 1 hour (no test file runs an hour). shm segments 32→6; all gateway suites then green.
+   - **Piped `make review-fix` through `tail -35`** and lost its "Fixed" list — again. Recovered by reading the diff as ground truth.
+   - **Repeated `gh` GraphQL i/o timeouts** — worked around with retry loops; verified push landed via `git ls-remote`.
+   - **`base-branch-guard` re-triggered** during merge → refused `--admin` past a non-reporting check, waited, then merged.
+
+5. **Problem Solving:**
+   - Proved PR1 changes discovery, not prompt content: booted real `buildAgentSession` on branch vs `origin/main` with a fixed cwd. main+clean HOME 2662 B `fa574112e4007a…`; branch+clean HOME 2662 B same SHA (identical); main+real HOME 7058 B (4396 B of `~/.pi/agent/skills` leaked); branch+real HOME 2662 B (independent of HOME). Probe file deleted after.
+   - Established the pre-existing 5000ms cross-file timeout between `instruction-service.test.ts` and `session-context-cross-tenant.test.ts` by reproducing it on a baseline worktree.
+   - Simplification finding for PR2: the duplicated `AgentInstructionLayers` type on both sides of the wire matches the existing convention (`McpStatus` is already duplicated), so no change made.
+   - Prod verification for #2313: `/health` returns `"revision":"99b50cc65ea3ca7e4183276dec35ed36857a63d6"` = the squash commit; ancestry gate OPEN; prod producing 212 events + 9 audit records since deploy. Noted honestly that the system prompt is not observable externally, so the host-skill-leak fix is verified locally, not in prod.
+
+6. **All user messages:**
+   - "why is it failing"
+   - "go ahead do those. if there is any simplification we can do"
+
+   (Prior-session user messages carried in the earlier summary: "i see we do hacks to changer system prompt, why, is there a better way? replaceBasePromptIdentity"; "the regec etc all seems hacky. could we maintain our own system prompt, what's the best way here?"; "how can we do it properly. remember agents also have their own identity but we need to make sure our approach is reliable and consistent"; "we won't end up regex hacks right?"; "is this actually stable, startsWirg is gonna be another regex no?"; "is it the pi native way? are we running on latest pi version? soulMd is also gonna be part of the discussion right? also if user changes soulMd is doesn't affect existing conversations right"; "doesn't transcriptions have these already? check and let me know in this suggested approch does the agent know it's 'pi' or do we say it's 'lobu'"; "why does the agent get pi docs?"; "yes dig in all properly and find out the best way to structure it. for end users pi is just an implementation detail, they don't use it"; "what's the question ask it properly"; "ok if we're confident on it let's continue do all")
+
+   Standing constraints from CLAUDE.md/AGENTS.md that remain in force: never write to `~/Code/lobu` directly (work in a worktree via `make task-setup`); stage by explicit path, never `git add -A`; never `git stash`; no "Co-Authored-By" or "Generated with Claude Code" in commit messages; no backwards-compat shims or `@deprecated` — delete the old thing; `make review` runs ONCE on settled HEAD, never as a find-fix loop; never `--admin` past a check that has not reported; workers never receive real credentials; `events` is append-only; never bulk-delete prod `organization` rows; show the diff not a summary; end with a confidence score and 2–4 next actions.
+
+7. **Pending Tasks:**
+   - PR #2317: `make review` is running in background (task `b4gtyh1pj`); then wait for required CI, then squash-merge.
+   - PR3: worker owns the system prompt document — pure builder (`system-prompt/{types,sections,build}.ts`), delivered via `systemPromptOverride` + a hand-constructed `before_agent_start` extension placed in `getExtensions().extensions` (byte-exact `===`, no string matching); sections in agreed order with `soulMd` in the operator layer; live event-driven config rebuild; prompt hash + section manifest on the run record; delete `replaceBasePromptIdentity`, `PI_CODING_AGENT_OPENER_RE` and their tests.
+   - Post-merge prod verification for #2317 once it lands.
+
+8. **Current Work:**
+
+   Immediately before this summary I had just opened PR #2317 (`refactor(server): send the agent's instruction layers apart, not welded`, commit `448cc8b80`, 13 files, +264/−81 before the fixer / +281/−98 after) and launched `make review` on it in the background (task id `b4gtyh1pj`, output at `/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/b4gtyh1pj.output`).
+
+   While it ran I completed the deferred prod-verification item for #2313:
+   - `curl https://app.lobu.ai/health` → `{"revision":"99b50cc65ea3ca7e4183276dec35ed36857a63d6",...}` — exactly PR #2313's squash commit
+   - `git merge-base --is-ancestor 99b50cc65… 99b50cc65…` → "GATE OPEN"
+   - Lobu MCP `query_sql` over prod events since the deploy → 212 `event`, 9 `audit`, 2 `calendar_event` rows; reported this as a liveness signal only, stating plainly that the system prompt is not observable from outside the worker so the host-skill-leak fix is verified by the local byte-comparison rather than in prod.
+
+   My last action was `tail -20` on the review output file, which returned empty — the review was still running.
+
+   Verification status for PR2 at that point: `make pre-pr` all six gates clean; agent-worker **797 pass, 12 skip, 0 fail**; gateway suites each clean individually — `instruction-service` 4 pass, `session-context-cross-tenant` 5 pass, `worker-gateway-session-context` 1 pass, `worker-response-liveness` 8 pass, `worker-token-refresh-route` 8 pass, `worker-session-context-model-fallback` 12 pass. The new gateway test was mutation-tested (re-weld → `(fail) … keeps identity, soul and user in their own fields (no welded blob) [152.40ms]`, 3 pass 1 fail) and reverted.
+
+9. **Optional Next Step:**
+
+   Read the completed `make review` verdict for PR #2317 from `/private/tmp/claude-501/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171/tasks/b4gtyh1pj.output`, act only on checkable defects it reports, then watch `gh pr checks 2317 --required` and squash-merge once every required check has reported green — following the same sequence used for #2313. This is directly in line with the user's "go ahead do those. if there is any simplification we can do", under which I stated: "Still owed on PR2: verify the fixer's diff, commit by explicit path, push, open the PR, `make review` once." The first four are done; `make review` is in flight.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

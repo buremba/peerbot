@@ -1,0 +1,1 @@
+what do you mean by asking if shared thread use-case? don't we support that already?

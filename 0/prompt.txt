@@ -1,0 +1,19 @@
+You previously reviewed this branch and returned NOT SAFE with three blocking findings. Re-review commit HEAD (READ ONLY, do not edit). Verify ONLY whether each finding is now genuinely closed, and whether the fixes introduced new problems.
+
+Your three blocking findings were:
+
+1. "The rollout is inert, but it is not security-safe across the A1→A2 interval." Callers could link/unlink/update `member_of` edges while `purpose` was still NULL (ACL reads trust the slug), so the later backfill would bless attacker-created edges; merge would also repoint unclassified `member_of` edges.
+   CLAIMED FIX: `assertNotAuthorizationType` now refuses on RESERVED SLUG as well as on purpose, so `member_of` is refused at link/unlink/update_link and the schema surfaces during the whole pre-classification window. The merge drop predicate and the ledger-exclusion predicate both changed to `(rt.purpose = 'authorization' OR rt.slug = 'member_of')`.
+
+2. "The trigger does not guard the OLD type during UPDATE." `COALESCE(NEW.relationship_type_id, OLD.relationship_type_id)` only checked NEW, so moving an edge off the ACL type revoked a grant without the flag.
+   CLAIMED FIX: the trigger now branches on TG_OP and, for UPDATE, checks whether EITHER OLD or NEW type is classified.
+
+3. "Unmerge can leave a stale grant after an intervening ACL sync." Merge moves identities to the winner; a sync then grants the winner; unmerge splits them and the winner keeps a grant the provider never gave.
+   CLAIMED FIX: unmerge now drops authorization edges touching EITHER entity under `withAclPrivilege`, letting the next sync re-derive.
+
+Also verify these, which came out of the same pass:
+4. A caller-SQL bypass: `set_config('lobu.acl_write','on',false)` sets a SESSION-level GUC that persists on a pooled connection and would forge the trigger flag for later requests. CLAIMED FIX: `validateAndScopeQuery` now rejects `set_config` in caller SQL. Is `validateAndScopeQuery` really the only caller-SQL path? Can the guard be evaded (aliasing, schema-qualification, quoting, operators, CTEs, casts, other GUC-setting functions)?
+
+Answer per finding: CLOSED / NOT CLOSED / PARTIALLY, citing file:line. Then list any NEW problem the fixes introduced — especially: does refusing the reserved slug break a legitimate existing caller or the ACL syncs themselves? Do the merge/unmerge drops interact badly with each other or with merge groups/chains?
+
+End with: SAFE TO MERGE / NOT SAFE, and confidence 0-100.

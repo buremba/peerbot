@@ -1,0 +1,117 @@
+<task-notification>
+<task-id>abeb1505ad8b33daa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/abeb1505ad8b33daa.output</output-file>
+<status>completed</status>
+<summary>Agent "PR forensics on re-fix chains" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Forensic report: why "fixed" doesn't stick (lobu, #2177–#2285, 2026‑07‑24 → 07‑29)
+
+### The 3 strongest evidence-backed root causes
+
+**1. The PR narrative and the diff disagree, and the test is written to match the diff — so everything is green and prod is broken.**
+`#2263` commit body (`git show -s ca4e737ad`) claims the new allowlist contains *"the few names the worker's own bootstrap reads (**NIX_PACKAGES**, JUST_BASH_ALLOWED_DOMAINS)"*. The code it shipped does not:
+```
+$ git show ca4e737ad:packages/agent-worker/src/shared/worker-env-keys.ts | grep -n NIX
+50:  "NIX_PATH",
+51:  "NIX_PROFILES",
+52:  "NIX_SSL_CERT_FILE",      # NIX_PACKAGES absent
+$ git show ca4e737ad:packages/agent-worker/src/__tests__/worker-env-allowlist.test.ts | grep -n NIX_PACKAGES
+103:      NIX_PACKAGES: "gh",
+112:    expect(out).not.toHaveProperty("NIX_PACKAGES");   # the test pins the bug
+```
+6 hours later `#2274` reversed it. Its own body records the prod consequence: `gh --version → not found`, and the agent *"reported it had created a 'simulated pull request'… No PR existed. A silent degrade that reads as success."* `#2274`: *"The existing test asserted the broken behaviour, which is why the suite stayed green while the feature was broken."* This same shape recurs — `#2192`: *"An existing test (`manage-agents-e2e.test.ts:744`) **codified the bug as intended**."*
+
+**2. Every merge bypassed the required review; ~23% also bypassed a failing required check.** Branch protection (`gh api repos/lobu-ai/lobu/branches/main/protection`) requires `typecheck, format-lint, migrations, unit, integration, frontend, pi-review` + `required_approving_review_count: 1`, with `enforce_admins: false`. Across 30 sampled PRs: **`reviewDecision == APPROVED`: 0/30**; **21/30 had zero reviews of any kind**; **11/30 merged with ≥1 failing check**, of which 7 were *required* contexts (`pi-review` FAILURE on #2284, #2263, #2259, #2258, #2250, #2211; `format-lint` + `check-drift` FAILURE on #2240). CI itself is not the bottleneck — a 6‑minute merge (#2274) genuinely ran full CI including `integration` in 4m44s. The gate that is skipped is the human/LLM verdict, not the machine.
+
+**3. Fixes are shipped faster than their own consequences can surface, and the consequence lands on the next fix.** 33.3% of `fix(...)` commits merged 07‑25→07‑29 were followed within 72h by another `fix`/`revert` touching the same non-test source file (11/33, identical under loose and strict counting). Median merge latency 41 min; 30% of the 80 sampled PRs merged &lt;20 min after opening. `#2240` merged **with `format-lint` FAILING** at 16:18Z — that exact break required `#2262` (17:23Z) and then `#2265`, which landed as a **literally empty commit**:
+```
+$ git diff-tree --no-commit-id -r 73ebb4994 | wc -l
+       0
+```
+Two agents fixed the same red CI in parallel; the second one's "fix(ci): apply biome formatting…" changed nothing.
+
+---
+
+### TASK A — confirmed re-fix chains
+
+| chain | PRs in order | why the first was insufficient |
+|---|---|---|
+| **nix install matcher (3 rounds, still broken)** | #2243 → #2259 → #2273 → #2277 → open issue **#2279** | #2259 widened the deny list using `(^\|[\s;\|&amp;()])` as the word boundary → over-denied `echo uvx cowsay`, `git log --grep nix run`, `git commit -m 'document nix shell support'`. #2273 fixed it **but was stacked on #2259's branch**: `gh pr view 2273 --json baseRefName` → `feat/nix-deny-list-gap`; GitHub marked it MERGED when the squash deleted the base branch, and `git log --oneline origin/main \| grep -c "#2273"` → **0**. #2277 re-did it against main and was closed. `git show origin/main:…/tool-policy.ts` line 98 still has `(^\|[\s;\|&amp;()])` — **the bug is live on main while a PR reads "merged"**. |
+| **npm publish / `npx @lobu/cli` 404** | #2235 → #2252 (issue **#2186** open 07‑24 → closed 07‑29) | #2235 solved the *manifest* half (inlined the `@lobu` graph, gated deps) but left `@lobu/plugin-api`/`plugin-host` in the `PACKAGES` publish set. Result per #2252: *"14.4.0 published correctly and still reported failure. Three prior releases (07‑16, 07‑21, 07‑24) failed the same way."* |
+| **docker release tagging** | #2241 → #2250 → #2256 (issues #2183, #2184) | #2241 fixed *which* tags get published (evidence: a hand-authored scenario table, **zero pasted command output**). Its own first release was then evicted from the CI concurrency queue: `30364235587 13:35 release completed cancelled ← evicted`, so `14.4.0` was never published and `latest` stayed on a pre-release build — **with every workflow green**. #2250 fixed the concurrency group. #2256 added an out-of-band ghcr audit because *"No step inside `build-images` can catch a run that never executes."* |
+| **gateway LLM client / org default** | #2246 ⇄ #2240 → #2262 → #2265 (issue #2251) | Not a re-fix so much as a self-inflicted split: #2240's body — *"The shared-gateway-LLM-client half of this PR landed on `main` independently as #2246… Rebasing dropped 7 commits that were already upstream verbatim."* #2246 also self-corrects a false claim: *"Corrected after review: the gate was originally wired into `make pre-pr` only, so this bullet's 'CI failure' claim was false — a contributor who skipped pre-pr passed every required check."* #2240 then broke `format-lint` on main → #2262 → #2265 (empty). |
+| **worker env allowlist → declared tooling** | #2218 → #2263 → #2274 | #2218 fixed the *gateway* side (union nix packages at resolve time). #2263 then added a worker-side allowlist that dropped `NIX_PACKAGES`, silently undoing #2218 end-to-end. #2274 restored it. See root cause 1. |
+| **raw crash blobs in chat** | #2268 → #2280 (1h47m apart) | #2268 claimed to *"stop dead-credential and personal-connection failures from surfacing as raw crashes."* #2280, touching the same `error-handler.ts` / `core/errors.ts` / `chat-response-bridge.ts`, reports the symptom still live: Anthropic's `oauth_not_allowed_for_organization` *"surfaced as a raw `Worker crashed: 403 {...}` blob with no CTA."* |
+| **`get_content` dropped filters** | #2211 → #2215 (issue #2214) | **Refuted as a bad chain** — this is the healthy pattern. #2211 fixed 3 dropped filters on the score path *and* opened #2214 for the separate `list-path.ts` org-scope hole it found. #2215 closed it 36 min later. Same file, different defect. Both bodies paste red→green + mutation results. |
+
+**#2262 → #2265: confirmed, worse than suspected.** Not "fixed twice" — fixed once (#2262, 4 insertions) and then a second PR merged 6 hours later containing **nothing at all**.
+
+---
+
+### TASK B — evidence quality (39 `fix(...)` PRs in range; ~25 requested, full set reported)
+
+| category | count | % |
+|---|---|---|
+| REAL_E2E (booted/prod/live with pasted output) | 11 | 28% |
+| RED_GREEN (failing-then-passing output pasted) | 15 | 38% |
+| TEST_ONLY (green test output only) | 0 | 0% |
+| TYPECHECK_ONLY | 1 | 3% |
+| **NONE (assertion with no pasted evidence)** | **12** | **31%** |
+
+11 of 39 fix PR bodies contain **zero fenced code blocks**. The dominant failure mode is not laziness — it's *narrative-strong, evidence-absent*: long, specific, confident prose asserting red→green and mutation testing, with nothing pasted. #2195, #2198, #2192, #2191, #2189, #2188, #2181, #2177 all claim verified-red-first in prose only.
+
+**Three weakest, verbatim:**
+
+&gt; **#2227** `fix(api): expose behavior IDs in operation responses` (whole Validation section):
+&gt; `## Validation` / `- make pre-pr` / `- REVIEWER_CLI=codex make review — 0 bugs, 0 blockers, tests adequate` / `- focused server operation/behavior integration tests` / `- focused Owletto tests and typecheck` / `- red→green coverage for missing behavior_id and leaked entity-change input.watcher_id`
+&gt; — 834 chars, no output, "red→green coverage" as a bullet.
+
+&gt; **#2204** `fix(web): make connector detail usable when empty, and fix App install URL`:
+&gt; `- [ ] Bug fix: red→fix→green — n/a, UI-gap fix; verified live on \`make dev\` (see owletto#593)`
+&gt; — evidence delegated to a PR in a different (private) repo; nothing in this body.
+
+&gt; **#2241** `fix(ci): tag docker images to releases instead of every main push` — the section is literally titled **"## End-to-end verification"** and contains a hand-authored markdown table of expected tags, no command output. Its very next release silently published nothing (#2250).
+
+---
+
+### TASK C — post-merge defect rate
+
+```
+total first-parent commits 07-25..07-29: 71
+fix( commits: 33
+fix commits followed within 72h by another fix/revert touching the SAME file: 11
+rate: 33.3%
+```
+Identical (11/33) under the strict variant that excludes tests, `package.json`, lockfiles, docs and the submodule pointer. The list (with lag): #2191→#2195 (+0.1h, `tools/search.ts`) · #2192→#2229/#2240/#2285 (+23.8/+37.1/+47.8h, `agent-routes.ts`, `default-provisioning.ts`) · #2195→#2198/#2203 (+1.2/+12.6h, `table-schema.ts`) · #2198→#2203/#2213 · #2211→#2215/#2246 (+0.6h, `content-search/list-path.ts`) · #2235→#2252 (+7.3h, `publish-packages.mjs`) · #2241→#2250 (+7.5h, `derive-image-tags.mjs`, `build-images.yml`) · #2246→#2240/#2280 (+1.5/+10.4h, `provider-secrets.ts`, `chat-response-bridge.ts`) · #2240→#2285 · #2263→#2268/#2274/#2259 (+5.6/+6.0/+6.8h, `session-runner.ts`, `worker-env-keys.ts`, `just-bash-bootstrap.ts`) · #2268→#2280 (+1.8h, `error-handler.ts`, `core/errors.ts`).
+
+Hotspot concentration: `scripts/check-gateway-llm-calls.mjs` touched by 5 PRs in 12h; `packages/server/src/lobu/agent-routes.ts` by 4; `chat-response-bridge.ts` by 4; `just-bash-bootstrap.ts` by 3 in 8h.
+
+---
+
+### TASK D — review gate reality (30 PRs sampled)
+
+- **`reviewDecision == APPROVED`: 0/30.** All 30 show `REVIEW_REQUIRED` and are merged. With `required_approving_review_count: 1` and `enforce_admins: false`, that is 30/30 admin-bypassing the review requirement.
+- **Zero reviews of any kind: 21/30.** The 9 with reviews have only `COMMENTED` states (bot/`codesmith` comments), never `APPROVED`.
+- **Merged with ≥1 failing check: 11/30 (37%).** Required-context failures merged anyway: `pi-review` FAILURE on **#2284, #2263, #2259, #2258, #2250, #2211**; `format-lint` + `check-drift` FAILURE on **#2240**; `check-drift` FAILURE also on #2274, #2268, #2218, #2213 (not a required context, but it is the submodule-order gate — ignored 5 times).
+- **Merged with a check still pending: 1/30** (#2285, `bun audit`).
+- **Speed:** median merge latency 41 min across all 80 PRs; 14/80 (18%) merged &lt;10 min of opening, 24/80 (30%) &lt;20 min. **Important correction to the hypothesis:** CI is fast enough that these short windows *did* run full CI (#2274 merged at +6min with `integration` green in 4m44s). The missing verification window is human/`pi-review`, not machine.
+- Release cadence in the window: `14.4.0` 13:35Z → `14.4.1` 14:32Z → `14.5.0` 18:03Z → `14.6.0` 00:02Z — **4 releases in 10.5 hours**, against a prior baseline of one every 3–5 days.
+
+---
+
+### Confidence
+
+- **Task A — 95.** Read the actual diffs (`git show`, `git show &lt;sha&gt;:&lt;path&gt;`), branch metadata (`gh pr view --json baseRefName`), and the open/closed issue text; the #2273-merged-but-absent-from-main finding and the #2265-empty-commit finding are both directly verified against `origin/main`.
+- **Task B — 78.** Heuristic block-extraction over 39 bodies plus manual reads of ~14 of them; the REAL_E2E/RED_GREEN boundary and "is a hand-authored table pasted evidence" are judgment calls. Counts of *zero fenced blocks* (11/39) are exact.
+- **Task C — 90.** Deterministic `git log --first-parent` computation, run twice with different file filters, same 33.3%. Caveat: "same file within 72h" includes adjacency (e.g. #2191→#2195 both editing `search.ts` for different reasons), so treat 33.3% as an upper bound on true re-fixes and ~6 chains as the verified floor.
+- **Task D — 92.** Straight from `gh pr view --json statusCheckRollup,reviews` and the branch-protection API. The one inference is that `--admin` specifically was used; the API doesn't record the flag, but `required_approving_review_count: 1` + `reviewDecision: REVIEW_REQUIRED` + merged is conclusive that protection was bypassed.
+
+### Suggested next actions
+
+1. **Fix the stacked-PR trap first** — #2273 is the clearest instance of "the agent says it's fixed and it's still going on": GitHub reports it MERGED, the fix is not on main, and issue #2279 is open. Add a post-merge assertion that every PR marked merged has its `mergeCommit` reachable from `origin/main`, or forbid non-`main` base branches.
+2. **Make the required-review gate real or delete it.** Right now `pi-review` is a required check that failed on 6 of 30 merges and blocked none. Either stop `--admin`-merging past it, or drop it from `required_status_checks` so the green wall means something.
+3. **Add a "commit message vs. diff" check for allowlists/denylists.** The #2263 failure (body names `NIX_PACKAGES`, code omits it, test asserts its absence) is mechanically detectable: grep identifiers named in the PR body against the diff's added lines.
+4. **Ban prose-only red→green.** 12/39 fix PRs pasted nothing. A CI gate that fails a `fix(...)` PR whose body has no fenced block containing a failure signature would have caught #2227, #2204, #2241, #2192, #2198, #2195, #2191, #2189, #2188, #2181, #2177.</result>
+<usage><subagent_tokens>146734</subagent_tokens><tool_uses>41</tool_uses><duration_ms>520795</duration_ms></usage>
+</task-notification>

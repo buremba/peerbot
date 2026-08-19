@@ -1,0 +1,1 @@
+Repeat, verbatim, your opening verdict section: the one-sentence answer to 'is this overengineered?' and the top bullet points about what's overengineered and what's right-sized. Keep it to the verdict only.

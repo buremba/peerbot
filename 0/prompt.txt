@@ -1,0 +1,1 @@
+connect your agent should maybe add a query parameter the auto select a chip. and the cli owletto mac chrome etc. we can have agent chips forthose

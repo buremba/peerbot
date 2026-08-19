@@ -1,0 +1,4 @@
+1. what's human post? maybe we can lock the entities to change, they can interact with the agent to provide those structural stuff. normally i guess they won't be able to change manually but only for cases where human wants to bypass we can do it. or do you think this is not a good approach?
+2. does all erps require this?
+3. ok let's do that are well, you can use html artifact to show me the final version of data models. 
+4. yes

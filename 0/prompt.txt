@@ -1,0 +1,1 @@
+do all one by one, autonomously deploy and test make sure and when done merge all

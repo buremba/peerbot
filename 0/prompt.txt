@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The restore state machine can fall back to an untrusted late host identity and can repeatedly retry terminally missing snapshots. Both defects affect the core result-restoration behavior introduced by this patch.
+
+Full review comments:
+
+- [P1] Reject late host IDs after a capability miss — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:560-564
+  When a capability-only replay is restored before `toolInfo` arrives, `id` is null here, so a `found:false` response clears the capability without recording any superseded host identity. A later `hostcontextchanged` is then accepted and restoration falls back to that ID; if the context is stale or reused, the iframe renders another card's snapshot despite the failed capability assertion. Preserve the rejected-capability boundary through late host-context delivery.
+
+- [P1] Keep missing restores marked complete — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:571-571
+  For an absent ID-only snapshot, this reset immediately clears the `snapshotRestoreCompleted` entry added above. The next empty `toolresult` or ChatGPT `setWidgetState` echo therefore repeats the same restore; because each miss persists another null widget snapshot, an echoing host can enter a loop of `restore_lobu_app_result` calls instead of remaining in the terminal unavailable state.
+  </results>
+  </user_action>

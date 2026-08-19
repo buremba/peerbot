@@ -1,0 +1,2 @@
+Stop hook feedback:
+[ok build all close issues review test e2e and merge when all done]: Condition requires all done, but #2299 remains open and unmerged, requiring user approval to merge past the environmental blocker. Last message states: '#2299 needs `--admin` past a red required check. I won't do that unilaterally' and 'Same call here, with the difference that this blocker is a sandbox artifact rather than a risk judgment.'

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi0yhgmlk</task-id>
+<summary>Monitor event: "required checks on submodule bump PR 2346"</summary>
+<event>2346 integration: pass
+2346 pi-review: fail
+2346 SOME NOT PASSING</event>
+</task-notification>

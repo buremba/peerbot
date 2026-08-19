@@ -1,0 +1,1 @@
+seeprate table is hard to scale

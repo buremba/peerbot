@@ -1,0 +1,2 @@
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"user","ts":"2026-07-20T14:50:31.368Z","content":[{"text":"Reply with exactly: CODEX_AUTH_OK"}]}
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"assistant","ts":"2026-07-20T14:50:33.307Z","content":[{"text":"CODEX_AUTH_OK","type":"text"}]}

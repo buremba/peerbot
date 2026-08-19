@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>baosaud00</task-id>
+<summary>Monitor event: "PR 2213 required checks"</summary>
+<event>format-lint: SUCCESS
+migrations: SUCCESS</event>
+</task-notification>

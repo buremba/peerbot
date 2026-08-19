@@ -1,0 +1,1 @@
+still too much border, we need to be leaner. maybe even delete the border for the 3 selectors and use less margin. after that yes do guardrail. the arrow is still in the most left here, http://127.0.0.1:9208/local-install/agents/lobu-builder/guardrails/create also the model selector component is not being used, we want the one in agent settings

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b51iqrd0y</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5d06133d-7c19-4807-81f8-78f582615802/tasks/b51iqrd0y.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for review to finish" completed (exit code 0)</summary>
+</task-notification>

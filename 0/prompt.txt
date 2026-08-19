@@ -1,0 +1,1 @@
+should we seperate guardrails into permissions and move the models out of settings into tabs. so on the sidebar we will have configure only which shows the tab design we deleted for behaviors skills guardrails permissions models settings

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bqxu3lu6y</task-id>
+<tool-use-id>toolu_01C7ZCDwnn4B77JBqx1XL5CT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bqxu3lu6y.output</output-file>
+<status>completed</status>
+<summary>Background command "Retry review with the claude reviewer (fable model)" completed (exit code 0)</summary>
+</task-notification>

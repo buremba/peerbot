@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bou4dsqhh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/bou4dsqhh.output</output-file>
+<status>completed</status>
+<summary>Monitor "pre-pr gate outcome for 2326" stream ended</summary>
+</task-notification>

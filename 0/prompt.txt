@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfg18eg0d</task-id>
+<tool-use-id>toolu_01ShmWbFRJiSM4oKpMJKccw8</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bfg18eg0d.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and re-run review" completed (exit code 0)</summary>
+</task-notification>

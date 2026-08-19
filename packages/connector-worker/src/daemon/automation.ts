@@ -17,9 +17,10 @@
  *
  * Unlike connector children (which inherit a small system-env allowlist), the
  * spawned agent CLI must run as the user: it inherits the daemon's environment
- * (PATH, HOME, the user's CLI credentials) minus `WORKER_API_TOKEN`, which the
- * CLI must never see — it authenticates through its own `~/.config/lobu`
- * credentials or the MCP bearer wired per-spec.
+ * (PATH, HOME, the user's CLI credentials) minus the `WORKER_API_TOKEN` env
+ * var, so the child cannot act as the worker/poll loop — it authenticates
+ * through its own `~/.config/lobu` credentials or the MCP bearer wired
+ * per-spec (deliberately the daemon's own bearer, as in the Mac dispatcher).
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -276,8 +277,11 @@ async function runCli(
     const args = buildArguments(spec, prompt, config, mcpArgs, timeoutMs / 1000);
     const started = Date.now();
 
-    // Inherit the user's environment (PATH, HOME, CLI credentials) but never
-    // leak the daemon's worker token into the spawned agent.
+    // Inherit the user's environment (PATH, HOME, CLI credentials) but drop
+    // WORKER_API_TOKEN so the child cannot act as the worker/poll loop itself.
+    // The same bearer is still wired into the child's MCP config on purpose
+    // (buildMcp above) — that is how the spawned CLI reaches Lobu tools, same
+    // as the Mac `AutomationDispatcher`; what we withhold is the daemon role.
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.WORKER_API_TOKEN;
     for (const [key, value] of Object.entries(mcpEnv)) env[key] = value;

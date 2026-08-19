@@ -236,22 +236,26 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       );
     }
 
-    // Identity reuse: when the sibling forwards its existing worker_id AND it
-    // already belongs to this user as a chrome-extension device, keep that
-    // identity stable — re-mint the PAT bound to the same worker_id (revoking
-    // the previous child PAT first) and reuse the existing device_workers row.
-    // This is what stops each Mac-bridge re-pair from minting a fresh uuid and
-    // orphaning the previous row (the source of the duplicate "chrome" entries
-    // on the Devices page). Falls through to a fresh mint for the first-ever
-    // pair, a stale/garbage id, or an id owned by another user/platform — i.e.
-    // any case where reuse would be unsafe or a no-op.
+    // Identity reuse: when the caller forwards its existing worker_id AND it
+    // already belongs to this user as a device of the SAME platform being
+    // requested, keep that identity stable — re-mint the PAT bound to the same
+    // worker_id (revoking the previous child PAT first) and reuse the existing
+    // device_workers row. This is what stops each re-register (Mac-bridge
+    // re-pair, headless daemon restart) from minting a fresh uuid and orphaning
+    // the previous row plus its still-live PAT (the source of the duplicate
+    // "chrome" entries on the Devices page). Matching on the requested platform
+    // rather than a fixed one keeps cross-platform reuse refused: a
+    // chrome-extension worker_id cannot be re-minted as headless or vice versa.
+    // Falls through to a fresh mint for the first-ever register, a
+    // stale/garbage id, or an id owned by another user/platform — i.e. any case
+    // where reuse would be unsafe or a no-op.
     let workerId: string;
     if (requestedWorkerId) {
       const existing = (await sql`
         SELECT worker_id FROM device_workers
         WHERE user_id = ${userId}
           AND worker_id = ${requestedWorkerId}
-          AND platform = 'chrome-extension'
+          AND platform = ${platform}
         LIMIT 1
       `) as unknown as Array<{ worker_id: string }>;
       workerId = existing[0]?.worker_id ?? crypto.randomUUID();

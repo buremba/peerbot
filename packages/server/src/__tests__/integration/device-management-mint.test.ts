@@ -93,6 +93,99 @@ describe('headless device mint (mint-child-token)', () => {
     expect(rows[0].organization_id).toBe(personalOrg.id);
   });
 
+  it('reuses a headless worker_id on re-mint and revokes the previous child PAT', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Reuse' });
+    const user = await createTestUser({ email: 'headless-mint-reuse@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+    const app = mintApp(user.id);
+
+    const first = await app.request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'headless', label: 'herdr-reuse' }),
+      },
+      TEST_ENV
+    );
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { worker_id: string; access_token: string };
+
+    // Re-register with the stored worker_id (what a headless daemon does on
+    // restart): identity must stay stable and the previous PAT must be revoked.
+    const second = await app.request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'headless', worker_id: firstBody.worker_id }),
+      },
+      TEST_ENV
+    );
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { worker_id: string; access_token: string };
+    expect(secondBody.worker_id).toBe(firstBody.worker_id);
+    expect(secondBody.access_token).not.toBe(firstBody.access_token);
+
+    const deviceRows = (await sql`
+      SELECT worker_id, platform FROM device_workers WHERE user_id = ${user.id}
+    `) as unknown as Array<{ worker_id: string; platform: string }>;
+    expect(deviceRows).toHaveLength(1);
+    expect(deviceRows[0].worker_id).toBe(firstBody.worker_id);
+    expect(deviceRows[0].platform).toBe('headless');
+
+    const pats = (await sql`
+      SELECT revoked_at FROM personal_access_tokens
+      WHERE user_id = ${user.id} AND worker_id = ${firstBody.worker_id}
+      ORDER BY id ASC
+    `) as unknown as Array<{ revoked_at: Date | null }>;
+    expect(pats).toHaveLength(2);
+    expect(pats[0].revoked_at).not.toBeNull();
+    expect(pats[1].revoked_at).toBeNull();
+  });
+
+  it('does not reuse a chrome-extension worker_id when re-minting as headless', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Cross' });
+    const user = await createTestUser({ email: 'headless-mint-cross@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+    const app = mintApp(user.id);
+
+    const chrome = await app.request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'chrome-extension', label: 'chrome' }),
+      },
+      TEST_ENV
+    );
+    expect(chrome.status).toBe(200);
+    const chromeBody = (await chrome.json()) as { worker_id: string };
+
+    const headless = await app.request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'headless', worker_id: chromeBody.worker_id }),
+      },
+      TEST_ENV
+    );
+    expect(headless.status).toBe(200);
+    const headlessBody = (await headless.json()) as { worker_id: string };
+    expect(headlessBody.worker_id).not.toBe(chromeBody.worker_id);
+
+    const rows = (await sql`
+      SELECT worker_id, platform FROM device_workers WHERE user_id = ${user.id} ORDER BY platform ASC
+    `) as unknown as Array<{ worker_id: string; platform: string }>;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.platform)).toEqual(['chrome-extension', 'headless']);
+  });
+
   it('rejects a platform that is not eligible for child-token mint', async () => {
     const user = await createTestUser({ email: 'headless-mint-reject@test.example.com' });
     const personalOrg = await createTestOrganization({ name: 'Personal Reject' });

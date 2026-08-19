@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6lr3guro</task-id>
+<tool-use-id>toolu_01MwzNfyLtgXTxvRLRdLuvAD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/b6lr3guro.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate the four-site fix" completed (exit code 0)</summary>
+</task-notification>

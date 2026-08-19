@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4d1828rr</task-id>
+<tool-use-id>toolu_011VcyK7fq5tJTDK5EG5NC6X</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f788a6c1-21e9-429d-a821-45098b92a603/tasks/b4d1828rr.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-review the sweep at its new HEAD" completed (exit code 0)</summary>
+</task-notification>

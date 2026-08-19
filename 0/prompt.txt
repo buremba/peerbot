@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b71ko0mh3</task-id>
+<tool-use-id>toolu_0153H3yTvPmPXiaGgahmcaQf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b71ko0mh3.output</output-file>
+<status>completed</status>
+<summary>Background command "ui-review and wait for 2810 checks" completed (exit code 0)</summary>
+</task-notification>

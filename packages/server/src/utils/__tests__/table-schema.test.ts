@@ -25,6 +25,8 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'connector_definitions',
       'entity_relationships',
       'entity_relationship_types',
+      // Owner-scoped, not org-scoped — see the CTE in execute-data-sources.
+      'device_workers',
     ];
     for (const t of expected) {
       expect(QUERYABLE_TABLE_NAMES.has(t)).toBe(true);
@@ -250,6 +252,12 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       // outlives its QUERYABLE_SCHEMA entry until the phase-2 migration.
       'default_repair_agent_id',
     ]),
+    // user_id: always the caller under the CTE's owner filter, so projecting it
+    // adds nothing but a correlation handle.
+    // connector_manifests: free-form jsonb the device writes verbatim — the
+    // same uncurated-write risk class that forced redaction onto
+    // connections.config, and nothing needs it to pin an Automation.
+    device_workers: new Set(['user_id', 'connector_manifests']),
     oauth_clients: new Set(['client_secret', 'client_secret_expires_at']),
     oauth_tokens: new Set(['token_hash']),
     // repair_*/last_repair_*: same retired repair-agent subsystem, awaiting the

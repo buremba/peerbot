@@ -448,6 +448,27 @@ function normalizeApiUrl(url: string): string {
   return end === url.length ? url : url.slice(0, end);
 }
 
+/**
+ * Reduce a context's API URL to the gateway ORIGIN the worker API is mounted on.
+ *
+ * Context URLs carry the SDK path (`https://app.lobu.ai/api/v1`) but
+ * `/api/workers/*` is mounted at the app root, so passing the context URL
+ * straight through builds `/api/v1/api/workers/poll` and every device call
+ * 404s. Only production contexts carry that path — a local context is a bare
+ * `http://localhost:<port>` — which is why the mismatch is invisible in dev.
+ * The Owletto Mac app already reduces the same way before polling
+ * (`LobuContextIdentity.origin(of:)`).
+ */
+export function apiUrlToGatewayOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    // Not a parseable absolute URL — hand it back trimmed and let the caller's
+    // first request fail with the address the user actually configured.
+    return normalizeApiUrl(url);
+  }
+}
+
 export async function findContextByUrl(
   apiUrl: string
 ): Promise<ResolvedContext | undefined> {

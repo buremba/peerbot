@@ -19,7 +19,11 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
-import { executeRun, WorkerClient } from "@lobu/connector-worker/daemon";
+import {
+	executeClaimedAutomationRun,
+	executeRun,
+	WorkerClient,
+} from "@lobu/connector-worker/daemon";
 import type { PollResponse } from "@lobu/core/contracts/worker/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { generateSecureToken, hashToken } from "../../../auth/oauth/utils";
@@ -246,6 +250,82 @@ describe("device automation resume — live server round-trip", () => {
 		// The exit report the daemon actually posted is what stamped the run.
 		expect(run.exit_reason).toBe("ok");
 		expect(run.output_tail ?? "").toContain("forgot to finalize");
+		expect(result.error).toBeUndefined();
+	});
+
+	// The one-shot handoff a native bridge uses. Same real server, same real
+	// complete-automation handler — what differs is that the CLAIM happened
+	// elsewhere, so these pin that the entry point still stamps the row and that
+	// its one hard requirement (the claiming worker's id) is load-bearing.
+	it("executes an already-claimed run and stamps the row through the real handler", async () => {
+		const workerId = "live-resume-worker";
+		const { sql, workspace, runId, token } = await liveDeviceRun(workerId);
+
+		const result = await executeClaimedAutomationRun({
+			apiUrl: baseUrl,
+			workerId,
+			authToken: token,
+			job: automationJob(runId, workspace.org.id),
+			timeoutMs: 30_000,
+			heartbeatIntervalMs: 60_000,
+			binaryOverrides: { pi: fakeBinary },
+		});
+
+		// Identical outcome to the daemon's own dispatch above: the resume budget
+		// is the server's, so both entry points must land in the same place.
+		expect(invocations()).toHaveLength(2);
+		const [run] = (await sql`
+      SELECT status, approved_input->>'finalize_nudge_count' AS nudges,
+             exit_reason, output_tail
+      FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{
+			status: string;
+			nudges: string | null;
+			exit_reason: string | null;
+			output_tail: string | null;
+		}>;
+		expect(run.status).toBe("failed");
+		expect(Number(run.nudges)).toBe(1);
+		expect(run.exit_reason).toBe("ok");
+		expect(run.output_tail ?? "").toContain("forgot to finalize");
+		expect(result.error).toBeUndefined();
+	});
+
+	it("a worker id that did not claim the run loses the report SILENTLY", async () => {
+		const workerId = "live-resume-worker";
+		const { sql, workspace, runId, token } = await liveDeviceRun(workerId);
+
+		// A second registered device of the same user. Reporting as it is refused
+		// 403 (`authorizeRunForWorker` requires `claimed_by === worker_id`), which
+		// `isRetriableDeliveryFailure` classifies as non-retriable — so the arm
+		// gives up after ONE attempt, logs an undelivered exit report, and returns
+		// no error. The loss is invisible to the caller, which is why `workerId` is
+		// a hard requirement on the one-shot entry point rather than a default.
+		const otherWorkerId = "live-resume-worker-2";
+		await sql`
+      INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label)
+      VALUES (${workspace.users.owner.id}, ${otherWorkerId}, 'macos', ${sql.json({})}, 'Other Mac')
+    `;
+
+		const result = await executeClaimedAutomationRun({
+			apiUrl: baseUrl,
+			workerId: otherWorkerId,
+			authToken: token,
+			job: automationJob(runId, workspace.org.id),
+			timeoutMs: 30_000,
+			heartbeatIntervalMs: 60_000,
+			binaryOverrides: { pi: fakeBinary },
+		});
+
+		// The agent still ran, once — the wrong id costs the REPORT, not the work,
+		// and the non-retriable 403 means no second delivery attempt either.
+		expect(invocations()).toHaveLength(1);
+		const [run] = (await sql`
+      SELECT status, exit_reason FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string; exit_reason: string | null }>;
+		expect(run.status).toBe("running");
+		expect(run.exit_reason).toBeNull();
+		// And it reports no error, which is exactly what makes it silent.
 		expect(result.error).toBeUndefined();
 	});
 });

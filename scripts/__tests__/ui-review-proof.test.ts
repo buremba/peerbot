@@ -3,7 +3,7 @@ import {
   buildProofBody,
   COMPARE_FILE_CAP,
   findProofComment,
-  isDeployOnlyRange,
+  isUnhostedRange,
   isHttpsArtifact,
   parseProof,
   permittedFluxTailParent,
@@ -154,9 +154,9 @@ describe("UI review proof", () => {
     }
   });
 
-  it("accepts only a complete deploy-only endpoint diff", () => {
+  it("accepts only a complete unhosted endpoint diff", () => {
     expect(
-      isDeployOnlyRange([
+      isUnhostedRange([
         { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
         { filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" },
       ])
@@ -165,18 +165,62 @@ describe("UI review proof", () => {
     // The range spans several merged PRs. A surviving UI change from an earlier
     // commit must still demand proof when the head PR is deploy-only on its own.
     expect(
-      isDeployOnlyRange([
+      isUnhostedRange([
         { filename: "src/components/shell/responsive-app-shell.tsx" },
         { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
       ])
     ).toBe(false);
 
-    // `deploy/` is a path prefix, not a substring.
-    expect(isDeployOnlyRange([{ filename: "src/deploy/widget.tsx" }])).toBe(
+    // An extension-only or Mac-only range has no hosted URL to compare, so it
+    // is exempt from proof the same way a deploy-only range is.
+    expect(
+      isUnhostedRange([
+        { filename: "apps/chrome/watch.js" },
+        { filename: "apps/chrome/sidepanel.html" },
+      ])
+    ).toBe(true);
+    expect(isUnhostedRange([{ filename: "apps/mac/Owletto/App.swift" }])).toBe(
+      true
+    );
+    // Mixed unhosted trees still qualify — none of them is hosted.
+    expect(
+      isUnhostedRange([
+        { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
+        { filename: "apps/chrome/manifest.json" },
+      ])
+    ).toBe(true);
+    // A hosted change anywhere in the range still demands proof.
+    expect(
+      isUnhostedRange([
+        { filename: "apps/chrome/watch.js" },
+        { filename: "src/components/shell/responsive-app-shell.tsx" },
+      ])
+    ).toBe(false);
+    // Fail closed on an apps/ tree that is NOT on the allowlist.
+    expect(isUnhostedRange([{ filename: "apps/web/index.tsx" }])).toBe(false);
+    // Build/post-build checks run in CI and are never served, so there is no
+    // URL to compare — the same reason deploy/ and the packaged apps qualify.
+    expect(
+      isUnhostedRange([{ filename: "scripts/check-mcp-app-bundle.mjs" }])
+    ).toBe(true);
+    // ...but the prefix must not swallow a hosted tree that merely contains
+    // a scripts/ directory, nor a sibling whose name it merely starts.
+    expect(isUnhostedRange([{ filename: "src/scripts/widget.tsx" }])).toBe(
       false
     );
     expect(
-      isDeployOnlyRange([
+      isUnhostedRange([{ filename: "scripts-archive/old-widget.tsx" }])
+    ).toBe(false);
+
+    // The unhosted prefixes are path prefixes, not substrings.
+    expect(isUnhostedRange([{ filename: "src/deploy/widget.tsx" }])).toBe(
+      false
+    );
+    expect(isUnhostedRange([{ filename: "src/apps/chrome/panel.tsx" }])).toBe(
+      false
+    );
+    expect(
+      isUnhostedRange([
         {
           filename: "deploy/k8s/archived-app.tsx",
           previous_filename: "src/app.tsx",
@@ -186,9 +230,9 @@ describe("UI review proof", () => {
 
     // Fail closed when the compare response tells us nothing, and when it may
     // have been truncated at the cap.
-    expect(isDeployOnlyRange([])).toBe(false);
+    expect(isUnhostedRange([])).toBe(false);
     expect(
-      isDeployOnlyRange(
+      isUnhostedRange(
         Array.from({ length: COMPARE_FILE_CAP }, (_, index) => ({
           filename: `deploy/k8s/generated/${index}.yaml`,
         }))

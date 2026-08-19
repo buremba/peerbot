@@ -825,8 +825,9 @@ export async function handleCompleteWindow(
     const entityChanges = [] as Array<{
       entityId: number;
       name: string;
-      kind: 'created' | 'updated';
+      kind: 'created' | 'updated' | 'denied';
       applied: Record<string, unknown>;
+      denied?: { source: 'policy' | 'rule'; reason: string };
     }>;
     const subscribedWorkspaceEventTypes = await findSubscribedWorkspaceEventTypes(
       automationOrgId,
@@ -894,8 +895,13 @@ export async function handleCompleteWindow(
 
     // One run-level change set covers every entity output.
     if (entityChanges.length > 0 && automationRunId && Number.isFinite(automationRunId)) {
+      // Count each kind explicitly. Deriving one by subtraction silently
+      // mislabels every kind added later — `denied` would have counted as
+      // `updated`, reporting a refusal as a write.
       const createdCount = entityChanges.filter((c) => c.kind === 'created').length;
-      const updatedCount = entityChanges.length - createdCount;
+      const updatedCount = entityChanges.filter((c) => c.kind === 'updated').length;
+      const deniedCount = entityChanges.filter((c) => c.kind === 'denied').length;
+      const deniedSuffix = deniedCount > 0 ? ` + ${deniedCount} denied` : '';
       const changeSetIdempotencyKey = `automation:${automationId}:run:${automationRunId}:change_set`;
       const findChangeSet = () => tx<{ id: number }>`
         SELECT id FROM events
@@ -908,11 +914,15 @@ export async function handleCompleteWindow(
           await tx.savepoint((sp) =>
             insertEvent(
               {
-                entityIds: entityChanges.map((c) => c.entityId),
+                // A denial can carry no entity (a refused CREATE never got an
+                // id), so the timeline links only the rows that exist.
+                entityIds: entityChanges.map((c) => c.entityId).filter((id) => id > 0),
                 organizationId: automationOrgId,
                 originId: `run_${automationRunId}_changeset`,
-                title: `Automation applied ${createdCount} new + ${updatedCount} updated`,
-                content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
+                title: `Automation applied ${createdCount} new + ${updatedCount} updated${deniedSuffix}`,
+                content: `This run created ${createdCount} and updated ${updatedCount} entities${
+                  deniedCount > 0 ? `; ${deniedCount} denied` : ''
+                }.`,
                 semanticType: 'change_set',
                 runId: automationRunId,
                 automationId: Number(automationId),
@@ -924,6 +934,7 @@ export async function handleCompleteWindow(
                   automation_id: Number(automationId),
                   created_count: createdCount,
                   updated_count: updatedCount,
+                  denied_count: deniedCount,
                   changes: entityChanges,
                 },
                 createdBy: automationCreatedBy,

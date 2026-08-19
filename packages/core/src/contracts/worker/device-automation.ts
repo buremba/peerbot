@@ -24,7 +24,7 @@ import type { AutomationPollPayload } from "./protocol.js";
 /** Local CLI runtimes a device-pinned Automation can name in `agent_kind`. */
 export type AgentKind = "claude-code" | "codex" | "opencode" | "pi" | "agy";
 
-/** Every kind the device executors advertise. Order is the UI/routing order. */
+/** Every kind a device-pinned Automation can name. Order is the UI/routing order. */
 export const AGENT_KINDS: readonly AgentKind[] = [
   "claude-code",
   "codex",

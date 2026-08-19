@@ -144,6 +144,121 @@ describe("compileEntityRule + runEntityRules", () => {
 		]);
 	});
 
+	it("unions repeated escalate calls on the same row", async () => {
+		// The defect: the runner ASSIGNED the verdict on every `escalate`, so a
+		// rule that escalated `a` and then `b` reported only `b` — and `a` rode
+		// along in the same write without review, because the granting validator
+		// only ever sees the verdict's surviving field list.
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a"], "r1");
+				row.escalate("b", "r2");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: { a: 1, b: 2 } }],
+		});
+
+		expect(verdict).toEqual({
+			outcome: "escalate",
+			fields: ["a", "b"],
+			reason: "r1; r2",
+		});
+	});
+
+	it("dedupes a field escalated twice, keeping first-seen order", async () => {
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a", "b"], "r1");
+				row.escalate(["b", "c"], "r1");
+				row.escalate("a", "r3");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: {} }],
+		});
+
+		expect(verdict).toEqual({
+			outcome: "escalate",
+			fields: ["a", "b", "c"],
+			reason: "r1; r3",
+		});
+	});
+
+	it("keeps a later reason that matches a segment of an earlier joined reason", async () => {
+		// Reasons are joined with "; ", so deduping by re-splitting the joined
+		// string tears a reason that itself contains "; " into segments — and
+		// then drops a genuinely distinct later reason that happens to equal
+		// one of them. Both reasons here are real and must both survive.
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a"], "needs sign-off; see policy 4");
+				row.escalate(["b"], "see policy 4");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: {} }],
+		});
+
+		expect(verdict).toEqual({
+			outcome: "escalate",
+			fields: ["a", "b"],
+			reason: "needs sign-off; see policy 4; see policy 4",
+		});
+	});
+
+	it("accumulates escalations per row, not across the batch", async () => {
+		// The accumulators are locals inside the row loop. If they were hoisted
+		// out, row 2 would inherit row 1's fields and reason and escalate a
+		// field its own rule never named.
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				if (row.patch.a !== undefined) row.escalate(["a"], "r1");
+				if (row.patch.b !== undefined) row.escalate(["b"], "r2");
+			};`,
+		);
+
+		const verdicts = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [
+				{ committed: {}, patch: { a: 1 } },
+				{ committed: {}, patch: { b: 2 } },
+			],
+		});
+
+		expect(verdicts).toEqual([
+			{ outcome: "escalate", fields: ["a"], reason: "r1" },
+			{ outcome: "escalate", fields: ["b"], reason: "r2" },
+		]);
+	});
+
+	it("deny wins over an earlier escalate on the same row", async () => {
+		const compiled = await compileEntityRule(
+			`export default (row) => {
+				row.escalate(["a"], "needs review");
+				row.deny("illegal");
+			};`,
+		);
+
+		const [verdict] = await runEntityRules({
+			compiled,
+			op: "update",
+			rows: [{ committed: {}, patch: { a: 1 } }],
+		});
+
+		expect(verdict).toEqual({ outcome: "deny", reason: "illegal" });
+	});
+
 	it("fails closed when the rule throws an untagged error", async () => {
 		const compiled = await compileEntityRule(
 			`export default () => { throw new Error("boom"); };`,

@@ -3,7 +3,10 @@
  * a PAT/OAuth token carrying `mcp:admin` — may PATCH/DELETE an agent or
  * rewrite its config. `mcp:admin` alone is not enough: the caller's member
  * role must be owner/admin regardless of auth source. A plain org MEMBER must
- * get 403 on all three surfaces.
+ * get 403 on all three surfaces — and on the sibling mutations in the same
+ * router: agent create and every inference-provider mutation (org-level
+ * credentials) — and the sandbox mutations, which are the same tier of
+ * org-level credential on a neighbouring router.
  *
  * Regression for the decision-brief finding: `requireSessionOrAdminPat` alone
  * lets any member rewrite/delete another member's agent (and change its
@@ -53,6 +56,11 @@ async function seedOrgAndAgent(): Promise<void> {
 async function importAgentRoutes() {
   const mod = await import("../agent-routes.js");
   return mod.agentRoutes;
+}
+
+async function importSandboxRoutes() {
+  const mod = await import("../sandbox-routes.js");
+  return mod.sandboxRoutes;
 }
 
 /** Every `authStash` field this file overwrites, as found on entry. */
@@ -177,10 +185,223 @@ describe("agent management mutations — role gate", () => {
     );
   });
 
+  // Sibling mutations in the same file: agent CREATE and every
+  // inference-provider mutation. Inference providers are ORG-level
+  // credentials (an API key / OAuth grant shared by every agent in the org),
+  // so they sit on the same owner/admin tier as agent administration.
+  test("member: POST / (create agent) is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentId: "member-made", name: "Member Made" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("owner: POST / (create agent) succeeds", async () => {
+    authStash.memberRole = "owner";
+    const app = await importAgentRoutes();
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentId: "owner-made", name: "Owner Made" }),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  test("member: POST /inference-providers is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug: "openai", kind: "openai", apiKey: "sk-x" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("owner: POST /inference-providers passes the gate (reaches handler validation)", async () => {
+    authStash.memberRole = "owner";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    // 400 (missing slug) proves it cleared the gate; 403 would mean the role
+    // check wrongly blocked the owner.
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error?: string }).error).toContain("slug");
+  });
+
+  test("member: PUT /inference-providers/:slug/key is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai/key", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value: "sk-rotated" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("owner: PUT /inference-providers/:slug/key passes the gate (reaches handler validation)", async () => {
+    authStash.memberRole = "owner";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai/key", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error?: string }).error).toContain("value");
+  });
+
+  test("member: DELETE /inference-providers/:slug is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai", {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("owner: DELETE /inference-providers/:slug passes the gate (reaches lookup)", async () => {
+    authStash.memberRole = "owner";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/no-such-provider", {
+      method: "DELETE",
+    });
+    // 404 (no such provider row) proves it cleared the gate.
+    expect(res.status).toBe(404);
+  });
+
+  test("member: POST /inference-providers/oauth/start is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/oauth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "openai-codex" }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error_description?: string };
+    expect(body.error_description).toContain("owner or admin");
+  });
+
+  // The remaining newly gated mutations. The owner side is proven by the
+  // representative pairs above — every route shares the one
+  // `requireManageAgentAccess` helper — so these assert only that each route
+  // is actually wired to it.
+  test("member: POST /inference-providers/oauth/complete is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/oauth/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "openai-codex", code: "abc" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /inference-providers/:slug is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ displayName: "Renamed" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /inference-providers/:slug/default is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai/default", {
+      method: "PUT",
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /inference-providers/:slug/capabilities/:modality is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importAgentRoutes();
+    const res = await app.request("/inference-providers/openai/capabilities/text", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
   test("member: GET config stays readable (read is org-wide by decision)", async () => {
     authStash.memberRole = "member";
     const app = await importAgentRoutes();
     const res = await app.request(`/${AGENT}/config`);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("sandbox mutations — same org-credential role gate", () => {
+  // A sandbox binds an org vault credential to a runtime provider, and deleting
+  // one drops every dependent agent back to the built-in runtime. That is the
+  // same blast radius as an inference provider, so it sits on the same tier —
+  // `requireSessionOrAdminPat` alone let any member create, re-key or delete
+  // one.
+  test("member: POST / is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "sb", provider_kind: "daytona" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: PUT /:id/credential is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1/credential", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credential: { api_key: "k" } }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("member: DELETE /:id is denied", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1", { method: "DELETE" });
+    expect(res.status).toBe(403);
+  });
+
+  test("member + PAT with mcp:admin is still denied on a sandbox mutation", async () => {
+    authStash.memberRole = "member";
+    authStash.authSource = "pat";
+    authStash.mcpAuthInfo = { scopes: ["mcp:admin"] };
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1", { method: "DELETE" });
+    expect(res.status).toBe(403);
+  });
+
+  test("owner: DELETE /:id clears the gate and reaches the handler", async () => {
+    authStash.memberRole = "owner";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/sb-1", { method: "DELETE" });
+    // 404 (no such sandbox) proves the role gate passed; a 403 would mean the
+    // owner was wrongly blocked.
+    expect(res.status).toBe(404);
+  });
+
+  test("member: GET / stays readable (read is org-wide, as on agents)", async () => {
+    authStash.memberRole = "member";
+    const app = await importSandboxRoutes();
+    const res = await app.request("/");
     expect(res.status).toBe(200);
   });
 });

@@ -227,7 +227,7 @@ gate_migrations() {
   # the default 64MB fails. Best-effort; if it truly can't raise, the apply
   # below fails loudly with the real error.
   if command -v psql >/dev/null 2>&1; then
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=0       -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()" >/dev/null 2>&1 || true || return 1
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=0       -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()" >/dev/null 2>&1 || true
   fi
   # Apply with the SAME runner production uses (scripts/migrate-up.mjs), NOT
   # dbmate up: migrate-up splits top-level statements so transaction:false

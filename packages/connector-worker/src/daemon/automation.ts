@@ -17,14 +17,15 @@
  *
  * Unlike connector children (which inherit a small system-env allowlist), the
  * spawned agent CLI must run as the user: it inherits the daemon's environment
- * (PATH, HOME, the user's CLI credentials) minus `WORKER_API_TOKEN`, which the
- * CLI must never see — it authenticates through its own `~/.config/lobu`
- * credentials or the MCP bearer wired per-spec.
+ * (PATH, HOME, the user's CLI credentials) minus the `WORKER_API_TOKEN` env
+ * var, so the child cannot act as the worker/poll loop — it authenticates
+ * through its own `~/.config/lobu` credentials or the MCP bearer wired
+ * per-spec (deliberately the daemon's own bearer, as in the Mac dispatcher).
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import {
@@ -39,10 +40,41 @@ import type {
   PollResponse,
   WorkerExitReason,
 } from '@lobu/core/contracts/worker/protocol';
+import { locateBinary, searchDirs } from './agent-binaries.js';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
-import type { ExecutorConfig } from './executor.js';
 import { log } from './log.js';
+
+/**
+ * The slice of the daemon's `ExecutorConfig` the automation arm reads.
+ *
+ * Declared narrowly so a caller that only executes automations — the one-shot
+ * `executeClaimedAutomationRun` entry point — does not have to fabricate
+ * connector-sync fields (`batchSize`, `generateEmbeddings`, `maxOldSpaceSize`)
+ * that this arm never touches. The daemon's full `ExecutorConfig` is
+ * structurally assignable to it.
+ */
+export interface AutomationExecutorConfig {
+  timeoutMs?: number;
+  heartbeatIntervalMs?: number;
+  /**
+   * Agent to use when the Automation names no `agent_kind`.
+   *
+   * The device, not the server, owns this choice: `agent_kind` is optional on
+   * the wire (`AutomationPollMetaSchema`), and which CLIs are actually
+   * installed is a property of the machine. The Mac app has always resolved it
+   * from the user's menubar pick; without it here, every Automation created
+   * without an explicit kind fails on the device with "no local agent executor
+   * configured".
+   */
+  defaultAgentKind?: AgentKind;
+  /**
+   * Explicit per-agent binary paths (else PATH lookup). Lets an operator point
+   * at a non-PATH CLI install, and is the injection seam the automation tests
+   * use to drive a fake binary.
+   */
+  binaryOverrides?: Partial<Record<AgentKind, string>>;
+}
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 export interface ExecutorResult {
@@ -67,29 +99,6 @@ class ExecutableNotFoundError extends Error {
     super(`${name} binary not found on PATH`);
     this.name = 'ExecutableNotFoundError';
   }
-}
-
-/** Search prefixes for CLI discovery — mirrors the Mac app's detector list. */
-function searchDirs(): string[] {
-  const home = homedir();
-  return [
-    `${home}/.local/bin`,
-    `${home}/.bun/bin`,
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-  ];
-}
-
-function locateBinary(name: string): string | null {
-  const dirs = [
-    ...searchDirs(),
-    ...(process.env.PATH ?? '').split(':').filter(Boolean),
-  ];
-  for (const dir of dirs) {
-    const candidate = path.join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -276,8 +285,11 @@ async function runCli(
     const args = buildArguments(spec, prompt, config, mcpArgs, timeoutMs / 1000);
     const started = Date.now();
 
-    // Inherit the user's environment (PATH, HOME, CLI credentials) but never
-    // leak the daemon's worker token into the spawned agent.
+    // Inherit the user's environment (PATH, HOME, CLI credentials) but drop
+    // WORKER_API_TOKEN so the child cannot act as the worker/poll loop itself.
+    // The same bearer is still wired into the child's MCP config on purpose
+    // (buildMcp above) — that is how the spawned CLI reaches Lobu tools, same
+    // as the Mac `AutomationDispatcher`; what we withhold is the daemon role.
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.WORKER_API_TOKEN;
     for (const [key, value] of Object.entries(mcpEnv)) env[key] = value;
@@ -408,7 +420,7 @@ export interface AutomationRunIo {
 export async function executeAutomationRun(
   client: ExecutorClient,
   job: PollResponse,
-  cfg: ExecutorConfig
+  cfg: AutomationExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
   const runId = job.run_id;
   const payload = job.payload;
@@ -421,7 +433,9 @@ export async function executeAutomationRun(
     return { itemsCollected: 0, error: message };
   }
 
-  const kind = payload.automation.agent_kind ?? null;
+  // The Automation's explicit kind wins; the caller's device-level default is
+  // the fallback, matching how the Mac app has always resolved an unset kind.
+  const kind = payload.automation.agent_kind ?? cfg.defaultAgentKind ?? null;
   const spec = kind != null ? DEVICE_AGENT_SPECS_BY_KIND.get(kind as AgentKind) : undefined;
   if (!spec) {
     const message = `no local agent executor configured for agent_kind='${kind ?? '(unset)'}'`;

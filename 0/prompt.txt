@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>byw2xwjgd</task-id>
+<summary>Monitor event: "prod rollout of device-pin fix + error rate"</summary>
+<event>POST-DEPLOY: 0 'Failed to wire device connector' errors in 3m across all replicas (was ~24/3m)</event>
+</task-notification>

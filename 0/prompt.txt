@@ -1,0 +1,1 @@
+when i install a conenctor it does things in the page but it should redirect to the relevant page for connector no? cleanup dead duplicate things

@@ -15,9 +15,11 @@ permissions:
   pull-requests: write
   packages: write
 
-concurrency:
-  group: preview-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+# Concurrency is declared PER JOB below, not here: a workflow-level group with
+# cancel-in-progress covered the cleanup job too, so a `synchronize`/`labeled`
+# event landing while teardown was running cancelled the teardown and leaked
+# the namespace — the accumulation this workflow's opt-in label was added to
+# stop. Deploys still supersede each other; teardown is never cancelled.
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -31,6 +33,9 @@ jobs:
   preview:
     runs-on: ubuntu-24.04
     if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'preview')))
+    concurrency:
+      group: preview-deploy-${{ github.event.pull_request.number || inputs.pr_number }}
+      cancel-in-progress: true
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -67,8 +72,10 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Setup kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
 
       - name: Create preview namespace
         run: |
@@ -271,13 +278,20 @@ jobs:
   cleanup:
     runs-on: ubuntu-24.04
     if: (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview')) && github.event.pull_request.head.repo.full_name == github.repository
+    # Own group, never cancelled: teardown must run to completion even if a
+    # deploy for the same PR is queued behind or ahead of it.
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
     steps:
       - name: Setup kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
 
       - name: Delete preview namespace
         run: |

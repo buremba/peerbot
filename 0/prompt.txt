@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>burnogfpb</task-id>
+<summary>Monitor event: "required checks on PR 2286 (device pin guard)"</summary>
+<event>migrations: pass</event>
+</task-notification>

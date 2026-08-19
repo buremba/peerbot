@@ -1,0 +1,187 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   User messages in chronological order:
+   - **"why is this taking too long"** — frustration at elapsed wall-clock; wanted a direct cause, not process narration.
+   - **"ok go do those make sure no gaps, check all conenctors simplify consolidate"** — finish the pending gate/merge items, audit ALL connectors for gaps, and simplify/consolidate duplication.
+   - **"revolut midas use the browser no?"** — challenge/verification that those connectors drive the browser.
+   - **"fix all issues and then try and make sure they work and then merge"** — fix discovered issues, verify them working, merge.
+   - **"did you e2e all those and make sure they work reliably"** — demand for real end-to-end verification and reliability, not unit tests.
+   - **"how come tcc revoked"** — challenge to my unverified claim that macOS TCC revoked Downloads access.
+   - **"yes merge if we're good"** — proceed to merge.
+   - **"ok make sure no gaps, merge all and make sure google maps etc data is correctly mapped"** — verify Maps data mapping correctness, close gaps, merge everything.
+   - **"so we have the info about these coordinates and we have query sql supporting getting locations fromt the coordinates to locations right? for google maps stuff do we have the number of comments and stars for the venues, their types their links etc"** — asking about geospatial SQL support and venue metadata coverage.
+   - **"ok that's fine, we map everything we see in the takeout right"** — asking whether the full Takeout archive is mapped.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo, Bun workspace, worktree-per-task via `make task-setup NAME=<slug>`
+   - Gate sequence: `make review-fix` → stage by explicit path → `make pre-pr-remote` (Depot, 18 lanes, tree attestation) → commit → `gh pr create` → `make review` (posts required `pi-review`) → `make ui-review` → `gh pr merge --squash --admin`
+   - **Depot failure classification (4 buckets), co-developed with peers:** (1) named infra — download/provisioning failures before test code runs, retry is correct; (2) named marginal — `5000.xx ms` gateway-Postgres hook timeouts, retry-green is a real warning; (3) fixture/state error wearing a timeout costume — a test body that throws reports as a 5s timeout; (4) unknown cause — unattested.
+   - `depot ci logs <run_id>` serves only the LAST attempt; to read a failed attempt, get `attempt_id` from `depot ci status <run> --output json | jq '.workflows[0].jobs[].attempts[]'` and pass it positionally **without** `--job`.
+   - `check-drift` reads the **branch's own** submodule pin, not the merge ref — merging the parent bump doesn't fix branches.
+   - `gh pr checks` shows the last **completed** run per check, not the run for the current head — compare `headSha` before acting on red.
+   - `pi-review` and `ui-review` are **commit-bound**; a rebase silently drops them and the PR sits BLOCKED on a check that never arrives.
+   - `make pre-pr-remote` attests the **staged** tree; a clean post-rebase worktree is refused. Use `git reset --soft origin/main` then `git commit -C <sha>` after passing.
+   - bun 1.3.5 ignores `timeout` in bunfig; CLI `--timeout` is required (#2691, `4873ecf9`).
+   - `GATEWAY_TEST_TIMEOUT_MS = 30_000` in `scripts/run-gateway-test-lanes.mjs` — numeric separator means `git grep "timeout 30000"` false-negatives; use `git merge-base --is-ancestor 4873ecf9c416af64ada6eea6842fbafa31acf311 HEAD`.
+   - Capability model: `packages/core/src/capabilities.ts` — `BROWSER_CAPABILITIES` (`browser.tabs`, `browser.scripting`, …), `OS_CAPABILITIES` (`os.files`), `PLATFORM_ALLOWLIST` maps `macos` → OS+BROWSER+MAC, `chrome-extension` → BROWSER.
+   - `required_capability` forces device pinning at connection create/update (`packages/server/src/tools/admin/manage_connections/handlers/device-binding.ts:70-111`, `connect.ts:173`, `crud.ts:759`).
+   - GeoJSON coordinate order is `[longitude, latitude]`.
+   - Postgres extensions present: `plpgsql`, `pg_trgm`, `vector`, `cube`, `earthdistance` — geospatial radius queries supported; coordinates live in JSONB with no spatial index.
+   - `connections` and `feeds` tables **soft-delete** (`deleted_at`); `feeds` legitimately holds many live rows per `(connection_id, feed_key)`.
+
+3. **Files and Code Sections:**
+
+   - **`examples/personal-agent/google-takeout.connector.ts`** (worktree `google-maps-takeout`, PR #2697)
+     The Maps feed. `review-fix` rewrote identity to URL-backed. Final identity code:
+     ```ts
+     const [longitude, latitude] = feature.geometry?.coordinates ?? [];
+     const placeIdentity =
+       mapsUrl ??
+       (longitude === undefined || latitude === undefined
+         ? `${name}\0${address ?? ""}`
+         : `${longitude},${latitude}`);
+     return [
+       {
+         origin_id: stableId("google_maps_place", [originType, placeIdentity]),
+         origin_type: originType,
+         occurred_at: occurredAt,
+         title: name,
+         payload_text: [
+           originType === "place_review"
+             ? `Reviewed ${name}${rating === undefined ? "" : ` — ${rating}/5`}`
+             : `Saved ${name}`,
+           reviewText,
+           address,
+           ...answers,
+         ].filter(Boolean).join("\n"),
+         source_url: mapsUrl,
+         metadata: {
+           platform: "google_maps",
+           place_name: name,
+           address,
+           country_code: props?.location?.country_code,
+           latitude,
+           longitude,
+           ...(rating === undefined ? {} : { rating }),
+         },
+       },
+     ];
+     ```
+     **Version bump added to fix a `pi-review` blocker:**
+     ```ts
+     key: "google.takeout",
+     name: "Google Takeout",
+     // Minor bump for the added `maps` feed. Connector source is retained per
+     // version, so shipping new behaviour under 1.0.0 would overwrite the
+     // existing artifact and leave version-pinned runs and rollback pointing at
+     // code that no longer matches.
+     version: "1.1.0",
+     ```
+     Reads only: `Keep/`, `Maps (your places)/Saved Places.json`, `Maps (your places)/Reviews.json`, `Saved/*.csv`, plus YouTube. Declares `requiredCapability: "os.files"`, `runtime: { platforms: ["macos"] }`.
+
+   - **`packages/connector-worker/src/bin.ts`** (worktree `local-os-files-worker`, PR #2687) — line 163:
+     ```ts
+     if (platform && !process.env.WORKER_API_TOKEN?.startsWith('owl_pat_')) {
+       console.error(
+         'Error: device mode requires a durable personal access token in WORKER_API_TOKEN.\n' +
+           "       `lobu whoami --json` falls back to your session's OAuth access token, which\n" +
+           '       expires within 24h and would leave this daemon polling 401 indefinitely.\n' +
+           '       Mint a device token and pass it as WORKER_API_TOKEN (expects an owl_pat_ prefix).'
+       );
+       process.exit(1);
+     }
+     ```
+
+   - **`examples/personal-agent/x-identity.ts`** and **`instagram-takeout.connector.ts`** (PR #2694, MERGED `ee534485`) — reserved-route list and URL-anchor display-name fallback.
+
+   - **`examples/personal-agent/takeout-utils.ts`** — 17 exports: `DEFAULT_WATERMARK`, `DEFAULT_BATCH_SIZE`, `assertDirectory`, `batchSize`, `readJsonFile`, `readJsArray`, `listFiles`, `parseDate`, `isoDate`, `isAfterWatermark`, `takeBatch`, `maxEventCursor`, `stableId`, `stripHtml`, `decodeHtml`, `parseCsv`, `twitterSnowflakeDate`. Imported by google-takeout, instagram-takeout, linkedin, twitter-takeout.
+
+   - **`localTakeoutSchema`** — **byte-identical duplicate in 3 files** (`google-takeout`, `instagram-takeout`, `twitter-takeout`), hardcoding `1000`/`5000` while `takeout-utils.ts` already exports `DEFAULT_BATCH_SIZE = 1000`. Consolidation target, not yet done.
+
+   - **`scripts/run-gateway-test-lanes.mjs`** — lane runner; `const GATEWAY_TEST_TIMEOUT_MS = 30_000;` at line 28, used at line 105.
+
+   - Memory files written/edited: `feedback_a_wait_condition_that_cannot_report_failure_is_decorative.md` (created, then extended with `gh pr checks` staleness and the zero-anomaly experiment), `reference_classify_retry_green_by_attempt_1_cause.md` (created, 4 buckets + experiment design), `reference_depot_cancelled_lanes_hide_a_real_timeout_failure.md` (edited: added CONTENTION THEORY PARTLY FALSIFIED block, fixed pgrep recipe), deleted duplicate `reference_cli_version_stamp_is_published_not_running_code.md`.
+
+   - Scratchpad files: `pr-takeout-entity-naming.md`, `pr-google-maps.md`, `pr-2687-addition.md`, `gate-sequence.sh`, `admin-pat.txt`, `pat.txt`, `losfw-head.sha`, `fixture-takeout/` (synthetic Maps archive), `reviewfix-partial-backup/unstaged-reviewfix.patch`.
+
+4. **Errors and fixes:**
+
+   - **Gate 1 hard-failed twice on idle machine** — `OAuthStateStore (Postgres-backed) > (unnamed) [5000.57ms]` and `UserAuthProfileStore > scanAllOAuth skips profiles whose agent row is missing [5000.28ms]`, both `a beforeEach/afterEach hook timed out`. Diff couldn't reach gateway suites. Fixed by #2691 merging + rebasing; then passed clean.
+   - **All 3 branches pinned stale submodule `a504a14c`** — would have failed `check-drift` three times. Fixed: rebase + `git -C packages/owletto merge --ff-only 6396cb92` after ancestry verification.
+   - **`review-fix` killed mid-write** — had weakened error text from "durable personal access token" → "personal access token" and dropped 3 tests (67→64). Backed up the diff, restored worktree from index, verified 67 pass and `durable` wording intact.
+   - **Killed a healthy `make review`** thinking it ran in the wrong worktree — it was correct (`cwd: takeout-entity-naming`); the Makefile resolves its own root. Restarted it.
+   - **Auto-merge counted only failing checks, not absent ones** — #2687's `pi-review` was absent after rebase; `--admin` would have pushed past a never-reported required check. Killed it, rewrote to enumerate expected checks.
+   - **zsh `for c in $REQ` didn't word-split** — printed all check names as one `MISSING` line. Fixed by inlining the list into the `for`.
+   - **Both PRs missing `ui-review`** — ran `make ui-review` on each; both returned "not applicable; packages/owletto remains 6396cb92".
+   - **`pi-review` blocker on #2697** — added a feed without bumping `definition.version`, which would overwrite the retained 1.0.0 artifact and break version-pinned runs/rollback. Verified the convention is live (`midas 1.0.2`, `linkedin 3.8.0`, `revolut 4.5.2`, `whatsapp 2.4.0`), bumped to `1.1.0`, re-gated clean, re-review passed 84/0 blockers.
+   - **Prod query missing `deleted_at IS NULL`** — I reported "0 of 11 connections pinned"; correct figures are **3 live connections (linkedin 1, midas 1, revolut 1), 0 pinned**; 7 linkedin rows were soft-deleted. Conclusion held, blast radius was 3.7x overstated. Peer flagged the same class of error against themselves.
+   - **Claimed "TCC revoked" without testing** — user challenged. Tested: Downloads DENIED, Documents/Desktop OK, `~/Code` and `/tmp` OK; then re-ran **unsandboxed** → still denied → genuine macOS TCC scoped to Downloads. Why it flipped between 18:46 and later is unknown; I refused to invent a cause.
+   - **Claimed the 60s-ceiling run proved bounded-slow** — peer showed zero anomalies discriminates nothing (neither shape occurred). Withdrew; residual logged **open**.
+   - **Overstated `pgrep -f "run-remote-ci.sh"` self-match as universal** — peer's `ZZUNIQUEPROBE` control disproved it; it's invocation-shaped (`zsh -c` wrapper). Corrected memory.
+   - **Inferred a peer session from a `ps` cwd** — wrong; traced the parent chain and found it was a **codex-spawned** `make pre-pr-remote` (review harness running its own 18-lane gate).
+   - **Wrote a duplicate memory** for `cli_version` — deleted mine, kept the peer's better version.
+   - **Worker registered as `e2e-device` not `macos:e2e-device`** → `worker_claim_timeout`. Checked whether my branch changed worker identity — it didn't (`macos:` is a convention in help text). Restarted with matching id.
+   - **Wait loop hung** because it only matched success patterns (my own decorative-check error, in my own code) — fixed by adding failure patterns and a `kill -0` liveness check.
+   - **`make review` on #2687 died twice (SIGTERM 143, then SIGKILL 9)** — diagnosed as **OOM: swap 15.1 GB of 16 GB used (92%)**. This also likely explains three background jobs "killed externally" earlier. Tore down the e2e rig (worker + gateway on 9418, force-killed PID 90617) and retried.
+
+5. **Problem Solving:**
+   - **Depot queue contention:** four sessions, one machine. Yielded three times, then hard-claimed. Contention theory partly falsified by an idle-machine hard fail.
+   - **E2E verification (user's explicit demand):** rebuilt rig, ran 3 syncs proving: sync 1 → 5 events with correct breakdown; sync 2 (checkpoint intact) → 0 items, 0 new rows; **sync 3 (checkpoint reset) → 5 re-collected, 0 new rows, zero duplicate live `origin_id`** — proving the identity rewrite supersedes rather than re-mints. Durable-PAT guard e2e'd: `owl_pat_` boots and claims jobs, `ya29.…` refused at startup, fleet mode unaffected.
+   - **Maps data mapping verification:** country/coordinate cross-check (GB 51.97/-0.40, TR 37.98/31.42, TH 11.83/100.11, PE -11.26/-77.19, VN 10.77/106.70); **US avg -140.95 flagged** as Pacific Ocean, drilled down → San Francisco 37.79/-122.40 plus two Kauai rows at -159.3/-159.7 pulled the mean; all correct. Zero impossible lat/lon, zero null titles/dates/origin_ids. List names map from filenames including Turkish (`kas kalinabilecek yerler`); `Want to go` 234, `E&L Wedding Istanbul Suggestions` 38.
+   - **Connector audit:** 8 connectors. 3 takeout declare `os.files`+`macos` correctly. **Gap found:** `chrome_dispatcher` used by midas, linkedin, revolut — none declares `requiredCapability`, so they can be dispatched to a worker with no extension and fail at runtime instead of failing closed. **Deliberately NOT fixed** — prod has 3 live connections, 0 pinned, so declaring it would break Revolut/Midas/LinkedIn; needs a pin-then-declare migration (user's decision).
+   - **Takeout coverage:** maps only 3 sources (YouTube, Keep, Maps) of ~47 archive folders. Unmapped: My Activity (159 files), Chat (54), Drive (961+25+75), Calendar (5 .ics), Contacts (~1000 vCards), Health (2114), Fit (126), Tasks, Purchases.
+   - **Venue metadata:** captured = your rating, your review text, Maps URL (as `source_url`), address, coords, country. NOT available in Takeout at all = venue aggregate stars, venue review count. Venue type/category not extracted and unverifiable while TCC blocks Downloads.
+
+6. **All user messages:**
+   - "why is this taking too long"
+   - "ok go do those make sure no gaps, check all conenctors simplify consolidate"
+   - "revolut midas use the browser no?"
+   - "fix all issues and then try and make sure they work and then merge"
+   - "did you e2e all those and make sure they work reliably"
+   - "how come tcc revoked"
+   - "yes merge if we're good"
+   - "ok make sure no gaps, merge all and make sure google maps etc data is correctly mapped"
+   - "so we have the info about these coordinates and we have query sql supporting getting locations fromt the coordinates to locations right? for google maps stuff do we have the number of comments and stars for the venues, their types their links etc"
+   - "ok that's fine, we map everything we see in the takeout right"
+
+7. **Pending Tasks:**
+   - Merge **#2697** (Maps) — gate clean `ee094435`, `pi-review` 84/0 blockers, `ui-review` posted; `integration` check was missing/`frontend` pending at last look.
+   - Merge **#2687** (durable PAT) — gate clean `bbf0e583`, `ui-review` posted, `pi-review` re-running after two OOM kills.
+   - **`localTakeoutSchema` consolidation** into `takeout-utils.ts` — own branch, safe, not started.
+   - **`requiredCapability` on revolut/midas/linkedin** — BLOCKED pending user decision; needs pin-then-declare migration on 3 live prod connections.
+   - **My Activity feeds** (Maps navigation/search history, Search, Calendar) — offered, awaiting user go-ahead.
+   - Restore Downloads TCC grant (System Settings → Privacy & Security → Files and Folders) to re-verify archive coverage.
+   - Clean up: local test DBs dropped already; e2e rig torn down; admin PAT still exists in dev DB.
+
+8. **Current Work:**
+   Immediately before this summary I was resolving why `make review` on **#2687** kept dying. It failed twice — first `make: *** [review] Error 143` (SIGTERM), then `make: *** [review] Killed: 9` (SIGKILL). I diagnosed the cause as memory pressure, not my earlier `pkill`:
+   ```
+   System-wide memory free percentage: 45%
+   vm.swapusage: total = 16384.00M  used = 15085.00M  free = 1299.00M
+   ```
+   Swap at 92% — the OOM killer. This also retroactively explains three background jobs earlier reported as "killed externally."
+
+   I then tore down the e2e rig to free memory: `pkill -f "bin.ts daemon --worker-id macos:e2e-device"` (worker stopped), and force-killed the gateway holding port 9418 (`killed 90617`, health then `000`). I relaunched `make review` in the `local-os-files-worker` worktree as background task `bklal5fcz`.
+
+   I had also just corrected a prod claim to the user after a peer's soft-delete finding:
+   ```
+   connector | all_rows | live | live_pinned
+   linkedin  |    8     |  1   |     0
+   midas     |    1     |  1   |     0
+   revolut   |    2     |  1   |     0
+   ```
+
+9. **Optional Next Step:**
+   Read the result of background task `bklal5fcz` (`make review` on #2687). If it posts a green `pi-review`, verify both PRs have all 10 required checks *present and passing* (not merely non-failing — the absent-check trap I caught), then merge both with `gh pr merge <n> --squash --admin`.
+
+   This follows directly from the user's "yes merge if we're good" and "ok make sure no gaps, merge all and make sure google maps etc data is correctly mapped." My last stated position was: *"I'll merge each one only when its own `pi-review` reports green — not on absence, which is the trap I caught in my own automation earlier."* Current blocking state per my last check:
+   ```
+   --- 2697 (9 checks) ---    MISSING: integration    frontend: pending
+   --- 2687 (10 checks) ---   pi-review: pending
+   ```
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

@@ -1,0 +1,1 @@
+wtf is {{entityId}} that doesn't make sense no? why do we have this feature even? can't a single agent manage the context itself and fan out subagents?

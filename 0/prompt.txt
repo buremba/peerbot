@@ -1,0 +1,1 @@
+remove http://127.0.0.1:4321/blog/entity-projection.webp stuff from there we don't use it.

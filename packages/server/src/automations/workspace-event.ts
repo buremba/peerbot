@@ -10,6 +10,7 @@ import { createAutomationEventRun } from '../runs/queue-service';
 import { WORKSPACE_EVENT_ACTIVATION_TASK } from '../scheduled/task-definitions';
 import { enqueueTasksInTransaction } from '../scheduled/task-scheduler';
 import { resolveAutomationExecutor } from '../tools/admin/manage_automations/executors';
+import { readAuditEventType } from '../utils/audit-event-type';
 import logger from '../utils/logger';
 import { dispatchAutomationRunsBestEffort } from './activation';
 import {
@@ -25,11 +26,24 @@ import {
 interface WorkspaceEventRecord {
   id: number;
   semanticType: string;
+  /**
+   * The stamped `<subject>.<op>` type for a platform-written audit row, or
+   * null for an Automation output. Carried alongside `semanticType` rather
+   * than collapsed into it because a subscription may legitimately name
+   * either: audit rows all share the `change` semantic type, so the stamp is
+   * the only way to subscribe to one kind of change without the rest.
+   */
+  auditEventType: string | null;
   metadata: Record<string, unknown>;
   entityIds: number[];
   entityTypeSlugs: string[];
   occurredAt: string;
-  producerAutomationId: number;
+  /**
+   * The Automation that produced this event, or null for a root — an event the
+   * platform itself wrote (a device coming online, a connection deleted) with
+   * no Automation upstream of it.
+   */
+  producerAutomationId: number | null;
 }
 
 interface MatchingWorkspaceEventActivation {
@@ -108,14 +122,33 @@ export async function enqueueWorkspaceEventActivations(
   );
 }
 
+/**
+ * The type names a subscription may use for this event, most specific first.
+ *
+ * An Automation output is nameable only by its semantic type. A platform-written
+ * audit row is additionally nameable by its stamped `<subject>.<op>` type, which
+ * is what makes `device.online` subscribable without also matching every other
+ * row whose semantic type is `change`.
+ */
+function subscribableEventTypes(
+  event: Pick<WorkspaceEventRecord, 'semanticType' | 'auditEventType'>
+): string[] {
+  return event.auditEventType == null
+    ? [event.semanticType]
+    : [event.auditEventType, event.semanticType];
+}
+
 export function matchesWorkspaceEventTrigger(
   trigger: AutomationWorkspaceEventTrigger,
   event: Pick<
     WorkspaceEventRecord,
-    'semanticType' | 'metadata' | 'entityTypeSlugs'
+    'semanticType' | 'auditEventType' | 'metadata' | 'entityTypeSlugs'
   >
 ): boolean {
-  if (!trigger.event_types.includes(event.semanticType)) return false;
+  const namesThisEvent = subscribableEventTypes(event).some((eventType) =>
+    trigger.event_types.includes(eventType)
+  );
+  if (!namesThisEvent) return false;
   if (
     trigger.entity_type !== undefined &&
     !event.entityTypeSlugs.includes(trigger.entity_type)
@@ -160,11 +193,6 @@ async function loadWorkspaceEvent(
     if (lineage[0]?.superseded_by != null) return null;
     throw new Error(`Workspace event ${eventId} was not found`);
   }
-  if (row.automation_id == null) {
-    throw new Error(
-      `Workspace event ${eventId} is not a declared Automation output`
-    );
-  }
   const entityIds = parsePgNumberArray(row.entity_ids);
   const entityTypes =
     entityIds.length > 0
@@ -179,15 +207,18 @@ async function loadWorkspaceEvent(
         ORDER BY et.slug
       `
       : [];
+  const metadata =
+    row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
   return {
     id: Number(row.id),
     semanticType: String(row.semantic_type),
-    metadata:
-      row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
+    auditEventType: readAuditEventType(metadata),
+    metadata,
     entityIds,
     entityTypeSlugs: entityTypes.map((item) => String(item.slug)),
     occurredAt: new Date(row.occurred_at).toISOString(),
-    producerAutomationId: Number(row.automation_id),
+    producerAutomationId:
+      row.automation_id == null ? null : Number(row.automation_id),
   };
 }
 
@@ -200,13 +231,27 @@ async function findMatchingWorkspaceEventActivations(
   matches: MatchingWorkspaceEventActivation[];
   fanoutLimited: boolean;
 }> {
-  const needle = [
+  // Coarse GIN needle, narrowed precisely by `matchesWorkspaceEventTrigger`
+  // below. An audit row is subscribable under two names, and containment
+  // cannot express a disjunction, so each name gets its own arm — the same
+  // shape `findMatchingAutomationActivations` uses for connector triggers.
+  // One arm alone would be wrong in both directions: the audit arm misses
+  // Automations subscribed to the raw semantic type, and the semantic arm
+  // misses every `<subject>.<op>` subscriber.
+  const needle = (eventType: string) => [
     {
       kind: 'event',
       source: 'workspace',
-      event_types: [signal.event_type],
+      event_types: [eventType],
     },
   ];
+  const triggerFilter =
+    event.auditEventType == null
+      ? db`w.triggers @> ${db.json(needle(event.semanticType))}::jsonb`
+      : db`(
+          w.triggers @> ${db.json(needle(event.auditEventType))}::jsonb
+          OR w.triggers @> ${db.json(needle(event.semanticType))}::jsonb
+        )`;
   const rows = await db`
     SELECT w.id, w.organization_id, w.agent_id, w.entity_ids,
            w.device_worker_id::text AS device_worker_id,
@@ -216,7 +261,7 @@ async function findMatchingWorkspaceEventActivations(
       AND w.status = 'active'
       AND w.current_version_id IS NOT NULL
       AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
-      AND w.triggers @> ${db.json(needle)}::jsonb
+      AND ${triggerFilter}
     ORDER BY w.id ASC
   `;
 
@@ -308,7 +353,16 @@ export async function activateWorkspaceEventTask(
     );
     return EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT;
   }
-  if (!causalAutomationIds.includes(event.producerAutomationId)) {
+  // A root carries no ancestry by construction: nothing ran before it. Demand
+  // that literally rather than skipping the check, because ancestry is what
+  // suppresses re-entry — a payload that pairs a producerless event with a
+  // non-empty path is either corrupt or an attempt to silence an Automation by
+  // naming it as its own ancestor, and neither should activate anything.
+  const producerMatchesCausalPath =
+    event.producerAutomationId == null
+      ? causalAutomationIds.length === 0
+      : causalAutomationIds.includes(event.producerAutomationId);
+  if (!producerMatchesCausalPath) {
     logger.error(
       {
         eventId: payload.eventId,
@@ -347,7 +401,7 @@ export async function activateWorkspaceEventTask(
     kind: 'event',
     source: 'workspace',
     event_id: event.id,
-    event_type: event.semanticType,
+    event_type: event.auditEventType ?? event.semanticType,
     delivery_id: `workspace-event:${event.id}`,
     occurred_at: event.occurredAt,
     root_event_ids: payload.rootEventIds,

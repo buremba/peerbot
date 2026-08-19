@@ -632,6 +632,8 @@ async function handleUpdate(
 		recordChangeEvent({
 			entityIds: [entityId],
 			organizationId: ctx.organizationId,
+			subject: "entity",
+			op: "updated",
 			title: `Entity updated: ${changes.map((c) => c.field).join(", ")}`,
 			content: `Entity "${entityDetails.name}" (id: ${entityId}) updated:\n${contentLines.join("\n")}`,
 			metadata: { changes },

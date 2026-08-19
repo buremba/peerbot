@@ -8,6 +8,11 @@
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
 import {
+  AUDIT_EVENT_TYPE_METADATA_KEY,
+  type AuditEventType,
+  formatAuditEventType,
+} from './audit-event-type';
+import {
   type AuditResourceKind,
   type ConfigResourceKind,
   redactConfigState,
@@ -676,6 +681,13 @@ export async function insertEvent(
 interface ChangeEventParams {
   entityIds: number[];
   organizationId: string;
+  /**
+   * What changed, as the shared `<subject>.<op>` vocabulary. Explicit here
+   * because this writer's `metadata` is caller-shaped free-form jsonb — unlike
+   * its siblings it carries no structured field the funnel could classify from.
+   */
+  subject: string;
+  op: string;
   title: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -694,14 +706,22 @@ const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
  * `_lobu_idempotency_key` (unique per org via `idx_events_org_idempotency_key`)
  * so a concurrent or retry insert after an ambiguous success resolves to the
  * winner instead of appending a duplicate.
+ *
+ * `eventType` is required rather than optional so a new writer cannot introduce
+ * an untyped audit row by omission: leaving it out is a compile error, not a
+ * silently unclassifiable event. The `record*` helpers below each supply it
+ * from data they already hold, so adding a new event type costs no code here —
+ * pass a new `subject`.
  */
 export async function insertConnectionlessAuditEvent(
-  params: InsertEventParams
+  params: InsertEventParams,
+  eventType: AuditEventType
 ): Promise<InsertedEvent> {
   const idempotencyKey = `audit:${params.originId}`;
   const metadata: Record<string, unknown> = {
     ...(params.metadata ?? {}),
     _lobu_idempotency_key: idempotencyKey,
+    [AUDIT_EVENT_TYPE_METADATA_KEY]: formatAuditEventType(eventType),
   };
 
   try {
@@ -770,7 +790,8 @@ export function recordChangeEvent(params: ChangeEventParams): void {
         metadata: params.metadata,
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
-      }),
+      },
+      { subject: params.subject, op: params.op }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -854,7 +875,10 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
         },
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
-      }),
+      },
+      // `verb` not `op`: the stored op is imperative (link/unlink/update_link)
+      // while the shared vocabulary is past-tense.
+      { subject: 'relationship', op: verb }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -990,7 +1014,8 @@ function recordStateChangeEvent(
         },
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
-      }),
+      },
+      { subject: params.resourceKind, op: params.op }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -1042,7 +1067,8 @@ export function recordLifecycleEvent(params: LifecycleEventParams): void {
           ...(params.extra ? { extra: params.extra } : {}),
         },
         createdBy: params.createdBy ?? null,
-      }),
+      },
+      { subject: params.entityType, op: params.op }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(

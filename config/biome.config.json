@@ -19,6 +19,8 @@
       "!**/.codex/**",
       "!**/.cli-smoke-run/**",
       "!**/.sdk-e2e-run/**",
+      "!**/.sdk-e2e-error-run/**",
+      "!**/.opencode/**",
       "!**/evals/**/last-run.json",
       "!**/.managed-e2e-run/**",
       "!**/dist/**",

@@ -948,6 +948,8 @@ async function handleDeleteFeed(
   recordChangeEvent({
     entityIds: feedEntityIds.map(Number),
     organizationId,
+    subject: 'feed',
+    op: 'deleted',
     title: `Feed deleted: ${feed.feed_key}`,
     content: `Feed "${feed.feed_key}" (id: ${args.feed_id}) was deleted.`,
     metadata: {

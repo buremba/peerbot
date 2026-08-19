@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7v31yjaa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b7v31yjaa.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for 2810 CI to complete" completed (exit code 0)</summary>
+</task-notification>

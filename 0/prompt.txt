@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf7g73yo6</task-id>
+<tool-use-id>toolu_01WZkkSr3HjwgsdBDdkBCdHC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab/tasks/bf7g73yo6.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for review round 3 verdict" completed (exit code 0)</summary>
+</task-notification>

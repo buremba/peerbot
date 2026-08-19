@@ -1,0 +1,1 @@
+the activity needs to render not random placeholder, normal acitivity page but some examples across different connectors so make it good looking, even an approval and interaction type etc. we can overlay it and say connect your data button

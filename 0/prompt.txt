@@ -1,0 +1,1 @@
+i was thinking whether it's best to collapse models sandboxes and devices under the connectors, does it make sense? it can be a new category?

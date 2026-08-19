@@ -1,0 +1,1 @@
+do we show mcp apps on event save? maybe run_sdk can also show when the agent writes to memory or changes something? does it make sense? i'm trying this and it looks broken https://chatgpt.com/share/6a80c0d1-4bb8-83eb-96d8-bd9dcf57e219

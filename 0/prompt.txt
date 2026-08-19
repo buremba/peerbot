@@ -1,0 +1,1 @@
+let's think of the best solution for it, use codex to think through. also for entity hook, tell me why it's not defined under where we define the entity type in the first place

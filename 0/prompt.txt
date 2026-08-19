@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b177nr453</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/8845e28f-1968-4265-b03d-2ffd9778591f/tasks/b177nr453.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for owletto CI to finish" completed (exit code 0)</summary>
+</task-notification>

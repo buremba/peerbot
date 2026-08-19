@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bl15hz8l4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bl15hz8l4.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the review gate once" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bo9t89zcj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/34004f74-20ed-439c-908b-fd1a4b248251/tasks/bo9t89zcj.output</output-file>
+<status>completed</status>
+<summary>Background command "Run opencode against the local Lobu MCP" completed (exit code 0)</summary>
+</task-notification>

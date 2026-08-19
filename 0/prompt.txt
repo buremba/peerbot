@@ -1,0 +1,1 @@
+check make sure it works properly. also in vercel sanodx why do we run bubblewrap

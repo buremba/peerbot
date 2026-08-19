@@ -1,0 +1,31 @@
+You are reviewing a design decision in this repo (a TypeScript monorepo, Lobu, an agent platform). Verify claims against the code yourself; do not trust my framing.
+
+BACKGROUND
+Connectors sync external data. A connector's sync() returns SyncResult (packages/connector-sdk/src/connector-types.ts:870) which carries ONLY events. Events are turned into entities by declarative 'attributions' rules on an eventKind (same file, ~line 540-625: EventAttributionRule, EventAttributionTargetSpec, EntityIdentitySpec with namespace/eventPath/primary, autoCreate, traits). The engine that executes these is packages/server/src/utils/entity-link-upsert.ts.
+
+THE GAP: attributions link EVENT -> ENTITY. There is no way for a connector to declare ENTITY -> ENTITY edges (rows in the entity_relationships table). The word 'relationship' does not appear in connector-types.ts at all.
+
+RELEVANT HISTORY: commit 88dab5bf2 'refactor(server): delete the identity-fact engine (#2416)' deleted a prior mechanism that derived relationship edges from compiled 'autoCreateWhen' rules stored on entity_relationship_types.metadata. Read that commit message. It was deleted as a 'parallel, unused identity mechanism'.
+
+CURRENT AD-HOC WRITERS of entity_relationships (all server-internal, none connector-declarable):
+- packages/server/src/utils/auto-linker.ts:126 — 'mentions' edges, confidence 0.4, source 'feed', SELECT-then-INSERT with NO ON CONFLICT
+- packages/server/src/gateway/routes/public/github-team-graph.ts:312 — source 'feed', confidence 1.0, ON CONFLICT DO NOTHING
+- packages/server/src/authz/channel-about.ts:268 — source 'config'/'manual', ON CONFLICT DO UPDATE, and it reconciles/tombstones scoped to source='config'
+Also packages/server/src/authz/access-graph.ts (ACL member_of) and tools/admin/manage_entity.ts (agent tool).
+The unique index is (from_entity_id, to_entity_id, relationship_type_id) WHERE deleted_at IS NULL.
+
+MY PROPOSAL (critique it hard):
+Layer 1: extract ONE upsertEntityRelationship() primitive into entity-link-upsert.ts; refactor all ad-hoc writers onto it. Unifies conflict policy, fixes the auto-linker check-then-act race.
+Layer 2: add 'relationships?: EntityRelationshipRule[]' as a sibling to 'attributions' on an eventKind:
+  { type: string (relationship_type slug), from: EventAttributionTargetSpec, to: EventAttributionTargetSpec, autoCreate?, confidence?, metadata? }
+Both endpoints reuse EventAttributionTargetSpec so they inherit identity resolution, primary-id semantics, and createWhen gating.
+Reconcile policy keyed on the 'source' column, scoped per connection (e.g. source='feed:<connection_id>') so one connector's sweep cannot delete another's edges.
+
+QUESTIONS
+1. Is this design sound, or does it repeat the mistake that got #2416 deleted?
+2. Is reusing EventAttributionTargetSpec for BOTH endpoints right, or does a from/to pair need a different abstraction?
+3. Reconciliation: connector edges additive-only, or authoritative-sweep scoped by source? What breaks in each? Consider that events are append-only and dedupe on origin_id, so a removed edge emits no signal.
+4. Should Layer 1 ship separately first?
+5. What am I missing? Name concrete failure modes.
+
+Be concise and concrete. Cite file:line. Disagree where warranted.

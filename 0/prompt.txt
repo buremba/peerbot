@@ -1,0 +1,1 @@
+i don't understand why vercel is problem. it's running in sandbox no? and that sandbox can run nix shell etc properly

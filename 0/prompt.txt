@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzdhft5ux</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/fc2de4d8-db6d-4d4c-8398-88fe7691ce6b/tasks/bzdhft5ux.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for this cleanup wave to finish (background)" completed (exit code 0)</summary>
+</task-notification>

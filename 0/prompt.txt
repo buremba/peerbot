@@ -1,0 +1,1 @@
+how big these gaps are? i thought behaviors usually create events, and they can be like event kind for an entity. the feeds also have event kind right? behavior is more like a feed and it can create event to create an entity or update an entity or delete it etc. for the slack. no matter where i am talking to the bot, it knows me and it can answer based on my data

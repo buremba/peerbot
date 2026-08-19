@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2t6xogqm</task-id>
+<tool-use-id>toolu_01CGWRqyTynwT3BqnZWWfFkH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/b2t6xogqm.output</output-file>
+<status>completed</status>
+<summary>Background command "Final make review on settled HEAD" completed (exit code 0)</summary>
+</task-notification>

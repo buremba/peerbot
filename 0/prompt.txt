@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf2vqey0s</task-id>
+<tool-use-id>toolu_01QgSU5SR1buSxoM9s43EX61</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bf2vqey0s.output</output-file>
+<status>completed</status>
+<summary>Monitor "scaffolded project boot" stream ended</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+hmm, i also want lobu cloud to have these app installation tokens so people can use lobu locally with our cloud creds to reuse. also is this a product gap?

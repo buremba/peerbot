@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwrf4u3d5</task-id>
+<tool-use-id>toolu_01TH1jPC9YqCVU4ogFEuSFkS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20859076-1eb6-464c-9b1c-dae2360fe186/tasks/bwrf4u3d5.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on the Fable backend" completed (exit code 0)</summary>
+</task-notification>

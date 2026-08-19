@@ -1,0 +1,153 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+User messages in chronological order:
+- **(Session continuation)** — resume the merge sequence for #2846 without acknowledgement. Standing prior instruction: *"yes lets go ahead one by one, i feel like were very slow and not making progress fast."*
+- **"what are all the remaining work, can you create github issues for all of them so can close this session and create new ones. put tech and implementation spec in there"** — comprehensive issue-filing with technical/implementation specs.
+- **"ohow big lift these issues are? can a less capable model do the work or is it hard"** — delegation triage.
+- **"let's make these decsions then interview me"** — resolve blocked design decisions via interview.
+- **"ok now everything can be done by the agent?"** — can everything now be delegated.
+- **"let's triage them and make the final version of the issues complete"** — label + make each issue self-contained.
+- **"did you add the labels"** — verification request.
+- **"why the fuck we needed 20 issues are they slop or what's the scope"** — pushback on issue count.
+- **"yes"** — approving the consolidation plan (fix #2852/#2862 and close, close #2853, fold #2847/#2848/#2850 into #2849, run or close #2864).
+- **"just change no need merge admin merge do without waiting"** — make the change and admin-merge without waiting for gates.
+- **"can i finish this session, is everything on github"**
+- **"any uncommitted work or all on github?"**
+- **"we don't want the entity transitions either no?"**
+- **"yes cleanup things we don't need. the erp close thing explain if we need something. depot is failing don't wait if it passed"**
+- **"do the cleanup and tell me if we can take it in to another agents in parallel"**
+- **"are we done here?"**
+- **"are all issues now good and up to date? can we exit here or do you need to do more cleanups?"**
+
+2. **Key Technical Concepts:**
+- **Migrations quiesce the app to 0 replicas:** `charts/lobu/templates/migration-job.yaml:9` (`helm.sh/hook: pre-install,pre-upgrade`) + `charts/lobu/files/migrate-upgrade.sh` scales app+worker to `--replicas=0` and waits `kubectl wait --for=delete` BEFORE migrating. Fails closed: only exit 3 (`CHECK_PENDING_NONE_EXIT` in `scripts/migrate-up.mjs`) skips quiesce. So **no version-skew window** on schema changes; don't reason from `strategy.type`.
+- **`ON CONFLICT` infers arbiter by comparing parse trees** — a bound `Param` never equals the index's `Const`, so sentinels must be SQL literals. Fails non-deterministically across suites, reads like test-isolation flake.
+- **Index-change blast radius:** changing a unique index breaks every `ON CONFLICT` naming the old column list (10 sites for `entity_identities`).
+- **`packages/server/tsconfig` excludes `__tests__`** — wrong-signature test calls compile clean, die in CI.
+- **`bunx vitest` does not honour `singleFork`** — files run concurrently against one DB, fabricating failures. Tell is two PIDs. Use `node ../../node_modules/.bin/vitest`.
+- **Events retain superseded rows:** `events.supersedes_event_id` + denormalized `superseded_by` inverse edge + partial unique index `idx_events_superseded_by`. Complete version chain = transaction-time history exists without valid-time.
+- **Depot org-wide cancellation was FIXED (#2707)** — `ci.yml` uses `group: ci-${{ github.ref || github.run_id }}`; `depot ci run` supplies no ref so each dispatch gets its own group. Parallel gates contend for capacity, not a slot.
+- **`enforce_admins: true` on main** — `gh pr merge --admin` cannot bypass missing required checks.
+- **Prod access recipe:** namespace `summaries-prod`, pod `lobu-db-prod-1`, DB `owletto`, user `summaries`, `-h 127.0.0.1` load-bearing, password from app pod's `DATABASE_URL`.
+- **Required contexts (10):** base-branch-guard, check-drift, format-lint, frontend, integration, migrations, pi-review, typecheck, ui-review, unit.
+- A `PreToolUse` hook blocks truncated schema-catalog queries (`head`/`tail`/`LIMIT` near `pg_indexes`).
+
+3. **Files and Code Sections:**
+
+**MERGED — #2846, squash `70e5abae116ca0fcffe1188154bf9bd79f7d3713`** (16 files, +609/−65):
+- `db/migrations/20260818000000_entity_identity_connection_scope.sql` — `scope_connection_id bigint`, index `idx_entity_identities_live_unique_scoped` on `(organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL`, `-- migrate:up transaction:false` + INVALID-carcass heal + CONCURRENTLY.
+- `packages/connector-sdk/src/connector-types.ts` — `EntityIdentitySpec.scope?: 'organization' | 'connection'`
+- `packages/server/src/utils/entity-link-upsert.ts` (+222) — `ResolvedIdentity`, `ORG_SCOPE_SENTINEL = 0`, `scopeKeyOf`, `identityKey`
+- Plus 8 files with `ON CONFLICT` rewrites.
+
+**PROD-VERIFIED:** index is 4-column COALESCE expression, `idx_entity_identities_live_unique` absent, `indisvalid = t`, `indisready = t`, 8,204 live rows / 0 scoped.
+
+**PR #2872 (open, `feat/docs-traps`, commit `5ac00d1b4`)** — 2 files, +7:
+- `packages/connector-sdk/src/connector-types.ts`:
+```
+   * NOT the same field as `scope` on the auth schema (`ConnectorAuthEnvKeys`,
+   * `ConnectorAuthOAuth`, `ConnectorAuthInteractive`), which shares this name and
+   * value union but scopes a CREDENTIAL, not an identity namespace. Check which
+   * one you are setting: writing `'connection'` here because you wrote it there
+   * forks one person into one entity per connection.
+   */
+  scope?: 'organization' | 'connection';
+```
+- `packages/server/AGENTS.md` — added bullet documenting the `bunx vitest` `singleFork` trap.
+- State: `pi-review: fail`, `unit: cancel`, 8 others pass.
+
+**PR #2874 (open, `fix/task-clean-prune`, commit `41ef3ba56`)** — `scripts/task-clean.sh`:
+```sh
+if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qF "worktree $worktree_dir"; then
+  git -C "$repo" worktree remove "$worktree_dir" --force
+else
+  echo "→ worktree path already gone from git"
+  rm -rf "$worktree_dir" 2>/dev/null || true
+fi
+
+# Drop any registration still pointing at the path we just removed. Without
+# this, `git branch -D` below fails with "cannot delete branch ... used by
+# worktree at <path>" ... Cheap and idempotent, so it runs unconditionally.
+git -C "$repo" worktree prune
+```
+State: **9/10 required pass, only `pi-review` outstanding.**
+
+**Deleted (verified content-complete on main first):**
+- `feat/entity-transitions` (`edadfcdf4`) — 30 files, 0 lines main lacks
+- `feat/erp-period-close` (`c27a77d9d`) — never pushed, code rejected for layering
+- `feat/identity-scope` (`0713d0cac`) — 16 files, 0 lines main lacks
+
+4. **Errors and fixes:**
+- **Claimed RollingUpdate caused a version-skew window** — wrong; the pre-upgrade quiesce exists. Corrected on the PR and written to memory.
+- **Filed #2859 and #2860 from a stale memory note** — #2842 (`006f3c568`) merged 4 minutes before #2846 and shipped both. Closed same day. Lesson: check `origin/main`/`gh pr view` before filing from memory.
+- **#2861 duplicated the peer session's #2866** — closed mine, carried the owner decision (cover ALL denials) onto #2866.
+- **Said `feat/spike-derived-edges` was unpushed** — it IS on origin. Corrected #2863's title and body.
+- **Named `ConnectorAuthMcp` in a doc comment** — doesn't exist; real name `ConnectorAuthInteractive`. Caught by reading the file.
+- **Dropped the reviewer's "inverted defaults" claim** — could not verify (no default declared at the type), so documented only the verified collision.
+- **Ran `make review` from wrong cwd** (main checkout, not worktree) — stopped and re-ran with `make -C <worktree>`.
+- **Labeled #2856 `blocked` incorrectly** — it's manifest+preflight only, no writes. Removed.
+- **Miscounted labels** (said 19 issues / 7 safe; actually 20 / 8). Corrected.
+- **Pushed `HEAD:fix/task-clean-prune` while local branch was `feat/task-clean-prune`** — broke `gh pr create` and `make ui-review`. Fixed with `--head` then `git branch -m`.
+- **`make task-clean` bug** — leaves stale worktree registration so `git branch -D` fails. Hit 3/3 times. Fixed in PR #2874.
+- **USER PUSHBACK: "why the fuck we needed 20 issues are they slop"** — I audited honestly: 3 filed-and-closed same day, 3 shouldn't have been issues, 4 over-decomposed. Consolidated 20 → 16.
+
+5. **Problem Solving:**
+- Merged #2846 and prod-verified it.
+- Ran a 7-decision owner interview; all recorded in issue bodies (not comments).
+- Discovered Depot trial expiry blocking all gating; filed #2873.
+- Rescued the `erp-period-close` KNOWN GAP analysis (merge bypasses the mutation gate; routing through `runMutationGate` was implemented and reverted because `WRITE_ACTION_MANIFEST.entity.defaultEffect.delete` is `"approval"`, making every agent auto-merge require approval; the missing capability is a gate that can say "approval is decided, run only data rules") onto #2868 — it existed nowhere on `origin/main` and the uncommitted changes were deleting it.
+
+6. **All user messages:**
+- (Session continuation prompt to resume without acknowledgement)
+- "what are all the remaining work, can you create github issues for all of them so can close this session and create new ones. put tech and implementation spec in there"
+- "ohow big lift these issues are? can a less capable model do the work or is it hard"
+- "let's make these decsions then interview me"
+- AskUserQuestion round 1: "Connector declares a tenant key"; "Record every denial, post-rollback"; "Read the spike's evidence first"; "Full re-assert + diff"
+- AskUserQuestion round 2: "Refuse until explicitly migrated"; "Hard fail at manifest load"; "do we need it as event dat provides history anyways"; "The safe tier, Re-key #2846 to scope_key, #2850 scope-blind resolver, Read the spike's evidence"
+- "ok now everything can be done by the agent?"
+- "let's triage them and make the final version of the issues complete"
+- "did you add the labels"
+- "why the fuck we needed 20 issues are they slop or what's the scope"
+- "yes"
+- "just change no need merge admin merge do without waiting"
+- "can i finish this session, is everything on github"
+- "any uncommitted work or all on github?"
+- "we don't want the entity transitions either no?"
+- "yes cleanup things we don't need. the erp close thing explain if we need something. depot is failing don't wait if it passed"
+- "do the cleanup and tell me if we can take it in to another agents in parallel"
+- "are we done here?"
+- "are all issues now good and up to date? can we exit here or do you need to do more cleanups?"
+
+**Standing constraints (from CLAUDE.md/AGENTS.md — remain in effect verbatim):** **Never write to `~/Code/lobu` directly** — run `make task-setup NAME=<slug>` first, never `git switch` in the main checkout. **Stage by explicit path (`git add -- <paths>`, never `-A`)**; after commit/rebase `git diff --name-only origin/main...HEAD` must equal the intended file list. **`events` is append-only** — never `DELETE FROM events`. **Never bulk-delete prod `organization` rows.** **Never resolve merge conflicts in the GitHub web UI.** **Two writing agents must never share a worktree.** **Never add a table or change DB design, API surface, or SDK surface without surfacing the proposal and receiving confirmation first.** **Never auto-submit an interactive browser draft.** **Workers never receive real credentials.** No backwards-compat shims, no `@deprecated`. No "Co-Authored-By" or Claude attribution in commits. No new `*.md` unless asked. Always show the diff. End with a confidence score + 2–4 next actions. Never `git stash`. **Never `--admin` past a check that has not reported.** Absence needs `origin/main` grep after `git fetch`. Prefer `bun`, never npm/yarn/pnpm. Do not use workflows/deep-research or the Agent tool unless requested. Never use `screencapture` as a screenshot fallback. Browsers are tier "read" for computer-use.
+
+7. **Pending Tasks:**
+- **#2871's body is STALE** — it references #2847, #2848, #2850, #2853, #2864 in its wave tables, all now CLOSED. This is the entry-point issue, so staleness there is the worst case, and it repeats the exact "decisions live in comments not bodies" failure I criticised earlier.
+- PR #2872 and #2874 both blocked on #2873 (Depot billing).
+- #2862's body offers "document vs guard" options; the documentation is now done in PR #2872 — may need noting.
+- Deepseek reviewer pool (`PI_REVIEW_PROVIDER=deepseek PI_REVIEW_MODEL=deepseek-v4-pro`) remains **untested** — I queued it then stopped it per user instruction.
+
+8. **Current Work:**
+Responding to *"are all issues now good and up to date? can we exit here or do you need to do more cleanups?"* by auditing issues for staleness rather than asserting they were fine. I ran a check against #2871's body and found:
+
+```
+=== issues referenced in #2871 body that are now CLOSED ===
+  #2847 referenced in body — state: CLOSED
+  #2848 referenced in body — state: CLOSED
+  #2850 referenced in body — state: CLOSED
+  #2853 referenced in body — state: CLOSED
+  #2864 referenced in body — state: CLOSED
+
+=== does #2863 body still say unpushed? ===
+  matches: 0
+```
+
+So #2863 is already clean, but **#2871's body needs rewriting** — its Wave 1/2/3 tables list five closed issues as if they were open work, and it does not mention PR #2874 or the `task-clean` fix. I had added a comment to #2871 noting the consolidation, but the body itself was never updated.
+
+9. **Optional Next Step:**
+Rewrite #2871's body so the entry-point tracking issue is accurate: remove the five closed issues (#2847, #2848, #2850, #2853, #2864) from the wave tables, fold their content into the #2849 row, add PR #2874, and keep the #2873 Depot blocker prominent at the top. This follows directly from the user's question *"are all issues now good and up to date?"* and from my own stated standard earlier in the session: *"Every decision moved from comments into the issue **bodies**. That mattered: seven issues had their decision recorded only in a comment, which is exactly what gets missed when someone picks the issue up fresh."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

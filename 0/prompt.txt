@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b4ge3vsrb</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/tasks/b4ge3vsrb.output</output-file>
+<status>failed</status>
+<summary>Background command "Push and wait for CI" failed with exit code 1</summary>
+</task-notification>

@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:13:45.686Z","content":[{"text":"New message in #sales:\n\nsarah: ok cool, sounds good 👍"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:13:58.569Z","id":"56052fab","input_tokens":189,"output_tokens":526,"content":[{"type":"tool_use","id":"call_b165b36867fc43ecb7e53640","name":"send_message","input":{"text":"👍"},"result":{"output":"","status":"success"}}]}

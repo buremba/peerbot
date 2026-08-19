@@ -1,0 +1,1 @@
+behavior creates event built tobight really? i thought keying config etc allows us to update the existing entities etc no? apparently it's not? for task tracking behaivor use-case the entity made sense but i feel like events cover entity use-cases as well. identify all the gaps ultrathink

@@ -1,0 +1,123 @@
+<task-notification>
+<task-id>a782e702ce33aab05</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/a782e702ce33aab05.output</output-file>
+<status>completed</status>
+<summary>Agent "Gapless document numbering" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## What I found first (changes the answer)
+
+**The mutation-interceptor seam cannot do gapless numbering.** `runMutationGate` for `create` is called at `packages/server/src/tools/admin/manage_entity.ts:320` with `sql: getDb()` — a *pool* client — and the row is inserted later by a separate `sql.begin(...)` inside `createEntity` (`packages/server/src/utils/entity-management.ts:493`). So an interceptor runs in a **different transaction** from the INSERT, and its contract returns a *decision* (`allow`/`deny`/`defer`), never a mutated `entityData`. Anything allocated there commits before the insert and is burned if the insert fails — a gap by construction. `x-transitions` works at that seam because refusal needs no atomicity; numbering does.
+
+The correct chokepoint is **inside `createEntity`'s existing `sql.begin` block**, immediately before the INSERT. (Also note: `beforeCreate` *can* mutate `data`, but it runs at line 422, before `getDb()` and outside the tx — same problem.)
+
+## Built (committed, `e77adc970`, not pushed)
+
+`packages/server/src/utils/document-numbering.ts` — declared as `x-numbering` on `entity_types.metadata_schema`, exactly the `x-transitions` pattern from `c4a95b23c`:
+
+```jsonc
+"x-numbering": {
+  "field": "invoice_no", "prefix": "INV", "reset": "year"|"month"|"never",
+  "padding": 6, "separator": "-", "series_field": "branch_code",
+  "timezone": "Europe/Istanbul"
+}
+```
+
+Exports: `parseNumberingSpec` (throws on malformed rather than silently no-op'ing), `derivePeriod` (bucket computed in the *declared* zone — an invoice cut 01:30 on 1 Jan in Istanbul belongs to the new year even though the server clock says 31 Dec UTC), `deriveSeries` (a declared-but-missing series value is an error, never folded into the shared `""` partition), `formatDocumentNumber`, `documentNumberLockKey` (FNV-1a → int32, same construction as `eventDedupLockKey` in `utils/insert-event.ts`), and `allocateDocumentNumber`. Lock namespace `0x646f636e` ("docn"), taken with `pg_advisory_xact_lock` — the repo's existing idiom (`insert-event.ts:649`, `db-helpers.ts:140`).
+
+The allocator is **not wired into any write path** and nothing in production calls it, so the missing table cannot be hit. Absence confirmed: `git fetch -q origin &amp;&amp; git grep -l "x-numbering\|document_number_counters\|allocateDocumentNumber" origin/main -- packages db` → no hits.
+
+## PROPOSAL — needs your confirmation (no migration written)
+
+### DDL I would add (`db/migrations/&lt;ts&gt;_document_number_counters.sql`)
+
+```sql
+-- migrate:up
+CREATE TABLE IF NOT EXISTS public.document_number_counters (
+  organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+  entity_type_id integer NOT NULL REFERENCES public.entity_types(id) ON DELETE CASCADE,
+  series text NOT NULL,                 -- '' when the type declares no series_field
+  period text NOT NULL,                 -- '2026' | '2026-08' | '' for reset:never
+  last_value bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT document_number_counters_pkey
+    PRIMARY KEY (organization_id, entity_type_id, series, period),
+  CONSTRAINT document_number_counters_last_value_positive CHECK (last_value &gt;= 0)
+);
+```
+
+One row per (org, type, series, period) — bounded config-shaped state, no index beyond the PK, no aggregate over history. This is the exact DDL the test creates and drops, so what's proven is what's proposed.
+
+### Locking protocol (inside `createEntity`'s existing `sql.begin`)
+
+1. `SELECT pg_advisory_xact_lock(0x646f636e, fnv1a32(org:typeId:series:period))`
+2. `INSERT … ON CONFLICT (org, type, series, period) DO UPDATE SET last_value = last_value + 1 RETURNING last_value`
+3. stamp `metadata[spec.field]`
+4. `INSERT INTO entities` — **same transaction**
+
+Honest note on the lock: for the single-statement UPSERT the counter row lock alone already serializes correctly under READ COMMITTED, so the advisory lock buys no correctness *today*. I kept it because it pins the serialization point ahead of the UPSERT for any second statement the allocator later grows (manual-override check, repair path reading `entities`), and it matches the 63 existing sites. Deadlock caveat documented: two txs allocating two different series in opposite order can deadlock on the two advisory locks; PG aborts one, and the abort burns nothing.
+
+### Rollback / gap analysis (the part that decides the design)
+
+- **Gapless holds** only because the counter is ordinary table state mutated in the caller's tx. Rollback undoes the bump and drops the lock → the next writer reuses the number. Proven, plus a negative control proving `nextval()` does the opposite.
+- **Price, stated plainly:** every concurrent create for one (org, type, series, period) serializes from allocation to COMMIT. Throughput per series = 1 / lock-hold time. This is affordable *only* because `createEntity`'s tx wraps just the INSERT (sub-ms); it would not be affordable inside a long agent-driven transaction, and no network I/O may ever sit between allocation and commit. There is no way to get gaplessness without this serialization — a non-blocking allocator is necessarily gap-prone.
+- **Residual gap sources I cannot close in code:** hard-deleting a numbered document (soft delete keeps the row, which is the ERP-correct answer — you cancel, you don't delete), a manual overwrite of the field, or a resequence/backfill.
+- **Residual duplicate source:** a caller passing `invoice_no` explicitly. Recommend the wiring **rejects** a caller-supplied value for a numbered field; otherwise the number is not authoritative. Your call.
+- **Deferred-approval creates:** the number must be allocated at *apply* time, not at proposal time, or a rejected proposal burns a number.
+- Optional second half I'd defer: a `entities.document_number` column + partial unique index as a DB-level backstop. The field name is per-type, so no generic functional index is expressible without materializing a column — bigger change, weaker payoff than the counter itself.
+
+## Evidence
+
+Mutation test (lock removed, atomic UPSERT → read-then-write), test unchanged:
+```
+× issues 50 numbers under 10-way concurrency with no duplicates and no gaps
+  → expected 11 to be 50        # 50 allocations, only 11 distinct numbers
+Tests  1 failed | 8 passed (9)
+```
+
+Restored, `cd packages/server &amp;&amp; bunx vitest run --reporter=verbose src/__tests__/integration/entities/document-numbering-concurrency.test.ts`:
+```
+✓ returns null for a type that declares no numbering
+✓ defaults reset/padding/separator and rejects malformed declarations
+✓ formats 2026-000001 and honours prefix, padding and separator
+✓ buckets the period in the declared zone, not the server zone
+✓ refuses to fold a missing series value into the shared partition
+✓ issues 50 numbers under 10-way concurrency with no duplicates and no gaps  85ms
+✓ does not burn a number when the writer transaction rolls back
+✓ NEGATIVE CONTROL: a Postgres sequence burns the number on rollback
+✓ keeps distinct series and periods on independent counters
+Test Files 1 passed (1)   Tests 9 passed (9)
+```
+The concurrency case asserts the issued set is *exactly* `2026-000001…2026-000050` (no dups **and** no gaps), that the persisted `entities` rows agree, and that `last_value = 50`. Real embedded Postgres, 10 concurrent transactions × 5 rounds.
+
+`bunx tsc --noEmit` in `packages/server`: clean (also re-run by the pre-commit hook, together with Biome over 561 files).
+
+## Git
+
+```
+$ git status --short
+(clean)
+
+$ git diff --stat origin/main...HEAD
+ .../document-numbering-concurrency.test.ts         | 361 ++++++++++++++++++++
+ packages/server/src/utils/document-numbering.ts    | 370 +++++++++++++++++++++
+ 2 files changed, 731 insertions(+)
+```
+Branch `feat/erp-gapless-numbering`, commit `e77adc970`, staged by explicit path, not pushed, no PR.
+
+## Confidence
+
+- **Allocator + locking protocol — 88.** Ran real 10-way concurrent transactions against real Postgres and mutation-killed the test; the protocol is proven, but against a table the *test* creates, not a migrated one, and never under multi-replica load.
+- **Spec parse / period / series / format — 92.** Every branch exercised directly, including the Istanbul year-boundary case; assumed (not verified) that `schemaExtras` carries `x-numbering` through `lobu apply` — that comes from a prior session's note on `x-transitions`, not from a run I did here.
+- **Claim that the interceptor seam can't do this — 90.** Read the actual call sites (`manage_entity.ts:320` pool client, `entity-management.ts:493` separate `sql.begin`); did not boot the app to watch it.
+- **Production readiness of the feature — 25.** Nothing is wired; no create path allocates a number, so end to end this does not work yet by design.
+- **CI gate — 0.** No `make pre-pr-remote`, no `make review`, no knip. `knip` may flag `allocateDocumentNumber` as test-only until it's wired.
+
+## Next actions (pick)
+
+1. **Confirm or amend the DDL above**, then I write the migration and wire the allocator into `createEntity`'s `sql.begin` — including the decision on whether a caller-supplied value for a numbered field is rejected or ignored.
+2. Decide whether allocation for **deferred (approval-queued) creates** happens at apply time (my recommendation) and whether `promote-keyed-entities` / `entity-field-approval` also need it.
+3. Run `make review-fix` then `make pre-pr-remote` on the settled diff — neither has run; `knip` is the likely first failure while the allocator is unwired.
+4. Decide on the optional `entities.document_number` column + partial unique index as a DB-level duplicate backstop, or explicitly accept the counter as the sole authority.</result>
+<usage><subagent_tokens>131691</subagent_tokens><tool_uses>59</tool_uses><duration_ms>700629</duration_ms></usage>
+</task-notification>

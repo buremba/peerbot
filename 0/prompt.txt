@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btg1dyyrt</task-id>
+<tool-use-id>toolu_01W9DLJjTjKj3gT9EVUDo5Dk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/btg1dyyrt.output</output-file>
+<status>completed</status>
+<summary>Background command "Rerun PR A gate" completed (exit code 0)</summary>
+</task-notification>

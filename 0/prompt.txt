@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bode43r01</task-id>
+<summary>Monitor event: "Lobu dev server boot: readiness or failure"</summary>
+<event>@lobu/server dev: [2026-08-12 17:09:22] [info] [core-services] Skipping config-driven provider "claude" — already registered
+@lobu/server dev: [2026-08-12 17:09:22] [info] [core-services] Skipping config-driven provider "chatgpt" — already registered</event>
+</task-notification>

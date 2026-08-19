@@ -1,0 +1,179 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The conversation began as a UI/design investigation and evolved into a full design + implementation + merge cycle.
+
+   - **Initial:** User asked why Skills appear separately under agents, whether the Skills page is folded into the Behavior page, and whether the "Goal" field with `@` referencing (which auto-populated sources) had been deleted.
+   - **"you start local dev and test. confirm the final state. i was talking about new behavior create/edit etc"** — boot local dev and verify the behavior create/edit flow empirically.
+   - **A long design dialogue** on how Behavior instructions should be authored, culminating in a settled design (see below).
+   - **"ok sounds good."** → begin implementation.
+   - **"continue the work and merge when done"** → run remaining gates, PR, merge.
+   - **"if you think it's good merge yourself"** → explicit authorization to make the merge judgment.
+
+   **Settled design (user-approved via AskUserQuestion, "Chips only" selected):**
+   - Behavior stores `skills: [{name, content}]` — pinned snapshots on the version
+   - One prompt field; `@` chips resolve in the composer (like owletto #633) and write the array
+   - Delivery: pinned snapshots as `.skills/*/SKILL.md`; device path (D) composes them into the payload; chat-listen path (C) keeps the live library (documented divergence)
+   - Iteration model: diff current skill vs snapshot, one-click upgrade → new behavior version; `lobu apply` IS the upgrade action for config projects
+   - Picker widget removed as an *editor*; survives as a read-only "Attached skills" strip hosting the upgrade action
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace, `packages/{core,server,cli,agent-worker,connectors,owletto}`
+   - owletto = private frontend git submodule (was 188 commits behind the pinned SHA)
+   - Behavior (agent-facing name) vs `watcher` (internal DB/engine vocabulary) — `make pre-pr` fails on agent-facing "watcher"
+   - Four dispatch paths: A=schedule/window, B=event background, C=chat-listen, D=device-worker poll
+   - `BEHAVIOR_RUN_SOURCE = "watcher-run"` isolation seam (from PR #2342)
+   - Worker token claims — signed, non-worker-supplied (`nixPackages`, `allowedDomains` pattern)
+   - `extractSourcesFromPromptTokens` / `PROMPT_KIND_TO_MODE` (feed, connection, connector, channel, metric — NOT entity)
+   - dbmate migration format (`-- migrate:up` / `-- migrate:down`)
+   - `QUERYABLE_SCHEMA` drift detection (`table-schema.ts`)
+   - TypeBox contracts; ProseMirror mention editor; `pi-review` required check with `enforce_admins: true`
+
+3. **Files and Code Sections:**
+
+   - **`db/migrations/20260730220000_watcher_versions_skills.sql`** (NEW; renamed from `20260730210000` which collided with `20260730210000_watchers_last_run_completed_at.sql` on origin/main)
+     - Adds the pinned-snapshot column. Required dbmate markers (initially missing — caught by integration tests):
+     ```sql
+     -- migrate:up
+     ALTER TABLE watcher_versions
+       ADD COLUMN IF NOT EXISTS skills jsonb;
+
+     -- migrate:down
+     ALTER TABLE watcher_versions
+       DROP COLUMN IF EXISTS skills;
+     ```
+     - NULL = pre-column version (instructions in `prompt`); `[]` = authored with skills, none chosen.
+
+   - **`packages/core/src/contracts/tools/manage-behaviors.ts`**
+     - Added `BehaviorSkillSchema` (`{name, content}`) + `BehaviorSkill` type, and a `skills` param with full-replacement semantics matching `sources`. Reworded `prompt` description to the OR-rule.
+
+   - **`packages/server/src/behaviors/triggers.ts`**
+     - `assertBehaviorInstructions` gained a third parameter so either source satisfies the rule:
+     ```ts
+     export function assertBehaviorInstructions(
+       triggers: BehaviorTrigger[],
+       instructions: string | null | undefined,
+       skills?: ReadonlyArray<{ name: string; content: string }> | null
+     ): void {
+       if (!behaviorRequiresInstructions(triggers)) return;
+       if (instructions?.trim()) return;
+       if (skills?.some((skill) => skill.content.trim())) return;
+       throw new ToolUserError(
+         "This Behavior runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill or provide instruction text. Only event triggers with execution 'turn' may omit both."
+       );
+     }
+     ```
+     - All 6 call sites updated (fix the class, not the instance).
+
+   - **`packages/server/src/tools/admin/manage_behaviors/shared.ts`**
+     - New `assertBehaviorSkillsResolve(sql, organizationId, agentId, skills)` — fail-closed 422 on missing/disabled skill or duplicate names. Validates the NAME but stores the CALLER's content (never re-reads the body, which would silently upgrade a pin).
+
+   - **`packages/server/src/tools/admin/manage_behaviors/crud.ts`** — create path persists `skills` in the `watcher_versions` INSERT; update path selects `cv.skills AS current_skills`; `create_from_version` passes `version.skills`.
+
+   - **`packages/server/src/tools/admin/manage_behaviors/version-actions.ts`** — passed-vs-omitted intent split mirroring `sources`; inherited snapshots carried verbatim.
+
+   - **`packages/server/src/gateway/behavior-run-session.ts`** (extended by review-fix) — `resolveBehaviorRunSkills` + `formatBehaviorRunSkillInstructions`. The SQL (verified live):
+     ```sql
+     SELECT version.skills
+     FROM runs behavior_run
+     JOIN watchers behavior ON behavior.id = behavior_run.watcher_id
+      AND behavior.organization_id = behavior_run.organization_id
+      AND behavior.agent_id = ${args.agentId}
+     JOIN watcher_versions version ON version.id = COALESCE(
+            NULLIF(behavior_run.approved_input->>'version_id','')::bigint,
+            behavior.current_version_id)
+      AND version.watcher_id = behavior.watcher_group_id
+     WHERE behavior_run.id = ${intent.runId} AND behavior_run.run_type = 'behavior'
+       AND behavior_run.watcher_id = ${intent.behaviorId}
+       AND behavior_run.organization_id = ${args.organizationId}
+     ```
+
+   - **`packages/server/src/gateway/gateway/index.ts:734`** — the seam changed from blanking `skillsConfig` for behavior runs to resolving the pinned snapshot.
+
+   - **`packages/server/src/worker-api/poll.ts`** — `formatDeviceBehaviorInstructions(prompt, rawSkills)` composes snapshots into the per-run task at dispatch (compile-at-dispatch for path D); fails the run on malformed data.
+
+   - **`packages/server/src/behaviors/skill-snapshots.ts`** (NEW) — `parseBehaviorSkillSnapshots`, throws on malformed rather than returning `[]`.
+
+   - **`packages/server/src/utils/table-schema.ts`** — registered `'skills'` on the `behavior_versions` relation (drift-detection failure otherwise).
+
+   - **`packages/cli/src/config/define.ts`** — added `prompt?: string` to `Behavior`; rewrote the `skills` doc for pin/re-apply semantics.
+
+   - **`packages/cli/src/commands/_lib/apply/desired-state.ts`** — `compileBehaviorInstructions` → `resolveBehaviorSkills` returning `Array<{name, content}>`; added `DesiredWatcher.skillSnapshots`.
+
+   - **`packages/cli/src/commands/_lib/apply/diff.ts`** — diffs `skillSnapshots` (BODIES) against `remote.skills`, because a name-level diff would report "no changes" and strand Behaviors on old text.
+
+   - **`packages/cli/src/commands/_lib/init-from-org/bootstrap.ts`** — removed skill synthesis (−102 lines); now emits `prompt:` and `skills: [names]` verbatim.
+
+4. **Errors and fixes:**
+
+   - **Stale submodule pointer (my biggest error):** First three answers were read against owletto pinned at `f61da939`, 188 commits behind `origin`. The Goal removal (#2320) had already shipped. **Fix:** grepped `origin` branches, corrected myself plainly, and re-read everything from `origin`. User feedback that triggered this: the user quoted UI copy I couldn't find.
+   - **Worktree wiped twice mid-session:** first the directory, then git metadata + branch (6 worktrees were prunable at one point). **Fix:** backed up 17 changed files to scratchpad, verified via `git diff --name-only 9f0c3e161 99dad4bf9` that none of my files overlapped the base drift (avoiding the "stale-tree commit reverts merged work" hazard), then restored into a fresh worktree.
+   - **Two bugs I introduced and caught by re-reading:** `prevRows` didn't SELECT `skills` (omitting the field on `create_version` would silently CLEAR pinned skills — the #2048 class); `watcherRows` didn't SELECT `agent_id`.
+   - **`make review-fix` left the tree not compiling** despite exiting 0: `BehaviorRunSkillSnapshot` undefined (should be `BehaviorSkillSnapshot`), and `ToolUserError` unimported in `version-actions.ts` (used twice). **Fix:** patched both; AGENTS.md's "re-read files after review-fix" warning proved correct.
+   - **Migration had no dbmate markers** — the column existed locally only because I applied the file by hand with `psql`; under the real runner it would have created nothing anywhere. Caught by `migrations-format.test.ts`.
+   - **`behavior_versions.skills` unregistered in QUERYABLE_SCHEMA** — hard drift failure. Caught by `table-schema.test.ts`.
+   - **Migration timestamp collision** — `20260730210000` already used on origin/main; renamed to `220000` (caught by review-fix).
+   - **`resolveBehaviorRunSkills` SQL never executed:** the gateway test injects a fake `db` returning a canned row. Verified live against `lobu_main` — pinned, COALESCE fallback, and cross-tenant guard all correct. My first two attempts returned empty, which was **my own shell quoting**, not a bug; I said so rather than reporting a false defect.
+   - **`pi-review` blocked merge twice:** codex out of credits (until Aug 5); claude reviewer failed with `--json-schema is not a valid JSON Schema: no schema with key or ref "https://json-schema.org/draft/2020-12/schema"`. **Fix:** stripped the unresolvable `$schema` key in the working tree ONLY (validation rules untouched), got a genuine review, restored the file before merging.
+   - **Reported a wrong status once:** said the Fable review "completed exit 0" when that was my wrapper's exit code — the review actually exited 1. Corrected explicitly.
+
+5. **Problem Solving:**
+
+   The central problem solved: skills were concatenated into `watcher_versions.prompt` at save time, discarding the seams — making diff/upgrade impossible, preventing picker rehydration, and leaving `prompt` owned by the compiler.
+
+   The critical catch: PR 1 (storage) alone would have been **actively broken**. Since `defineBehavior` had no `prompt` field before this branch, every existing declarative Behavior is skills-only; the next `lobu apply` would have set `prompt: ""`, bumped the version, and left each Behavior dispatching on the generic built-in fallback — silently, unattended. This forced delivery into the same PR.
+
+6. **All user messages:**
+   - "skills show up under agents seperately why? isn't skills page folded into the behavior page. i see sources there but we used to have goal and the user can do @ and reference which we add to the sources automatically, is that deleted?"
+   - "you start local dev and test. confirm the final state. i was talking about new behavior create/edit etc"
+   - "any more gaps? we will get rid of Sources / Add source / Add SQL / Data handed to the agent alongside its instructions. Behavior-owned — skills never add or remove sources. riht"
+   - "maybe we can have seperate skills page that's fine. we just make the existing skill page also using that rich format. and in the behavior the user either referencing a skill or enter their custom prompt. makes sense?"
+   - "watcher's prompt should we allow referencing to skills maybe, does it make sense?"
+   - "i don't know about the goal what's the best way"
+   - "does that mean the user can just reference skills int he prompt"
+   - "ok sounds good. what's the work for this?"
+   - "prompt is optional in this case right?"
+   - "check where the gap is. so we can start working on it"
+   - "what do you think is best? people iterte on their skills and would it break the behaviors maybe"
+   - "for teh versioning, we're talking about a single text, a diff and upgrade to latest is a better idea no?"
+   - "hmm, is skills can be referenced from prompt, do we even need skills seperate under behaivor"
+   - "ok what's the question in don't get it"
+   - (via AskUserQuestion) selected **"Chips only (Recommended)"**
+   - "so in this case behavior sources can reference to skills i suppose?"
+   - "no sepoerate skills under bheavior?"
+   - "the declarative way? how will it work"
+   - "ok sounds good."
+   - "any gaps, did codex review it?"
+   - "continue the work and merge when done"
+   - "if you think it's good merge yourself"
+
+   **Standing constraints from project context (must remain in effect):** never write to `~/Code/lobu` directly (work in a worktree via `make task-setup`); stage by explicit path, never `git add -A`; no "Co-Authored-By" or Claude attribution in commit messages; never bulk-delete prod `organization` rows; workers never receive real credentials; `events` is append-only (never `DELETE FROM events`); never resolve merge conflicts in the GitHub web UI.
+
+7. **Pending Tasks:**
+   - **Prod-verify after rollout** — this is a prod-visible surface change; AGENTS.md requires a `ScheduleWakeup` (~1500s) gate on the squash SHA `84b86a6a724d6d07264083005ca2f49d48ad3bc4` using `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` (merge commit first — reversed accepts a stale deploy).
+   - **owletto composer UI** (the half the user actually sees): `@` skill chips in the prompt, read-only attached-skills strip, diff/upgrade action. Requires adding `skill` to `LobuRefKind`.
+   - **`$schema` fix as its own PR** — `prompts/review-output-schema.json` draft-2020-12 ref breaks the claude reviewer; blocks every PR until codex credits return Aug 5.
+   - **No booted agent turn** has consumed `.skills/` files end to end.
+   - **Worktree pruning** — something in the environment wiped worktrees twice; unresolved.
+
+8. **Current Work:**
+
+   Immediately before the summary request, I completed the merge of PR #2371. The final sequence:
+   - Restored `prompts/review-output-schema.json` via `git checkout --`, confirming `tree clean: 0 changes`
+   - Confirmed `pi-review pass` — `bug_free 85, simplicity 78, slop 8, bugs 0, 0 blockers, risk medium`
+   - Ran `gh pr merge 2371 --squash`
+
+   Result: `{"mergedAt":"2026-07-30T22:06:22Z","sha":"84b86a6a724d6d07264083005ca2f49d48ad3bc4","state":"MERGED"}`
+
+   Final shipped state: 3 commits, 28 files. All CI green (unit, typecheck, frontend, format-lint, migrations, integration 8m48s, check-drift, base-branch-guard, CodeQL, Trivy, sdk-e2e, cli-smoke). Local: `make pre-pr` exit 0, `make test-unit` exit 0, `make test-integration` **364 files / 3153 passed / 0 failed**. Migration applied to both `lobu_test` and `lobu_main`; e2e test rows cleaned up.
+
+9. **Optional Next Step:**
+
+   The merge is complete and the user's request ("continue the work and merge when done" / "if you think it's good merge yourself") is fulfilled. The one step directly implied by the merge and mandated by project rules is the **post-merge prod-verify wakeup**, since this is a prod-visible surface. Per AGENTS.md step 10: *"Prod-visible surface? Verify it live after rollout. Set a self-rescheduling `ScheduleWakeup` (~1500s) carrying the rollout gate: poll the deployed SHA, then `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`"* — gating on the squash commit `84b86a6a724d6d07264083005ca2f49d48ad3bc4`, not the branch head.
+
+   I should confirm with the user before starting either of the other two candidates (the owletto composer PR, or the `$schema` reviewer fix), since neither was explicitly requested as the next task.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

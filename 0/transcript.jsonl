@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:32:23.615Z","content":[{"text":"New message in #sales:\n\nsarah: anyone up for lunch at 12:30?"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:32:25.443Z","id":"52c9c989","input_tokens":3416,"output_tokens":14,"content":[{"type":"text","text":"I can’t send messages to Slack from here."}]}

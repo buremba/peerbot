@@ -1,0 +1,8 @@
+what's this? looks weird. Lobu production activity digest
+Window: 2026-08-12T22:00:00.000Z to 2026-08-12T22:20:00.000Z
+New connections: 1 — market.quotes: Market Quotes (buremba)
+MCP activity: 13 new conversations / 1 authenticated user / 2 clients — unknown client (buremba), lobu-cli (buremba)
+Kubernetes logs: 246 errors / 7 warnings
+Logs: https://monitoring-kube-prometheus-stack-grafana.brill-kanyu.ts.net
+
+does it show the users interacting with it etc

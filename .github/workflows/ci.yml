@@ -141,6 +141,16 @@ jobs:
         with:
           node-version: "22"
 
+      # Cache the .deb so the steady-state install touches no apt mirror at all.
+      # The mirror stall this avoids is a HANG, not an error, so no retry policy
+      # can bound it — only not needing the network can. Keyed on the runner
+      # image, which is what determines the package version.
+      - name: Cache bubblewrap package
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lobu-bwrap
+          key: bwrap-deb-${{ runner.os }}-${{ runner.arch }}-v1
+
       - name: Install bubblewrap (for embedded exec-sandbox tests)
         # The ONLY job that requires bwrap: the worker exec-sandbox escape
         # matrix here (LOBU_REQUIRE_EXEC_SANDBOX=1) hard-fails without it, and
@@ -1232,6 +1242,7 @@ jobs:
           bash scripts/lib/__tests__/review-upstream-guard.test.sh
           bash scripts/lib/__tests__/review-skip.test.sh
           bash scripts/lib/__tests__/review-cache.test.sh
+          bash scripts/lib/__tests__/install-bubblewrap.test.sh
 
       - name: Preview workflow guards
         # The preview deploy's mid-flight teardown decides whether to delete a

@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The main state machine passes its existing tests and builds, but it drops user state after an in-flight restore failure and can combine data from one card with identity and state from another. Both defects were reproduced with focused host tests.
+
+Full review comments:
+
+- [P2] Retry queued saves after hydration fails — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:317-318
+  When a user changes disclosure or pagination state while `restore_lobu_app_result` is pending and that request fails or returns an invalid response, this branch awaits `false` and returns without retrying hydration or calling `save_lobu_app_state`. The edit remains visible locally but is lost on reload unless the user makes another edit, so preserve and retry the queued revision after the failed restore.
+
+- [P2] Reset cards when the tool name changes — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:755-760
+  When a reused iframe receives a host context whose JSON-RPC ID is reused for a different tool, `identityChanged` becomes true but `switchedCards` remains false because it only compares the ID. Restoration then updates the tool name and view state while retaining the previous card's authoritative data, producing mismatched content such as an old `query_sdk` result under `query_sql`; treat the tool-name change as a card switch before restoring.
+  </results>
+  </user_action>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>ba4lzvxap</task-id>
+<tool-use-id>toolu_01TEUVg1QEzcWQVPu4DJMAFg</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/ba4lzvxap.output</output-file>
+<status>completed</status>
+<summary>Background command "Launch opencode: tool-policy split" completed (exit code 0)</summary>
+</task-notification>

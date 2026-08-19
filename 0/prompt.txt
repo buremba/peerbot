@@ -1,0 +1,1 @@
+do we need the entity type or does the agent can create the events to send events so i can view them in place. which model is the best? don't we have the event type option to be created instead of entities stored in the db

@@ -1,0 +1,148 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   - **Initial request:** "check this session, review all of its work and continue finish what it started, review and merge when done opencode -s ses_00eeb7f2cffecFWLOvwRBfXiAE" — review an opencode session's entire body of work, finish its unfinished task, and take it through review to merge.
+   - **"go"** — continue working.
+   - **"should we fix 1 for 2 isn't the file there."** — asking whether to fix follow-up #1 (`incident_eligible`), and challenging follow-up #2 on the grounds that the LinkedIn takeout file probably IS present.
+   - **"i feel lost, why do we need these? what's the non overengineered long term fix?"** (answer to Q1) — wanted justification, not options; wanted the simplest durable fix.
+   - **"wtf why it runs on cloud? i thought it runs on the device"** (answer to Q2) — wanted an explanation of why device-bound takeout work executes in the cloud.
+   - **"ok let's do those properly and make sure it works"** — approval to execute the three proposed pieces: (a) delete `incident_eligible`, (b) declare `requiredCapability: 'os.files'` + `runtime: macos` on the three takeout connectors, (c) pause the 10 LinkedIn takeout feeds on connection 412 — done properly with real verification.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo (Bun workspace, `packages/*`), worktree-per-task workflow via `make task-setup NAME=<slug>`
+   - Connector-health alerter: a 15-minute scheduled scan (`cron: '*/15 * * * *'`) over `connections` + `feeds` emitting `logger.error` → pino→Sentry→Slack; dedupe via `connections.unhealthy_alerted_at` (Postgres-mediated NULL→now() transition)
+   - Alerter rules: A `all_feeds_failing`, B `zero_feeds`, C `no_recent_sync` (7 days), D `feeds_degraded` (ratio 0.5, floor 3 expected feeds); `FAILURE_THRESHOLD = 3`, `MIN_CONNECTION_AGE_HOURS = 24`, `ZERO_FEEDS_GRACE_HOURS = 48`
+   - `deriveFeedHealthSemantics` — pure read-time derivation of `executionMode` / `attention` / (formerly) `incidentEligible`
+   - `DEVICE_ONLINE_WINDOW_SECONDS = 120` (dispatch-grade liveness) vs the new `DEVICE_OFFLINE_HOURS = 48` (alert-grade)
+   - Device capability model: `packages/core/src/capabilities.ts` — `OS_CAPABILITIES = ["os.shell","os.files","os.notifications"]`, `MAC_DEVICE_CAPABILITIES`, `PLATFORM_ALLOWLIST`
+   - Worker dispatch lanes in `worker-api/poll.ts`: fleet lane `AND con.device_worker_id IS NULL`; device lane `AND con.device_worker_id = <me> AND (cd.required_capability IS NULL OR ...)`
+   - SDK contract: omitting `runtime` means the connector runs on the cloud worker fleet
+   - Gates: `make review-fix` → `make pre-pr-remote` (Depot, 18 jobs, tree attestation) → `gh pr create` → `make review` (posts `pi-review`) → `make ui-review` → `gh pr merge --squash --admin` → prod-smoke rollout gate
+   - Red→green + mutation-testing evidence requirements
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/connectors/connector-health.ts`** (PR #2683, MERGED as `deb351f7`)
+     - The core of the finished work. Rewrote the detection query from per-connection SQL aggregates to per-feed rows, and moved classification into JS consuming `deriveFeedHealthSemantics`.
+     - Added config field and constant:
+       ```ts
+       const DEVICE_OFFLINE_HOURS = 48;
+       export interface ConnectorHealthConfig { ...; deviceOfflineHours: number; }
+       ```
+     - `device_stale` SQL (I restored the fail-closed NULL handling the fixer removed):
+       ```sql
+       -- Fails CLOSED on a missing/blank worker row: a connection pinned to a
+       -- worker that is no longer there is collecting nothing either. (The FK is
+       -- ON DELETE SET NULL and the reaper refuses to delete a worker a live
+       -- connection references, so this is a guard, not a live path.)
+       (
+         c.device_worker_id IS NOT NULL
+         AND (
+           dw.id IS NULL
+           OR dw.last_seen_at IS NULL
+           OR dw.last_seen_at < now() - make_interval(hours => ${cfg.deviceOfflineHours})
+         )
+       ) AS device_stale,
+       ```
+     - `classifyFeed` — the central design change (syncable, NOT `executionMode === 'scheduled'`):
+       ```ts
+       const operatorPausedClean = row.feed_status === 'paused' && cf === 0;
+       const syncable =
+         semantics.executionMode !== 'virtual' && semantics.executionMode !== 'streaming';
+       const expected =
+         syncable && semantics.attention !== 'needs_auth' && !operatorPausedClean;
+       const deviceStale = row.device_stale === true;
+       const failing =
+         expected &&
+         (row.last_sync_status === 'failed' || cf >= cfg.failureThreshold || deviceStale);
+       const persistent = expected && (cf >= cfg.failureThreshold || deviceStale);
+       ```
+     - Zero-feed chat exclusion (from `review-fix`, verified correct):
+       ```ts
+       if (feedCount === 0) {
+         // Chat rows are transports, not collectors. A channel-less chat connection
+         // must not trip the collector-only zero-feed rule.
+         if (rows[0]?.credential_mode != null) return null;
+         return { reason: 'zero_feeds', feedCount: 0, failingFeedCount: 0, newestSyncAt: null, lastError: null };
+       }
+       ```
+     - Header comment section "## Why `execution_mode === 'scheduled'` is NOT the expected predicate" carrying the prod measurements (196 of 215; github 4551 runs/14d; coverage 43→14 connections).
+
+   - **`packages/server/src/__tests__/integration/connector-health-alert.test.ts`** (PR #2683)
+     - Added `seedDeviceWorker` (note: NO `first_seen_at` column — dropped by migration), `seedAuthProfile`, `kind` on `seedFeed` (sets both `kind` and `virtual = (kind === 'virtual')`), `deviceWorkerId`/`authProfileId`/`credentialMode` on `seedConnection`.
+     - 6 new tests: excludes streaming feeds from the expected set; does not flag a virtual-only connection; does not apply the zero-feed rule to a chat connection; does not flag a connection whose auth profile is waiting on sign-in; flags a connection whose pinned device has been silent for days; does not flag a connection whose device is only briefly offline.
+
+   - **`packages/server/src/connectors/feed-health-semantics.ts`** (CURRENT WORK, worktree `drop-incident-eligible`)
+     - Header rewritten: "## The two outputs"; `no_schedule` documented as meaning only "no cron", with the prod numbers; new section "## There is deliberately no `incidentEligible` here" explaining it was unused and rested on a wrong inference, and that the decision now lives in `connector-health.ts`.
+     - `type FeedExecutionMode = "virtual" | "streaming" | "scheduled" | "no_schedule";` (was `| "manual"`)
+     - `interface FeedHealthSemantics { executionMode; attention; }` — `incidentEligible: boolean` removed
+     - Both early returns (virtual, streaming) no longer return `incidentEligible: false`
+     - `const executionMode: FeedExecutionMode = isScheduled(input) ? "scheduled" : "no_schedule";`
+     - Deleted the `unattended` const, the `incidentEligible` derivation, and the now-dead `const isActive = (status?: string | null): boolean => status === "active";`
+     - Final return is now `return { executionMode, attention };`
+
+   - **`packages/server/src/tools/admin/manage_feeds.ts`** (CURRENT WORK)
+     - The single production consumer. Line ~317 changed to:
+       ```ts
+       return {
+         ...feed,
+         execution_mode: semantics.executionMode,
+         attention: semantics.attention,
+       };
+       ```
+
+   - **Memory files written:**
+     - `reference_feeds_schedule_is_not_the_unattended_signal.md` (with the PROD-VERIFIED 2026-08-12 closure block)
+     - `reference_prod_db_read_only_query_recipe.md` (DB is `owletto` not `app`; `-h 127.0.0.1` load-bearing)
+     - Appended the prod-smoke worktree-fetch trap to `feedback_post_merge_prod_verify_wakeup.md`
+     - MEMORY.md index updated
+
+4. **Errors and fixes:**
+   - **`relation "feeds" does not exist`** querying prod → the app database is `owletto`, not `app`. Found via `DATABASE_URL`'s path segment.
+   - **`Peer authentication failed for user "summaries"`** → must pass `-h 127.0.0.1`; the unix socket only accepts `-U postgres`, which cannot see the app schema.
+   - **`kubectl exec <pod> -- printenv DATABASE_URL` returned empty** (stale pod name after a deploy) → caught by length-asserting the password (`pwlen=0`); fixed by resolving the pod name dynamically each time.
+   - **`column "first_seen_at" of relation "device_workers" does not exist`** in the new test → dropped by `db/migrations/20260616120200_drop_vestigial_columns.sql`; removed it from the INSERT.
+   - **`Failed to resolve entry for package "@lobu/pgvector-embedded"`** running vitest → fixed by running `make build-packages` first.
+   - **`rg -rn <pattern>`** silently treated `-r n` as a replacement, replacing every match with "n" → switched to `grep`.
+   - **Depot jobs cancelled mid-run** → a peer session (`apply-drift-gate-continue`) was running its own `make pre-pr-remote`; the harness auto-retried ("retrying failed Depot jobs (1/1); successful jobs are preserved") and finished 18/18.
+   - **prod-smoke hung on `== rollout ==`** → `git merge-base --is-ancestor "$EXPECT_SHA" "$cur"` runs against the LOCAL repo, and the worktree had never fetched the squash commit, so it errored silently and burned the whole `ROLLOUT_WAIT`. Fixed with `git fetch -q origin`; rerun gave 8 passed, 0 failed.
+   - **`review-fix` removed two things I restored:** the fail-closed NULL handling on `device_stale`, and the prod-measurement rationale it labelled "unverifiable production-count commentary" (it is verifiable — I ran the queries).
+   - **`TS6133: 'isActive' is declared but its value is never read`** after removing the incidentEligible derivation → deleted the now-dead helper (per AGENTS: delete, don't `_`-prefix).
+   - **User feedback that changed my approach:** the pushback "i feel lost, why do we need these? what's the non overengineered long term fix?" caused me to stop presenting option menus and instead grep for actual consumers, which showed `incident_eligible` had exactly one caller and nothing acting on it — leading to "delete it" rather than "add a column to make it honest."
+
+5. **Problem Solving:**
+   - **Rejected the inherited premise with evidence.** The opencode session was about to gate the alerter on `execution_mode === 'scheduled'`. Prod data showed 196/215 active collected feeds have no cron yet run unattended, and that gate would have cut coverage 43→14 connections and silenced connection 412. Kept the two real fixes (virtual/streaming exclusion, device liveness) and dropped the premise.
+   - **Separated dispatch-grade from alert-grade device liveness** (120s vs 48h) so a closed laptop cannot page an operator every 15 minutes.
+   - **Confirmed the LinkedIn "missing file" was a misroute, not a missing file:** `/Users/burakemre/Downloads/linkedin_takeout` exists on the MacBook; the runs were claimed by `embedded:summaries-app-lobu-app-…` (a Kubernetes pod) because connection 412 is unpinned AND the connector declares no `required_capability`/`runtime`.
+   - **Left an open unknown honestly:** connection 412's row was last modified 2026-08-11 04:35:25 UTC (one second before the runs that timed out) and it is no longer pinned; I explicitly declined to guess the cause given four already-disproven theories in memory.
+   - **Live prod verification of #2683:** first tick under the new code — `scanned 60, unhealthy 36, newly_alerted 5, recovered 1`; 482/484 flagged `all_feeds_failing` with `last_error: null` (device-stale firing alone); telegram 459 recovered; replay vs live markers agreed on 60/60 connections.
+
+6. **All user messages:**
+   - "check this session, review all of its work and continue finish what it started, review and merge when done opencode -s ses_00eeb7f2cffecFWLOvwRBfXiAE"
+   - "go"
+   - "do we have more work or can we be done here?"
+   - "should we fix 1 for 2 isn't the file there."
+   - (AskUserQuestion answer, Q1) "i feel lost, why do we need these? what's the non overengineered long term fix?"
+   - (AskUserQuestion answer, Q2) "wtf why it runs on cloud? i thought it runs on the device"
+   - "ok let's do those properly and make sure it works"
+
+7. **Pending Tasks:**
+   - **Piece 1 (in progress):** delete `incident_eligible` — finish test updates, gates, PR, review, merge, verify.
+   - **Piece 2:** declare `requiredCapability: 'os.files'` + `runtime: { platforms: ['macos'] }` on the three real takeout connectors (google, instagram, twitter — NOT the `linkedin` hybrid, whose healthy `home_feed` would break). Caveat already established: no worker advertises `os.files` today, so this makes failures honest, not working.
+   - **Piece 3:** pause the 10 LinkedIn takeout feeds (419–428) on connection 412 — a prod data mutation, reversible, to be reported exactly.
+   - Deferred/optional: build the local `os.files` takeout worker (~150 lines) that would make takeout ingest actually work.
+
+8. **Current Work:**
+   Working in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/drop-incident-eligible` (branch `feat/drop-incident-eligible`, created via `make task-setup NAME=drop-incident-eligible`) on piece 1, after the user said "ok let's do those properly and make sure it works".
+
+   Completed edits: `feed-health-semantics.ts` header rewritten (two outputs, `no_schedule` documented as "no cron and NOTHING MORE", plus a "There is deliberately no `incidentEligible` here" section); `FeedExecutionMode` `"manual"` → `"no_schedule"`; `incidentEligible` removed from the interface, both early returns, and the derivation; `unattended` const removed; `manage_feeds.ts` no longer emits `incident_eligible`. A typecheck run produced exactly one error — `src/connectors/feed-health-semantics.ts(110,7): error TS6133: 'isActive' is declared but its value is never read` — and my last action was deleting that dead helper line.
+
+   Not yet done: re-run typecheck; update the two test files that still assert the removed field — `packages/server/src/__tests__/unit/feed-health-semantics.test.ts` (has `describe("incidentEligible")` at line 283 plus ~9 `.incidentEligible` assertions and an `incidentEligible: false` object literal at line 54) and `packages/server/src/__tests__/integration/feeds-list-health-and-count.test.ts` (lines 159, 168, 174 reference `incident_eligible`, including the test name "surfaces derived execution_mode / attention / incident_eligible per feed"); then `make review-fix`, stage by explicit path, `make pre-pr-remote`, commit, push, `gh pr create`, `make review`, `make ui-review`, merge, prod-verify.
+
+9. **Optional Next Step:**
+   Re-run `bunx tsc --noEmit` in `.claude/worktrees/drop-incident-eligible/packages/server` to confirm the `isActive` deletion cleared the last type error, then update `packages/server/src/__tests__/unit/feed-health-semantics.test.ts` (remove the `describe("incidentEligible")` block and the `incidentEligible` assertions, rename `manual` → `no_schedule` expectations) and `packages/server/src/__tests__/integration/feeds-list-health-and-count.test.ts` (drop the `incident_eligible` assertions at lines 168/174 and rename the test at line 159), then run the focused suites and proceed through the mandated gates to a merged PR — directly continuing the user's instruction "ok let's do those properly and make sure it works", where "those" are the three pieces I proposed: "delete `incident_eligible`; declare `os.files` + macos runtime on the three real takeout connectors; pause the 10 takeout feeds on 412 since they cannot work there today."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/90d4e325-62fd-4c7c-a94f-fe56982ad059.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

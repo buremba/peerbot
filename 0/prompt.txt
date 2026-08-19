@@ -1,0 +1,91 @@
+# Review this plan adversarially. Repo: /Users/burakemre/Code/lobu (read-only; do NOT edit files).
+
+You are reviewing a SETTLED set of design decisions before implementation begins.
+Your job is to find where they are WRONG against the actual code on `origin/main`,
+not to praise them. Verify every claim below against the repo; several earlier
+claims in this program turned out to be false when checked.
+
+Answer concretely with file:line evidence. If a decision is fine, say so briefly
+and move on — spend your effort on what breaks.
+
+## Context
+
+`entity_relationships` (baseline.sql:1204) is written today ONLY by:
+- `manage_entity.ts` (imperative, behind the reaction client's `entities.link`)
+- `auto-linker.ts` (NER-lite `mentions`, capped 20/event)
+- three purpose-built materializers: `github-team-graph`, `channel-about`, `access-graph`
+
+There is NO manifest surface that maps a foreign key on an emitted event to a
+typed entity->entity edge. That is the gap. A 6-commit spike exists on branch
+`feat/spike-derived-edges` (worktree `.claude/worktrees/spike-derived-edges`).
+
+## Decision 1 — connector-declared edges: `relationships` on eventKinds
+
+Additive to `packages/connector-sdk/src/connector-types.ts:543-556`, mirroring
+the existing `attributions` field:
+
+```ts
+relationships?: EventRelationshipRule[];
+interface EventRelationshipRule { type: string; name: string; from: RelationshipEndpointSpec; to: RelationshipEndpointSpec }
+interface RelationshipEndpointSpec { entityType?: string; identities: EntityIdentitySpec[] }
+```
+
+- `name` is the stable owner id (connection + name = ownerId), independent of ruleVersion.
+- The relationship TYPE is resolved from the DB, never minted from the manifest string.
+
+## Decision 2 — retraction: EXPLICIT ONLY
+
+An edge persists until explicitly retracted. Absence from a sync carries no
+information (event-stream connectors emit increments, not snapshots).
+Rejected: snapshot/reconcile-per-sync; per-rule choice.
+Intended mechanism: the reserved `metadata.derivedFrom` convention plus the
+existing sweep index `idx_entity_relationships_derived_from_rule` (baseline :3714).
+
+## Decision 3 — identity scope per identity spec
+
+`scope?: 'organization' | 'connection'` on `EntityIdentitySpec`, default
+`'organization'`. Fixes #2798: `idx_entity_identities_live_unique` is
+`(organization_id, namespace, identifier) WHERE deleted_at IS NULL`
+(baseline.sql:3678) and EXCLUDES `connection_id`.
+
+## Decision 4 — cardinality on the relationship TYPE, org config only
+
+`cardinality: one | many` extending `entity_relationship_type_rules`
+(baseline.sql:1132). Not connector-declarable. `one` => a new target replaces
+the previous; `many` => accumulate.
+
+## Decision 5 — connector entityTypes behind an install-time grant
+
+Manifest declaration; an ungranted connector FAILS THE INSTALL.
+
+## Questions I want answered specifically
+
+1. **Do decisions 2 and 4 actually compose, or do they contradict?** Cardinality
+   `one` means "a new target replaces the previous" — that IS a retraction not
+   triggered by an explicit retract. Is there a case where these two rules give
+   different answers for the same edge? Be concrete.
+
+2. **With explicit-retraction-only, can an edge EVER be removed** for a
+   `cardinality: many` type when the source deletes the relationship? I believe
+   the manifest needs an `op?: 'assert' | 'retract'`. Is that sufficient, or is
+   there a case it cannot express?
+
+3. **Is `metadata.derivedFrom` + `idx_entity_relationships_derived_from_rule`
+   actually usable** for retraction sweeps? Verify BOTH indexes exist, verify
+   `derivedFrom` has no writer/reader on origin/main, and check whether the
+   index shape supports the query a retraction sweep would issue.
+
+4. **Does `scope: 'connection'` break anything that currently relies on
+   cross-connection identity collapse?** Find real call sites. The same Slack
+   user seen through two connections should stay ONE person — does defaulting to
+   `'organization'` genuinely preserve that everywhere?
+
+5. **Does cardinality-on-type conflict with existing writers?** `auto-linker`,
+   `access-graph`, `channel-about`, `github-team-graph` all write edges today
+   without any cardinality concept. If `belongs_to` becomes `cardinality: one`,
+   does any existing writer start silently replacing edges it used to accumulate?
+
+6. **What am I not asking that I should be?** Name the single most likely way
+   this plan produces a production incident.
+
+Be blunt. If a decision should be reversed, say which and why.

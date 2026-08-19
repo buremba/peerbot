@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0v5gvfj6</task-id>
+<tool-use-id>toolu_014AhNKSotdAamSESW8mJLYi</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/b0v5gvfj6.output</output-file>
+<status>completed</status>
+<summary>Background command "Dispatch codex with default sandbox" completed (exit code 0)</summary>
+</task-notification>

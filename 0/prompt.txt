@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bwf61029p</task-id>
+<summary>Monitor event: "make review verdict + required CI checks on PR 2343"</summary>
+<event>CHECK typecheck: pass</event>
+</task-notification>

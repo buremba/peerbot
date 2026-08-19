@@ -1,0 +1,1 @@
+ok let's do these and create the pr. we also need to see how other harnesses like chatgpt can actually process behaviors properly

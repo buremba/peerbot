@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bnan5v38x</task-id>
+<tool-use-id>toolu_01HYtUR6TJ2Pam5cQKH2SURa</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/bnan5v38x.output</output-file>
+<status>completed</status>
+<summary>Background command "Build with the self-quit-when-idle change" completed (exit code 0)</summary>
+</task-notification>

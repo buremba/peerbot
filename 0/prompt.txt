@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bquc87kul</task-id>
+<tool-use-id>toolu_01TwHjoisx5PPqCqMbDEZa1Z</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab/tasks/bquc87kul.output</output-file>
+<status>completed</status>
+<summary>Background command "Build workspace packages" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+prod secret i meant add vercel connection in buremba org. i added the token to .env

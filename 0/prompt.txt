@@ -1,0 +1,1 @@
+do we have any jira app client id etc like managed auth

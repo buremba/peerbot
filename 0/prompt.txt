@@ -1,0 +1,1 @@
+we won't use gemini, we're gonnna switch glm 5.2

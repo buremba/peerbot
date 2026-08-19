@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The primary restoration flow works and focused tests/builds pass, but an asynchronous compatibility-cache event can replace a newly restored card with stale data. This breaks the patch's core result-restoration guarantee under a plausible event ordering.
+
+Review comment:
+
+- [P2] Ignore stale widget caches after a capability restore — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:860-863
+  When a capability-only replay replaces an unkeyed card and `restore_lobu_app_result` succeeds, `resetForCapabilityResult` has set `hasLiveToolOutput` to false and the restore path never sets it back. A delayed `openai:set_globals` event containing only the previous `widgetState` therefore satisfies this condition and overwrites the exact restored data while retaining the new identity/view state. Treat successfully restored data as protected from widget-state-only fallback updates.
+  </results>
+  </user_action>

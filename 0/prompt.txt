@@ -1,0 +1,1 @@
+yes let's fix that properly. you mean the summary stuff should not be posted right? how do we manage that, do we know summary is not needed? 4. that was intentional, if there is any hardcoded links we need to fix

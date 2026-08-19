@@ -1153,6 +1153,39 @@ Memory:
       await connectorRuntimeSelfCheckCommand(options);
     });
 
+  // ─── daemon ─────────────────────────────────────────────────────────
+  program
+    .command("daemon")
+    .description("Run a device worker that polls the gateway for jobs")
+    .option(
+      "--api-url <url>",
+      "Gateway URL (defaults to your logged-in context)"
+    )
+    .option(
+      "--worker-id <id>",
+      "Device worker id (defaults to <platform>:<hostname>)"
+    )
+    .option(
+      "--platform <name>",
+      "Device platform (defaults to macos/headless by host)"
+    )
+    .option(
+      "--capabilities <a,b>",
+      "Capabilities to advertise (default os.shell,os.files)"
+    )
+    .option(
+      "--label <name>",
+      "Device name on the Devices page (defaults to hostname)"
+    )
+    .option(
+      "--debug",
+      "Log poll/heartbeat/retry detail (default: one line per run)"
+    )
+    .action(async (options) => {
+      const { daemonCommand } = await import("./commands/daemon.js");
+      await daemonCommand(options);
+    });
+
   // ─── doctor ─────────────────────────────────────────────────────────
   program
     .command("doctor")

@@ -16,3 +16,4 @@ export type { ExecutorConfig } from './executor.js';
 export { executeRun } from './executor.js';
 export type { DaemonConfig } from './worker.js';
 export { startDaemon, WorkerDaemon } from './worker.js';
+export { startDaemonCommand, type DaemonStartOptions } from './start.js';

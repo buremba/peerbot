@@ -300,6 +300,28 @@ MOCK
   grep -q -- '--cpu 4 ' <<<"$flat" || fail "daytona create must pass the default cpu"
   grep -q -- '--disk 10 ' <<<"$flat" || fail "daytona create must pass the default disk"
   rm -rf "$tmpbin" "$call_log"
+
+  # Tri-state provider resolution. A present-but-faulty CLI (list fails, i.e.
+  # not logged in) must fail closed under `auto` rather than silently falling
+  # back to local — that masking is the regression this guards against.
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/daytona" <<'MOCK_FAULTY'
+#!/usr/bin/env bash
+exit 1
+MOCK_FAULTY
+  chmod +x "$tmpbin/daytona"
+  if PATH="$tmpbin:$PATH" REMOTE_CI_PROVIDER=auto GATE_SKIP_SETTLED_CHECK=1 \
+      bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit 2>/dev/null; then
+    fail "faulty (not logged in) daytona CLI was accepted under auto"
+  fi
+  out="$(PATH="$tmpbin:$PATH" REMOTE_CI_PROVIDER=auto GATE_SKIP_SETTLED_CHECK=1 \
+      bash "$SCRIPT_DIR/../../run-remote-ci.sh" unit 2>&1 || true)"
+  case "$out" in
+    *"refusing to silently"*) ;;
+    *) fail "faulty CLI did not fail closed with a clear message: $out" ;;
+  esac
+  rm -rf "$tmpbin"
+
   # Mocked SUCCESSFUL daytona lifecycle: create stores the generated name,
   # list reports it started (poll passes), exec emits the GATE_REMOTE_EXIT
   # sentinel, delete is called. Exercises polling, sentinel parsing, cleanup.

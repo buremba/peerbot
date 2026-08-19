@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgkf46zjw</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81b0c70e-1044-4a0c-bf12-f5a42068578a/tasks/bgkf46zjw.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run pre-pr on revised fix" completed (exit code 0)</summary>
+</task-notification>

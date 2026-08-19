@@ -1,0 +1,1 @@
+so what's the best way? notifications usually ask questions and needs to be interactive. potentialls clicking a button triggering another agent run etc based on the schema the agent generates etc. maybe it can save an event etc and another behavior subscribes to it, or the agent says value of the button becomes the prompt for a new conversation etc

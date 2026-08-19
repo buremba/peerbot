@@ -1,0 +1,1 @@
+triage prs that doesn't have running session, issues for the last one week etc and guide me what to do

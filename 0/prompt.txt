@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bylq7cnpf</task-id>
+<tool-use-id>toolu_01JwuSE52vArSf6tnD6p5joG</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/36b94b29-6f78-4313-bd35-f54248c3effe/tasks/bylq7cnpf.output</output-file>
+<status>killed</status>
+<summary>Background command "Full suite, full output capture" was stopped</summary>
+</task-notification>

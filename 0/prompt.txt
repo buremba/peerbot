@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b33jgo23w</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/59170af4-27c9-4466-bc60-1820469338cb/tasks/b33jgo23w.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch the 14.4.1 publish run" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+3. the user can reference other entities there no? 2. am i asking for db or api changes? i thought we allow the user to select existing skills, see manage them or create new one under behavior. we can have prompt cache copy of skills that's fine but normally it's managed in which one in declarative et

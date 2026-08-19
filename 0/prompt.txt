@@ -1,0 +1,10 @@
+<task-notification>
+<task-id>a105790feb31cb22a</task-id>
+<tool-use-id>toolu_01JVyk25JXA8cCH7Ya1ECoJP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/830d2806-d323-48b7-80b9-f28cf7556caf/tasks/a105790feb31cb22a.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix query_sql silent empty results" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Waiting for `make review` to complete.</result>
+<usage><subagent_tokens>230957</subagent_tokens><tool_uses>135</tool_uses><duration_ms>1338525</duration_ms></usage>
+</task-notification>

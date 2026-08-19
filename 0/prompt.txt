@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>buzelm5wg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/279de3ab-0acd-4e7e-8c0b-0774e773be4a/tasks/buzelm5wg.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for hardening PR CI" completed (exit code 0)</summary>
+</task-notification>

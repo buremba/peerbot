@@ -75,12 +75,22 @@ export default (row) => {
 };
 `;
 
+/** PROBE the grant's SCOPE: escalates a field the delete card never covered. */
+const ESCALATE_OTHER_FIELD_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.changed("$deleted") && row.next.$deleted) {
+    row.escalate(["status"], "confirm the status before deleting");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 
 // esbuild costs ~100ms per call, so compile each rule once for the whole file.
 let invoiceCompiled: string;
 let ticketCompiled: string;
 let escalateDeleteCompiled: string;
+let escalateOtherFieldCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -198,10 +208,16 @@ async function seedEscalatingDoc() {
 
 describe("entity row validation at the physical writer", () => {
 	beforeAll(async () => {
-		[invoiceCompiled, ticketCompiled, escalateDeleteCompiled] = await Promise.all([
+		[
+			invoiceCompiled,
+			ticketCompiled,
+			escalateDeleteCompiled,
+			escalateOtherFieldCompiled,
+		] = await Promise.all([
 			compileEntityRule(INVOICE_RULE),
 			compileEntityRule(TICKET_RULE),
 			compileEntityRule(ESCALATE_DELETE_RULE),
+			compileEntityRule(ESCALATE_OTHER_FIELD_RULE),
 		]);
 	}, 60_000);
 
@@ -488,8 +504,35 @@ describe("entity row validation at the physical writer", () => {
 			expect(await readDeletedAt(invoice.id)).toBeNull();
 		}, 60_000);
 
-		/** The grant is SCOPED: it covers `$deleted` and nothing else. */
+		/**
+		 * The grant is SCOPED to `$deleted`. A rule that escalates some OTHER field
+		 * while judging the delete is asking about something nobody reviewed, so the
+		 * delete card cannot cover it — the apply must still stop. This is the
+		 * property that makes the grant a scoped waiver rather than a mode flag.
+		 */
 		it("does not let a delete grant waive an escalate on another field", async () => {
+			const { org, user } = await seedOrg("Escalates elsewhere");
+			await seedType(org.id, "doc", escalateOtherFieldCompiled);
+			const doc = await createEntity({
+				entity_type: "doc",
+				name: "DOC-OTHER",
+				organization_id: org.id,
+				created_by: user.id,
+				metadata: { status: "open" },
+			} as Parameters<typeof createEntity>[0]);
+
+			// Even WITH the delete card's grant in hand, `status` is not covered.
+			await expect(
+				deleteEntity(doc.id, false, TEST_ENV, ctxFor(org.id, { userId: user.id }), {
+					approvedFields: ["$deleted"],
+				}),
+			).rejects.toThrow(/status/);
+
+			expect(await readDeletedAt(doc.id)).toBeNull();
+		}, 60_000);
+
+		/** A grant waives an ESCALATE. It may never launder a DENY. */
+		it("does not let a delete grant launder a deny", async () => {
 			const { org, user, invoice } = await seedInvoice("posted");
 
 			// The invoice rule DENIES this delete. A grant may not launder a deny —

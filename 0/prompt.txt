@@ -1,0 +1,1 @@
+use gemini api key, it should work. the default will be z.ai and if it doesn't work fallback is gemini right

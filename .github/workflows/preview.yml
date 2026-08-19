@@ -275,6 +275,25 @@ jobs:
               });
             }
 
+      # Deploy and cleanup run in disjoint concurrency groups (so teardown is
+      # never cancelled), which opens the reverse window: a close/unlabel that
+      # lands mid-deploy no longer cancels this run, and the surviving deploy
+      # would recreate the namespace cleanup just deleted. Re-check the PR's
+      # state after deploying and tear down if the preview is no longer wanted.
+      - name: Tear down if the PR closed or lost the preview label mid-deploy
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          state=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" -q '.state')
+          labeled=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" -q '[.labels[].name] | index("preview") != null')
+          echo "PR state=$state preview-labeled=$labeled"
+          if [ "$state" != "open" ] || [ "$labeled" != "true" ]; then
+            echo "Preview no longer wanted; deleting namespace $PREVIEW_NS"
+            kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
+          fi
+
   cleanup:
     runs-on: ubuntu-24.04
     if: (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview')) && github.event.pull_request.head.repo.full_name == github.repository

@@ -48,8 +48,10 @@ jobs:
       STAGING_ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || github.event.action }}
     steps:
       - name: Setup kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
 
       - name: Release lock (unlabeled)
         if: env.STAGING_ACTION == 'unlabeled'

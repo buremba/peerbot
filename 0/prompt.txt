@@ -1,0 +1,9 @@
+<task-notification>
+<task-id>b3xpui2n7</task-id>
+<summary>Monitor event: "pre-pr for the reduced #2340"</summary>
+<event>=== pre-pr (reduced #2340) ===
+src/components/agents/skill-editor.tsx(35,26): error TS2339: Property 'nixPackages' does not exist on type '{ content?: string | undefined; description?: string | undefined; instructions?: string | undefined; system?: boolean | undefined; modelPreference?: string | undefined; thinkingLevel?: "high" | ... 3 more ... | undefined; name: string; enabled: boolean; repo: string; }'.
+error: script "build" exited with code 1
+make[1]: *** [build-packages] Error 1
+make: *** [pre-pr] Error 2</event>
+</task-notification>

@@ -1,0 +1,56 @@
+Prove, END TO END IN PRODUCTION, that Slack channel-membership revocation now
+invalidates the authz ACL graph. Report EVIDENCE, not assertions.
+
+## What just shipped
+- PR #2771 merged as squash b6e36adaca80a3e935bdc7d2e21edda32129b3ef, deployed
+  to prod (image build 2145, verified by SHA ancestry, 2/2 pods ready).
+- It adds `invalidateSlackConnectionAcl` to the Slack coordinator: on a verified
+  `member_left_channel` webhook, the connection's `authz_source_acl_state` row is
+  upserted to freshness_state='stale' with clock_timestamp(), BEFORE hydration and
+  delivery. A stale row FAILS CLOSED at the gate (packages/server/src/authz/acl-state.ts).
+- The Slack app (A096D2P623B) has just had the `member_left_channel` bot event
+  subscription added (verified via apps.manifest.export). Before today, prod
+  never received this event at all.
+
+## Your job
+Confirm the whole chain actually works in prod:
+  user leaves channel -> Slack delivers member_left_channel -> signature verified
+  -> ACL row flips to stale -> channel recall is DENIED until the next ACL sync
+  rebuilds the graph and re-marks it fresh.
+
+## Hard constraints
+- READ-ONLY on prod data unless a step is unavoidable for the test. Never DELETE
+  from `events`. Never touch `organization` rows. Never delete connections.
+- Prefer a DISPOSABLE test channel you create yourself over any existing channel.
+  Do NOT remove anyone from a real channel, and do NOT disturb existing bindings.
+- Clean up whatever you create (archive/delete the test channel, remove test rows
+  you added) and say explicitly what you cleaned up.
+- If a step needs a permission or credential you do not have, STOP and report the
+  exact blocker. Do not fabricate a result and do not route around a denial.
+- Reading prod DB: use the read-only recipe. The prod DB name is `owletto`,
+  namespace `summaries-prod`. If a kubectl/psql call is refused, say so plainly
+  and fall back to the Lobu SDK (`lobu call query_sdk --org <slug>`).
+
+## Useful facts
+- ACL row: table `authz_source_acl_state`, keyed (organization_id, connection_id).
+  Columns: acl_support ('none'|'partial'|'full'), freshness_state
+  ('fresh'|'stale'|'failed'), last_synced_at, updated_at.
+- Enforcement needs acl_support='full' AND freshness_state='fresh' AND synced
+  within ACL_STALE_AFTER_MINUTES=60. Any non-enforcing row fails CLOSED.
+- Runtime connection ids look like `agentconn-<slug>`; `connections.slug` is the
+  join key (strip the prefix).
+- The webhook route is packages/server/src/routes/public/app-webhooks.ts (edge
+  signature check at ~line 1066) then the Slack coordinator takes over.
+- Live Slack connections + their bound channels: see
+  `resolveBoundChannelRows` and table `channel_messages` / behavior subscriptions.
+
+## Deliverable
+A short report with:
+ 1. The exact trigger you used (which channel, which member left, timestamp).
+ 2. Evidence the webhook ARRIVED in prod (log line, or the ACL row's updated_at
+    moving) — quote it.
+ 3. The ACL row BEFORE and AFTER, with real values.
+ 4. Whether recall was actually denied while stale (the strongest evidence).
+ 5. What you cleaned up.
+ 6. A confidence score 0-100 per claim, with the one-line basis for each, plus
+    2-4 concrete next actions. Say clearly which parts you could NOT verify.

@@ -1,0 +1,1 @@
+figure out where this system agent is being used and let's see if we can fully get rid of it. instead. when there is zero agent in a workspace we can just show connect your agent and build a managed agent section

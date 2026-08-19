@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxxc2j8ur</task-id>
+<tool-use-id>toolu_01Mrn3UvMANXmnM2bBAQiQXo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bxxc2j8ur.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI to finish on rebased HEAD" completed (exit code 0)</summary>
+</task-notification>

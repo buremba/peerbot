@@ -1,0 +1,26 @@
+You are advising on the long-term design of "keyed supersede" for Behavior event outputs in the Lobu codebase. Read the context, then recommend the best approach for long-term reliability. Be concrete: recommend ONE approach, justify it against the alternatives, and note the migration/effort cost. If a DB schema change is warranted, say so explicitly (a new table or column is acceptable if it's the right call).
+
+=== The hard invariant ===
+`events` is append-only. Content is never DELETEd or UPDATEd. The ONE sanctioned content-adjacent write is a lineage-metadata stamp: inserting a new event that supersedes an old one also does `UPDATE events SET superseded_by = <newId> WHERE id = <oldId> AND superseded_by IS NULL` (the "dual-write"). "Current" rows are those with `superseded_by IS NULL`. A partial unique index `idx_events_superseded_by ON events(supersedes_event_id) WHERE supersedes_event_id IS NOT NULL` guarantees one superseder per target.
+
+=== The feature ===
+Behavior declared event outputs gained an optional `key`: `{ event: "voice_profile", key: ["channel","mode"] }`. Each run must keep EXACTLY ONE current event per key (the newest refinement), history append-only. Current implementation in persist-behavior-event-output.ts:
+1. On each run, find current heads for the key: `SELECT id FROM events WHERE org AND semantic_type AND superseded_by IS NULL AND metadata @> {key values} ORDER BY created_at DESC, id DESC`.
+2. Insert the new event with `supersedes_event_id = <newest head>`.
+3. Review found two bugs: (a) the probe uses `String(value).trim()` but the stored metadata keeps the original value, so numeric/whitespace-padded keys never match their own head → every run appends a new live head; (b) `LIMIT 1` head selection means legacy duplicates / concurrent first-runs leave extra live heads permanently.
+
+=== The proposed fix under review ===
+(a) normalize key values into stored metadata; (b) find ALL heads and stamp every older one: `UPDATE events SET superseded_by = <newId>, updated_at = now() WHERE id = ANY(<older heads>) AND superseded_by IS NULL` inside the same transaction as the insert.
+
+=== The concern this consultation must address ===
+The fix (b) writes N lineage UPDATEs per run (one per older head) to an "append-only" table. Even though these are lineage-metadata stamps (not content), it feels like drifting toward "random updates" on events. The user wants the long-term design to be as reliable as possible.
+
+=== Alternatives to weigh ===
+- A. The proposed fix as-is (find heads + stamp older ones).
+- B. Materialize a "current head pointer" table keyed by (watcher_id, output_name, key) → current event id, upserted in the same tx as the insert; reads and the next write read the pointer instead of scanning events. Keeps events content append-only with only the single existing supersede stamp; no multi-row stamps; race-safe via the pointer row's unique key + tx.
+- C. Enforce one-head-per-key with a partial unique index on events over (semantic_type, key field values) WHERE superseded_by IS NULL; writers supersede-then-retry on 23505.
+- Any other design you think is better.
+
+Consider: multi-replica correctness (no in-memory state), the existing dual-write supersede machinery, the legacy-adoption case (migrated events have no behavior_id/behavior_output, so head lookup must match them), and that this pattern will be reused by other Behaviors (digests, statuses, profiles).
+
+Reply in under 600 words. End with a one-line verdict: the recommended approach and why.

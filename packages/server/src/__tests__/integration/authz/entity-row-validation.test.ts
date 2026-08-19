@@ -485,6 +485,9 @@ describe("entity row validation at the physical writer", () => {
 			expect(preview.message).toMatch(/would NOT be deleted/);
 			expect(preview.message).toMatch(/posted is frozen: \$deleted is not writable/);
 			expect(preview.deleted).toBe(0);
+			// Structured, so `manage_entity` can suppress its "would be queued for
+			// approval" suffix without pattern-matching the prose.
+			expect(preview.refused).toBe(true);
 			// A dry run mutates nothing, verdict or no verdict.
 			expect(await readDeletedAt(invoice.id)).toBeNull();
 		}, 60_000);
@@ -501,6 +504,7 @@ describe("entity row validation at the physical writer", () => {
 			);
 
 			expect(preview.message).toBe("Dry run: entity would be soft-deleted");
+			expect(preview.refused).toBeUndefined();
 			expect(await readDeletedAt(invoice.id)).toBeNull();
 		}, 60_000);
 

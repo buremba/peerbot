@@ -1533,6 +1533,12 @@ export async function deleteEntity(
   deleted: number;
   dry_run?: boolean;
   tree?: ForceDeleteTreeReport;
+  /**
+   * Dry run only: a write rule refuses this delete. Structured rather than left
+   * for the caller to sniff out of `message`, because a caller that pattern-
+   * matched the prose would silently start lying the day the wording changed.
+   */
+  refused?: true;
 }> {
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
@@ -1821,6 +1827,7 @@ export async function deleteEntity(
         message: `Dry run: entity would NOT be deleted — ${err.verdict.reason}`,
         deleted: 0,
         dry_run: true,
+        refused: true,
       };
     }
     return {

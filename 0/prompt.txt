@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9sq2lkln</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4ff32892-49a4-4aff-9bf9-a9aeee310481/tasks/b9sq2lkln.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for both PRs CI to settle" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi8b8c6fg</task-id>
+<tool-use-id>toolu_01B3FRX3aaYe4uKW8h9rvUvu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bi8b8c6fg.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for checks then verify" completed (exit code 0)</summary>
+</task-notification>

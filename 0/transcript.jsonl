@@ -1,0 +1,3 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:41:05.917Z","content":[{"text":"New message in #sales:\n\ndave: 😂😂 that deck though"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:41:10.389Z","id":"d82617e4","input_tokens":188,"output_tokens":342,"content":[{"type":"tool_use","id":"call_6c368dad47944695ac8e1ea6","name":"send_message","input":{"text":"😄"},"result":{"output":"Message sent.","status":"success"}}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:41:12.771Z","id":"d4d128c9","input_tokens":244,"output_tokens":45,"content":[{"type":"text","text":"Just casual channel chatter — acknowledged with a 😄 emoji reaction, no action needed."}]}

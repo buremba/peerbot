@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bouxz1s62</task-id>
+<tool-use-id>toolu_01P86xyhU8XUDoNReLgiDReK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa/tasks/bouxz1s62.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run authz, rules, and eval suites" completed (exit code 0)</summary>
+</task-notification>

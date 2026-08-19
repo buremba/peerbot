@@ -1,0 +1,12 @@
+Prod-verify gate for PR #2361 (device Behavior exit-report replay), MERGE_SHA=a23ad740f6f11b28892628037b295ddbe601d112.
+
+1. Check rollout completion on Kubernetes state, NOT /health (a single /health probe hits one pod and false-positives mid-rollout):
+   kubectl get pods -n summaries-prod -l app.kubernetes.io/component=api -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}'
+   All pods must be on the new image tag. Then confirm ancestry with the MERGE commit first:
+   git merge-base --is-ancestor a23ad740f6f11b28892628037b295ddbe601d112 "$DEPLOYED_SHA"
+   (argument order matters; gate on the squash commit, never the branch head)
+2. If not rolled out yet, re-schedule this same wakeup (~1500s) and stop.
+3. Once deployed, run the live checks:
+   - Dispatch a device Behavior, force the CLI to exit without completeWindow: expect exactly one `status: resume` then a terminal fail with reason_code missing_complete_window. Check runs.approved_input->>'finalize_nudge_count'.
+   - Dispatch an event-turn Behavior to the device and confirm the run completes with window_id NULL and NO canvas_state event (owletto#656 prompt split).
+4. Write the verdict as a closure line into memory/project_device_behavior_exit_report_delivery.md, replacing "prod-verify OWED", and update the MEMORY.md pointer.

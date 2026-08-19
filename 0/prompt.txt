@@ -1,0 +1,1 @@
+i want you to fix issues, run dev server use same vercel keys start a converstaion asking it to create a pr for landing and see it generating the or

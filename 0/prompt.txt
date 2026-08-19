@@ -1,0 +1,207 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Original (pre-compaction): *"take this session review the work and finish up and then merge when done grok --resume 019fafe0-9423-7e51-8606-bb4ec1d25cfc"* — execute the approved-but-unimplemented plan for issue #2320 (thin Skills + Behaviors), five PRs A–E.
+
+   Subsequent user turns in this session:
+   - *"you try doing it using owletto and make sure it works"* — use the paired Owletto extension to get an authenticated browser, build the owletto Behavior-authoring rework myself (previously reported blocked on screenshots), and verify it actually works.
+   - *"is the dev server running so i can test?"* — restart the dev server for hands-on testing.
+   - *"ok go do next actions. instead of z.ai you can use gemini api keys"* — work the next-action list; switch Behaviors off z.ai onto Gemini API keys.
+   - *"what is the qustion i don't understand for 1 and try e2e"* — re-explain the external-client question plainly; run the end-to-end Gemini test.
+   - *"what's external client question. do all next steps"* — explain again; execute all four listed next steps.
+   - *"ok fix things and merge and cleanup after"* (most recent) — fix the remaining items, merge, then clean up.
+
+2. **Key Technical Concepts:**
+   - Lobu monorepo: Bun workspace, `packages/{core,server,agent-worker,cli,connectors,owletto}`; `owletto` is a git submodule (repo `lobu-ai/owletto`)
+   - Issue #2320 locked model: Connections → Agent (who) → Skills (how) → Behaviors (when + optional ordered `skills[]`); **no author-facing Behavior prompt**
+   - Freeze model: `lobu apply` joins skill bodies in order into `watcher_versions.prompt`; `skills[]` is declarative-only and never reaches the server
+   - `compileBehaviorInstructions` (CLI, `desired-state.ts`): bodies `.trim()` joined `"\n\n"`, max 5 skills, 32KB UTF-8 byte ceiling
+   - Skills-presence rule: `triggers.length === 0 || some(kind==='schedule' || execution==='window')` requires ≥1 skill; event-turn may have zero
+   - TanStack Router file-based routing under `src/app/`; TanStack Query; shadcn/cmdk Combobox
+   - Owletto extension bridge: `client.operations.execute({connection_id, operation_key:'navigate'|'evaluate'|'close_tab'})` via `mcp__claude_ai_Lobu__run_sdk`
+   - Better-auth session cookies; PAT exchange via `/api/exchange-token`; vite `LOBU_API_PROXY` cookie-domain rewriting
+   - Gates: `make pre-pr`, `make review-fix`, `make review` (posts required `pi-review`), `make task-setup NAME=<slug>`
+   - Mutation testing to validate new tests
+
+3. **Files and Code Sections:**
+
+   **`packages/owletto/src/lib/behavior-skills.ts`** (NEW, owletto#634) — the web mirror of the CLI compile. Central to the whole rework.
+   ```ts
+   export const MAX_BEHAVIOR_SKILLS = 5;
+   export const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
+   export function skillBody(skill: BehaviorSkillOption): string {
+     return (skill.content ?? skill.instructions ?? "").trim();
+   }
+   export function behaviorRequiresSkills(triggers: BehaviorTriggerLike[] | undefined): boolean {
+     const list = triggers ?? [];
+     if (list.length === 0) return true;
+     return list.some((t) => t.kind === "schedule" || t.execution === "window");
+   }
+   export function compileBehaviorInstructions(selected: string[], library: BehaviorSkillOption[]): string {
+     if (selected.length === 0) return "";
+     const byName = new Map(library.map((s) => [s.name, s]));
+     const bodies: string[] = [];
+     for (const name of selected) {
+       const skill = byName.get(name);
+       const body = skill ? skillBody(skill) : "";
+       if (body) bodies.push(body);
+     }
+     return bodies.join("\n\n");
+   }
+   export function compiledByteLength(compiled: string): number {
+     return new TextEncoder().encode(compiled).length;
+   }
+   ```
+
+   **`packages/owletto/src/components/entity-tabs/watchers-tab/behavior-skills-picker.tsx`** (NEW) — ordered picker with move up/down/remove, `{selected.length}/{MAX_BEHAVIOR_SKILLS}` counter, and the empty-library escape hatch:
+   ```tsx
+   {available.length === 0 && agentId ? (
+     <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+       This agent has no skills yet — a Behavior's instructions come from them.{" "}
+       <Link to="/$owner/agents/$agentId/skills" params={{ owner, agentId }} ...>
+         Add a skill to {agentId}
+       </Link>, then come back.
+     </div>
+   ) : ( <Combobox ...>...</Combobox> )}
+   ```
+
+   **`packages/owletto/src/components/entity-tabs/watchers-tab/behavior-sources-editor.tsx`** (NEW) — required because removing the goal field removed the only source-authoring surface. Final `SOURCE_KINDS` after the #635 fix:
+   ```ts
+   export const SOURCE_KINDS: LobuRefKind[] = ["connection", "connector", "feed", "metric"];
+   ```
+   (with a doc comment explaining no `entity`: it scopes the Behavior; server's grammar wants an entity *type* slug while reference search returns *instances*.)
+
+   **`packages/owletto/src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx`** (heavily modified) — key logic after the #636 fix:
+   ```ts
+   const frozenInstructions = prefill?.prompt ?? "";
+   const hasFrozenInstructions = frozenInstructions.trim().length > 0;
+   const skillsRequired = behaviorRequiresSkills(triggers);
+   const skillsError =
+     selectedSkills.length === 0 && hasFrozenInstructions
+       ? null
+       : validateBehaviorSkills(selectedSkills, skillLibrary, triggers);
+   const compiledInstructions =
+     selectedSkills.length > 0
+       ? compileBehaviorInstructions(selectedSkills, skillLibrary)
+       : frozenInstructions;
+   const canSubmit = Boolean(name.trim()) && !skillsError;
+   ```
+
+   **`packages/owletto/src/lib/references.ts`** — extracted `appendBehaviorSource(sources, seenQueries, usedNames, label, fallback, query)` shared by the chip codec and the new `behaviorSourcesWithRef(ref, existing)`.
+
+   **`packages/owletto/src/components/ui/combobox.tsx`** — added optional `onQueryChange?: (query: string) => void` so server-search callers can observe the query.
+
+   **`packages/server/src/watchers/run-completion.ts`** (CURRENT WORK) — the `model_used` provenance fix:
+   ```ts
+   /**
+    * Mark a server-dispatched Behavior run completed, recording who executed it.
+    *
+    * `complete_window` defaults `runs.model_used` to the literal 'external-client'
+    * whenever its caller omits `model` (see complete-window.ts), and the platform's
+    * own Lobu agent omits it — so a run the SERVER dispatched ends up labelled as
+    * though an outside MCP client had executed it. That label reads as an
+    * observation and is not one: triaging the July 2026 Behavior collapse from this
+    * column produced exactly that wrong conclusion.
+    *
+    * This path is reached only for runs the server dispatched to the Lobu agent —
+    * it is keyed on `dispatched_message_id`, which only `watchers/automation.ts`
+    * sets — so the executor is known here. Mirrors the device-worker stamp in
+    * `worker-api/run-lifecycle.ts`. A model the agent DID report always wins; this
+    * only replaces the placeholder.
+    *
+    * (SQL comments are kept out of the template literal: a backtick inside one
+    * terminates the string and fails the esbuild transform, not just at runtime.)
+    */
+   export async function markWatcherRunCompleted(
+     sql: DbClient, runId: number, windowId: number | null
+   ): Promise<void> {
+     await sql`
+       UPDATE runs
+       SET status = 'completed',
+           window_id = ${windowId},
+           completed_at = current_timestamp,
+           error_message = NULL,
+           model_used = CASE
+             WHEN model_used = 'external-client' OR model_used IS NULL
+               THEN 'lobu-agent'
+             ELSE model_used
+           END
+       WHERE id = ${runId}
+         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+     `;
+   }
+   ```
+
+   **`packages/server/src/__tests__/integration/watchers/completed-run-model-provenance.test.ts`** (NEW, current work) — 4 tests: replaces the placeholder; stamps a NULL; keeps a reported model (`gemini-2.5-pro`); does NOT stamp a failed run.
+
+   **Key read-only files that shaped decisions:**
+   - `packages/server/src/watchers/automation.ts:1362` — `claimed_by = ${\`lobu:${payload.agent_id}\`}` set by the platform's own dispatcher
+   - `packages/server/src/tools/admin/manage_behaviors/complete-window.ts:67` — `provenanceModel = args.model?.trim() ? args.model : 'external-client'`
+   - `packages/server/src/worker-api/run-lifecycle.ts:1027` — the device-cli precedent this fix mirrors
+   - `packages/server/src/watchers/schedule-cursor.ts:85` — `advanceScheduleAfterTerminalFailure` (added by #2335)
+
+4. **Errors and fixes:**
+   - **`Failed to resolve entry for "@lobu/pgvector-embedded"` / `@lobu/core/reserved`** — fresh worktrees have no `packages/*/dist`. Fixed with `make build-packages`. Hit twice (owletto worktree, then server worktree).
+   - **Skills picker button not found by accessible name** — `<Label htmlFor="behavior-skills-add">` made the label text override the button's accessible name. Removed the `htmlFor`/`id` pairing.
+   - **Detached HEAD in submodule (twice)** — after `git -C packages/owletto checkout <sha>`, my commits landed on detached HEAD and `git push origin <branch>` silently pushed the stale branch ref. Detected by comparing `git rev-parse HEAD` vs `origin/<branch>`. Fixed with `git branch -f <new> HEAD && git checkout`.
+   - **Vite served a stale module ~20 minutes** — `curl localhost:5173/src/<path>.tsx | grep <new string>` returned 0 while the file on disk had the edit. Fixed with `--force`; this is now a memory note.
+   - **Forged-cookie recipe in `docs/BROWSER_TESTING.md` is dead** — HMAC-signed session token returns `null` from `/api/auth/get-session` even directly against prod. Replaced with PAT exchange (`lobu token create` → `/api/exchange-token`), which works against prod but is rejected by the local server.
+   - **SQL comment containing backticks inside a template literal** — broke the esbuild transform ("No test files found" + parse error). Moved the comment into a JSDoc block above the function.
+   - **pi-review blocker round 1 on #2348**: `entity` offered by the sources picker with no codec mapping → silently added nothing. Fixed by dropping the kind + a class-level `it.each(SOURCE_KINDS)` guard. Mutation-verified.
+   - **pi-review blocker round 2 on #2348**: frozen-instructions bypass gated on `isEditing` → scheduled templates/clones unsavable. Fixed by gating on `hasFrozenInstructions` alone. Mutation-verified.
+   - **Memory file clobbered** — I full-file `Write`-overwrote `project_behaviors_down_zai_quota.md` after reading only its first 5 lines, destroying a concurrent session's #2350 write-up. Recovered from GitHub issue #2350 and merged both accounts. Recorded as a process note.
+   - **Three wrong prod-triage conclusions I had to self-correct**: (a) crediting the Gemini switch for the recovery; (b) concluding an "external MCP client" was claiming Behavior runs; (c) both stemmed from reading `claimed_by`/`model_used` without reading the code that writes them. The generalizable lesson written to memory: *a status column is only evidence if you have read the line that writes it.*
+
+5. **Problem Solving:**
+   - Established the authenticated-browser recipe: local SPA (`bun run dev --force`) + `LOBU_API_PROXY=https://app.lobu.ai` + `?lobu_token=<PAT>` handoff, so unmerged frontend code runs against the real production API with no local account.
+   - Determined no server change was needed for the authoring rework by reading issue #2320 rather than the stale grok plan.
+   - Discovered and closed the source-authoring gap created by removing the goal field.
+   - Resolved the Behaviors collapse completely: **two independent causes**, ~18:35 UTC Jul 29 (Gemini switch stopped z.ai 429s) and ~19:15 UTC (#2319 rollout fixed `completeWindow`). Evidence: 404 `completeWindow` failures before the #2319 merge, 14 after, last at 19:14:00; 9/9 completed since 19:16.
+   - Confirmed #2350's gap 2 (terminal 429 retried ~2000×) was already fixed by #2335 (`ce4725e0`), deployed, and covered by `failed-run-advances-schedule.test.ts`; commented this on the issue so it isn't rebuilt.
+
+6. **All user messages:**
+   - *"take this session review the work and finish up and then merge when done grok --resume 019fafe0-9423-7e51-8606-bb4ec1d25cfc"* (pre-compaction)
+   - *"/compact"* (local command)
+   - *"you try doing it using owletto and make sure it works"*
+   - *"is the dev server running so i can test?"*
+   - *"ok go do next actions. instead of z.ai you can use gemini api keys"*
+   - *"what is the qustion i don't understand for 1 and try e2e"*
+   - *"what's external client question. do all next steps"*
+   - *"ok fix things and merge and cleanup after"*
+
+   Standing constraints that remain in force (from CLAUDE.md / AGENTS.md): **Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup`**; **stage by explicit path (`git add -- <paths>`, never `-A`)**; no Co-Authored-By or "Generated with Claude Code" in commit messages; **never `git stash`**; never resolve merge conflicts in the GitHub web UI; push owletto submodule changes BEFORE bumping the pointer; **never bulk-delete prod `organization` rows**; **`events` is append-only — never `DELETE FROM events`**; **workers never receive real credentials**; do not call the AgentTool unless the user requested it; do not use workflows or deep-research unless requested; clean up test data after prod verification.
+
+7. **Pending Tasks:**
+   - Finish `make pre-pr` on the `behavior-run-model-provenance` worktree, then commit (explicit paths), push, open PR, `make review` once, merge.
+   - Clean up afterwards (worktree removal, any residual test data) — explicitly requested in the last user message.
+   - **#2350 provider failover (gap 1)** remains open and needs the user's product decision (which provider a workspace falls back to, who pays). I deliberately did not invent this.
+
+8. **Current Work:**
+
+   Implementing the `model_used` provenance fix — the last of the three "next actions" that was actually fixable (completeWindow was already fixed by #2319; the retry storm by #2335; failover needs a user decision).
+
+   Working in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/behavior-run-model-provenance` on branch `feat/behavior-run-model-provenance`.
+
+   Completed so far:
+   - Edited `packages/server/src/watchers/run-completion.ts` `markWatcherRunCompleted` to replace the `'external-client'` placeholder with `'lobu-agent'` (full snippet in section 3).
+   - Created `packages/server/src/__tests__/integration/watchers/completed-run-model-provenance.test.ts` with 4 tests.
+   - **RED proven** (fix temporarily reverted): `× replaces the 'external-client' placeholder with the real executor → expected 'external-client' to be 'lobu-agent'` and `× stamps a run that never had any model recorded → expected null to be 'lobu-agent'`; `Tests 2 failed | 2 passed (4)`.
+   - Fixed the backtick-in-template-literal esbuild break by moving SQL comments into JSDoc.
+   - **GREEN proven**: `✓ ... (4 tests) 152ms` / `Tests 4 passed (4)`.
+   - Full watchers integration suite: `Test Files 19 passed (19)` / `Tests 175 passed (175)`.
+   - Launched `make pre-pr` (background, log `/tmp/prepr2.log`) and a blocking waiter (`b3il064cl`) on `grep -qE "pre-pr gates clean|❌|error TS|FAILED"`.
+
+   Verification command used throughout: `DATABASE_URL="postgres://$USER@127.0.0.1:5418/lobu_test" PGSSLMODE=disable bunx vitest run <path>`.
+
+9. **Optional Next Step:**
+
+   Read the `make pre-pr` result from `/tmp/prepr2.log`; if clean, commit by explicit path, push, open the PR, run `make review` once, merge when the gate reports green, then clean up the worktree — directly fulfilling the most recent user instruction *"ok fix things and merge and cleanup after"*.
+
+   I was mid-flight on exactly this, having just stated: *"For that last one: recording the real model would mean threading a new field through core → agent-worker → gateway, which is a feature. The proportionate fix follows the existing device-worker precedent — on the platform-agent completion path (reachable only via `dispatched_message_id`, which only the dispatcher sets), replace the `external-client` placeholder with `lobu-agent`. A model the agent genuinely reported still wins. Four tests written, including one asserting a failed run does not get stamped. I'm proving red before green."*
+
+   Both red and green are now proven; only the gates, PR, merge, and cleanup remain.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/dc1df443-8162-4cd9-b062-3e67f86994ab.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

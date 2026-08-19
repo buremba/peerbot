@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bp5ecoo4i</task-id>
+<tool-use-id>toolu_015xWpaX9NtJp3JckL8X5otQ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/279de3ab-0acd-4e7e-8c0b-0774e773be4a/tasks/bp5ecoo4i.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix pass" completed (exit code 0)</summary>
+</task-notification>

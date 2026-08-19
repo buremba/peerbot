@@ -1,0 +1,1 @@
+ok in prod we do't allow gh in embedded mode no? we require sandboxes?

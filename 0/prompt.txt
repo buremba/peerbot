@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>af0c60fbed9d0f044</task-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/af0c60fbed9d0f044.output</output-file>
+<status>failed</status>
+<summary>Agent "Ship CLI in Docker image #2231" failed: Agent terminated early due to an API error: You've hit your session limit · resets 5pm (Europe/London)</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Clean red→green evidence from real images. Now opening the PR.</result>
+</task-notification>

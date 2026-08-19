@@ -1,0 +1,1 @@
+should we do the check on lobu ai after prod is deployed maybe, that's more of a real test no?

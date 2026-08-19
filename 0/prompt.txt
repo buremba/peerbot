@@ -1,0 +1,55 @@
+<task-notification>
+<task-id>afaaebf029b933ab1</task-id>
+<tool-use-id>toolu_01WBbUzSBBnJF1D7fkHfLA3b</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/73b05c30-a55e-428b-b8db-bc6fbe243c78/tasks/afaaebf029b933ab1.output</output-file>
+<status>completed</status>
+<summary>Agent "Narrow org-scope fallback footgun" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Working tree clean, fix confirmed in the committed file, exactly 2 files changed.
+
+## Report
+
+**PR:** https://github.com/lobu-ai/lobu/pull/2284 (`make review` not run, as instructed)
+
+### Your corrections were right, and one more
+The "diverging siblings" claim is indeed false — both functions resolve `ambientOrgId` first on `origin/main` and carry the explanatory comments. I did not touch that.
+
+I also did **not** change `resolveOrgId` (your rejected fix). But the narrower framing needed one correction: **`resolveOrgId` was not the bug at all.** At line 465 the `if (ambientOrgId)` branch above returns in every case, so `tryGetOrgId()` is provably null there — `resolveOrgId(x)` is exactly `x ?? undefined`, a no-op. Removing it changes nothing on its own.
+
+### The real bug (reachable, and worse than described)
+The org came from `verifyOwnedAgentAccess`'s metadata branch → `AgentConfigStore.getMetadata`, which **only filters by org when an ambient org exists**. With none it runs `WHERE id = $agentId` — no org predicate, no ORDER BY (`postgres-stores.ts:215`). Since `agents` is keyed `(organization_id, id)`, `lobu-builder` matches a row per tenant and `rows[0]` is arbitrary; the `owner_*` columns it vouches against are legacy and unique only by convention, so that arbitrary row can still name the caller. That org went to `listAgentThreads` as the transcript read scope.
+
+**Reachability chain (traced, not assumed):** `verifySettingsSession` accepts the `lobu_settings_session` cookie, a separate auth channel from Better Auth. `/connect/claim` (`connect-auth.ts:251`) issues it with no Better Auth user → `createLobuAuthBridge` leaves `user` null → `createLobuOrgContextMiddleware` calls `next()` **without** `orgContext.run()` → no ambient org → fallback fires.
+
+### Red → green
+RED against `origin/main` source: 2 fail, 2 pass. GREEN: 60/60 across 5 suites; 47/47 DB-backed; `make test-unit` exit 0 (`0 fail`, 9 suites); `make pre-pr` exit 0. Both outputs are in the PR body.
+
+### Two process notes
+- My first fix attempt (in `agent-ownership.ts`) caused **9 regressions** — my own `mock.module` leaked across test files. I caught it by diffing against a stashed baseline (35/35 green) rather than trusting the isolated run. Rewrote the test without module mocking.
+- `make review-fix` then **reverted my fix** and replaced it with a stricter fail-closed version in `agent-history.ts`. I evaluated it on the merits rather than reverting: it's strictly stronger (declines instead of returning an unproven org) and also closes the admin bypass returning an undefined org. I kept it and re-verified RED/GREEN against it.
+
+### Call-site classification (18 real sites, not ~49)
+The ~49 conflated tests plus a **same-named local** `requireOrgId(c: any)` at `lobu/agent-routes.ts:1876` that reads the Hono context — 10 hits, unrelated to the helper.
+
+| Class | Count | Sites |
+|---|---|---|
+| Ambient-request store methods | 12 | `grant-store` (5), `user-agents-store` (3), `behavior-subscription-service` (4) |
+| Worker/token &amp; provider-context | 3 | `base-provider-module.ts`, all `context?.organizationId` |
+| Ambient-read only (no arg) | 2 | `agent-history.ts:429`, `:506` |
+| Fixed here | 1 | `agent-history.ts:465` — the only site feeding an ownership-derived org as the explicit arg |
+
+The `base-provider-module.ts` group is the concrete evidence your rejected throw-on-disagreement fix would have broken things.
+
+### Confidence
+- **Bug reality &amp; reachability — 92.** Traced the full middleware chain in `origin/main` source and reproduced with a failing test; the mutation test (reverting the fix logic) reproduces the failure, so the test genuinely bites. Not verified against a live prod request.
+- **Fix correctness — 85.** 60/60 unit + 47/47 DB-backed green, with a non-regression guard that stubs `getMetadata` to throw, proving legitimate single-org owners still resolve. I did **not** boot the server and drive a real `/connect/claim` flow end-to-end.
+- **Call-site classification — 88.** Read every one of the 18 sites; the local-`requireOrgId` collision is confirmed by its definition and imports. I did not exercise the worker paths at runtime.
+- **No collateral damage — 90.** Working tree clean, exactly 2 files vs `origin/main`, baseline-diffed to distinguish my regressions from environmental noise.
+
+### Next actions
+1. **Boot and drive a real `/connect/claim` link** for a single-org agent owner — the one path I proved only by unit test, and the one that 401s if `agent_users` lacks a row. This is the main residual risk.
+2. **Audit the other `getMetadata` consumers** (`agent-routes.ts` ×4, `mcp/proxy.ts:477`, `gateway.ts:401`, `agent.ts:807`). This PR closed the one path that turned the org-less arbitrary-row query into a cross-tenant read; the query itself is unchanged and still latent.
+3. **Consider fixing `postgres-stores.ts:215` at the source** — add `ORDER BY organization_id LIMIT 1` or make the org-less branch decline for multi-org ids. Deliberately out of scope here since it changes behavior for genuinely single-workspace deployments.
+4. **Narrow `getAuthorizedAgentScope`'s return type** to `organizationId: string` — every path now returns a defined org, so the `| undefined` lets future callers reintroduce the no-org case silently.</result>
+<usage><subagent_tokens>123574</subagent_tokens><tool_uses>85</tool_uses><duration_ms>1740714</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,1 @@
+yes dig in, explain how our hooks and atuomations cover what and if we suppport all use-cases

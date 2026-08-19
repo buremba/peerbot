@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcxf1jd5p</task-id>
+<tool-use-id>toolu_01QPBq5zmWm8FmTEndkt8gU1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/bcxf1jd5p.output</output-file>
+<status>completed</status>
+<summary>Background command "Final full pre-pr after worktree install" completed (exit code 0)</summary>
+</task-notification>

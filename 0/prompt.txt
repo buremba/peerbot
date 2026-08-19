@@ -1,0 +1,152 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+This session continued a long design conversation about write-time entity policy in Lobu. The user's requests chronologically:
+
+   - (Carried over) "ok let's finalize the spec, if you want to do spikes you can to save the memory so i can also compact"
+   - "how big of a lift is this, can we reuse and make code simpler easier to follow and effective."
+   - "we no longer have the x-transitions stuff right? do 1 explain 2 and explain 4" — verify x-transitions status; do next-action #1 (the seam spike), explain #2 (`entity_types` columns) and #4 (`SDKMode: "none"`)
+   - "ok sounds cool to all if you think this approach scales well" — conditional approval of three PRs, gated on scaling
+   - "ok 1. in the meantime are we gonna cover erp use-cases with this approach" — ship PR #1; answer ERP coverage
+   - "what's the issue, we don't want to overengineer explain where the gap is and if there is an arthictural fix"
+   - "you could use opus" — explicit direction to use opus as the review gate reviewer
+   - "yes 3 we can kill. explain 2 do we have the sdk changes now how does it work" — approve killing the x-transitions DSL; explain the insert branding and the SDK surface
+   - "how are the rules defined"
+   - "yes do those as well" — approve all three: `entity_types` columns, DSL deletion, `EntityRowInsert` branding
+
+2. **Key Technical Concepts:**
+   - **Two-tier policy split**: queryable (declarative policy rows, answers "may I?" and gates reads) vs enforceable (per-type code at the write seam)
+   - **Deny-only verbs**: `deny(reason)`, `escalate(fields, reason)`. **No `allow`** — a rule can narrow the lattice, never widen it
+   - **Branded types as structural enforcement**: `declare const validatedBrand: unique symbol`; no public constructor, so bypass is a compile error
+   - **Batch-shaped isolate execution**: one isolate per (type, batch), not per row
+   - **Per-row isolate serialization is already free**: lock at `entity-management.ts:958` precedes rule position `:1101`
+   - **Event-loop starvation is per-process, not per-row**
+   - **Compile memoization** by content hash (`computeCodeHash`)
+   - **Guest-side control flow**: `deny`/`escalate` need zero `ivm.Reference` bridges
+   - **Inert-then-arm rollout**: schema before code so a rolling deploy never runs new code against an old table
+   - `REVIEWER_CLI` has only **two** quota pools (pi is codex-backed)
+
+3. **Files and Code Sections:**
+
+   - **`packages/server/src/sandbox/run-script.ts`** — MERGED in PR #2838 (squash `7f70ab985`). Added compile memo:
+     ```ts
+     const compiledSourceCache = new Map<string, { code: string; bytes: number }>();
+     const COMPILED_SOURCE_CACHE_MAX_ENTRIES = 256;
+     const COMPILED_SOURCE_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+     let compiledSourceCacheBytes = 0;
+     ```
+     Miss branch discounts existing entry before incrementing bytes (concurrent double-compile fix). `SDKMode = "read" | "full"` at `sdk-manifest.ts:11`.
+
+   - **`packages/server/src/authz/entity-rule-executor.ts`** (NEW, rewritten batch-first this turn):
+     ```ts
+     const RULE_BATCH_TIMEOUT_MS = 2_000;
+     export const MAX_RULE_BATCH = 2_000;
+     export type EntityRuleVerdict =
+       | { outcome: "allow" }
+       | { outcome: "deny"; reason: string }
+       | { outcome: "escalate"; fields: string[]; reason: string };
+     export interface EntityRuleRow { committed: Record<string, unknown>; patch: Record<string, unknown>; }
+     export interface EntityRuleBatch { compiled: string; rows: EntityRuleRow[]; op: "create"|"update"|"delete"; timeoutMs?: number; }
+     export function wrapCompiledRule(compiledModule: string): string
+     export async function runEntityRules(batch: EntityRuleBatch): Promise<EntityRuleVerdict[]>
+     ```
+     `RULE_RUNNER` is a guest-side template literal; `ctx.actor` deliberately ABSENT (documented as a follow-up). Recursively chunks at MAX_RULE_BATCH. Fails closed on crash/timeout/bad verdict.
+
+   - **`packages/server/src/authz/entity-row-validation.ts`** (heavily edited this turn):
+     - Import changed to `import { type EntityRuleRow, runEntityRules } from "./entity-rule-executor";` and `import type { EntityRowInsert, EntityRowPatch } from "../utils/entity-management";`
+     - `CommittedRow.metadata_schema` → `rules_compiled: string | null`
+     - SQL now selects `et.rules_compiled` instead of `et.metadata_schema`
+     - `validateEntityRowPatch` groups rows by `rules_compiled` into `Map<string, {ids, rows}>`, runs `runEntityRules` per group, throws `EntityRowValidationError` on deny; escalate also throws ("escalation is not wired yet")
+     - Added at end: `ValidatedEntityRowInsert`, `validateEntityRowInsert({tx, row})` (reads `entity_types` directly by `row.entityTypeId`, `committed: {}`), `unvalidatedEntityRowInsert({row, reason})`
+     - Retained: `validatedBrand`, `ValidatedEntityRowPatch`, `EntityRowValidationError`, `UNGOVERNED_COLUMNS`, `RESERVED_COLUMN_NAMES` (`$name`/`$slug`/`$parent_id`/`$content`/`$deleted`), `flatten`, `committedState`, `unvalidatedEntityRowPatch`
+
+   - **`packages/server/src/utils/entity-management.ts`** — `insertEntityRow` and `tryInsertEntityRow` now take `row: ValidatedEntityRowInsert`. Import updated to pull both brands.
+
+   - **`db/migrations/20260817210000_entity_type_write_rules.sql`** (NEW):
+     ```sql
+     ALTER TABLE public.entity_types
+       ADD COLUMN IF NOT EXISTS rules_source text,
+       ADD COLUMN IF NOT EXISTS rules_compiled text;
+     ```
+     With `-- migrate:down` dropping both. Extensive comment explaining: mirrors `watchers.reaction_script`/`reaction_script_compiled`; no new table (1:1, rides existing join, zero extra queries); not in `metadata_schema` (that holds data like `x-lobu-resolution`, rules are code); ships INERT.
+
+   - **DELETED via `git rm`**: `packages/server/src/authz/entity-transition-rules.ts` (206 lines), `packages/server/src/authz/__tests__/entity-transition-rules.test.ts` (211 lines)
+
+   - **Spike tests committed as `4c13c8ae3`** on `feat/entity-transitions` (887 lines): `spike-approval-hold-vs-invariant.test.ts`, `spike-create-bypasses-validation.test.ts`, `spike-entity-rule-at-seam.test.ts`, `entity-rule-executor.ts`
+
+   - **`packages/cli/src/config/define.ts`** — `reactionFromFile<Handler>(path) → { kind: "reactionSource", path }`; `ReactionHandler = (ctx, client, params?) => Promise<unknown>`; `EntityType` interface has `key`, `name`, `description`, `required`, `properties`, `eventKinds`, `resolution` (the `x-lobu-resolution` precedent). **`x-transitions` appears nowhere in packages/cli.**
+
+4. **Errors and fixes:**
+   - **`initialStates` was overengineering** — user: "what's the issue, we don't want to overengineer". Withdrew it; a create is just `committed = {}` and one `if` in the rule.
+   - **Predicted 2 create bypasses, compiler found 5** — `eval-cases.ts:472`, `canvas-events.ts:111`, `entity-link-upsert.ts:530`, `entity-management.ts:840`, `promote-keyed-entities.ts:218`. Stated openly that I was wrong by more than half and that this vindicates the brand over grepping.
+   - **`runScript` compiled on every call** — found during the spike; fixed with a hash-keyed memo. p50 9.2→3.2ms.
+   - **My memo test used wall-clock timing** — review-fix caught it as a flake (warm runs 2.8–4.8ms vs a 5ms floor). Replaced with `vi.mock` compile-call counts. Verified by mutation.
+   - **`make review-fix` reported exit 0 through a pipe while `make` returned Error 1** — caught only by checking exit code explicitly. Matches the `| tail -N` hides-a-failed-gate note in memory.
+   - **Ran `make pre-pr-remote` from the main checkout** instead of the worktree — it failed closed on pre-existing modified workflow files before dispatching. Re-ran from the worktree.
+   - **Used `pkill -f "pre-pr-remote"`** which could have killed a peer session's gate; flagged as luck not care.
+   - **Stale memo copy found in the entity-transitions worktree** — my pre-fixer version, which would have reverted #2838's improvements. Backed up to /tmp and `git restore`d.
+   - **All three reviewers exhausted** — codex (Aug 20), fable (credits), pi (`Codex error: usage limit reached`, i.e. codex-backed). I declined to use opus unilaterally; user then said "you could use opus".
+
+5. **Problem Solving:**
+
+   **Measurements (node 22, 14 cores):**
+   - Compile memo: before p50 9.2ms/min 7.4/p95 114; after p50 3.2/min 1.5/p95 5.2; cold first esbuild ~100ms
+   - Bundle sizes: bare 1,003 bytes; with zod 542,893 bytes (justifies 32MB byte cap)
+   - Per-row scaling (SPIKE 4): 1w 283 ops/s p50 2.65; 4w 279 p50 9.96; 16w 396 p50 40.05 — flat throughput, linear degradation
+   - Per-batch (SPIKE 5): 1 row 2.2/2.5ms; 50 → 223.7/3.3; 200 → 697.5/3.0; 1000 → 3648.6/5.3; 5000 → **21050.8/13.5 (1556×)**
+
+   **Proven facts:**
+   - x-transitions and the whole validation seam are NOT on origin/main (unpushed branch work)
+   - x-transitions was never authorable via the CLI (raw SQL only)
+   - Creates bypass validation — demonstrated with a contrast pair: same end state denied via update, permitted via create
+   - deny/escalate need zero host bridges
+   - An isolate runs safely under a held row lock and the tx commits
+
+   **PR #2838 shipped**: `perf(server): memoize compiled sandbox sources by content hash`, squash `7f70ab985`, verdict `bug_free 88, simplicity 80, slop 10, bugs 0, 0 blockers`. All 10 branch-protection contexts verified individually before `--admin` merge. One non-blocking suggestion deferred and recorded as a PR comment (LRU recency at `:918`).
+
+6. **All user messages:**
+   - "how big of a lift is this, can we reuse and make code simpler easier to follow and effective."
+   - "we no longer have the x-transitions stuff right? do 1 explain 2 and explain 4"
+   - "ok sounds cool to all if you think this approach scales well"
+   - "ok 1. in the meantime are we gonna cover erp use-cases with this approach"
+   - "what's the issue, we don't want to overengineer explain where the gap is and if there is an arthictural fix"
+   - "you could use opus"
+   - "yes 3 we can kill. explain 2 do we have the sdk changes now how does it work"
+   - "how are the rules defined"
+   - "yes do those as well"
+
+   **Standing constraints from CLAUDE.md/AGENTS.md that remain in force:** Never write to `~/Code/lobu` directly (use `make task-setup`). Stage by explicit path (`git add -- <paths>`, never `-A`). `events` is append-only. Never bulk-delete prod `organization` rows. Never resolve merge conflicts in the GitHub web UI. Two writing agents must never share a worktree. **Never add a table or change DB design, API surface, or SDK surface without surfacing the proposal and receiving confirmation first.** Never auto-submit an interactive browser draft. No "Co-Authored-By" or Claude attribution in commit messages. No backwards-compat shims, `@deprecated` tags, or fallback aliases — delete the old thing. Absence needs `git fetch -q origin && git grep <pattern> origin/main`.
+
+7. **Pending Tasks:**
+   - Classify and fix the 5 create-bypass sites the compiler found (in progress)
+   - Port the approval-hold reproduction onto the code-rule executor (the user approved the DSL kill; I proposed porting rather than losing this repro)
+   - Rewrite/port `entity-row-validation.test.ts` (275 lines, written against x-transitions) and `spike-create-bypasses-validation.test.ts` / `spike-approval-hold-vs-invariant.test.ts` which still reference `x-transitions`
+   - Prod-verify `7f70ab985` is an ancestor of the deployed SHA after rollout
+   - `SDKMode: "none"` as its own PR (previously approved, not started)
+
+8. **Current Work:**
+
+   Executing "yes do those as well" — all three approved changes on the `feat/entity-transitions` worktree. Completed: the migration, the batch-shaped executor rewrite, the seam wiring, the DSL deletion, and the insert branding.
+
+   Immediately before this summary, `bunx tsc --noEmit` had enumerated the create bypasses:
+   ```
+   src/runs/eval-cases.ts(472,4)              — eval scaffolding
+   src/utils/canvas-events.ts(111,5)          — canvas entity, platform bookkeeping
+   src/utils/entity-link-upsert.ts(530,7)     — link auto-create (tryInsertEntityRow)
+   src/utils/entity-management.ts(840,5)      — THE createEntity path
+   src/utils/promote-keyed-entities.ts(218,9) — automation output promotion
+   ```
+   I was reading the surrounding code at each of the three ambiguous sites to classify them as validate-vs-exempt. My working classification: `entity-management.ts:840` and `promote-keyed-entities.ts:218` should VALIDATE (real tenant data); `eval-cases.ts:472` and `canvas-events.ts:111` should use `unvalidatedEntityRowInsert` (platform bookkeeping, matching the existing exemption reasons); `entity-link-upsert.ts:530` still undetermined.
+
+   Also noted but unresolved: escalate currently throws "escalation is not wired yet" rather than holding fields, and `ctx.actor` is deliberately absent from the rule context because `validateEntityRowPatch`'s signature has no principal (its own doc comment says validation "has no principal in it") and threading one would touch ~13 call sites.
+
+9. **Optional Next Step:**
+
+   Finish classifying and fixing the five create-bypass sites so `tsc` is clean, then run the test suites. This follows directly from the user's "yes do those as well" and from the work in flight: the compiler enumerated exactly five sites and I stated "The compiler found **five** create bypasses, not the two my grep predicted. That's precisely the argument for the brand over grepping — I was wrong by more than half."
+
+   After that, the remaining in-scope work is porting the approval-hold repro and updating the three test files that still reference `x-transitions` — since deleting the DSL invalidates them, which I flagged earlier: "Two of the three spike tests I just committed **depend on `x-transitions`** to create a deny-able condition... Deleting the DSL invalidates both."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/d4dd595f-7813-471b-8289-6923b28b89fa.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

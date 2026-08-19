@@ -1,0 +1,12 @@
+<task-notification>
+<task-id>wntax7gkp</task-id>
+<tool-use-id>toolu_01B2XjUc1s11nCZgjpT1nFki</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/wntax7gkp.output</output-file>
+<status>failed</status>
+<summary>Dynamic workflow "Verify two dead SkillConfig fields are safe to delete, and pin the aggregator dedup precedence" failed: TypeError: parallel() expects an array of functions, not promises. Wrap each call: () =&gt; agent(...)
+    at &lt;anonymous&gt; (/$bunfs/root/src/entrypoints/cli.js:13972:3307)
+    at processTicksAndRejections (native:7:39)</summary>
+<recovery>To resume after editing the script, call: Workflow({scriptPath: '/Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/workflows/scripts/skill-dead-fields-and-dedup-test-wf_1eaed090-2c5.js', resumeFromRunId: 'wf_1eaed090-2c5'})
+Agent transcripts: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/subagents/workflows/wf_1eaed090-2c5</recovery>
+<usage><agent_count>3</agent_count><agents_done>3</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>236964</subagent_tokens><tool_uses>93</tool_uses><duration_ms>446099</duration_ms></usage>
+</task-notification>

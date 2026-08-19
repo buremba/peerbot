@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bhny0jnt8</task-id>
+<tool-use-id>toolu_01DT3Ktqaik3qk4xQ4W7HzW4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c3dc213c-a275-44a5-9345-8bf68a35760f/tasks/bhny0jnt8.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR checks to completion" completed (exit code 0)</summary>
+</task-notification>

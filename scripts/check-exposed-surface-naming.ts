@@ -483,6 +483,8 @@ const CANONICAL_SCAN_EXCLUSIONS = new Set([
   // Vendored/generated Kubernetes API descriptions use generic standards prose.
   "packages/owletto/deploy/k8s/infrastructure/cert-manager/cert-manager.yaml",
   "packages/owletto/deploy/k8s/clusters/buremba-prod/cert-manager.yaml",
+  "packages/owletto/deploy/k8s/infrastructure/barman-plugin/manifest.yaml",
+  "packages/owletto/deploy/k8s/clusters/lobu-prod/barman-plugin.yaml",
 ]);
 
 function isCanonicalScanException(file: string): boolean {

@@ -1,0 +1,1 @@
+the permissions can have (1/x etc.) indicator maybe similar to the other accordions. when owletto is executing some operation, should we change the menubar icon for like blikning or somehow different etc? also it looks like in owletto chrome extension and mac app we use the previous icons, get rid of them.

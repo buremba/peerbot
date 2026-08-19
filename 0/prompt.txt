@@ -1,0 +1,1 @@
+from connections should we support creating the behavior so the user select agent and get the behavior page populated with the relevant subcription. think of all these similar use-cases. also in add conenctor when a connector is clicked don't we see the install connector like button how does it work

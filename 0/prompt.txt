@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpdr65ay5</task-id>
+<tool-use-id>toolu_016vLANevy1VDXAKvzoVaiyk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/25855ca6-1129-4b4d-ba7a-9d72acb13600/tasks/bpdr65ay5.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for mac-build-smoke and read the Swift results" completed (exit code 0)</summary>
+</task-notification>

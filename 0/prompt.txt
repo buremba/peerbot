@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bh2wc3con</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/34004f74-20ed-439c-908b-fd1a4b248251/tasks/bh2wc3con.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for API to come up" completed (exit code 0)</summary>
+</task-notification>

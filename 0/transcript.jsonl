@@ -1,0 +1,1 @@
+{"v":1,"agent":"codex","cli_version":"0.10.1","type":"assistant","ts":"2026-08-10T00:25:43.278Z","content":[{"text":"The full build passed, and the packed MCP App rendered and completed its host handshake using both native decompression and the pako fallback. No actionable regressions were found.","type":"text"}]}

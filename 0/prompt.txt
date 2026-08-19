@@ -1,0 +1,18 @@
+<task-notification>
+<task-id>bc2744pjj</task-id>
+<summary>Monitor event: "PR #2830 required checks"</summary>
+<event>base-branch-guard: pass
+check-drift: pass
+format-lint: pass
+frontend: pass
+integration-bun: pass
+integration-vitest (1/3): pass
+integration-vitest (2/3): pass
+integration-vitest (3/3): pass
+integration: pass
+migrations: pass
+pi-review: pass
+typecheck: pass
+ui-review: pass
+unit: pass</event>
+</task-notification>

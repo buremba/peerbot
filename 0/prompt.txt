@@ -1,0 +1,1 @@
+if we were to design this in a way you suggest, how would it be like? i thought member etc can be an entity so we can do the relations etc all dogfooding, be able to define things like person entity employees entity int he future to define different groups etc

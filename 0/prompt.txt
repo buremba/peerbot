@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>ba2s5zwbz</task-id>
+<tool-use-id>toolu_01Tjruueq8KfhsKNPuHzSHTM</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b495caea-80b1-4ed4-9dcf-1726b2bc90e1/tasks/ba2s5zwbz.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on the repinned head" completed (exit code 0)</summary>
+</task-notification>

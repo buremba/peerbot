@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The reload logic can select a cached target over a live result and can restore nonfunctional approval controls when the full-result envelope lacks separate metadata. Both issues affect the compatibility scenarios this patch is intended to handle.
+
+Full review comments:
+
+- [P2] Prefer live globals before cached widget state — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-chatgpt-rehydrate/packages/owletto/src/mcp-apps/_shared/host.tsx:76-78
+  When both same-origin compatibility targets expose `openai`—for example, the inner app has restored `widgetState` while ChatGPT's outer sandbox has the current `toolOutput` and `toolResponseMetadata`—this first-match branch returns the cached inner object without inspecting the live parent result. This can render stale data or lose the current approval capability; scan all targets for result globals before falling back to widget state.
+
+- [P2] Sanitize full results that lack approval metadata — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-chatgpt-rehydrate/packages/owletto/src/mcp-apps/_shared/openai-compat.ts:134-136
+  When ChatGPT restores the newly supported full-result form without a separate `toolResponseMetadata` field, `approvalCapability` is `undefined`, but this condition leaves any `resolve_lobu_approval` actions in `structuredContent`. The Provider initializes the capability to null, so those buttons call the server without the required `_meta` and always fail; initial restored output without a valid capability should be display-sanitized like an explicit metadata clear.
+  </results>
+  </user_action>

@@ -1,0 +1,1 @@
+were we duplicating, what was the best way to design this properly? maybe chatgpt actually calling my computer bash in some way.

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bph8azgze</task-id>
+<tool-use-id>toolu_01EgjRBXXguqxoa6H2nj5aZ4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/81ba9cd8-6898-473f-81d1-f54153aebf94/tasks/bph8azgze.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for owletto 622 CI" completed (exit code 0)</summary>
+</task-notification>

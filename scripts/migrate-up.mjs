@@ -18,9 +18,9 @@
  * deploy that ships no schema change:
  *   0 - at least one migration is pending (the caller must quiesce)
  *   3 - the ledger is complete, nothing is pending (safe to skip the quiesce)
- *   4 - migrations are pending, but every one of them is marked
- *       `-- lobu:no-quiesce` and survives the incompatible-DDL guard below, so
- *       the old replicas can keep serving across the migration
+ *   4 - migrations are pending, but every one of them carries the author's
+ *       `-- lobu:no-quiesce` declaration, so the old replicas can keep
+ *       serving across the migration
  *   1 - the answer could not be determined (the caller must quiesce)
  * Only the definitive 3 and 4 unlock the fast path; every other status,
  * including a crash, leaves the caller quiescing.

@@ -6,10 +6,13 @@ import { join, resolve } from "node:path";
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const MIGRATE_UP = join(REPO_ROOT, "scripts/migrate-up.mjs");
 
-/** One of the two statuses (3 = nothing pending, 4 = all backward-compatible)
- * that let charts/lobu/files/migrate-upgrade.sh skip its quiesce. The tests
- * below pin the fail-closed paths against this one; the sibling
- * migration-compatibility.test.ts covers the 4 path. */
+/** One of the two statuses (3 = nothing pending, 4 = every pending migration
+ * marked) that let charts/lobu/files/migrate-upgrade.sh skip its quiesce. The
+ * tests below pin the fail-closed paths against this one. The 4 path needs a
+ * real ledger, so it is covered where one exists: the pending-check contract
+ * step in .github/workflows/ci.yml drives 3/0/4 against a live database, and
+ * charts/lobu/tests/migrate-upgrade-recovery.sh asserts status 4 scales
+ * nothing. */
 const NOTHING_PENDING = 3;
 
 function runCheckPending(env: Record<string, string>) {

@@ -1,0 +1,1 @@
+what product usecase it can be? maybe agent showing what it run etc but i wonder why wouldn't everything be part of save_memory, let's think of the cases

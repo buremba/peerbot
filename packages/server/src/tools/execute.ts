@@ -19,6 +19,7 @@ import type { Env } from '../index';
 import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
+import { assertDeploymentsNotPaused } from '../utils/deployment-pause';
 import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { enforceRoleScopeAccess } from './access-control';
@@ -74,6 +75,14 @@ export interface AuthContext {
   instructions?: string;
   /** `x-lobu-apply-id` when the call belongs to a `lobu apply` run. */
   applyId?: string | null;
+  /**
+   * `x-lobu-rollback-of` when the run is a `lobu rollback` restoring the named
+   * deployment. Lets a rollback proceed while promotions are paused — rolling
+   * back further is the main thing an operator does while paused. Claimed by
+   * the client, VERIFIED server-side against a real deployment in this org
+   * (see `assertDeploymentsNotPaused`); never trusted on shape alone.
+   */
+  rollbackOf?: string | null;
   /**
    * Per-turn LIMIT on which tools may execute admin-tier actions. Carried on
    * the worker token (see
@@ -147,6 +156,7 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     scopedToOrg,
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
     applyId: parseApplyId(c.req.header('x-lobu-apply-id')),
+    rollbackOf: parseApplyId(c.req.header('x-lobu-rollback-of')),
     // Admin-tool LIMIT: only the verified worker token's per-turn allowlist
     // (an admin-tools run) carries this. External
     // `mcp:admin` callers need no grant — every tool is reachable uniformly
@@ -247,6 +257,26 @@ export async function executeTool(
   authCtx: AuthContext
 ): Promise<unknown> {
   checkToolAccess(toolName, args, authCtx);
+
+  // Promotions pause, enforced where config is actually mutated. `lobu apply`
+  // writes through these tools, so this is the chokepoint that binds every
+  // caller — including a CI job posting straight at the API with a PAT, which
+  // the CLI-side check never could. Read-tier calls and non-apply traffic pass
+  // through untouched; see `assertDeploymentsNotPaused`.
+  const pauseTool = getTool(toolName);
+  if (pauseTool && !ORG_AGNOSTIC_TOOLS.has(toolName)) {
+    await assertDeploymentsNotPaused({
+      organizationId: authCtx.organizationId,
+      applyId: authCtx.applyId ?? null,
+      rollbackOf: authCtx.rollbackOf ?? null,
+      isReadOnly:
+        getRequiredAccessLevel(
+          toolName,
+          args,
+          isAuthorizationReadOnly(pauseTool)
+        ) === 'read',
+    });
+  }
 
   // Org-agnostic tools get a minimal context with just userId
   if (ORG_AGNOSTIC_TOOLS.has(toolName)) {

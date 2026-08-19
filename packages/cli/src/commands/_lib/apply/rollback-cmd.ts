@@ -147,6 +147,11 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     url: opts.url,
     org: opts.org,
     applyId: newApplyId,
+    // Declares this run a rollback for the whole of its lifetime, so the
+    // server's promotions-pause gate lets its writes through. Rolling back
+    // further is exactly what an operator does while paused, and the pause a
+    // previous rollback set would otherwise block this one.
+    rollbackOf: opts.applyId,
     fetchImpl: opts.fetchImpl,
   });
   printText(chalk.dim(`Org: ${orgSlug}`));

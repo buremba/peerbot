@@ -1,0 +1,2 @@
+review these prs Lobu #2436 (https://github.com/lobu-ai/lobu/pull/2436) — backend snapshots; all currently reported CI checks pass.
+  - Owletto #684 (https://github.com/lobu-ai/owletto/pull/684) — Activity request/response display. are they legit, any backend gaps, ui issues, scalabillity problems etc?

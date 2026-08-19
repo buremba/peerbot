@@ -1,0 +1,199 @@
+<task-notification>
+<task-id>a8241ffc184aad51d</task-id>
+<tool-use-id>toolu_01QMq211UuyoGMuBGMsf11AK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/80a07b66-b51e-40f2-aa52-ff184f289026/tasks/a8241ffc184aad51d.output</output-file>
+<status>completed</status>
+<summary>Agent "Extract entity-type precedent" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything needed. Findings below.
+
+---
+
+# Findings
+
+## 1. The `$`-entity-type precedent
+
+### What seeding a system entity type actually requires
+
+There are **two** precedents and they are wildly different in size.
+
+**`$canvas` — the minimal one.** `/Users/burakemre/Code/lobu/packages/server/src/utils/canvas-events.ts:110-122`. That's it. **13 lines**, inline inside `ensureWatcherCanvasEntity`, no dedicated file:
+
+```
+INSERT INTO entity_types (slug, name, description, icon, organization_id, created_at, updated_at)
+VALUES ($canvas, 'Canvas', 'Per-Behavior canvas window', 'layout', ...)
+ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+DO UPDATE SET updated_at = entity_types.updated_at
+RETURNING id
+```
+
+No `metadata_schema`, no `event_kinds`, no view template, no json_template, no merge logic, no cache priming. The comment at canvas-events.ts:108-111 explains *why* it exists at all: it is a fallback-avoidance hack — canvases used to bind to `$member`, "exposing canvases through the member roster and its privacy policy."
+
+**`$member` — the maximal one.** `/Users/burakemre/Code/lobu/packages/server/src/utils/member-entity-type.ts`. The actual insert is member-entity-type.ts:242-267 and is structurally identical to the `$canvas` one (same `ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL`), plus `metadata_schema` and `event_kinds` JSON.
+
+### Boilerplate vs. $member-specific — the 386-line breakdown
+
+I read the whole file. Here is the honest split:
+
+| Lines | What | Copyable? |
+|---|---|---|
+| 1-24 | imports + `MemberSchemaProperty`/`MemberMetadataSchema` local types | ~20 lines, trivially copyable |
+| 26-83 | `DEFAULT_MEMBER_EVENT_KINDS` (12 kinds incl. the `guidance` built-in) | **$member-specific.** The `guidance` kind (76-83) is org-wide prompt context. A skill type wants maybe 1-2 kinds. |
+| 85-132 | `DEFAULT_MEMBER_METADATA_SCHEMA` | **$member-specific** (email/image_url/role/status/push_name/last_seen_at). You'd write your own ~20 lines. |
+| 134-147 | `arraysEqual`, `mergeEnumValues` | generic, ~14 lines |
+| 149-228 | `mergeMemberMetadataSchema` — 80 lines of `x-email`/`x-image` field-discovery, enum merging, `delete properties.user_id` legacy cleanup | **100% $member-specific.** This exists solely because `$member`'s schema is user-editable *and* has semantically-load-bearing fields (which column is the email? which is the avatar?) that connectors depend on. A `$skill` type has no such coupling. |
+| 230-278 | `ensureSkillEntityType` insert path | **the real boilerplate, ~35 lines** |
+| 280-351 | the update path: schema merge + the 50-line `guidance` backfill comment (300-337) + guarded UPDATE + cache re-prime | **$member-specific.** All of this is the fallout of `guidance` becoming a mandatory built-in kind after orgs were already provisioned (issue #1913). A brand-new `$skill` type has no legacy orgs to backfill. |
+| 353-366 | `resolveMemberSchemaFieldsFromSchema` | **$member-specific** (x-email/x-image resolution for the roster UI) |
+| 368-386 | `memberMetadataSchemasEqual` | generic, ~19 lines |
+
+**Realistic estimate for `skill-entity-type.ts`: 90-140 lines.** Roughly: ~25 lines of metadata schema, ~15 of event kinds, ~40 for the ensure/insert, ~20 of comments. You would *not* copy the merge machinery (149-228), the guidance backfill (300-350), or `resolveMemberSchemaFieldsFromSchema`. Those ~220 lines are pure $member archaeology. If you skip idempotent schema-drift merging entirely (as `$canvas` does), you're at **~40 lines**.
+
+Note there is no `primeSkillEventKinds` equivalent to write — `primeMemberEventKinds` (member-entity-type.ts:273, 350) is a cache in `/Users/burakemre/Code/lobu/packages/server/src/utils/event-kind-validation.ts` that exists because `$member` event kinds are validated on every `save_content`. Check whether `$skill` needs that hot path at all; probably not.
+
+### **BLOCKER: the `$` prefix directly fights "user-visible and user-authorable"**
+
+This is the most important thing I found. `/Users/burakemre/Code/lobu/packages/core/src/reserved.ts:12-18`:
+
+```
+/**
+ * True when a type is platform-owned (hidden from rail, never pruned).
+ * Sole signal: slug starts with `$`.
+ */
+export function isSystemEntityType(et)  { return et.slug?.startsWith("$") }
+```
+
+The header comment at reserved.ts:7 is explicit: *"Users cannot create `$…` types. Hide + prune use the `$` prefix only."* Four independent consequences, all of which you'd have to fight:
+
+1. **Hidden from the entity-type rail AND the memory scope-bar Type dropdown.** `/Users/burakemre/Code/lobu/packages/owletto/src/components/memory/use-visible-entity-types.ts:20` filters `!isSystemEntityType(et)`. The docstring at lines 6-10 says this is "shared by the entity-type rail and the memory scope-bar Type dropdown so both show exactly the same list." So `/$owner/memory?type=%24skill` would work **only as a hand-typed / deep-linked URL** — `$skill` would never appear in the type picker or the rail. Users could not navigate to their skills.
+
+2. **Hidden from public pages entirely.** `/Users/burakemre/Code/lobu/packages/server/src/public-pages.ts:119-120, 143, 149, 1066` — system-slug types are stripped from published type lists, from children lists, and `notFound()`ed in path resolution.
+
+3. **Marked read-only in the UI.** `/Users/burakemre/Code/lobu/packages/owletto/src/app/$owner/entity-types/$slug.tsx:20` sets `isSystemManaged`. Also `manage_entity_schema.ts:128` stamps `is_system: slug.startsWith('$')` on every row it returns.
+
+4. **Users literally cannot create one.** `/Users/burakemre/Code/lobu/packages/core/src/reserved.ts:120-124` → `isReservedEntityTypeSlug` returns true for any `$…`, and `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_entity_schema.ts:434-440` throws a 422 `"Cannot create entity type with reserved slug '$skill'"`. Only server-side `ensure*` code paths can seed a `$` type (they bypass the tool and hit SQL directly).
+
+Empirically this matches: **`$member` is user-visible only because it has a bespoke `/$owner/members` page** (`/Users/burakemre/Code/lobu/packages/owletto/src/app/$owner/members/index.tsx`) and a `member-scope-gate.tsx` — i.e. it escapes the generic board via custom UI, exactly the thing you're trying to delete. **`$canvas` has zero UI and is intentionally invisible.** Neither is a precedent for "system-seeded AND generically browsable."
+
+**Recommendation:** if `$skill` must be user-visible and user-authorable, do not use a `$` prefix. Use `skill` (plain slug). It is *not* in `RESERVED_ENTITY_TYPE_SLUGS` (reserved.ts:98-114) nor `OWNER_ROUTE_SEGMENTS` (26-34), so it's legal today. You lose "never pruned" protection (see §2) and gain everything else. If you want both, you'd need to split `isSystemEntityType` into two predicates (`isHiddenFromUI` vs `isPruneProtected`) — that's a change across 6 call sites in 2 packages.
+
+---
+
+## 2. Can `lobu apply` manage entity ROWS?
+
+**No. Not remotely.** There is no row concept anywhere in the apply pipeline.
+
+The diff kind union is closed and enumerable — grep of `kind: "…"` in `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/diff.ts` yields exactly: `agent`, `auth-profile`, `connection`, `connector-definition`, `entity-type`, `feed`, `inference-provider`, `relationship-type`, `settings`, `watcher`. No `entity`. `DesiredState.memorySchema` (desired-state.ts:285-288) has only `entityTypes` and `relationshipTypes`.
+
+Rows are written **only** by `lobu memory seed`, and that path is *create-only, never update, never delete*: `/Users/burakemre/Code/lobu/packages/cli/src/commands/memory/_lib/seed-cmd.ts:374-390` sends `action: "create"` and swallows `"already exists"` as a no-op success (line 384-386). It never diffs, never updates an existing row, and has no delete branch at all.
+
+### What adding rows would take
+
+Files, in dependency order:
+
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/desired-state.ts` — add `DesiredEntity` interface next to `DesiredEntityType` (desired-state.ts:46-82) and an `entities: DesiredEntity[]` to `memorySchema` (line 285).
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/map-config.ts` (919 lines) — parse whatever new config surface declares rows.
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/diff.ts` — a `diffEntity()` mirroring `diffEntityType` (369-430) plus a matching block in `computeDiff` (~975-1000), plus widening the `DiffRow` union.
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/client.ts` — `listEntities()` (paginated!) + `upsertEntity()` + `deleteEntity()`, mirroring `upsertEntityType` (client.ts:632) / `deleteEntityType` (831).
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/apply-cmd.ts` — a fetch into the remote snapshot (~line 335-412), an execution block (~800-820 is the entity-type one), and a delete-dispatch entry (line 1172: `["entity-type", (id) =&gt; ctx.client.deleteEntityType(id)]`).
+- `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/render.ts:15, 28, 125` — three registry entries (label, plural, ordering).
+
+Ballpark: **500-900 lines across 6 files.** The mechanical part is fine. The hard part is the remote snapshot: entity *types* are a bounded list you can fetch in one call; entity *rows* are unbounded. `apply` would need to paginate every row of the type on every run just to compute a diff, and identity matching (slug? id? content-hash?) is an unsolved design question, not a port.
+
+### Prune would delete user-authored skills. Yes, really.
+
+`computeDiff({prune})` — `/Users/burakemre/Code/lobu/packages/cli/src/commands/_lib/apply/diff.ts:907-1000`. The model for entity types (diff.ts:986-999):
+
+&gt; anything remote-and-owned that is **not** in desired state → `verb: prune &amp;&amp; !isSystemEntityType(remoteEntity) ? "delete" : "drift"`
+
+Note the two escape hatches that exist *today* and why:
+- `ownsDefinition` (diff.ts:919-922) — never touch another org's public types.
+- `isSystemEntityType` (diff.ts:995) — **`$…` types are never pruned.** That is currently the *only* thing standing between prune and destruction of platform data.
+
+If you add rows to this loop with the same shape, then `lobu apply --prune` would **delete every skill a user wrote in the app that isn't declared in the repo config**, because from the diff's point of view a UI-authored row is indistinguishable from a row the operator deleted from config. That is a real data-loss path, not a hypothetical.
+
+Ironically this is an argument *for* the `$` prefix (prune-protection) and simultaneously the argument *against* it (invisibility) — the same predicate controls both, which is exactly the coupling flagged in §1.
+
+### Is there a drift-handling precedent that generalizes to rows?
+
+Yes, and it's genuinely good — but it does **not** generalize to rows. The pattern is at diff.ts:405-428, on `eventKinds` and `viewTemplate`:
+
+```
+name: "eventKinds",
+changed: (d, r) =&gt;
+  d.eventKinds !== undefined
+    ? !deepEqual(d.eventKinds, r.eventKinds)
+    : prune &amp;&amp; r.eventKinds !== undefined,
+```
+
+The comment (diff.ts:406-411) states the intent precisely: *"event_kinds can be authored out-of-band via manage_entity_schema (a connector feed, the UI, an agent), so a config that simply doesn't declare them must NOT wipe them. Declared: diff and set on change. Omitted + prune: a present remote set is a removal. Omitted + no prune: unmanaged, never churns."* Same three-state logic for `viewTemplate` at 422-428.
+
+This is **tri-state on a single named field of a known object**: declared / omitted-unmanaged / omitted-under-prune. It works because the *container* (the entity type) is always declared; only one of its fields is optional.
+
+Rows are a different problem — **set membership**, not field presence. There is no "the config didn't mention this field" for a row that simply exists remotely; the row either is or isn't in the desired set. To make rows safe you'd need something the codebase does not have today: a per-row provenance marker (e.g. `metadata.managed_by: 'config'`) so prune only deletes rows apply itself created. Nothing like that exists — I checked `seedDataEntity`'s payload (seed-cmd.ts:353-372) and it stamps no provenance.
+
+The nearest thing to a precedent is agents/watchers, which are **report-only, never delete**: diff.ts:963-971 emits `verb: "drift"` unconditionally for remote agents missing from desired state, and diffWatcher's docstring (diff.ts:461-462) says "Remote watchers without a desired model are reported as drift, never deleted." **That** — drift-report-only, no prune — is the pattern rows should copy.
+
+---
+
+## 3. The entity board: would it work for skill authoring?
+
+**No. This is a hard blocker for the "delete 1,400 lines of UI" win, and it's not close.**
+
+### The generic board is a kanban, not a document editor
+
+`/Users/burakemre/Code/lobu/packages/owletto/src/components/entities/entity-board-view.tsx:1-57`. It is a `@dnd-kit` drag-and-drop board keyed on a `resolveWorkflowField` (an enum metadata property) with an optional `resolveRankField` for ordering. `onUpdate(entityId, patch)` exists solely so dragging a card writes a new enum value. Cards render name + avatar + badges. There is no long-text affordance anywhere in its 520 lines.
+
+The table view (`entity-table-view.tsx`, 725 lines) is worse for this purpose — it references content only as a **count**: `entity.total_content` at lines 450 and 461, rendered as a column.
+
+### The detail pane cannot edit long text either — and cannot edit `content` at all
+
+`/Users/burakemre/Code/lobu/packages/owletto/src/components/memory/memory-entity-detail.tsx:55-65` delegates everything to `EntityTabsContent`. That form (`/Users/burakemre/Code/lobu/packages/owletto/src/components/entity-tabs/index.tsx:139-260`) has exactly three inputs:
+
+- Name — `&lt;Input&gt;` (index.tsx:145-149)
+- URL Slug — `&lt;Input&gt;` (index.tsx:154-161)
+- `&lt;DynamicSchemaForm&gt;` over `metadata_schema` (index.tsx:162-173)
+
+Plus a "Correction note" `&lt;Textarea rows={2}&gt;` (index.tsx:174-186) that appears only when metadata is dirty and is an audit note, not content.
+
+**There is no `content` field in this form at all.** The server supports it — `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_entity.ts:305-306, 463` accept and persist `args.content` — but the web `Entity` type never surfaces it. Grepping `/Users/burakemre/Code/lobu/packages/owletto/src/lib/api/entities.ts` for `content` returns only `total_content` (145, 369, 415), `content_count` (393, 401), `text_content` (429), `recent_content` (463) — all counts and derived read-only shapes. **The generic UI has no path to write `entities.content`.**
+
+### And `DynamicSchemaForm` has no textarea branch whatsoever
+
+`/Users/burakemre/Code/lobu/packages/owletto/src/components/dynamic-schema-form.tsx` — I read the full widget dispatch (lines ~215-360). The branches are: enum→`&lt;Select&gt;` (line ~228), boolean→`&lt;Checkbox&gt;` (249), number/integer→`&lt;Input type=number&gt;` (269), array-of-string→comma-separated `&lt;Input&gt;` (300), **default→single-line `&lt;Input type="text"&gt;` (line ~328-355)**.
+
+There is no `x-textarea`, no `maxLength`-based heuristic, no `format: 'markdown'` handling. A 200-line `SKILL.md` body pasted into a `metadata.instructions` string property would render as a **single-line text box** you'd have to scroll horizontally through. That is unusable and I'd call it a straight-up regression.
+
+For comparison, the thing you'd be deleting: `/Users/burakemre/Code/lobu/packages/owletto/src/components/agents/agent-skill-detail-form.tsx:33-45` gives you a real `&lt;Textarea rows={4}&gt;` for instructions. Modest, but strictly better than a single-line input.
+
+### The view-template escape hatch doesn't save you either
+
+The render-DSL registry — `/Users/burakemre/Code/lobu/packages/owletto/src/components/entities/renderer-registry.tsx:136-145` — exposes exactly four entity node types: `entity-avatar`, `entity-link`, `entity-table`, `entity-board` (plus `metric-series`). Grep for `markdown` across `components/entities/` returns **nothing**. `MarkdownText` exists (`/Users/burakemre/Code/lobu/packages/owletto/src/components/markdown-text.tsx`) and is used by the events tab (`entity-tabs/events-tab/event-card.tsx:1719, 1910-1914`) and the Behaviors JSON renderer (`watchers-tab/json-renderer.tsx:127-129, 224-228`, which has a nice `isMarkdownLike` heuristic) — but it is **read-only rendering**, and it is not wired into the entity renderer registry. So a custom `viewTemplate` for `$skill` cannot even *display* markdown today, let alone edit it.
+
+### Honest verdict on Q3
+
+The "delete ~1,400 lines" framing is misleading on two counts:
+
+1. The actual bespoke skills UI is **~821 lines**, not 1,400, by `wc -l` on the files named plus siblings: `agent-skills-index.tsx` 308, `agent-skill-context.tsx` 242, `skill-editor.tsx` 57, `skill-catalog.ts` 67 (+79 test), `skill-index-cards.ts` 25 (+20 test), `skill-route-key.ts` 13 (+10 test). Adding the files the task didn't list — `agent-skills-create.tsx` 183, `skill-config-editors.tsx` 111, `agent-skill-detail.tsx` 101, `agent-skills-route.tsx` 91, `agent-skill-detail-form.tsx` 65 — gets you to ~1,370. So the number is roughly right *if* you count the five unlisted files too.
+
+2. To make the generic board a non-downgrade you would have to *add*: a `content` field to the web Entity type + read path, a content editor in `entity-tabs/index.tsx`, a textarea/markdown branch in `dynamic-schema-form.tsx`, and probably a `markdown` node in `renderer-registry.tsx`. That is new generic UI work that partly offsets the deletion — though, to be fair, it's generic and benefits every entity type, which is a defensible trade the bespoke code doesn't offer.
+
+Also worth flagging as a scope issue: **skills are not entity rows today at all.** They live in `agent_settings.skills_config` JSON (`/Users/burakemre/Code/lobu/packages/server/src/lobu/stores/postgres-stores.ts:89, 174`) and are consumed there by the worker (`/Users/burakemre/Code/lobu/packages/agent-worker/src/runtime/session-runner.ts:681, 700-713` syncs them to a `.skills/` directory), by guardrails (`gateway/guardrails/output-scan.ts:75, 174, 217`), by the MCP proxy (`gateway/auth/mcp/proxy.ts:457`), the message consumer (`gateway/orchestration/message-consumer.ts:616`), the catalog (`catalog/installed.ts:135`), and built-in commands (`gateway/commands/built-in-commands.ts:72`). Moving skills to entity rows is a **data migration plus ~7 server-side consumer rewrites**, which is a much larger project than the UI deletion it's being justified by.
+
+---
+
+## Summary of blockers
+
+| # | Blocker | Evidence |
+|---|---|---|
+| 1 | `$` prefix hides the type from the rail **and** the type dropdown — users could never navigate to `$skill` | reserved.ts:16; use-visible-entity-types.ts:20 |
+| 2 | `$` prefix makes the type uncreatable/uneditable by users via the API | reserved.ts:120-124; manage_entity_schema.ts:434-440 |
+| 3 | `apply` has **no** row concept — 6 files, ~500-900 lines to add | diff.ts kind union; desired-state.ts:285 |
+| 4 | `apply --prune` would delete user-authored rows; the only prune guard today is the `$` prefix, which conflicts with blocker #1 | diff.ts:986-999 |
+| 5 | No row provenance marker exists, so safe prune is not implementable as-is | seed-cmd.ts:353-372 |
+| 6 | **Generic entity form cannot edit long markdown — every string is a single-line `&lt;Input&gt;`, and `entities.content` is not editable or even readable in the web UI at all** | dynamic-schema-form.tsx (default branch); entity-tabs/index.tsx:139-260; lib/api/entities.ts |
+| 7 | Skills live in `agent_settings.skills_config` JSON with ~7 server consumers — moving them to entity rows is a migration, not a refactor | postgres-stores.ts:89,174; session-runner.ts:700 |
+
+Blockers 1, 2 and 6 are the ones I'd resolve before committing to this design. #6 in particular is load-bearing exactly as you suspected, and the code does not support the optimistic reading.</result>
+<usage><subagent_tokens>70313</subagent_tokens><tool_uses>52</tool_uses><duration_ms>227307</duration_ms></usage>
+</task-notification>

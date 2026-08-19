@@ -1,0 +1,19 @@
+Final go/no-go review. You reviewed two earlier revisions of this design and found real errors both times; this is revision 4, after spikes. Verify against code; do not trust my summary.
+
+SETTLED APPROACH (sequence):
+1. Gate $links. Protected relationship types (member_of|can_read|deny_read) enforced in the relationship WRITE PATH behind an internal capability only audited compilers hold. Spike found entity-mutation-gate.ts guards only 'update' and never mentions 'link'; approval branches in manage_entity.ts (346,597,781,1397) all sit outside the link handler (1463-1571). validateTypeRule permits any pair when no rules are seeded; ACL read trusts any live member_of.
+2. relationship-store.ts — one claim-aware primitive. Migrate ALL 14 mutation statements across 7 files: access-graph.ts(2), channel-about.ts(3), github-team-graph.ts(1), manage_entity.ts(3), auto-linker.ts(1), entity-management.ts(1), entity-merge.ts(3). Preserve deliberate per-caller policies (ignore / reaffirm / error) as named options rather than collapsing them. Migrate incrementally, not in one sweep.
+3. assertion_key column; move live uniqueness from (from,to,type) to (organization_id, assertion_key). Spike verified: ACL read is EXISTS(...) so duplicate rows are read-safe, and 0 of 23 read sites do single-row-per-triple lookups. But 3 writers use ON CONFLICT (from,to,type) and MUST be rewritten or they fail at runtime. Backfill legacy:<id>.
+4. Connector domain-edge rules evaluated in insertEvent afterPersist, with stable rule keys + endpoint roles; PLUS a separate feedless connection-level directory lane for principal|membership|identity (no-feed connectors throw if polled).
+5. Locked authz program proceeds separately. Also: docs/plans/authz-acl-permission-program.md §5 claims member_left_channel is 'already-subscribed' but SLACK_BOT_EVENTS in packages/connectors/src/slack.ts has member_joined_channel and ZERO member_left_channel.
+
+OUT OF SCOPE: separate claims table (only if the index proves immovable); post-gate field masking (replaced by finance-only facet events); recursive traversal for agents (agent SQL tool rejects WITH RECURSIVE — separate query-surface gap).
+
+QUESTIONS
+A. Go or no-go? If no-go, what specifically breaks?
+B. Is the sequence right, especially doing $links gating BEFORE the store exists? Is a 50-line targeted gate safe, or does it need the store first to be correct?
+C. assertion_key: any remaining correctness hazard we have not covered? Consider entity-merge repointing, hard DELETE in entity-management.ts:1027, and backfill/rollout ordering on a live table.
+D. Anything in the incremental-migration plan that risks a regression given the 7 writers' deliberate behavioral differences?
+E. Is there a materially simpler design that covers the same 12 use cases? If yes, describe it; if no, say so plainly.
+
+Be blunt and concrete. file:line. If it is good, say so without hedging.

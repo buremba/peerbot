@@ -1,0 +1,221 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+**Overarching (inherited, still the destination):** A gap analysis — explicitly **NOT a migration** — of whether **Prodma**, a Turkish manufacturing ERP (.NET 4.6.1, WinForms/DevExpress, SQL Server, EF EDMX, 422 tables / 453 screens / 503 DbSets, source at `/Users/burakemre/Downloads/emre_project`), could be rebuilt on **Lobu**. Purpose: "to see where lobu lacks." Audience is Prodma's owner, a domain expert.
+
+**Intents this session, in order:**
+1. Resolve the ambiguous "i authorize"; drive PR #2788 (ACL failure observability) to merge-ready.
+2. Explain whether `--context` can be passed to lobu CLI commands despite a stale active context.
+3. Report next steps, remaining work, and lines added/deleted.
+4. Finish #2788 through the gates ("a"); for held work ("b") launch **interactive** codex agents in `herdr` so they can review, give confidence, and interview the user.
+5. Move the three panes into separate windows **without killing running processes**.
+6. Explain why agent #11 is needed; create a **private repo under the lobu-ai GitHub org** with the project files, to also be **synced to a prod org for demonstration**.
+7. Name the prod org `prodma-erp`, create it, let `lobu apply` guide the process.
+8. Identify which agent is implementing transition hooks; address the "2 months of work" estimate that alarmed the user.
+9. Pause agent #11 and verify whether its work already shipped — "but we need to make sure we fill the gaps."
+
+## 2. Key Technical Concepts
+
+- **`connections.updated_at` is a cache-invalidation key**, not bookkeeping. `ChatInstanceManager` stores it as `ManagedInstance.rowVersion` (`chat-instance-manager.ts:309`, `:359`, `:774`) and re-hydrates chat adapters when the stored row is newer. Any recurring writer must no-op when nothing changed, or it thrashes live Slack instances.
+- **READ COMMITTED + EvalPlanQual subtlety:** when an UPDATE blocks on a row lock and the blocker commits, Postgres re-checks the target tuple but subqueries still evaluate against the **original snapshot**. This is why `clearConnectionAclError`'s `EXISTS(... = 'fresh')` could erase a newly committed failure.
+- **`current_timestamp` = transaction start; `clock_timestamp()` = statement time.**
+- **ACL freshness fence:** `markAclFresh` guards with `WHERE authz_source_acl_state.updated_at < ${syncStartedAt}::timestamptz`. The ACL-state timestamp MUST advance on every failure or an older in-flight sync can re-open the gate (fail-open).
+- **Lock ordering:** both ACL writers must take `connections` before `authz_source_acl_state`, matching deletion order, to avoid deadlock.
+- **lobu CLI `--context` coverage:** accepted by `call`, `status`, `whoami`, `chat`, `token`, `link`, `login`/`logout`. NOT accepted by `apply`, `agent`, `memory`, `connector`, `org` — including subcommands (`agent list`, `memory run`, `org show`, `connector run` all zero). `lobu link` binds a directory to a (context, org) pair in `.lobu/project.json` and is the durable fix.
+- **Global `lobu` on PATH (`~/.bun/bin`) was 13.4.0 vs project pin 14.22.0.** The old CLI sends `installedProviders`, which prod rejects. Dry-run plans DIFFER between versions (48 create/0 update vs 46/1/1), so a plan from the wrong CLI is not evidence.
+- **`lobu org create <slug>` creates nothing server-side** — it only opens `https://app.lobu.ai/orgs/new?slug=…&name=…` for a human. It passes `name=<slug>`, so pass the display name yourself.
+- **`lobu apply` needs `--yes`** when stdin is not a TTY.
+- **`client.entitySchema.listTypes()`** (NOT `client.entityTypes`) lists types, takes NO `scope` arg, and returns org types PLUS public schemas — filter on `organization_id`.
+- **Prod deploy scales the app to 0/0 to run migrations** — every migration causes a downtime window.
+- **Deployed prod SHA** resolves via image tag `YYYYMMDD-HHMMSS-NNNNNN` where NNNNNN is the "Build and Push Images" workflow run number.
+- **vitest excludes** `src/gateway/**/__tests__`, `src/lobu/__tests__`, `src/workspace/**/__tests__`, `src/tools/admin/__tests__`, etc. `src/tools/__tests__/` is NOT excluded (it is a vitest suite).
+- **`format:check`** runs `biome format --config-path config/biome.config.json .` — `access-graph.ts` is in biome's ignore list.
+- **Depot org-wide cancel is FIXED** (#2707): `group: ci-${{ github.ref || github.run_id }}`. Concurrent gates are safe.
+- **herdr** terminal workspace manager: `herdr agent start <name> --cwd PATH --no-focus -- codex "prompt"`, `herdr pane move <id> --new-workspace --label X`, `herdr pane read <id> --lines N`. `pane move` preserves `terminal_id` (proof no restart).
+
+## 3. Files and Code Sections
+
+**`packages/server/src/authz/acl-observability.ts`** (PR #2788) — final form of `markConnectionAclFailed`:
+```ts
+export async function markConnectionAclFailed(
+	organizationId: string,
+	connectionId: string,
+	reason: string,
+): Promise<void> {
+	const sql = getDb();
+	const message = formatAclErrorMessage(reason);
+	await sql.begin(async (tx) => {
+		// Lock the live connection row FIRST and UNCONDITIONALLY. Two reasons:
+		// (1) lock order is connections → ACL state, matching connection deletion
+		// and fresh-state stamping, so a failing sync cannot deadlock against a
+		// concurrent delete; (2) the message UPDATE below is conditional, so a
+		// repeated identical failure would take no row lock at all and could
+		// interleave with `clearConnectionAclError`.
+		await tx`
+      SELECT 1
+      FROM connections
+      WHERE organization_id = ${organizationId}
+        AND deleted_at IS NULL
+        AND ${tx.unsafe(aclConnectionIdSql())} = ${connectionId}
+      FOR UPDATE
+    `;
+		await tx`
+      UPDATE connections
+      SET error_message = ${message}, updated_at = current_timestamp
+      WHERE organization_id = ${organizationId}
+        AND deleted_at IS NULL
+        AND ${tx.unsafe(aclConnectionIdSql())} = ${connectionId}
+        AND (
+          error_message IS NULL
+          OR left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
+        )
+        AND error_message IS DISTINCT FROM ${message}
+    `;
+		await tx`
+      UPDATE authz_source_acl_state
+      SET freshness_state = 'failed', updated_at = clock_timestamp()
+      WHERE organization_id = ${organizationId}
+        AND connection_id = ${connectionId}
+    `;
+	});
+}
+```
+and `clearConnectionAclError` (now a transaction with a leading lock + a fresh-state EXISTS guard).
+
+**`packages/server/src/authz/access-graph.ts`** — `markAclFresh` wrapped in `sql.begin` with a `SELECT c.deleted_at FROM connections c … FOR UPDATE` and `if (connections.length > 0 && connections.every((row) => row.deleted_at != null)) return;`. Final diff reduced from 695 changed lines to **21** after reverting the whitespace churn.
+
+**`packages/server/src/__tests__/integration/authz/acl-observability.test.ts`** — 11 tests. Key new ones: `leaves connections.updated_at untouched when the same failure repeats` (uses `const SENTINEL = '2001-01-01T00:00:00.000Z'` backdating) and `does not erase a failure that commits while a clear is already waiting` (promise barriers, `sql.begin` holding `FOR UPDATE`).
+
+**`db/migrations/20260816000000_acl_state_orphan_cleanup.sql`** — DELETE-only, no schema change. This caused the prod downtime window.
+
+**`/Users/burakemre/Code/prodma-demo/lobu.config.ts`** — added:
+```ts
+export default defineConfig({
+  // Pin the target org explicitly. `lobu apply` takes no --context flag and
+  // otherwise resolves the org ambiently, so a stale active context could
+  // apply this schema to the wrong runtime.
+  org: "prodma-erp",
+  orgName: "Prodma ERP",
+  agents: [agent],
+  entities: [ ... 14 types ... ],
+  relationships: [ ... 32 types ... ],
+});
+```
+
+**Memory files written/updated:**
+- NEW `reference_connections_updated_at_is_a_chat_instance_memo_key.md`
+- NEW `reference_lobu_cli_context_flag_coverage.md`
+- NEW `reference_global_lobu_cli_is_stale_use_project_local.md`
+- NEW `project_prodma_demo_repo_and_prod_org.md`
+- UPDATED `project_acl_failure_observability.md` (round-1/2 blockers + MERGED 078be4c03)
+- UPDATED `reference_github_connector_oauth_callback_was_unregistered.md` (profile attach was the second half of the fix)
+- UPDATED `feedback_mutation_test_new_tests.md` (two failure modes: mutation didn't apply; margin too thin)
+- UPDATED `MEMORY.md` index (4 new lines)
+
+**`/tmp` deliverables:** `lobu-brief-1-prodma-form.md`, `lobu-brief-3-connector-edges.md` (header rewritten to UNBLOCKED), `lobu-brief-4-prod-followups.md` (NEW), `lobu-brief-5-prodma-gap-analysis.md` (NEW), `connector-edges-proposal.md` (58KB, agent #12), `prodma-lobu-ranked-gap-register.md` (36KB, agent #14), `funnel-audit-report.md`.
+
+## 4. Errors and Fixes
+
+- **Round-1 blocker (real):** `connections.updated_at` rewritten on every repeat ACL failure → Slack adapter thrash. Fixed with `IS DISTINCT FROM` guards.
+- **My fail-open regression:** I added `AND freshness_state IS DISTINCT FROM 'failed'` on the ACL-state update. review-fix removed it correctly — the fence must advance on every failure. I was wrong; review-fix was right.
+- **Round-2 blocker (real):** clear/failure race under READ COMMITTED. Fixed with unconditional `SELECT … FOR UPDATE` first in both writers.
+- **My whitespace misjudgment:** I kept a 695-line `access-graph.ts` reformat, claiming reverting would redden format-lint. Wrong — I had run `biome check` without `--config-path config/biome.config.json`. With the real config `bun run format:check` exits 0 both ways. Reverted to 21 lines.
+- **Mutation test with a 1ms margin** — would falsely pass on a same-millisecond collision. Rewrote with a fixed sentinel so it fails by 25 years.
+- **zsh word-splitting** in a mutation loop (`set -- $m` doesn't split in zsh) → empty args. Caught by my own `assert` guard; redone with explicit calls.
+- **32 test "failures"** that were actually `DATABASE_URL is required` from running vitest outside `packages/server`.
+- **`bun test` on `src/tools/__tests__/search-managed-recall-and-acl.test.ts`** — that dir is NOT in vitest's exclude list, so it's a vitest suite. Re-ran under vitest: 2/2.
+- **False "tsc CLEAN"** printed by `&&` after a piped `tail` with a wrong `-p` path. Redone with explicit exit code.
+- **Stray `packages/search` file** created by a `cp` typo — deleted immediately.
+- **False "clean" leak check** — zsh glob ate the `?` in a `gh api` URL so the call never ran. Redone with quoting.
+- **`no available server` on `lobu apply`** — prod app at 0/0 replicas during my migration. Recovered.
+- **`installedProviders` rejection** — global CLI 13.4.0 vs project 14.22.0. Fixed with `./node_modules/.bin/lobu`.
+- **Misattributed the context switch** to an agent; more likely `lobu run` (which auto-selects a local context) from a `~/Code/prodma-demo` process up 1d18h.
+
+## 5. Problem Solving
+
+- **PR #2788 merged** after 3 review rounds: squash `078be4c03`, 12 files, +930/−56. Verified all 10 required contexts individually against branch protection (`gh pr checks` omits unreported contexts — `ui-review` was exactly that case).
+- **Deploy verified:** image run 2150 → deployed SHA `078be4c03`, `git merge-base --is-ancestor` passed on the squash SHA.
+- **Prod recovered** to 2/2 replicas, health 200, after the migration-induced downtime.
+- **GitHub connection 385 fully recovered:** 1271 consecutive failures → 0, `error_message` null, `unhealthy_alerted_at` self-cleared.
+- **Repo `lobu-ai/prodma-demo` created** (private, 24 files, 432KB), secret-scanned, verified against the GitHub API tree.
+- **Org `prodma-erp` created and applied**: 14/14 entity types (`missing: []`), 32 relationship types, agent `prodma-demo`, org id `REDACTED`.
+- **Gap register delivered** — verdict: "not yet a credible replacement for a manufacturing ERP of record"; Gap 2 (write funnel, 22 bypass sites / 9 categories + 4 hard-delete sites) blocks Gap 3 (transitions/numbering/period close). It also flagged **8 stale/contradicted memory facts of mine**, including "numbering allocates on create" (numbering is absent) and "a transition-freeze hook exists as a shipped feature" (only the approval interceptor exists).
+- **"2 months" estimate has no basis in the deliverable** — I grepped the register; there is no effort/timeline estimate anywhere. It came from chat only.
+
+## 6. All User Messages
+
+- "even though active context is different, some can pass --context to oeprate right"
+- "ok what's the next steps for us" (earlier variant: "ok what's the next steps, tell me remainng work, progress lines of deleted/added")
+- "a for b you can create new codex agents in herdr but interactive mode so it can review give confidence interview me for next steps."
+- "also chage d"
+- "there is three panes in a single window, could they be seperate windows but don't kill running things"
+- "oh 3 is a bug? we ideally want to finish this session, ditpcash parallel rmeaninig work, but don't want to lose context. finish the work confirm it works, launch seperate agents to manage it proeprly so can continue. take your time but make sure we're not missing anything"
+- "ok what's the next steps for us"
+- "ok go ahead"
+- "1 explain 11 why do we need it. i want you to create a repo under lobu-ai github org private and put the files there for our project. it will also be synced to a prod org for demostration"
+- "prodma-erp can be good name in prod, we can create a new one, lobu apply leads us right"
+- "which agent is working on the hoooks for transitions etc to be implemented, a codex agent said we're not erp ready"
+- "should that agent work on it, or should this be a seperate agent? that agent scared me saying that's 2 months of work"
+- "a but we need to make sure we fill the gaps"
+
+**Security-relevant constraints still in effect (verbatim from CLAUDE.md / AGENTS.md / the lobu skill):**
+- "**Never write to `~/Code/lobu` directly.** Run `make task-setup NAME=<slug>` first, and never `git switch` in the main checkout — other sessions share it."
+- "**Stage by explicit path** (`git add -- <paths>`, never `-A`). A commit is a snapshot, so a stale file copy left by earlier work in the same worktree silently reverts merged PRs."
+- "**`events` is append-only.** Never `DELETE FROM events`; tombstone or supersede instead."
+- "**Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are usually real signups. Surface them one at a time for confirmation."
+- "**Never resolve merge conflicts in the GitHub web UI** — it has silently dropped 1000+ lines of feature work."
+- "**Two writing agents must never share a worktree** — they overwrite each other's uncommitted work."
+- "**Never add a table or change DB design, API surface, or SDK surface** without surfacing the proposal and receiving confirmation first."
+- "**Never auto-submit an interactive browser draft, in any package.**"
+- "**Workers never receive real credentials** — placeholders or proxied access only."
+- "**Request paths never aggregate history.**"
+- "Do NOT include 'Co-Authored-By' or any Claude attribution in commit messages" / no "Generated with Claude Code" line.
+- "**Absence needs `origin/main`:** `git fetch -q origin && git grep <pattern> origin/main`."
+- "Prefer `bun`, never npm/yarn/pnpm." (enforced by a PreToolUse hook that blocks npm)
+- "One branch = one concern. Never `git stash`; use WIP commits."
+- "never `--admin` past a check that has not reported."
+- "Do not call the AgentTool unless the user requested it" / "Do not use workflows or deep-research unless the user requested it."
+- From the lobu skill: "Never open or request permission to read `.env`"; "Never read, print, invent, or paste a real secret into source or chat."
+- "When I push back on an approach or call a finding a false positive, STOP and re-investigate the real root cause — do not start wiring a workaround."
+- **Prohibited regardless of user authorization:** modifying system or security settings (this correctly blocked editing GitHub OAuth redirect URIs); creating accounts.
+
+## 7. Pending Tasks
+
+- **Stop agent #11 (`brief1-prodma-form`)** — verification is complete and proves it is redundant/harmful.
+- **Ensure the gaps still get filled** (user's explicit qualifier on choosing (a)).
+- **User must answer the boundary question:** Lobu workspace around Prodma vs ERP of record. This re-ranks the whole gap register.
+- Agent #15 (`brief4-prod-followups`) is working and was waiting on user input; now unblocked on `github-acl-sync.ts` since #2788 merged.
+- Agent #12 (`brief3-connector-edges`) is idle with 4 design decisions queued for the user.
+- Agent #14 (`brief5-prodma-gap`) is idle, register delivered.
+- Housekeeping: `kill 80234` (a `make dev` in `responsive-shell` worktree running 1d4h); `lobu link` the active worktrees.
+
+## 8. Current Work
+
+Immediately before this summary, I was executing the user's choice of **(a) pause #11 and verify whether its work already shipped**, qualified by "but we need to make sure we fill the gaps."
+
+I completed the verification decisively:
+
+1. Pinned Owletto SHA on `origin/main` is `027a76de0ad8372257a532a495adc105b96a4839`.
+2. `git merge-base --is-ancestor 87191912 027a76de0` → **NO**, prodma-form is not in the pin.
+3. BUT `3b657a76` — subject **"feat(entity-form): generic line-item grid, linked-entity picker, date controls (#844)"**, identical to `87191912`'s subject — **IS IN PIN**, as is `c34837ad` (#845 fixes).
+4. File-level comparison confirmed they are the same work: both touch the same 6 files; `dynamic-schema-form.tsx` is 724 lines changed in `87191912` vs 769 in `3b657a76`.
+5. `git diff --stat 87191912 027a76de0 -- src/components/dynamic-schema-form.tsx` → **208 insertions / 97 deletions**, meaning the pin has diverged *beyond* the branch. **Landing `87191912` would revert merged fixes.**
+6. Agent #11's worktree (`/Users/burakemre/Code/lobu/.claude/worktrees/prodma-form`, branch `feat/prodma-form`) contains only: `M packages/owletto` (pointer `2dc397f29` → `3523867d6`) and untracked `_spike/` holding `BRIEF.md` and `REPORT-form.md`. No substantive work would be lost.
+
+Conclusion reached but **not yet communicated to the user and agent #11 not yet stopped**: brief 1 was written on stale information — it even listed #844/#845 as "related already-merged work" without recognising they ARE the same work.
+
+## 9. Optional Next Step
+
+Stop agent #11 and report the finding, then address the "fill the gaps" qualifier.
+
+The user's most recent request was: **"a but we need to make sure we fill the gaps"** — where (a) was my offer to *"pause #11 and verify whether its work already shipped"*.
+
+Concretely:
+1. Close agent #11's pane (`herdr pane close wF7:p1`) and note its `_spike/BRIEF.md` / `_spike/REPORT-form.md` are worth reading before discarding the worktree.
+2. Report that the prodma-form UI gap is **already closed in the pin** via owletto#844 + #845, so it should be struck from the gap list — and that landing `87191912` would have reverted 208 lines of merged fixes.
+3. Address "make sure we fill the gaps" by proposing the sequencing I already recommended and the user has not yet answered: *"You answer the boundary question. Workspace-around-Prodma vs ERP-of-record. One sentence, and it re-ranks the whole register."* then a read-only design agent for the persistence seam, then implementation — explicitly not launching a 22-site funnel implementation before that decision.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

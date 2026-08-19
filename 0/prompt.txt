@@ -1,0 +1,1 @@
+ok good. when there is no activity, i like the backplaceholder stuff but add connector dialog there looks weird. instead can we make opacity 0.5 for the back and put the add connectors, create managed agent, and copy prompt to bring your agent buttons above?

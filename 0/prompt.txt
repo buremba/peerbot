@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>a38242ad048193a92</task-id>
+<tool-use-id>toolu_017aebUS6DawPdwTaCeVhdoG</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/a38242ad048193a92.output</output-file>
+<status>failed</status>
+<summary>Agent "Proxy-only egress for spawned binaries #2244" failed: Agent terminated early due to an API error: API Error: 400 output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+</task-notification>

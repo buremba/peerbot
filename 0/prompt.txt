@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bty070jzf</task-id>
+<tool-use-id>toolu_01VqvvmNTtwYYNW4EztxvN1o</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/bty070jzf.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on PR 2382" completed (exit code 0)</summary>
+</task-notification>

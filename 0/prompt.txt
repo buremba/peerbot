@@ -1,0 +1,1 @@
+so now why conversation needs client id? isn't the convresation for the managed agents? we don't see the thinking blocks etc for chatgpt

@@ -10,82 +10,52 @@ Connector-operation approvals arrived in Slack as bare text:
 Never *which* operation, on *which* connection, with *what* input — so the
 decision could not be made from the notification.
 
-## Why not render `json_template` in chat
+## One pipeline: kind -> json_template -> card
 
-The obvious fix is "chat should render the same `json_template` the web app and
-MCP apps render". It was the first plan here, and it is wrong.
+Every notification that names a `semanticType` now resolves an event kind the
+normal way (`resolveEventKindDefinition`) and renders its `json_template` in
+chat through the same walker the web and MCP surfaces use. When a kind declares
+no template, `resolveEntityRender` synthesizes the default field table from the
+kind's `metadataSchema` — again the same path the other surfaces take — so the
+three surfaces cannot drift apart by construction.
 
-`validate-json-template.ts:11-16` refuses to allowlist component types:
+The template semantics live in **`@lobu/core/json-template`**: `walkTemplate`
+owns path resolution, `if` truthiness, `each` scoping, the `{{path}}` /
+`"a/{{b}}"` binding forms, and `formatValue` (currency/date/url/enum/boolean/
+number formatting) so the formatting of a bound scalar agrees everywhere. The
+server's `validate-json-template` imports the same directive set rather than
+keeping its own copy.
 
-> The renderer's component set is extended app-side (entity-board,
-> entity-table, charts, …) which the server can't know.
+`notifications/template-card.ts` is only a *visitor* over that tree: it decides
+how a node becomes Slack/Teams/GChat content. The structural nodes are shared;
+the component vocabulary stays open (the server validates, not allowlists,
+component types), and chat maps the components it has an equivalent for —
+buttons, link buttons, selects, images, fields, tables, dividers, text-ish
+leaves — to Block Kit. A component chat cannot draw (`entity-board`, charts) is
+collected as `unsupported` and the card links out to the full record instead of
+silently showing a subset. The same rule covers template-declared controls: a
+button whose action nothing in the interaction bridge routes is dropped with a
+note rather than drawn dead.
 
-Only `text` / `data` / `if` / `each` are structural; the rest is an open,
-app-side React vocabulary that has no Block Kit equivalent. A chat-side walker
-would be a second renderer that can never be faithful, drifts every time the DSL
-grows, and that no visual test covers. A prototype hit three sharp edges within
-an hour: `each` nested in a table lost its item scope, Slack's 10-field section
-cap silently produced undeliverable messages, and long values needed clamping.
+## Platform event kinds
 
-## What chat reads instead
+`utils/platform-event-kinds.ts` declares the kinds the platform emits, consulted
+as the **last** resort in `resolveEventKindDefinition` so an org that declares
+the same slug still wins. Each kind declares a `metadataSchema` (and, where the
+interesting content is a list, a hand-authored `jsonTemplate`):
 
-The kind's `metadataSchema` — a closed shape of properties plus annotations.
-This is also the common case: `jsonTemplate` is optional and, per its own doc,
-"when absent, rendering falls back to a default synthesized from
-`metadataSchema`". A kind that DOES author a template usually did so to get a
-component chat cannot show, which is exactly when guessing is worse than
-linking out.
-
-One rule covers everything chat cannot show — an authored template, fields past
-the platform cap, an over-long value: **show what fits and link to the event.**
-
-## What was built
-
-- **`@lobu/core/json-template`** — `formatValue` and the `VALUE_FORMATS`
-  directive set (the server's `validate-json-template` now imports it instead
-  of keeping its own copy). Owletto has an identical copy at
-  `src/lib/json-renderer/format-value.ts`; a follow-up PR in that repo deletes
-  it and imports this (plus the vite alias a new core subpath needs), so scalar
-  formatting is one implementation for all three surfaces.
-- **`orderedSchemaFields`** — extracted from `buildDefaultEntityTemplate` and
-  exported. Ordering (`x-table-column`), hiding (`x-hidden`) and labelling
-  (`x-table-label` / `title`) are now shared by the web default template and the
-  chat card, so they agree by construction rather than by convention.
-- **`notifications/template-card.ts`** — `buildKindCard`: schema fields →
-  `Fields`, Slack-escaped, capped at 10 fields and one shared 1900-char
-  label+value budget per field, plus an Actions row: Approve/Reject when the
-  notification names a `decisionRunId`, and an "Open in Lobu" / "Review in
-  Lobu" `LinkButton`. Declines (returns null → markdown body) when the kind
-  authored a `jsonTemplate` or the schema has no usable fields.
-- **`utils/platform-event-kinds.ts`** — kinds the platform emits, consulted as
-  the LAST resort in `resolveEventKindDefinition` so an org declaring the same
-  slug still wins. Holds `connector_operation_approval` (operation, connection,
-  input) as a `metadataSchema` only.
-- **Wiring** — `service.ts` builds the card from the kind when the caller passed
-  no explicit `card`; `triggers.ts` gives connector-operation approvals that
-  semantic type + payload + `decisionRunId`, keyed on the explicit `operation`
-  argument (builder runs such as `manage_automations` also arrive without
-  `details` but are not chat-decidable, so absence of `details` is not the
-  signal); `execute.ts` passes the operation name and input.
+- `connector_operation_approval` — operation, connection, input; schema-only.
+- `entity_change_approval` — the proposed fields / before-after diffs; authors a
+  `jsonTemplate` because a list is what `each` exists for.
+- `connection_authorization_needed`, `browser_session_expired`,
+  `invitation_received` — a handful of scalars, schema-only.
 
 Because the kind is resolved the normal way, the Memory view and MCP apps pick
-up the same approval rendering with no extra work.
-
-## Does the approval use `json_template`?
-
-Not in chat. The two surfaces build the same content two different ways:
-
-- **web / MCP** — the kind declares no `jsonTemplate`, so `resolveEntityRender`
-  synthesizes one from `metadataSchema` and the event ships as
-  `payload_type: 'json_template'`.
-- **chat** — `buildKindCard` reads `metadataSchema` straight into `Fields`; no
-  template is ever constructed.
-
-They agree because both go through `orderedSchemaFields` and format values with
-the shared `formatValue`, not by coincidence — `template-card.test.ts` pins it.
-
-The deliberate divergence: if a kind DOES author a `jsonTemplate`, web renders
-that design and chat declines to markdown + link.
+up the same rendering with no extra work. `triggers.ts` stamps the semantic
+type, payload, and (for the two approval families) `decisionRunId`; connector
+operations are keyed on the explicit `operation` argument, not on the absence
+of `details` (builder runs such as `manage_automations` also arrive without
+`details` but are not chat-decidable).
 
 ## Slack output
 

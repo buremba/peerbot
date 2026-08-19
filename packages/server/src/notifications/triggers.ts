@@ -9,10 +9,10 @@ import {
 	ENTITY_CHANGE_APPROVAL_KIND,
 	INVITATION_RECEIVED_KIND,
 } from "../utils/platform-event-kinds";
+import { escapeSlackText } from "../utils/slack-text";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
-import { escapeSlackText } from "../utils/slack-text";
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */
 type OrgNotification = Omit<
@@ -562,25 +562,6 @@ export async function notifyActionApprovalNeeded(params: {
 			type: "action_approval_needed",
 			title: formatActionApprovalTitle(params.actionKey, params.details),
 			body: formatActionApprovalBody(params),
-			// An entity change renders through its kind (below), so the hand-built
-			// card is skipped for it — passing both would win the `card` branch in
-			// the notification service and the kind would never be consulted.
-			...(entityChange
-				? {}
-				: {
-			card: buildActionApprovalCard({
-				runId: params.runId,
-				approvalUrl: params.approvalUrl,
-				details: params.details,
-				// approvalUrl deliberately omitted from the summary: the card already
-				// carries it as the link button, and the body's "Review: …" line next
-				// to an identical button reads as a rendering bug.
-				summary: formatActionApprovalBody({
-					connectionName: params.connectionName,
-					details: params.details,
-				}),
-			}),
-					}),
 			// Both approval families render through a platform event kind, so the
 			// chat post, the Memory view and MCP apps all show the SAME table from
 			// one declaration instead of each surface formatting the payload again.

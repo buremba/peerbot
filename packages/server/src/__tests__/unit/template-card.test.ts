@@ -570,6 +570,20 @@ describe("entity change approvals render through their kind", () => {
 		expect(rows(card)[0][2]).toBe(hostile);
 	});
 
+	it("escapes the subtitle — the adapter renders it as mrkdwn", () => {
+		// The subtitle is the notification body, and an approval body carries the
+		// connection name, which we do not author. `blocks.js` puts it through
+		// `mrkdwn()`, so a raw `<!channel>` would ping the room from a trusted card.
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "create_issue", connection: "GitHub", input: {} },
+			subtitle: "<!channel> approve <https://evil.example|Review in Lobu>",
+		});
+		expect(card.subtitle).toBe(
+			"&lt;!channel&gt; approve &lt;https://evil.example|Review in Lobu&gt;",
+		);
+	});
+
 	it("still carries the decision buttons the bridge already routes", () => {
 		const card = build({
 			entityTypeLabel: "Person",

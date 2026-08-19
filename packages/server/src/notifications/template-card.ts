@@ -4,9 +4,9 @@
  * ONE PIPELINE: kind -> json_template -> card. `resolveEntityRender` already
  * yields a template for every kind — the authored `json_template` when there is
  * one, otherwise the default synthesized from `metadataSchema` — so chat reads
- * the same tree the web and MCP surfaces render. Nothing here looks at
- * `metadataSchema`; deriving a second layout from it is what made chat and web
- * disagree by construction.
+ * the same tree the web and MCP surfaces render. Nothing here derives a second
+ * layout from `metadataSchema`; doing so is what made chat and web disagree by
+ * construction.
  *
  * `walkTemplate` (in `@lobu/core/json-template`) owns every structural decision
  * — path resolution, `if` truthiness, `each` scoping, the string shorthand — so
@@ -62,7 +62,6 @@ const MAX_CELL_CHARS = 400;
 /** Slack paginates a native table; show the whole record rather than page 1. */
 const TABLE_PAGE_SIZE = 100;
 const MAX_TEXT_CHARS = 1900;
-
 
 function clamp(value: string, max: number): string {
 	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -437,7 +436,11 @@ export function buildKindCard(params: {
 
 	return Card({
 		title: params.title,
-		subtitle: params.subtitle,
+		// The adapter renders the subtitle through `mrkdwn()` (a context block), and
+		// the body is not ours — an approval body carries the connection name. Raw,
+		// a `<!channel>` in it pings the room from inside a trusted card. Escaped
+		// like every other mrkdwn surface here.
+		subtitle: params.subtitle ? escapeSlackText(params.subtitle) : undefined,
 		children,
 	});
 }

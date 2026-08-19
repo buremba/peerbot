@@ -6,9 +6,9 @@ import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
+import { resolveEventKindDefinition } from "../utils/event-kind-validation";
 import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
-import { resolveEventKindDefinition } from "../utils/event-kind-validation";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { buildKindCard } from "./template-card";
 
@@ -507,8 +507,8 @@ async function deliverToBotConnections(
 	const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
 	// Card precedence, richest first:
 	//   1. an explicit `card` — the caller built it, so it wins outright;
-	//   2. the notification's own event kind, whose metadata schema gives chat
-	//      the same fields the Memory view shows. This is what stops a caller
+	//   2. the notification's own event kind, whose render template gives chat
+	//      the same content the Memory view shows. This is what stops a caller
 	//      authoring its content twice (`payloadData` for web, a hand-built card
 	//      for chat) and drifting between them;
 	//   3. the markdown body.

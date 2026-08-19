@@ -43,8 +43,38 @@ import type {
 import { locateBinary, searchDirs } from './agent-binaries.js';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
-import type { ExecutorConfig } from './executor.js';
 import { log } from './log.js';
+
+/**
+ * The slice of the daemon's `ExecutorConfig` the automation arm reads.
+ *
+ * Declared narrowly so a caller that only executes automations — the one-shot
+ * `executeClaimedAutomationRun` entry point — does not have to fabricate
+ * connector-sync fields (`batchSize`, `generateEmbeddings`, `maxOldSpaceSize`)
+ * that this arm never touches. The daemon's full `ExecutorConfig` is
+ * structurally assignable to it.
+ */
+export interface AutomationExecutorConfig {
+  timeoutMs?: number;
+  heartbeatIntervalMs?: number;
+  /**
+   * Agent to use when the Automation names no `agent_kind`.
+   *
+   * The device, not the server, owns this choice: `agent_kind` is optional on
+   * the wire (`AutomationPollMetaSchema`), and which CLIs are actually
+   * installed is a property of the machine. The Mac app has always resolved it
+   * from the user's menubar pick; without it here, every Automation created
+   * without an explicit kind fails on the device with "no local agent executor
+   * configured".
+   */
+  defaultAgentKind?: AgentKind;
+  /**
+   * Explicit per-agent binary paths (else PATH lookup). Lets an operator point
+   * at a non-PATH CLI install, and is the injection seam the automation tests
+   * use to drive a fake binary.
+   */
+  binaryOverrides?: Partial<Record<AgentKind, string>>;
+}
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 export interface ExecutorResult {
@@ -390,7 +420,7 @@ export interface AutomationRunIo {
 export async function executeAutomationRun(
   client: ExecutorClient,
   job: PollResponse,
-  cfg: ExecutorConfig
+  cfg: AutomationExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
   const runId = job.run_id;
   const payload = job.payload;
@@ -403,7 +433,9 @@ export async function executeAutomationRun(
     return { itemsCollected: 0, error: message };
   }
 
-  const kind = payload.automation.agent_kind ?? null;
+  // The Automation's explicit kind wins; the caller's device-level default is
+  // the fallback, matching how the Mac app has always resolved an unset kind.
+  const kind = payload.automation.agent_kind ?? cfg.defaultAgentKind ?? null;
   const spec = kind != null ? DEVICE_AGENT_SPECS_BY_KIND.get(kind as AgentKind) : undefined;
   if (!spec) {
     const message = `no local agent executor configured for agent_kind='${kind ?? '(unset)'}'`;

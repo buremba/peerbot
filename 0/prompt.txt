@@ -1,0 +1,199 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+User's requests in chronological order this session:
+1. (Carried over) Build an HTML artifact interviewing the user for sign-offs on connector-declared edge decisions, get codex's opinion on each, and save memory before compaction.
+2. "ok i agre with you. is this a big change estimate it and give your confidence levels we don't want overcimplicate and also make it reliable" — agreeing with my recommendations (D1=A/key, D2=A, D3=D, D4=B/source-scoped, D5=A, D6=C, D7=B) and asking for sizing + confidence, with emphasis on not over-complicating while staying reliable.
+3. "how confident are you" — asking for calibrated confidence.
+4. "do you you can start implementing test e2e on prodma erp make sure all works and then merge" — implement, test end-to-end on Prodma ERP, verify, merge.
+5. "ok do it the right way verify with codex if needed" — proceed properly, use codex verification.
+6. "how confident are you now" — re-asking confidence after implementation.
+7. **"ok we need to be confident over 90 percent to actually merge all, need to do spikes think of use-cases edge caess"** — set a >90% confidence bar for merging, requiring spikes and systematic use-case/edge-case enumeration.
+8. **"i agree"** (CURRENT) — agreeing with D8=C (merge/unmerge/force-delete should drop ACL edges and let the next sync rebuild) and the four-gate framing.
+
+2. **Key Technical Concepts:**
+- Lobu monorepo: Bun workspace, `packages/*` (core, connector-sdk, server, connectors, cli, owletto submodule)
+- **The ACL hole:** `member_of` is both an ACL primitive and ordinary domain vocabulary; `ensureMemberOfType` upserts (`ON CONFLICT DO UPDATE`) so it ADOPTS pre-existing rows
+- **`source` cannot carry the boundary:** `CALLER_SETTABLE_SOURCES = ['ui', 'llm', 'feed', 'api']` — ACL syncs write `source: 'feed'`, which is also caller-settable
+- **Transaction-local GUC chokepoint:** `SET LOCAL lobu.acl_write = 'on'` via `set_config(..., true)`, enforced by a `BEFORE INSERT OR UPDATE OR DELETE` trigger
+- **Attribution transaction ordering:** `applyEventAttributions` commits in its own transaction BEFORE event inserts (`run-lifecycle.ts:292-296`); event inserts are statement-per-autocommit
+- `insertEvent` advisory lock on `(connection_id, origin_id)` — serializes same-subject ingests across replicas; skipped if caller supplies `sql`
+- `afterPersist` hook fires at `insert-event.ts:440` (unchanged) and `:630` (persisted)
+- Decisions D1–D8 (D8 = what merge/unmerge/force-delete do with ACL edges; answer = C, drop and re-derive)
+- Gates: `make pre-pr-remote` (Depot, org-serialized), `make review` (pi-review), `make review-fix`, `make ui-review`
+- Prodma: repo `lobu-ai/prodma-demo`, prod org `prodma-erp` (id `REDACTED`), 14 entity types, 32 relationship types
+
+3. **Files and Code Sections:**
+
+**MERGED — PR #2824, squash `fc137c07`** (worktree `edge-upsert-consolidate`, 6 files, +451/−156): consolidated 4 hand-rolled edge writers into `packages/server/src/utils/edge-writes.ts` (`upsertEdges`, `ensureRelationshipType`), fixed a live `23505` race in `auto-linker` which had copied the INSERT without `ON CONFLICT`.
+
+**Current worktree: `/Users/burakemre/Code/lobu/.claude/worktrees/acl-purpose-classification`**
+
+**`db/migrations/20260816020000_relationship_type_purpose.sql`** (NEW, ~57 lines) — `-- migrate:up`, adds `purpose text` column + `entity_relationship_types_purpose_check` CHECK (`purpose IS NULL OR purpose = 'authorization'`), backfills all active `member_of` rows, extensive comments on rollout order; `-- migrate:down` drops constraint + column.
+
+**`db/migrations/20260816030000_spike_acl_edge_chokepoint.sql`** (NEW, SPIKE — not merge-ready as labelled):
+```sql
+CREATE OR REPLACE FUNCTION lobu_guard_authorization_edges()
+RETURNS trigger LANGUAGE plpgsql AS $
+DECLARE type_id bigint; is_authz boolean;
+BEGIN
+  type_id := COALESCE(NEW.relationship_type_id, OLD.relationship_type_id);
+  SELECT purpose = 'authorization' INTO is_authz
+  FROM entity_relationship_types WHERE id = type_id;
+  IF COALESCE(is_authz, false) IS NOT TRUE THEN RETURN COALESCE(NEW, OLD); END IF;
+  IF COALESCE(current_setting('lobu.acl_write', true), '') <> 'on' THEN
+    RAISE EXCEPTION 'relationship type % is authorization-bearing; edges on it are maintained only by the ACL syncs', type_id
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END; $;
+CREATE TRIGGER lobu_guard_authorization_edges
+BEFORE INSERT OR UPDATE OR DELETE ON entity_relationships
+FOR EACH ROW EXECUTE FUNCTION lobu_guard_authorization_edges();
+```
+
+**`packages/server/src/utils/relationship-validation.ts`** (MODIFIED, ~+70 lines) — added after `EDGE_SOURCE_MANUAL`:
+```ts
+export type RelationshipTypePurpose = 'authorization';
+export const PURPOSE_AUTHORIZATION: RelationshipTypePurpose = 'authorization';
+const RESERVED_AUTHORIZATION_SLUGS = new Set(['member_of']);
+export function isReservedAuthorizationSlug(slug: string): boolean { ... }
+
+export async function withAclEdgeWrite<T>(
+  db: DbClient,
+  fn: (tx: DbClient) => Promise<T>
+): Promise<T> {
+  return db.begin(async (tx: DbClient) => {
+    await tx`SELECT set_config('lobu.acl_write', 'on', true)`;
+    return fn(tx);
+  }) as Promise<T>;
+}
+
+export function assertNotAuthorizationType(
+  type: { slug?: string | null; purpose?: string | null },
+  action: string
+): void {
+  if (type.purpose !== PURPOSE_AUTHORIZATION) return;
+  throw new ToolUserError(
+    `Relationship type '${type.slug ?? 'unknown'}' is authorization-bearing and cannot be modified via ${action}. ` +
+      'Access-granting edges are maintained by the connector ACL syncs.', 403);
+}
+```
+
+**`packages/server/src/utils/edge-writes.ts`** (MODIFIED) — `ensureRelationshipType` gained `purpose?: RelationshipTypePurpose`, inserts it, and:
+```sql
+ON CONFLICT (organization_id, slug) WHERE status = 'active'
+DO UPDATE SET
+  updated_at = EXCLUDED.updated_at,
+  purpose = COALESCE(EXCLUDED.purpose, entity_relationship_types.purpose)
+```
+
+**`packages/server/src/authz/access-graph.ts`** (MODIFIED) — `ensureMemberOfType` passes `purpose: PURPOSE_AUTHORIZATION`; edge create + departure reconcile wrapped at line ~520:
+```ts
+const { createdEdges, removedEdges } = await withAclEdgeWrite(sql, async (tx) => {
+    const created = await upsertEdges({ db: tx, ... });
+    let removed_ = 0;
+    for (const [resourceEntityId, resourceMembers] of currentMembersByResource) { ... await tx`UPDATE entity_relationships ...` ... }
+    return { createdEdges: created.length, removedEdges: removed_ };
+});
+```
+
+**`packages/server/src/gateway/routes/public/github-team-graph.ts`** (MODIFIED) — `upsertEdges` wrapped in `withAclEdgeWrite(getDb(), (tx) => upsertEdges({ db: tx, ... }))`.
+
+**`packages/server/src/tools/admin/manage_entity.ts`** (MODIFIED) — link type lookup selects `rt.slug, rt.purpose` + `assertNotAuthorizationType(typeRows[0], 'link')`; `EdgeAuditRow` gained `purpose: string | null`; `lockEdgeForMutation` gained an `action: string` param and calls `assertNotAuthorizationType`; both call sites labelled `"unlink"` and `"update_link"`.
+
+**`packages/server/src/tools/admin/manage_entity_schema.ts`** (MODIFIED) — reserved-slug guard before duplicate check in create; `requireRelationshipType` write-mode selects `id, slug, purpose` and calls `assertNotAuthorizationType(existing[0], action)`.
+
+**`packages/server/src/utils/entity-merge.ts`** (MODIFIED, D8=C) — new step 2b before the collision tombstone:
+```ts
+await tx`SELECT set_config('lobu.acl_write', 'on', true)`;
+await tx`
+    UPDATE entity_relationships r
+    SET deleted_at = current_timestamp, updated_at = current_timestamp
+    FROM entity_relationship_types rt
+    WHERE rt.id = r.relationship_type_id
+      AND rt.purpose = 'authorization'
+      AND r.organization_id = ${orgId}
+      AND r.deleted_at IS NULL
+      AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
+`;
+```
+
+**`packages/server/src/utils/entity-management.ts`** (MODIFIED, D8=C) — `await tx\`SELECT set_config('lobu.acl_write', 'on', true)\`;` added before the `DELETE FROM entity_relationships` in `force_delete_tree`'s `sql.begin`.
+
+**`packages/server/src/utils/table-schema.ts`** (MODIFIED) — added `'purpose'` to the `entity_relationship_types` column list (required by a drift-detection test).
+
+**Test files (NEW):**
+- `packages/server/src/__tests__/integration/authz/relationship-type-purpose.test.ts` (6 tests)
+- `packages/server/src/__tests__/integration/authz/authorization-type-guards.test.ts` (6 tool-level tests; `seedAclEdge` now uses `withAclEdgeWrite`)
+- `packages/server/src/__tests__/integration/authz/acl-edge-chokepoint.spike.test.ts` (8 tests, SPIKE)
+- `packages/server/src/__tests__/integration/authz/acl-trigger-cost.spike.test.ts` (1 test, SPIKE)
+
+**Artifacts published:**
+- `https://claude.ai/code/artifact/852de803-ebd3-48b1-b680-6bf7c9852b14` — Edge Generation Sign-Off (D1–D7)
+- `https://claude.ai/code/artifact/898fa544-c0ec-4c91-b72f-a15faf6a6b6d` — One Invoice, End to End
+- `https://claude.ai/code/artifact/b4e1acd7-3ebd-45a1-a4c7-e9cc3a1cb64d` — ACL Edge Cases (spike + 16-case matrix + D8)
+
+**Memory files written:** `project_connector_declared_edges_decision_state.md`, `reference_connector_edges_must_write_from_afterpersist_not_attributions.md`, `reference_ensure_member_of_type_adopts_any_existing_org_type.md`, `reference_prod_member_of_types_are_all_platform_created.md`; updated `reference_prod_db_read_only_query_recipe.md` (pod renamed `lobu-ai-prod-db-1` → `lobu-db-prod-1`) and `MEMORY.md`.
+
+4. **Errors and fixes:**
+- **Sizing at "~60 lines" was against the wrong seam.** `run-lifecycle.ts:292-296` states attributions commit in their own transaction before event inserts. Corrected: edges must be written from `afterPersist`.
+- **`git grep` with glob pathspec returned nothing** (`origin/main -- 'packages/*/src'`). Known trap; re-ran without the pathspec.
+- **PR #2824 `typecheck` failed** — generated-client drift guard, not a type error. Verified the four hunks touched no route/schema, used `[client-regen-not-needed]` sentinel via amend. Tree hash unchanged so preflight held.
+- **`ui-review` showed MISSING not pending** after the amend — status was on the pre-amend sha. Re-ran it before merging.
+- **Test fixture arg shape wrong** — used `action: "create_relationship_type"`; actual is `schema_type: "relationship_type"` + `action: "create"`. 3 tests fixed.
+- **Full sweep caught 2 of my omissions:** missing `-- migrate:up`/`-- migrate:down` markers, and `purpose` missing from `QUERYABLE_SCHEMA`. Both fixed; 510 tests passed.
+- **codex read a checkout 2 commits behind** — claimed "two `member_of` creators"; post-#2824 there is one function called from two sites.
+- **codex PR A review: NOT COMPLETE, 5 findings** — merge/unmerge/force-delete bypass; TOCTOU; two-deploy split insufficient; `remove_rule` + inverse-type bypass; migration generically unsafe. My "guard set is complete" claim was wrong in 4 ways; confidence dropped 82 → 45.
+- **Spike blast radius:** ~20 tests red because no legitimate ACL writer set the flag. Fixed by wiring `access-graph.ts`, `github-team-graph.ts`, and the test fixture → 19 files/136 tests green.
+
+5. **Problem Solving:**
+- **PR #2824 merged** (`fc137c07`), all 10 required contexts verified individually by name.
+- **Prod audit (read-only):** all 4 `member_of` types are `created_by` NULL, `metadata` NULL, edges only `source='feed'`. No org ever authored its own → classify-in-place is safe, no reserved-slug data migration. (codex correctly noted `created_by` goes null when a user is deleted, so this is suggestive not proof.)
+- **`lobu apply` prune risk cleared:** `diff.ts:1104-1111` gates prune on `baseline.owned`; platform-minted `member_of` is never a delete candidate.
+- **Discovered a sixth gap codex missed:** `source: 'feed'` is caller-settable, so a caller-minted ACL edge is byte-identical to a sync-minted one.
+- **Chokepoint spike: 8/8 green**, blocks merge repoint / hard delete / tombstone / impersonating INSERT, allows sync writes, leaves ERP edges untouched, no flag leak across pooled transactions.
+- **Trigger cost: 500 edges, 7.1ms vs 6.1ms = 17% overhead (~2µs/row).** Approach not invalidated.
+- **Calibration record:** six predictive claims, six misses, all low. PR A estimated 250 lines → 453 staged for A1 alone (~2x), and split into A1+A2 unplanned.
+
+6. **All user messages:**
+- "ok i agre with you. is this a big change estimate it and give your confidence levels we don't want overcimplicate and also make it reliable"
+- "how confident are you"
+- "do you you can start implementing test e2e on prodma erp make sure all works and then merge"
+- "ok do it the right way verify with codex if needed"
+- "how confident are you now"
+- "ok we need to be confident over 90 percent to actually merge all, need to do spikes think of use-cases edge caess"
+- "i agree"
+
+**Standing constraints (from CLAUDE.md/AGENTS.md, must remain in effect):** Never write to `~/Code/lobu` directly — use `make task-setup NAME=<slug>`; never `git switch` in the main checkout. Stage by explicit path (`git add -- <paths>`, never `-A`). `events` is append-only — never `DELETE FROM events`. Never bulk-delete prod `organization` rows. Never resolve merge conflicts in the GitHub web UI. Two writing agents must never share a worktree. Never add a table or change DB design, API surface, or SDK surface without surfacing the proposal and receiving confirmation first. Never auto-submit an interactive browser draft. No backwards-compat shims, no `@deprecated`. No "Co-Authored-By" or Claude attribution in commits. No new `*.md` unless asked. Always show the diff (`git status` + `git diff --stat`). End with a confidence score + 2–4 next actions. Never `git stash`. Never `--admin` past a check that has not reported. Check `pgrep -f "make pre-pr-remote"` before dispatching. Absence needs `origin/main` grep after `git fetch`.
+
+7. **Pending Tasks:**
+- Task #11 PR A — ACL purpose classification (in progress)
+- Task #12 PR B — SDK surface + preflight (blocked by #11); re-baseline at ~800 lines
+- Task #13 PR C — edge write from `afterPersist` + cardinality (blocked by #12); needs a resolver spike first — codex showed `Map<number, number[]>` dedupes by entity id and can't carry attribution keys
+- Task #14 PR D — assertion ledger, deferred; must be decomposed before it can pass a 90 bar
+- Task #2 #2812 — green locally, still needs gate + PR
+- Task #9 — re-scope after #2824
+- Task #10 — re-cut the Prodma gap register
+- **Outstanding codex findings not yet addressed:** #2 (TOCTOU/atomicity), #3 (repeat backfill for rolling deploy), #4 (`remove_rule` at `manage_entity_schema.ts:1337` + `inverse_type_slug` at `:894`/`:1096`), #5 (migration provenance genericity)
+- Remaining spikes named in the artifact: repeat-backfill spike, PR C resolver spike, PR D decomposition
+
+8. **Current Work:**
+Immediately before this summary, following the user's "i agree" (approving D8=C and the four-gate framing), I was wiring the spiked database chokepoint into production paths:
+- Measured trigger cost: `[spike] 500 edges — with trigger 7.1ms, without 6.1ms, overhead 17%`
+- Added `withAclEdgeWrite` to `relationship-validation.ts`
+- Wired `access-graph.ts` (create + departure reconcile now in one transaction — also fixes a pre-existing atomicity bug where a crash between them left grants written and departures unreconciled) and `github-team-graph.ts`
+- Fixed `seedAclEdge` in `authorization-type-guards.test.ts` to use the flag
+- Applied D8=C to `entity-merge.ts` (tombstone classified edges before repoint) and `entity-management.ts` (set flag before force-delete's hard DELETE)
+
+The last command run was `bunx tsc --noEmit` + `bunx vitest run src/__tests__/integration/entities src/__tests__/integration/authz`, which returned: **`Test Files 25 passed (25)`, `Tests 187 passed (187)`**.
+
+9. **Optional Next Step:**
+Continue toward the user's stated bar: "ok we need to be confident over 90 percent to actually merge all, need to do spikes think of use-cases edge caess" — with D8=C now agreed ("i agree").
+
+Concretely, the next steps are: (a) promote the spike migration from `20260816030000_spike_acl_edge_chokepoint.sql` to a real, merge-ready migration (it is currently explicitly labelled "SPIKE — not for merge as-is"), noting this is a DB design change requiring the user's confirmation per AGENTS.md; (b) address the four still-open codex findings — TOCTOU atomicity, the repeat backfill for the rolling-deploy window, `remove_rule` (`manage_entity_schema.ts:1337`) and the inverse-type path (`:894`/`:1096`), and the migration's generic-safety concern; (c) add tests covering merge/unmerge/force-delete with classified edges (codex noted "there are no classified-type tests for merge/unmerge/delete, `remove_rule`, inverse creation, or classification races"); (d) run the full sweep, then re-run codex on the result before gating — as I stated: "I don't want to gate a boundary it hasn't re-checked."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

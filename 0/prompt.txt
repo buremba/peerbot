@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc3l5fu6r</task-id>
+<tool-use-id>toolu_01Mvp85DcoEtEB6kX1wVuCUT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20859076-1eb6-464c-9b1c-dae2360fe186/tasks/bc3l5fu6r.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on the amended HEAD" completed (exit code 0)</summary>
+</task-notification>

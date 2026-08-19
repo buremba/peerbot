@@ -1,0 +1,13 @@
+Third review of this branch. Review commit HEAD (READ ONLY, do not edit). Your last verdict was NOT SAFE (96/100) on snapshot 9eec23c4. Everything below has changed since. Verify ONLY these, then give a verdict.
+
+CLOSED SINCE YOUR LAST PASS (verify each is genuinely closed and introduced nothing new):
+
+1. Your BLOCKING `lobu apply` regression (configs legitimately declare `member_of`, both create and update were refused). FIX: the reserved-slug refusal was REMOVED from the relationship-TYPE surfaces entirely. `assertNotAuthorizationType` is purpose-only again and is what the schema surfaces call. A new, separate `assertNotAclManagedEdge` (purpose OR reserved slug) is called ONLY by the EDGE surfaces — link, unlink, update_link. Rationale: declaring a type grants nobody access; creating an edge on it does. Does `lobu apply` now work end to end for a config declaring `member_of` (create AND update paths)? And is the pre-classification window still closed against actually minting or revoking a grant?
+
+2. Your finding 3(a), "legacy merges never execute the cleanup because it is inside `if (operation)`". I believe this was already false on the reviewed commit — the cleanup sits AFTER that block closes. Confirm whether the ACL cleanup runs for a legacy merge with no `entity_merge_operations` row.
+
+3. Your NEW blocking item: pre-upgrade ledgers containing `member_of` rows would make historical merges un-undoable once classified, because unmerge restores every ledger relationship unprivileged. FIX: the ledger fetch now joins the type and computes `acl_managed`; both the exactness check and the restore loop skip those ids, and the cleanup drops them. A test reproduces it (merge while ordinary → classify → unmerge) and fails with your exact predicted error when the skip is removed.
+
+4. Your finding 3(b), the concurrent-sync race (a sync resolves the identity to the winner, unmerge cleans and commits, the in-flight sync then writes the stale winner grant). FIX: unmerge now sets `authz_source_acl_state.freshness_state='stale', updated_at=clock_timestamp()` for the org. The claim is that this closes it from both ends — the gate stops trusting the snapshot, AND the in-flight sync's own `fresh` stamp is suppressed because that stamp only applies `WHERE updated_at < syncStartedAt`. Is that reasoning correct? Is org-wide the right scope, or does it need to be per-connection? Does marking stale have a harmful availability side effect (e.g. does 'stale' fail closed and lock users out until the next sync, and how long is that)?
+
+Be adversarial. If any fix is wrong, incomplete, or introduces a worse problem, say so with file:line. Then: SAFE TO MERGE / NOT SAFE, confidence 0-100.

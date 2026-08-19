@@ -1,0 +1,1 @@
+hmm, show some examples in the html artifact, when the run_sdk calls different things like save event, get events, search, runs a bash on a device etc all, the user should be able to expand it and see it. also we need to fix this issue and potentially get rid of the previous ugly printer at all

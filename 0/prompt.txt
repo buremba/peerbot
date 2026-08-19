@@ -1,0 +1,1 @@
+remember that never make such assumptions, if you need new table or change db design or api or sdk etc surface you must always confirm with me first. maybe save it in agents.md etc

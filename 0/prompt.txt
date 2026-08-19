@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2ciypeh4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/24051bbf-1588-442f-ace1-14de8ebf3372/tasks/b2ciypeh4.output</output-file>
+<status>completed</status>
+<summary>Monitor "PRs #2299/#2300 required checks" stream ended</summary>
+</task-notification>

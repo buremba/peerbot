@@ -1,0 +1,1 @@
+i check this for example and it doesn't seem like useful indeed? http://127.0.0.1:4181/mcp-app-harness.html?case=generic-bare-object

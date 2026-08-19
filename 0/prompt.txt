@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbfk42le5</task-id>
+<tool-use-id>toolu_01Jn91BKtFZsNvRvErTNULEE</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/bbfk42le5.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR A required checks to report" completed (exit code 0)</summary>
+</task-notification>

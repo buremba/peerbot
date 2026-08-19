@@ -1,0 +1,76 @@
+<task-notification>
+<task-id>a1925f7a98ff984e9</task-id>
+<tool-use-id>toolu_01J7JXrPn2PHhqy1eEntuoRW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/08a3b00f-d798-4b3e-89c3-c9b62c54a2fa/tasks/a1925f7a98ff984e9.output</output-file>
+<status>completed</status>
+<summary>Agent "Track E: tabs + error CTAs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Both trees clean, file lists exactly as intended, no extra files.
+
+## Report
+
+### Ground truth
+
+**Superproject** (`feat/connect-tabs-cta`, HEAD `407e35f43`) — status clean.
+```
+git diff --name-only origin/main...HEAD
+packages/owletto
+ packages/owletto | 2 +-
+```
+
+**Owletto submodule** (HEAD `444560de`) — status clean.
+```
+ src/components/agents/agent-editor-form.tsx    |  2 +-
+ src/components/agents/lobu-chat-store.test.tsx |  2 +-
+ src/index.css                                  | 32 ++++++++++++++++++
+ src/lib/agent-error-cta.test.ts                | 27 +++++++++++----
+ src/lib/agent-error-cta.ts                     | 30 ++++++++++++----
+ src/lib/models-anchor.test.ts                  | 47 ++++++++++++++++++++++++++
+ 6 files changed, 126 insertions(+), 14 deletions(-)
+```
+
+No routes added or removed. Nothing outside the two decisions was touched.
+
+### CTA destinations, before → after
+
+| kind | before | after |
+|---|---|---|
+| `provider-management` | `/{slug}/infrastructure/models?provider=&amp;model=` | `/{slug}/agents/{agentId}/settings?provider=&amp;model=#models` |
+| `provider-management`, no `agentId` | resolved to org URL | **returns `null`** |
+| `provider-connect` | `/{slug}/inference-providers/new?provider=&amp;model=` | unchanged |
+| `agent-settings` | `/{slug}/agents/{agentId}/settings` | unchanged (no `#models` — see below) |
+
+`?provider=`/`?model=` are preserved and `agentId` is `encodeURIComponent`-encoded. The no-`agentId` null is asserted for both `PROVIDER_AUTH` and `PROVIDER_BASE_URL_UNRESOLVED`.
+
+### Highlight and reduced motion
+
+The fixer replaced my React hook with a pure-CSS `#models:target` rule, and I kept that after verifying its one real risk did not apply: the `#models` div is gated only on `showChatPrefs` (a synchronous prop), not on `isConfigLoading` like the Identity block above it, so it exists at first paint and the browser's native fragment scroll lands. The flash is paint-only (ring + tint, no layout shift). Under `@media (prefers-reduced-motion: reduce)` the animation is dropped and a static ring remains, so the "you are here" cue survives without motion.
+
+### Mutation testing
+
+Against `agent-error-cta.test.ts` + `lobu-chat-store.test.tsx` (34 tests): removing `url.hash = "models"` → 3 fail; removing the `if (!ctx.agentId) return null` guard → 1 fail; dropping `encodeURIComponent` → 1 fail; dropping the provider/model param writes → 2 fail. All restored to 34/34.
+
+One mutation initially **survived**: renaming `id="models"` to `id="modelz"` left all 948 tests green, because the CTA fragment, the form `id`, and the CSS selector are three copies of one magic string with nothing binding them. I added `src/lib/models-anchor.test.ts` to pin all three; it now fails on renaming the form id, renaming the CSS selector, or dropping the CTA hash. I also fixed a weak `ready`-gate test in the hook suite that passed against broken code before I deleted that file.
+
+### Things worth flagging
+
+**`make review-fix` reverted the assigned work.** It restored `provider-management` to `/infrastructure/models`, deleted my hook and its tests, and rewrote both test files to lock in the old destination — then reported it as "Fixed". I restored decision 2 and re-verified. I kept only its CSS simplification, which was a genuine improvement. Worth knowing the fixer will argue against a deliberate behavior change it reads as a regression.
+
+**I did not add `#models` to `agent-settings`.** The fixer had done this; it was never in the brief, and `agent-settings` fires for "pick a model" where the whole settings tab is the target. Left as-is.
+
+**`make test-unit` was red mid-run, then green.** An intermediate run showed 15 failures in `packages/cli` (Node version gates). I confirmed these reproduce on clean `origin/main` with my changes reverted, and the final run exits 0 — flaky under parallelism, not mine.
+
+### Confidence
+
+- **CTA logic (`agent-error-cta.ts`) — 95.** 34 tests pass and four mutations bite; the URL contract is fully exercised in unit tests.
+- **Anchor/CSS arrival flash — 60.** The identifier contract is test-pinned and the build passes, but I never loaded a browser. The `:target` behavior, the flash timing, and the reduced-motion degradation are reasoned from code, not observed. This is the weakest surface.
+- **Gates — 90.** `make test-unit` exits 0, `make pre-pr` clean (2 pre-existing lint infos in untouched files), 951/951 owletto tests pass. Not booted; `make review` not run per instruction.
+
+### Next actions
+
+1. Load `/{slug}/agents/{agentId}/settings#models` in a browser and confirm the scroll lands and the flash plays once — the one thing I could not verify, and the weakest link above.
+2. Toggle OS reduced-motion and confirm the static ring appears with no animation.
+3. Decide whether the server's `buildProviderManagementUrl` (`packages/server/src/utils/url-builder.ts:152`, still `/infrastructure/models`) should follow. **Slack/Telegram buttons still point at the old URL** — the web chat and the native bridges now disagree, and the server path was explicitly out of scope.
+4. Note for the `inference`-facet branch: `/infrastructure/models` is now referenced only by the server builder and `inference-providers/index.tsx`'s redirect, so it is nearly orphaned.</result>
+<usage><subagent_tokens>158382</subagent_tokens><tool_uses>75</tool_uses><duration_ms>1400619</duration_ms></usage>
+</task-notification>

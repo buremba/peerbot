@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bjb10dqu7</task-id>
+<tool-use-id>toolu_01FZM4eSmSNNBC3qmhccmKHR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/bjb10dqu7.output</output-file>
+<status>completed</status>
+<summary>Background command "Build signed app with the TCC hint for live deploy" completed (exit code 0)</summary>
+</task-notification>

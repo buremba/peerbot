@@ -1,0 +1,1 @@
+i thought query_sql is an event and the request parameters are in the event itself?

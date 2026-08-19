@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b1voune07</task-id>
+<summary>Monitor event: "required CI checks on lobu PR 2387"</summary>
+<event>integration: pass
+ALL REQUIRED CHECKS SETTLED</event>
+</task-notification>

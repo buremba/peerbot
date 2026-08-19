@@ -1,0 +1,1 @@
+how big of a lift is this, can we reuse and make code simpler easier to follow and effective.

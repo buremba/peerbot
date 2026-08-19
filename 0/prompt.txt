@@ -1,0 +1,1 @@
+identify all the gaps, clean dead code simplify and also the desk needs to support what we had with shortcuts etc when people seeing notifications

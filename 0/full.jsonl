@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"019fda6b-954b-76ee-8dce-1ff68e353539","timestamp":"2026-08-07T04:11:51.499Z","cwd":"/Users/burakemre/Code/lobu"}
+{"type":"model_change","id":"cb1d6d8d","parentId":null,"timestamp":"2026-08-07T04:11:52.149Z","provider":"zai","modelId":"qwen"}
+{"type":"thinking_level_change","id":"a88ae998","parentId":"cb1d6d8d","timestamp":"2026-08-07T04:11:52.149Z","thinkingLevel":"low"}
+{"type":"message","id":"0f5d2a48","parentId":"a88ae998","timestamp":"2026-08-07T04:11:52.161Z","message":{"role":"user","content":[{"type":"text","text":"Reply OK"}],"timestamp":1786075912160}}
+{"type":"message","id":"5537b57e","parentId":"0f5d2a48","timestamp":"2026-08-07T04:11:52.593Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"zai","model":"qwen","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1786075912220,"errorMessage":"400: {\"code\":\"1211\",\"message\":\"Unknown Model, please check the model code.\"}"}}

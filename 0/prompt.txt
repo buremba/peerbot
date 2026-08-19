@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2cqad0u6</task-id>
+<tool-use-id>toolu_01DDSfsLtjKjuM3jUsyeBGkq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/14b0fff6-7bae-49d5-b15f-8be512252109/tasks/b2cqad0u6.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix on consolidated branch" completed (exit code 0)</summary>
+</task-notification>

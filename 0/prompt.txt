@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bn4p02qqt</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bn4p02qqt.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run the remote gate on the rebased tree" completed (exit code 0)</summary>
+</task-notification>

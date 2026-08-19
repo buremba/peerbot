@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi87afxyb</task-id>
+<tool-use-id>toolu_0177z7Evyccwwvui3ieUArs3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bi87afxyb.output</output-file>
+<status>failed</status>
+<summary>Background command "Restart dev server properly in background" failed with exit code 144</summary>
+</task-notification>

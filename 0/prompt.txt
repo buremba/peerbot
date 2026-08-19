@@ -1,0 +1,1 @@
+when @ we can always show sql no? also people can select entity types, search the entities in there etc. i thought that will be more user intruative, what's the best way to do it

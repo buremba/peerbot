@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bho48ygse</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/44b7a5bd-00fa-463a-804c-668245f4acf0/tasks/bho48ygse.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch mac-release build for 14.9.0" completed (exit code 0)</summary>
+</task-notification>

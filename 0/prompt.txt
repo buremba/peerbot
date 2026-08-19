@@ -1,0 +1,1 @@
+ok our hot paths should never do these kind of aggreations, it kills the performance. we need to add it to agents.md as well. interview me if you need assitance

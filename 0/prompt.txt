@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b39xy4v8m</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f33cc6c8-268a-4dc1-9605-e2ffb3bfbbbc/tasks/b39xy4v8m.output</output-file>
+<status>completed</status>
+<summary>Background command "Fourth review round" completed (exit code 0)</summary>
+</task-notification>

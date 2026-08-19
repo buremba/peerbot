@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b32mc4gcl</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b32mc4gcl.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR B dev server" completed (exit code 0)</summary>
+</task-notification>

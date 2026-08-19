@@ -1,0 +1,1 @@
+so can you tell me if for each run_sdk we get these previews or chatgpt etcc needs to call that render_lobu view to actually show something to user? i see it's flooded and many lobu views

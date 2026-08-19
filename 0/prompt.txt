@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bioe1dlbx</task-id>
+<tool-use-id>toolu_01JZcK1QiuwEcYPy5mPeQoH2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/c0e19f5c-511d-4c2d-a8a3-0cb2c09c6784/tasks/bioe1dlbx.output</output-file>
+<status>completed</status>
+<summary>Background command "Try codex reviewer" completed (exit code 0)</summary>
+</task-notification>

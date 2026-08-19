@@ -1,0 +1,1 @@
+we can wait for prod deployment and schedule an e2e that verifies and if it fails it can continue this session if not take apart everything without resuming claude and be done?

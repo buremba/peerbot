@@ -1,0 +1,1 @@
+hmm, doesn't mcp auth session etc works properly doesn't the protocol support?

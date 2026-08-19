@@ -1,0 +1,1 @@
+do you think asof reads will be useful for all use-cases not just for erp, hope we're not ducktaping? also id $links the best approach or should we have the connector be able to generate edges via an api

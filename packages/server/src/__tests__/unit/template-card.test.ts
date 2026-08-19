@@ -311,46 +311,75 @@ describe("platform limits", () => {
 describe("template-declared controls", () => {
 	const bound = (props: Record<string, unknown>) => ({ type: "button", props });
 
-	it("renders a bound button, and drops one that cannot do anything", () => {
+	it("renders a button whose action the bridge can actually route", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [bound({ label: "Run tool", style: "primary", onClick: "@tool:sync:42" })],
+			},
+			data: {},
+		});
+		expect(buttons(card).map((b) => b.label)).toEqual(["Run tool"]);
+		expect(buttons(card)[0].id).toBe("tool:sync:42");
+		expect(buttons(card)[0].style).toBe("primary");
+	});
+
+	it("drops a control bound to an action nothing routes, and says so", () => {
 		const card = buildKindCard({
 			jsonTemplate: {
 				type: "card",
 				children: [
-					bound({ label: "Retry sync", style: "primary", onClick: "@retry_sync" }),
+					bound({ label: "Retry sync", onClick: "@retry_sync" }),
 					bound({ label: "Dead button" }),
 				],
 			},
 			data: {},
+			url: "https://app.lobu.ai/events/1",
 		});
-		expect(buttons(card).map((b) => b.label)).toEqual(["Retry sync"]);
-		expect(buttons(card)[0].id).toBe("template-action:retry_sync");
-		expect(buttons(card)[0].style).toBe("primary");
+		// Neither is drawn: one has no action at all, the other has no route.
+		expect(buttons(card).map((b) => b.label)).toEqual(["Open in Lobu"]);
+		expect(texts(card).at(-1)).toBe("_*Retry sync* is only available in Lobu._");
 	});
 
-	it("resolves {{path}} interpolation in a button label", () => {
+	it("names every unroutable control, not just the first", () => {
 		const card = buildKindCard({
 			jsonTemplate: {
 				type: "card",
-				children: [bound({ label: "Approve {{customer.name}} ({{items[0].qty}})", onClick: "@go" })],
-			},
-			data: { customer: { name: "Acme" }, items: [{ qty: 12 }] },
-		});
-		expect(buttons(card)[0].label).toBe("Approve Acme (12)");
-	});
-
-	it("drops a select with no options and keeps one with them", () => {
-		const withOpts = buildKindCard({
-			jsonTemplate: {
-				type: "card",
 				children: [
+					bound({ label: "Ignore", onClick: "@ignore_drift" }),
+					bound({ label: "Disconnect", onClick: "@disconnect" }),
 					{ type: "select", props: { label: "Reason", onChange: "@set_reason", options: [{ label: "Safe", value: "safe" }] } },
-					{ type: "select", props: { label: "Empty", onChange: "@x", options: [] } },
 				],
 			},
 			data: {},
 		});
-		expect(buttons(withOpts)).toHaveLength(1);
-		expect(buttons(withOpts)[0].id).toBe("template-action:set_reason");
+		expect(buttons(card)).toEqual([]);
+		expect(texts(card).at(-1)).toBe(
+			"_*Disconnect*, *Ignore*, *Reason* are only available in Lobu._",
+		);
+	});
+
+	it("keeps link buttons, which need no server round-trip", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "link-button", props: { label: "Open runbook", url: "https://lobu.ai/runbook" } }],
+			},
+			data: {},
+		});
+		expect(buttons(card).map((b) => b.url)).toEqual(["https://lobu.ai/runbook"]);
+	});
+
+	it("resolves {{path}} interpolation in a control label", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [bound({ label: "Approve {{customer.name}} ({{items[0].qty}})", onClick: "@retry" })],
+			},
+			data: { customer: { name: "Acme" }, items: [{ qty: 12 }] },
+		});
+		// Unroutable, so it surfaces by name — with the binding already resolved.
+		expect(texts(card).at(-1)).toBe("_*Approve Acme (12)* is only available in Lobu._");
 	});
 
 	it("clamps the actions row to what Slack accepts", () => {
@@ -358,7 +387,7 @@ describe("template-declared controls", () => {
 			jsonTemplate: {
 				type: "card",
 				children: Array.from({ length: 30 }, (_, i) =>
-					bound({ label: `B${i}`, onClick: `@a${i}` }),
+					bound({ label: `B${i}`, onClick: `@tool:a${i}` }),
 				),
 			},
 			data: {},
@@ -366,9 +395,9 @@ describe("template-declared controls", () => {
 		expect(buttons(card)).toHaveLength(25);
 	});
 
-	it("puts template controls before the decision buttons", () => {
+	it("puts routable template controls before the decision buttons", () => {
 		const card = buildKindCard({
-			jsonTemplate: { type: "card", children: [bound({ label: "Retry", onClick: "@retry" })] },
+			jsonTemplate: { type: "card", children: [bound({ label: "Retry", onClick: "@tool:retry" })] },
 			data: {},
 			url: "https://app.lobu.ai/events/1",
 			decisionRunId: 9001,

@@ -307,16 +307,17 @@ export interface TemplateVisitor<T> {
     props: Record<string, unknown>,
     children: T[],
     ctx: { actions: Record<string, string>; node: TemplateNode }
-  ): T[];
+  ): T[] | null;
 }
 
 /**
  * Walk a template against `data`, emitting whatever the visitor builds.
  *
- * `unsupported` collects the component types the visitor refused, so a caller
- * can tell "rendered everything" from "rendered part of it" and degrade
- * honestly — the chat card links out to the full record instead of quietly
- * showing a subset.
+ * `unsupported` collects the component types the visitor refused — signalled by
+ * returning `null`, NOT by returning nothing. The distinction matters: a
+ * visitor that knowingly drops a node (a control it cannot wire up, a wrapper
+ * with no content) has handled it, and reporting that as unrenderable would
+ * misname the problem to the reader.
  */
 export function walkTemplate<T>(
   node: unknown,
@@ -379,7 +380,9 @@ export function walkTemplate<T>(
     actions,
     node: n,
   });
-  if (emitted.length === 0 && children.length === 0 && type)
-    unsupported?.add(type);
+  if (emitted === null) {
+    if (type) unsupported?.add(type);
+    return children;
+  }
   return emitted;
 }

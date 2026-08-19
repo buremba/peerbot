@@ -90,8 +90,22 @@ type ActionElement = ButtonElement | LinkButtonElement | SelectElement;
  * this.
  */
 const MAX_ACTIONS = 25;
-/** Prefix marking a button whose click routes to a template-declared action. */
-export const TEMPLATE_ACTION_PREFIX = "template-action";
+/**
+ * Actions a chat click can actually execute. `interaction-bridge`'s dispatch
+ * chain is the allowlist — it handles these prefixes and nothing else, so a
+ * control bound to anything outside this set would render as a button that
+ * silently does nothing when pressed.
+ *
+ * Template-declared actions (`onClick: "@retry_sync"`) are NOT here: resolving
+ * a bare action name to something the server may run needs a registry that
+ * says which names an org has authorised, and there isn't one. Until that
+ * exists, such controls are reported and dropped rather than drawn dead.
+ */
+const ROUTABLE_ACTION_PREFIXES = ["run-approval", "tool", "suggestion", "question"] as const;
+
+function isRoutableAction(action: string): boolean {
+	return ROUTABLE_ACTION_PREFIXES.some((prefix) => action.startsWith(`${prefix}:`));
+}
 
 const str = (value: unknown, fallback = ""): string =>
 	value === undefined || value === null ? fallback : String(value);
@@ -120,21 +134,25 @@ const textOf = (frags: Frag[]): string =>
 		.join("")
 		.trim();
 
-const cardVisitor: TemplateVisitor<Frag> = {
+const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 	text: (content) => [{ kind: "text", text: content }],
 	value: (rendered) => [{ kind: "text", text: rendered }],
 	component: (type, props, children, { actions }) => {
 		if (PASSTHROUGH.has(type)) return children;
 		if (type === "button") {
 			const action = actions.onClick ?? actions.onPress ?? actions.onSubmit;
-			// A button with no bound action cannot do anything when clicked, and a
-			// dead control in an approval card is worse than an absent one.
+			// A dead control in an approval card is worse than an absent one, so a
+			// button is drawn only when the click has somewhere to go.
 			if (!action) return [];
+			if (!isRoutableAction(action)) {
+				unroutable.add(str(props.label) || textOf(children) || action);
+				return [];
+			}
 			return [
 				{
 					kind: "action",
 					element: Button({
-						id: `${TEMPLATE_ACTION_PREFIX}:${action}`,
+						id: action,
 						label: clamp(str(props.label) || textOf(children) || action, 75),
 						style: buttonStyle(props.style),
 						value: str(props.value, action),
@@ -159,6 +177,10 @@ const cardVisitor: TemplateVisitor<Frag> = {
 		if (type === "select") {
 			const action = actions.onChange ?? actions.onSelect;
 			if (!action || !Array.isArray(props.options)) return [];
+			if (!isRoutableAction(action)) {
+				unroutable.add(str(props.label) || str(props.placeholder) || action);
+				return [];
+			}
 			const options = (props.options as unknown[])
 				.map((opt) => {
 					const o = (opt ?? {}) as Record<string, unknown>;
@@ -173,7 +195,7 @@ const cardVisitor: TemplateVisitor<Frag> = {
 				{
 					kind: "action",
 					element: Select({
-						id: `${TEMPLATE_ACTION_PREFIX}:${action}`,
+						id: action,
 						label: clamp(str(props.label) || str(props.placeholder) || action, 75),
 						placeholder: str(props.placeholder) || undefined,
 						options,
@@ -267,11 +289,12 @@ const cardVisitor: TemplateVisitor<Frag> = {
 			const body = textOf(children) || str(props.children) || str(props.value);
 			return body ? [{ kind: "text", text: body }] : [];
 		}
-		// Unknown component. Returning nothing marks it unsupported so the caller
-		// can link out rather than present a partial record as complete.
-		return [];
+		// Unknown component. `null` — not `[]` — is what marks it unsupported, so
+		// the caller can link out rather than present a partial record as
+		// complete. Everything above returned `[]` deliberately and is handled.
+		return null;
 	},
-};
+});
 
 function fragsToChildren(frags: Frag[]): {
 	children: CardChild[];
@@ -360,10 +383,18 @@ export function buildKindCard(params: {
 	if (!template) return null;
 
 	const unsupported = new Set<string>();
+	const unroutable = new Set<string>();
 	const { children, actions: templateActions } = fragsToChildren(
-		walkTemplate(template, params.data, cardVisitor, unsupported),
+		walkTemplate(template, params.data, makeCardVisitor(unroutable), unsupported),
 	);
-	if (children.length === 0 && templateActions.length === 0) return null;
+	if (unroutable.size > 0) {
+		const names = [...unroutable].sort();
+		children.push(
+			CardText(
+				`_${names.map((n) => `*${escapeSlackText(n)}*`).join(", ")} ${names.length === 1 ? "is" : "are"} only available in Lobu._`,
+			),
+		);
+	}
 
 	if (unsupported.size > 0) {
 		children.push(
@@ -372,6 +403,10 @@ export function buildKindCard(params: {
 			),
 		);
 	}
+
+	// Checked only after the notes above: a card whose every control was dropped
+	// still has something true to say, and saying it beats silence.
+	if (children.length === 0 && templateActions.length === 0) return null;
 
 	const actions: ActionElement[] = [...templateActions];
 	if (params.decisionRunId) {

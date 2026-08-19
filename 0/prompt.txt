@@ -1,0 +1,1 @@
+ok let's do it. also what i meant for slack was that having a single behavior for all. when the message.created selected i don't se eit asking channel etc. is that form we will have by dynamic or what

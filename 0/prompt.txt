@@ -1,0 +1,1 @@
+ok good. last thing is that should we put behaviors and runtime, not skills guardrails, settings there? in the runtime we can have models identity guardrails access table? and we can have settings? would tha tmake sense

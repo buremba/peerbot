@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmkxgwvzr</task-id>
+<tool-use-id>toolu_01X5gJEJLXmEtY6JM9bpHKtX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/4226e7a7-3646-49f8-ac53-c326d3a23430/tasks/bmkxgwvzr.output</output-file>
+<status>completed</status>
+<summary>Background command "Run make review on PR 2306" completed (exit code 0)</summary>
+</task-notification>

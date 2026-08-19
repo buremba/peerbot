@@ -1,0 +1,1 @@
+hmm interesting. could we set the device for these things to my local and let lobu orchestrate my local opencode

@@ -1,0 +1,1 @@
+why need seperate flag, maybe the value saves an event and always continues no?

@@ -1,0 +1,135 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+The user's line of inquiry evolved across the conversation, all centered on the Lobu agent's system prompt:
+   - **Initial:** "i see we do hacks to changer system prompt, why, is there a better way? replaceBasePromptIdentity" — understand why a regex hack exists.
+   - **Then:** "the regec etc all seems hacky. could we maintain our own system prompt, what's the best way here?" — own the prompt outright.
+   - **Then:** "how can we do it properly. remember agents also have their own identity but we need to make sure our approach is reliable and consistent" — a proper architecture that preserves per-agent identity while guaranteeing consistency.
+   - **Then (pushback, twice):** "we won't end up regex hacks right?" and "is this actually stable, startsWirg is gonna be another regex no?" — no string/pattern matching against pi's output, anywhere.
+   - **Then:** "is it the pi native way? are we running on latest pi version? soulMd is also gonna be part of the discussion right? also if user changes soulMd is doesn't affect existing conversations right"
+   - **Then:** "doesn't transcriptions have these already? check and let me know in this suggested approch does the agent know it's 'pi' or do we say it's 'lobu'"
+   - **Then:** "why does the agent get pi docs?"
+   - **Then:** "yes dig in all properly and find out the best way to structure it. for end users pi is just an implementation detail, they don't use it" — full investigation + concrete structure.
+   - **Finally:** "ok if we're confident on it let's continue do all" — implement all planned PRs.
+
+   Agreed plan (3 pieces, PR1 in flight): PR1 = stop pi discovering resources from the agent-writable workspace (security); PR2 = gateway returns identityMd/soulMd/userMd/unconfigured separately; PR3 = worker owns the system prompt document (builder + delivery + tests).
+
+2. Key Technical Concepts:
+   - `@mariozechner/pi-coding-agent` v0.73.1 (= npm latest), used by packages/agent-worker
+   - `AgentSession.prompt()` resets `agent.state.systemPrompt = this._baseSystemPrompt` every turn (agent-session.js:797) unless a pi extension `before_agent_start` handler returns `{systemPrompt}`
+   - `buildSystemPrompt` has two branches: default (pi's opener + tools + guidelines + 1017-char pi-docs block) and `customPrompt` (supplied prompt + append + context files + skills + date + cwd)
+   - `DefaultResourceLoader` options: `systemPromptOverride`, `appendSystemPromptOverride`, `noExtensions`, `noSkills`, `noPromptTemplates`, `noThemes`, `noContextFiles`, `extensionFactories`
+   - pi's `ResourceLoader` interface (9 members: getExtensions, getSkills, getPrompts, getThemes, getAgentsFiles, getSystemPrompt, getAppendSystemPrompt, extendResources, reload)
+   - `ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>`; `Extension` is a plain exported interface (path, resolvedPath, sourceInfo, handlers, tools, messageRenderers, commands, flags, shortcuts)
+   - pi package exports map allows only `.` and `./hooks` — `loadExtensionFromFactory` is NOT reachable
+   - Layered prompt structure: persona (agent) / contract (Lobu, byte-identical) / tools / environment / operator (soulMd + customInstructions) / audience (userMd) / notice / time+place
+   - `config_changed` SSE → `invalidateSessionContextCache()` + `[System notice: Your configuration was updated since the last message]` in the user turn
+   - Workspace `/workspace/{conversationId}` (or `/app/workspaces/…`) persists for pod lifetime — pod-local, not PVC, never cleaned
+   - Red→fix→green evidence requirement; mutation-testing new tests; `make pre-pr` / `make review-fix` / `make review` gate sequence
+
+3. Files and Code Sections:
+
+   - **`packages/agent-worker/src/runtime/session-runner.ts`** (modified, main worktree analysis + worktree edit)
+     - `replaceBasePromptIdentity` (line ~313) with `PI_CODING_AGENT_OPENER_RE = /^You are an expert coding assistant operating inside pi, a coding agent harness\.[^\n]*/` — the inert hack
+     - Line ~1298-1309: `const basePrompt = session.systemPrompt; … session.agent.state.systemPrompt = finalSystemPrompt;` — wiped every turn
+     - `buildAgentSession` now hoists defaults and supplies the loader:
+       ```ts
+       const cwd = options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd();
+       const settingsManager = options.settingsManager ?? SettingsManager.inMemory();
+       const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
+       const authStorage = options.authStorage ?? options.modelRegistry?.authStorage ?? AuthStorage.inMemory();
+       const modelRegistry = options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
+       const resourceLoader = options.resourceLoader ?? createLobuResourceLoader();
+       const result = await createAgentSession({ ...options, cwd, settingsManager, sessionManager, authStorage, modelRegistry, resourceLoader });
+       ```
+     - Prompt call sites now pass `expandPromptTemplates: false` with an explanatory comment
+     - New import: `import { createLobuResourceLoader } from "./pi-resources";`
+
+   - **`packages/agent-worker/src/runtime/pi-resources.ts`** (NEW) — current state is a zero-I/O stub loader:
+     ```ts
+     import { createExtensionRuntime, type LoadExtensionsResult, type ResourceLoader } from "@mariozechner/pi-coding-agent";
+
+     export function createLobuResourceLoader(): ResourceLoader {
+       const extensions: LoadExtensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+       return {
+         getExtensions: () => extensions,
+         getSkills: () => ({ skills: [], diagnostics: [] }),
+         getPrompts: () => ({ prompts: [], diagnostics: [] }),
+         getThemes: () => ({ themes: [], diagnostics: [] }),
+         getAgentsFiles: () => ({ agentsFiles: [] }),
+         getSystemPrompt: () => undefined,
+         getAppendSystemPrompt: () => [],
+         extendResources: () => {},
+         reload: async () => {},
+       };
+     }
+     ```
+     Long module doc explains each discovery path and why flags aren't enough. The doc comment was just corrected to remove the disproven "hang" claim, replaced with: "(A symlink cycle does not hang: the recursion overflows the stack and `collectSkillEntries`'s own catch-all swallows it. Measured, not assumed.)"
+
+   - **`packages/agent-worker/src/__tests__/pi-resource-discovery.test.ts`** (NEW) — 7 tests: extension not executed, prompt template not registered, SYSTEM.md not used, APPEND_SYSTEM.md not appended, AGENTS.md not loaded, loader-contract unit test (all getters empty + stable runtime identity), skill not registered.
+
+   - **`packages/server/src/gateway/services/instruction-service.ts:296-307`** (read only, PR2 target) — welds identityMd/soulMd/userMd into one `agentInstructions` string.
+
+   - **`charts/lobu/values.yaml`** + `charts/lobu/templates/worker-deployment.yaml` / `deployment.yaml` — `app.workspaces.enabled: false` (pod-local, not PVC); proved workspace persistence.
+
+   - **`packages/agent-worker/src/core/workspace.ts`** — `WorkspaceManager.setupWorkspace` only `mkdir -p`s `${baseDirectory}/${sanitized}`; no cleanup.
+
+4. Errors and fixes:
+   - **The prompt hack is inert** — proved by probe: `AFTER PROMPT starts: "You are an expert coding assistant…"`, `marker survived? false`.
+   - **My proposed `/^You are /gm` assertion was itself a regex** — user asked "we won't end up regex hacks right?"; I replaced it with structural section-property assertions.
+   - **`startsWith` + snapshot still coupled to pi's output** — user pushback "is this actually stable, startsWirg is gonna be another regex no?"; I found the `before_agent_start` extension path giving byte-exact `===`.
+   - **`make review-fix` rewrote pi-resources.ts** as a stub and added in-memory fallbacks. I initially rejected the stub (extensionFactories needed) but kept the call-site hoisting; later adopted the stub after confirming `Extension` is constructible.
+   - **Biome error** (fixer emitted tabs) → fixed with `bun run check:fix` (memory: biome via check:fix only).
+   - **`make review` blocker: symlink-cycle stall** — I verified traversal is real but mutation-tested the claim: the mutant passed (7 pass) and a direct probe printed "reload returned — no hang". The stall does NOT reproduce (stack overflow swallowed by `collectSkillEntries`'s catch). I removed the non-discriminating symlink test, replaced it with a loader-contract unit test, and corrected the module doc.
+
+5. Problem Solving:
+   - Root cause generalized: Lobu never configured pi, so pi's CLI defaults apply with `cwd` = the agent-writable, pod-persistent workspace. The prompt hack is one symptom; `.pi/extensions` code execution is the severe one.
+   - Verified `read`/`write` have no path confinement (`resolveToCwd` passes absolute paths, expands `~`).
+   - Verified nothing persists the system prompt (pi session file or lobu DB) → hash on run record proposed.
+   - Verified pi 0.73.1 is latest and the loader approach is pi's documented recipe.
+
+6. All user messages:
+   - "i see we do hacks to changer system prompt, why, is there a better way? replaceBasePromptIdentity"
+   - "the regec etc all seems hacky. could we maintain our own system prompt, what's the best way here?"
+   - "how can we do it properly. remember agents also have their own identity but we need to make sure our approach is reliable and consistent"
+   - "we won't end up regex hacks right?"
+   - "is this actually stable, startsWirg is gonna be another regex no?"
+   - "is it the pi native way? are we running on latest pi version? soulMd is also gonna be part of the discussion right? also if user changes soulMd is doesn't affect existing conversations right"
+   - "doesn't transcriptions have these already? check and let me know in this suggested approch does the agent know it's "pi" or do we say it's "lobu""
+   - "why does the agent get pi docs?"
+   - "yes dig in all properly and find out the best way to structure it. for end users pi is just an implementation detail, they don't use it"
+   - "what's the question ask it properly"
+   - AskUserQuestion answers: soulMd → "Operator layer, after the Lobu contract (Recommended)"; config timing → "1 but can we do that in a way where we pull everything relevant to that contetx from lobu and the agent knows everything. or do you think 2 is more reliable for now?"; workspace → "Not sure — I should verify it"
+   - "ok if we're confident on it let's continue do all"
+
+7. Pending Tasks:
+   - Finish PR #2313: re-run `make pre-pr` + full tests after the stub-loader switch, commit (explicit paths), push, update PR body with the corrected blocker analysis, re-run `make review` once, merge when CI green.
+   - PR2: gateway `instruction-service.ts` returns `identityMd`/`soulMd`/`userMd`/`unconfigured` separately instead of the welded `agentInstructions` blob.
+   - PR3: worker owns the system prompt — pure builder (`system-prompt/{types,sections,build}.ts`), delivered via `systemPromptOverride` + a `before_agent_start` extension (byte-exact), sections in the agreed order with soulMd in the operator layer, live event-driven config rebuild, prompt hash + section manifest on the run record; delete `replaceBasePromptIdentity`, `PI_CODING_AGENT_OPENER_RE`, and the old tests.
+   - Post-merge prod verification wakeup per AGENTS.md step 10.
+
+8. Current Work:
+   Working in worktree `/Users/burakemre/Code/lobu/.claude/worktrees/pi-loader-hardening` on branch `feat/pi-loader-hardening`, PR #2313 open (commit b0f78f59f pushed; subsequent stub-loader changes are uncommitted).
+
+   Immediately before the summary request I had just replaced the DefaultResourceLoader-with-flags implementation in `pi-resources.ts` with the zero-I/O stub `ResourceLoader`, updated the call site to `options.resourceLoader ?? createLobuResourceLoader()`, replaced the non-discriminating symlink test with a loader-contract unit test (7 pass, 14 expect() calls), and applied an Edit to `pi-resources.ts` correcting the module doc — replacing the disproven hang claim with:
+   ```
+    * `DefaultResourceLoader`'s `noExtensions`/`noSkills`/... flags would leave the
+    * property resting on getting six flags right, and they only discard results
+    * AFTER `reload()` has already walked the tree via the package manager. That
+    * walk recurses into subdirectories and follows symlinks (`collectSkillEntries`
+    * stats the link target and recurses when it is a directory), so the agent
+    * still gets to decide how much work every later boot of the conversation does.
+    * (A symlink cycle does not hang: the recursion overflows the stack and
+    * `collectSkillEntries`'s own catch-all swallows it. Measured, not assumed.)
+   ```
+   That Edit applied but the tool warned the file had other on-disk changes not in context. Leftover temp files to clean: `/tmp/pi-resources.keep.ts`, `/tmp/cycle-probe.ts`.
+
+9. Optional Next Step:
+   Re-read `packages/agent-worker/src/runtime/pi-resources.ts` (it changed on disk after the last Edit), then run `bun run check:fix`, the full agent-worker suite, and `make pre-pr`; commit the stub-loader change by explicit path; push; update the PR #2313 body to record that the reviewer's blocker was investigated — traversal is real but the stall does not reproduce (stack overflow swallowed by `collectSkillEntries`'s catch), and the loader now does zero filesystem work which moots it; then run `make review` once more on the settled HEAD.
+
+   This follows directly from the user's "ok if we're confident on it let's continue do all" and the mid-flight blocker response, where I stated: "The mutation disproved the blocker's stall claim — the recursion blows the stack and `collectSkillEntries`'s `catch` swallows it, so `reload()` returns."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/3bbf7a8f-aa32-4ddf-8a73-1d63870a1171.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

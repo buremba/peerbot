@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b8m1p4gw1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/b8m1p4gw1.output</output-file>
+<status>killed</status>
+<summary>Background command "Re-review 2398 on post-bot HEAD" was stopped</summary>
+</task-notification>

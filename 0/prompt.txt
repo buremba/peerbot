@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bf2vqey0s</task-id>
+<summary>Monitor event: "scaffolded project boot"</summary>
+<event>SCAFFOLD BOOTED: {"status":"ok","service":"lobu-api","timestamp":"2026-07-31T03:18:49.288Z","version":"1.6.0","revision":"unknown","build_time":null,"environment":"development"}</event>
+</task-notification>

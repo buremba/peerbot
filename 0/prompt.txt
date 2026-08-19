@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgxrxf7p1</task-id>
+<tool-use-id>toolu_01AaHbQmC7gwwWMgnt19Fo5V</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/1680adf3-6dda-4ba4-8464-05948b9cc106/tasks/bgxrxf7p1.output</output-file>
+<status>completed</status>
+<summary>Background command "Run lease probe with correct exports" completed (exit code 0)</summary>
+</task-notification>

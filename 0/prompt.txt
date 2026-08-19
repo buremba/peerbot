@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbfitzqow</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/a94ab9f8-474d-4e21-8eb4-43026a73e462/tasks/bbfitzqow.output</output-file>
+<status>completed</status>
+<summary>Background command "make review &gt; /tmp/review-812.log 2&gt;&amp;1" completed (exit code 0)</summary>
+</task-notification>

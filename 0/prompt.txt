@@ -1,0 +1,256 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+**Initial request:** User shared a screenshot of notification cards at `app.lobu.ai/buremba/agents/lobu-builder/chat` showing raw markdown (`**An agent** wants to merge [905319918039@s.whatsapp.net](https://app.lobu.ai/...). - Entity id: 886 - Entity ids: [ 886 ] - Winner...`) and asked: *"why these don't show up as embedded, when clicked using the peek view etc?"*
+
+**Second request:** *"yes we should use inline components for our notification section. when clicked we can show it dedicated and focused etc so the inline struff can just be a summary"* — i.e. render markdown inline in the card as a summary only, with full detail in the dedicated/focused (peek) view.
+
+**Scope guidance (via AskUserQuestion note):** *"how would it look like? we want to dogfood as much as possible and don't complicate"* — user did NOT pick a scope option, asked to see what it would look like and to keep it simple. User DID select "Fix it in the same PR (Recommended)" for the Slack-vs-Markdown escaping split.
+
+**Third request:** *"why don't we fix things here"* — pushback on my having filed a follow-up issue (#2212) instead of fixing the `MarkdownText` block-variant exposure in-branch.
+
+**Fourth request:** *"still not soing here. http://localhost:8879/local-install/agents/lobu-builder/chat/c/2d5bca4ac0b7"* — fix not visible locally.
+
+**Fifth (mid-turn):** *"what's the dev server and the feature you were working on?"*
+
+**Sixth:** *"can you test prod when deployed?"*
+
+**Merge approval:** User selected "Merge both, in order (Recommended)" — squash owletto#599 first, repoint submodule, wait for check-drift, then squash lobu#2210.
+
+## 2. Key Technical Concepts
+
+- **Bun workspace monorepo** under `packages/*`; `owletto` is a private git submodule (frontend)
+- **Notifications are `events` rows + `notification_targets`** — no `notifications` table. `events.payload_text` holds the markdown body; `events.metadata` holds `notification_type`/`resource_*`. The structured `ActionApprovalDetails` is **never persisted**
+- **Two-surface rendering:** one body string consumed by in-app Markdown (react-markdown + remark-gfm) AND Slack mrkdwn — requires per-emitter escaping
+- **GFM injection vectors:** `~` (strikethrough), `<>` (autolinks), `[` `]` (link forging), `*` `_` `` ` `` (emphasis), setext underlines of ANY length, `img` (IP beaconing)
+- **Cross-repo merge order:** owletto first → repoint submodule → parent. `check-drift` fails until pinned SHA is reachable from `owletto/main`
+- **`packages/owletto` is biome-excluded** from parent repo's `format-lint`
+- Vitest (frontend, jsdom) vs `bun test` (server); mutation testing to prove tests bite
+- TanStack Router; `line-clamp-2` requires inline (not block) children
+
+## 3. Files and Code Sections
+
+### `packages/server/src/notifications/triggers.ts` (MODIFIED — core server fix)
+The producer of notification bodies. Split one escaping function into two per-surface ones.
+
+```ts
+/** Slack mrkdwn only — Markdown does NOT decode HTML entities. */
+function escapeSlackText(value: string): string {
+	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Escape user/agent-controlled text for the in-app Markdown body (GFM...).
+ */
+function escapeMarkdownText(value: string): string {
+	return value
+		.replace(/([\\`*_~[\]<>])/g, "\\$1")
+		// Setext underlines of ANY run length ("Trusted line\n=" renders <h1>)
+		.replace(/^([ \t]{0,3})([-=]+)(?=[ \t]*$)/gm, "$1\\$2")
+		.replace(/^([ \t]{0,3})(?=[#>+-](?:\s|$))/gm, "$1\\")
+		.replace(/^([ \t]{0,3}\d{1,9})([.)])(?=\s|$)/gm, "$1\\$2");
+}
+
+/** Raw display text; each emitter applies its own escaping. */
+function displayNotificationValue(value: unknown): string {
+	if (value === undefined || value === null || value === "") return "Not set";
+	if (typeof value === "string") return value;
+	return JSON.stringify(value, null, 2);
+}
+
+/** Kept UNASSEMBLED so emitters escape values without touching `~old~` delimiters. */
+function compactDiffValues(currentValue: unknown, proposedValue: unknown) {
+	return {
+		current: truncateNotificationLine(displayNotificationValue(currentValue)),
+		proposed: truncateNotificationLine(displayNotificationValue(proposedValue)),
+	};
+}
+```
+
+Model now holds raw + one-line-collapsed values:
+```ts
+	requestedBy: details.actorLabel ? truncateNotificationLine(details.actorLabel) : null,
+	entityName: details.entityName ? truncateNotificationLine(details.entityName) : null,
+	...
+	diffs: Array<{ label: string; current: string; proposed: string }> | null;
+```
+Generic branch:
+```ts
+	const connLabel = params.connectionName
+		? ` on ${escapeMarkdownText(truncateNotificationLine(params.connectionName))}`
+		: "";
+```
+
+### `packages/owletto/src/lib/notification-summary.ts` (NEW)
+```ts
+const REVIEW_LINK_LINE = /^\[Review in Lobu\]\(.*\)$/;
+const DETAIL_LINE = /^[-*]\s/;
+
+export function notificationSummaryMarkdown(body: string | null | undefined): string | null {
+	if (!body) return null;
+	const summary: string[] = [];
+	for (const raw of body.split("\n")) {
+		const line = raw.trim();
+		if (line === "") { if (summary.length > 0) break; continue; }
+		if (DETAIL_LINE.test(line) || REVIEW_LINK_LINE.test(line)) break;
+		summary.push(line);
+	}
+	const text = summary.join(" ").trim();
+	if (text !== "") return text;
+	// Fall back to leading lines (minus review CTA) so a bullet-only agent digest
+	// still shows a body instead of rendering blank.
+	const fallback = body.split("\n").map(l => l.trim())
+		.filter(l => l !== "" && !REVIEW_LINK_LINE.test(l)).join(" ").trim();
+	return fallback === "" ? null : fallback;
+}
+```
+
+### `packages/owletto/src/components/markdown-text.tsx` (MODIFIED)
+Shared `components` map now hardened (covers BOTH variants):
+```ts
+function isOwnAppHref(href: string | undefined): boolean {
+	if (!href) return false;
+	try {
+		const base = typeof window === "undefined" ? "https://localhost" : window.location.href;
+		const url = new URL(href, base);
+		if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+		return typeof window === "undefined" || url.host === window.location.host;
+	} catch { return false; }
+}
+
+const components: Components = {
+	// ...
+	a: ({ href, children }) =>
+		isOwnAppHref(href) ? (<a href={href} target="_blank" rel="noopener noreferrer"
+			className="font-medium text-primary underline underline-offset-2">{children}</a>)
+			: (<>{children}</>),
+	img: ({ alt }) => <>{alt}</>,
+};
+
+const inlineComponents: Components = { ...components,
+	p/h1-h6/ul/ol/li/blockquote/pre: ({children}) => <>{children}</>, hr: () => null };
+const inlineComponentsNoLinks: Components = { ...inlineComponents, a: ({children}) => <>{children}</> };
+
+export const InlineMarkdownText: FC<{ text: string; className?: string;
+	linkPolicy?: "app-links" | "strip" }> = ({ text, className, linkPolicy = "strip" }) => (
+	<span className={cn("break-words", className)}>
+		<ReactMarkdown remarkPlugins={[remarkGfm]}
+			components={linkPolicy === "app-links" ? inlineComponents : inlineComponentsNoLinks}>
+			{text}
+		</ReactMarkdown>
+	</span>
+);
+```
+
+### `packages/owletto/src/components/home/home-attention-timeline.tsx` (MODIFIED)
+```tsx
+const summaryText = item.kind === "notification"
+	? notificationSummaryMarkdown(item.body) : null;
+...
+{summaryText ? (
+	<div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground"
+		onClick={(e) => { if ((e.target as HTMLElement).closest("a")) e.stopPropagation(); }}>
+		<InlineMarkdownText text={summaryText}
+			linkPolicy={item.notification?.type === "action_approval_needed" ? "app-links" : "strip"} />
+	</div>
+) : item.body ? (
+	<p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.body}</p>
+) : null}
+```
+Also `if (e.target !== e.currentTarget) return;` added to row `onKeyDown`.
+
+### Test files (NEW/MODIFIED)
+- `packages/owletto/src/lib/notification-summary.test.ts` (8 tests)
+- `packages/owletto/src/components/markdown-text.inline.test.tsx` (14 tests)
+- `packages/owletto/src/components/markdown-text.test.tsx` (5 tests, NEW for block variant)
+- `packages/owletto/src/components/home/home-attention-timeline.test.tsx` (2 tests, authored by review-fix)
+- `packages/server/src/__tests__/unit/approval-notification-render.test.ts` (12 tests; golden pins re-captured)
+
+### Key read-only findings
+- `packages/owletto/src/app/$owner/agents/$agentId/chat.tsx:74` — `HomeAttentionTimeline` is mounted as `emptyContent`. Comment: *"a named thread (`/chat/c/$threadId`) renders that thread and ignores all of this."*
+- `packages/server/src/notifications/service.ts:208-209` — `card` is Slack-only: `const content = params.card ? { card: params.card } : { markdown: text };`
+- `packages/server/src/tools/admin/notify.ts` — resolves recipients to org admins; `if (userIds.length === 0) return { notified_count: 0 };`
+- `packages/owletto/src/components/agents/agent-thread.tsx:487-499` — chat attachments use a separate `AttachmentChip` with its own `<img>`, NOT Markdown
+
+## 4. Errors and Fixes
+
+1. **Escape regex too aggressive** — `/([\\`*_{}[\]()#+\-!>])/g` produced `New <Name\>`, `\(currently set by you\)`, `\{ "nested": true \}`. Narrowed to inline-only chars.
+2. **`[ 886 ]` backslash leak** — caught by my own e2e script, not tests. First tried lookahead (`]` only before `(`), which later proved insufficient; final answer: escape brackets unconditionally since react-markdown strips backslashes.
+3. **Test used `\\*` in JSX literal** — my own bug; fixed with `String.raw`.
+4. **Missing build in fresh worktree** — `Cannot find module '@lobu/connector-worker/compile'`; fixed with `make build-packages`.
+5. **Review round 1 blockers (CONFIRMED via rendered DOM):** `~~trusted agent~~` → `<del>`; `Budget] <https://evil.example>` created a second attacker anchor. Fixed by adding `~ < > [ ]`.
+6. **`~high~` diff delimiters got escaped** — my escape ran over the pre-assembled diff line. Fixed by keeping `current`/`proposed` unassembled in the model.
+7. **Review round 2:** agent_message bodies render live links. Added `linkPolicy`.
+8. **Review round 3:** type-based trust insufficient (generic branch + un-re-escapable historical rows). Replaced with `isOwnAppHref`.
+9. **Review round 4:** default `img` renderer (tracking pixel); setext of 1-2 chars. Both fixed.
+10. **Review round 5:** multiline entity name `"Bad\n\nName"` → card showed `"wants to delete Bad"`. Fixed with `truncateNotificationLine`.
+11. **Tests used absolute `app.lobu.ai` hrefs** — failed under jsdom `localhost` after origin validation. Switched to relative permalinks (matches production, since `buildResourcePermalink` omits baseUrl).
+12. **Merged formatting bug** — biome flagged indentation in code merged via #599; parent CI missed it (owletto is biome-excluded). Fixed via owletto#600.
+13. **USER FEEDBACK — "why don't we fix things here":** I had filed issue #2212 instead of fixing `MarkdownText`. Corrected by fixing in-branch and closing the issue.
+14. **My own incorrect claim, corrected:** I told the user the timeline "wasn't on the chat route." It IS (`chat.tsx:74`), as `emptyContent`. I stated this correction explicitly.
+15. **My own incorrect description:** I said the summarizer was un-gated for all rows; a review-fix pass had narrowed it to `item.kind === "notification"` (correct — run/sync bodies are status text). I flagged this correction.
+
+## 5. Problem Solving
+
+**Root cause:** Server emits Markdown; timeline rendered it as a raw JSX string. The body's *first line is already a summary sentence*, so no schema change was needed — show line 1 rendered, drop the rest (which already lives in the peek/run view via `run_ids=` → `MemoryEventsPeek`).
+
+**Deliberately NOT done:** persisting `ActionApprovalDetails` for true structured components — user said "don't complicate."
+
+**Local-not-showing diagnosis (3 causes, none code):** (1) user's URL had `/c/<threadId>`, a named thread, where the timeline is structurally absent; (2) `local-install` has **zero** notifications (`count: 0`); (3) user's main checkout was 2 commits behind with submodule at pre-merge `596b6923` — I fast-forwarded and updated to `56046ad0`.
+
+**Unresolved:** dev server on 8879 served a 3368-byte `notification-summary.ts` while every on-disk checkout has 2347 — running from an unidentified directory (`lsof`/`ps` blocked in sandbox). Needs a restart.
+
+## 6. All User Messages
+
+1. *"why these don't show up as embedded, when clicked using the peek view etc? [Image #1] https://app.lobu.ai/buremba/agents/lobu-builder/chat"* (+ screenshot of raw-markdown approval cards)
+2. *"yes we should use inline components for our notification section. when clicked we can show it dedicated and focused etc so the inline struff can just be a summary"*
+3. AskUserQuestion response — scope: no option selected, note: *"how would it look like? we want to dogfood as much as possible and don't complicate"*; escaping: *"Fix it in the same PR (Recommended)"*
+4. *"why don't we fix things here"*
+5. AskUserQuestion response: *"Merge both, in order (Recommended)"*
+6. *"still not soing here. http://localhost:8879/local-install/agents/lobu-builder/chat/c/2d5bca4ac0b7"*
+7. *"what's the dev server and the feature you were working on?"* (mid-turn)
+8. *"can you test prod when deployed?"*
+
+**Standing constraints (from CLAUDE.md/AGENTS.md, must persist):** Never write to `~/Code/lobu` directly — work in a worktree via `make task-setup`. `events` is append-only — never `DELETE FROM events`. Never bulk-delete prod `organization` rows. Workers never receive real credentials. Stage by explicit path (`git add -- <paths>`, never `-A`). Never `git stash`. Never resolve merge conflicts in the GitHub web UI. No dynamic imports. No backwards-compat shims/`@deprecated`. No "Co-Authored-By"/"Generated with Claude Code" in commits. Never `--admin` past a check that has not reported. `make review` once on settled HEAD. Prefer DOM reads over screenshots. Don't use AgentTool/workflows unless requested. Never use the Workflow tool (token cost).
+
+## 7. Pending Tasks
+
+None outstanding. All merged and prod-verified. Optional follow-ups previously surfaced (not requested): documenting `notifications.send({body})` format; the `notify.ts` silent no-op when no admins resolve (agent reports "Sent." but `notified_count: 0`); restarting the unidentified dev server on port 8879.
+
+## 8. Current Work
+
+Immediately before this summary I completed the user's request *"can you test prod when deployed?"* — full prod verification, which succeeded.
+
+Confirmed `Build and Push Images` succeeded on `fc62394d` (contains merge `0dd712b`). Navigated to `https://app.lobu.ai/buremba/agents/lobu-builder/chat` (no `/c/` suffix, so the timeline mounts).
+
+Results:
+```json
+{ "bundleHasHostCheck": true, "hasActivity": true, "hasNeedsApproval": true,
+  "rawBold": [], "rawMdLink": [] }
+```
+Card inspection (21 approval rows) — these are the exact rows from the original screenshot:
+```json
+{ "title": "Review merging person",
+  "summary": "An agent wants to merge 905319918039@s.whatsapp.net.",
+  "strongCount": 1,
+  "links": ["https://app.lobu.ai/buremba/person/member-0faa51dac0"], "imgs": 0 }
+```
+Non-approval rows render with `a: 0` (links stripped as designed). Peek pane verified:
+```
+Merge duplicate person / Requested by an agent · Run #702096
+KEPT Abdulhamit / TO MERGE AWAY 905319918039@s.whatsapp.net
+WHY THIS NEEDS APPROVAL / No configured deterministic identity rule proves this merge.
+[Confirm] [Reject]     — rawMd: false
+```
+Last action: closed the peek pane (`closed: true`, URL restored to `/buremba/agents/lobu-builder/chat`), leaving the user's browser session as found.
+
+**Shipped:** owletto#599 (`c9efeb9`), owletto#600 (`56046ad`), lobu#2210 (`0dd712b`). Final review: `bug_free 92, bugs 0, blockers 0, tests_adequate: true`. 946 frontend tests / 110 files, 669 server tests. Worktree removed, branches auto-deleted.
+
+## 9. Optional Next Step
+
+None. The user's most recent request — *"can you test prod when deployed?"* — is complete and verified successful: the deployed bundle contains the fix, all 21 approval cards render clean summaries with no raw markdown, live entity permalinks, zero images, and the peek view shows the structured detail with Confirm/Reject actions. I should report these results and await further direction rather than starting tangential work.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/burakemre/.claude/projects/-Users-burakemre-Code-lobu/8845e28f-1968-4265-b03d-2ffd9778591f.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.

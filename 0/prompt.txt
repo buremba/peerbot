@@ -1,0 +1,3 @@
+change "Who works here, both your agents and Lobu managed agents.
+
+" to "Who works here, all your agents" and change the label of copy prompt to copy prompt to bring your agent. also when a workspace is created, why don't we actually create an event so this is never empty? like a system event

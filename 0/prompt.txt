@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbwi0b8j0</task-id>
+<tool-use-id>toolu_01WQfKuEjVHUismWH4gTQTRT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e39f49c0-cd35-4e6e-a982-109426394d02/tasks/bbwi0b8j0.output</output-file>
+<status>completed</status>
+<summary>Background command "Push and final review of 2013" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+fix all these issues in our previews they need to work properly. also we never wanto to dump so much data in the mcp app, instead let the user see the data in lobu. charts etc are good though, the table is fine as well.

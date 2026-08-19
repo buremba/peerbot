@@ -1,0 +1,1 @@
+Read /tmp/pr-preview-question.md. Then answer the two questions with a focused, practical recommendation and reasoning. No code needed. Return your opinion as text.

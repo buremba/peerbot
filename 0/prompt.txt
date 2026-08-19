@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bbv1fwsqy</task-id>
+<summary>Monitor event: "PR #2290 checks + pi-review"</summary>
+<event>PR2290 FAILING checks: pi-review
+PR2290 watch ended</event>
+</task-notification>

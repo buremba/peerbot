@@ -38,7 +38,7 @@ The 86-second narrated demo shows ChatGPT using Lobu over MCP to pull connected 
 governed tools without leaving the conversation. The same shared context remains available to
 Claude, Codex, and custom agents.
 
-https://github.com/user-attachments/assets/089473bc-bd04-461c-9121-d05fa779e06e
+https://github.com/user-attachments/assets/c07e7c23-a29b-4b05-895e-51dcb935bac4
 
 ## Start with the agent you already use
 
@@ -87,36 +87,14 @@ Instead of every agent rebuilding the same state through per-session tool calls,
 - **Delegate when useful.** Persistent Lobu specialists can own a role, conversation history, tools, and recurring responsibilities.
 - **Keep control.** Identity, source permissions, approvals, credential brokering, provenance, and audit stay server-side.
 
-```text
-Connectors / webhooks / devices / APIs
-                     |
-                     v
-           +--------------------+
-           | append-only log    |<-------------------------------+
-           +---------+----------+                                |
-                     | resolve identities                         |
-                     | attach provenance                          |
-                     v                                            |
-           +--------------------+                                 |
-           | context graph      |                                 |
-           | entities + links   |                                 |
-           | current + history  |                                 |
-           +---------+----------+                                 |
-                /          \                                    |
-             query       watch / subscribe                       |
-                \          /                                    |
-           +---------+----------+                                 |
-           | agents + behaviors |                                 |
-           +---------+----------+                                 |
-                     |                                            |
-          sandbox + scoped tools / MCP                            |
-                     |                                            |
-            policy + approvals                                   |
-                     |                                            |
-                     v                                            |
-           actions on systems                                    |
-                     |                                            |
-              action events -------------------------------------+
+```mermaid
+flowchart TD
+    Sources["Connectors / webhooks / devices / APIs"] --> Log[("append-only log")]
+    Log -->|"resolve identities<br/>attach provenance"| Graph["context graph<br/>entities + links<br/>current + history"]
+    Graph -->|"query"| Agents["agents + behaviors"]
+    Graph -->|"watch / subscribe"| Agents
+    Agents -->|"sandbox + scoped tools / MCP<br/>policy + approvals"| Actions["actions on systems"]
+    Actions -->|"action events"| Log
 ```
 
 **MCP is for doing. Lobu's event graph is for knowing.**

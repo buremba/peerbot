@@ -1,0 +1,3 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T15:37:36.882Z","content":[{"text":"New message in #sales:\n\ndave: 😂😂 that deck though"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:37:38.939Z","id":"7eb94f3d","input_tokens":167,"output_tokens":124,"content":[{"type":"tool_use","id":"call_34a5ae70a1964e81a6ff02a4","name":"skip_reply","input":{},"result":{"output":"Skipped.","status":"success"}}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T15:37:40.467Z","id":"23a81b92","input_tokens":111,"output_tokens":62,"content":[{"type":"text","text":"Casual social chatter — nothing actionable, skipped replying."}]}

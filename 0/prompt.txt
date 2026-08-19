@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bwqr34i95</task-id>
+<summary>Monitor event: "PR 2343 checks after the authz fix"</summary>
+<event>2343 base-branch-guard: pass
+2343 check-drift: pass</event>
+</task-notification>

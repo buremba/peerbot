@@ -1,0 +1,21 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The patch risks exceeding the production MCP resource fetch budget and introduces deterministic chart defects for stored labels and range selection. It also removes safety bounds from agent-authored chart dimensions.
+
+Full review comments:
+
+- [P1] Keep the serialized MCP resource under the fetch budget — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-prod-fetch/packages/owletto/src/mcp-apps/interaction/markdown-view.tsx:2-3
+  Adding these parsers leaves the single-file app at 978,810 raw bytes, but escaping that HTML into the JSON-RPC `resources/read` response produces roughly 1,007,825 bytes. That exceeds the 1,000,000-byte fetch budget documented by `scripts/check-mcp-app-bundle.mjs`, so hosts enforcing the limit on the resource response can again reject the template before iframe startup; measure and constrain the serialized payload or use a smaller renderer.
+
+- [P2] Retain a safe upper bound for chart heights — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-prod-fetch/packages/owletto/src/mcp-apps/interaction/json-template-view.tsx:180-180
+  When an agent-authored `json_template` supplies a very large `height`, removing the previous upper clamp lets the SVG and MCP auto-resized iframe become arbitrarily tall, potentially stalling rendering or destroying the host layout. The same unbounded conversion was added to PieChart and StackedAreaChart; allow the required 400px contract while retaining a finite maximum.
+
+- [P2] Preserve date-only and categorical axis labels — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-prod-fetch/packages/owletto/src/mcp-apps/interaction/json-template-view.tsx:574-577
+  For date-only rows such as `2026-08-09`, `new Date` interprets the value as UTC and `getDate()` displays 8/8 for users west of UTC; the permissive parser also converts fallback labels such as `Jan` into `1/1`. These stored labels were previously displayed verbatim, so parse only known timestamps using appropriate UTC semantics and leave arbitrary labels unchanged.
+
+- [P2] Clamp a 100% range start to the final row — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-prod-fetch/packages/owletto/src/mcp-apps/interaction/json-template-view.tsx:581-584
+  When Range start is dragged to 100% while Range end is also 100%, this calculation produces `rows.length`; the subsequent lookup is undefined and `onDateRangeSelect` is silently skipped even though the controls show a last-point range. Clamp the start index to `rows.length - 1`, as is already done for the end index.
+  </results>
+  </user_action>

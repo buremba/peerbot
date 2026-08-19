@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1djgcjn6</task-id>
+<tool-use-id>toolu_01KdR7rUzALGEKt11uaK1nYx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/caf26cd6-7152-465a-818d-0afdf6a9b617/tasks/b1djgcjn6.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review on 803eb4e59" completed (exit code 0)</summary>
+</task-notification>

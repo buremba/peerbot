@@ -1,0 +1,8 @@
+triage these Status: Open.
+#2504 In lobu-ai/lobu;· buremba opened 10h ago
+Device Behaviors: the completion contract's lobu memory exec examples cannot compile
+bug
+Something isn't working
+
+Status: Open.
+#2503 In lobu-ai/lobu;· buremba opened 10h ago

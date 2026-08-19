@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbhfzdooz</task-id>
+<tool-use-id>toolu_011bbvX9oGXpEFNxbWjUnBiX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bbhfzdooz.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for peer gate then gate 2779" completed (exit code 0)</summary>
+</task-notification>

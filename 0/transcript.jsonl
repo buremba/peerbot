@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-07-31T16:30:21.034Z","content":[{"text":"New message in #sales:\n\ndave: 😂😂 that deck though"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-07-31T16:30:21.946Z","id":"9451e2ea","input_tokens":3411,"output_tokens":17,"content":[{"type":"text","text":"😂 It really is something—glad it got a reaction!"}]}

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>boa2k7h8q</task-id>
+<tool-use-id>toolu_01MuWHunkSrtja9KgBwNToJN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/82368b87-6555-4432-bce4-6459714348f7/tasks/boa2k7h8q.output</output-file>
+<status>killed</status>
+<summary>Background command "Confirm head parity and re-review 2399" was stopped</summary>
+</task-notification>

@@ -1,0 +1,1 @@
+ok seed some entities so i can test. also what's fan out let me understandd the question

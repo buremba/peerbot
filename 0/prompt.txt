@@ -1,0 +1,1 @@
+why is it taking it too long? we're moving to k8s for ci and previews do you think it would be better?

@@ -1,0 +1,1 @@
+wtf is that? actually don't use claude code use codex instead from my local creds. replace the tmux window accordingly. also you did it wrong, we dont pull lobu codebase there we need to just take the prompt in our landing page and paste it into codex and it installs lobu cli etc

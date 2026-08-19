@@ -1,0 +1,1 @@
+ok also for saved event etc the ids needs to be a link no? same with notifications etc. so we have a way from mcp apps for the user to land in lobu url (gateway url.) review all the work fix issues and then merge and test e2e

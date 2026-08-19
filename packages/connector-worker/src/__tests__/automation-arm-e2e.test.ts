@@ -263,3 +263,40 @@ describe('automation arm failure diagnosis', () => {
     expect(completions[0].body.error).toContain('Credit balance is too low');
   });
 });
+
+/**
+ * A timed-out CLI is the one exit path with no diagnosis attached: the run row
+ * gets `output_tail` from stdout only, and the timeout branch built its error
+ * from a fixed string, so whatever the CLI wrote to stderr before it stalled
+ * was dropped. That is how a device Automation can fail 39 times in a row and
+ * leave nothing behind to explain why (prod #71, Aug 18-19).
+ */
+describe('automation arm timeout diagnosis', () => {
+  const stderrStallBinary = path.join(tmp, 'pi-stderr-stall');
+
+  beforeAll(() => {
+    // Writes its diagnosis to stderr, then stalls until the deadline kills it.
+    writeFileSync(
+      stderrStallBinary,
+      `#!/bin/sh\necho "MCP server handshake failed: connection refused" >&2\nsleep 4\n`
+    );
+    chmodSync(stderrStallBinary, 0o755);
+  });
+
+  test('keeps the stderr the CLI wrote before it stalled', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const stalling = cfg();
+    stalling.timeoutMs = 500;
+    stalling.binaryOverrides = { pi: stderrStallBinary };
+
+    await executeAutomationRun(client(), automationJob(), stalling);
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('timeout');
+    // The deadline itself still has to be reported — it is the primary fact.
+    expect(completions[0].body.error).toContain('timeout');
+    // ...but so does the only evidence of WHY the CLI stalled.
+    expect(completions[0].body.error).toContain('MCP server handshake failed');
+  }, 30_000);
+});

@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'bun:test';
 import { ManageAutomationsSchema } from '../../tools/admin/manage_automations';
 import {
+  assertServerLaneModelResolves,
   assertValidExecutionConfig,
   type ExecutionConfigCaller,
 } from '../../tools/admin/automation-execution-config';
@@ -111,4 +112,61 @@ describe('assertValidExecutionConfig — elevated permission_mode gate', () => {
       expect(() => assertValidExecutionConfig({ permission_mode: mode }, member)).not.toThrow();
     }
   });
+});
+
+/**
+ * `lobu apply` writes Automations at phase 6 and org-owned inference providers
+ * at phase 10b, so a config declaring BOTH a provider and an Automation pinned
+ * to that provider's model reaches the model guard four phases before the
+ * provider row exists. The guard must stand down for an apply run rather than
+ * reject a config that is internally consistent — and do it before touching the
+ * database, since there is nothing to look up yet.
+ */
+describe('assertServerLaneModelResolves — lobu apply exemption', () => {
+  const applyRun = {
+    executionConfig: { model: 'not-registered-yet/some-model' },
+    organizationId: 'org_apply',
+    isDevicePinned: false,
+  };
+
+  it('stands down for an apply run (no provider lookup, no throw)', async () => {
+    await expect(
+      assertServerLaneModelResolves({ ...applyRun, applyId: 'apply_abc123' })
+    ).resolves.toBeUndefined();
+  });
+
+  it('reaches the provider lookup off an apply run', async () => {
+    // Asserts the DB-less failure BY NAME, not a bare `toThrow()`: the point is
+    // that this call gets as far as the provider lookup, which is exactly what
+    // the apply arm above short-circuits past. The real rejection (a
+    // ToolUserError naming the unregistered slug) is covered against a live
+    // database in integration/automations/automation-model-namespace.test.ts.
+    await expect(
+      assertServerLaneModelResolves({ ...applyRun, applyId: null })
+    ).rejects.toThrow(/DATABASE_URL/);
+  });
+
+  it('skips a device-pinned Automation without a lookup', async () => {
+    await expect(
+      assertServerLaneModelResolves({
+        ...applyRun,
+        isDevicePinned: true,
+        applyId: null,
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(['auto', 'bare-model-id', ''])(
+    "does not second-guess %o",
+    async (model) => {
+      await expect(
+        assertServerLaneModelResolves({
+          executionConfig: { model },
+          organizationId: 'org_apply',
+          isDevicePinned: false,
+          applyId: null,
+        })
+      ).resolves.toBeUndefined();
+    }
+  );
 });

@@ -1,3 +1,4 @@
+import { getInferenceProviderBySlug } from '../../lobu/stores/provider-secrets';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
 
@@ -58,4 +59,61 @@ export function assertValidExecutionConfig(value: unknown, caller: ExecutionConf
       `execution_config.permission_mode '${mode}' requires an owner or admin role; members may use: default, plan, auto, acceptEdits.`
     );
   }
+}
+
+/**
+ * Reject a model ref that names a provider this org has not registered.
+ *
+ * `execution_config.model` is ONE stored field with TWO resolution namespaces
+ * (see `getAutomationModelOverride` in automations/automation.ts). A
+ * device-pinned Automation passes the ref verbatim to a local CLI as `--model`,
+ * so it must name a provider THAT CLI has registered; a server-dispatched one
+ * resolves it against the org's `inference_providers`, where a server-lane ref
+ * is `<provider slug>/<model>` (`modelRefFromDefaultRow` builds it that way).
+ *
+ * Only the server lane is policed, because only its registry lives here — the
+ * CLI's provider list is on the user's machine and the server cannot see it.
+ * Left unchecked, a CLI-namespace ref on the server lane is accepted at the
+ * write and then fails on every scheduled run: prod Automation #5 took an
+ * `opencode-go/…` ref and answered `OpenRouter 400: not a valid model ID`.
+ *
+ * Deliberately narrow, so the check can only fire on a ref it fully understands:
+ * an absent/blank model, `auto`, and an unqualified id (no `/`) all pass. The
+ * org's registered providers are a human declaration, not a heuristic — the
+ * only thing being asserted is that the named one exists.
+ *
+ * `lobu apply` is exempt, and that is a soundness limit rather than a courtesy:
+ * apply writes Automations at phase 6 and org-owned inference providers at
+ * phase 10b, so a config declaring BOTH a provider and an Automation on that
+ * provider's model reaches this check four phases before the provider row
+ * exists. Rejecting there would fail a config that is internally consistent —
+ * and against a CLI already published to npm. Closing that hole means moving
+ * apply's provider phase ahead of its Automation phase first.
+ */
+export async function assertServerLaneModelResolves(params: {
+  executionConfig: unknown;
+  organizationId: string;
+  /** Effective pin AFTER the patch — either field set means the device lane. */
+  isDevicePinned: boolean;
+  /** `ctx.applyId` — non-null only for a `lobu apply` run. */
+  applyId?: string | null;
+}): Promise<void> {
+  const { executionConfig, organizationId, isDevicePinned, applyId } = params;
+  if (executionConfig === undefined || executionConfig === null) return;
+  if (applyId != null) return;
+  if (isDevicePinned) return;
+  const raw = (executionConfig as { model?: unknown }).model;
+  if (typeof raw !== 'string') return;
+  const model = raw.trim();
+  if (model === '' || model === 'auto') return;
+  const slash = model.indexOf('/');
+  if (slash <= 0) return;
+  const slug = model.slice(0, slash);
+  if (await getInferenceProviderBySlug(organizationId, slug)) return;
+  throw new ToolUserError(
+    `execution_config.model '${model}' names inference provider '${slug}', which this organization has not registered. ` +
+      `Register it first, use a model from a provider you have, or pass 'auto'. ` +
+      `Note: a device-pinned Automation (agent_kind + device_worker_id) instead resolves this ref against the local CLI's own providers, which are not interchangeable with these.`,
+    400
+  );
 }

@@ -89,6 +89,8 @@ export interface ExecutorResult {
 const STDOUT_CAP = 4 * 1024 * 1024;
 const STDERR_CAP = 1 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 600_000;
+/** Cap on the CLI-output tail folded into `runs.error_message`. */
+const DETAIL_TAIL_CHARS = 500;
 const LOCAL_MAX_ROUNDS = 8;
 const EXIT_REPORT_DELIVERY_ATTEMPTS = 3;
 const EXIT_REPORT_RETRY_DELAY_MS = 2000;
@@ -346,9 +348,23 @@ async function runCli(
 
     let exitReason: WorkerExitReason;
     let errorMessage: string | null;
+    // The last thing the CLI said before it stopped. Prefer stderr, but fall
+    // back to stdout. `claude` prints its fatal on stdout ("Credit balance is
+    // too low") and leaves stderr empty, so reading stderr alone reported the
+    // most likely real failure as a bare "exited with non-zero status 1" with
+    // the cause only in output_tail; `opencode` logs to stderr instead. Bounded
+    // because this lands in `runs.error_message`, and stderr is capped at 1 MiB.
+    const detail = (
+      stderrData.toString('utf8').trim() || stdoutData.toString('utf8').trim()
+    ).slice(-DETAIL_TAIL_CHARS);
     if (timedOut) {
       exitReason = 'timeout';
-      errorMessage = `${label} exited via ${killedSignal ?? 'SIGTERM'} after ${Math.trunc(timeoutMs / 1000)}s timeout`;
+      const deadline = `${label} exited via ${killedSignal ?? 'SIGTERM'} after ${Math.trunc(timeoutMs / 1000)}s timeout`;
+      // The deadline alone says nothing about WHY the CLI stalled, and a
+      // stalled CLI usually wrote nothing to stdout — so `output_tail` is NULL
+      // and this message is the only surviving evidence. Prod #71 failed this
+      // way 39 consecutive times and left no diagnosis behind.
+      errorMessage = detail === '' ? deadline : `${deadline}: ${detail}`;
     } else if (exitCode === 0) {
       exitReason = 'ok';
       errorMessage = null;
@@ -357,13 +373,6 @@ async function runCli(
       errorMessage = `${label} exited via signal (status=${proc.signalCode})`;
     } else {
       exitReason = 'error_message';
-      // Prefer stderr, but fall back to the tail of stdout. `claude` prints its
-      // fatal there ("Credit balance is too low") and leaves stderr empty, so
-      // reading stderr alone reported the most likely real failure as a bare
-      // "exited with non-zero status 1" with the cause only in output_tail.
-      const detail =
-        stderrData.toString('utf8').trim() ||
-        stdoutData.toString('utf8').trim().slice(-500);
       errorMessage =
         detail === ''
           ? `${label} exited with non-zero status ${exitCode}`

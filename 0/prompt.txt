@@ -1,0 +1,1 @@
+make all subagents fitting into our design, connector page is not like that, agent page is not like that. in the sidebar there is no behaviorand configure

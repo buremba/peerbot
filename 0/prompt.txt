@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The capability-based restore can overwrite newer live card data when host events arrive while the asynchronous restore is pending. This leaves the new no-toolInfo recovery path vulnerable to the event-ordering race it is intended to handle.
+
+Review comment:
+
+- [P2] Ignore restore responses superseded by live output — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:311-315
+  When a no-`toolInfo` host starts this restore from an empty replay, a later non-empty `toolresult` or `openai:set_globals` update can install current data while the request is pending. The response is then applied unconditionally here, replacing the newer result—including current actions and view state—with the older display-only snapshot; capture the capability/data generation and discard the response if it changed while awaiting.
+  </results>
+  </user_action>

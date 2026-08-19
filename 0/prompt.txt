@@ -1,0 +1,1 @@
+yes delete the dead worktrees

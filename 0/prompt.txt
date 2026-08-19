@@ -1,0 +1,1 @@
+save this to .env and use it in our prod as well REDACTED

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbozobplf</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30140936-8f87-43bd-83a7-fe289633e312/tasks/bbozobplf.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI checks to settle" completed (exit code 0)</summary>
+</task-notification>

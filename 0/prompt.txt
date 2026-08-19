@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxe7gt30u</task-id>
+<tool-use-id>toolu_01JPtQf1hPw6rStrJydQedYY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/13f0fe8f-d0cb-4f1a-b19c-1621ef6e6b2b/tasks/bxe7gt30u.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI to settle then report" completed (exit code 0)</summary>
+</task-notification>

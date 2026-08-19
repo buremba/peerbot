@@ -1,0 +1,1 @@
+Answer in under 120 words, exact numbers, no preamble. Q1: what context window does this project model run and is 1M active? Q2: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE — is it a percent of full window, and default value? Q3: if my session stays ~40%% of window, does PCT=75 ever fire, and what value fires earlier? Q4: env keys to reduce image/tool-result retention.

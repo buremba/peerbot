@@ -1,0 +1,1 @@
+there is no api changes needed right? also do we show the chatgpt conversation in the recent section? i see the logs in events but don't see the conversaiton

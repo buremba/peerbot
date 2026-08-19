@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bzsnpje6t</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/b003c9d5-e19c-4800-b0b6-8138e4cb7c2f/tasks/bzsnpje6t.output</output-file>
+<status>completed</status>
+<summary>Background command "Run review-fix" completed (exit code 0)</summary>
+</task-notification>

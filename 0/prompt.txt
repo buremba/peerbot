@@ -1,0 +1,1 @@
+i don't understand why we need that document table, that doesn't make sense? is it because of generating a unique id etc?

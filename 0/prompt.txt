@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6gfh9lzj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/9b2cbf0b-681a-45b4-93cf-d91a16522d4c/tasks/b6gfh9lzj.output</output-file>
+<status>completed</status>
+<summary>Background command "Run pre-pr on the reduced #2340" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bizqs9vcl</task-id>
+<tool-use-id>toolu_01NfKKpiGqgLBnkur1nTxoCu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bizqs9vcl.output</output-file>
+<status>completed</status>
+<summary>Background command "Gate erp-asof-reads" completed (exit code 0)</summary>
+</task-notification>

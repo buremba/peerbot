@@ -1,0 +1,1 @@
+hmm, why jira connector can't support the actions, guide me through. if we extend using the mcp i thought we can still require the users login and use their auth

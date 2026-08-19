@@ -1,0 +1,1 @@
+ok any more simplification or is it fully done? my problem withlocation was that the agents can trick people into stuff. the url also sounds useful but i'm not sure if the agents need to do it since we know about the chatgpt ui etc and can construct the url if they share the convo id?

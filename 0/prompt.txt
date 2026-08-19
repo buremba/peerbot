@@ -1,0 +1,1 @@
+is there any way we can hide desktop stuff? you can use claude app maybe and ghostty? do we support showing cursor zooming in etc to record video

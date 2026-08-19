@@ -1,0 +1,1 @@
+we used to put the mcp client's logo in the sidebar like claude and chatgpt. also when clicked we should not redirect the user to client page, instead we should redirect to events page with the client ids filter. in the events page

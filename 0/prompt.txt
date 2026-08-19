@@ -1,0 +1,1 @@
+oh fuck, so we don't really have all my tweets? dind't we check and backfill from the twitter export? also doesn't tiwtter connector have similar action to populate tweet? guide me through

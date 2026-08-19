@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmd437oot</task-id>
+<tool-use-id>toolu_01ArP6W4APNNhzKhnenhY1yV</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/30a3648b-457b-4a87-8c17-d28e38054e73/tasks/bmd437oot.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for final gate" completed (exit code 0)</summary>
+</task-notification>

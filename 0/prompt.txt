@@ -1,0 +1,1 @@
+is the main deployed? i want you to test it in prod using mcp and create sandbox do stuff etc

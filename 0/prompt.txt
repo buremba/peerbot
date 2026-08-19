@@ -1,0 +1,1 @@
+Say the word PONG and nothing else.

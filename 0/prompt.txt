@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bcj6ouhhh</task-id>
+<summary>Monitor event: "PR #2829 required checks after amend"</summary>
+<event>typecheck: pass
+unit: pass</event>
+</task-notification>

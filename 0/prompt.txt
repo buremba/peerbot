@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bbfixt9v2</task-id>
+<tool-use-id>toolu_015uT1QnyfLTjQp6zV3EkuMX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/5b3a8fb5-1a3b-47a3-a6e5-aa4b52e14cb0/tasks/bbfixt9v2.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for CI across all four PRs" was stopped</summary>
+</task-notification>

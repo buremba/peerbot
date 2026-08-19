@@ -1,0 +1,2 @@
+Stop hook feedback:
+[go review see if you can simplify things and merge when all done and do e2e]: The condition requires three things: (1) review simplification, (2) merge when all done, and (3) do e2e. The transcript shows: (1) simplification review complete ('found nothing to cut'), (2) CI still running (`Monitor started...CI monitoring`), NOT merged yet, and (3) e2e not started ('Next: merge on green, then run the e2e'). The agent is waiting for CI before merging and has not yet run e2e verification.

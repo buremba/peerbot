@@ -1,0 +1,12 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The focused suites, MCP bundle build, and typecheck pass, but a valid metadata-stripped replay ordering resets state for the same restored approval result. This breaks the restoration behavior the patch is intended to provide.
+
+Review comment:
+
+- [P2] Compare display-safe fingerprints for approval replays — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:714-718
+  When an empty capability replay restores an approval card, the stored result is intentionally display-safe (its `resolve_lobu_approval` action is removed), but a later standard or flat compatibility replay of the same result without `_meta` can still contain that action. Comparing the raw fingerprints here marks the same result as `metadataLessResultChanged`, runs `resetCurrentResult()`, and drops the restored disclosure/pagination state and snapshot binding; fingerprint the display-safe representation on both paths before deciding this is a new result.
+  </results>
+  </user_action>

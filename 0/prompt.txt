@@ -1,0 +1,21 @@
+You are reviewing an architecture/implementation plan for the Lobu monorepo (packages/server authz, packages/connectors, chat platforms).
+
+Read the plan at /tmp/lobu-plan-review/connector-authz-plugin-plan.md and spot-check claims against the real code:
+- packages/server/src/authz/sources.ts
+- packages/server/src/authz/acl-sync.ts
+- packages/server/src/gateway/connections/sender-identity.ts
+- packages/connector-sdk/src/acl-source.ts
+- packages/connectors/src/slack-identity.ts
+- packages/server/src/gateway/connections/channel-transcript.ts
+
+Return a structured review:
+1. Verdict: APPROVE / APPROVE WITH CHANGES / REJECT
+2. Confidence 0-100 you or an agent can implement end-to-end safely with clean cut
+3. Blockers (must fix before coding)
+4. Important risks / missing steps
+5. PR1 vs PR2 ordering feedback
+6. Whether Telegram L1 is correctly scoped
+7. Concrete file-level checklist for PR1 and PR2
+8. What would make you less confident
+
+Be harsh. No fluff. Cite file paths.

@@ -41,8 +41,27 @@ import type {
 } from '@lobu/core/contracts/worker/protocol';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
-import type { ExecutorConfig } from './executor.js';
 import { log } from './log.js';
+
+/**
+ * The slice of the daemon's `ExecutorConfig` the automation arm reads.
+ *
+ * Declared narrowly so a caller that only executes automations — the one-shot
+ * `executeClaimedAutomationRun` entry point — does not have to fabricate
+ * connector-sync fields (`batchSize`, `generateEmbeddings`, `maxOldSpaceSize`)
+ * that this arm never touches. The daemon's full `ExecutorConfig` is
+ * structurally assignable to it.
+ */
+export interface AutomationExecutorConfig {
+  timeoutMs?: number;
+  heartbeatIntervalMs?: number;
+  /**
+   * Explicit per-agent binary paths (else PATH lookup). Lets an operator point
+   * at a non-PATH CLI install, and is the injection seam the automation tests
+   * use to drive a fake binary.
+   */
+  binaryOverrides?: Partial<Record<AgentKind, string>>;
+}
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 export interface ExecutorResult {
@@ -408,7 +427,7 @@ export interface AutomationRunIo {
 export async function executeAutomationRun(
   client: ExecutorClient,
   job: PollResponse,
-  cfg: ExecutorConfig
+  cfg: AutomationExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
   const runId = job.run_id;
   const payload = job.payload;

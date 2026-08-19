@@ -1,5 +1,5 @@
 import { startDaemonCommand } from "@lobu/connector-worker/daemon";
-import { resolveContext } from "../internal/context.js";
+import { apiUrlToGatewayOrigin, resolveContext } from "../internal/context.js";
 
 export interface DaemonOptions {
   apiUrl?: string;
@@ -28,7 +28,9 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
   let apiUrl = options.apiUrl?.trim();
   if (!apiUrl) {
     try {
-      apiUrl = (await resolveContext()).url;
+      // The worker API is mounted at the ORIGIN, not under the context's
+      // `/api/v1` SDK path — see `apiUrlToGatewayOrigin`.
+      apiUrl = apiUrlToGatewayOrigin((await resolveContext()).url);
     } catch {
       // No context configured — surface the explicit requirement below.
     }

@@ -1186,6 +1186,34 @@ Memory:
       await daemonCommand(options);
     });
 
+  // ─── automation ─────────────────────────────────────────────────────
+  const automation = program
+    .command("automation")
+    .description("Device Automation execution");
+
+  withCommonOpts(
+    automation
+      .command("execute")
+      .description(
+        "Execute one already-claimed Automation run (envelope on stdin)"
+      )
+      .option(
+        "--api-url <url>",
+        "Gateway URL (defaults to your logged-in context)"
+      )
+      .option(
+        "--worker-id <id>",
+        "Worker id that claimed the run (required; must match claimed_by)"
+      )
+      .option("--job-file <path>", "Read the run envelope from a file")
+      .option("--debug", "Log heartbeat/retry detail")
+  ).action(async (options) => {
+    const { automationExecuteCommand } = await import(
+      "./commands/automation.js"
+    );
+    await automationExecuteCommand(options);
+  });
+
   // ─── doctor ─────────────────────────────────────────────────────────
   program
     .command("doctor")

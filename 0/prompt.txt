@@ -1,0 +1,1 @@
+the connectors can show up under their devices etc maybe, what's the best ux? we don't need infrastructure/deployments no? we can have a new filter in the envets saying deployments

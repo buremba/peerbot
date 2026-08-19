@@ -1,0 +1,1 @@
+what are these bugs, could you fix them properly. tell me so i can also confirm. also edge generation i believe connectors should be able to import, what's the best way to make it work

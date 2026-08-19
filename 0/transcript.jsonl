@@ -1,0 +1,2 @@
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"user","ts":"2026-08-17T01:17:48.273Z","content":[{"text":"Say hello in 5 words"}]}
+{"v":1,"agent":"pi","cli_version":"0.10.1","type":"assistant","ts":"2026-08-17T01:17:49.801Z","id":"2d87d846","input_tokens":15255,"output_tokens":8,"content":[{"type":"text","text":"Hello there, I am Pi."}]}

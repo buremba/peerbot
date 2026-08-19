@@ -17,11 +17,12 @@ import { fileURLToPath } from 'node:url';
 // packages/server dir (mirror of APP_ROOT in index.ts).
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const ORIGIN_PLACEHOLDER = '__LOBU_MCP_APP_ORIGIN__';
-const SAFE_BUNDLE_FILENAME = /^(?:index|legacy-v2)\.html$/;
 const SAFE_ASSET_PATH = /^assets\/[A-Za-z0-9._-]+\.(?:css|js)$/;
 
-function bundleFileCandidates(appDir: string, filename: string): string[] {
-  const rel = path.join('dist-mcp-apps', appDir, filename);
+// Shared by the template read and the asset reads below, so it stays keyed by
+// a path relative to the app's dist dir.
+function bundleFileCandidates(appDir: string, relPath: string): string[] {
+  const rel = path.join('dist-mcp-apps', appDir, relPath);
   const webDist = process.env.WEB_DIST_DIR?.trim();
   return [
     webDist ? path.join(webDist, '..', rel) : undefined,
@@ -102,19 +103,14 @@ export function withAbsoluteAssetUrls(html: string, assetBase: string): string {
 }
 
 /** Read a built MCP App bundle's HTML. Returns null when no build is present. */
-export async function readMcpAppBundle(
-  appDir: string,
-  filename = 'index.html'
-): Promise<string | null> {
-  if (!SAFE_BUNDLE_FILENAME.test(filename)) return null;
-  const cacheKey = `${appDir}/${filename}`;
-  const cached = bundleCache.get(cacheKey);
+async function readMcpAppBundle(appDir: string): Promise<string | null> {
+  const cached = bundleCache.get(appDir);
   if (cached !== undefined) return cached;
-  for (const candidate of bundleFileCandidates(appDir, filename)) {
+  for (const candidate of bundleFileCandidates(appDir, 'index.html')) {
     try {
       await stat(candidate);
       const html = await readFile(candidate, 'utf8');
-      bundleCache.set(cacheKey, html);
+      bundleCache.set(appDir, html);
       return html;
     } catch {
       // candidate absent — try the next
@@ -125,14 +121,14 @@ export async function readMcpAppBundle(
 
 /**
  * Render the current external-asset template for a remote MCP host. The raw
- * HTML stays cached by filename; request-specific origins are stamped only
+ * HTML stays cached per app dir; request-specific origins are stamped only
  * after the cache read so one tenant/request cannot contaminate another.
  */
 export async function renderMcpAppTemplate(
   appDir: string,
   publicOrigin: string
 ): Promise<string | null> {
-  const html = await readMcpAppBundle(appDir, 'index.html');
+  const html = await readMcpAppBundle(appDir);
   if (html == null) return null;
 
   const assetBase = `${publicOrigin}/mcp-apps/${encodeURIComponent(appDir)}/`;

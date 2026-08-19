@@ -25,8 +25,6 @@ import {
 } from '../../setup/test-fixtures';
 import { get, post } from '../../setup/test-helpers';
 
-const STUB_EMBEDDED_HTML =
-  '<!doctype html><html><body data-test="mcp-app-embedded-stub">embedded</body></html>';
 const STUB_EXTERNAL_HTML =
   '<!doctype html><html><head><link rel="stylesheet" href="./assets/app.css?v=css123"><script defer src="./assets/app.js?v=js123"></script></head><body data-test="mcp-app-external-stub">external</body></html>';
 
@@ -54,10 +52,6 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     mkdirSync(join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets'), {
       recursive: true,
     });
-    writeFileSync(
-      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'legacy-v2.html'),
-      STUB_EMBEDDED_HTML
-    );
     writeFileSync(
       join(tmpRoot, 'dist-mcp-apps', 'interaction', 'index.html'),
       STUB_EXTERNAL_HTML
@@ -205,7 +199,6 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?.uri).toBe('ui://lobu/interaction/v42.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-external-stub');
-    expect(content?.text).not.toContain('mcp-app-embedded-stub');
     // Absolute, not `./assets/…` behind a `<base>`: Claude serves the app
     // sandbox with `base-uri 'self'`, drops the element, and then resolves
     // every relative URL against its own origin — a blank widget.
@@ -273,105 +266,28 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect((await get('/mcp-apps/unknown/assets/app.js')).status).toBe(404);
   });
 
-  it('keeps v1 and v2 aliases on the packed, network-free template', async () => {
+  it('refuses every retired interaction URI instead of aliasing it', async () => {
+    // Retired ids used to be enumerated and re-served, each pinned to the
+    // template it was issued with (a packed self-contained one or the external
+    // one); that table was deleted along with the packed template. A host only
+    // asks for one when it re-reads a chat transcript old enough that its own
+    // cache has been evicted, and that card fails alone. Nothing current
+    // resolves through here, so a bump no longer has a list to forget.
     const sessionId = await initSession(`/mcp/${org.slug}`);
-    for (const uri of ['ui://lobu/interaction/v1', 'ui://lobu/interaction/v2']) {
-      const response = await post(`/mcp/${org.slug}`, {
-        body: {
-          jsonrpc: '2.0',
-          id: uri,
-          method: 'resources/read',
-          params: { uri },
-        },
-        headers: { 'mcp-session-id': sessionId },
-        token,
-      });
-      expect(response.status).toBe(200);
-      const content = (await response.json()).result?.contents?.[0];
-      expect(content?.uri).toBe(uri);
-      expect(content?.mimeType).toBe('text/html;profile=mcp-app');
-      expect(content?.text).toContain('mcp-app-embedded-stub');
-      expect(content?.text).not.toContain('mcp-app-external-stub');
-      expect(content?._meta?.ui?.csp).toEqual({
-        connectDomains: [],
-        resourceDomains: [],
-        frameDomains: [],
-      });
-      expect(content?._meta?.ui?.domain).toBeUndefined();
-    }
-  });
-
-  it('keeps v3-v6 and every v30-and-later retired URI on the external template', async () => {
-    const sessionId = await initSession(`/mcp/${org.slug}`);
-    // Derive the retired range from the live constant so a bump that forgets
-    // to alias the URI it replaced fails here instead of in a live chat.
     const currentVersion = Number(
       LOBU_INTERACTION_RESOURCE_URI.match(/\/v(\d+)\.html$/)?.[1]
     );
     expect(currentVersion).toBeGreaterThan(30);
-    const externalAliases = [
-      3,
-      4,
-      5,
-      6,
-      ...Array.from({ length: currentVersion - 30 }, (_, index) => 30 + index),
-    ].map((version) => `ui://lobu/interaction/v${version}.html`);
-
-    for (const uri of externalAliases) {
-      const response = await post(`/mcp/${org.slug}`, {
-        body: {
-          jsonrpc: '2.0',
-          id: uri,
-          method: 'resources/read',
-          params: { uri },
-        },
-        headers: { 'mcp-session-id': sessionId },
-        token,
-      });
-
-      expect(response.status).toBe(200);
-      const content = (await response.json()).result?.contents?.[0];
-      expect(content?.uri).toBe(uri);
-      expect(content?.mimeType).toBe('text/html;profile=mcp-app');
-      expect(content?.text).toContain('mcp-app-external-stub');
-      expect(content?.text).not.toContain('mcp-app-embedded-stub');
-      const assetSrc = content?.text?.match(
-        /src="([^"]+\/mcp-apps\/interaction\/assets\/app\.js\?v=js123)"/
-      )?.[1];
-      expect(assetSrc).toBeTruthy();
-      expect(content?.text).not.toContain('./assets/');
-      const resourceOrigin = new URL(assetSrc!).origin;
-      expect(content?._meta?.ui?.csp).toEqual({
-        connectDomains: [],
-        resourceDomains: [resourceOrigin],
-        frameDomains: [],
-      });
-    }
-  });
-
-  it('keeps prior packed resource aliases on the network-free template', async () => {
-    const sessionId = await initSession(`/mcp/${org.slug}`);
-    for (const uri of [
+    const retired = [
+      'ui://lobu/interaction/v1',
+      'ui://lobu/interaction/v2',
       'ui://lobu/interaction/v7.html',
-      'ui://lobu/interaction/v8.html',
-      'ui://lobu/interaction/v9.html',
-      'ui://lobu/interaction/v10.html',
-      'ui://lobu/interaction/v11.html',
-      'ui://lobu/interaction/v12.html',
-      'ui://lobu/interaction/v13.html',
-      'ui://lobu/interaction/v14.html',
-      'ui://lobu/interaction/v15.html',
-      'ui://lobu/interaction/v20.html',
-      'ui://lobu/interaction/v21.html',
-      'ui://lobu/interaction/v22.html',
-      'ui://lobu/interaction/v23.html',
-      'ui://lobu/interaction/v24.html',
-      'ui://lobu/interaction/v25.html',
-      'ui://lobu/interaction/v26.html',
-      'ui://lobu/interaction/v27.html',
-      'ui://lobu/interaction/v28.html',
       'ui://lobu/interaction/v29.html',
-    ]) {
+      'ui://lobu/interaction/v30.html',
+      `ui://lobu/interaction/v${currentVersion - 1}.html`,
+    ];
+
+    for (const uri of retired) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
           jsonrpc: '2.0',
@@ -382,11 +298,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         headers: { 'mcp-session-id': sessionId },
         token,
       });
-      expect(response.status).toBe(200);
-      const content = (await response.json()).result?.contents?.[0];
-      expect(content?.uri).toBe(uri);
-      expect(content?.text).toContain('mcp-app-embedded-stub');
-      expect(content?.text).not.toContain('./assets/');
+      const body = await response.json();
+      // The card fails; the session does not. A retired id must not read as a
+      // successful empty render, which a host would cache and never retry.
+      expect(body.result).toBeUndefined();
+      expect(JSON.stringify(body.error)).toContain(uri);
     }
   });
 

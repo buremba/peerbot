@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bc5j87uub</task-id>
+<tool-use-id>toolu_01UYM8druqh6F7gLrtZKUAup</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/bc5j87uub.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll gate again" completed (exit code 0)</summary>
+</task-notification>

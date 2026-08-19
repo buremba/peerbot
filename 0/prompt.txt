@@ -1,0 +1,96 @@
+# Design question: is MCP activity a CONVERSATION with an external origin?
+
+Repo: /Users/burakemre/Code/lobu (bun workspace, TS, Postgres). Read the real files.
+
+## The user's framing (this is the question to evaluate)
+
+"I thought one conversation can be mapped to internal and external, meaning it's
+living somewhere else like Slack, and Recent automatically shows it?"
+
+They are pointing out that the `conversations` model ALREADY expresses "this
+conversation lives somewhere else":
+
+  packages/server/src/gateway/services/conversations-store.ts:28 classifyConversation()
+    platform 'api'  -> { kind: 'owned',    storedPlatform: 'web' }
+    anything else   -> { kind: 'platform', storedPlatform: <platform> }
+
+Slack is not special-cased anywhere. A Slack message flows:
+  inbound -> message-consumer.ts:465 classifyConversation -> upsertConversation
+  -> conversations row (kind='platform', platform='slack')
+  -> listAgentThreads (agent-thread-list.ts) lists it in Recent
+  -> the UI opens it READ-ONLY by raw conversation_id
+     (app-sidebar.tsx: `if (!isWeb)` -> /conversations/$conversationId)
+
+So the user's question is: why is MCP not simply another `platform` value?
+
+## What I built (and now doubt)
+
+PR #2211. I DERIVED sidebar entries for MCP clients by aggregating audit events:
+
+  agent-thread-list.ts — a query grouping `events` (semantic_type='audit') joined
+  to oauth_clients by client_name, emitting platform:'mcp' entries carrying
+  clientIds[], which deep-link to the events timeline filtered by those ids.
+
+Plus a genuinely separate, self-standing change: a `client_id` filter on the
+events/get_content query paths (events.client_id is a real indexed column,
+idx_events_client_id, FK -> oauth_clients, written per tool call by
+recordToolInvocationAudit in tools/audit.ts:112).
+
+## What I found AFTER building it (the reason I'm asking)
+
+There is ALREADY a purpose-built connected-clients API I did not know about:
+
+  packages/server/src/lobu/client-routes.ts:197  GET /api/{org}/clients
+    returns MCP clients + messaging clients with:
+      status: connected|disconnected, authState, lastSeenAt, assignedAgentId,
+      capabilities, userAgent, firstParty, externalUrl, linkedUserName/Email
+  packages/server/src/lobu/client-routes.ts:302  DELETE /mcp/:clientId (revoke)
+  owletto: src/lib/api/clients.ts — typed `useConnectedClients` hook already exists,
+  but is consumed in exactly ONE place (a behavior-builder panel). There is NO
+  connected-apps page.
+
+So my derived "MCP client" notion is a SECOND, POORER model of a concept the
+codebase already models better.
+
+## The hard constraint
+
+An MCP tool call has NO transcript. `agent_transcript_snapshot.run_id` is NOT NULL
+(baseline.sql:430) and the write route verifies run ownership
+(gateway/transcript-routes.ts). MCP calls have no run and no worker. So a
+conversations row for MCP would list an entry that opens to NOTHING — unlike Slack,
+whose rows DO have transcripts written by the worker that processed the message.
+
+Also relevant: `upsertConversation` has exactly one caller (message-consumer.ts:477,
+the queue consumer) and `resolvePinnedSelection` (sandbox-store.ts:266) is the only
+other writer. Neither is reachable from the MCP tool path (mcp-handler.ts /
+tools/execute.ts import neither).
+
+MCP sessions have a 1hr sliding TTL (mcp-handler.ts:52) but oauth_clients rows are
+long-lived. A client RE-REGISTERS under the same client_name: prod has 6 distinct
+client_ids for "Lobu CLI". Every client_name maps to exactly 1 user and 1 org.
+
+## Questions
+
+1. **Is the user right?** Should MCP be a `platform` value on `conversations`
+   (kind='platform', platform='mcp') so Recent lists it with zero new mechanism —
+   the same way Slack does? What breaks, given there is no transcript to open?
+
+2. If yes, what is the unit of an MCP "conversation" — the MCP session (1hr TTL),
+   the oauth client registration, or something else? What would its
+   `conversation_id` be, and who writes the row?
+
+3. If no — if MCP activity is genuinely NOT a conversation — then is the right
+   surface the EXISTING `GET /api/{org}/clients` (which already models connection
+   status and revoke), with a connected-apps page? And should the sidebar entry be
+   dropped entirely, or sourced from that API instead of my derived audit query?
+
+4. **Is my derived audit-event aggregation a workaround?** Be blunt. I am asking
+   because I built it before finding client-routes.ts.
+
+5. Should the `client_id` events filter be kept regardless? It is independently
+   useful ("what did ChatGPT do here") and has no dependency on the UI decision.
+
+6. What am I missing? Be adversarial and cite file:line.
+
+Prefer the simplest design that does NOT create a second model of an existing
+concept. Say plainly if the answer is "delete what you built and use the existing API".

@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6tma7exb</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/b6tma7exb.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run PR A gate after infra cancellation" completed (exit code 0)</summary>
+</task-notification>

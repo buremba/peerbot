@@ -1,0 +1,15 @@
+<user_action>
+  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+  <action>review</action>
+  <results>
+  The new result-identity state machine mishandles both omitted and explicitly absent snapshot capability metadata. These paths can either prevent restoration and persistence or leak view state between reused result cards.
+
+Full review comments:
+
+- [P1] Preserve compatibility capability on metadata-less results — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:525-526
+  When ChatGPT publishes the capability through `openai:set_globals` but the same result's standard `toolresult` has data and omits `_meta`, `capability` is `undefined` and this assignment clears the retained token. Without host `toolInfo`, that token is the sole identity, so an in-flight restore is rejected and later view-state edits cannot be saved; preserve the existing capability for metadata-omitted deliveries.
+
+- [P2] Reset state for explicitly capability-less results — /Users/burakemre/Code/lobu/.claude/worktrees/mcp-app-v8/packages/owletto/src/mcp-apps/_shared/host.tsx:636-642
+  When a reused ChatGPT iframe receives a new `toolOutput` whose `toolResponseMetadata` is present but lacks the snapshot key, the extractor returns `null`. Because this fingerprint boundary only handles `undefined`, differing output bypasses `resetCurrentResult()` and carries the previous card's pagination, disclosure state, and tool name into the new card; apply the fingerprint fallback whenever no valid string capability identifies the result.
+  </results>
+  </user_action>

@@ -25,6 +25,17 @@ workflow_job() {
   ' "$workflow"
 }
 
+# Pull the body of a job's `run: |` block out of the YAML the caller already
+# extracted, so the tests below execute the real gate script instead of
+# re-stating it. Both fan-ins are shaped the same way, so they share this.
+job_run_script() {
+  awk '
+    /^        run: \|$/ { capture = 1; next }
+    capture && /^          / { print; next }
+    capture && NF { exit }
+  ' <<<"$1"
+}
+
 run_id="$(printf 'Org: test\nRun: bj0453b334\nWaiting...\n' | remote_ci_extract_run_id)"
 assert_eq "$run_id" "bj0453b334"
 
@@ -139,8 +150,95 @@ for smoke in sdk-lifecycle-e2e sdk-error-taxonomy-e2e cli-command-smoke; do
     fail "$smoke does not restore the built distributions"
 done
 sdk_gate="$(workflow_job "$workflow" sdk-cli-e2e)"
-grep -q '^    needs: \[sdk-lifecycle-e2e, sdk-error-taxonomy-e2e, cli-command-smoke\]$' <<<"$sdk_gate" ||
+grep -q '^    needs: \[sdk-cli-build, sdk-lifecycle-e2e, sdk-error-taxonomy-e2e, cli-command-smoke\]$' <<<"$sdk_gate" ||
   fail "sdk-cli-e2e does not aggregate every deep smoke"
+integration_gate="$(workflow_job "$workflow" integration)"
+grep -q '^    needs: \[check-author, paths, server-integration-vitest, server-integration-bun\]$' <<<"$integration_gate" ||
+  fail "integration fan-in does not gate on check-author/paths"
+# The fan-in decision is pure shell over the `needs.*.result` strings, so it can
+# be EXECUTED rather than pattern-matched. A grep only proves the text is
+# present; running the real script from the workflow proves the decision. The
+# result vocabulary is GitHub's: success | failure | cancelled | skipped.
+integration_gate_script="$(job_run_script "$integration_gate")"
+[ -n "$integration_gate_script" ] || fail "could not extract the integration fan-in script"
+
+# author paths packages vitest bun -> pass|fail
+gate_verdict() {
+  if AUTHOR_RESULT="$1" PATHS_RESULT="$2" PACKAGES_CHANGED="$3" \
+     VITEST_RESULT="$4" BUN_RESULT="$5" \
+     bash -e -c "$integration_gate_script" >/dev/null 2>&1; then
+    echo pass
+  else
+    echo fail
+  fi
+}
+
+assert_gate() {
+  local expected="$1"; shift
+  local got
+  got="$(gate_verdict "$@")"
+  [ "$got" = "$expected" ] ||
+    fail "integration fan-in: author=$1 paths=$2 packages=$3 vitest=$4 bun=$5 -> $got, wanted $expected"
+}
+
+# Everything green passes, whether or not runtime paths changed.
+assert_gate pass success success true success success
+assert_gate pass success success false success success
+# THE REGRESSION: a shard reports `skipped` when its own dependency broke. With
+# packages=true that is a broken gate, not an unaffected PR, and must be red.
+assert_gate fail success success true skipped success
+assert_gate fail success success true success skipped
+assert_gate fail success success true skipped skipped
+# ...but a genuinely unaffected PR still passes on skipped shards.
+assert_gate pass success success false skipped skipped
+# An unset `packages` output is not the string "true", so it reads as unaffected.
+assert_gate pass success success "" skipped skipped
+# A gate job that did not succeed is fatal however it ended — this is the hole
+# `check-author`/`paths` were added to `needs` to close.
+assert_gate fail failure success true success success
+assert_gate fail skipped success true success success
+assert_gate fail cancelled success true success success
+assert_gate fail success failure true success success
+assert_gate fail success skipped true success success
+assert_gate fail success cancelled false skipped skipped
+# `cancelled` is not `skipped`: it never gets the unaffected-PR exemption.
+assert_gate fail success success false cancelled success
+assert_gate fail success success false success cancelled
+# An outright shard failure is red regardless of the paths filter.
+assert_gate fail success success false failure success
+assert_gate fail success success true failure failure
+# Same treatment for the SDK fan-in: execute it, don't pattern-match it. None of
+# these jobs has a paths filter, so `skipped` can only mean a broken upstream —
+# there is no unaffected-PR exemption to carve out here.
+sdk_gate_script="$(job_run_script "$sdk_gate")"
+[ -n "$sdk_gate_script" ] || fail "could not extract the sdk-cli-e2e gate script"
+
+sdk_gate_verdict() {
+  if BUILD_RESULT="$1" SDK_RESULT="$2" ERROR_TAXONOMY_RESULT="$3" CLI_RESULT="$4" \
+     bash -e -c "$sdk_gate_script" >/dev/null 2>&1; then
+    echo pass
+  else
+    echo fail
+  fi
+}
+
+assert_sdk_gate() {
+  local expected="$1"; shift
+  local got
+  got="$(sdk_gate_verdict "$@")"
+  [ "$got" = "$expected" ] ||
+    fail "sdk-cli-e2e: build=$1 sdk=$2 taxonomy=$3 cli=$4 -> $got, wanted $expected"
+}
+
+assert_sdk_gate pass success success success success
+# A skipped smoke means sdk-cli-build broke underneath it — never green.
+assert_sdk_gate fail success skipped success success
+assert_sdk_gate fail success success skipped success
+assert_sdk_gate fail success success success skipped
+assert_sdk_gate fail skipped skipped skipped skipped
+assert_sdk_gate fail failure skipped skipped skipped
+assert_sdk_gate fail success cancelled success success
+assert_sdk_gate fail success failure success success
 dead_code="$(workflow_job "$workflow" dead-code-report)"
 [ -n "$dead_code" ] || fail "advisory dead-code report was dropped during SDK fan-out"
 grep -q '^    needs: \[unit, frontend, integration, format-lint, typecheck, migrations\]$' <<<"$dead_code" ||

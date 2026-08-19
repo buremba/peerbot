@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bgxaiqz3q</task-id>
+<summary>Monitor event: "dev boot with embedded pg"</summary>
+<event>HEALTHY after 3 checks</event>
+</task-notification>

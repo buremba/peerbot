@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1pzmsl99</task-id>
+<tool-use-id>toolu_013PCLGbPom1ZWmPDqA1qdmR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e8ae611f-3800-43ed-836d-8de4d4fb9fe5/tasks/b1pzmsl99.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run review on the settled head" completed (exit code 0)</summary>
+</task-notification>

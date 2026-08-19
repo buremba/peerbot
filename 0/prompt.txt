@@ -1,0 +1,54 @@
+<task-notification>
+<task-id>a0f4ee7ec1be933f1</task-id>
+<tool-use-id>toolu_01RiVc5RS5CDirVDQD9u5pmH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/20120f8c-2c63-4e6f-b5a4-6cbc52c6601c/tasks/a0f4ee7ec1be933f1.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify MCP server config model" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All checks are complete — this was read-only verification (greps and file reads only; no writes, no state changes). Sanity check: I traced the full path from install entry point → connector definition → connection → credential resolution → visibility predicate, and each link is cited from committed code in the main checkout.
+
+## Verdict: PARTIAL — architecturally true, two details need correcting
+
+### The actual mechanism (with evidence)
+
+**1. How a remote MCP server is added: it's a connector, org-scoped — not an agent-config field, not a standalone connection type.**
+
+- Entry point: the `manage_connections` admin tool's install action accepts exactly one of `connector_id | source_url | source_uri | source_code | mcp_url` — `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_connections/handlers/connector-management.ts:50-77`.
+- `installConnectorFromMcpUrl` (`/Users/burakemre/Code/lobu/packages/server/src/catalog/connector-definitions.ts:232-318`) probes the remote server, then upserts an **org-scoped** `connector_definitions` row keyed `mcp.&lt;server-name&gt;` with `mcp_config = { upstream_url, tool_prefix }` (line 267, `versionScope: "organization"` at 281).
+- Source-installed connectors can equally declare `mcpConfig: { upstreamUrl }` in the SDK — `/Users/burakemre/Code/lobu/packages/connector-sdk/src/connector-types.ts:64-67` — persisted to the same `mcp_config` column (`/Users/burakemre/Code/lobu/packages/server/src/utils/connector-definition-install.ts:326,364,393`).
+- Explicit negative: agent/global MCP server config is **intentionally unsupported**. `/Users/burakemre/Code/lobu/packages/server/src/gateway/auth/mcp/config-service.ts:55-60`: "Raw agent/global MCP servers are intentionally unsupported; the only worker MCP is the gateway-derived system `lobu-memory` server. External MCP capabilities must be installed as connectors and executed through connector operations." The `mcpServers` mention in `/Users/burakemre/Code/lobu/packages/core/src/contracts/agent-settings.ts:9` is a doc comment about *removed* drift — the TypeBox schema has no such field.
+- `packages/plugin-mcp` is the **client** side (turns MCP tool defs into agent ToolDefinitions plus `_login/_login_check/_logout` tools — `/Users/burakemre/Code/lobu/packages/plugin-mcp/src/index.ts:35-124`). Lobu's own MCP *server* is separate (`mcp-handler.ts` / the `/mcp/:orgSlug` lobu-memory endpoint).
+
+**2. Scope and per-user credentials: definition is org-level; credentials are per-connection, and two users CAN hold different credential sets against the same MCP server.**
+
+- `connections` table: org-scoped rows with `created_by`, `auth_profile_id`, `visibility text DEFAULT 'org' NOT NULL` — `/Users/burakemre/Code/lobu/db/migrations/00000000000000_baseline.sql:707-730`.
+- Multiple live connections per (org, connector) are allowed; uniqueness is per `(organization_id, connector_key, account_id)` — baseline.sql:3533. Two users with different upstream accounts = two coexisting connections.
+- MCP tool calls execute against a **specific connection**: `callTool(connectorKey, config, orgId, toolName, args, connectionId)` → `resolveCredentialsByConnectionId` — `/Users/burakemre/Code/lobu/packages/server/src/mcp-proxy/client.ts:256-264`, `/Users/burakemre/Code/lobu/packages/server/src/mcp-proxy/credential-resolver.ts:62-95` ("multi-account support when the caller specifies which connection to use").
+
+**3. Yes, it touches `connections.visibility` — heavily.**
+
+- Defaulting: personal `oauth_account` creds are floored to `private` regardless of role; shared credential kinds default `org` for admins, `private` for members — `resolveConnectionVisibility` in `/Users/burakemre/Code/lobu/packages/server/src/tools/admin/helpers/connection-helpers.ts:577-590`.
+- Hard DB backstop: a trigger **rejects** any oauth_account-backed connection at `visibility='org'` — `/Users/burakemre/Code/lobu/db/migrations/20260703200000_connection_personal_cred_private_guard.sql:32-59`.
+- Enforcement at use: `compileConnectionRowVisibility` (`/Users/burakemre/Code/lobu/packages/server/src/authz/connection-visibility.ts:67-81`) — visible iff `visibility='org'` OR `created_by = principal`; applied when selecting operation targets (`/Users/burakemre/Code/lobu/packages/server/src/tools/admin/manage_operations.ts:776-810`). Admins do NOT see other members' private connections.
+
+### The two corrections
+
+1. **"A private MCP connection that only exists for the identity that created it"** — true of the *connection/credentials*, not the *server registration*. The connector definition (and its discovered tool catalog) is org-level and visible to the whole org; what's private is your connection and its credential. There is no per-user server registration.
+2. **"Each user attaches their own Google credentials"** — the plumbing exists (per-connection oauth_account profiles, trigger-forced private), but a connector installed from a bare `mcp_url` gets `authSchema: null` (connector-definitions.ts:254), so it's unauthenticated out of the box; per-user OAuth attachment requires the connector definition to declare an auth schema (e.g. a source-installed connector carrying both `mcpConfig` and `authSchema`). I found no automatic upstream-MCP OAuth discovery (RFC 9728 / WWW-Authenticate) on the proxy path — the `www-authenticate` code in the repo is Lobu acting as its own OAuth/MCP *server*. Minor nuance: tool *discovery* (`discoverTools`, client.ts:176-200) uses the org's most-recently-updated credentialed connection without a visibility filter, but that only builds the tool catalog; actual calls are per-connectionId and visibility-gated.
+
+### Corrected public-safe phrasing
+
+&gt; Remote MCP servers are installed as connectors at the org level — you point Lobu at an MCP URL (or ship a connector that declares an upstream MCP) and its tools become org-visible operations. Credentials live one level down, on connections: each user can create their own connection to the same MCP connector, and personal OAuth credentials are forced to private visibility (a DB trigger rejects org-visible personal creds outright), so agents acting for other users can't route through your token. Tool calls always execute against a specific connection, so two users hit the same MCP server with two different credential sets. The one nuance: the server registration itself (and its tool list) is org-visible — what's private is your connection and credential, not the server's existence — and per-user OAuth against an upstream MCP needs the connector to declare an auth schema; a bare URL install is unauthenticated by default.
+
+### Confidence and next actions
+
+**Confidence: 90 (high) on the mechanism and visibility model** — I read the install path, proxy client, credential resolver, authz compiler, and DB schema/triggers end-to-end in committed code, including the explicit "intentionally unsupported" comment ruling out agent-level MCP config. **75 (medium) on the negative claim "no upstream MCP OAuth discovery flow"** — based on targeted greps (www-authenticate, oauth-protected-resource, connect-handler MCP branches) that all came back as Lobu's own OAuth-server side; I did not exhaustively read the owletto frontend or every OAuth callback path.
+
+Next actions you could pick from:
+1. Grep the owletto submodule for an MCP-connector OAuth connect UI before asserting the "auth schema required" nuance publicly.
+2. E2E-verify the two-users-two-connections story against a real MCP server (install via `mcp_url`, connect as two users, confirm per-connection tokens hit upstream).
+3. If the "bare URL install = no auth" gap matters for the reply's audience, check whether upstream MCP OAuth discovery (RFC 9728) is on any roadmap/issue before describing it as absent by design.
+
+result: Claim verified PARTIAL — MCP servers install as org-level connectors (`installConnectorFromMcpUrl`, connector-definitions.ts:232) with per-connection, per-user credentials gated by `connections.visibility` (personal creds trigger-forced private); corrections: the server registration is org-visible (only the connection is private) and bare-URL installs have no auth schema.</result>
+<usage><subagent_tokens>95807</subagent_tokens><tool_uses>42</tool_uses><duration_ms>369203</duration_ms></usage>
+</task-notification>

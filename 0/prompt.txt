@@ -1,0 +1,1 @@
+remove gemini we don't use it. agy replaces gemini. add pi agent as well and test it

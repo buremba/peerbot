@@ -1,0 +1,1 @@
+we also see all the history in audit logs when shit happens? what do you think is the best for our approach for new entity creation updates etc

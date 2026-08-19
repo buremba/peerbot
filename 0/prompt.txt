@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>by52daqar</task-id>
+<tool-use-id>toolu_0148o9C11AcjGiZCHYhSgGLW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/872c1f9c-d1ae-4139-93a5-3ed7b02ede10/tasks/by52daqar.output</output-file>
+<status>killed</status>
+<summary>Background command "Boot vite proxied to prod" was stopped</summary>
+</task-notification>

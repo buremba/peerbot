@@ -1,0 +1,1 @@
+we can also get rid of the ui page and refer to $skills entity for the agentid as well no? when i scale in terms of flexibility i mean. the users can have their own skills etc

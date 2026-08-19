@@ -1,0 +1,84 @@
+<task-notification>
+<task-id>a946063971802b10e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/f0b3eac6-8946-4c9e-bbf8-24d856a5592a/tasks/a946063971802b10e.output</output-file>
+<status>completed</status>
+<summary>Agent "Period close enforcement" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Period close is enforced at the entity mutation gate, uncommitted on `feat/erp-period-close` in `/Users/burakemre/Code/lobu/.claude/worktrees/erp-period-close`.
+
+## What I built
+
+**Where the period lives (investigated first):** nothing in the repo has any notion of an accounting period, fiscal calendar, or close date — `grep` over `db/migrations` and `packages/server/src` for `accounting|period_close|closed_through|fiscal|lock_date` returns zero. The only per-org config surface that can hold this without DDL is `entity_types.metadata_schema` (jsonb). `organization` has only a better-auth `metadata text` column — not appropriate. So the close is declared as an `x-` vendor extension on the entity type, exactly like the `x-transitions` precedent:
+
+```json
+"x-period-close": { "field": "posting_date", "closed_through": "2026-06-30" }
+```
+
+`closed_through` is inclusive. Closing a period is an ordinary `manage_entity_schema` edit — **no new table, no DDL**.
+
+**New:** `packages/server/src/authz/period-close-interceptor.ts` (352 lines), registered in `BUILTIN_INTERCEPTORS`. Rules: create dated ≤ close → deny; entity already dated ≤ close is sealed against *every* field including its own date → deny; open entity backdated into the closed period → deny; delete of a closed-period entity → deny; absent date = undated = allowed (and the moment it gets a closed date, the update path denies); malformed rule or unparsable date → deny (fail closed). Dates compare as UTC calendar days so a bare `2026-06-30` can't drift a day.
+
+**Gate plumbing:** `UpdateMutationRequest` now carries `currentValues`/`proposedValues` alongside `fields` — ownership says *who* may write, the values are what let an interceptor reason about *what* the write does. Wired at every update door: `entity-management.updateEntity`, `promote-keyed-entities` (existing-row sync), and a new gate call in `entity-field-approval.applyEntityFieldChangeProposal` (an approval queued before a close must not apply after it).
+
+**Two structural changes worth flagging:**
+1. `updateEntity` previously ran the gate only for non-human edits (`if (!isHumanEdit)`). A close that binds agents but not people is not a close, so the gate now runs for every principal with `principalKind: "user"`. Approval policy is unaffected — `entity-policy.evaluateEntityFieldUpdates` short-circuits `"user"` to allow, and human writes present owner `"none"`.
+2. `promote-keyed-entities` gated *creates* with one per-type probe carrying no row data, so a Behavior could promote an unlimited number of backdated new rows. Added a per-row create gate before insert (fail-closed, `deniedCreate` + a warn log); the per-type approval probe still governs approvals.
+
+## Proof (real output, final code)
+
+Focused suite, 19 cases across create / update / delete / approval-apply:
+```
+ ✓ src/__tests__/integration/tools/entity-period-close.test.ts (19 tests) 2737ms
+ ✓ src/__tests__/integration/tools/all-tools-e2e.test.ts (29 tests) 467ms
+ ✓ src/__tests__/integration/tools/entity-change-approval-create-dedupe.test.ts (2 tests)
+ ✓ src/__tests__/integration/tools/entity-approval-owner-routing.test.ts (7 tests)
+ ✓ src/__tests__/integration/entity-schema/metadata-provenance-keys.test.ts (2 tests)
+ ✓ src/__tests__/integration/watchers/promotion-gate-fail-closed.test.ts (2 tests)
+ Test Files  6 passed (6)      Tests  61 passed (61)
+```
+Mutation test (interceptor removed from `BUILTIN_INTERCEPTORS`, then restored) — the deny cases die, the allow cases survive, so nothing passes vacuously:
+```
+ Test Files  1 failed (1)      Tests  12 failed | 7 passed (19)
+```
+Full server vitest suite: `Test Files 428 passed (428) / Tests 3881 passed | 2 skipped`, `EXIT=0`. `bunx tsc --noEmit` clean. Gate unit tests via `bun test`: 14 pass / 0 fail.
+
+## NOT enforced (explicit)
+
+- **`events` — completely unenforced.** Rows carry their own `occurred_at`, never touch this gate, and are written by connector sync / `save_content`. A backdated event lands in a closed period today. That is the HARD half (DB triggers on an append-only table) and I did not build it.
+- **Ungated entity doors** that write metadata directly, bypassing the gate: `utils/entity-merge.ts` (entity-resolution merge), `watchers/classifier-extraction.ts`, `utils/member-entity.ts`, `utils/entity-link-upsert.ts` (attribution/identity), and `manage_entity`'s link/unlink graph edges. The `x-transitions` branch gated edges via a `$links` pseudo-attribute; I did not port that, since an edge has no posting date.
+- **The close is per entity type, not per org.** Closing a month means editing every posting type's schema; nothing enforces that they agree, and there is no close history, no `closed_by`, and no reopen record.
+- **Enforcement is server-side only** — direct SQL, migrations, and admin DB access are unaffected.
+
+## Proposed DDL (needs your confirmation before building)
+
+To make the close org-wide and auditable:
+```sql
+CREATE TABLE accounting_period_closes (
+  organization_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  ledger          text NOT NULL DEFAULT 'default',
+  closed_through  date NOT NULL,
+  closed_at       timestamptz NOT NULL DEFAULT now(),
+  closed_by       text REFERENCES "user"(id),
+  note            text,
+  PRIMARY KEY (organization_id, ledger)
+);
+```
+The type keeps `"x-period-close": { "field": "posting_date", "ledger": "default" }` (the date field is genuinely type-specific); `closed_through` moves to the table. Bounded config table, PK lookup on the read path — roughly a 10-line change in the interceptor. Reopen/close history goes to `events` as domain records, not extra columns.
+
+## Confidence
+
+- **Interceptor logic (create/update/delete, dates, malformed/absent handling) — 92.** Ran 19 integration cases against a real Postgres through `executeTool`, plus a mutation test proving each denial comes from this code.
+- **`entity-management` update path incl. the human-edit change — 85.** Exercised by the focused tests and the full 3881-test suite; I did not drive it through the live app UI.
+- **`entity-field-approval` apply path — 80.** Covered by a differential pair (same flow applies when open, refuses after close), but the approve call swallows the error into a still-pending run rather than surfacing it to the caller — I asserted on the DB outcome, not the error surface.
+- **`promote-keyed-entities` (both branches) — 62.** Compiles, the existing promotion-gate fail-closed suite passes, and the update branch mirrors a proven pattern — but I wrote **no test that drives a Behavior window promoting a backdated row**. The per-row create gate is untested end to end.
+- **Events / DB-trigger half — 0.** Not attempted, by design.
+
+## Suggested next actions
+
+1. Decide on the `accounting_period_closes` DDL above — until then the close is per entity type and has no audit trail.
+2. Add a promotion test that runs `promoteBehaviorEntityOutput` with a backdated row and asserts `deniedCreate` (the weakest surface at 62).
+3. Decide whether the ungated doors get folded in now — `entity-merge` is the sharpest one, since merging a closed invoice into another rewrites its metadata with no gate.
+4. If the events half matters, scope the DB-trigger design separately; `events` being append-only makes it a different shape of problem than this gate.</result>
+<usage><subagent_tokens>191099</subagent_tokens><tool_uses>140</tool_uses><duration_ms>1052184</duration_ms></usage>
+</task-notification>

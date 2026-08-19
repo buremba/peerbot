@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmh6jdhrj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-burakemre-Code-lobu/e3e39998-3947-4d70-b1e6-a73e5b005158/tasks/bmh6jdhrj.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch for remaining integration check" completed (exit code 0)</summary>
+</task-notification>

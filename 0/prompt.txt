@@ -1,0 +1,105 @@
+<file name="/private/tmp/claude-501/-Users-burakemre-Code-lobu/1b95a027-7948-46dc-8553-ddfe89bc6524/scratchpad/identity-simplification-plan.md">
+# Identity simplification plan — review request
+
+Repo: `/Users/burakemre/Code/lobu` (Bun workspace, `packages/*`). Read `AGENTS.md` first.
+
+## Context / constraints
+
+- **No customers yet. Backwards compatibility is explicitly NOT a concern.** Prefer deletion over shims.
+- Stated goal: **simplify the system, not complicate it.** A proposal that adds a table, a subsystem, or a
+  compatibility layer needs to justify itself against just deleting something instead.
+- Long-term target: one identity graph. A human is one `$member` entity per org; every platform account
+  (Slack, Telegram, X, Jira, Linear, GitHub, …) resolves onto that `$member` via `entity_identities`.
+
+## Current data model (verify these claims — I may be wrong)
+
+Two tables that both look "identity-ish" but do different jobs:
+
+- **`entity_identities`** — `(organization_id, namespace, identifier) -> entity_id`, live-unique per org.
+  Translates an *external string* into an entity. This is the only door from the outside world into the graph.
+  Written by `packages/server/src/utils/entity-link-upsert.ts` and `packages/server/src/authz/access-graph.ts`.
+- **`entity_relationships`** — `(from_entity_id, relationship_type_id, to_entity_id)`. Entity-to-entity edges.
+  `member_of` edges are the **read ACL** for channel/repo recall.
+
+Plus two things I believe are redundant:
+
+- **`chat_user_identities`** — GLOBAL (no `organization_id`), PK `(platform, team_id, platform_user_id)` ->
+  `lobu_user_id`. Written by `packages/server/src/lobu/stores/chat-identity.ts:60-77` and by the `/lobu link`
+  slash-command flow. I traced its readers to RBAC role checks only; I believe authz never reads it.
+- **identity-fact engine** — `packages/server/src/identity/` (capability registry, assurance levels,
+  `IDENTITY_ENGINE_SHADOW` flag). I verified it never writes `entity_identities`; it writes `events` and
+  `entity_relationships` (`engine.ts:429`) and is read via JOIN at `auth-hook.ts:90,149`.
+
+## The bugs this plan is meant to fix
+
+1. **SEVERE — permanent denial.** Adoption of a Slack identity onto a `$member` happens only at sign-in and only
+   for Slack (`packages/server/src/auth/subject-identities.ts:315` gates on `providerId === "slack"`;
+   `:100-141` is `adoptSlackIdentityOntoMember`). A human who signs in with Google/GitHub/Microsoft while being
+   in Slack channels never gets their `slack_user_id` adopted onto their `$member`. Only email can bridge them,
+   and Slack email is not currently fetched (see 3). Result: they are permanently denied Slack channel recall.
+2. **Telegram / X / Discord mint nothing.** `packages/server/src/gateway/connections/sender-identity.ts` has
+   `case 'slack'` and `default: return null`. So a Telegram user has no identity row at all and can never be
+   linked to their `$member`. Email cannot bridge Telegram or X — neither platform exposes one.
+3. **Hollow Slack person names.** `packages/connectors/src/slack-identity.ts:158-166` sets
+   `name: combined` where `combined` is `"T09ABC:U123XYZ"`. Auto-created `person` entities are titled with the
+   raw composite id. There is a resource name-refresh loop at `access-graph.ts:330-350` but **no member
+   equivalent**, so a bad name is permanent.
+4. **No Slack email.** `packages/connectors/src/slack.ts:41-62` — `SLACK_BOT_SCOPES` has `users:read`,
+   `reactions:read`, `reactions:write` but NOT `users:read.email`. Also `member_joined_channel` is subscribed
+   at `:68` with no handler.
+5. **`person` <-> `$member` cannot be merged.** `packages/server/src/utils/entity-merge.ts:210-214` throws
+   `cannot merge entities of different entity types`.
+6. **`resolveRequesterMember`** (`packages/server/src/authz/channel-visibility.ts:154-164`) short-circuits on
+   `byAuth`. I considered unioning the two resolvers and confirmed it does NOT work:
+   `resolveRequesterByChatUserId` (`:100-140`) builds keys via `identity.buildUserKey(teamId, userId)` where
+   `userId` must already be a *platform* user id, not an auth user id.
+
+## Proposed plan
+
+1. **Generalize `adoptSlackIdentityOntoMember` -> `adoptIdentityOntoMember(namespace, identifier)`.**
+   Replace the Slack-only function; do not add alongside it. Its body already does
+   INSERT -> adopt-from-`person` (UPDATE with `merged_from_entity_id = COALESCE(...)`) -> conflict.
+2. **Call it from two places:** (a) sign-in, for *every* OAuth provider, not just Slack; (b) the account-linking
+   flow. This is what closes bug 1.
+3. **Repoint `/lobu link` to write `entity_identities`** instead of `chat_user_identities`.
+4. **Set `merged_into` on drained `person` entities** so the old entity tombstones instead of lingering live.
+5. **Add Telegram identity minting** in `sender-identity.ts` (namespace `telegram_user_id`), removing the
+   `default: return null` dead end for the platforms we actually run.
+6. **Delete `chat_user_identities`** and its store, after repointing readers to `$member` -> `auth_user_id`.
+7. **Delete the identity-fact engine** (`packages/server/src/identity/`), including `IDENTITY_ENGINE_SHADOW`.
+8. **Slack email chain:** add `users:read.email` scope, fetch via `users.list`, and declare `email` as an
+   ADDITIONAL primary on `slackAclSource.memberIdentities`.
+9. **Member name enrichment + a member name-refresh loop** mirroring `access-graph.ts:330-350`.
+
+## Already shipped this session (context, not under review)
+
+PR #2411 fixed two `resolveMembers` defects in `packages/server/src/authz/access-graph.ts`: it now excludes
+soft-deleted entities from resolution, and it implements primary/secondary tier precedence (a present-but-
+unmatched primary never falls through to a secondary match). Tests in
+`packages/server/src/__tests__/integration/authz/access-graph-member-resolution.test.ts`.
+
+## What I want from you
+
+Read the actual code before answering — do not take my claims on faith. Then:
+
+1. **Which of my claims above are wrong?** Cite file:line. I have already been wrong four times this session
+   about what this code does.
+2. **Is step 8 (email as an ADDITIONAL primary) actually safe?** My worry: with two primaries, a member
+   carrying a fresh `slack_user_id` (unmatched) plus a matched `email` now has "a primary present and one
+   primary hit", so it would collapse onto the email holder. Is that the behaviour we want, or does it
+   reintroduce the recycled-identity hazard PR #2411 just closed? Note `entity-link-upsert.ts:756-780`
+   comments `// size 0 = present-but-unmatched -> leave null so a new entity is created.`
+3. **Is deleting `chat_user_identities` genuinely safe** — is there any reader I missed, and does the global
+   (org-less) scope of that table encode something `entity_identities` (org-scoped) structurally cannot
+   express? Specifically: a human in multiple orgs DMing a bot.
+4. **Is deleting `packages/server/src/identity/` safe**, or does something depend on its output?
+5. **Is this plan actually a simplification?** Count what it adds vs deletes. If any step is net-complication,
+   say so and propose the deletion that replaces it.
+6. **What is the correct ORDER** to do these in so nothing is broken between steps, and which steps should be
+   separate PRs (repo rule: one branch = one concern)?
+7. **What am I not seeing?** Sharpest structural criticism you have.
+
+Be concrete and cite file:line. Disagreement is more useful to me than agreement.
+
+</file>
+Review this plan. Read the actual code in this repo to verify every claim before answering. Answer all 7 questions. Cite file:line.

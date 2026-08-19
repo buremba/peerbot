@@ -1,0 +1,1 @@
+can you just run the frontend on the prod api so we can iterate. we want the connector list to be a row, also use the rows instead of columns for simplicity

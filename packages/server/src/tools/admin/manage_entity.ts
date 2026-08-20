@@ -828,11 +828,7 @@ async function handleMerge(
 	// and before the review branch below — a dry run must never create an
 	// approval, exactly as on the delete path.
 	if (args?.dry_run) {
-		const preview = await previewMerge({
-			orgId: ctx.organizationId,
-			loserIds,
-			winnerId,
-		});
+		const preview = await previewMerge({ loserIds, winnerId });
 		return {
 			action: "merge",
 			success: true,

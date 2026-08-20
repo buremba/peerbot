@@ -113,7 +113,7 @@ export interface ApplyMergeGroupParams {
  * behind it.
  */
 export async function previewMerge(
-	params: { orgId: string; loserIds: number[]; winnerId: number },
+	params: { loserIds: number[]; winnerId: number },
 	db: DbClient = getDb(),
 ): Promise<{ refused: boolean; reason: string | null }> {
 	const loserIds = [...new Set(params.loserIds)].sort((a, b) => a - b);

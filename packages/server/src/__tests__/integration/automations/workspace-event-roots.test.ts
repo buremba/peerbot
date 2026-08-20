@@ -20,6 +20,7 @@ import {
   insertEvent,
 } from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { isPlatformEventType } from '../../../automations/platform-event-catalog';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { createTestAgent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
@@ -28,23 +29,22 @@ async function subscriberOrg(eventTypes: string[][]) {
   const sql = getTestDb();
   const workspace = await TestWorkspace.create({ name: 'Workspace Event Root Org' });
   const ownerUserId = workspace.users.owner.id;
-  // A workspace trigger may only name an event type some entity type declares
-  // (`assertAutomationTriggerConnections`). For an entity-type-less trigger the
-  // catalog is the union across the org, so declaring on `$member` is what
-  // makes a type subscribable org-wide. Platform-emitted types have no
-  // declaring entity type yet — closing that catalog gap is separate work; here
-  // the types are declared explicitly so the activation path itself is what is
-  // under test.
+  // A workspace trigger may only name an event type some catalog declares
+  // (`assertAutomationTriggerConnections`). Platform `<subject>.<op>` types come
+  // from the computed platform catalog and need no declaration — that is the
+  // point, and the tests below rely on it. Only non-platform types are declared
+  // here, on `$member`, whose `event_kinds` is the org-wide content registry.
+  const declared = eventTypes.flat().filter((type) => !isPlatformEventType(type));
   await ensureMemberEntityType(workspace.org.id);
-  await sql`
-    UPDATE entity_types
-    SET event_kinds = ${sql.json(
-      Object.fromEntries(
-        eventTypes.flat().map((type) => [type, { description: type }])
-      )
-    )}
-    WHERE organization_id = ${workspace.org.id} AND slug = '$member'
-  `;
+  if (declared.length > 0) {
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json(
+        Object.fromEntries(declared.map((type) => [type, { description: type }]))
+      )}
+      WHERE organization_id = ${workspace.org.id} AND slug = '$member'
+    `;
+  }
   const agent = await createTestAgent({
     organizationId: workspace.org.id,
     ownerUserId,
@@ -100,22 +100,22 @@ describe('workspace events with no producing Automation', () => {
     // The second Automation subscribes to a sibling op. It exists to prove the
     // GIN needle narrows rather than matching every dotted subscriber.
     const { workspace, automationIds } = await subscriberOrg([
-      ['device.online'],
-      ['device.offline'],
+      ['device.deleted'],
+      ['connection.deleted'],
     ]);
-    const [onlineConsumer] = automationIds;
+    const [deviceConsumer] = automationIds;
 
     const event = await insertConnectionlessAuditEvent(
       {
         organizationId: workspace.org.id,
         entityIds: [],
-        originId: 'device:root-worker:online',
+        originId: 'device:root-worker:deleted',
         semanticType: 'change',
         title: 'Device came online',
         content: 'A device worker started reporting.',
         metadata: { category: 'device', worker_id: 'root-worker' },
       },
-      { subject: 'device', op: 'online' }
+      { subject: 'device', op: 'deleted' }
     );
 
     // The writer stamped it and left `automation_id` null: this row is a root.
@@ -128,7 +128,7 @@ describe('workspace events with no producing Automation', () => {
     `;
     expect(stored[0]).toEqual({
       automation_id: null,
-      event_type: 'device.online',
+      event_type: 'device.deleted',
     });
 
     await expect(
@@ -149,7 +149,7 @@ describe('workspace events with no producing Automation', () => {
         AND organization_id = ${workspace.org.id}
     `;
     expect(runs.map((row) => Number(row.automation_id))).toEqual([
-      onlineConsumer,
+      deviceConsumer,
     ]);
     expect(runs[0]?.approved_input).toMatchObject({
       delivery_ids: [`workspace-event:${event.id}`],
@@ -159,16 +159,16 @@ describe('workspace events with no producing Automation', () => {
         event_id: event.id,
         // The specific name, not the `change` semantic type every audit row
         // shares — otherwise the consumer cannot tell what happened.
-        event_type: 'device.online',
+        event_type: 'device.deleted',
         causal_automation_ids: [],
         depth: 1,
       },
     });
   });
 
-  it('also activates a subscriber named by the raw semantic type', async () => {
+  it('does not let a `change` subscription become an audit firehose', async () => {
     const sql = getTestDb();
-    const { workspace, automationIds } = await subscriberOrg([['change']]);
+    const { workspace } = await subscriberOrg([['change']]);
 
     const event = await insertConnectionlessAuditEvent(
       {
@@ -183,33 +183,35 @@ describe('workspace events with no producing Automation', () => {
       { subject: 'connection', op: 'deleted' }
     );
 
-    // Both arms of the needle have to fire: stamping a specific type must not
-    // silently unsubscribe an Automation already listening to `change`.
+    // Every audit row carries `change`, so matching it would wake this
+    // Automation on essentially every write in the organization. An audit row
+    // is named by its stamped type and nothing else.
     await expect(
       activateWorkspaceEventTask(rootPayload(workspace.org.id, event.id), sql)
-    ).resolves.toMatchObject({ matched: 1, queued: 1 });
-    const runs = await sql<{ automation_id: number }>`
-      SELECT automation_id FROM runs
-      WHERE run_type = 'automation' AND organization_id = ${workspace.org.id}
-    `;
-    expect(runs.map((row) => Number(row.automation_id))).toEqual(automationIds);
+    ).resolves.toMatchObject({ matched: 0, queued: 0 });
+    expect(
+      await sql`
+        SELECT id FROM runs
+        WHERE run_type = 'automation' AND organization_id = ${workspace.org.id}
+      `
+    ).toHaveLength(0);
   });
 
   it('terminates a root that arrives claiming ancestry', async () => {
     const sql = getTestDb();
-    const { workspace, automationIds } = await subscriberOrg([['device.online']]);
+    const { workspace, automationIds } = await subscriberOrg([['device.deleted']]);
 
     const event = await insertConnectionlessAuditEvent(
       {
         organizationId: workspace.org.id,
         entityIds: [],
-        originId: 'device:forged-worker:online',
+        originId: 'device:forged-worker:deleted',
         semanticType: 'change',
         title: 'Device came online',
         content: 'A device worker started reporting.',
         metadata: {},
       },
-      { subject: 'device', op: 'online' }
+      { subject: 'device', op: 'deleted' }
     );
 
     // Nothing ran before a root, so a non-empty causal path is incoherent.

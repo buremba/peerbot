@@ -20,6 +20,7 @@ import {
   type ViewTemplateTab,
 } from '@lobu/core/contracts/tools/manage-entity-schema';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
+import { isPlatformEventType } from '../../automations/platform-event-catalog';
 import { compileEntityRule } from '../../authz/entity-rule-executor';
 import { type DbClient, getDb } from '../../db/client';
 import { validateMetricReadModes } from '../../metrics/read-mode';
@@ -186,6 +187,29 @@ function assertValidMetricsConfig(metricsConfig: unknown): void {
   ];
   if (errors.length > 0) {
     throw invalidSchema(`invalid metrics_config: ${errors.join('; ')}`);
+  }
+}
+
+/**
+ * Reject event kinds that collide with the platform's own `<subject>.<op>`
+ * vocabulary.
+ *
+ * `event_kinds` is the registry `save_content` validates against, so a type
+ * declared here becomes postable as ordinary content. Declaring
+ * `connection.deleted` would therefore let any caller with content-write
+ * access post a row that Automations subscribed to real connection deletions
+ * would activate on. Blocking the collision at declaration is the chokepoint —
+ * checking on every save would leave already-declared collisions live.
+ */
+function assertEventKindsAvoidPlatformVocabulary(
+  eventKinds: Record<string, unknown> | null | undefined
+): void {
+  if (!eventKinds || typeof eventKinds !== 'object') return;
+  const reserved = Object.keys(eventKinds).filter(isPlatformEventType);
+  if (reserved.length > 0) {
+    throw invalidSchema(
+      `event_kinds may not redeclare platform event types: ${reserved.join(', ')}`
+    );
   }
 }
 
@@ -515,6 +539,7 @@ async function etHandleCreate(
   // metadata_schema is stored as the author sent it — measure/dimension roles for
   // a derived type are classified ON READ (see etHandleGet), never persisted.
   assertValidMetricsConfig(args.metrics_config);
+  assertEventKindsAvoidPlatformVocabulary(args.event_kinds);
   const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
   const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
@@ -620,6 +645,7 @@ async function etHandleUpdate(
   }
   assertValidMetricsConfig(args.metrics_config);
   assertValidBacking(args.backing);
+  assertEventKindsAvoidPlatformVocabulary(args.event_kinds);
   // Converting a populated stored type to a derived (view-backed) type would
   // orphan its existing rows (the view ignores them). Reject it.
   if (args.backing?.sql) {

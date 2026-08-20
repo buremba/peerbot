@@ -10,20 +10,19 @@ import { markAcceptedInternalFields } from '../validate-args';
 // ============================================
 
 /**
- * Event payloads are byte-capped at the read boundary so one oversized event
- * cannot flood a model turn. A clamped row keeps the head of `payload_text`
- * plus a `… [truncated]` suffix and sets `payload_truncated: true` and
- * `content_length` (the full original character length). Read the remainder
- * with the SQL reader (read-only, org-scoped): `SELECT substr(payload_text,
- * <offset>, <len>) ...` using the character offsets implied by `content_length`.
+ * Query/listing reads truncate long text values (head + `… [truncated]` +
+ * full `content_length`) so one oversized event cannot flood a model turn;
+ * the full body is read by an explicit event-id read or `substr(...)`.
  */
 const PAYLOAD_CAP_NOTE =
-  'Event payloads are byte-capped at the read boundary: a clamped row keeps ' +
-  'only the head of `payload_text`/`text_content` plus a `… [truncated]` suffix ' +
-  'and sets `payload_truncated: true` with `content_length` = full original ' +
-  'character length. Read the remainder with the SQL reader (read-only, ' +
+  'Long text is truncated on query/listing reads: a value longer than ' +
+  '~4000 characters is returned as a head plus a `… [truncated]` suffix, with ' +
+  '`content_length` set to the full original character length. Query reads ' +
+  '(list/search, query_sql, automation sources) truncate; an explicit ' +
+  'event-id read (`content_ids`) returns the full body. To read the rest of a ' +
+  'truncated value, fetch the event by id, or use the SQL reader (read-only, ' +
   'org-scoped): `SELECT substr(payload_text, <offset>, <len>) FROM events ' +
-  'WHERE id = <event_id>` using the character offsets implied by `content_length`.';
+  'WHERE id = <event_id>`, with `offset` derived from `content_length`.';
 
 // ============================================
 // Typebox Schema

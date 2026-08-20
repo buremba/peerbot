@@ -18,7 +18,7 @@ import {
   parseRecordArray,
   toNumberOrUndefined,
 } from './types';
-import { clampRowPayloads, type ClampBudget } from './byte-clamp';
+import { truncateRowsText } from './truncate';
 
 /**
  * Gated payload keys: the request itself and its size. `request_status` is
@@ -159,12 +159,14 @@ export async function buildContentItems(opts: {
   excerptsMap: Map<number, string>;
   includePrivateAttribution: boolean;
   /**
-   * Per-row byte budget applied at this serialization chokepoint. Omitted for
-   * the non-agent web paths that render content cards, which want full bodies;
-   * provided for agent-facing reads so one oversized `payload_text` cannot
-   * flood the model turn.
+   * When provided, every string cell of every item is truncated to this many
+   * characters (head + `… [truncated]` + full `content_length`). Passed for
+   * bulk query reads (list/search) so one oversized `payload_text` cannot flood
+   * the model turn. Omitted — full bodies returned — for the deliberate
+   * explicit event-id (`content_ids`) read, whose whole point is "get the full
+   * event". Omitted for the non-agent web paths that render content cards.
    */
-  clamp?: ClampBudget;
+  headChars?: number;
 }): Promise<ContentItem[]> {
   const {
     sql,
@@ -174,7 +176,7 @@ export async function buildContentItems(opts: {
     baseUrl,
     excerptsMap,
     includePrivateAttribution,
-    clamp,
+    headChars,
   } = opts;
 
   // Score and text-search paths intentionally return slimmer rows than exact
@@ -369,8 +371,6 @@ export async function buildContentItems(opts: {
       root_context: f.root_context as ContentItem['root_context'],
       permalink: buildResourcePermalink(ownerSlug, { kind: 'event', eventId: f.id }, baseUrl) ?? null,
     };
-    // Agent-facing reads clamp oversized payloads at this exit (see above).
-    if (clamp) clampRowPayloads(item as unknown as Record<string, unknown>, clamp);
 
     return item;
   });
@@ -402,6 +402,13 @@ export async function buildContentItems(opts: {
       item.payload_data = renderData;
     })
   );
+
+  // Truncate oversized text HERE, after the render tail above: that tail
+  // synthesizes `payload_data` for metadata-only events, so a truncation
+  // earlier would miss an arbitrarily large rendered body.
+  if (headChars !== undefined) {
+    truncateRowsText(contentItems as unknown as Array<Record<string, unknown>>, headChars);
+  }
 
   return contentItems;
 }

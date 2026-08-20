@@ -20,6 +20,7 @@ import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
+import { QUERY_TEXT_HEAD_CHARS, truncateRowsText } from '../get_content/truncate';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
 
@@ -672,6 +673,14 @@ export async function querySqlImpl(
           return rest;
         })
       : rawRows;
+
+    // query_sql wraps the caller's SQL in `SELECT *` (projection is not
+    // controllable), so PG cannot truncate an arbitrarily large text column in
+    // the query itself. Truncate here at the response boundary: any string cell
+    // longer than the query head becomes a head + marker + full length, so an
+    // oversized payload/summary column never floods the model turn. The full
+    // value is still read via an explicit event-id read or substr(...).
+    truncateRowsText(rows, QUERY_TEXT_HEAD_CHARS);
 
     const columns = (result.columns ?? [])
       .filter((col: { name: string }) => !(result.columnsHaveWindowCol && col.name === TOTAL_COL))

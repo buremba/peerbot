@@ -38,7 +38,7 @@ import type { GetContentArgs } from './schema';
 import type { ClassifierConfig, GetContentResult } from './types';
 import { parseJson, parseRecordArray } from './types';
 import { stableJson } from '../../utils/insert-event';
-import { BULK_BUDGET, clampRows, exactSinglePayloadBudget, type ClampBudget } from './byte-clamp';
+import { QUERY_TEXT_HEAD_CHARS, truncateRowsText } from './truncate';
 
 // ============================================
 // Content Query (inlined from automation-content-query)
@@ -72,13 +72,11 @@ interface ContentQueryParams {
     beforeId?: number;
   };
   /**
-   * Per-source byte budget; when provided, returned rows are clamped to these
-   * caps at the serialization chokepoint (after row trimming, before the
-   * response is assembled) so one oversized event cannot flood the model turn.
-   * Omitted by fingerprinting, which must hash FULL rows so `skip_if_unchanged`
-   * still sees a payload growing past a cap.
+   * When false, returned rows are NOT text-truncated. Omitted for normal reads
+   * (truncate) and set by fingerprinting, which must hash FULL rows so
+   * `skip_if_unchanged` still sees a payload growing past a cap.
    */
-  payloadClamp?: (sourceName: string) => ClampBudget;
+  truncatePayloads?: boolean;
 }
 
 function isMetricSource(
@@ -302,12 +300,14 @@ async function queryContentData(
     }
   }
 
-  // Byte clamp the rows that survived trimming, per source. `allContent` and
-  // `sourcesContent` are both built from these clamped rows, so the response
-  // is bounded whether the agent reads `content` or `sources`.
-  if (params.payloadClamp) {
-    for (const [sourceName, rows] of Object.entries(results)) {
-      clampRows(rows, params.payloadClamp(sourceName));
+  // Truncate the surviving rows (after trimming), per source. `allContent` and
+  // `sourcesContent` are both built from these truncated rows, so the response
+  // is bounded whether the agent reads `content` or `sources`. Ordinary reads
+  // truncate every string cell to the query head; fingerprinting skips this so
+  // `skip_if_unchanged` still sees a payload growing past a cap.
+  if (params.truncatePayloads !== false) {
+    for (const rows of Object.values(results)) {
+      truncateRowsText(rows as Record<string, unknown>[], QUERY_TEXT_HEAD_CHARS);
     }
   }
 
@@ -336,7 +336,7 @@ async function queryContentData(
           author_name: rec.author_name ?? rec.author,
           title: rec.title,
           text_content: rec.payload_text ?? rec.text_content,
-          // Byte-cap markers (see byte-clamp) survive the raw-row → content-item
+          // Truncation markers (see truncate) survive the raw-row → content-item
           // mapping so a caller reading `content` sees the same truncation
           // signal as a caller reading `sources`.
           payload_truncated: rec.payload_truncated,
@@ -405,6 +405,9 @@ export async function fingerprintAutomationSources(args: {
     // register its own write as a change and re-fire on every tick forever.
     automationId: args.automationId,
 	throwOnSourceError: true,
+    // Fingerprint FULL rows: `skip_if_unchanged` must still detect a payload
+    // growing past the truncation head, so truncation is disabled here.
+    truncatePayloads: false,
   });
   const sourceState = Object.fromEntries(
     Object.entries(result.sourcesContent).map(([sourceName, sourceRows]) => [
@@ -637,13 +640,10 @@ export async function handleAutomationMode(
       beforeOccurredAt: args.before_occurred_at,
       beforeId: args.before_id,
     },
-    // The exact trigger-input source earns the deliberate-lookup head (scaled
-    // down as the id count grows); every authored source gets the small bulk
-    // head so one huge event in a window cannot flood the run.
-    payloadClamp: (sourceName) =>
-      sourceName === triggerInputSourceName && triggerContentIds.length > 0
-        ? exactSinglePayloadBudget(triggerContentIds.length)
-        : BULK_BUDGET,
+    // Truncate oversized text in every returned source (authored sources and
+    // the exact trigger-input source alike) to the query head, so one huge
+    // event in a window cannot flood the run. The full body is fetched by an
+    // explicit event-id read.
   });
   const {
     sourcesContent,

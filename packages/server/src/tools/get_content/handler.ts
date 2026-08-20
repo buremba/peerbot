@@ -47,7 +47,7 @@ import {
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleAutomationMode } from './automation-mode';
-import { exactSinglePayloadBudget, BULK_BUDGET } from './byte-clamp';
+import { QUERY_TEXT_HEAD_CHARS } from './truncate';
 import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
@@ -502,12 +502,10 @@ async function getContentImpl(
     // bound can never drift from the branch it is supposed to describe.
     const isExactIdRead = Boolean(args.content_ids?.length);
 
-    // Deliberate single-event lookups earn a large per-row payload budget,
-    // scaled down as the id count grows; list and search reads get the small
-    // bulk head so one oversized event cannot flood the model turn.
-    const payloadBudget = isExactIdRead
-      ? exactSinglePayloadBudget(args.content_ids?.length ?? 0)
-      : BULK_BUDGET;
+    // A deliberate explicit-id read returns full bodies ("go get the event");
+    // list and search reads truncate oversized text so one huge event cannot
+    // flood the model turn. `headChars` is the truncation cap in characters.
+    const headChars = isExactIdRead ? undefined : QUERY_TEXT_HEAD_CHARS;
 
     if (isExactIdRead) {
       ({ rawContent, total, chainTotal, pageInfo } = await fetchByContentIds({
@@ -727,7 +725,7 @@ async function getContentImpl(
       baseUrl,
       excerptsMap,
       includePrivateAttribution: ctx.memberRole != null,
-      clamp: payloadBudget,
+      headChars,
     });
     // Verbatim requests are served ONLY on an explicit `content_ids` read. A
     // list or search page is an ambient read — inlining every retained request

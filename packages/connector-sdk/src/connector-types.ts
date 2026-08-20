@@ -1188,18 +1188,17 @@ export interface ContentItem {
   text_content: string;
   payload_text?: string | null;
   /**
-   * Present (true) when this row's payload was clamped to a byte cap at the
-   * read boundary so one oversized event cannot flood the model turn.
-   * `payload_text`/`text_content` then hold the head plus a `… [truncated]`
-   * suffix, `content_length` holds the full original character length, and an
-   * oversized `payload_data` is replaced by `{ _truncated: true, bytes: N }`.
+   * Present (true) when a query/listing read truncated this row's long text to
+   * a head (see `content_length`). `payload_text`/`text_content` then hold the
+   * head plus a `… [truncated]` suffix. Query reads truncate values over
+   * ~4000 characters; an explicit event-id read returns the full body.
    */
   payload_truncated?: boolean;
   /**
-   * Full character length of the source payload before clamping, present only
-   * when `payload_truncated` is true. Character (not byte) length, matching
-   * the semantics of `events.content_length`, so a caller can decide whether
-   * to page the remainder via `substr(payload_text, offset, len)`.
+   * Full original character length of the truncated text, present only when
+   * `payload_truncated` is true. Character length, matching the semantics of
+   * `events.content_length`, so a caller can decide whether to page the
+   * remainder via `substr(payload_text, offset, len)`.
    */
   content_length?: number;
   payload_data?: Record<string, unknown>;

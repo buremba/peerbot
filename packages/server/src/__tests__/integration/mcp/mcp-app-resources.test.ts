@@ -266,19 +266,22 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect((await get('/mcp-apps/unknown/assets/app.js')).status).toBe(404);
   });
 
-  it('refuses every retired interaction URI instead of aliasing it', async () => {
-    // Retired ids used to be enumerated and re-served, each pinned to the
-    // template it was issued with (a packed self-contained one or the external
-    // one); that table was deleted along with the packed template. A host only
-    // asks for one when it re-reads a chat transcript old enough that its own
-    // cache has been evicted, and that card fails alone. Nothing current
-    // resolves through here, so a bump no longer has a list to forget.
+  it('serves the current template for a superseded interaction URI, and still refuses an unknown one', async () => {
+    // A host reads the resource id once, from `resources/list` and the
+    // tool-level `openai/outputTemplate` it captured at connect time, and
+    // caches it for the life of that connection. So every already-connected
+    // host asks for the PREVIOUS id the moment a bump lands. When that 404'd,
+    // the card died for everyone until each user hit Refresh on the connector
+    // (confirmed on prod: ChatGPT rendered `Failed to fetch template` with the
+    // sandbox iframe at height 0; refreshing the plugin fixed it with no code
+    // change). Every version resolves to the one shell we serve today.
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const currentVersion = Number(
       LOBU_INTERACTION_RESOURCE_URI.match(/\/v(\d+)\.html$/)?.[1]
     );
     expect(currentVersion).toBeGreaterThan(30);
-    const retired = [
+    const superseded = [
+      // The earliest ids predate the `.html` suffix.
       'ui://lobu/interaction/v1',
       'ui://lobu/interaction/v2',
       'ui://lobu/interaction/v7.html',
@@ -287,7 +290,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       `ui://lobu/interaction/v${currentVersion - 1}.html`,
     ];
 
-    for (const uri of retired) {
+    for (const uri of superseded) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
           jsonrpc: '2.0',
@@ -299,8 +302,40 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         token,
       });
       const body = await response.json();
-      // The card fails; the session does not. A retired id must not read as a
-      // successful empty render, which a host would cache and never retry.
+      const content = body.result?.contents?.[0];
+      // Echo back the id that was ASKED for, not the canonical one: that is
+      // the key the host files the result under.
+      expect(content?.uri).toBe(uri);
+      expect(content?.mimeType).toBe('text/html;profile=mcp-app');
+      // The same external shell the current id serves — not an empty render,
+      // which a host would cache and never retry.
+      expect(content?.text).toContain('mcp-app-external-stub');
+      expect(content?.text).toContain(
+        'src="http://localhost/mcp-apps/interaction/assets/app.js?v=js123"'
+      );
+      expect(content?._meta?.ui?.csp).toBeTruthy();
+    }
+
+    // Resolution is scoped to the interaction shell. Anything else is still an
+    // error, so a typo or a foreign `ui://` id cannot silently render Lobu's.
+    for (const uri of [
+      'ui://lobu/interaction/vNext.html',
+      'ui://lobu/interaction/v42.htm',
+      'ui://lobu/interaction',
+      'ui://lobu/dashboard/v1.html',
+      'ui://other/interaction/v1.html',
+    ]) {
+      const response = await post(`/mcp/${org.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: uri,
+          method: 'resources/read',
+          params: { uri },
+        },
+        headers: { 'mcp-session-id': sessionId },
+        token,
+      });
+      const body = await response.json();
       expect(body.result).toBeUndefined();
       expect(JSON.stringify(body.error)).toContain(uri);
     }

@@ -45,6 +45,7 @@ export function resolveRunInitiator(ctx: InitiatorSource): RunInitiatorColumns {
 				user_id: ctx.userId ?? null,
 				client_id: ctx.clientId ?? null,
 				conversation_id: ctx.sourceContext?.conversationId ?? null,
+				platform: ctx.sourceContext?.platform ?? null,
 			},
 			createdByUserId: ctx.userId ?? null,
 		};

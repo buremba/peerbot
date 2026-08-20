@@ -6,7 +6,14 @@ import {
   REDACTED_SENTINEL,
 } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
+import { getDb } from '../db/client';
 import type { Env } from '../index';
+import {
+  type ActionOrigin,
+  actionOriginLabel,
+  formatUtc,
+} from '../notifications/action-card-state';
+import { resolveInteractionActionOrigin } from '../notifications/action-origin';
 import { ToolUserError } from '../utils/errors';
 import { buildResourcePermalink } from '../utils/url-builder';
 import { getContent } from './get_content';
@@ -332,6 +339,10 @@ function approvalBlocks(row: {
 type ApprovalContentItem = {
   id: number;
   run_id: number;
+  created_at: string;
+  client_id: string | null;
+  agent_id: string | null;
+  automation_id: number | null;
   title: string | null;
   payload_text: string;
   interaction_type: 'approval';
@@ -341,6 +352,98 @@ type ApprovalContentItem = {
   interaction_output: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 };
+
+function stringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function approvalDecisionBlock(
+  row: ApprovalContentItem,
+  status: string
+): LobuViewBlock | null {
+  if (status === 'pending') return null;
+  const reviewer =
+    typeof row.metadata?.reviewed_by_name === 'string'
+      ? row.metadata.reviewed_by_name.trim()
+      : '';
+  // A decision appends a NEW event version (supersedeActionEvent), so this
+  // row's created_at is the decision time for cards written before
+  // `reviewed_at` was stamped.
+  const timestamp =
+    formatUtc(
+      typeof row.metadata?.reviewed_at === 'string' ? row.metadata.reviewed_at : row.created_at
+    ) ?? '';
+  const decisionStatus =
+    row.metadata?.reviewed_at && (status === 'completed' || status === 'failed')
+      ? 'approved'
+      : status;
+  const decision = `${decisionStatus.charAt(0).toUpperCase()}${decisionStatus.slice(1)}`;
+  return {
+    type: 'text',
+    label: 'Decision',
+    value: `${decision}${reviewer ? ` by ${reviewer}` : ''}${timestamp ? ` · ${timestamp}` : ''}`,
+    muted: true,
+  };
+}
+
+async function approvalOrigin(row: ApprovalContentItem, ctx: ToolContext): Promise<ActionOrigin> {
+  const runs = await getDb()<{
+    automation_id: number | null;
+    initiator_ref: Record<string, unknown> | null;
+    original_client_id: string | null;
+  }>`
+    SELECT r.automation_id, r.initiator_ref, original.client_id AS original_client_id
+    FROM runs r
+    LEFT JOIN LATERAL (
+      SELECT e.client_id
+      FROM events e
+      WHERE e.run_id = r.id
+        AND e.organization_id = r.organization_id
+        AND e.interaction_type = 'approval'
+      ORDER BY e.id ASC
+      LIMIT 1
+    ) original ON true
+    WHERE r.id = ${row.run_id} AND r.organization_id = ${ctx.organizationId}
+    LIMIT 1
+  `;
+  const metadata = row.metadata ?? {};
+  const initiator = isRecord(metadata.initiator)
+    ? metadata.initiator
+    : (runs[0]?.initiator_ref ?? {});
+  const automationId =
+    Number(runs[0]?.automation_id ?? row.automation_id ?? initiator.automation_id ?? 0) || null;
+  // The MCP activity row is keyed by the host conversation id when the host
+  // exposes one and by the transport session id when it does not — the same
+  // choice `currentMcpActivityAttribution` made when the row was written.
+  const mcpActivityId =
+    stringOrNull(metadata.mcp_conversation_id) ?? stringOrNull(metadata.mcp_session_id);
+  const conversationId = mcpActivityId ?? stringOrNull(initiator.conversation_id);
+  if (!automationId && !conversationId) return { kind: 'direct', label: 'Direct request' };
+  return resolveInteractionActionOrigin({
+    organizationId: ctx.organizationId,
+    automationId,
+    conversationId,
+    // get_content's `platform` column carries the event's connector_key, never a
+    // chat platform, so it is deliberately not a fallback here.
+    platform: mcpActivityId ? 'mcp' : stringOrNull(initiator.platform),
+    clientIdentity:
+      ctx.memberRole != null
+        ? (stringOrNull(initiator.client_id) ?? row.client_id ?? runs[0]?.original_client_id ?? null)
+        : null,
+    agentId: row.agent_id ?? stringOrNull(initiator.agent_id),
+  });
+}
+
+function approvalOriginBlock(origin: ActionOrigin): LobuViewBlock {
+  return {
+    type: 'text',
+    label: actionOriginLabel(origin.kind),
+    value: displayValue(origin.label, TEXT_VALUE_MAX_LENGTH),
+    muted: true,
+  };
+}
 
 function isApprovalContentItem(value: unknown, runId: number): value is ApprovalContentItem {
   if (!isRecord(value)) return false;
@@ -463,8 +566,13 @@ async function findApprovalRow(
 
 async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Promise<LobuView> {
   const row = await findApprovalRow(runId, env, ctx);
+  const origin = await approvalOrigin(row, ctx).catch(() => ({
+    kind: 'direct' as const,
+    label: 'Direct request',
+  }));
 
   const status = row.interaction_status ?? 'pending';
+  const decisionBlock = approvalDecisionBlock(row, status);
   const baseTitle = displayValue(row.title ?? `Approval run ${runId}`, TITLE_MAX_LENGTH).replace(
     /\s+—\s+(?:pending approval|approved|rejected|completed|failed|cancelled)$/i,
     ''
@@ -519,13 +627,17 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
       TITLE_MAX_LENGTH
     ),
     tone: status === 'pending' ? 'warning' : 'default',
-    blocks: approvalBlocks({
-      content: row.payload_text,
-      interaction_input_schema: row.interaction_input_schema,
-      interaction_input: row.interaction_input,
-      interaction_output: row.interaction_output,
-      metadata: row.metadata,
-    }),
+    blocks: [
+      ...approvalBlocks({
+        content: row.payload_text,
+        interaction_input_schema: row.interaction_input_schema,
+        interaction_input: row.interaction_input,
+        interaction_output: row.interaction_output,
+        metadata: row.metadata,
+      }),
+      approvalOriginBlock(origin),
+      ...(decisionBlock ? [decisionBlock] : []),
+    ],
     actions,
   };
   if (canIssueApprovalCapability(row, status, ctx)) {

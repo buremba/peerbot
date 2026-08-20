@@ -306,5 +306,14 @@ describe("resolveApprovalChatOrigin", () => {
 			kind: "automation",
 			label: "Hourly incident triage",
 		});
+		expect(
+			await resolveInteractionActionOrigin({
+				organizationId: org.id,
+				automationId: Number(automation.id),
+			}),
+		).toEqual({
+			kind: "automation",
+			label: "Hourly incident triage",
+		});
 	});
 });

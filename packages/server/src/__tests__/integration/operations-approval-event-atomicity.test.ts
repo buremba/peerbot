@@ -175,6 +175,7 @@ describe("approval-event atomicity (item 16)", () => {
 		expect(eventRows[0].organization_id).toBe(orgId);
 		expect(eventRows[0].metadata).toMatchObject({
 			mcp_session_id: "session-approval-atomicity",
+			initiator: { kind: "user", user_id: userId },
 		});
 
 		const after = await sql`SELECT count(*)::int AS n FROM runs WHERE organization_id = ${orgId}`;

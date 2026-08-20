@@ -34,6 +34,7 @@ import logger from "../../../../utils/logger";
 import { buildResourcePermalink } from "../../../../utils/url-builder";
 import { trackAutomationReaction } from "../../../../utils/automation-reactions";
 import { dispatchChromeActionToExtension } from "../../../../worker-api/dispatch-chrome-action";
+import { resolveRunInitiator } from "../../../initiator";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
 import { waitForDeviceActionRun } from "../../device-action-wait";
@@ -687,6 +688,7 @@ export async function handleExecute(
 				return { claim: createdRun, eventId: null };
 			}
 			const createdRunId = createdRun.runId;
+			const initiator = resolveRunInitiator(ctx);
 			const event = await insertEvent(
 				{
 				entityIds,
@@ -716,6 +718,10 @@ export async function handleExecute(
 					connection_name:
 						connection.display_name ?? connection.connector_key,
 					run_id: createdRunId,
+					initiator: {
+						kind: initiator.initiatorKind,
+						...initiator.initiatorRef,
+					},
 					...currentMcpActivityEventMetadata(ctx),
 				},
 				authorName: ctx.clientId ?? "agent",

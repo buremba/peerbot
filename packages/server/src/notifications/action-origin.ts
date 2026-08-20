@@ -1,9 +1,6 @@
 import { getDb } from "../db/client";
 import { parseAutomationRunConversationId } from "../gateway/permissions/automation-run-intent";
-import {
-	currentMcpActivityAttribution,
-	type McpActivityAttribution,
-} from "../lobu/stores/mcp-client-conversations";
+import { currentMcpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import type { ToolContext } from "../tools/registry";
 import type { ActionOrigin } from "./action-card-state";
 
@@ -46,7 +43,7 @@ async function automationOrigin(
 
 async function mcpConversationOrigin(
 	organizationId: string,
-	activity: McpActivityAttribution,
+	activity: { clientIdentity: string; activityId: string },
 ): Promise<ActionOrigin> {
 	const rows = await getDb()<{
 		title: string | null;
@@ -77,10 +74,17 @@ async function resolveConversationActionOrigin(params: {
 	platform?: string | null;
 	conversationId?: string | null;
 	agentId?: string | null;
+	clientIdentity?: string | null;
 }): Promise<ActionOrigin> {
 	let title: string | null = null;
 	const sourcePlatform = params.platform?.trim().toLowerCase() || null;
 	const storedPlatform = sourcePlatform === "api" ? "web" : sourcePlatform;
+	if (storedPlatform === "mcp" && params.conversationId && params.clientIdentity) {
+		return mcpConversationOrigin(params.organizationId, {
+			clientIdentity: params.clientIdentity,
+			activityId: params.conversationId,
+		});
+	}
 	if (storedPlatform && params.conversationId) {
 		const rows = await getDb()<{
 			title: string | null;
@@ -110,8 +114,18 @@ export async function resolveInteractionActionOrigin(params: {
 	platform?: string | null;
 	conversationId?: string | null;
 	agentId?: string | null;
+	clientIdentity?: string | null;
+	automationId?: number | null;
 	source?: string | null;
 }): Promise<ActionOrigin> {
+	if (params.organizationId && params.automationId != null) {
+		return automationOrigin(params.organizationId, params.automationId).catch(
+			() => ({
+				kind: "automation",
+				label: `Automation #${params.automationId}`,
+			}),
+		);
+	}
 	if (params.organizationId && params.source === "automation-run") {
 		const run = parseAutomationRunConversationId(params.conversationId ?? "");
 		if (run) {
@@ -131,6 +145,7 @@ export async function resolveInteractionActionOrigin(params: {
 		platform: params.platform,
 		conversationId: params.conversationId,
 		agentId: params.agentId,
+		clientIdentity: params.clientIdentity,
 	}).catch(() => ({ kind: "conversation", label: fallback }));
 }
 

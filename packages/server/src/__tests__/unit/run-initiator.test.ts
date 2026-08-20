@@ -20,6 +20,7 @@ describe("resolveRunInitiator", () => {
 				user_id: "user_1",
 				client_id: "claude-ai",
 				conversation_id: "conv-1",
+				platform: "mcp",
 			},
 			createdByUserId: "user_1",
 		});

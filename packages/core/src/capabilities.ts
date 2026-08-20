@@ -60,10 +60,11 @@ export const MAC_DEVICE_CAPABILITIES = [
 //
 // `automations.execute` is the rolling-deploy-safe claim gate for headless
 // Automation execution: the server only hands `run_type='automation'` runs to
-// device workers that advertise it, so an old deployed connector-worker (which
-// refuses automation runs) can never claim and wedge one. The daemon auto-
-// advertises it on the headless platform; a device that cannot run the local
-// agent CLIs simply does not opt in.
+// device workers that advertise it, so a daemon build that predates the
+// automation lane can never claim one and wedge it. The daemon adds the string
+// itself on the headless platform (WorkerClient.advertisedCapabilities), which
+// is what makes it a build signal rather than an operator flag; whether a given
+// host can launch the Automation's CLI is the separate `agent_kinds` gate.
 export const HEADLESS_CAPABILITIES = [
   "os.shell",
   "os.files",

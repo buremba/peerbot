@@ -181,9 +181,9 @@ export const AutomationPollContextSchema = Type.Object({
   // token and promotes it into a direct-auth MCP session for the token's org.
   // The daemon hands both to the spawned CLI as its MCP wiring and as
   // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
-  // agent for this run. Absent when the run has no usable assigned agent —
-  // the daemon then falls back to its own wiring. macOS is exempt: Owletto's
-  // bridge dispatches with its own credential machinery.
+  // agent for this run. Absent when the run has no usable assigned agent, or
+  // when minting failed — the daemon then falls back to its own wiring. macOS
+  // is exempt: Owletto's bridge dispatches with its own credential machinery.
   agent_session: Type.Optional(
     Type.Object({
       conversation_id: Type.String(),

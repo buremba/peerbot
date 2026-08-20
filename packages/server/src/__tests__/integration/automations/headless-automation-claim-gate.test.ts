@@ -1,22 +1,25 @@
 /**
  * Rolling-deploy-safe claim gate for the Automation lane in /api/workers/poll.
  *
- * A headless connector-worker daemon refuses `run_type='automation'` runs, so
- * before this gate it could claim one from poll and leave it stuck `running`
- * forever (the executor returns a refusal the daemon's fire-and-forget loop
- * ignores). The fix: the poll automation lane only matches devices that
- * advertise `automations.execute` (the daemon opts in by auto-advertising it
- * on the headless platform) — with the macOS exemption preserving the
- * pre-capability exemption for Owletto's bridge, which advertises a fixed
- * capability set with no such string.
+ * A daemon build that predates the automation lane mishandles a
+ * `run_type='automation'` run — it falls through to the sync path, which
+ * finalizes the run row without the Automation-side bookkeeping and wedges the
+ * schedule. Nothing stopped such a device from claiming one. The fix: the poll
+ * automation lane only matches devices advertising `automations.execute`, which
+ * the daemon adds itself on the headless platform (so it is a build signal, not
+ * an operator flag) — with the macOS arm preserving the pre-capability
+ * exemption for Owletto's bridge, which advertises a fixed capability set with
+ * no such string.
  *
  * These tests drive the real poll endpoint with a device-pinned automation:
  *   - headless device WITHOUT automations.execute → no claim (run stays pending)
  *   - headless device WITH automations.execute → claims + payload envelope
+ *   - headless automation with no assigned agent → claims, no run-scoped session
  *   - macOS device with capabilities:{} → still claims (exemption)
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import { verifyWorkerToken } from '@lobu/core';
 import type { DbClient } from '../../../db/client';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
@@ -102,6 +105,20 @@ async function setupDevicePinnedAutomation(opts: {
 }
 
 describe('headless Automation claim gate (automations.execute)', () => {
+  // The dispatch path MINTS a worker token, which encrypts. Own the key here
+  // rather than inheriting it: a fork that starts without one would otherwise
+  // exercise the mint-failure fallback and silently stop asserting the session.
+  const previousEncryptionKey = process.env.ENCRYPTION_KEY;
+
+  beforeAll(() => {
+    process.env.ENCRYPTION_KEY = randomBytes(32).toString('base64');
+  });
+
+  afterAll(() => {
+    if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = previousEncryptionKey;
+  });
+
   beforeEach(async () => {
     await cleanupTestDatabase();
   });
@@ -188,6 +205,8 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(typeof agentSession?.expires_at).toBe('number');
     expect(agentSession!.expires_at).toBeGreaterThan(Date.now());
     const claims = verifyWorkerToken(agentSession!.token);
+    expect(claims).not.toBeNull();
+    if (!claims) throw new Error('minted automation worker token did not verify');
     expect(claims.agentId).toBe('claim-gate-agent');
     expect(claims.organizationId).toBe(ctx.workspace.org.id);
     expect(claims.conversationId).toBe(agentSession!.conversation_id);

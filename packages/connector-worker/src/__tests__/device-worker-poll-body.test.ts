@@ -100,6 +100,40 @@ describe("device worker poll body", () => {
     expect(calls[0].body).toMatchObject({ label: "Buraks-MacBook-Pro" });
   });
 
+  test("a headless device advertises automations.execute without being told to", async () => {
+    // The gateway's Automation claim lane matches this exact string, so the
+    // build — not the operator's --capabilities flag — is what opts a headless
+    // daemon in. Without it, every headless device silently stops claiming
+    // Automation runs.
+    const { calls } = capturePoll();
+    await new WorkerClient({
+      apiUrl: "https://app.example.com",
+      workerId: "w-6",
+      capabilities: { "os.shell": true, "os.files": true },
+      platform: "headless",
+    }).poll();
+
+    expect(calls[0].body.capabilities).toEqual({
+      "os.shell": true,
+      "os.files": true,
+      "automations.execute": true,
+    });
+  });
+
+  test("macOS is not given automations.execute — its allowlist would drop it", async () => {
+    // The poll lane exempts macOS outright; advertising a string the macos
+    // allowlist rejects would only log a dropped-capability warning per poll.
+    const { calls } = capturePoll();
+    await new WorkerClient({
+      apiUrl: "https://app.example.com",
+      workerId: "w-7",
+      capabilities: { "os.files": true },
+      platform: "macos",
+    }).poll();
+
+    expect(calls[0].body.capabilities).not.toHaveProperty("automations.execute");
+  });
+
   test("capability names survive verbatim — the server matches them as strings", async () => {
     // `required_capability` is compared with `= ANY(...)` against these exact
     // strings, so any normalization here (case-folding, dot handling) would

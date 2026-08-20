@@ -904,7 +904,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         return c.json({ success: false, error: "Forbidden" }, 403);
       }
       if (existing) {
-        // Reuse existing session — touch lastActivity and return existing token
+        // Reuse the existing session — touch lastActivity and hand back a
+        // freshly minted token for it (tokens are stateless, never stored).
         await sessMgr.touchSession(conversationId);
 
         const { token, expiresAt } = mintSessionToken();

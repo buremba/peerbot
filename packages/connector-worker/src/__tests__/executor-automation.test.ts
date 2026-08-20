@@ -18,8 +18,11 @@ import {
   type AutomationRunIo,
   type ExecutorResult,
 } from '../daemon/automation.js';
-import type { AutomationPollPayload } from '@lobu/core/contracts/worker/protocol';
-import type { CompleteAutomationRequest } from '@lobu/core/contracts/worker/protocol';
+import { executeRun } from '../daemon/executor.js';
+import type {
+  AutomationPollPayload,
+  CompleteAutomationRequest,
+} from '@lobu/core/contracts/worker/protocol';
 
 function makeResult(overrides: Partial<ExecutorResult> = {}): ExecutorResult {
   return {
@@ -245,7 +248,6 @@ function makeSafetyNetClient() {
 
 describe('executeRun try/catch safety net', () => {
   test('catches unhandled errors and terminates the run via complete', async () => {
-    const { executeRun } = await import('../daemon/executor.js');
     const { client, completes } = makeSafetyNetClient();
 
     const result = await executeRun(
@@ -261,7 +263,6 @@ describe('executeRun try/catch safety net', () => {
   });
 
   test('automation-lane unhandled error terminates via complete-automation, never the sync endpoint', async () => {
-    const { executeRun } = await import('../daemon/executor.js');
     const { client, completes, automationCompletes } = makeSafetyNetClient();
 
     // payload present but malformed (automation key missing) → throws inside

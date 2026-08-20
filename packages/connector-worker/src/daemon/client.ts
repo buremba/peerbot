@@ -192,6 +192,19 @@ export class WorkerClient implements ExecutorClient {
     return kinds;
   }
 
+  /**
+   * Capabilities this poll advertises. On the headless platform the daemon adds
+   * `automations.execute` itself: the gateway hands `run_type='automation'` runs
+   * only to devices advertising it, so the string is the build signal that keeps
+   * an older daemon — one whose executor mishandles the automation lane — from
+   * claiming and wedging a run. Whether this host can actually launch the
+   * Automation's CLI is a separate gate: the `agent_kinds` discovered below.
+   */
+  private advertisedCapabilities(): WorkerCapabilities {
+    if (this.platform !== 'headless') return this.capabilities;
+    return { ...this.capabilities, 'automations.execute': true };
+  }
+
   private authHeaders(): Record<string, string> {
     return this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {};
   }
@@ -227,7 +240,7 @@ export class WorkerClient implements ExecutorClient {
   async poll(): Promise<PollResponse> {
     return this.requestJson<PollResponse>('/api/workers/poll', {
       worker_id: this.workerId,
-      capabilities: this.capabilities,
+      capabilities: this.advertisedCapabilities(),
       version: this.version,
       // app_version belongs to the device registration fields, so omit both for
       // fleet workers rather than sending empty values. A device worker also

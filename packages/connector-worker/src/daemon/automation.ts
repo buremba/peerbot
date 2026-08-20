@@ -21,8 +21,8 @@
  * Its Lobu credential is the poll envelope's per-run `agent_session` when the
  * server minted one (see `resolveAutomationRunAccess`): the run authenticates
  * as the Automation's assigned agent, not as the daemon or the user's ambient
- * CLI session. The daemon's own bearer remains only the fallback for servers
- * that predate session minting.
+ * CLI session. The daemon's own bearer remains only the fallback for a run the
+ * server sent no session for — an older server, or one that could not mint.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';

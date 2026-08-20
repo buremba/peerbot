@@ -662,7 +662,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
               AND (
                 'automations.execute' = ANY(${pgTextArray(authorizedCapabilities)}::text[])
-                OR ${effectivePlatform} = 'macos'
+                OR ${effectivePlatform}::text = 'macos'
               )
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
               AND (
@@ -952,18 +952,31 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         // which is bound to the user's personal org and can't authenticate to
         // a team-org Automation. The daemon injects the token into the spawned
         // CLI (env + MCP wiring) against the gateway MCP proxy endpoint.
-        const access = buildAutomationRunWorkerAccess({
-          agentId,
-          automationId: row.automation_id,
-          runId: row.run_id,
-          organizationId: row.organization_id,
-        });
-        agentSession = {
-          conversation_id: access.conversationId,
-          mcp_url: `${resolvePublicGatewayUrl()}/mcp/lobu-memory`,
-          token: access.token,
-          expires_at: access.expiresAt,
-        };
+        //
+        // Minting encrypts, so it can throw (missing/short ENCRYPTION_KEY). The
+        // run is ALREADY claimed by this point, so letting that escape would 500
+        // the poll and strand it `running` — the exact wedge the claim gate
+        // exists to prevent. Degrade to the pre-session dispatch instead.
+        try {
+          const access = buildAutomationRunWorkerAccess({
+            agentId,
+            automationId: row.automation_id,
+            runId: row.run_id,
+            organizationId: row.organization_id,
+          });
+          agentSession = {
+            conversation_id: access.conversationId,
+            mcp_url: `${resolvePublicGatewayUrl()}/mcp/lobu-memory`,
+            token: access.token,
+            expires_at: access.expiresAt,
+          };
+        } catch (err) {
+          devicePrompt = automationInstructions;
+          logger.error(
+            { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId, err },
+            '[poll] failed to mint the Automation run session; dispatching instructions-only'
+          );
+        }
       } else {
         // No assigned agent (or no parseable run payload): dispatch the
         // pre-session shape — instructions prompt + exit-report completion on

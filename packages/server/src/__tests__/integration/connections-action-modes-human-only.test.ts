@@ -1,30 +1,25 @@
 /**
- * `connection.config.action_modes` is a human-only control surface.
+ * `connection.config.action_modes` is a human-web-session-only control surface.
+ * The map takes precedence over connector approval defaults, so autonomous and
+ * token callers may round-trip unchanged modes but cannot change them.
  *
- * The modes map is what unattended runs execute UNDER: `resolveActionMode`
- * consults it BEFORE the connector's `requiresApproval` default, so a
- * principal that can write it can grant itself `auto` on e.g. `os.shell` and
- * erase the approval gate for its own actions. `manage_connections`
- * create/update are member-tier, and an agent's MCP session carries its user's
- * membership, so membership alone cannot carry the decision — the identity
- * must be a verified human, the same rule operation-run approvals already
- * enforce.
- *
- * Every caller-supplied config write is gated:
- *   - update  (merge/replace of connection.config) — gated when modes CHANGE,
+ * Every `manage_connections` path that can persist caller-supplied modes is covered:
+ *   - update  (merge/replace of connection.config) — gated when modes change,
  *     so an agent round-tripping a read config keeps editing other keys
- *   - create  (config lands verbatim on the new row)
+ *   - create  (mints the collector connection row)
  *   - connect / connect_managed (the recommended create path, same insert)
- *   - update_connector_default_config (defaults seed every future connection)
+ *   - update_connector_default_config (defaults seed every future connection;
+ *     a full-replace write, gated when modes change vs the STORED defaults so
+ *     removal is caught too)
  *
- * `apply_chat_connection` is not gated: its config goes through `parseConfig`,
- * whose `Value.Clean` strips keys outside the chat platform schema, so
- * `action_modes` can never reach the row that way.
+ * Chat create/apply/update paths sanitize config through `parseConfig`, whose
+ * `Value.Clean` strips `action_modes` before persistence.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
+import type { ConnectionsArgs } from "../../tools/admin/manage_connections/schemas";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -46,12 +41,23 @@ async function storedConfig(
 	return row?.config ?? {};
 }
 
+async function callManageConnections(
+	args: ConnectionsArgs,
+	ctx: ToolContext,
+): Promise<Record<string, unknown>> {
+	return (await manageConnections(args, {} as Env, ctx)) as Record<
+		string,
+		unknown
+	>;
+}
+
 describe("connection action_modes writes are human-only", () => {
 	let orgId: string;
 	let userId: string;
 	let humanCtx: ToolContext;
 	let agentCtx: ToolContext;
 	let mcpCtx: ToolContext;
+	let tokenCtx: ToolContext;
 	let systemCtx: ToolContext;
 
 	beforeAll(async () => {
@@ -62,19 +68,23 @@ describe("connection action_modes writes are human-only", () => {
 		});
 		orgId = org.id;
 		userId = user.id;
-		humanCtx = ctx;
+		humanCtx = { ...ctx, tokenType: "session" };
 		// An MCP-bound agent runs under its user's membership: same user, but the
 		// session carries the agent identity. MCP transport likewise marks a
 		// non-human decision path.
-		agentCtx = { ...ctx, agentId: "automation-agent" };
-		mcpCtx = { ...ctx, mcpSessionId: "mcp-session-1" };
+		agentCtx = { ...humanCtx, agentId: "automation-agent" };
+		mcpCtx = { ...humanCtx, mcpSessionId: "mcp-session-1" };
+		// A real API token always carries a client marker — the PAT verifier
+		// stamps `pat_<id>` and OAuth tokens carry their client id — so the
+		// clientId arm of the gate is what denies token callers.
+		tokenCtx = { ...ctx, tokenType: "pat", clientId: "pat_1" };
 		// An Automation REACTION carries no user, agent or client id at all — it
 		// is an in-process system call (`userId: null`, `memberRole: null`,
 		// `tokenType: 'session'`; see reaction-executor.ts) and so clears the
 		// role gates on create / connect / connector defaults. Absence of a
 		// machine marker is not humanity: the modes gate must still stop it.
 		systemCtx = {
-			...ctx,
+			...humanCtx,
 			userId: null,
 			memberRole: null,
 			tokenType: "session",
@@ -95,33 +105,22 @@ describe("connection action_modes writes are human-only", () => {
 		return conn.id;
 	}
 
-	it("an agent session cannot flip an operation to auto", async () => {
+	const deniedContexts: Array<[string, () => ToolContext]> = [
+		["agent session", () => agentCtx],
+		["MCP transport", () => mcpCtx],
+		["API token (client-bearing) context", () => tokenCtx],
+	];
+
+	it.each(deniedContexts)("%s cannot flip an operation to auto", async (_, getCtx) => {
 		const connectionId = await seedConnection();
-		const result = (await manageConnections(
+		const result = await callManageConnections(
 			{
 				action: "update",
 				connection_id: connectionId,
 				config: { action_modes: { run: "auto" } },
 			},
-			{} as Env,
-			agentCtx,
-		)) as Record<string, unknown>;
-
-		expect(String(result.error)).toMatch(/human web session/i);
-		expect((await storedConfig(connectionId)).action_modes).toBeUndefined();
-	});
-
-	it("an MCP-transport session cannot either", async () => {
-		const connectionId = await seedConnection();
-		const result = (await manageConnections(
-			{
-				action: "update",
-				connection_id: connectionId,
-				config: { action_modes: { run: "auto" } },
-			},
-			{} as Env,
-			mcpCtx,
-		)) as Record<string, unknown>;
+			getCtx(),
+		);
 
 		expect(String(result.error)).toMatch(/human web session/i);
 		expect((await storedConfig(connectionId)).action_modes).toBeUndefined();
@@ -131,16 +130,15 @@ describe("connection action_modes writes are human-only", () => {
 		// `update` is separately fenced by "you can only update connections you
 		// created", so probe `create` — the path a userless system context
 		// otherwise walks straight through.
-		const result = (await manageConnections(
+		const result = await callManageConnections(
 			{
 				action: "create",
 				connector_key: CONNECTOR_KEY,
 				display_name: "Reaction Created Shell",
 				config: { action_modes: { run: "auto" } },
 			},
-			{} as Env,
 			systemCtx,
-		)) as Record<string, unknown>;
+		);
 
 		expect(String(result.error)).toMatch(/human web session/i);
 		const [planted] = (await sql`
@@ -152,15 +150,14 @@ describe("connection action_modes writes are human-only", () => {
 
 	it("a human session can change modes", async () => {
 		const connectionId = await seedConnection();
-		const result = (await manageConnections(
+		const result = await callManageConnections(
 			{
 				action: "update",
 				connection_id: connectionId,
 				config: { action_modes: { run: "auto" } },
 			},
-			{} as Env,
 			humanCtx,
-		)) as Record<string, unknown>;
+		);
 
 		expect(result.error).toBeUndefined();
 		expect(
@@ -173,27 +170,25 @@ describe("connection action_modes writes are human-only", () => {
 
 	it("an agent round-tripping unchanged modes still edits other config keys", async () => {
 		const connectionId = await seedConnection();
-		const asHuman = (await manageConnections(
+		const asHuman = await callManageConnections(
 			{
 				action: "update",
 				connection_id: connectionId,
 				config: { action_modes: { run: "approval" } },
 			},
-			{} as Env,
 			humanCtx,
-		)) as Record<string, unknown>;
+		);
 		expect(asHuman.error).toBeUndefined();
 
 		// The Owletto/SDK pattern: read config, spread it, patch one key back.
-		const asAgent = (await manageConnections(
+		const asAgent = await callManageConnections(
 			{
 				action: "update",
 				connection_id: connectionId,
 				config: { action_modes: { run: "approval" }, greeting: "hello" },
 			},
-			{} as Env,
 			agentCtx,
-		)) as Record<string, unknown>;
+		);
 
 		expect(asAgent.error).toBeUndefined();
 		const stored = await storedConfig(connectionId);
@@ -203,46 +198,75 @@ describe("connection action_modes writes are human-only", () => {
 		);
 	});
 
+	it("an agent cannot remove modes through merge or replace", async () => {
+		const patches: Array<{
+			config: Record<string, unknown>;
+			replace_config?: boolean;
+		}> = [
+			{ config: { action_modes: {} } },
+			{ config: { greeting: "replacement" }, replace_config: true },
+		];
+
+		for (const patch of patches) {
+			const connectionId = await seedConnection();
+			await callManageConnections(
+				{
+					action: "update",
+					connection_id: connectionId,
+					config: { action_modes: { run: "approval" } },
+				},
+				humanCtx,
+			);
+
+			const result = await callManageConnections(
+				{ action: "update", connection_id: connectionId, ...patch },
+				agentCtx,
+			);
+
+			expect(String(result.error)).toMatch(/human web session/i);
+			expect((await storedConfig(connectionId)).action_modes).toEqual({
+				run: "approval",
+			});
+		}
+	});
+
 	it("an agent cannot plant modes at create", async () => {
-		const result = (await manageConnections(
+		const result = await callManageConnections(
 			{
 				action: "create",
 				connector_key: CONNECTOR_KEY,
 				display_name: "Agent Created Shell",
 				config: { action_modes: { run: "auto" } },
 			},
-			{} as Env,
 			agentCtx,
-		)) as Record<string, unknown>;
+		);
 
 		expect(String(result.error)).toMatch(/human web session/i);
 	});
 
 	it("an agent cannot seed modes through connector defaults", async () => {
-		const result = (await manageConnections(
+		const result = await callManageConnections(
 			{
 				action: "update_connector_default_config",
 				connector_key: CONNECTOR_KEY,
 				default_connection_config: { action_modes: { run: "auto" } },
 			},
-			{} as Env,
 			agentCtx,
-		)) as Record<string, unknown>;
+		);
 
 		expect(String(result.error)).toMatch(/human web session/i);
 	});
 
 	it("an agent cannot plant modes through connect", async () => {
-		const result = (await manageConnections(
+		const result = await callManageConnections(
 			{
 				action: "connect",
 				connector_key: CONNECTOR_KEY,
 				display_name: "Agent Connected Shell",
 				config: { action_modes: { run: "auto" } },
 			},
-			{} as Env,
 			agentCtx,
-		)) as Record<string, unknown>;
+		);
 
 		expect(String(result.error)).toMatch(/human web session/i);
 		const [planted] = (await sql`
@@ -250,5 +274,107 @@ describe("connection action_modes writes are human-only", () => {
       WHERE organization_id = ${orgId} AND display_name = 'Agent Connected Shell'
     `) as unknown as Array<{ config: Record<string, unknown> | null }>;
 		expect(planted).toBeUndefined();
+	});
+
+	it("an agent cannot plant modes through managed connect before enrollment", async () => {
+		const result = await callManageConnections(
+			{
+				action: "connect_managed",
+				connector_key: CONNECTOR_KEY,
+				managed_by_org: "unreachable-managed-org",
+				config: { action_modes: { run: "auto" } },
+			},
+			agentCtx,
+		);
+
+		expect(String(result.error)).toMatch(/human web session/i);
+	});
+
+	// Defaults are replaced, so removal must be compared with the stored map.
+	// Use a separate connector to keep these mutations independent.
+	describe("connector defaults removal", () => {
+		const DEFAULTS_KEY = "os.shell-defaults-gate";
+
+		async function storedDefaults(): Promise<Record<string, unknown> | null> {
+			const [row] = (await sql`
+        SELECT default_connection_config FROM connector_definitions
+        WHERE key = ${DEFAULTS_KEY} AND organization_id = ${orgId} AND status = 'active'
+      `) as unknown as Array<{
+				default_connection_config: Record<string, unknown> | null;
+			}>;
+			return row?.default_connection_config ?? null;
+		}
+
+		beforeAll(async () => {
+			await createTestConnectorDefinition({
+				organization_id: orgId,
+				key: DEFAULTS_KEY,
+				name: "Shell Defaults Gate",
+			});
+		});
+
+		beforeEach(async () => {
+			const seeded = await callManageConnections(
+				{
+					action: "update_connector_default_config",
+					connector_key: DEFAULTS_KEY,
+					default_connection_config: {
+						action_modes: { run: "approval" },
+						workdir: "/srv",
+					},
+				},
+				humanCtx,
+			);
+			expect(seeded.success).toBe(true);
+		});
+
+		it("an agent cannot remove modes from connector defaults", async () => {
+			const result = await callManageConnections(
+				{
+					action: "update_connector_default_config",
+					connector_key: DEFAULTS_KEY,
+					default_connection_config: { workdir: "/srv" },
+				},
+				agentCtx,
+			);
+
+			expect(String(result.error)).toMatch(/human web session/i);
+			expect((await storedDefaults())?.action_modes).toEqual({
+				run: "approval",
+			});
+		});
+
+		it("an agent round-tripping unchanged modes still edits other default keys", async () => {
+			const result = await callManageConnections(
+				{
+					action: "update_connector_default_config",
+					connector_key: DEFAULTS_KEY,
+					default_connection_config: {
+						action_modes: { run: "approval" },
+						workdir: "/srv/updated",
+					},
+				},
+				agentCtx,
+			);
+
+			expect(result.success).toBe(true);
+			const defaults = await storedDefaults();
+			expect(defaults?.action_modes).toEqual({ run: "approval" });
+			expect(defaults?.workdir).toBe("/srv/updated");
+		});
+
+		it("a human can remove modes from connector defaults", async () => {
+			const result = await callManageConnections(
+				{
+					action: "update_connector_default_config",
+					connector_key: DEFAULTS_KEY,
+					default_connection_config: { workdir: "/srv/updated" },
+				},
+				humanCtx,
+			);
+
+			expect(result.success).toBe(true);
+			expect((await storedDefaults())?.action_modes).toBeUndefined();
+		});
 	});
 });

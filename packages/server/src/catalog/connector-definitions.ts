@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { getErrorMessage } from "@lobu/core";
 import { getLoginProviderScopes } from "../auth/config";
-import { type DbClient, type DbQuery, getDb } from "../db/client";
+import { getDb } from "../db/client";
 import { getLocalActionKind } from "../operations/connector-operations";
 import {
 	getMcpOAuthRequestedScopes,
@@ -899,28 +899,4 @@ export async function toggleConnectorLoginEnabled(params: {
   `;
 
 	return connector;
-}
-
-/**
- * Update one column (plus `updated_at`) on an active connector_definitions row,
- * scoped to the given org. `setClause` builds the `SET col = …` fragment with
- * the supplied sql client (so `sql.json(...)` / `::text` casts work). Returns
- * `true` if a row was updated, `false` if no matching active connector exists.
- */
-export async function updateActiveConnectorDefinitionField(
-	connectorKey: string,
-	organizationId: string,
-	setClause: (sql: DbClient) => DbQuery<unknown>,
-): Promise<boolean> {
-	const sql = getDb();
-	const updated = await sql`
-    UPDATE connector_definitions
-    SET ${setClause(sql)},
-        updated_at = NOW()
-    WHERE key = ${connectorKey}
-      AND organization_id = ${organizationId}
-      AND status = 'active'
-    RETURNING key
-  `;
-	return updated.length > 0;
 }

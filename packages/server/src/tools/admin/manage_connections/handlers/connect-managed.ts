@@ -3,6 +3,10 @@ import { joinPublicOrganization } from '../../../../workspace/join-public';
 import { resolveManagedAuthConnectorOffer } from '../../../../workspace/managed-auth-discovery';
 import type { ConnectionsArgs, ManageConnectionsResult } from '../schemas';
 import { handleRequiredManagedConnect } from './connect';
+import {
+	denyNonHumanActionModesWrite,
+	hasActionModes,
+} from './action-modes-guard';
 
 /**
  * Start a managed OAuth grant from any workspace context.
@@ -18,6 +22,12 @@ export async function handleConnectManaged(
 ): Promise<ManageConnectionsResult> {
 	if (!ctx.isAuthenticated || !ctx.userId) {
 		return { error: 'Lobu login is required before using managed auth.' };
+	}
+	// Refuse before joinPublicOrganization mutates membership. The delegated
+	// connect handler repeats this at the connection-insert boundary.
+	if (hasActionModes(args.config)) {
+		const denied = denyNonHumanActionModesWrite(ctx);
+		if (denied) return denied;
 	}
 
 	const organizationSlug = await resolveManagedAuthConnectorOffer({

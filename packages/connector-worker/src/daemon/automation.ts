@@ -813,8 +813,12 @@ async function runCli(
     const label = spec.binaryName;
     const exitCode = target?.exitCode ?? null;
     const targetSignal = target?.signalCode ?? null;
+    // Once the target exits, cleanupSignal belongs only to its supervisor or
+    // descendants and must not overwrite the target's own exit metadata.
     const exitSignal =
-      killedSignal ?? cleanupSignal ?? (targetSignal != null ? `signal:${targetSignal}` : null);
+      killedSignal ??
+      (cancelled ? cleanupSignal : null) ??
+      (targetSignal != null ? `signal:${targetSignal}` : null);
 
     let exitReason: WorkerExitReason;
     let errorMessage: string | null;

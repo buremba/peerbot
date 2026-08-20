@@ -499,6 +499,7 @@ describe('automation arm e2e', () => {
     expect(result.error).toBeUndefined();
     expect(heartbeatRequests).toBeGreaterThan(0);
     expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_signal).toBeNull();
     expect(completions[0].body.output).toContain('GRACEFUL_HEARTBEAT_OUTPUT');
     expect(existsSync(heartbeatConflictTerminated)).toBe(false);
   });

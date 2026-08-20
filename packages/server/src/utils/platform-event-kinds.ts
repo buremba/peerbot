@@ -36,6 +36,46 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 	 */
 	[CONNECTOR_OPERATION_APPROVAL_KIND]: {
 		description: "A connector operation waiting for a human decision.",
+		/**
+		 * Which operation, on which connection, is the card's IDENTITY, not two
+		 * more rows of its record — so it goes in the `context` strip and the body
+		 * is left to the one thing the decision actually turns on, the input. Read
+		 * as a field table it was three rows of two words each, which is how a
+		 * two-column layout wastes a whole card.
+		 */
+		jsonTemplate: {
+			type: "card",
+			children: [
+				{
+					type: "context",
+					children: [
+						{ type: "strong", children: [{ type: "text", content: "Operation" }] },
+						{ type: "data", path: "operation" },
+						{
+							type: "if",
+							condition: "connection",
+							then: {
+								type: "span",
+								children: [
+									{ type: "text", content: "· via " },
+									{ type: "data", path: "connection" },
+								],
+							},
+						},
+					],
+				},
+				{
+					type: "fields",
+					children: [
+						{
+							type: "field",
+							props: { label: "Input" },
+							children: [{ type: "data", path: "input", fallback: "—" }],
+						},
+					],
+				},
+			],
+		},
 		metadataSchema: {
 			type: "object",
 			properties: {
@@ -74,6 +114,9 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 				action: { type: "string", title: "Action" },
 				entityTypeLabel: { type: "string", title: "Type" },
 				entityName: { type: "string", title: "Entity" },
+				// The entity's own page. A link TARGET, never a row of its own — the
+				// name in the strip is what carries it.
+				entityUrl: { type: "string", title: "Entity URL", "x-hidden": true },
 				requestedBy: { type: "string", title: "Requested by" },
 				why: { type: "string", title: "Why approval is needed" },
 				diffs: { type: "array", title: "Changes", "x-hidden": true },
@@ -90,6 +133,68 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 		jsonTemplate: {
 			type: "card",
 			children: [
+				/**
+				 * WHAT is under review — its type, its name, who asked — introduces
+				 * the card rather than filling it: those three never change the
+				 * decision, they identify what the decision is about. Each value
+				 * carries its own leading separator inside the same `if`, so an
+				 * absent one takes its `·` with it.
+				 *
+				 * The trailing space in each separator is load-bearing. Chat joins
+				 * strip segments with one and normalises the run; the web renderer
+				 * lays the strip out with a flex `gap`, which applies BETWEEN direct
+				 * children and not inside the `span` grouping a separator with its
+				 * value — so without it the page reads "· requested byCRM sync".
+				 *
+				 * The name links to the entity when we have a URL for it, which is
+				 * the one thing a reader deciding from chat could not otherwise
+				 * reach: the record as it stands TODAY, next to the change proposed
+				 * to it.
+				 */
+				{
+					type: "context",
+					children: [
+						{
+							type: "if",
+							condition: "entityTypeLabel",
+							then: {
+								type: "strong",
+								children: [{ type: "data", path: "entityTypeLabel" }],
+							},
+						},
+						{
+							type: "if",
+							condition: "entityName",
+							then: {
+								type: "span",
+								children: [
+									{ type: "text", content: "· " },
+									{
+										type: "if",
+										condition: "entityUrl",
+										then: {
+											type: "link",
+											props: { href: "{{entityUrl}}" },
+											children: [{ type: "data", path: "entityName" }],
+										},
+										else: { type: "data", path: "entityName" },
+									},
+								],
+							},
+						},
+						{
+							type: "if",
+							condition: "requestedBy",
+							then: {
+								type: "span",
+								children: [
+									{ type: "text", content: "· requested by " },
+									{ type: "data", path: "requestedBy" },
+								],
+							},
+						},
+					],
+				},
 				{
 					type: "fields",
 					children: [
@@ -103,29 +208,6 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 							},
 						},
 						{
-							type: "field",
-							props: { label: "Type" },
-							children: [{ type: "data", path: "entityTypeLabel", fallback: "—" }],
-						},
-						{
-							type: "if",
-							condition: "entityName",
-							then: {
-								type: "field",
-								props: { label: "Entity" },
-								children: [{ type: "data", path: "entityName" }],
-							},
-						},
-						{
-							type: "if",
-							condition: "requestedBy",
-							then: {
-								type: "field",
-								props: { label: "Requested by" },
-								children: [{ type: "data", path: "requestedBy" }],
-							},
-						},
-						{
 							type: "if",
 							condition: "why",
 							then: {
@@ -136,43 +218,78 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 						},
 					],
 				},
+				// Two shapes, so two tables. An update is three columns whose middle
+				// and right only mean anything once they are NAMED — "Eng" next to
+				// "Staff Eng" is undecidable without `Current`/`Proposed` above it.
+				// A create/delete/merge is a label/value pair, which needs no header
+				// and renders as native fields in chat.
 				{
-					type: "table",
-					props: { caption: "Proposed change" },
-					children: [
-						{
-							type: "tbody",
-							children: [
-								// An update: one row per changed field, current then proposed.
-								{
-									type: "each",
-									items: "diffs",
-									as: "d",
-									render: {
+					type: "if",
+					condition: "diffs",
+					then: {
+						type: "table",
+						props: { caption: "Proposed change" },
+						children: [
+							{
+								type: "thead",
+								children: [
+									{
 										type: "tr",
 										children: [
-											{ type: "th", children: [{ type: "data", path: "d.label" }] },
-											{ type: "td", children: [{ type: "data", path: "d.current", fallback: "—" }] },
-											{ type: "td", children: [{ type: "data", path: "d.proposed", fallback: "—" }] },
+											{ type: "th", children: [{ type: "text", content: "Field" }] },
+											{ type: "th", children: [{ type: "text", content: "Current" }] },
+											{ type: "th", children: [{ type: "text", content: "Proposed" }] },
 										],
 									},
-								},
-								// A create / delete / merge: one row per proposed field.
-								{
-									type: "each",
-									items: "proposal",
-									as: "p",
-									render: {
-										type: "tr",
-										children: [
-											{ type: "th", children: [{ type: "data", path: "p.label" }] },
-											{ type: "td", children: [{ type: "data", path: "p.value", fallback: "—" }] },
-										],
+								],
+							},
+							{
+								type: "tbody",
+								children: [
+									{
+										type: "each",
+										items: "diffs",
+										as: "d",
+										render: {
+											type: "tr",
+											children: [
+												{ type: "th", children: [{ type: "data", path: "d.label" }] },
+												{ type: "td", children: [{ type: "data", path: "d.current", fallback: "—" }] },
+												{ type: "td", children: [{ type: "data", path: "d.proposed", fallback: "—" }] },
+											],
+										},
 									},
-								},
-							],
-						},
-					],
+								],
+							},
+						],
+					},
+				},
+				{
+					type: "if",
+					condition: "proposal",
+					then: {
+						type: "table",
+						props: { caption: "Proposed change" },
+						children: [
+							{
+								type: "tbody",
+								children: [
+									{
+										type: "each",
+										items: "proposal",
+										as: "p",
+										render: {
+											type: "tr",
+											children: [
+												{ type: "th", children: [{ type: "data", path: "p.label" }] },
+												{ type: "td", children: [{ type: "data", path: "p.value", fallback: "—" }] },
+											],
+										},
+									},
+								],
+							},
+						],
+					},
 				},
 			],
 		},

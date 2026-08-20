@@ -8,6 +8,7 @@ import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversat
 import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
 import { resolveEventKindDefinition } from "../utils/event-kind-validation";
 import { insertEvent } from "../utils/insert-event";
+import { toAbsolutePermalink } from "../utils/url-builder";
 import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { buildKindCard } from "./template-card";
@@ -483,8 +484,12 @@ async function resolveNotificationKindCard(
 			jsonTemplate: kind.jsonTemplate,
 			data: params.payloadData ?? {},
 			title: params.title,
-			subtitle: params.body ?? undefined,
-			url: params.resourceUrl,
+			body: params.body ?? undefined,
+			// Chat has no origin to resolve against, and Slack answers a relative
+			// button url with `invalid_blocks` — dropping the entire message, not
+			// just the button. The stored `resource_url` stays relative for the
+			// inbox; only the card gets the absolute form.
+			url: toAbsolutePermalink(params.resourceUrl),
 			decisionRunId: params.decisionRunId,
 		});
 	} catch (err) {

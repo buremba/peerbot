@@ -27,6 +27,39 @@ function withBaseUrl(baseUrl: string | undefined, path: string): string {
   return `${baseUrl}${path}`;
 }
 
+/**
+ * Absolutise a permalink for a destination that cannot resolve a relative one.
+ *
+ * In-app links are built relative on purpose so the inbox resolves them against
+ * whatever origin the user is on. Chat has no origin: Slack rejects a relative
+ * `url` on a button with `invalid_blocks` and drops the WHOLE message, so a
+ * relative link there costs the notification its delivery.
+ *
+ * Returns undefined when no public origin is configured — a card with no button
+ * still delivers, which a rejected message does not.
+ */
+export function toAbsolutePermalink(
+  url: string | null | undefined,
+  baseUrl?: string
+): string | undefined {
+  if (!url) return undefined;
+  const trimmed = url.trim();
+  if (!trimmed) return undefined;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Refused BEFORE the origin join, because the join is what makes them
+  // dangerous. `//evil.example/x` and `javascript:alert(1)` both carry no
+  // `http` prefix, so without this they come back out as
+  // `https://app.lobu.ai//evil.example/x` — a link wearing our domain and
+  // going nowhere — from a card the reader trusts. Every caller needs this,
+  // not just the ones that remembered: `notify`'s `resource_url` is an
+  // agent-supplied tool argument.
+  if (trimmed.startsWith('//')) return undefined;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return undefined;
+  const origin = getPublicWebUrl(undefined, baseUrl);
+  if (!origin) return undefined;
+  return `${origin}${trimmed.startsWith('/') ? '' : '/'}${trimmed}`;
+}
+
 export function getPublicWebUrl(requestUrl?: string, baseUrl?: string): string | undefined {
   const base = baseUrl || getConfiguredPublicOrigin();
   if (base) return normalizeBaseUrl(base);

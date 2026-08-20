@@ -12,8 +12,12 @@
  * something an assertion could drift away from.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { buildKindCard } from "../../notifications/template-card";
+import {
+	__resetPublicOriginCachesForTests,
+	__setLocalFrontendForTests,
+} from "../../utils/public-origin";
 import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	ENTITY_CHANGE_APPROVAL_KIND,
@@ -35,6 +39,34 @@ function rows(card: Card | null): string[][] {
 	const table = kids(card).find((c) => c.type === "table");
 	return (table?.rows as string[][]) ?? [];
 }
+/**
+ * Label/value pairs of the card's `fields` blocks. A two-column table has no
+ * column names to show and Slack would draw its header row as an empty band, so
+ * the builder emits native fields for that shape instead of a headless table.
+ */
+function pairs(card: Card | null): string[][] {
+	return kids(card)
+		.filter((c) => c.type === "fields")
+		.flatMap((c) =>
+			(c.children as Array<{ label: string; value: string }>).map((f) => [
+				f.label,
+				f.value,
+			]),
+		);
+}
+/** Column headers of the first table, which Slack renders as its first row. */
+const headers = (card: Card | null) =>
+	(kids(card).find((c) => c.type === "table")?.headers as string[]) ?? [];
+/**
+ * The card's opening prose — the notification body, which is a leading `text`
+ * child now that the subtitle slot belongs to the context strip.
+ */
+const body = (card: Card | null) => {
+	const first = kids(card)[0];
+	return first?.type === "text" ? (first.content as string) : undefined;
+};
+/** The context strip: one Slack `context` block, carried as the subtitle. */
+const strip = (card: Card | null) => card?.subtitle;
 const texts = (card: Card | null) =>
 	kids(card)
 		.filter((c) => c.type === "text")
@@ -50,7 +82,7 @@ const schema = (properties: Record<string, unknown>) => ({
 });
 
 describe("default template (no authored json_template)", () => {
-	it("renders one row per schema field, label then value", () => {
+	it("renders one field per schema property, label then value", () => {
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
 			data: {
@@ -59,11 +91,14 @@ describe("default template (no authored json_template)", () => {
 				input: { title: "Fix it" },
 			},
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["Operation", "create_issue"],
 			["Connection", "GitHub"],
 			["Input", "Title: Fix it"],
 		]);
+		// Not a table: two columns have no names, and Slack would draw the header
+		// row as an empty band above them.
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
 	});
 
 	it("honours x-table-column order, x-table-label, title and x-hidden", () => {
@@ -76,7 +111,7 @@ describe("default template (no authored json_template)", () => {
 			}),
 			data: { first: "a", later: "b", secret: "nope", renamed: "c" },
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["First", "a"],
 			["Later", "b"],
 			["Renamed", "c"],
@@ -88,7 +123,7 @@ describe("default template (no authored json_template)", () => {
 			metadataSchema: APPROVAL_KIND.metadataSchema,
 			data: { operation: "x", connection: null, input: undefined },
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["Operation", "x"],
 			["Connection", "—"],
 			["Input", "—"],
@@ -131,7 +166,7 @@ describe("authored json_template", () => {
 			data: { operation: "deploy" },
 		});
 		expect(texts(card)).toEqual(["Deploy approval"]);
-		expect(rows(card)).toEqual([["Service", "deploy"]]);
+		expect(pairs(card)).toEqual([["Service", "deploy"]]);
 	});
 
 	it("takes the if branch matching the data, like the web renderer", () => {
@@ -180,7 +215,7 @@ describe("authored json_template", () => {
 			},
 			data: { lines: [{ name: "Widgets", qty: 12 }, { name: "Gadgets", qty: 3 }] },
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["Widgets", "12"],
 			["Gadgets", "3"],
 		]);
@@ -222,13 +257,17 @@ describe("authored json_template", () => {
 describe("Slack escaping is per destination", () => {
 	const hostile = "<!channel> & <https://evil.example|Review in Lobu>";
 
-	it("leaves table cells unescaped — the adapter emits them as raw_text", () => {
+	it("escapes a value that rides in fields — those are mrkdwn, not raw_text", () => {
 		const card = buildKindCard({
 			metadataSchema: schema({ v: { type: "string", title: "V" } }),
 			data: { v: hostile },
 		});
-		// Escaping here would show the reader a literal `&lt;`.
-		expect(rows(card)).toEqual([["V", hostile]]);
+		// A label/value pair renders as fields, and the adapter emits those through
+		// `mrkdwn()`. Unescaped, this value would ping the channel. Table CELLS are
+		// the opposite case and stay raw — pinned by the diffs table below.
+		expect(pairs(card)).toEqual([
+			["V", "&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;"],
+		]);
 	});
 
 	it("escapes free text, which the adapter emits as mrkdwn", () => {
@@ -239,6 +278,160 @@ describe("Slack escaping is per destination", () => {
 		expect(texts(card)[0]).toBe(
 			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
 		);
+	});
+});
+
+describe("the body's duplicate review link", () => {
+	it("drops the body line that links to the page the button already opens", () => {
+		// The body is written for the TEXT fallback, where there is no button.
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
+			data: { operation: "run", connection: "Mac Shell", input: {} },
+			body: "A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/acme/memory?run_ids=42)",
+			url: "https://app.lobu.ai/acme/memory?run_ids=42",
+		});
+		expect(body(card)).toBe("A queued action on Mac Shell is waiting.");
+		expect(buttons(card).map((b) => b.url)).toContain(
+			"https://app.lobu.ai/acme/memory?run_ids=42",
+		);
+	});
+
+	it("keeps a link that points somewhere the card does NOT already offer", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
+			data: { operation: "run", connection: "Mac Shell", input: {} },
+			body: "See [the runbook](https://wiki.example/runbook) first.",
+			url: "https://app.lobu.ai/acme/memory?run_ids=42",
+		});
+		expect(body(card)).toBe("See the runbook first.");
+	});
+});
+
+describe("table headers", () => {
+	it("lifts a declared thead out of the body into the header row", () => {
+		// Slack ALWAYS draws a table's first row as its header. Left in the body a
+		// declared header row was drawn twice: once as an empty band, once as data.
+		const th = (t: string) => ({ type: "th", children: [{ type: "text", content: t }] });
+		const td = (t: string) => ({ type: "td", children: [{ type: "text", content: t }] });
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{
+						type: "table",
+						children: [
+							{ type: "thead", children: [{ type: "tr", children: [th("Field"), th("Current"), th("Proposed")] }] },
+							{ type: "tbody", children: [{ type: "tr", children: [td("Email"), td("a@x"), td("b@x")] }] },
+						],
+					},
+				],
+			},
+			data: {},
+		});
+		expect(headers(card)).toEqual(["Field", "Current", "Proposed"]);
+		expect(rows(card)).toEqual([["Email", "a@x", "b@x"]]);
+	});
+
+	it("takes every header row out of the body, not just the promoted one", () => {
+		// A `thead` may declare more than one `tr` (a grouped header). Only the
+		// first can become Slack's header row; the rest must not fall through and
+		// render as data indistinguishable from the record.
+		const th = (t: string) => ({ type: "th", children: [{ type: "text", content: t }] });
+		const td = (t: string) => ({ type: "td", children: [{ type: "text", content: t }] });
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "table", children: [
+						{ type: "thead", children: [
+							{ type: "tr", children: [th("Change"), th("Change")] },
+							{ type: "tr", children: [th("Current"), th("Proposed")] },
+						] },
+						{ type: "tbody", children: [{ type: "tr", children: [td("Eng"), td("Staff Eng")] }] },
+					] },
+				],
+			},
+			data: {},
+		});
+		expect(headers(card)).toEqual(["Change", "Change"]);
+		expect(rows(card)).toEqual([["Eng", "Staff Eng"]]);
+	});
+
+	it("treats a row of th + td as data, not a header", () => {
+		// The default template's `th` is a per-row LABEL, not a column name. Only a
+		// row of nothing but `th` is a header — HTML's own rule.
+		const card = buildKindCard({
+			metadataSchema: schema({
+				a: { type: "string", title: "A" },
+				b: { type: "string", title: "B" },
+				c: { type: "string", title: "C" },
+			}),
+			data: { a: "1", b: "2", c: "3" },
+		});
+		expect(pairs(card)).toEqual([
+			["A", "1"],
+			["B", "2"],
+			["C", "3"],
+		]);
+	});
+
+	it("renders the data-driven form the web renderer supports", () => {
+		// `{type:"table", data, columns}` has no `tr` children, so it used to fall
+		// through to "no rows" — dropping the only content and, with it, the whole
+		// card. `columns` names the headers, so this shape never has to guess.
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "table", props: { caption: "Risks" }, data: "{{risks}}", columns: ["risk_name", "severity"] },
+				],
+			},
+			data: {
+				risks: [
+					{ risk_name: "Leak", severity: "high" },
+					{ risk_name: "Cost", severity: "low" },
+				],
+			},
+		});
+		expect(headers(card)).toEqual(["Risk Name", "Severity"]);
+		expect(rows(card)).toEqual([
+			["Leak", "high"],
+			["Cost", "low"],
+		]);
+	});
+
+	it("names the data-driven table by the prop the web renderer reads", () => {
+		// That form is titled with `title`, not `caption`, so reading only
+		// `caption` would label the same table differently on the two surfaces.
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "table", props: { title: "Risks" }, data: "{{risks}}", columns: ["risk_name"] },
+				],
+			},
+			data: { risks: [{ risk_name: "Leak" }] },
+		});
+		expect(kids(card).find((c) => c.type === "table")?.caption).toBe("Risks");
+	});
+
+	it("drops a table whose declared columns are empty", () => {
+		// `columns: []` resolves every row to no cells at all — a table with no
+		// columns, which is not a shape to hand the adapter.
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Risks" },
+					{ type: "table", data: "{{risks}}", columns: [] },
+				],
+			},
+			data: { risks: [{ risk_name: "Leak" }] },
+		});
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+		expect(texts(card)).toEqual(["Risks"]);
 	});
 });
 
@@ -286,12 +479,41 @@ describe("platform limits", () => {
 			metadataSchema: schema({ v: { type: "string", title: "V" } }),
 			data: { v: "x".repeat(6000) },
 		});
-		const cell = rows(card)[0][1];
+		const cell = pairs(card)[0][1];
 		expect(cell.length).toBeLessThanOrEqual(400);
 		expect(cell.endsWith("…")).toBe(true);
 	});
 
-	it("keeps every row rectangular so Slack accepts the table", () => {
+	it("chunks a long field run instead of losing its tail", () => {
+		// Slack caps fields per SECTION at 10 — a cap on the block, not on what
+		// the card may show. Slicing to 10 made a 15-row entity-create proposal
+		// silently lose rows 11+, and the reader approves a record with no sign
+		// anything is missing.
+		const rows = Array.from({ length: 15 }, (_, i) => ({
+			type: "tr",
+			children: [
+				{ type: "th", children: [{ type: "text", content: `Field ${i + 1}` }] },
+				{ type: "td", children: [{ type: "text", content: `value ${i + 1}` }] },
+			],
+		}));
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "table", children: [{ type: "tbody", children: rows }] }],
+			},
+			data: {},
+		});
+		expect(pairs(card)).toHaveLength(15);
+		expect(pairs(card)[14]).toEqual(["Field 15", "value 15"]);
+		// Split across sections, none of which breaches Slack's cap.
+		const blocks = kids(card).filter((c) => c.type === "fields");
+		expect(blocks).toHaveLength(2);
+		for (const block of blocks) {
+			expect((block.children as unknown[]).length).toBeLessThanOrEqual(10);
+		}
+	});
+
+	it("uses fields, not a headless table, for a label/value schema", () => {
 		const card = buildKindCard({
 			metadataSchema: schema({
 				a: { type: "string", title: "A" },
@@ -299,18 +521,26 @@ describe("platform limits", () => {
 			}),
 			data: { a: "1", b: "2" },
 		});
-		const table = kids(card).find((c) => c.type === "table") as {
-			headers: string[];
-			rows: string[][];
-		};
-		const width = table.headers.length;
-		expect(width).toBe(2);
-		for (const row of table.rows) expect(row).toHaveLength(width);
+		// Two columns become fields, so there is no header row to leave blank.
+		// Rectangularity for real tables is pinned by the ragged-row test in
+		// "structural edge cases".
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+		expect(pairs(card)).toEqual([
+			["A", "1"],
+			["B", "2"],
+		]);
 	});
 });
 
 describe("template-declared controls", () => {
 	const bound = (props: Record<string, unknown>) => ({ type: "button", props });
+
+	// A failed assertion must not leave the configured origin behind for the
+	// sibling suites, which assert on its absence.
+	afterEach(() => {
+		delete process.env.PUBLIC_GATEWAY_URL;
+		__resetPublicOriginCachesForTests();
+	});
 
 	it("renders a button whose action the bridge can actually route", () => {
 		const card = buildKindCard({
@@ -369,6 +599,42 @@ describe("template-declared controls", () => {
 			data: {},
 		});
 		expect(buttons(card).map((b) => b.url)).toEqual(["https://lobu.ai/runbook"]);
+	});
+
+	it("absolutises a link button's url — Slack takes it verbatim", () => {
+		// A relative button url is answered with `invalid_blocks`, which drops the
+		// whole message. Same rule as the strip, applied at the button.
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "link-button", props: { label: "Open", url: "/acme/memory?run_ids=1" } }],
+			},
+			data: {},
+		});
+		expect(buttons(card).map((b) => b.url)).toEqual([
+			"https://app.lobu.ai/acme/memory?run_ids=1",
+		]);
+	});
+
+	it("degrades a link button we cannot vouch for to its label", () => {
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Runbook" },
+					{ type: "link-button", props: { label: "Open", url: "javascript:alert(1)" } },
+				],
+			},
+			data: {},
+		});
+		expect(buttons(card)).toEqual([]);
+		// The label is not lost with the control — a dead button costs the whole
+		// message, a plain label costs nothing.
+		expect(texts(card)).toEqual(["Runbook\nOpen"]);
 	});
 
 	it("resolves {{path}} interpolation in a control label", () => {
@@ -450,6 +716,33 @@ describe("structural edge cases", () => {
 		expect(kids(card).some((c) => c.type === "table")).toBe(false);
 	});
 
+	it("drops a table left with only its header row", () => {
+		// A declared `thead` over an `each` that resolved to nothing. The header
+		// is lifted out, no data row survives, and the table goes with it.
+		//
+		// The alternative — keep the row as DATA once it is the only one — is the
+		// bug this file exists to fix: Slack draws a table's first row as its
+		// header, so that renders "Field | Current" as a data row beneath an
+		// empty band. Column names with nothing under them say nothing; the
+		// prose around them still does.
+		const th = (t: string) => ({ type: "th", children: [{ type: "text", content: t }] });
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Nothing changed." },
+					{ type: "table", children: [
+						{ type: "thead", children: [{ type: "tr", children: [th("Field"), th("Current")] }] },
+						{ type: "tbody", children: [{ type: "each", items: "rows", as: "r", render: { type: "tr", children: [{ type: "td", children: [{ type: "data", path: "r" }] }] } }] },
+					] },
+				],
+			},
+			data: { rows: [] },
+		});
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+		expect(texts(card)).toEqual(["Nothing changed."]);
+	});
+
 	it("pads ragged rows so Slack accepts the table", () => {
 		const card = buildKindCard({
 			jsonTemplate: {
@@ -477,7 +770,7 @@ describe("structural edge cases", () => {
 			},
 			data: { groups: [{ name: "G1", rows: ["x", "y"] }, { name: "G2", rows: ["z"] }] },
 		});
-		expect(rows(card)).toEqual([["G1", "x"], ["G1", "y"], ["G2", "z"]]);
+		expect(pairs(card)).toEqual([["G1", "x"], ["G1", "y"], ["G2", "z"]]);
 	});
 });
 
@@ -512,7 +805,7 @@ describe("entity change approvals render through their kind", () => {
 		]);
 	});
 
-	it("shows a create as one row per proposed field", () => {
+	it("shows a create as one field per proposed value", () => {
 		const card = build({
 			entityTypeLabel: "Company",
 			entityName: "Acme Robotics",
@@ -525,7 +818,14 @@ describe("entity change approvals render through their kind", () => {
 				{ label: "Domain", value: "acme.example" },
 			],
 		});
-		expect(rows(card)).toEqual([
+		// Type and Entity identify the card, so they are in the strip, not the
+		// body. The proposal is a label/value pair, so it lands in fields — under
+		// its own caption, so the strip's "Acme Robotics" cannot be mistaken for
+		// "Name: Acme Robotics" (the value being approved).
+		expect(strip(card)).toBe("*Company* · Acme Robotics");
+		expect(texts(card)).toContain("*Proposed change*");
+		expect(pairs(card)).toEqual([
+			["Action", "Create this entity"],
 			["Name", "Acme Robotics"],
 			["Domain", "acme.example"],
 		]);
@@ -541,10 +841,10 @@ describe("entity change approvals render through their kind", () => {
 			proposal: [],
 			diffs: [{ label: "Amount", current: "$1,200", proposed: "$18,400" }],
 		});
-		const fieldLabels = kids(card)
-			.filter((c) => c.type === "fields")
-			.flatMap((c) => (c.children as Array<{ label: string }>).map((f) => f.label));
-		expect(fieldLabels).toEqual(["Type"]);
+		// Nothing optional resolved, so the fields block never opens — and the
+		// strip is the type alone rather than a `·` with nothing after it.
+		expect(pairs(card)).toEqual([]);
+		expect(strip(card)).toBe("*Deal*");
 	});
 
 	it("escapes the mrkdwn header fields but not the raw_text table cells", () => {
@@ -558,45 +858,93 @@ describe("entity change approvals render through their kind", () => {
 			proposal: [],
 			diffs: [{ label: "Bio", current: null, proposed: hostile }],
 		});
-		const entityField = kids(card)
-			.filter((c) => c.type === "fields")
-			.flatMap((c) => c.children as Array<{ label: string; value: string }>)
-			.find((f) => f.label === "Entity");
-		expect(entityField?.value).toBe(
-			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
+		// The strip goes out as mrkdwn, so a raw `<!channel>` in an entity name
+		// would ping the room from a trusted card and a raw `<url|text>` would
+		// render a link spoofing the genuine one.
+		expect(strip(card)).toBe(
+			"*Person* · &lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
 		);
 		// Cells go out as raw_text, which Slack never parses — escaping here would
 		// show the reader a literal `&lt;`.
 		expect(rows(card)[0][2]).toBe(hostile);
 	});
 
-	it("flattens the Markdown body into the subtitle — mrkdwn is not Markdown", () => {
+	it("flattens the Markdown body — mrkdwn is not Markdown", () => {
 		// This is the real approval body: `escapeMarkdownText` backslashes and a
 		// `[Review in Lobu](url)` link that the card already carries as a button.
 		// Rendered raw through `mrkdwn()`, every one of those shows literally.
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
 			data: { operation: "create_issue", connection: "GitHub", input: {} },
-			subtitle:
-				"A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/runs/42)",
+			body: "A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/runs/42)",
 		});
-		expect(card.subtitle).toBe(
+		expect(body(card)).toBe(
 			"A queued action on Mac Shell is waiting.\n\nReview: Review in Lobu",
 		);
 	});
 
-	it("escapes the subtitle — the adapter renders it as mrkdwn", () => {
-		// The subtitle is the notification body, and an approval body carries the
+	it("escapes the body — the adapter renders it as mrkdwn", () => {
+		// The body is the notification body, and an approval body carries the
 		// connection name, which we do not author. `blocks.js` puts it through
 		// `mrkdwn()`, so a raw `<!channel>` would ping the room from a trusted card.
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
 			data: { operation: "create_issue", connection: "GitHub", input: {} },
-			subtitle: "<!channel> approve <https://evil.example|Review in Lobu>",
+			body: "<!channel> approve <https://evil.example|Review in Lobu>",
 		});
-		expect(card.subtitle).toBe(
+		expect(body(card)).toBe(
 			"&lt;!channel&gt; approve &lt;https://evil.example|Review in Lobu&gt;",
 		);
+	});
+
+	it("clamps the body without cutting an escaped entity in half", () => {
+		// `renderApprovalBody` emits one line per proposed field and has no cap of
+		// its own, so a wide entity-create routinely runs past MAX_TEXT_CHARS.
+		// Escaping happens BEFORE the clamp, so a naive slice lands inside `&amp;`
+		// and Slack renders the `&am` fragment literally — on the card the reader
+		// is approving.
+		// A RUN of ampersands guarantees the cut lands inside an entity
+		// whatever the exact budget works out to, rather than depending on the
+		// padding happening to line up with it.
+		const long = `${"a".repeat(1880)}${"&".repeat(30)}`;
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
+			data: { operation: "create_issue", connection: "GitHub", input: {} },
+			body: long,
+		});
+		const text = body(card) ?? "";
+		// Non-vacuity: the clamp must actually have fired.
+		expect(text.endsWith("…")).toBe(true);
+		expect(text.length).toBeLessThanOrEqual(1900);
+		// Every `&` that survives introduces a COMPLETE entity.
+		expect(/&(?!amp;|lt;|gt;)/.test(text)).toBe(false);
+	});
+
+	it("clamps a field value without cutting an escaped entity in half", () => {
+		// Same defect one block down. A cell is clamped RAW at MAX_CELL_CHARS
+		// (400) on the way in, so the only value that still overflows the field
+		// budget afterwards is one that escaping expands — 400 ampersands become
+		// 2000 characters, and the cut lands inside the last `&amp;`.
+		const KIND = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+		const card = buildKindCard({
+			metadataSchema: KIND.metadataSchema,
+			jsonTemplate: KIND.jsonTemplate,
+			data: {
+				entityTypeLabel: "Person",
+				entityName: "Ada",
+				action: "Create this entity",
+				proposal: [
+					{ label: "Bio", value: "&".repeat(400) },
+				],
+				diffs: null,
+			},
+		});
+		const value = pairs(card).find(([label]) => label === "Bio")?.[1] ?? "";
+		expect(value.endsWith("…")).toBe(true);
+		expect(/&(?!amp;|lt;|gt;)/.test(value)).toBe(false);
 	});
 
 	it("still carries the decision buttons the bridge already routes", () => {
@@ -614,5 +962,254 @@ describe("entity change approvals render through their kind", () => {
 			"run-approval:991:reject",
 			"https://app.lobu.ai/runs/991",
 		]);
+	});
+});
+
+/**
+ * The context strip — the card's identity line, which the Slack adapter emits
+ * as a `context` block above the body.
+ *
+ * Everything here is about it staying TRUE rather than looking right: a link
+ * that cannot be opened from chat is worse than a name with no link, a control
+ * has no inline form at all, and a value the template did not resolve must take
+ * its separator with it instead of leaving the strip opening on a `·`.
+ */
+describe("the context strip", () => {
+	const ctx = (children: unknown[], data: Record<string, unknown> = {}) =>
+		buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "context", children },
+					{ type: "text", content: "body" },
+				],
+			},
+			data,
+		});
+
+	afterEach(() => {
+		delete process.env.PUBLIC_GATEWAY_URL;
+		__resetPublicOriginCachesForTests();
+		__setLocalFrontendForTests(undefined);
+	});
+
+	it("renders a link as Slack's `<url|label>`, not as a button", () => {
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "data", path: "name" }],
+				},
+			],
+			{ url: "https://app.lobu.ai/acme/person/ada", name: "Ada Lovelace" },
+		);
+		expect(strip(card)).toBe("<https://app.lobu.ai/acme/person/ada|Ada Lovelace>");
+		// A context block holds no controls, so the link must NOT also have been
+		// promoted into the actions row.
+		expect(buttons(card)).toEqual([]);
+	});
+
+	it("absolutises a relative permalink — chat has no origin to resolve against", () => {
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "/acme/person/ada" },
+		);
+		expect(strip(card)).toBe("<https://app.lobu.ai/acme/person/ada|Ada>");
+	});
+
+	it("keeps the label as plain text when the url cannot be absolutised", () => {
+		// No configured origin and no local frontend would normally fall back to
+		// the hosted UI; pinning both is what makes "unresolvable" reachable.
+		// Reset FIRST: the reset clears the local-frontend pin as well, so pinning
+		// before it leaves the answer up to whether this checkout happens to have
+		// a built bundle — green here, red in CI.
+		__resetPublicOriginCachesForTests();
+		__setLocalFrontendForTests(true);
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "/acme/person/ada" },
+		);
+		expect(strip(card)).toBe("Ada");
+	});
+
+	it("refuses a protocol-relative url — the origin join would fake our domain", () => {
+		// `//evil.example/x` carries no scheme, so a scheme test alone waves it
+		// through and the origin join renders `https://app.lobu.ai//evil.example/x`
+		// — a link that looks like ours and goes nowhere.
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "//evil.example/x" },
+		);
+		expect(strip(card)).toBe("Ada");
+	});
+
+	it("drops whole segments at the budget rather than cutting one", () => {
+		// The parts are finished mrkdwn. A cut lands mid-`<url|label>` and Slack
+		// renders the wreckage literally, so the tail goes instead.
+		const long = "x".repeat(600);
+		const card = ctx(
+			[
+				{ type: "data", path: "a" },
+				{ type: "data", path: "b" },
+				{
+					type: "link",
+					props: { href: "https://app.lobu.ai/acme/person/ada" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ a: long, b: long },
+		);
+		const text = strip(card) ?? "";
+		expect(text).toBe(long);
+		// The dropped link is absent OUTRIGHT — no half-rendered `<...|` left over.
+		expect(text).not.toContain("<");
+	});
+
+	it("refuses to vouch for a non-http scheme", () => {
+		// With an origin configured, an unabsolutisable url is the ONLY thing
+		// standing between `javascript:` and a rendered link — without the scheme
+		// guard the origin join turns it into one.
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "javascript:alert(1)" },
+		);
+		expect(strip(card)).toBe("Ada");
+	});
+
+	it("drops a control rather than drawing a label that cannot be pressed", () => {
+		// `@name` is the DSL's action binding, so this button IS routable — it
+		// reaches the strip as a real control and is dropped there because a
+		// context block holds none, not because it failed to resolve.
+		const card = ctx([
+			{ type: "text", content: "Person" },
+			{
+				type: "button",
+				props: { label: "Approve", onClick: "@run-approval:1:approve" },
+			},
+		]);
+		expect(strip(card)).toBe("Person");
+		// It is dropped from the strip, not relocated into the actions row.
+		expect(buttons(card)).toEqual([]);
+	});
+
+	it("takes an absent value's separator with it", () => {
+		const children = [
+			{
+				type: "if",
+				condition: "type",
+				then: { type: "strong", children: [{ type: "data", path: "type" }] },
+			},
+			{
+				type: "if",
+				condition: "name",
+				then: {
+					type: "span",
+					children: [
+						{ type: "text", content: "·" },
+						{ type: "data", path: "name" },
+					],
+				},
+			},
+		];
+		expect(strip(ctx(children, { type: "Person", name: "Ada" }))).toBe("*Person* · Ada");
+		expect(strip(ctx(children, { type: "Person" }))).toBe("*Person*");
+		// The first value absent is the case the authored-separator rule cannot
+		// cover on its own: the strip drops the `·` left with nothing before it.
+		expect(strip(ctx(children, { name: "Ada" }))).toBe("Ada");
+	});
+
+	it("does not turn a body into a card the template could not draw", () => {
+		// The body is the same prose the markdown fallback already carries. A
+		// template that resolved to nothing must still fall back rather than
+		// produce a card that says nothing the fallback did not.
+		expect(
+			buildKindCard({
+				jsonTemplate: {
+					type: "card",
+					children: [
+						{ type: "if", condition: "never", then: { type: "text", content: "x" } },
+					],
+				},
+				data: {},
+				body: "A queued action is waiting.",
+			}),
+		).toBeNull();
+	});
+
+	it("is absent, not empty, when nothing in it resolved", () => {
+		expect(strip(ctx([{ type: "data", path: "missing" }]))).toBeUndefined();
+	});
+
+	it("escapes strip content — it goes out as mrkdwn", () => {
+		const card = ctx([{ type: "data", path: "name" }], {
+			name: "<!channel> & <https://evil.example|Review in Lobu>",
+		});
+		expect(strip(card)).toBe(
+			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
+		);
+	});
+
+	it("puts the connector operation's identity in the strip, its input in the body", () => {
+		const kind = PLATFORM_EVENT_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
+		const card = buildKindCard({
+			metadataSchema: kind.metadataSchema,
+			jsonTemplate: kind.jsonTemplate,
+			data: {
+				operation: "Deploy to production",
+				connection: "Acme Shell",
+				input: { cmd: "helm upgrade lobu ./chart" },
+			},
+		});
+		expect(strip(card)).toBe("*Operation* Deploy to production · via Acme Shell");
+		expect(pairs(card).map((p) => p[0])).toEqual(["Input"]);
+	});
+
+	it("links the entity under review from the approval strip", () => {
+		const kind = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+		const card = buildKindCard({
+			metadataSchema: kind.metadataSchema,
+			jsonTemplate: kind.jsonTemplate,
+			data: {
+				entityTypeLabel: "Person",
+				entityName: "Ada Lovelace",
+				entityUrl: "https://app.lobu.ai/acme/person/ada-lovelace",
+				requestedBy: "nightly-triage",
+				diffs: [{ label: "Email", current: "a@old", proposed: "a@new" }],
+			},
+		});
+		expect(strip(card)).toBe(
+			"*Person* · <https://app.lobu.ai/acme/person/ada-lovelace|Ada Lovelace> · requested by nightly-triage",
+		);
 	});
 });

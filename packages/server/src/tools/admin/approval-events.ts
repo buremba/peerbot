@@ -122,6 +122,9 @@ export async function supersedeActionEvent(
 		reviewer?.name ??
 		(priorMetadata.reviewed_by_name as string | undefined) ??
 		null;
+	const reviewedAt = reviewer
+		? new Date().toISOString()
+		: ((priorMetadata.reviewed_at as string | undefined) ?? null);
 
 	const nextEvent = await insertEvent(
 		{
@@ -165,6 +168,7 @@ export async function supersedeActionEvent(
 				status,
 				...(reviewedById ? { reviewed_by_id: reviewedById } : {}),
 				...(reviewedByName ? { reviewed_by_name: reviewedByName } : {}),
+				...(reviewedAt ? { reviewed_at: reviewedAt } : {}),
 				...(extraMetadata.output
 					? { action_output: extraMetadata.output }
 					: {}),

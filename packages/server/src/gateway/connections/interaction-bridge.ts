@@ -1,11 +1,25 @@
 import { createLogger } from "@lobu/core";
-import { Actions, Button, Card, CardText, LinkButton } from "chat";
+import {
+	Actions,
+	Button,
+	Card,
+	type CardElement,
+	CardText,
+	LinkButton,
+} from "chat";
 import { SCOPE_CHECK_NOT_APPLICABLE } from "../../auth/tool-access.js";
 import { getDb, pgTextArray } from "../../db/client.js";
 import type { Env } from "../../index.js";
 import { ENTITY_CHANGE_ACTION_KEYS } from "../../tools/admin/entity-field-approval.js";
 import { manageOperations } from "../../tools/admin/manage_operations.js";
 import type { ToolContext } from "../../tools/registry.js";
+import {
+	actionResolutionText,
+	type ActionOrigin,
+	actionOriginSubtitle,
+	settleActionCard,
+} from "../../notifications/action-card-state.js";
+import { resolveInteractionActionOrigin } from "../../notifications/action-origin.js";
 import {
 	pairAdminGrant,
   type PendingToolInvocation,
@@ -97,21 +111,6 @@ async function takePendingToolInvocation(
 	requestId: string,
 ): Promise<PendingToolInvocation | null> {
   return takePendingTool(requestId);
-}
-
-function describeDecision(decision: string): string {
-	switch (decision) {
-		case "1h":
-			return "Approved (1h)";
-		case "24h":
-			return "Approved (24h)";
-		case "always":
-			return "Approved (always)";
-		case "deny":
-			return "Denied";
-		default:
-			return `Decision: ${decision}`;
-	}
 }
 
 function actionEventTeamId(
@@ -227,31 +226,6 @@ export async function resolveEntityApprovalRun(
 	return { state, ownerUserId: rows[0].owner_user_id ?? null };
 }
 
-/**
- * Replace the approval card's buttons with a plain-text decision summary.
- * Best-effort: silently swallows edit failures (the card may be unreachable
- * after a long gap, or the platform may not support edits).
- */
-async function stripApprovalButtons(
-  sent: SentMessage | undefined,
-  pending: {
-    mcpId: string;
-    toolName: string;
-    args: Record<string, unknown>;
-  },
-	decision: string,
-): Promise<void> {
-  if (!sent) return;
-  const summary =
-    `*Tool Approval*\n${pending.mcpId} → ${pending.toolName}\n` +
-    `${formatToolArgs(pending.args)}\n\n_${describeDecision(decision)}_`;
-  try {
-    await sent.edit(summary);
-  } catch {
-    // best effort — card may be stale, edit may be unsupported
-  }
-}
-
 function formatToolArgs(args: Record<string, unknown>): string {
   return Object.entries(args)
     .map(([k, v]) => {
@@ -259,6 +233,94 @@ function formatToolArgs(args: Record<string, unknown>): string {
       return `  ${k}: ${val}`;
     })
     .join("\n");
+}
+
+function questionCard(
+	question: string,
+	options: string[],
+	id: string,
+	origin: ActionOrigin,
+) {
+	return Card({
+		subtitle: actionOriginSubtitle(origin),
+		children: [
+			CardText(question),
+			Actions(
+				options.map((option, index) =>
+					Button({
+						id: `question:${id}:${index}`,
+						label: option,
+						value: option,
+					}),
+				),
+			),
+		],
+	});
+}
+
+function toolApprovalCard(
+	pending: {
+		mcpId: string;
+		toolName: string;
+		args: Record<string, unknown>;
+	},
+	id: string,
+	origin: ActionOrigin,
+) {
+	return Card({
+		subtitle: actionOriginSubtitle(origin),
+		children: [
+			CardText(
+				`*Tool Approval*\n${pending.mcpId} → ${pending.toolName}\n${formatToolArgs(pending.args)}`,
+			),
+			Actions([
+				Button({
+					id: `tool:${id}:1h`,
+					label: "Allow 1h",
+					style: "primary",
+					value: "1h",
+				}),
+				Button({
+					id: `tool:${id}:24h`,
+					label: "Allow 24h",
+					style: "primary",
+					value: "24h",
+				}),
+				Button({
+					id: `tool:${id}:always`,
+					label: "Allow always",
+					style: "primary",
+					value: "always",
+				}),
+				Button({
+					id: `tool:${id}:deny`,
+					label: "Deny always",
+					style: "danger",
+					value: "deny",
+				}),
+			]),
+		],
+	});
+}
+
+async function editClickedCard(event: any, card: CardElement): Promise<boolean> {
+	const threadId =
+		typeof event.threadId === "string"
+			? event.threadId
+			: typeof event.thread?.id === "string"
+				? event.thread.id
+				: null;
+	const messageId = typeof event.messageId === "string" ? event.messageId : null;
+	if (!threadId || !messageId || !event.adapter?.editMessage) return false;
+	try {
+		await event.adapter.editMessage(threadId, messageId, {
+			card,
+			fallbackText: "Action updated",
+		});
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** Context tracked per posted question so the click handler can feed the
@@ -473,16 +535,19 @@ export function registerInteractionBridge(
         return;
       }
 
-      const buttons = event.options.map((option, i) =>
-        Button({
-          id: `question:${event.id}:${i}`,
-          label: option,
-          value: option,
-				}),
-      );
-      const card = Card({
-        children: [CardText(event.question), Actions(buttons)],
-      });
+			const actionOrigin = await resolveInteractionActionOrigin({
+				organizationId,
+				platform: event.platform,
+				conversationId: event.conversationId,
+				agentId: connection.agentId,
+				source: event.source,
+			});
+			const card = questionCard(
+				event.question,
+				event.options,
+				event.id,
+				actionOrigin,
+			);
       const fallbackText = `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`;
       const sent = await postWithFallback(
         thread,
@@ -521,43 +586,17 @@ export function registerInteractionBridge(
   const onToolApprovalNeeded = withResolvedThread<PostedToolApproval>(
     "tool:approval-needed",
     async (event, thread) => {
-      const argsText = formatToolArgs(event.args);
-      const text = `Tool Approval\n${event.mcpId} → ${event.toolName}\n${argsText}`;
+			const text = `Tool Approval\n${event.mcpId} → ${event.toolName}\n${formatToolArgs(event.args)}`;
       const tid = event.id;
 
-      const card = Card({
-        children: [
-          CardText(
-						`*Tool Approval*\n${event.mcpId} → ${event.toolName}\n${argsText}`,
-          ),
-          Actions([
-            Button({
-              id: `tool:${tid}:1h`,
-              label: "Allow 1h",
-              style: "primary",
-              value: "1h",
-            }),
-            Button({
-              id: `tool:${tid}:24h`,
-              label: "Allow 24h",
-              style: "primary",
-              value: "24h",
-            }),
-            Button({
-              id: `tool:${tid}:always`,
-              label: "Allow always",
-              style: "primary",
-              value: "always",
-            }),
-            Button({
-              id: `tool:${tid}:deny`,
-              label: "Deny always",
-              style: "danger",
-              value: "deny",
-            }),
-          ]),
-        ],
-      });
+			const actionOrigin = await resolveInteractionActionOrigin({
+				organizationId: connection.organizationId,
+				platform: event.platform,
+				conversationId: event.conversationId,
+				agentId: event.agentId,
+				source: event.source,
+			});
+			const card = toolApprovalCard(event, tid, actionOrigin);
       const sent = await postWithFallback(
         thread,
         { card, fallbackText: text },
@@ -662,7 +701,7 @@ export function registerInteractionBridge(
     grantStore,
     executeToolDirect,
     claimApprovalCard,
-    async (questionId, value, thread, author) => {
+    async (questionId, value, thread, author, actionEvent) => {
       // Fast path — Slack's block_actions webhook requires a <3s response.
       // The claim is a single `UPDATE … RETURNING` on a PK and stays well
       // under the budget; the slow platform API calls (post receipt, edit
@@ -717,33 +756,49 @@ export function registerInteractionBridge(
         : "*You submitted a response.*";
 
       void (async () => {
-        // Visible "user submitted X" receipt so the click is acknowledged
-        // in-thread even before the worker responds.
-        try {
-          const card = Card({ children: [CardText(receiptText)] });
-          await thread
-            .post({ card, fallbackText: receiptText })
-            .catch(async () => {
-              await thread.post(receiptText);
-            });
-        } catch {
-          try {
-            await thread.post(receiptText);
-          } catch {
-            // best effort — even the plain-text fallback failed
-          }
-        }
-
-        // Strip the original card's buttons so it can't be clicked again.
-        if (entry.sent) {
-          try {
-            await entry.sent.edit(
-							`${question.question}\n\n_Answered: ${value}_`,
-            );
-          } catch {
-            // best effort — card may be stale or un-editable
-          }
-        }
+				const resolution = {
+					status: "answered" as const,
+					actorName: author?.fullName ?? author?.userName ?? null,
+					resolvedAt: new Date(),
+					detail: value ? `Response: ${value}` : "Response submitted.",
+				};
+				const actionOrigin = await resolveInteractionActionOrigin({
+					organizationId,
+					platform: question.platform,
+					conversationId: question.conversationId,
+					agentId: connection.agentId,
+					source: question.source,
+				});
+				const settledCard = settleActionCard(
+					questionCard(
+						question.question,
+						question.options,
+						questionId,
+						actionOrigin,
+					),
+					resolution,
+				);
+				const edited = await editClickedCard(actionEvent, settledCard);
+				if (!edited && entry.sent) {
+					try {
+						await entry.sent.edit({
+							card: settledCard,
+							fallbackText: actionResolutionText(resolution),
+						});
+					} catch {
+						// best effort — card may be stale or un-editable
+					}
+				}
+				if (!edited && !entry.sent) {
+					// The durable claim already won, but this host cannot address the
+					// original platform message. Leave a receipt instead of making the
+					// click appear to have done nothing.
+					try {
+						await thread.post(receiptText);
+					} catch {
+						// best effort
+					}
+				}
 
         // MUST route with question.userId (the original message's user), not
         // author.userId (who physically clicked). The worker session is keyed
@@ -877,6 +932,7 @@ type OnQuestionClickFn = (
   value: string,
   thread: any,
 	author: { userId?: string; userName?: string; fullName?: string } | undefined,
+	actionEvent: any,
 ) => Promise<void>;
 
 /**
@@ -1010,6 +1066,8 @@ export function registerActionHandlers(
 				ctx,
 			).catch((error) => ({ error: String(error) }));
 			const resultRecord = result as Record<string, unknown>;
+			// Keep the terse thread receipt for cards delivered before card payloads
+			// were persisted. New cards also settle in place via manage_operations.
 			const message =
 				typeof resultRecord.message === "string"
 					? resultRecord.message
@@ -1051,13 +1109,26 @@ export function registerActionHandlers(
             { requestId, decision },
 						"Tool approval click with no pending invocation — likely expired",
           );
-          try {
-            await sent.edit(
-							"*Tool Approval*\n\n_This approval request expired before it could be acted on. Re-send your last message to retry._",
-            );
-          } catch {
-            // best effort
-          }
+					const expiredResolution = {
+						status: "expired" as const,
+						detail:
+							"Re-send your last message to create a new approval request.",
+					};
+					const expiredCard = settleActionCard(
+						Card({ children: [CardText("*Tool Approval*")] }),
+						expiredResolution,
+					);
+					const edited = await editClickedCard(event, expiredCard);
+					try {
+						if (!edited) {
+							await sent.edit({
+								card: expiredCard,
+								fallbackText: actionResolutionText(expiredResolution),
+							});
+						}
+					} catch {
+						// best effort
+					}
           try {
             await thread.post(
 							"This tool approval request expired before it could be acted on. Re-send your last message to retry.",
@@ -1076,12 +1147,39 @@ export function registerActionHandlers(
 
       const pattern = `/mcp/${pending.mcpId}/tools/${pending.toolName}`;
 
-      // Edit the posted card to strip buttons so it can't be clicked again.
-      await stripApprovalButtons(
-        claimApprovalCard?.(requestId),
-        pending,
-				decision,
-      );
+			const resolution = {
+				status:
+					decision === "deny" ? ("denied" as const) : ("approved" as const),
+				actorName: event.user?.fullName ?? event.user?.userName ?? null,
+				resolvedAt: new Date(),
+				detail:
+					decision === "deny"
+						? "Tool access denied."
+						: `Tool access allowed ${decision === "always" ? "until revoked" : `for ${decision}`}.`,
+			};
+			const actionOrigin = await resolveInteractionActionOrigin({
+				organizationId: pending.organizationId ?? connection.organizationId,
+				platform: pending.platform,
+				conversationId: pending.conversationId,
+				agentId: pending.agentId,
+				source: pending.source,
+			});
+			const settledCard = settleActionCard(
+				toolApprovalCard(pending, requestId, actionOrigin),
+				resolution,
+			);
+			const sent = claimApprovalCard?.(requestId);
+			const edited = await editClickedCard(event, settledCard);
+			if (!edited && sent) {
+				try {
+					await sent.edit({
+						card: settledCard,
+						fallbackText: actionResolutionText(resolution),
+					});
+				} catch {
+					// Best effort: durable grant/deny state remains authoritative.
+				}
+			}
 
       // Resolve the post target. Prefer the original conversation captured at
       // the time the tool call was blocked (saved alongside the pending
@@ -1276,7 +1374,13 @@ export function registerActionHandlers(
         return;
       }
       try {
-        await onQuestionClick(questionId, responseText, thread, event.user);
+				await onQuestionClick(
+					questionId,
+					responseText,
+					thread,
+					event.user,
+					event,
+				);
       } catch (error) {
         logger.error(
           { connectionId: connection.id, error: String(error) },

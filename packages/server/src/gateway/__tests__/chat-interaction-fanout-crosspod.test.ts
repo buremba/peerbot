@@ -325,4 +325,72 @@ describe("chat interaction card cross-pod fan-out (faithful seam, real bridge + 
     fanoutCleanup();
     bridgeCleanup();
   });
+
+	test("a one-shot question settles the original card through the click adapter", async () => {
+		const sentEdit = mock(async () => undefined);
+		const threadPost = mock(async () => ({ edit: sentEdit }));
+		const thread = { id: CHANNEL, post: threadPost };
+		let actionHandler: ((event: any) => Promise<void>) | undefined;
+		const chat = {
+			onAction: mock((handler: (event: any) => Promise<void>) => {
+				actionHandler = handler;
+			}),
+			channel: mock((key: string) => (key === CHANNEL ? thread : null)),
+			getAdapter: mock((_platform: string) => null),
+			createThread: null,
+		};
+		const ingestClick = mock(async () => undefined);
+		const instance = {
+			connection: makeConnection(),
+			chat,
+			messageBridge: { ingestClick },
+			conversationState: {},
+		};
+		const manager = {
+			has: (id: string) => id === CONN,
+			getInstance: (id: string) => (id === CONN ? instance : undefined),
+		};
+		const service = new InteractionService();
+		const cleanup = registerInteractionBridge(
+			service,
+			manager as any,
+			makeConnection(),
+			chat as any,
+		);
+
+		service.emit("question:created", slackQuestion);
+		await waitFor(
+			() => threadPost.mock.calls.length === 1,
+			"question card is posted",
+		);
+		if (!actionHandler) throw new Error("question action handler was not registered");
+		const editMessage = mock(async () => undefined);
+		await actionHandler({
+			actionId: `question:${slackQuestion.id}:0`,
+			value: "Yes",
+			thread,
+			threadId: CHANNEL,
+			messageId: "1700000000.000700",
+			adapter: { editMessage },
+			user: {
+				userId: USER,
+				userName: "ada",
+				fullName: "Ada Reviewer",
+			},
+		});
+		await waitFor(
+			() => editMessage.mock.calls.length === 1 && ingestClick.mock.calls.length === 1,
+			"question card settles and click reaches worker",
+		);
+
+		expect(threadPost).toHaveBeenCalledTimes(1);
+		expect(sentEdit).not.toHaveBeenCalled();
+		const settledJson = JSON.stringify(editMessage.mock.calls[0]?.[2]);
+		expect(settledJson).toContain("*Answered*");
+		expect(settledJson).toContain("Ada Reviewer");
+		expect(settledJson).toContain("Conversation: Slack conversation");
+		expect(settledJson).not.toContain('\"type\":\"button\"');
+
+		cleanup();
+	});
 });

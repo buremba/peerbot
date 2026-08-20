@@ -10,9 +10,14 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { upsertConversation } from "../../../gateway/services/conversations-store";
+import {
+	resolveActionOrigin,
+	resolveInteractionActionOrigin,
+} from "../../../notifications/action-origin";
 import { resolveApprovalChatOrigin } from "../../../tools/admin/approval-delivery";
 import type { ToolContext } from "../../../tools/registry";
-import { cleanupTestDatabase } from "../../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestAutomationSubscription } from "../../setup/automation-subscriptions";
 import {
 	addUserToOrganization,
@@ -223,5 +228,83 @@ describe("resolveApprovalChatOrigin", () => {
 		);
 
 		expect(target.channelId).toBeNull();
+	});
+
+	it("names the materialized conversation that triggered an action", async () => {
+		const org = await createTestOrganization();
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			agentId: "release-agent",
+			ownerUserId: user.id,
+		});
+		await upsertConversation({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			platform: "slack",
+			conversationId: "slack:C_RELEASE",
+			threadId: null,
+			kind: "platform",
+			title: "Release prep",
+			locationLabel: "#release-prep",
+			lastActivityAt: new Date(),
+		});
+
+		const origin = await resolveActionOrigin(
+			ctxFor({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionId: "conn-release",
+				channelId: "slack:C_RELEASE",
+			}),
+		);
+
+		expect(origin).toEqual({
+			kind: "conversation",
+			label: "Slack — Release prep",
+		});
+	});
+
+	it("prefers the verified Automation over conversation context", async () => {
+		const sql = getTestDb();
+		const org = await createTestOrganization();
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			agentId: "triage-agent",
+			ownerUserId: user.id,
+		});
+		const [automation] = await sql<{ id: number }[]>`
+			INSERT INTO automations (
+				organization_id, agent_id, created_by, automation_group_id, name
+			) VALUES (${org.id}, ${agent.agentId}, ${user.id}, 0, 'Hourly incident triage')
+			RETURNING id
+		`;
+		const ctx = {
+			...ctxFor({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionId: "conn-release",
+				channelId: "slack:C_RELEASE",
+			}),
+			actingAutomationId: Number(automation.id),
+		} as ToolContext;
+
+		expect(await resolveActionOrigin(ctx)).toEqual({
+			kind: "automation",
+			label: "Hourly incident triage",
+		});
+		expect(
+			await resolveInteractionActionOrigin({
+				organizationId: org.id,
+				conversationId: `agent_automation_${automation.id}_run_77`,
+				source: "automation-run",
+			}),
+		).toEqual({
+			kind: "automation",
+			label: "Hourly incident triage",
+		});
 	});
 });

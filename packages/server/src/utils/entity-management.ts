@@ -566,14 +566,26 @@ export async function patchEntityRows(params: {
  * the tombstone is an implementation detail of the redirect, and a tenant must
  * be able to freeze deletion without freezing dedupe.
  *
- * REMAINING GAP: the winner's metadata patch and the redirect repoint are still
- * ungoverned, and unmerge (`liveness: "live"`) is deliberately left free so a
- * freeze cannot strand a row tombstoned. The winner is the hard one:
- * `mergeEntityState` appends the loser's name to `metadata.aliases` on every
- * merge, so governing it would present a metadata change to the rule engine on
- * every single merge — a rule freezing a canonical row would make it unable to
- * absorb any duplicate. That needs a decision about what approving a merge
- * grants, not a call added here.
+ * The merge's other three writes are DECLARED EXEMPTIONS, not oversights:
+ *
+ *  - The WINNER's metadata patch. `mergeEntityState` is winner-preserving: it
+ *    fills only fields the winner left undefined/null/empty, unions arrays, and
+ *    appends the loser's name to `metadata.aliases`. It cannot overwrite a value
+ *    the winner already holds, so freezing a field already means a merge cannot
+ *    change it. Governing the patch anyway would present a metadata change on
+ *    EVERY merge — the alias append guarantees one — so a rule freezing the
+ *    canonical record would make it unable to absorb any duplicate, which is
+ *    exactly backwards: the canonical row is the one you merge INTO. The
+ *    residual hole is narrow and named: filling a BLANK field on a frozen winner
+ *    is a write no rule sees. Closing it means judging the patch minus the alias
+ *    ledger, which makes `aliases` platform vocabulary a tenant can no longer
+ *    govern — a rule-contract change, not a call added here.
+ *  - The redirect repoint. Step 4 of `applyMergeInTransaction` flattens rows
+ *    that ALREADY point at the loser so they point at the winner instead. Those
+ *    rows are tombstones of merges that were judged when they happened; asking
+ *    again would re-litigate a settled decision on a row nobody is editing.
+ *  - Unmerge (`liveness: "live"`). Left free on purpose, so a freeze added after
+ *    a merge cannot strand a row tombstoned with no way back.
  */
 export async function transitionEntityMergeRows(params: {
 	tx: DbClient;

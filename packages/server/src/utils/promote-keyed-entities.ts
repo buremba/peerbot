@@ -34,6 +34,7 @@
 import { slugify } from '@lobu/core';
 import { ApprovalAttribution } from '@lobu/core/contracts/interaction-envelope';
 import {
+  type CreateOrDeleteDecision,
   deferEntityCreate,
   deferEntityFieldChange,
   type DeferredMutation,
@@ -298,8 +299,12 @@ async function upsertKeyedEntity(params: {
    * fails closed (deny) rather than promote under no agent envelope.
    */
   automationOwnerResolved: boolean;
-  /** Org policy: creates of this type queue an approval instead of inserting. */
-  createNeedsApproval: boolean;
+  /**
+   * The type-wide org-policy decision for creates of this type, resolved once per
+   * promotion. Passed whole rather than as a derived boolean so the refusal is
+   * reported from the same place as every other refusal — see `denied` below.
+   */
+  createGate: CreateOrDeleteDecision;
 }): Promise<{
   entityId: number;
   created: boolean;
@@ -308,12 +313,11 @@ async function upsertKeyedEntity(params: {
   applied: Record<string, AppliedChange>;
   blockedCreate: boolean;
   /**
-   * Set when the write was REFUSED here: every rule deny, plus a policy deny on
-   * an UPDATE. A policy deny on a CREATE is decided by the type-wide gate before
-   * this runs, so it returns as a plain `blockedCreate` and the caller derives
-   * that one. Carries the reason so the run's change set can record WHY, not
-   * just that a row was skipped: containment means the window survives, so
-   * nothing else marks it.
+   * Set when the write was REFUSED here — every refusal, whichever decider made
+   * it: a rule deny on either op, and a policy deny on an update or a create.
+   * Carries the reason so the run's change set can record WHY, not just that a
+   * row was skipped: containment means the window survives, so nothing else
+   * marks it.
    */
   denied?: { source: 'policy' | 'rule'; reason: string };
   /**
@@ -477,11 +481,22 @@ async function upsertKeyedEntity(params: {
     }
   }
 
-  // Org policy holds creates of this type for approval — no insert, no identity
-  // claim. The caller queues a durable create proposal post-commit; when it is
-  // approved and re-promoted, the identity claim above dedupes as usual.
-  if (params.createNeedsApproval) {
-    return { entityId: 0, created: false, blocked: {}, applied: {}, blockedCreate: true };
+  // Org policy is not an unqualified allow for creates of this type — no insert,
+  // no identity claim. A `defer` means the caller queues a durable create proposal
+  // post-commit; when it is approved and re-promoted, the identity claim above
+  // dedupes as usual. A `deny` is reported as a refusal right here, so no caller
+  // has to re-derive from the type-wide decision which of the two it was.
+  if (params.createGate.outcome !== 'allow') {
+    return {
+      entityId: 0,
+      created: false,
+      blocked: {},
+      applied: {},
+      blockedCreate: true,
+      ...(params.createGate.outcome === 'deny'
+        ? { denied: { source: 'policy' as const, reason: params.createGate.reason } }
+        : {}),
+    };
   }
 
   // 2. Create the entity (sequence-allocated id — multi-replica safe),
@@ -668,7 +683,6 @@ export async function promoteAutomationEntityOutput(
     entityData: { entity_type: entityTypeSlug, name: '' },
     proposal: {},
   });
-  const createNeedsApproval = createGate.outcome !== 'allow';
   if (createGate.outcome === 'deny') {
     logger.warn(
       { automationId, organizationId, entityTypeSlug, reason: createGate.reason },
@@ -763,21 +777,12 @@ export async function promoteAutomationEntityOutput(
           automationId,
           automationAgentId: automationOwner.ownerAgentId,
           automationOwnerResolved: automationOwner.resolved,
-          createNeedsApproval,
+          createGate,
         })
       );
-      // A refusal, on either op and from either decider. Every rule deny — and a
-      // policy deny on an UPDATE — arrives as `denied`. A policy deny on a CREATE
-      // carries no such marker: it returns early as a plain blocked create, so
-      // read it off the type-wide gate decision instead. The two can never
-      // disagree, because that early return happens before the insert the rule
-      // runs inside.
-      const refusal =
-        denied ??
-        (blockedCreate && createGate.outcome === 'deny'
-          ? ({ source: 'policy', reason: createGate.reason } as const)
-          : null);
-      if (refusal) {
+      // A refusal, on either op and from either decider — rule or policy. Every
+      // one of them arrives as `denied`; there is nothing left to re-derive here.
+      if (denied) {
         logger.warn(
           {
             automationId,
@@ -786,8 +791,8 @@ export async function promoteAutomationEntityOutput(
             stableKey,
             entityId,
             op: blockedCreate ? 'create' : 'update',
-            deniedBy: refusal.source,
-            reason: refusal.reason,
+            deniedBy: denied.source,
+            reason: denied.reason,
           },
           '[promote-keyed-entities] write denied — row skipped'
         );
@@ -795,7 +800,7 @@ export async function promoteAutomationEntityOutput(
         // set so it is queryable next to the writes that DID land. A refused
         // CREATE has no id, so it is recorded under the name the automation
         // proposed — the only handle a reader has on a row never written.
-        result.changes.push({ entityId, name, kind: 'denied', applied: {}, denied: refusal });
+        result.changes.push({ entityId, name, kind: 'denied', applied: {}, denied });
         continue;
       }
       if (blockedCreate) {

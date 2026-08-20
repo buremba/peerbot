@@ -12,6 +12,7 @@ import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../../db/client';
 import { emit } from '../../events/emitter';
 import { currentMcpActivityAttribution } from '../../lobu/stores/mcp-client-conversations';
+import { resolveActionOrigin } from '../../notifications/action-origin';
 import { queueAgentAsk } from '../../notifications/ask';
 import {
   createNotificationForUsers,
@@ -259,6 +260,9 @@ async function handleSend(
       : null;
 
   const orgSlug = await getOrgSlug(ctx.organizationId);
+  const actionOrigin = args.input_schema
+    ? await resolveActionOrigin(ctx)
+    : null;
 
   // Feedback is learned from server-stamped execution provenance only.
   // Caller input must never choose another Automation's learning history.
@@ -357,6 +361,7 @@ async function handleSend(
           }) ?? null)
         : null),
     mcpActivity: currentMcpActivityAttribution(ctx),
+    actionOrigin,
     automationId: actingAutomationId,
     automationVersionId: actingVersionId,
     runId: actingRunId,

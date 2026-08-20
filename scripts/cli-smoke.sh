@@ -211,16 +211,41 @@ expect_grep "lobu init --list-providers" "--provider" "$WT" init --list-provider
 PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 expect_grep "lobu init . --here" "Lobu initialized" "$PROJ" init . -y --here --provider gemini
 rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
+# The `invoice` type carries write rules. `rulesFromFile` ships the file's RAW
+# source with the apply; the server compiles it and runs it at the entity write
+# seam. Declaring it HERE (rather than in a project applied later) is deliberate
+# -- the boot auto-apply below is the same path a user takes, so a rule that
+# fails to resolve, compile, or round-trip breaks the boot loudly instead of
+# being discovered by a bespoke invocation nobody ships.
+#
+# Hyphen-free single-word key on purpose: entity-type keys containing `_` are
+# slugified server-side but diffed verbatim by the CLI, so they never converge.
+mkdir -p "$PROJ/rules"
+cat > "$PROJ/rules/invoice.ts" <<'TS'
+// An invoice is born in draft. `op === "create"` is the branch that only exists
+// because creates reach the seam too -- without it this rule would govern edits
+// while leaving "create it already posted" wide open.
+export default (row) => {
+  if (row.op === "create" && row.next.status !== "draft") {
+    row.deny("an invoice is created in draft, not " + row.next.status);
+  }
+};
+TS
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { defineAgent, defineConfig, defineEntityType, secret } from "@lobu/cli/config";
+import { defineAgent, defineConfig, defineEntityType, rulesFromFile, secret } from "@lobu/cli/config";
 
 const echo = defineAgent({
   id: "echo", name: "Echo", dir: "./agents/echo",
   providers: [{ id: "mock", model: "mock-model", key: secret("MOCK_API_KEY") }],
 });
 const note = defineEntityType({ key: "note", name: "Note" });
+const invoice = defineEntityType({
+  key: "invoice", name: "Invoice",
+  properties: { status: { type: "string" } },
+  rules: rulesFromFile("./rules/invoice.ts"),
+});
 
-export default defineConfig({ agents: [echo], entities: [note] });
+export default defineConfig({ agents: [echo], entities: [note, invoice] });
 TS
 
 expect_grep "lobu validate" "is valid" "$PROJ" validate
@@ -361,6 +386,31 @@ note "apply (dry-run + real, against the live server)"
 ( cd "$PROJ" && MOCK_API_KEY=mock-key-smoke node "$LOBU_BIN" apply --only agents --yes --url "http://localhost:$GW_PORT" ) > "$OUT" 2>&1 </dev/null; RC=$?
 { [ "$RC" -eq 0 ] && grep -qiE "Apply complete|Nothing to apply|Provider keys applied" "$OUT"; } && pass "lobu apply --only agents --yes" || softfail "lobu apply --only agents (expected complete/noop, exit=$RC)"
 expect_grep "lobu deploy alias --dry-run" "Dry run" "$PROJ" deploy --dry-run --url "http://localhost:$GW_PORT"
+
+note "entity write rules (rulesFromFile -> apply -> compiled -> enforced)"
+# The boot auto-apply shipped rules/invoice.ts as raw source. Unit tests cover
+# each half separately -- the CLI resolving the marker, the server executing a
+# compiled rule -- but only a live apply proves the halves agree on the wire.
+# Everything below runs against the SAME rule the boot shipped.
+
+# Enforcement. The rule's OWN reason has to come back: a generic 400 (or a
+# success) would mean the source shipped but never ran.
+expect_fail_grep "write rule denies an illegal create" "an invoice is created in draft, not posted" \
+  "$PROJ" call manage_entity -c local --arg "action=create" --arg "entity_type=invoice" \
+  --arg "name=INV-SMOKE-BAD" --arg 'metadata:={"status":"posted"}'
+
+# Contrast, and it is load-bearing: without it a rule that denied EVERY create
+# -- or an entity type that failed to apply at all -- would pass the case above.
+expect_ok "write rule permits the legal create" \
+  "$PROJ" call manage_entity -c local --arg "action=create" --arg "entity_type=invoice" \
+  --arg "name=INV-SMOKE-OK" --arg 'metadata:={"status":"draft"}'
+
+# Idempotence. The diff compares rule SOURCE text against what the server stored,
+# so any normalization difference between send and store shows up as an
+# entity-type that can never converge -- re-applying forever, which is exactly
+# how underscore entity-type keys behave. `=` is the noop verb.
+( cd "$PROJ" && MOCK_API_KEY=mock-key-smoke node "$LOBU_BIN" apply --dry-run --url "http://localhost:$GW_PORT" ) > "$OUT" 2>&1 </dev/null; RC=$?
+{ [ "$RC" -eq 0 ] && grep -qF "= entity-type invoice" "$OUT"; } && pass "re-apply of an unchanged rule is a noop" || softfail "re-apply of an unchanged rule (expected '= entity-type invoice', exit=$RC)"
 
 note "rollback (restore snapshot + pause/resume promotions)"
 # The apply above records a self-contained deployment snapshot. Resolve its id

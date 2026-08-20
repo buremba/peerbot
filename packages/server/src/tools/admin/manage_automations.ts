@@ -38,6 +38,7 @@ import {
   currentMcpActivityAttribution,
   currentMcpActivityEventMetadata,
 } from '../../lobu/stores/mcp-client-conversations';
+import { resolveActionOrigin } from '../../notifications/action-origin';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { resolveApprovalChatOrigin } from './approval-delivery';
 import { insertEvent } from '../../utils/insert-event';
@@ -804,6 +805,7 @@ async function queueAutomationWriteForApproval(
 
   // One destination, never the org-wide fan-out — see resolveApprovalChatOrigin.
   const chatOrigin = await resolveApprovalChatOrigin(ctx);
+  const actionOrigin = await resolveActionOrigin(ctx);
   notifyActionApprovalNeeded({
     orgId: ctx.organizationId,
     runId,
@@ -816,6 +818,7 @@ async function queueAutomationWriteForApproval(
     teamId: chatOrigin.teamId,
     requesterUserId: ctx.userId ?? null,
     mcpActivity: currentMcpActivityAttribution(ctx),
+    actionOrigin,
   }).catch((error) => logger.error(error, 'Failed to send manage_automations approval notification'));
 
   return {

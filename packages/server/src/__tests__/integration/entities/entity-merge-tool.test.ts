@@ -7,6 +7,7 @@
 
 import postgres from "postgres";
 import { beforeEach, describe, expect, it } from "vitest";
+import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import { PROD_PG_VALUE_OPTIONS } from "../../../db/client";
 import {
 	assessEntityResolution,
@@ -1143,6 +1144,282 @@ describe("manage_entity merge action", () => {
 			source_run_id: automationRun.id,
 			status: "active",
 		});
+	});
+
+	/**
+	 * A certain-identity merge by a non-user actor, on a type whose write rule
+	 * has the given verdict. Returns the ctx and ids so a caller can drive the
+	 * merge and read back what did (or did not) happen.
+	 */
+	async function autoMergeCandidateWithRule(
+		orgName: string,
+		ruleSource: string,
+		seed: number,
+	) {
+		const org = await createTestOrganization({ name: orgName });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+
+		// The identity rule is certain (exact email) — policy alone would auto-merge.
+		await sql`
+			UPDATE entity_types
+			SET rules_compiled = ${await compileEntityRule(ruleSource)},
+			    metadata_schema = ${sql.json({
+						type: "object",
+						properties: { email: { type: "string" }, status: { type: "string" } },
+						"x-lobu-resolution": {
+							rules: [
+								{
+									fields: ["email"],
+									normalizer: "email",
+									onMatch: "auto_merge",
+								},
+							],
+						},
+					})}
+			WHERE id = (SELECT entity_type_id FROM entities WHERE id = ${winner.id})
+		`;
+		await sql`
+			UPDATE entities
+			SET metadata = jsonb_build_object('email', 'Person@Example.com', 'status', 'open')
+			WHERE id = ${winner.id}
+		`;
+		await sql`
+			UPDATE entities
+			SET metadata = jsonb_build_object('email', 'person@example.com', 'status', 'open')
+			WHERE id = ${loser.id}
+		`;
+		await sql`
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			   status, min_cooldown_seconds,
+			   created_at, updated_at)
+			VALUES
+			  (${seed}, ${org.id}, 'personal-agent', ${user.id}, ${seed},
+			   'Escalating duplicate resolution', 'active', 0,
+			   now(), now())
+		`;
+		const [automationRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, automation_id,
+			   approval_status, created_at, completed_at)
+			VALUES
+			  ('automation', 'completed', ${org.id}, ${seed}, 'auto', now(), now())
+			RETURNING id
+		`;
+		const agentCtx = {
+			...ctx(org.id, user.id, "owner"),
+			userId: null,
+			agentId: "personal-agent",
+			actingAutomationId: seed,
+			actingRunId: automationRun.id,
+		} as ToolContext;
+		return { org, user, sql, winner, loser, agentCtx };
+	}
+
+	const ESCALATE_MERGE_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.changed("$merged_into") && row.next.$merged_into) {
+    row.escalate(["$merged_into"], "a merge needs a second pair of eyes");
+  }
+};
+`;
+
+	async function countRuns(orgId: string): Promise<number> {
+		const sql = getTestDb();
+		const rows = await sql<{ n: number }[]>`
+			SELECT count(*)::int AS n FROM runs
+			WHERE organization_id = ${orgId} AND action_key IS NOT NULL
+		`;
+		return Number(rows[0]?.n ?? 0);
+	}
+
+	/**
+	 * The case the escalate-to-card work deliberately left uncovered: a NON-USER
+	 * actor whose deterministic identity rule says `auto_merge`, on a type whose
+	 * write rule escalates `$merged_into`.
+	 *
+	 * Resolution policy and the type's write rule answer different questions.
+	 * Policy asks "is this the same record?" — the identity rule is certain, so it
+	 * says merge without asking. The write rule asks "may this record be merged
+	 * away?" — and an escalate is the tenant saying "not without a human". The
+	 * second must win: certainty about identity is not consent to the write.
+	 *
+	 * Failing closed with a 409 is the wrong shape for that. It is the same
+	 * verdict the delete path used to produce before it minted a card, and it
+	 * leaves an automation with no path forward — the merge can never happen, and
+	 * no human is ever asked. The escalate already names exactly the field the
+	 * merge card's replay grants, so the card can carry it.
+	 */
+	it("cards an auto_merge whose write rule escalates, instead of failing it closed", async () => {
+		const { org, user, sql, winner, loser, agentCtx } =
+			await autoMergeCandidateWithRule(
+				"Escalating Merge Org",
+				ESCALATE_MERGE_RULE,
+				6011,
+			);
+
+		const result = (await manageEntity(
+			{
+				action: "merge",
+				entity_id: loser.id,
+				winner_entity_id: winner.id,
+			},
+			env,
+			agentCtx,
+		)) as unknown as {
+			success?: boolean;
+			approval_queued?: boolean;
+			approval_run_id?: number;
+			resolution?: { decision: string; reason: string };
+		};
+
+		// Carded, not applied and not thrown.
+		expect(result.success).toBeUndefined();
+		expect(result.approval_queued).toBe(true);
+		expect(result.approval_run_id).toEqual(expect.any(Number));
+		// The card says WHY it is waiting: the rule's words, not the policy's.
+		expect(result.resolution?.reason).toMatch(/second pair of eyes/);
+
+		// Nothing moved while the card waits.
+		const [after] = await sql`
+			SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+		`;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).toBeNull();
+
+		// The persisted card is a merge proposal for exactly this pair.
+		const [run] = await sql<{ action_input: Record<string, unknown> }[]>`
+			SELECT action_input FROM runs WHERE id = ${result.approval_run_id}
+		`;
+		expect(run.action_input.operation).toBe("merge");
+		expect(run.action_input.winner_entity_id).toBe(winner.id);
+		expect(run.action_input.entity_ids).toEqual([loser.id]);
+
+		// And the card is REPLAYABLE: approving it grants `$merged_into`, so the
+		// rule that escalated does not escalate the very merge it asked for. A
+		// card a human approves and that then throws would be worse than the 409.
+		const approved = await manageOperations(
+			{ action: "approve", run_id: result.approval_run_id as number },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("approved" in approved && approved.approved).toBe(true);
+		const [applied] = await sql`
+			SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+		`;
+		expect(Number(applied.merged_into)).toBe(winner.id);
+		expect(applied.deleted_at).not.toBeNull();
+	});
+
+	/**
+	 * The gates that keep the card honest, and the reason the routing is narrow.
+	 * A merge card's replay grants exactly `[$merged_into]` — a hardcoded literal
+	 * at the apply site. Minting a card for any other verdict produces one that
+	 * throws the moment a reviewer approves it, spending a human decision on a
+	 * write that was never going to land. A deny is not a request for review at
+	 * all, and approval must never launder one into a merge.
+	 */
+	it("does NOT card a merge the write rule DENIES", async () => {
+		const { org, sql, winner, loser, agentCtx } =
+			await autoMergeCandidateWithRule(
+				"Denying Merge Org",
+				`
+export default (row) => {
+  if (row.op === "update" && row.changed("$merged_into") && row.next.$merged_into) {
+    row.deny("a posted record cannot be merged away");
+  }
+};
+`,
+				6021,
+			);
+		const before = await countRuns(org.id);
+
+		await expect(
+			manageEntity(
+				{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+				env,
+				agentCtx,
+			),
+		).rejects.toThrow(/cannot be merged away/);
+
+		const [after] = await sql`
+			SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+		`;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).toBeNull();
+		expect(await countRuns(org.id)).toBe(before);
+	});
+
+	it("does NOT card an escalate naming a field the merge card cannot grant", async () => {
+		// `$merged_into` ALONGSIDE a field the card never grants: the dangerous
+		// shape, because a guard that merely looks for `$merged_into` in the list
+		// would card it, and the replay re-escalates on `status` the moment a
+		// reviewer approves.
+		const { org, sql, winner, loser, agentCtx } =
+			await autoMergeCandidateWithRule(
+				"Escalates Elsewhere Merge Org",
+				`
+export default (row) => {
+  if (row.op === "update" && row.changed("$merged_into") && row.next.$merged_into) {
+    row.escalate(["$merged_into", "status"], "a reviewer must confirm the status first");
+  }
+};
+`,
+				6031,
+			);
+		const before = await countRuns(org.id);
+
+		await expect(
+			manageEntity(
+				{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+				env,
+				agentCtx,
+			),
+		).rejects.toThrow(/status/);
+
+		const [after] = await sql`
+			SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+		`;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).toBeNull();
+		expect(await countRuns(org.id)).toBe(before);
+	});
+
+	it("does NOT card an escalation that names no fields at all", async () => {
+		// An empty field list grants nothing, so the replay re-escalates forever.
+		// The guard must test the list's CONTENTS, not just that every member is
+		// `$merged_into` — `[].every(...)` is vacuously true.
+		const { org, sql, winner, loser, agentCtx } =
+			await autoMergeCandidateWithRule(
+				"Escalates Nothing Merge Org",
+				`
+export default (row) => {
+  if (row.op === "update" && row.changed("$merged_into") && row.next.$merged_into) {
+    row.escalate([], "somebody should look at this");
+  }
+};
+`,
+				6041,
+			);
+		const before = await countRuns(org.id);
+
+		await expect(
+			manageEntity(
+				{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+				env,
+				agentCtx,
+			),
+		).rejects.toThrow(/approval required/);
+
+		const [after] = await sql`
+			SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+		`;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).toBeNull();
+		expect(await countRuns(org.id)).toBe(before);
 	});
 
 	it("discovers duplicate groups server-side from candidate IDs", async () => {

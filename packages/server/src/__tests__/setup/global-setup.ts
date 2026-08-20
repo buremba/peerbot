@@ -14,6 +14,7 @@ import type { GlobalSetupContext } from 'vitest/node';
 import { closeDbSingleton } from '../../db/client';
 import { startEmbeddedBackend, stopActiveEmbeddedBackend } from './embedded-postgres-backend';
 import { closeTestDb, setupTestDatabase } from './test-db';
+import { assertNodeVitestRuntime } from './vitest-runtime';
 
 // Make the resolved test DATABASE_URL available to forked test workers via
 // vitest's `inject()`. Env-var propagation from this setup process to forks
@@ -28,6 +29,8 @@ declare module 'vitest' {
 }
 
 export async function setup({ provide }: GlobalSetupContext): Promise<void> {
+  assertNodeVitestRuntime();
+
   if (process.env.SKIP_TEST_DB_SETUP === '1') {
     console.log('\n⚠️  Skipping test database setup (SKIP_TEST_DB_SETUP=1).\n');
     provide('databaseUrl', null);

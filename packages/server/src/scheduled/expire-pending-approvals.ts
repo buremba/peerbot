@@ -41,6 +41,7 @@
 
 import { intervals } from "../config/intervals";
 import { getDb, pgTextArray } from "../db/client";
+import { queueApprovalNotificationCardRefresh } from "../notifications/service";
 import { supersedeActionEvent } from "../tools/admin/approval-events";
 import logger from "../utils/logger";
 import { APPROVAL_RUN_TYPES } from "../utils/run-statuses";
@@ -101,6 +102,7 @@ export async function expirePendingApprovals(
 	const reason = `Approval expired: nobody decided within ${ttlDays} day${ttlDays === 1 ? "" : "s"}.`;
 
 	let expiredCount = 0;
+	const expiredRunIdsByOrg = new Map<string, number[]>();
 	// Drain successive batches so a backlog bigger than one batch clears in this
 	// invocation. Bounded by EXPIRY_INVOCATION_LIMIT; also stops as soon as a
 	// batch comes back empty or makes no progress (see below).
@@ -143,7 +145,7 @@ export async function expirePendingApprovals(
 		const expiredBeforeBatch = expiredCount;
 		for (const candidate of candidates) {
 			try {
-				const didExpire = await sql.begin(async (tx) => {
+				const expiredRow = await sql.begin(async (tx) => {
 					// Re-assert the full candidate predicate while claiming the row. A
 					// human decision or another replica's committed expiry wins before
 					// this write.
@@ -160,7 +162,7 @@ export async function expirePendingApprovals(
             RETURNING id, organization_id, action_key
           `) as unknown as ExpiredApprovalRow[];
 					const row = rows[0];
-					if (!row) return false;
+					if (!row) return null;
 
 					// `events` stays append-only. interaction_status has no 'expired'
 					// member, so the card uses 'rejected' as its non-actionable UI state
@@ -184,9 +186,14 @@ export async function expirePendingApprovals(
 							`Cannot expire approval run ${Number(row.id)}: its approval card is missing`,
 						);
 					}
-					return true;
+					return row;
 				});
-				if (didExpire) expiredCount += 1;
+				if (expiredRow) {
+					expiredCount += 1;
+					const orgRunIds = expiredRunIdsByOrg.get(expiredRow.organization_id) ?? [];
+					orgRunIds.push(Number(expiredRow.id));
+					expiredRunIdsByOrg.set(expiredRow.organization_id, orgRunIds);
+				}
 			} catch (error) {
 				logger.warn(
 					{ runId: Number(candidate.id), error: String(error) },
@@ -201,6 +208,9 @@ export async function expirePendingApprovals(
 		if (expiredCount === expiredBeforeBatch) break;
 	}
 
+	for (const [organizationId, runIds] of expiredRunIdsByOrg) {
+		queueApprovalNotificationCardRefresh(organizationId, runIds);
+	}
 	return { expired: expiredCount };
 }
 

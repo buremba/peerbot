@@ -39,6 +39,7 @@ import {
 	currentMcpActivityAttribution,
 	currentMcpActivityEventMetadata,
 } from "../../lobu/stores/mcp-client-conversations";
+import { resolveActionOrigin } from "../../notifications/action-origin";
 import {
 	formatFieldChangeAction,
 	formatLabel,
@@ -1026,6 +1027,7 @@ export async function proposeEntityChange(
 		approvalPolicy.deliveryTarget.channelId
 			? approvalPolicy.deliveryTarget
 			: await resolveApprovalChatOrigin(ctx);
+	const actionOrigin = await resolveActionOrigin(ctx);
 
 	notifyActionApprovalNeeded({
 		orgId: ctx.organizationId,
@@ -1040,6 +1042,7 @@ export async function proposeEntityChange(
 		ownerUserId: updateProposal?.owner_user_id ?? null,
 		requesterUserId: ctx.userId ?? null,
 		mcpActivity: currentMcpActivityAttribution(ctx),
+		actionOrigin,
 		details:
 			operation === "update"
 				? {

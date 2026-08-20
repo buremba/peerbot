@@ -8,9 +8,11 @@
  * complete_window does) with a test interceptor registered into the gate.
  */
 
+import { ApprovalAttribution } from "@lobu/core/contracts/interaction-envelope";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
 	__resetMutationGateForTests,
+	deferEntityCreate,
 	registerMutationInterceptor,
 } from "../../../authz/entity-mutation-gate";
 import type { DbClient } from "../../../db/client";
@@ -138,6 +140,74 @@ describe("mutation gate fail-closed in automation promotion", () => {
 		expect(await promotedIdentities(ctx)).toHaveLength(0);
 	});
 
+	/**
+	 * The HANDLE on a row that was never written. `promote-keyed-entities.test.ts`
+	 * already proves a policy-denied create reaches the persisted change set with
+	 * `source: 'policy'` and a reason; what it does not pin is the identity of that
+	 * record — `entityId: 0` and the proposed name. Both are load-bearing:
+	 * complete-window links the change set with `filter((id) => id > 0)`, so a
+	 * refused create that reported any other id would link the timeline to an
+	 * unrelated entity, and the name is the only thing left to read it back by.
+	 *
+	 * Also pins the record across a move: this refusal used to be re-derived at the
+	 * caller from the type-wide gate decision, and is now returned by
+	 * `upsertKeyedEntity` like every other refusal.
+	 */
+	it("a denied create records the policy refusal in the run's change set", async () => {
+		const ctx = await setup();
+		registerMutationInterceptor({
+			name: "test-deny-create-record",
+			evaluate: async (req) =>
+				req.action === "create"
+					? { outcome: "deny", reason: "quota exceeded" }
+					: null,
+		});
+
+		const result = await promote(ctx, "low");
+
+		expect(result.changes).toHaveLength(1);
+		// A refused create has no row, so it carries no id and is recorded under
+		// the name the automation proposed.
+		expect(result.changes[0].entityId).toBe(0);
+		expect(result.changes[0]).toMatchObject({
+			kind: "denied",
+			name: "Stability · App Crashes",
+			denied: { source: "policy", reason: "quota exceeded" },
+		});
+	});
+
+	/**
+	 * The negative that keeps the create branch honest. `defer` and `deny` are both
+	 * "not allow", and both block the inline insert — but only one is a refusal.
+	 * Reporting a deferral as `denied` SWALLOWS the card: the caller records the
+	 * refusal and `continue`s before it reaches the carding branch, so the row is
+	 * marked rejected and the approval it was owed is never queued.
+	 */
+	it("a DEFERRED create is carded, not recorded as a refusal", async () => {
+		const ctx = await setup();
+		registerMutationInterceptor({
+			name: "test-defer-create-record",
+			evaluate: async (req) =>
+				req.action === "create"
+					? {
+							outcome: "defer",
+							deferred: deferEntityCreate({
+								entityData: { entity_type: "topic", name: "App Crashes" },
+								proposal: {},
+								attribution: ApprovalAttribution.Automation,
+							}),
+						}
+					: null,
+		});
+
+		const result = await promote(ctx, "low");
+
+		expect(result.created).toBe(0);
+		expect(result.deferred).toHaveLength(1);
+		expect(result.changes.filter((c) => c.kind === "denied")).toHaveLength(0);
+		expect(await promotedIdentities(ctx)).toHaveLength(0);
+	});
+
 	it("a denied update applies no fields (row skipped, window not poisoned)", async () => {
 		const ctx = await setup();
 
@@ -164,5 +234,10 @@ describe("mutation gate fail-closed in automation promotion", () => {
 
 		const [after] = await promotedIdentities(ctx);
 		expect((after.metadata as Record<string, unknown>).severity).toBe("low");
+		expect(second.changes).toHaveLength(1);
+		expect(second.changes[0]).toMatchObject({
+			kind: "denied",
+			denied: { source: "policy", reason: "rate limited" },
+		});
 	});
 });

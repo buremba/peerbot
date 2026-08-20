@@ -86,7 +86,32 @@ async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promis
 // 20-30s) could exhaust a flat-100s deadline before the worker even
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
-export async function waitForDeviceActionRun(
+const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
+const POLL_MS = 500;
+
+interface DeviceActionRunOutcome {
+  status: 'completed' | 'failed' | 'timeout';
+  // `action_output` is arbitrary connector/device JSON — object, array, or
+  // scalar — so the completed output is `unknown`, not an object.
+  output?: unknown;
+  error_message?: string;
+}
+
+interface WaitForDeviceActionRunOptions {
+  queueMs: number;
+  postClaimMs: number;
+  pollMs: number;
+  /** Clock the deadlines are measured against. Defaults to `Date.now`. */
+  now?: () => number;
+  /**
+   * Poll delay. Defaults to an abort-aware sleep over `abortSignal`; a
+   * replacement is responsible for its own abort handling.
+   */
+  sleep?: (ms: number) => Promise<void>;
+  abortSignal?: AbortSignal;
+}
+
+export function waitForDeviceActionRun(
   runId: number,
   organizationId: string,
   /**
@@ -94,18 +119,32 @@ export async function waitForDeviceActionRun(
    * On abort we stop polling and finalize the run as `timeout` so the orphaned
    * poll loop and any in-flight device work don't leak past the caller.
    */
-  abortSignal?: AbortSignal,
-): Promise<{
-  status: 'completed' | 'failed' | 'timeout';
-  // `action_output` is arbitrary connector/device JSON — object, array, or
-  // scalar — so the completed output is `unknown`, not an object.
-  output?: unknown;
-  error_message?: string;
-}> {
+  abortSignal?: AbortSignal
+): Promise<DeviceActionRunOutcome> {
+  return waitForDeviceActionRunWithOptions(runId, organizationId, {
+    queueMs: DEVICE_ACTION_QUEUE_BUDGET_MS,
+    postClaimMs: POST_CLAIM_BUDGET_MS,
+    pollMs: POLL_MS,
+    abortSignal,
+  });
+}
+
+/**
+ * The waiter itself, with its budgets and timing boundary supplied by the
+ * caller. Tests use it to shrink the budgets — and, for the phase switch, to
+ * drive the clock — while running the same database reads and timeout
+ * finalization as production. Runtime callers should use
+ * {@link waitForDeviceActionRun}, which supplies the production budgets.
+ */
+export async function waitForDeviceActionRunWithOptions(
+  runId: number,
+  organizationId: string,
+  options: WaitForDeviceActionRunOptions
+): Promise<DeviceActionRunOutcome> {
   const sql = getDb();
-  const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
-  const POLL_MS = 500;
-  const queueDeadline = Date.now() + DEVICE_ACTION_QUEUE_BUDGET_MS;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => sleepUnlessAborted(ms, options.abortSignal));
+  const queueDeadline = now() + options.queueMs;
   let claimedAtMs: number | null = null;
 
   while (true) {
@@ -148,14 +187,14 @@ export async function waitForDeviceActionRun(
     }
     // Caller aborted (e.g. reaction timeout) — stop polling and let the
     // timeout finalization below mark the run, so we don't leak this loop.
-    if (abortSignal?.aborted) break;
-    const now = Date.now();
+    if (options.abortSignal?.aborted) break;
+    const currentTimeMs = now();
     if (claimedAtMs != null) {
-      if (now - claimedAtMs >= POST_CLAIM_BUDGET_MS) break;
+      if (currentTimeMs - claimedAtMs >= options.postClaimMs) break;
     } else {
-      if (now >= queueDeadline) break;
+      if (currentTimeMs >= queueDeadline) break;
     }
-    await sleepUnlessAborted(POLL_MS, abortSignal);
+    await sleep(options.pollMs);
   }
 
   // Which phase timed out decides what the operator needs to hear. A run that
@@ -175,7 +214,7 @@ export async function waitForDeviceActionRun(
     deviceDiagnostic == null
       ? 'waitForDeviceActionRun: device claimed the run but did not complete in time'
       : `waitForDeviceActionRun: no device claimed the run within ${Math.round(
-          DEVICE_ACTION_QUEUE_BUDGET_MS / 1000
+          options.queueMs / 1000
         )}s (${deviceDiagnostic})`;
 
   // Atomic timeout finalization. The WHERE clause matches only non-
@@ -226,7 +265,7 @@ export async function waitForDeviceActionRun(
     status: 'timeout',
     error_message:
       deviceDiagnostic == null
-        ? `Run ${runId} claimed but the device worker didn't finish within ${POST_CLAIM_BUDGET_MS}ms.`
-        : `Run ${runId} was never claimed within ${DEVICE_ACTION_QUEUE_BUDGET_MS}ms — ${deviceDiagnostic}.`,
+        ? `Run ${runId} claimed but the device worker didn't finish within ${options.postClaimMs}ms.`
+        : `Run ${runId} was never claimed within ${options.queueMs}ms — ${deviceDiagnostic}.`,
   };
 }

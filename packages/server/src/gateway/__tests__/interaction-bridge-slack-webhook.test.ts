@@ -482,7 +482,7 @@ describe("Slack block_actions → run-approval entity_field_change (Tier B)", ()
       SELECT metadata FROM entities WHERE id = ${fx.entityId}
     `;
     expect(entity.metadata.severity).toBe("high");
-		expect(h.postMessage).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(h.postMessage).toHaveBeenCalledTimes(1));
 		expect(String(h.postMessage.mock.calls[0]?.[1])).toContain("approved");
   });
 

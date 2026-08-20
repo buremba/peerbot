@@ -2312,7 +2312,6 @@ export async function handleDelete(
     return { error: "Connection not found or already deleted" };
   }
 
-  // Record change event in knowledge for audit trail
 	queueApprovalNotificationCardRefresh(
 		organizationId,
 		deleted.expiredApprovalRunIds,
@@ -2330,6 +2329,7 @@ export async function handleDelete(
     .filter((value) => Number.isFinite(value));
 	const connName =
 		conn.display_name || conn.connector_key || args.connection_id;
+	// Record change event in knowledge for audit trail
   recordChangeEvent({
     entityIds: entityIds.map(Number),
     organizationId,

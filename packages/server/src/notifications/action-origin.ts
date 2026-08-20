@@ -72,7 +72,7 @@ async function mcpConversationOrigin(
 	};
 }
 
-export async function resolveConversationActionOrigin(params: {
+async function resolveConversationActionOrigin(params: {
 	organizationId: string;
 	platform?: string | null;
 	conversationId?: string | null;

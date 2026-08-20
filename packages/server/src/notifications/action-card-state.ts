@@ -18,8 +18,7 @@ export type ActionResolution = {
 		| "rejected"
 		| "denied"
 		| "answered"
-		| "expired"
-		| "failed";
+		| "expired";
 	actorName?: string | null;
 	resolvedAt?: string | Date | null;
 	detail?: string | null;

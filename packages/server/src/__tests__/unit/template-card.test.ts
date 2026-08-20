@@ -899,6 +899,54 @@ describe("entity change approvals render through their kind", () => {
 		);
 	});
 
+	it("clamps the body without cutting an escaped entity in half", () => {
+		// `renderApprovalBody` emits one line per proposed field and has no cap of
+		// its own, so a wide entity-create routinely runs past MAX_TEXT_CHARS.
+		// Escaping happens BEFORE the clamp, so a naive slice lands inside `&amp;`
+		// and Slack renders the `&am` fragment literally — on the card the reader
+		// is approving.
+		// A RUN of ampersands guarantees the cut lands inside an entity
+		// whatever the exact budget works out to, rather than depending on the
+		// padding happening to line up with it.
+		const long = `${"a".repeat(1880)}${"&".repeat(30)}`;
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
+			data: { operation: "create_issue", connection: "GitHub", input: {} },
+			body: long,
+		});
+		const text = body(card) ?? "";
+		// Non-vacuity: the clamp must actually have fired.
+		expect(text.endsWith("…")).toBe(true);
+		expect(text.length).toBeLessThanOrEqual(1900);
+		// Every `&` that survives introduces a COMPLETE entity.
+		expect(/&(?!amp;|lt;|gt;)/.test(text)).toBe(false);
+	});
+
+	it("clamps a field value without cutting an escaped entity in half", () => {
+		// Same defect one block down. A cell is clamped RAW at MAX_CELL_CHARS
+		// (400) on the way in, so the only value that still overflows the field
+		// budget afterwards is one that escaping expands — 400 ampersands become
+		// 2000 characters, and the cut lands inside the last `&amp;`.
+		const KIND = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+		const card = buildKindCard({
+			metadataSchema: KIND.metadataSchema,
+			jsonTemplate: KIND.jsonTemplate,
+			data: {
+				entityTypeLabel: "Person",
+				entityName: "Ada",
+				action: "Create this entity",
+				proposal: [
+					{ label: "Bio", value: "&".repeat(400) },
+				],
+				diffs: null,
+			},
+		});
+		const value = pairs(card).find(([label]) => label === "Bio")?.[1] ?? "";
+		expect(value.endsWith("…")).toBe(true);
+		expect(/&(?!amp;|lt;|gt;)/.test(value)).toBe(false);
+	});
+
 	it("still carries the decision buttons the bridge already routes", () => {
 		const card = build({
 			entityTypeLabel: "Person",

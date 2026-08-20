@@ -80,6 +80,35 @@ function clamp(value: string, max: number): string {
 }
 
 /**
+ * Clamp text that has ALREADY been through `escapeSlackText`.
+ *
+ * Escaping expands (`&` becomes `&amp;`), so the cap has to be applied to the
+ * escaped form — that is the budget Slack actually counts, and clamping the raw
+ * text first can still hand Slack a string well over the limit. But a plain
+ * slice of escaped text lands inside an entity often enough to matter: the cut
+ * leaves `&am`, and Slack renders the fragment literally in a card the reader is
+ * about to approve. An approval body is built one line per proposed field with
+ * no bound of its own (`renderApprovalBody`), so this is the ordinary case for a
+ * wide entity, not a pathological one. Cut, then walk back off a trailing
+ * partial entity.
+ */
+function clampEscaped(value: string, max: number): string {
+	if (value.length <= max) return value;
+	let cut = value.slice(0, max - 1);
+	const lastAmp = cut.lastIndexOf("&");
+	// The longest entity we emit is `&amp;` (5). A `&` within that distance of
+	// the end with no `;` after it is a partial one.
+	if (
+		lastAmp !== -1 &&
+		cut.length - lastAmp <= 5 &&
+		!cut.slice(lastAmp).includes(";")
+	) {
+		cut = cut.slice(0, lastAmp);
+	}
+	return `${cut}…`;
+}
+
+/**
  * What the walk emits. Cells and rows are intermediate: a `td` cannot know
  * whether it is inside a table until its `tr`, and a `tr` cannot become a card
  * child on its own.
@@ -508,7 +537,7 @@ function fragsToChildren(frags: Frag[]): {
 	const flushText = () => {
 		const text = pendingText.join("\n").trim();
 		pendingText = [];
-		if (text) children.push(CardText(clamp(escapeSlackText(text), MAX_TEXT_CHARS)));
+		if (text) children.push(CardText(clampEscaped(escapeSlackText(text), MAX_TEXT_CHARS)));
 	};
 	const flushFields = () => {
 		const batch = pendingFields;
@@ -531,7 +560,8 @@ function fragsToChildren(frags: Frag[]): {
 						return Field({
 							label,
 							value:
-								clamp(escapeSlackText(f.value), MAX_TEXT_CHARS - label.length) || "—",
+								clampEscaped(escapeSlackText(f.value), MAX_TEXT_CHARS - label.length) ||
+											"—",
 						});
 					}),
 				),
@@ -670,7 +700,7 @@ export function buildKindCard(params: {
 	// Ahead of everything the template drew: the body says what is being asked,
 	// and the record below it is the evidence for that ask.
 	const body = bodyTextFor(params.body, params.url);
-	if (body) children.unshift(CardText(clamp(body, MAX_TEXT_CHARS)));
+	if (body) children.unshift(CardText(clampEscaped(body, MAX_TEXT_CHARS)));
 
 	const actions: ActionElement[] = [...templateActions];
 	if (params.decisionRunId) {

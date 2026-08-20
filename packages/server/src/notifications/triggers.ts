@@ -316,18 +316,16 @@ export function formatActionApprovalBody(params: {
 }
 
 /**
- * The chat card for an approval, on the SAME affordance rule the web row uses.
+ * The chat card for an ask, on the SAME affordance rule the web row uses.
  *
  * Sharing `resolveAskAffordance` is the point: the decision "can this be
  * settled in one click, or does it need real input?" is derived once from the
- * schema and answered identically on every surface. It previously returned
- * undefined for anything that was not an entity change, so Automation and agent
- * write approvals reached Slack with NO card and no way to act.
+ * schema and answered identically on every surface. Decision-only asks get
+ * Approve/Reject; anything needing input gets the review link ONLY — a button
+ * that cannot carry the human's input would report success while discarding it.
  *
- * Decision-only approvals get Approve/Reject. Anything needing input gets the
- * review link ONLY — never buttons. A button that cannot carry the human's
- * input would report success while discarding it, which is exactly the defect
- * this whole change set exists to remove.
+ * Entity and operation approvals never come through here: they render through
+ * their platform event kinds in `notifyActionApprovalNeeded`.
  */
 export function buildActionApprovalCard(params: {
 	runId?: number;

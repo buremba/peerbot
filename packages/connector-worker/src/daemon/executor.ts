@@ -174,6 +174,18 @@ export async function executeRun(
             status: 'failed',
             error_message: message,
           });
+        } else if (job.run_type === 'automation') {
+          // Automation runs terminate ONLY via /complete-automation — the sync
+          // /complete endpoint would finalize the run row but skip the
+          // automation-side bookkeeping (schedule advance, failure accounting),
+          // wedging the schedule the way a stuck run would.
+          await client.completeAutomation(job.run_id, {
+            worker_id: client.id,
+            output: '',
+            error: message,
+            duration_ms: 0,
+            exit_reason: 'crash',
+          });
         } else {
           await client.complete({
             run_id: job.run_id,

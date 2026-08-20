@@ -853,6 +853,38 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
 
+    // Automation sessions mint through buildAutomationRunWorkerAccess so the
+    // token identity matches the canonical `..._automation_<id>_run_<id>`
+    // correlation AND the advertised expiry matches the worker token's real
+    // verification TTL (WORKER_TOKEN_TTL_MS, default 2h) — the generic
+    // TOKEN_EXPIRATION_MS (24h) overstated it. Non-automation sessions keep the
+    // generic mint unchanged.
+    const mintSessionToken = (): { token: string; expiresAt: number } => {
+      const automationAccess =
+        automationIntent && tokenOrganizationId
+          ? buildAutomationRunWorkerAccess({
+              agentId,
+              automationId: automationIntent.automationId,
+              runId: automationIntent.runId,
+              organizationId: tokenOrganizationId,
+              conversationId,
+            })
+          : null;
+      return {
+        token:
+          automationAccess?.token ??
+          generateWorkerToken(agentId, conversationId, deploymentName, {
+            channelId,
+            agentId,
+            organizationId: tokenOrganizationId,
+            platform: "api",
+            sessionKey: userId,
+          }),
+        expiresAt:
+          automationAccess?.expiresAt ?? Date.now() + TOKEN_EXPIRATION_MS,
+      };
+    };
+
     // Try to resume existing session (unless forceNew is requested).
     // Refuse cross-tenant resume defensively: even though the userId fallback
     // above is per-org-unique for the default-agent path, a future caller that
@@ -875,28 +907,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         // Reuse existing session — touch lastActivity and return existing token
         await sessMgr.touchSession(conversationId);
 
-        const automationAccess =
-          automationIntent && tokenOrganizationId
-            ? buildAutomationRunWorkerAccess({
-                agentId,
-                automationId: automationIntent.automationId,
-                runId: automationIntent.runId,
-                organizationId: tokenOrganizationId,
-                conversationId,
-              })
-            : null;
-        const token =
-          automationAccess?.token ??
-          generateWorkerToken(agentId, conversationId, deploymentName, {
-            channelId,
-            agentId,
-            organizationId: tokenOrganizationId,
-            platform: "api",
-            sessionKey: userId,
-          });
-
-        const expiresAt =
-          automationAccess?.expiresAt ?? Date.now() + TOKEN_EXPIRATION_MS;
+        const { token, expiresAt } = mintSessionToken();
         const baseUrl = pubUrl || "http://localhost:8080";
 
         logger.info(
@@ -917,28 +928,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
     }
 
-    const automationAccess =
-      automationIntent && tokenOrganizationId
-        ? buildAutomationRunWorkerAccess({
-            agentId,
-            automationId: automationIntent.automationId,
-            runId: automationIntent.runId,
-            organizationId: tokenOrganizationId,
-            conversationId,
-          })
-        : null;
-    const token =
-      automationAccess?.token ??
-      generateWorkerToken(agentId, conversationId, deploymentName, {
-        channelId,
-        agentId,
-        organizationId: tokenOrganizationId,
-        platform: "api",
-        sessionKey: userId,
-      });
-
-    const expiresAt =
-      automationAccess?.expiresAt ?? Date.now() + TOKEN_EXPIRATION_MS;
+    const { token, expiresAt } = mintSessionToken();
 
     const session: ThreadSession = {
       conversationId,

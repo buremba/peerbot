@@ -375,6 +375,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           platform = COALESCE(device_workers.platform, EXCLUDED.platform),
           app_version = EXCLUDED.app_version,
           capabilities = EXCLUDED.capabilities,
+          label = COALESCE(EXCLUDED.label, device_workers.label),
           organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
           connector_manifests = CASE
             WHEN ${connectorManifestsAccepted} THEN EXCLUDED.connector_manifests
@@ -927,49 +928,52 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     }
     let devicePrompt = automationInstructions;
     let agentSession: { conversation_id: string; mcp_url: string; token: string; expires_at: number } | undefined;
-    if (effectivePlatform !== 'macos') {
+    if (effectivePlatform !== 'macos' && row.automation_id != null) {
       const runPayload = parseAutomationRunPayload(approved);
       const agentId =
         typeof approved['agent_id'] === 'string' && approved['agent_id'].trim()
           ? approved['agent_id'].trim()
           : row.automation_agent_id?.trim() || null;
-      if (!runPayload || row.automation_id == null || !agentId) {
-        const message = !agentId
-          ? `Automation run ${row.run_id} has no assigned agent — cannot mint run-scoped MCP access.`
-          : `Automation run ${row.run_id} is missing its pinned agent identity`;
-        await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
-        return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message, ...pollMetadata });
+      if (
+        runPayload &&
+        agentId &&
+        (await ensureAutomationAgentExists(sql, row.organization_id, agentId))
+      ) {
+        devicePrompt = buildDispatchMessage({
+          automationId: row.automation_id,
+          runId: row.run_id,
+          agentId,
+          payload: runPayload,
+          automationInstructions: automationInstructions ?? undefined,
+          executor: 'device',
+        });
+        // Per-run Automation agent session (same WorkerToken identity as the
+        // server-side dispatcher's agent session) — never the device's PAT,
+        // which is bound to the user's personal org and can't authenticate to
+        // a team-org Automation. The daemon injects the token into the spawned
+        // CLI (env + MCP wiring) against the gateway MCP proxy endpoint.
+        const access = buildAutomationRunWorkerAccess({
+          agentId,
+          automationId: row.automation_id,
+          runId: row.run_id,
+          organizationId: row.organization_id,
+        });
+        agentSession = {
+          conversation_id: access.conversationId,
+          mcp_url: `${resolvePublicGatewayUrl()}/mcp/lobu-memory`,
+          token: access.token,
+          expires_at: access.expiresAt,
+        };
+      } else {
+        // No assigned agent (or no parseable run payload): dispatch the
+        // pre-session shape — instructions prompt + exit-report completion on
+        // the daemon's own wiring — rather than failing a run that used to
+        // execute. Only runs with a real agent identity get a minted session.
+        logger.warn(
+          { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId },
+          '[poll] headless automation has no usable assigned agent; dispatching instructions-only (no run-scoped MCP session)'
+        );
       }
-      if (!(await ensureAutomationAgentExists(sql, row.organization_id, agentId))) {
-        const message = `Assigned agent "${agentId}" does not exist in this organization.`;
-        await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
-        return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message, ...pollMetadata });
-      }
-      devicePrompt = buildDispatchMessage({
-        automationId: row.automation_id,
-        runId: row.run_id,
-        agentId,
-        payload: runPayload,
-        automationInstructions: automationInstructions ?? undefined,
-        executor: 'device',
-      });
-      // Per-run Automation agent session (same WorkerToken identity as the
-      // server-side dispatcher's agent session) — never the device's PAT, which
-      // is bound to the user's personal org and can't authenticate to a
-      // team-org Automation. The executor sends the token as the MCP bearer
-      // against the canonical headless lobu-memory endpoint.
-      const access = buildAutomationRunWorkerAccess({
-        agentId,
-        automationId: row.automation_id,
-        runId: row.run_id,
-        organizationId: row.organization_id,
-      });
-      agentSession = {
-        conversation_id: access.conversationId,
-        mcp_url: `${resolvePublicGatewayUrl()}/mcp/lobu-memory`,
-        token: access.token,
-        expires_at: access.expiresAt,
-      };
     }
 
     return c.json({

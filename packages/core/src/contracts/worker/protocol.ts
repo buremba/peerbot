@@ -172,6 +172,26 @@ export const AutomationPollContextSchema = Type.Object({
   user: Type.Object({
     user_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   }),
+  // Non-macOS device execution only: the per-run lobu-memory MCP session.
+  // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
+  // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
+  // PAT is bound to the user's personal org and can't authenticate to a
+  // team-org Automation). `mcp_url` is the gateway MCP proxy endpoint
+  // (`{PUBLIC_GATEWAY_URL}/mcp/lobu-memory`), which validates the worker
+  // token and promotes it into a direct-auth MCP session for the token's org.
+  // The daemon hands both to the spawned CLI as its MCP wiring and as
+  // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
+  // agent for this run. Absent when the run has no usable assigned agent —
+  // the daemon then falls back to its own wiring. macOS is exempt: Owletto's
+  // bridge dispatches with its own credential machinery.
+  agent_session: Type.Optional(
+    Type.Object({
+      conversation_id: Type.String(),
+      mcp_url: Type.String(),
+      token: Type.String(),
+      expires_at: Type.Number(),
+    })
+  ),
 });
 
 /**
@@ -184,67 +204,6 @@ export const AutomationPollPayloadSchema = Type.Object({
   automation: AutomationPollMetaSchema,
   event: AutomationPollEventSchema,
   context: AutomationPollContextSchema,
-});
-
-/**
- * The payload envelope a claimed `run_type='automation'` run carries. The
- * device-side executor (Owletto's AutomationDispatcher on macOS, the
- * connector-worker daemon on headless herdr) reads `automation.agent_kind` to
- * pick a local CLI and `automation.execution_config` for its timeout/budget,
- * and embeds the output contract from `extraction_schema` in the prompt.
- * Mirror of the server's `worker-api/poll.ts` automation response — do not
- * add server-only keys here (the server already strips them via
- * `stripServerOnlyExecutionConfig`); a strict device-side decode drops unknown
- * fields.
- */
-export const AutomationPayloadSchema = Type.Object({
-  automation: Type.Object({
-    id: Type.String(),
-    name: Type.Union([Type.String(), Type.Null()]),
-    slug: Type.Union([Type.String(), Type.Null()]),
-    agent_kind: Type.Union([Type.String(), Type.Null()]),
-    notification_channel: Type.String(),
-    notification_priority: Type.String(),
-    execution_config: Type.Union([
-      Type.Record(Type.String(), Type.Unknown()),
-      Type.Null(),
-    ]),
-    prompt: Type.Union([Type.String(), Type.Null()]),
-    extraction_schema: Type.Union([
-      Type.Record(Type.String(), Type.Unknown()),
-      Type.Null(),
-    ]),
-  }),
-  event: Type.Object({
-    trigger_event_id: Type.Union([Type.String(), Type.Null()]),
-    fired_at: Type.String(),
-    payload: Type.Record(Type.String(), Type.Unknown()),
-  }),
-  context: Type.Object({
-    device: Type.Object({
-      worker_id: Type.Union([Type.String(), Type.Null()]),
-    }),
-    user: Type.Object({
-      user_id: Type.Union([Type.String(), Type.Null()]),
-    }),
-    // Non-macOS device execution only: the per-run lobu-memory MCP session.
-    // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
-    // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
-    // PAT is bound to the user's personal org and can't authenticate to a
-    // team-org Automation). The executor sends it as `Authorization: Bearer`
-    // plus the `x-lobu-memory-direct-auth: 1` header against the org-scoped
-    // `/mcp/{orgSlug}` URL, which promotes it into a direct-auth MCP session
-    // (see workspace/multi-tenant.ts). macOS is exempt: Owletto's bridge
-    // dispatches with its own credential machinery.
-    agent_session: Type.Optional(
-      Type.Object({
-        conversation_id: Type.String(),
-        mcp_url: Type.String(),
-        token: Type.String(),
-        expires_at: Type.Number(),
-      })
-    ),
-  }),
 });
 
 /** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
@@ -537,7 +496,6 @@ export type RunType = Static<typeof RunTypeSchema>;
 export type WorkerExitReason = Static<typeof WorkerExitReasonSchema>;
 export type WorkerExitDiagnostics = Static<typeof WorkerExitDiagnosticsSchema>;
 export type OAuthCredentials = Static<typeof OAuthCredentialsSchema>;
-export type AutomationPayload = Static<typeof AutomationPayloadSchema>;
 export type PollRequest = Static<typeof PollRequestSchema>;
 export type PollResponse = Static<typeof PollResponseSchema>;
 export type AutomationExecutionConfig = Static<

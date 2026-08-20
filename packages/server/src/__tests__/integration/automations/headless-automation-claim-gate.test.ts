@@ -198,34 +198,56 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(String(run.status)).toBe('running');
   });
 
-  it('worker poll cannot overwrite a user-set device label', async () => {
+  it('automation without an assigned agent still dispatches instructions-only (no run-scoped session)', async () => {
     const ctx = await setupDevicePinnedAutomation({
-      workerId: 'headless-label',
+      workerId: 'headless-agentless',
       platform: 'headless',
-      capabilities: { 'os.shell': true },
+      capabilities: { 'os.shell': true, 'automations.execute': true },
     });
+    // Legacy shape: automations existed (and executed) before agent assignment
+    // was wired into device dispatch. They must keep dispatching with the
+    // instructions prompt + exit-report completion, not fail at claim time.
+    await ctx.sql`
+      UPDATE automations SET agent_id = NULL WHERE id = ${ctx.automationId}
+    `;
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
       ctx.workspace.org.id,
-      'headless-label'
+      'headless-agentless'
     );
+
+    const trig = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    expect(trig.status).toBe(200);
 
     const pollRes = await post('/api/workers/poll', {
       token,
       body: {
-        worker_id: 'headless-label',
-        platform: 'headless',
-        app_version: 'test',
-        label: 'daemon reported label',
-        capabilities: { 'os.shell': true },
+        worker_id: 'headless-agentless',
+        capabilities: { 'os.shell': true, 'automations.execute': true },
       },
     });
     expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as {
+      run_id?: number;
+      run_type?: string;
+      error?: string;
+      payload?: {
+        automation?: { prompt?: string };
+        context?: { agent_session?: unknown };
+      };
+    };
+    expect(job.run_type).toBe('automation');
+    expect(job.run_id).toBeGreaterThan(0);
+    expect(job.payload?.automation?.prompt).toContain('Summarize');
+    expect(job.payload?.automation?.prompt).not.toContain(
+      'client.automations.completeWindow'
+    );
+    expect(job.payload?.context?.agent_session).toBeUndefined();
 
-    const [device] = await ctx.sql`
-      SELECT label FROM device_workers WHERE worker_id = 'headless-label'
+    const [run] = await ctx.sql`
+      SELECT status FROM runs WHERE id = ${job.run_id}
     `;
-    expect(String(device.label)).toBe('Device');
+    expect(String(run.status)).toBe('running');
   });
 
   it('macOS device with capabilities:{} still claims (pre-capability exemption)', async () => {

@@ -1,5 +1,71 @@
 # Changelog
 
+## [15.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.0.0...lobu-v15.1.0) (2026-08-20)
+
+
+### Features
+
+* add headless device platform for server/VM workers ([#2880](https://github.com/lobu-ai/lobu/issues/2880)) ([72107a2](https://github.com/lobu-ai/lobu/commit/72107a2c6696f2f518433a34f697372da4446584))
+* allow headless platform to mint child device tokens ([#2884](https://github.com/lobu-ai/lobu/issues/2884)) ([6064780](https://github.com/lobu-ai/lobu/commit/6064780ecc9765179ba80e37e8442a782aaf1754))
+* **authz:** govern soft delete with entity write rules ([#2932](https://github.com/lobu-ai/lobu/issues/2932)) ([7731ae2](https://github.com/lobu-ai/lobu/commit/7731ae2b7b3b45adc319b739e7befc019fa060fb))
+* **automations:** let platform-written events activate Automations as roots ([#2938](https://github.com/lobu-ai/lobu/issues/2938)) ([f321ce3](https://github.com/lobu-ai/lobu/commit/f321ce38114a7702f18861835f5cc7eedfc678fa))
+* **automations:** make platform events subscribable from a computed catalog ([#2944](https://github.com/lobu-ai/lobu/issues/2944)) ([1d9fffe](https://github.com/lobu-ai/lobu/commit/1d9fffe1e6c881b765e6201310092b204052cd4f))
+* **automations:** queue activation for platform-written events ([#2947](https://github.com/lobu-ai/lobu/issues/2947)) ([e53c712](https://github.com/lobu-ai/lobu/commit/e53c7127e42911b817201700750ef40368c65394))
+* **ci:** rename pre-pr-remote to pr-full with daytona-first, local-fallback gate ([#2890](https://github.com/lobu-ai/lobu/issues/2890)) ([abc5469](https://github.com/lobu-ai/lobu/commit/abc5469fe7a2d12c255d77239e016efcb8e6b661))
+* **cli:** execute an already-claimed device Automation via `lobu automation execute` ([#2907](https://github.com/lobu-ai/lobu/issues/2907)) ([201546d](https://github.com/lobu-ai/lobu/commit/201546d3e3027f1e33ae021651ac693260b68d9a))
+* **cli:** prompt for token scope interactively instead of hardcoding read+write ([#2834](https://github.com/lobu-ai/lobu/issues/2834)) ([4138062](https://github.com/lobu-ai/lobu/commit/4138062941e755c484983e36e8a7ae61b43a35ff))
+* **connectors:** read device-backed virtual feeds live, retaining nothing ([#2940](https://github.com/lobu-ai/lobu/issues/2940)) ([a13789c](https://github.com/lobu-ai/lobu/commit/a13789c189a3bcc3120966113fb8cd312628d256))
+* **devices:** gate the automation claim lane on advertised agent kinds ([#2918](https://github.com/lobu-ai/lobu/issues/2918)) ([1854088](https://github.com/lobu-ai/lobu/commit/185408861ec5f56e8d010081df180ae1367501c8))
+* **notifications:** render every notification through one json_template pipeline ([#2935](https://github.com/lobu-ai/lobu/issues/2935)) ([3125a29](https://github.com/lobu-ai/lobu/commit/3125a29a2d48fa1608afa9e9999158b58fb124e2))
+* os.shell connector for headless devices (run commands on herdr) ([#2886](https://github.com/lobu-ai/lobu/issues/2886)) ([5dffccf](https://github.com/lobu-ai/lobu/commit/5dffccf50ee43932fb7f532e97e6a675e6946c1e))
+* PR preview environments with K8s + Tailscale ([#2826](https://github.com/lobu-ai/lobu/issues/2826)) ([9f65c1e](https://github.com/lobu-ai/lobu/commit/9f65c1efd81e5e6f5b08ac2b8edd7fd558c9ef41))
+* **sdk:** expose the caller's devices as client.devices ([#2926](https://github.com/lobu-ai/lobu/issues/2926)) ([d641b23](https://github.com/lobu-ai/lobu/commit/d641b2381dd53804d7c298259ffc08290f044dff))
+* **server,connector-sdk:** scope entity identities per connection when declared ([#2846](https://github.com/lobu-ai/lobu/issues/2846)) ([70e5aba](https://github.com/lobu-ai/lobu/commit/70e5abae116ca0fcffe1188154bf9bd79f7d3713))
+* **server,core:** expose acl_managed on relationship rows ([#2843](https://github.com/lobu-ai/lobu/issues/2843)) ([d727440](https://github.com/lobu-ai/lobu/commit/d7274409835a894335e276e1b88a6b19d90c0edb))
+* **server,core:** report relationship-type purpose on list and get ([#2837](https://github.com/lobu-ai/lobu/issues/2837)) ([2a8bc47](https://github.com/lobu-ai/lobu/commit/2a8bc47aa65829b3e8a9606e6006a1861532f4b2))
+* **server:** expose device_workers through query_sql, owner-scoped ([#2922](https://github.com/lobu-ai/lobu/issues/2922)) ([4b9d5f4](https://github.com/lobu-ai/lobu/commit/4b9d5f49dfd4326a6e85a51e6786caeaf0a6838d))
+* **server:** per-type entity write rules, enforced at the write seam ([#2842](https://github.com/lobu-ai/lobu/issues/2842)) ([006f3c5](https://github.com/lobu-ai/lobu/commit/006f3c568f4546a544695200ed12f4b3df6ecadb))
+* **worker:** execute device Automations in the connector-worker daemon ([#2902](https://github.com/lobu-ai/lobu/issues/2902)) ([0703a0e](https://github.com/lobu-ai/lobu/commit/0703a0efcd61a97b9bcb02a543564a1e3397a058))
+
+
+### Bug Fixes
+
+* **automations:** contain a write-rule escalate to its promoted row ([#2923](https://github.com/lobu-ai/lobu/issues/2923)) ([561f0db](https://github.com/lobu-ai/lobu/commit/561f0dbe58cb04ed448df9c9d70f26c3b27b1a6d))
+* **automations:** contain a write-rule verdict on a promoted CREATE ([#2924](https://github.com/lobu-ai/lobu/issues/2924)) ([fd1511d](https://github.com/lobu-ai/lobu/commit/fd1511d9c31c59806614af39b1a506d5ee0b36ca))
+* **automations:** make a stalled device Automation diagnosable ([#2937](https://github.com/lobu-ai/lobu/issues/2937)) ([e5ccc1e](https://github.com/lobu-ai/lobu/commit/e5ccc1ee28e44f9f58316db7677c353ac8240264))
+* **automations:** record a refused promote in the run change set ([#2927](https://github.com/lobu-ai/lobu/issues/2927)) ([7d022a4](https://github.com/lobu-ai/lobu/commit/7d022a46e6f0b7ddfab67193c538cf80ea484389))
+* **chart:** make registry credentials opt-in ([#2779](https://github.com/lobu-ai/lobu/issues/2779)) ([2ea1e6c](https://github.com/lobu-ai/lobu/commit/2ea1e6c45490e7c8f20983f1fa4e82a1a9ba4392))
+* **ci:** exempt Owletto build scripts from ui-review hosted proof ([#2928](https://github.com/lobu-ai/lobu/issues/2928)) ([6c8f9f3](https://github.com/lobu-ai/lobu/commit/6c8f9f3b7efc682bd925e85ed592ec0f893ab065))
+* **ci:** exempt the vendored Barman Cloud manifests from the naming gate ([#2939](https://github.com/lobu-ai/lobu/issues/2939)) ([77f8efc](https://github.com/lobu-ai/lobu/commit/77f8efcfec2ffa48b4f85a465de87defe49ea0e7))
+* **ci:** exempt unhosted Owletto trees from ui-review hosted proof ([#2905](https://github.com/lobu-ai/lobu/issues/2905)) ([4f901bf](https://github.com/lobu-ai/lobu/commit/4f901bfe7f62ab38edb2304eb7d13d47c3e74709))
+* **ci:** fail closed when daytona CLI is present but unusable ([#2934](https://github.com/lobu-ai/lobu/issues/2934)) ([433b0e1](https://github.com/lobu-ai/lobu/commit/433b0e1aabd57ad6b12a42a18afda37133f6d591))
+* **connections:** backfill legacy unowned private connections before removing admin visibility arm ([#2892](https://github.com/lobu-ai/lobu/issues/2892)) ([535c338](https://github.com/lobu-ai/lobu/commit/535c338298142bd872b876e427642cdc8b678287))
+* **deploy:** skip the migration quiesce for backward-compatible migrations ([#2921](https://github.com/lobu-ai/lobu/issues/2921)) ([170e171](https://github.com/lobu-ai/lobu/commit/170e171075986a758b99979b86574058e092b24f))
+* **gateway:** deliver terminal thread_response locally on the final attempt ([#2901](https://github.com/lobu-ai/lobu/issues/2901)) ([883b577](https://github.com/lobu-ai/lobu/commit/883b5779572fc2dd60dc0c43405ad7a45bd3b71c))
+* **mcp-apps:** honour the asset content digest and scope base injection to head ([#2897](https://github.com/lobu-ai/lobu/issues/2897)) ([fe27eb8](https://github.com/lobu-ai/lobu/commit/fe27eb89f7e52f6acdef5aaf5703f1749c8a0a0a))
+* **mcp-apps:** serve absolute asset URLs so Claude can render the card ([#2915](https://github.com/lobu-ai/lobu/issues/2915)) ([8d1a349](https://github.com/lobu-ai/lobu/commit/8d1a349a1a06c596cfca541ab4d75e6a4fe0a306))
+* **mcp:** bind MCP resource to the host the client actually called ([#2893](https://github.com/lobu-ai/lobu/issues/2893)) ([ddbc043](https://github.com/lobu-ai/lobu/commit/ddbc043ee46d8de99994012fad1a5f91dfb1fd25))
+* **notifications:** make the approval chat-origin tier work for preview orgs ([#2916](https://github.com/lobu-ai/lobu/issues/2916)) ([8995c8f](https://github.com/lobu-ai/lobu/commit/8995c8f2cda48684b76db927d1d84421e55da813))
+* **notifications:** stop approvals fanning out to every bound channel ([#2906](https://github.com/lobu-ai/lobu/issues/2906)) ([9a2ee35](https://github.com/lobu-ai/lobu/commit/9a2ee35567c87875e81e6eccc1e2a3a980c60d43))
+* re-stage biome auto-fixes in pre-commit hook ([#2881](https://github.com/lobu-ai/lobu/issues/2881)) ([817f985](https://github.com/lobu-ai/lobu/commit/817f9857a4a81ee7d378d4dbca7eb67631a6c526))
+* **review:** default the Claude reviewer to Opus instead of Fable ([#2898](https://github.com/lobu-ai/lobu/issues/2898)) ([e48b684](https://github.com/lobu-ai/lobu/commit/e48b68435bba0782a643b66976d59972d6371674))
+* **review:** end teardown when a process group cannot be signalled ([#2896](https://github.com/lobu-ai/lobu/issues/2896)) ([0d6fbb3](https://github.com/lobu-ai/lobu/commit/0d6fbb3a4d78d1dedc7074579ea0501a03c9c41e))
+* **server,cli:** resolve entity-type slugs through one canonical normalizer ([#2762](https://github.com/lobu-ai/lobu/issues/2762)) ([4770346](https://github.com/lobu-ai/lobu/commit/4770346a108b8b14c3f9e39f87ee4c30d6360325))
+* **server:** an escalated approval card applies atomically or not at all ([#2919](https://github.com/lobu-ai/lobu/issues/2919)) ([da4484e](https://github.com/lobu-ai/lobu/commit/da4484ed662e7467c380cf8c9ec3a094485c7572))
+* **server:** gate agent create and inference-provider mutations to owner/admin ([#2914](https://github.com/lobu-ai/lobu/issues/2914)) ([8b569c5](https://github.com/lobu-ai/lobu/commit/8b569c5a0ae94c1a8e3e69e86d470d1e18464060))
+* **server:** gate agent management mutations to owner/admin ([#2899](https://github.com/lobu-ai/lobu/issues/2899)) ([95e0fdf](https://github.com/lobu-ai/lobu/commit/95e0fdf0d729c5ed5fb98683d36219c5102f3e65))
+* **server:** gate approval-waived entity writes behind a module boundary ([#2903](https://github.com/lobu-ai/lobu/issues/2903)) ([ad3bb80](https://github.com/lobu-ai/lobu/commit/ad3bb800d4e83e1994b6f4bd672f8f286295a30c))
+* **server:** keep the ACL-managed half of an inverse relationship pair ([#2844](https://github.com/lobu-ai/lobu/issues/2844)) ([976b68a](https://github.com/lobu-ai/lobu/commit/976b68aa6172c108f9c3b82aec8ce4f1cba3da3c))
+* **server:** reuse headless device identity on child-token re-mint ([#2911](https://github.com/lobu-ai/lobu/issues/2911)) ([38b4cac](https://github.com/lobu-ai/lobu/commit/38b4cacb70e493b0cd8752403d383e99a569867c))
+* **server:** seed device autowire connections from default_connection_config ([#2841](https://github.com/lobu-ai/lobu/issues/2841)) ([e883f18](https://github.com/lobu-ai/lobu/commit/e883f18b5caf7d5aa6397e11020e5c801cf3bc49))
+* **server:** tell agents which relationship types refuse writes ([#2840](https://github.com/lobu-ai/lobu/issues/2840)) ([9ffbefc](https://github.com/lobu-ai/lobu/commit/9ffbefc926556ed2ffe4aded03d8fa04a0877bbf))
+* **server:** union repeated escalate verdicts in entity rules ([#2910](https://github.com/lobu-ai/lobu/issues/2910)) ([f66db5b](https://github.com/lobu-ai/lobu/commit/f66db5bc8ad92b9d7cc23a954581142ca074be5a))
+
+
+### Performance Improvements
+
+* **server:** memoize compiled sandbox sources by content hash ([#2838](https://github.com/lobu-ai/lobu/issues/2838)) ([7f70ab9](https://github.com/lobu-ai/lobu/commit/7f70ab985ac1acfe29c208cbd8f6141764fb26d0))
+
 ## [15.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.22.0...lobu-v15.0.0) (2026-08-17)
 
 

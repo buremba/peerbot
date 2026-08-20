@@ -1636,6 +1636,27 @@ export async function deleteEntity(
     };
 
     if (opts?.dryRun) {
+      // Preview the RULE too, or the preview lies — the same reasoning the soft
+      // path below spells out. A pool read is right here because a dry run
+      // enforces nothing: the verdict is advisory by construction, and the real
+      // delete re-asks it under lock.
+      try {
+        await validateEntityRowPatchGrantingApprovedFields({
+          tx: sql,
+          ids: entityTreeIds,
+          patch: { softDelete: true },
+          approvedFields: opts?.approvedFields ?? [],
+        });
+      } catch (err) {
+        if (!(err instanceof EntityRowValidationError)) throw err;
+        return {
+          message: `Dry run: force delete would NOT run — ${err.verdict.reason}`,
+          deleted: 0,
+          dry_run: true,
+          refused: true,
+          tree: report,
+        };
+      }
       return {
         message: `Dry run: force delete would remove ${report.entities} entities and detach ${report.events_detached} event rows`,
         deleted: 0,
@@ -1655,6 +1676,33 @@ export async function deleteEntity(
       // org generation, the reverse of organization deletion's parent-then-
       // cascade order unless the org is claimed up front.
       await lockOrgForAclInvalidation(tx, ctx.organizationId);
+      // A force delete answers to the same `$deleted` name a soft delete does.
+      // Hard deletion is not a lesser destruction than a tombstone, so giving
+      // `force` its own reserved name would turn every "this row cannot be
+      // deleted" rule into "cannot be deleted without passing
+      // force_delete_tree=true" — a control with a documented bypass. This is
+      // the opposite call from merge, which got its own `$merged_into` precisely
+      // because merging a duplicate into its canonical record is a correction
+      // and not a destruction at all.
+      //
+      // Every id in the tree is judged, not just the root: a descendant carries
+      // its own type's rules, and deleting a parent must not be a way to destroy
+      // a frozen child.
+      //
+      // Locked first for the reason the soft path locks — the verdict has to
+      // describe the rows this transaction actually removes.
+      await tx`
+        SELECT id FROM entities
+        WHERE id = ANY(${entityTreeIdsLiteral}::bigint[])
+        ORDER BY id
+        FOR UPDATE
+      `;
+      await validateEntityRowPatchGrantingApprovedFields({
+        tx,
+        ids: entityTreeIds,
+        patch: { softDelete: true },
+        approvedFields: opts?.approvedFields ?? [],
+      });
       // Force-delete removes ACL edges along with everything else. That is
       // correct — the entity is gone, so its membership projection must go too —
       // but the `entity_relationships` trigger refuses authorization-bearing
@@ -1857,9 +1905,14 @@ export async function deleteEntity(
   // it until the tombstone commits, so no concurrent write can change the state
   // the verdict was based on.
   //
-  // Scope is the soft-delete path only. `force` above hard-deletes the tree
-  // through `hardDeleteEntityRows`, which no rule sees: freezing a row does not
-  // survive a force delete.
+  // `force` above asks the same question of every row in the tree before it
+  // hard-deletes any of them, so freezing a row survives both delete paths. The
+  // physical helper `hardDeleteEntityRows` itself stays unguarded and is
+  // deliberately exempt: its other callers are rollback paths that destroy a row
+  // the platform created moments earlier in the same request
+  // (`entity-link-upsert`, `promote-keyed-entities`, `canvas-events`,
+  // `eval-cases`). Judging those would let a tenant rule wedge a half-built
+  // record in place, which is the failure the rollback exists to prevent.
   //
   // A deny throws rather than returning: approval cannot launder an illegal
   // state into a legal one. An escalate throws too UNLESS this call is the

@@ -71,7 +71,8 @@ export interface EntityRowValidationVerdict {
  * `manage_entity`'s delete and merge paths have no `EntityRowValidationError`
  * catch (only its CREATE path does), so an escalate with no policy card behind
  * it fails closed like link auto-create. A `deny` stops the write either way,
- * and a hard delete never reaches this seam at all.
+ * and the hard (force) delete reaches this seam under the same `$deleted` name,
+ * so freezing a row freezes both delete paths.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;
@@ -92,8 +93,9 @@ export class EntityRowValidationError extends Error {
  * The complement (`metadata`, `name`, `slug`, `parentId`, `content`,
  * `softDelete`) IS governed: freezing a document has to stop a rename, not
  * merely a metadata edit, and it has to stop the row being tombstoned out from
- * under the rule that froze it. (A hard delete removes the row without a patch,
- * so it never passes through here — see `deleteEntity`.)
+ * under the rule that froze it. `deleteEntity` proposes `softDelete` for a hard
+ * (force) delete too, so a row about to be destroyed outright is judged by the
+ * same `$deleted` name instead of slipping past the seam.
  */
 const UNGOVERNED_COLUMNS: ReadonlySet<string> = new Set([
 	"currentViewTemplateVersionId",

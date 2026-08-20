@@ -67,12 +67,12 @@ export interface EntityRuleBatch {
 	compiled: string;
 	rows: EntityRuleRow[];
 	/**
-	 * `delete` is deliberately absent: a soft delete reaches this seam as an
+	 * `delete` is deliberately absent: both delete paths reach this seam as an
 	 * ordinary patch whose one governed column is `$deleted` flipping to true, so
-	 * a rule judges it as an `update` and `changed("$deleted")` is what tells it
-	 * apart. A hard delete (`force_delete_tree`) removes the row outright and
-	 * never reaches this seam at all, so a `delete` op would be a contract only
-	 * half the deletes could honour.
+	 * a rule judges them as an `update` and `changed("$deleted")` is what tells
+	 * it apart. A hard delete (`force_delete_tree`) removes the row outright, but
+	 * it proposes that same `$deleted` patch first, so a `delete` op would name an
+	 * operation neither path actually presents.
 	 */
 	op: "create" | "update";
 	timeoutMs?: number;

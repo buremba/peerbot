@@ -136,9 +136,12 @@ if (endpoint.includes("/contents/packages/owletto?ref=")) {
 } else if (endpoint.startsWith("repos/lobu-ai/owletto/compare/")) {
   output({
     status: process.env.MOCK_COMPARE_STATUS || "ahead",
+    // Default every mocked file to a readable patch. The agent classifier only
+    // judges ranges whose content it can actually see, so a fixture without
+    // patches would exercise the refusal path rather than the case under test.
     files: JSON.parse(
       process.env.MOCK_OWLETTO_FILES || '[{"filename":"src/app.tsx"}]'
-    ),
+    ).map((file) => ({ patch: "@@ -1 +1 @@\\n-old\\n+new", ...file })),
   });
 } else if (endpoint.includes("/collaborators/") && endpoint.endsWith("/permission")) {
   output({ permission: "admin" });
@@ -394,7 +397,18 @@ describe("ui-review command", () => {
 
   it("requires proof when the pointer comparison diverged", () => {
     const fixture = createFixture();
+    // A reviewer that would happily wave this through is installed on purpose:
+    // without it the assertion would pass merely because no agent could spawn,
+    // proving nothing about the divergence guard itself.
+    const agentScript = createFakeAgentScript(fixture.repo, {
+      has_ui_surface: false,
+      reasoning: "deploy manifests only.",
+      verification_summary: "n/a",
+      reviewer: "claude",
+    });
     const result = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: agentScript,
       MOCK_COMPARE_STATUS: "diverged",
       MOCK_OWLETTO_FILES: JSON.stringify([
         { filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" },
@@ -450,6 +464,69 @@ describe("ui-review command", () => {
     const parentComment =
       state.comments["repos/lobu-ai/lobu/issues/2500/comments"]?.[0];
     expect(parentComment?.body).toContain("**UI review recorded**");
+  });
+
+  it("requires ARTIFACT when the comparison hit GitHub's file cap", () => {
+    const fixture = createFixture();
+    // At the cap GitHub truncates the file list, so a "no UI surface" verdict
+    // would rest on a range the reviewer only partly saw.
+    const agentScript = createFakeAgentScript(fixture.repo, {
+      has_ui_surface: false,
+      reasoning: "nothing user-visible in the files I was shown.",
+      verification_summary: "n/a",
+      reviewer: "claude",
+    });
+
+    const result = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: agentScript,
+      MOCK_OWLETTO_FILES: JSON.stringify(
+        Array.from({ length: 300 }, (_, index) => ({
+          filename: `deploy/k8s/generated/manifest-${index}.yaml`,
+        }))
+      ),
+    });
+
+    expectExit(result, 2);
+    const status = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "error",
+      description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
+    });
+  });
+
+  it("requires ARTIFACT when a changed file carries no readable patch", () => {
+    const fixture = createFixture();
+    // GitHub omits the patch for binary and oversized files. That content is
+    // exactly where an icon or screenshot change hides, so the filename alone
+    // must never be enough to clear the gate.
+    const agentScript = createFakeAgentScript(fixture.repo, {
+      has_ui_surface: false,
+      reasoning: "the filenames look like build output.",
+      verification_summary: "n/a",
+      reviewer: "claude",
+    });
+
+    const result = runUiReview(fixture, {
+      UI_REVIEW_AGENT: "1",
+      UI_REVIEW_AGENT_SCRIPT: agentScript,
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "src/assets/logo.png", patch: null },
+      ]),
+    });
+
+    expectExit(result, 2);
+    const status = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "error",
+      description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
+    });
   });
 
   it("still requires ARTIFACT when the reviewer finds real UI surface", () => {

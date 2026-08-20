@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   type AgentUiReviewProof,
   buildProofBody,
+  COMPARE_FILE_CAP,
   findProofComment,
   isArtifactProof,
   isUnhostedRange,
@@ -290,6 +291,23 @@ function tryAgentClassification(
   headPointer: string
 ): AgentVerdict | null {
   if (process.env.UI_REVIEW_AGENT === "0") return null;
+  // The classifier may only judge a range it can see in full. A non-"ahead"
+  // comparison is not the pointer delta being proposed, and at GitHub's
+  // COMPARE_FILE_CAP the file list is truncated — buildAgentContext would then
+  // describe a partial range, letting a "no UI surface" verdict be returned by
+  // an agent that never saw the UI files. Both fall through to requiring a real
+  // ARTIFACT, matching the guarantees isUnhostedRange already demands.
+  const files = comparison.files ?? [];
+  if (
+    comparison.status !== "ahead" ||
+    files.length === 0 ||
+    files.length >= COMPARE_FILE_CAP
+  ) {
+    return null;
+  }
+  // A file whose patch GitHub omitted is content this range changed but the
+  // agent cannot read, so the verdict would rest on the filename alone.
+  if (files.some((file) => !file.patch)) return null;
   const dir = mkdtempSync(join(tmpdir(), "lobu-ui-review-agent-"));
   try {
     const contextFile = join(dir, "context.md");

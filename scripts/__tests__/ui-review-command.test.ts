@@ -359,7 +359,7 @@ describe("ui-review command", () => {
       context: "ui-review",
       state: "success",
       description:
-        "Owletto 111111111...222222222 is deploy-only; no UI to prove",
+        "Owletto 111111111...222222222 touches only unhosted trees; no hosted UI to prove",
       target_url: "https://github.com/lobu-ai/owletto/pull/712",
     });
     // The exemption is judged over the whole pointer range, so the range is what
@@ -370,6 +370,29 @@ describe("ui-review command", () => {
     expect(finalState.opened).toBe(
       "https://github.com/lobu-ai/owletto/pull/712"
     );
+  });
+
+  it("passes a Chrome/Mac/scripts range without calling it deploy-only", () => {
+    const fixture = createFixture();
+    // These trees ship real UI of their own — the exemption says hosted proof
+    // is the wrong instrument, not that nothing is user-visible. The status is
+    // durable on the commit, so it must not claim "deploy-only" here.
+    const result = runUiReview(fixture, {
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "apps/chrome/src/sidepanel.ts" },
+        { filename: "apps/mac/Sources/MacShellActionService.swift" },
+        { filename: "scripts/check-bundle-size.mjs" },
+      ]),
+    });
+
+    expectExit(result, 0);
+    const description = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1)?.payload?.description as string;
+    expect(description).toBe(
+      "Owletto 111111111...222222222 touches only unhosted trees; no hosted UI to prove"
+    );
+    expect(description).not.toContain("deploy-only");
   });
 
   it("requires proof when an earlier commit left a UI change in the range", () => {

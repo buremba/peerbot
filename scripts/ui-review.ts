@@ -435,7 +435,7 @@ function main(): number {
       lobuRepo,
       localHead,
       "success",
-      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} is deploy-only; no UI to prove`,
+      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} touches only unhosted trees; no hosted UI to prove`,
       owlettoPr.html_url
     );
     console.log(

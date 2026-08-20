@@ -1375,7 +1375,14 @@ export async function applyEntityChangeProposal(
 				evidence: resolved.evidence,
 			},
 		};
-		return applyMergeGroupInTransaction(params, db);
+		// This IS the approval, scoped exactly as the delete path is: a merge card
+		// approves the merge and nothing else, so the grant is the one reserved
+		// name the merge seam proposes. A `deny` still throws — approval cannot
+		// make an illegal merge legal.
+		return applyMergeGroupInTransaction(
+			{ ...params, approvedFields: ["$merged_into"] },
+			db,
+		);
 	}
 	const deleteProposal = asDeleteProposal(proposal);
 	// The grant comes from the write this card REPLAYS. A delete card's entire

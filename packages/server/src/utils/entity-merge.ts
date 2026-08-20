@@ -36,6 +36,7 @@ import {
 	type ResolutionEvidence,
 } from "../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../entity-resolution/staleness";
+import { validateEntityRowMergeGrantingApprovedFields } from "../authz/entity-row-validation";
 import { transitionEntityMergeRows } from "./entity-management";
 import logger from "./logger";
 import {
@@ -61,6 +62,13 @@ export interface ApplyMergeParams {
   /** Who triggered the merge (agent id / user id) — for the tombstone audit. */
   mergedBy: string;
 	resolution?: MergeResolutionProvenance;
+	/**
+	 * Set ONLY when this call is the application of a merge a human already
+	 * approved, so a rule that escalates on the merge does not escalate the very
+	 * merge its escalation asked for. `["$merged_into"]` is the whole vocabulary
+	 * a merge card can be said to have approved.
+	 */
+	approvedFields?: readonly string[];
 }
 
 export interface ApplyMergeResult {
@@ -81,6 +89,8 @@ export interface ApplyMergeGroupParams {
   mergedBy: string;
 	resolution?: MergeResolutionProvenance;
 	expectedResolutionFingerprint?: string;
+	/** See {@link ApplyMergeParams.approvedFields}. */
+	approvedFields?: readonly string[];
 }
 
 /**
@@ -146,6 +156,7 @@ export async function applyMergeGroupInTransaction(
         winnerId: params.winnerId,
         mergedBy: params.mergedBy,
 				resolution: params.resolution,
+				approvedFields: params.approvedFields,
       },
       tx,
     );
@@ -240,6 +251,19 @@ async function applyMergeInTransaction(
 			"applyMerge: cannot merge entities of different entity types",
 		);
   }
+
+	// The type's write rules judge the merge, under the locks taken above and
+	// BEFORE any row is written — a denied merge should cost no work, and the
+	// verdict must be read from the same snapshot the writes commit into.
+	//
+	// The loser only. See `validateEntityRowMergeGrantingApprovedFields` for why
+	// the winner's metadata and the redirect repoint are deliberately excluded.
+	await validateEntityRowMergeGrantingApprovedFields({
+		tx,
+		loserIds: [loserId],
+		mergedInto: winnerId,
+		approvedFields: params.approvedFields ?? [],
+	});
 
 	const identitiesBefore = await tx<{
 		id: number;

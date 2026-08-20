@@ -559,11 +559,21 @@ export async function patchEntityRows(params: {
  * Merge and unmerge are one compound transaction — never run `runMutationGate`
  * from here.
  *
- * KNOWN GAP: a type's write rules do not cover this path either, so a rule that
- * freezes a row does not stop that row being merged away or restored. Merge is a
- * topology change rather than a field edit — `committed`/`patch` do not describe
- * it, so a rule written against fields could not judge it as-is. Closing this
- * needs a merge-shaped verdict, not a call to `validateEntityRowPatch` here.
+ * Write rules are enforced by the CALLER, not here. `applyMergeInTransaction`
+ * runs `validateEntityRowMergeGrantingApprovedFields` over the losing row —
+ * under the locks it already holds and before any write — proposing the
+ * reserved name `$merged_into`. Merge deliberately does NOT reuse `$deleted`:
+ * the tombstone is an implementation detail of the redirect, and a tenant must
+ * be able to freeze deletion without freezing dedupe.
+ *
+ * REMAINING GAP: the winner's metadata patch and the redirect repoint are still
+ * ungoverned, and unmerge (`liveness: "live"`) is deliberately left free so a
+ * freeze cannot strand a row tombstoned. The winner is the hard one:
+ * `mergeEntityState` appends the loser's name to `metadata.aliases` on every
+ * merge, so governing it would present a metadata change to the rule engine on
+ * every single merge — a rule freezing a canonical row would make it unable to
+ * absorb any duplicate. That needs a decision about what approving a merge
+ * grants, not a call added here.
  */
 export async function transitionEntityMergeRows(params: {
 	tx: DbClient;

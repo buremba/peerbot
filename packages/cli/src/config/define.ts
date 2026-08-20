@@ -114,7 +114,10 @@ export interface EntityWriteRow<Fields = Record<string, unknown>> {
   patch: Partial<Fields> & Record<string, unknown>;
   /** `{ ...committed, ...patch }`, i.e. the row as it would commit. */
   next: Partial<Fields> & Record<string, unknown>;
-  /** Deletes do not reach the rule seam yet, so a rule only ever sees these two. */
+  /**
+   * Deletes and merges use the existing row-shaped contract: they arrive as
+   * `op: "update"` with `$deleted` or `$merged_into` changing respectively.
+   */
   op: "create" | "update";
   /**
    * True when `field`'s value differs between {@link committed} and

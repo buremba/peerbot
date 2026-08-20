@@ -10,7 +10,7 @@ import addFormats from 'ajv-formats';
 import {
   enqueueWorkspaceEventActivations,
   findSubscribedWorkspaceEventTypes,
-} from '../../../automations/workspace-event';
+} from '../../../automations/workspace-event-enqueue';
 import {
   automationTriggerSignals,
   deriveWorkspaceEventCausality,

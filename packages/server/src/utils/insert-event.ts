@@ -7,6 +7,11 @@
 
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
+import { getActingAutomationId } from './acting-automation-context';
+import {
+  enqueueWorkspaceEventActivations,
+  findSubscribedWorkspaceEventTypes,
+} from '../automations/workspace-event-enqueue';
 import {
   AUDIT_EVENT_TYPE_METADATA_KEY,
   type AuditEventType,
@@ -699,6 +704,64 @@ interface ChangeEventParams {
   clientId?: string | null;
 }
 
+/**
+ * Queue Automation activation for a freshly written audit row, when anything
+ * subscribes to its `<subject>.<op>` type.
+ *
+ * Fire-and-forget by design. The audit row is the durable record; a failure to
+ * queue its activation must never fail — or roll back — the change being
+ * audited. Double delivery is guarded twice over: the queue key is per event
+ * id, and `createAutomationEventRun` dedupes per Automation on the
+ * `workspace-event:<id>` delivery id even if a second task is ever queued.
+ *
+ * Causality is read off the row itself rather than passed in: a row with no
+ * producer is a root (empty ancestry, depth 1), and a row produced by an
+ * Automation names that Automation as its own causal path. That is what stops
+ * an Automation waking itself on the audit exhaust of its own write — the
+ * matcher skips any Automation already in `causal_automation_ids`, and
+ * `activateWorkspaceEventTask` rejects a payload whose ancestry disagrees with
+ * the row's producer.
+ */
+async function queueWorkspaceEventActivation(args: {
+  organizationId: string;
+  eventId: number;
+  eventType: string;
+  producerAutomationId: number | null;
+}): Promise<void> {
+  try {
+    const subscribed = await findSubscribedWorkspaceEventTypes(
+      args.organizationId,
+      [args.eventType]
+    );
+    if (!subscribed.has(args.eventType)) return;
+    const sql = getDb();
+    await sql.begin(async (tx) => {
+      await enqueueWorkspaceEventActivations(tx, [
+        {
+          organizationId: args.organizationId,
+          eventId: args.eventId,
+          rootEventIds: [args.eventId],
+          causalAutomationIds:
+            args.producerAutomationId == null
+              ? []
+              : [args.producerAutomationId],
+          depth: 1,
+        },
+      ]);
+    });
+  } catch (err) {
+    logger.error(
+      {
+        eventId: args.eventId,
+        eventType: args.eventType,
+        organizationId: args.organizationId,
+        error: String(err),
+      },
+      '[insert-event] failed to queue workspace-event activation; audit row is durable'
+    );
+  }
+}
+
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
 
 /**
@@ -722,18 +785,32 @@ export async function insertConnectionlessAuditEvent(
   eventType: AuditEventType
 ): Promise<InsertedEvent> {
   const idempotencyKey = `audit:${params.originId}`;
+  const formattedEventType = formatAuditEventType(eventType);
   const metadata: Record<string, unknown> = {
     ...(params.metadata ?? {}),
     _lobu_idempotency_key: idempotencyKey,
-    [AUDIT_EVENT_TYPE_METADATA_KEY]: formatAuditEventType(eventType),
+    [AUDIT_EVENT_TYPE_METADATA_KEY]: formattedEventType,
   };
+  // Who caused this change. An explicit id wins over ambient scope so a writer
+  // that already resolved its producer keeps saying so; absent both, the row is
+  // a genuine root (a person, a cron tick, a connector sync).
+  const producerAutomationId =
+    params.automationId ?? getActingAutomationId();
 
   try {
-    return await insertEvent({
+    const inserted = await insertEvent({
       ...params,
       connectionId: null,
+      automationId: producerAutomationId,
       metadata,
     });
+    await queueWorkspaceEventActivation({
+      organizationId: params.organizationId,
+      eventId: inserted.id,
+      eventType: formattedEventType,
+      producerAutomationId,
+    });
+    return inserted;
   } catch (error) {
     if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX)) throw error;
     const sql = getDb();

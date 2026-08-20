@@ -408,20 +408,13 @@ export async function executeTool(
 const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
 
 /**
- * The `automation_source` an agent declared on this call.
- *
- * Self-declared and therefore advisory — an agent that omits it is attributed
- * to nothing, exactly as today. The reaction identity checked first is
- * server-set and cannot be forged, so the non-forgeable source always wins.
- *
- * The window travels with the automation id because it is the agent lane's
- * only route to the driving run, and the run is what carries causal ancestry.
- */
-/**
  * Drop a declared source that does not name an Automation in this organization.
  *
  * Returns null rather than throwing: attribution is a provenance hint, and a
  * bad hint should cost the caller its attribution, not fail their tool call.
+ * The window is not paired to the Automation here — `loadRunEventCausality`
+ * scopes its run lookup to the producing Automation, so a foreign window
+ * inherits nothing.
  */
 export async function verifiedAutomationSource(
   declared: { automationId: number; windowId: number | null } | null,
@@ -438,6 +431,16 @@ export async function verifiedAutomationSource(
   return rows[0] ? declared : null;
 }
 
+/**
+ * The `automation_source` an agent declared on this call.
+ *
+ * Self-declared and therefore advisory — an agent that omits it is attributed
+ * to nothing, exactly as today. The reaction identity checked first is
+ * server-set and cannot be forged, so the non-forgeable source always wins.
+ *
+ * The window travels with the automation id because it is the agent lane's
+ * only route to the driving run, and the run is what carries causal ancestry.
+ */
 function declaredAutomationSource(
   args: Record<string, unknown>
 ): { automationId: number; windowId: number | null } | null {

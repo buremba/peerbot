@@ -469,4 +469,113 @@ describe('audit rows inherit the producing run causal chain', () => {
     expect(queued[0]!.depth).toBe(1);
     expect(queued[0]!.causalAutomationIds).toEqual([automationId]);
   });
+
+  it('starts a fresh chain when the run was woken by a connector event', async () => {
+    const { organizationId, automationId } = await subscriber('Connector Org', [
+      'connection.deleted',
+    ]);
+    const sql = getTestDb();
+    // A connector-triggered run: `approved_input` HAS trigger signals, but none
+    // of them workspace ones. Deriving ancestry from these would produce an
+    // EMPTY root set, which `activateWorkspaceEventTask` rejects — the row must
+    // instead start its own chain.
+    const rows = (await sql`
+      INSERT INTO public.runs (
+        organization_id, run_type, action_key, status, automation_id,
+        approved_input
+      ) VALUES (
+        ${organizationId}, 'automation', 'run_automation', 'running',
+        ${automationId},
+        ${sql.json({
+          trigger_signals: [
+            {
+              connector_key: 'gmail',
+              event_type: 'message.received',
+              delivery_id: 'gmail:msg-1',
+              label: 'New message',
+              input_text: 'New message received',
+            },
+          ],
+        })}
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    await runWithActingAutomation(
+      { automationId, runId: Number(rows[0]!.id) },
+      async () => {
+        recordLifecycleEvent({
+          organizationId,
+          entityType: 'connection',
+          op: 'deleted',
+          entityId: 99,
+          summary: 'Connection deleted by a connector-triggered run',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    );
+
+    const queued = await waitForActivations(organizationId, 1);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.rootEventIds).toHaveLength(1);
+    expect(queued[0]!.depth).toBe(1);
+    expect(queued[0]!.causalAutomationIds).toEqual([automationId]);
+  });
+
+  it('does not inherit through a window belonging to another Automation', async () => {
+    const { organizationId, automationId, api, agentId } = await subscriber(
+      'Foreign Window Org',
+      ['connection.deleted']
+    );
+    const upstreamAutomationId = await secondAutomation(api, agentId, 'upstream');
+    const windowId = 4711;
+    const sql = getTestDb();
+    // The run behind the declared window belongs to the OTHER Automation.
+    // `automation_source.window_id` is caller input, so inheriting through it
+    // would plant that Automation into this row's causal path — suppressing it
+    // downstream. The run lookup is scoped to the producer and finds nothing.
+    await sql`
+      INSERT INTO public.runs (
+        organization_id, run_type, action_key, status, automation_id,
+        window_id, approved_input
+      ) VALUES (
+        ${organizationId}, 'automation', 'run_automation', 'running',
+        ${upstreamAutomationId}, ${windowId},
+        ${sql.json({
+          trigger_signals: [
+            {
+              kind: 'event',
+              source: 'workspace',
+              event_id: 7575,
+              event_type: 'connection.deleted',
+              delivery_id: 'workspace-event:7575',
+              occurred_at: new Date().toISOString(),
+              root_event_ids: [7575],
+              causal_automation_ids: [upstreamAutomationId],
+              depth: 5,
+            },
+          ],
+        })}
+      )
+    `;
+
+    await runWithActingAutomation(
+      { automationId, runId: null, windowId },
+      async () => {
+        recordLifecycleEvent({
+          organizationId,
+          entityType: 'connection',
+          op: 'deleted',
+          entityId: 111,
+          summary: 'Connection deleted with a foreign declared window',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    );
+
+    const queued = await waitForActivations(organizationId, 1);
+    expect(queued[0]!.depth).toBe(1);
+    expect(queued[0]!.rootEventIds).toHaveLength(1);
+    expect(queued[0]!.causalAutomationIds).toEqual([automationId]);
+  });
 });

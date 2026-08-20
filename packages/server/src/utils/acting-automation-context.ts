@@ -71,17 +71,13 @@ export function runWithActingAutomation<T>(
   );
 }
 
-/** The Automation driving this call, or null outside any automation scope. */
-export function getActingAutomationId(): number | null {
-  return actingAutomationContext.getStore()?.automationId ?? null;
-}
-
 /**
- * The full acting scope, for callers that need the run behind the Automation.
+ * The Automation driving this call and the run behind it, or null outside any
+ * automation scope.
  *
- * Audit-row activation uses it to INHERIT the driving run's causal path
- * instead of minting a fresh root — which is what bounds an A -> B -> A
- * cascade, since depth only accrues when ancestry is carried forward.
+ * Audit-row activation uses the run to INHERIT its causal path instead of
+ * minting a fresh root — which is what bounds an A -> B -> A cascade, since
+ * depth only accrues when ancestry is carried forward.
  */
 export function getActingAutomationScope(): {
   automationId: number;

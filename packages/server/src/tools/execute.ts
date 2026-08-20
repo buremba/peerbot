@@ -419,7 +419,7 @@ const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
  */
 function declaredAutomationSource(
   args: Record<string, unknown>
-): { automationId: number; windowId: number | null } | null {
+): { automationId: number; windowId: number } | null {
   const source = args.automation_source;
   if (!source || typeof source !== 'object') return null;
   const positiveInteger = (value: unknown): number | null =>
@@ -430,9 +430,11 @@ function declaredAutomationSource(
     (source as { automation_id?: unknown }).automation_id
   );
   if (automationId == null) return null;
+  const windowId = positiveInteger((source as { window_id?: unknown }).window_id);
+  if (windowId == null) return null;
   return {
     automationId,
-    windowId: positiveInteger((source as { window_id?: unknown }).window_id),
+    windowId,
   };
 }
 

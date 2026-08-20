@@ -41,6 +41,13 @@ import {
 	evaluateEntityMutation,
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
+import { resolveAutomationAttribution } from "../../automations/automation-source";
+import {
+	type DbClient,
+	getDb,
+	pgBigintArray,
+	pgTextArray,
+} from "../../db/client";
 import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
 import { loadLiveEntityIdentities } from "../../entity-resolution/identities";
 import {
@@ -48,12 +55,6 @@ import {
 	RESOLUTION_FINGERPRINT_VERSION,
 } from "../../entity-resolution/policy";
 import { wasResolutionRejected } from "../../entity-resolution/rejection";
-import {
-	type DbClient,
-	getDb,
-	pgBigintArray,
-	pgTextArray,
-} from "../../db/client";
 import type { Env } from "../../index";
 import {
 	batchLoadRelationships,
@@ -98,7 +99,6 @@ import { buildEntityUrl } from "../../utils/url-builder";
 import { trackAutomationReaction } from "../../utils/automation-reactions";
 import { isAdminOrOwnerRole } from "../access-control";
 import { MEMBER_ENTITY_TYPE_SLUG } from "../constants";
-import { resolveAutomationAttribution } from "../../automations/automation-source";
 import type { ToolContext } from "../registry";
 import { withValidatedArgs } from "../validate-args";
 import {
@@ -236,9 +236,9 @@ async function manageEntityImpl(
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-  const result = await runManageEntity(args, env, ctx);
+	const result = await runManageEntity(args, env, ctx);
 
-  // Track automation reaction for mutating actions
+	// Track automation reaction for mutating actions.
 	// Reaction tracking took the declared source verbatim — no session
 	// precedence, no ownership check — so an unowned id credited another
 	// Automation's feedback record. Still gated on the caller HAVING declared a
@@ -255,38 +255,38 @@ async function manageEntityImpl(
 		reactionAttribution.windowId != null &&
 		"action" in result
 	) {
-    const reactionType =
+		const reactionType =
 			result.action === "create"
 				? "entity_created"
 				: result.action === "update"
 					? "entity_updated"
 					: result.action === "link"
 						? "entity_linked"
-            : null;
-    if (reactionType) {
-      const entityId =
+						: null;
+		if (reactionType) {
+			const entityId =
 				result.action === "create" && "entity" in result
-          ? (result as any).entity.id
-          : args.entity_id;
-      await trackAutomationReaction({
-        organizationId: ctx.organizationId,
-        automationId: reactionAttribution.automationId,
-        windowId: reactionAttribution.windowId,
-        reactionType,
+					? result.entity?.id
+					: args.entity_id;
+			await trackAutomationReaction({
+				organizationId: ctx.organizationId,
+				automationId: reactionAttribution.automationId,
+				windowId: reactionAttribution.windowId,
+				reactionType,
 				toolName: "manage_entity",
-        toolArgs: {
-          action: args.action,
-          entity_type: args.entity_type,
-          name: args.name,
-          entity_id: args.entity_id,
-        },
-        toolResult: result as Record<string, unknown>,
-        entityId,
-      });
-    }
-  }
+				toolArgs: {
+					action: args.action,
+					entity_type: args.entity_type,
+					name: args.name,
+					entity_id: args.entity_id,
+				},
+				toolResult: result as Record<string, unknown>,
+				entityId,
+			});
+		}
+	}
 
-  return result;
+	return result;
 }
 
 // ============================================

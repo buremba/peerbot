@@ -10,6 +10,7 @@
 import { Buffer } from 'node:buffer';
 import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk/identity-normalize';
 import { type Static, Type } from '@sinclair/typebox';
+import { resolveAutomationAttribution } from '../automations/automation-source';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
@@ -29,7 +30,6 @@ import { ensureMemberEntityType } from '../utils/member-entity-type';
 import { requireWriteAccess } from '../utils/organization-access';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { validateTemplateHandlers } from '../utils/validate-json-template';
-import { resolveAutomationAttribution } from '../automations/automation-source';
 import { trackAutomationReaction } from '../utils/automation-reactions';
 import { isSystemContext } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';

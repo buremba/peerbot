@@ -8,7 +8,9 @@
  * the part a future refactor can silently undo.
  *
  * `automation_reactions` is the observable end of that path: a row appears with
- * the Automation credited for the write, or no row appears at all.
+ * the Automation credited for the write, or no row appears at all. Each case
+ * pairs the forged declaration with an owned one, so a change that disabled
+ * reaction tracking outright cannot make these pass by writing nothing.
  *
  * Only the cross-org case is asserted here. A NONEXISTENT id is invisible at
  * this surface: the composite foreign key already rejected the insert and the
@@ -18,7 +20,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestAgent } from '../../setup/test-fixtures';
+import { createCanvasWindow, createTestAgent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
 async function orgWithAutomationAndWindow(name: string, slug: string) {
@@ -39,19 +41,36 @@ async function orgWithAutomationAndWindow(name: string, slug: string) {
     prompt: 'Anything.',
     agent_id: agent.agentId,
   })) as { automation_id: string };
+  const automationId = Number(created.automation_id);
+  const windowId = await createCanvasWindow({
+    automationId,
+    organizationId: workspace.org.id,
+    windowStart: '2026-01-01T00:00:00.000Z',
+    windowEnd: '2026-01-08T00:00:00.000Z',
+    createdBy: ownerUserId,
+  });
   return {
     api,
     organizationId: workspace.org.id,
-    automationId: Number(created.automation_id),
+    automationId,
+    windowId,
   };
 }
 
 async function reactionRows(organizationId: string) {
-  return getTestDb()<{ automation_id: number; window_id: number }>`
+  const rows = await getTestDb()<{
+    automation_id: number | string;
+    window_id: number | string;
+  }>`
     SELECT automation_id, window_id
     FROM automation_reactions
     WHERE organization_id = ${organizationId}
+    ORDER BY id
   `;
+  return rows.map((row) => ({
+    automation_id: Number(row.automation_id),
+    window_id: Number(row.window_id),
+  }));
 }
 
 describe('write surfaces refuse an unowned automation_source', () => {
@@ -59,25 +78,81 @@ describe('write surfaces refuse an unowned automation_source', () => {
     await cleanupTestDatabase();
   });
 
-  it('credits nobody when save_memory declares another org’s Automation', async () => {
+  it('keeps only owned credit when save_memory also declares another org’s Automation', async () => {
     const victim = await orgWithAutomationAndWindow('Surface Victim', 's-victim');
     const attacker = await orgWithAutomationAndWindow('Surface Attacker', 's-attacker');
 
-    // Deliberately the SDK namespace, not `executeTool`: `client.knowledge.save`
-    // calls the handler directly, so the dispatch-level verification added in
-    // #2952 never runs on this path. The surface has to hold on its own.
+    await attacker.api.knowledge.save({
+      semantic_type: 'note',
+      metadata: {},
+      title: 'Owned credit',
+      content: 'Attributed to this organization’s Automation.',
+      automation_source: {
+        automation_id: attacker.automationId,
+        window_id: attacker.windowId,
+      },
+    });
+
     await attacker.api.knowledge.save({
       semantic_type: 'note',
       metadata: {},
       title: 'Borrowed credit',
       content: 'Attributed to an Automation this org does not own.',
-      automation_source: { automation_id: victim.automationId, window_id: 1 },
+      automation_source: {
+        automation_id: victim.automationId,
+        window_id: victim.windowId,
+      },
     });
 
-    // The write itself is fine — attribution is a hint, not a permission — but
-    // it must land on nobody rather than on the victim's feedback record.
-    await expect(reactionRows(attacker.organizationId)).resolves.toEqual([]);
+    await expect(reactionRows(attacker.organizationId)).resolves.toEqual([
+      { automation_id: attacker.automationId, window_id: attacker.windowId },
+    ]);
     await expect(reactionRows(victim.organizationId)).resolves.toEqual([]);
   });
 
+  it('keeps only owned credit when manage_entity also declares another org’s Automation', async () => {
+    const victim = await orgWithAutomationAndWindow('Entity Victim', 'e-victim');
+    const attacker = await orgWithAutomationAndWindow('Entity Attacker', 'e-attacker');
+    await attacker.api.entity_schema.createType({ slug: 'company', name: 'Company' });
+    await attacker.api.entity_schema.createRelType({ slug: 'related', name: 'Related' });
+    const from = (await attacker.api.entities.create({
+      type: 'company',
+      name: 'From',
+    })) as { entity: { id: number } };
+    const to = (await attacker.api.entities.create({
+      type: 'company',
+      name: 'To',
+    })) as { entity: { id: number } };
+    const borrowedTo = (await attacker.api.entities.create({
+      type: 'company',
+      name: 'Borrowed To',
+    })) as { entity: { id: number } };
+
+    await attacker.api.entities.manage({
+      action: 'link',
+      from_entity_id: from.entity.id,
+      to_entity_id: to.entity.id,
+      relationship_type_slug: 'related',
+      automation_source: {
+        automation_id: attacker.automationId,
+        window_id: attacker.windowId,
+      },
+    });
+
+    await attacker.api.entities.manage({
+      action: 'link',
+      from_entity_id: from.entity.id,
+      to_entity_id: borrowedTo.entity.id,
+      relationship_type_slug: 'related',
+      automation_source: {
+        automation_id: victim.automationId,
+        window_id: victim.windowId,
+      },
+    });
+
+    await expect(reactionRows(attacker.organizationId)).resolves.toEqual([
+      { automation_id: attacker.automationId, window_id: attacker.windowId },
+    ]);
+    await expect(reactionRows(victim.organizationId)).resolves.toEqual([]);
+  });
 });

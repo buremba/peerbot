@@ -13,7 +13,7 @@
  *     causal chain (`workspace-event-enqueue.ts`)
  *   - a NONEXISTENT id fails the `events_automation_id_fkey` constraint, and
  *     because audit writes are fire-and-forget the row is dropped entirely
- *   - a declared window belonging to a different Automation batches this
+ *   - a declared window belonging to a DIFFERENT Automation batches this
  *     proposal into that Automation's approval card
  *
  * `notify.ts` has validated this field for exactly these reasons since it was
@@ -23,53 +23,63 @@
  * Kept free of tool and gateway imports so any write surface can reach it.
  */
 
-import type { DbClient } from '../db/client';
 import { getDb } from '../db/client';
 
 /** The Automation a durable write is attributed to, after verification. */
-export interface AutomationAttribution {
+interface AutomationAttribution {
   automationId: number | null;
   windowId: number | null;
 }
 
-/** The `automation_source` shape every tool contract declares. */
-export interface DeclaredAutomationSource {
+/**
+ * The `automation_source` shape every tool contract declares.
+ *
+ * Both halves are required: `manage_entity`, `save_content`, and `notify` all
+ * type `window_id` as `Type.Number()`, so a declaration missing one is malformed
+ * input, not a partial one to honor.
+ */
+interface DeclaredAutomationSource {
   automation_id: number;
-  window_id?: number | null;
+  window_id: number;
 }
 
 /** The parts of a ToolContext this resolution reads. */
-export interface ActingAutomationSession {
+interface ActingAutomationSession {
   organizationId: string;
   actingAutomationId?: number | null;
   actingWindowId?: number | null;
 }
 
 /**
- * Drop a declared source that does not name an Automation in this organization.
+ * Drop a declared source unless the Automation belongs to this organization AND
+ * the window belongs to that Automation.
+ *
+ * The pairing is the half that is easy to miss: an org member can name their own
+ * Automation next to someone else's `window_id` and land the proposal in that
+ * window's approval card. `notify.ts` has paired the two the same way since it
+ * was added.
  *
  * Returns null rather than throwing: attribution is a provenance hint, and a bad
- * hint should cost the caller its attribution, not fail their tool call. The
- * window is not paired to the Automation here — `loadRunEventCausality` scopes
- * its run lookup to the producing Automation, so a foreign window inherits
- * nothing.
+ * hint should cost the caller its attribution, not fail their tool call.
  */
 export async function verifiedAutomationSource(
-  declared: { automationId: number; windowId: number | null } | null,
-  organizationId: string,
-  // Resolved AFTER the guard, never as a default parameter: a default is
-  // evaluated at call time, so `getDb()` would run on every call — including
-  // the overwhelmingly common one with nothing declared, and including unit
-  // suites that boot no database at all.
-  db?: DbClient
-): Promise<{ automationId: number; windowId: number | null } | null> {
+  declared: { automationId: number; windowId: number } | null,
+  organizationId: string
+): Promise<{ automationId: number; windowId: number } | null> {
   if (!declared) return null;
-  const client = db ?? getDb();
-  const rows = await client<{ id: number }>`
-    SELECT id
-    FROM automations
-    WHERE id = ${declared.automationId}
-      AND organization_id = ${organizationId}
+  // `getDb()` is reached only AFTER the guard, and never as a default parameter:
+  // a default is evaluated at call time, so it would run on every call — the
+  // overwhelmingly common one with nothing declared included, and unit suites
+  // that boot no database at all.
+  const rows = await getDb()<{ id: number }>`
+    SELECT a.id
+    FROM automations a
+    JOIN canvas_windows w
+      ON w.id = ${declared.windowId}
+     AND w.automation_id = a.id
+     AND w.organization_id = a.organization_id
+    WHERE a.id = ${declared.automationId}
+      AND a.organization_id = ${organizationId}
     LIMIT 1
   `;
   return rows[0] ? declared : null;
@@ -89,8 +99,7 @@ export async function verifiedAutomationSource(
  */
 export async function resolveAutomationAttribution(
   ctx: ActingAutomationSession,
-  declared: DeclaredAutomationSource | null | undefined,
-  db?: DbClient
+  declared: DeclaredAutomationSource | null | undefined
 ): Promise<AutomationAttribution> {
   if (ctx.actingAutomationId != null) {
     return {
@@ -100,9 +109,8 @@ export async function resolveAutomationAttribution(
   }
   if (!declared) return { automationId: null, windowId: null };
   const verified = await verifiedAutomationSource(
-    { automationId: declared.automation_id, windowId: declared.window_id ?? null },
-    ctx.organizationId,
-    db
+    { automationId: declared.automation_id, windowId: declared.window_id },
+    ctx.organizationId
   );
   return verified ?? { automationId: null, windowId: null };
 }

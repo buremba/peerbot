@@ -341,6 +341,38 @@ SET window_id = source.run_id
 FROM source_for_reaction source
 WHERE reaction.id = source.id;
 
+-- An early reaction writer stored automation_id in window_id instead of the
+-- Canvas root. Recover only the unambiguous same-organization result whose
+-- declared window contains the reaction timestamp; ambiguous rows still fail
+-- the assertion below instead of being silently misattributed.
+-- orphan-reaction-cutover:start
+WITH orphan_reaction_candidate AS (
+  SELECT reaction.id, current.run_id
+  FROM public.automation_reactions reaction
+  LEFT JOIN public.runs existing
+    ON existing.id = reaction.window_id
+   AND existing.organization_id = reaction.organization_id
+   AND existing.automation_id = reaction.automation_id
+  JOIN canvas_run_map current ON true
+  JOIN canvas_members head ON head.event_id = current.head_event_id
+  WHERE existing.id IS NULL
+    AND reaction.window_id = reaction.automation_id
+    AND head.organization_id = reaction.organization_id
+    AND head.automation_id = reaction.automation_id
+    AND reaction.created_at >= (head.metadata->>'window_start')::timestamptz
+    AND reaction.created_at <= (head.metadata->>'window_end')::timestamptz
+), source_for_orphan_reaction AS (
+  SELECT id, min(run_id) AS run_id
+  FROM orphan_reaction_candidate
+  GROUP BY id
+  HAVING count(*) = 1
+)
+UPDATE public.automation_reactions reaction
+SET window_id = source.run_id
+FROM source_for_orphan_reaction source
+WHERE reaction.id = source.id;
+-- orphan-reaction-cutover:end
+
 WITH source_for_merge AS (
   SELECT operation.id, COALESCE((
     SELECT member.run_id
@@ -468,7 +500,10 @@ BEGIN
   END IF;
   IF EXISTS (
     SELECT 1 FROM public.automation_reactions reaction
-    LEFT JOIN public.runs run ON run.id = reaction.window_id
+    LEFT JOIN public.runs run
+      ON run.id = reaction.window_id
+     AND run.organization_id = reaction.organization_id
+     AND run.automation_id = reaction.automation_id
     WHERE run.id IS NULL
   ) THEN
     RAISE EXCEPTION 'Cannot retire Canvas: an Automation reaction has no producing run';

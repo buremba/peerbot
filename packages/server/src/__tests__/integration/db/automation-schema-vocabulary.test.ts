@@ -9,6 +9,8 @@ const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
 const CANVAS_REMOVAL_MIGRATION = '20260820120000_remove_canvas_runtime.sql';
 const CANVAS_RESULT_CUTOVER_START = '-- canvas-result-cutover:start';
 const CANVAS_RESULT_CUTOVER_END = '-- canvas-result-cutover:end';
+const ORPHAN_REACTION_CUTOVER_START = '-- orphan-reaction-cutover:start';
+const ORPHAN_REACTION_CUTOVER_END = '-- orphan-reaction-cutover:end';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
 const ENTITY_REWRITE_START = '-- entity-metadata-cutover:start';
@@ -30,8 +32,13 @@ function resolveMigrationsDir(): string {
   throw new Error('Could not locate db/migrations from the test directory');
 }
 
-function loadMarkedSection(startMarker: string, endMarker: string, label: string): string {
-  const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
+function loadMarkedSection(
+  startMarker: string,
+  endMarker: string,
+  label: string,
+  migration = CUTOVER_MIGRATION,
+): string {
+  const up = loadMigrationUpSection(resolveMigrationsDir(), migration);
   const start = up.indexOf(startMarker);
   const end = up.indexOf(endMarker);
   if (start < 0 || end < start) throw new Error(`Could not locate ${label}`);
@@ -43,11 +50,21 @@ function loadTraitRewrite(): string {
 }
 
 function loadCanvasResultCutover(): string {
-  const up = loadMigrationUpSection(resolveMigrationsDir(), CANVAS_REMOVAL_MIGRATION);
-  const start = up.indexOf(CANVAS_RESULT_CUTOVER_START);
-  const end = up.indexOf(CANVAS_RESULT_CUTOVER_END);
-  if (start < 0 || end < start) throw new Error('Could not locate Canvas result cutover');
-  return up.slice(start + CANVAS_RESULT_CUTOVER_START.length, end);
+  return loadMarkedSection(
+    CANVAS_RESULT_CUTOVER_START,
+    CANVAS_RESULT_CUTOVER_END,
+    'Canvas result cutover',
+    CANVAS_REMOVAL_MIGRATION,
+  );
+}
+
+function loadOrphanReactionCutover(): string {
+  return loadMarkedSection(
+    ORPHAN_REACTION_CUTOVER_START,
+    ORPHAN_REACTION_CUTOVER_END,
+    'orphan reaction cutover',
+    CANVAS_REMOVAL_MIGRATION,
+  );
 }
 
 describe('Automation schema vocabulary', () => {
@@ -146,6 +163,17 @@ describe('Automation schema vocabulary', () => {
         // The marked section runs before the full migration drops this legacy
         // relation key; the test database has already applied that final drop.
         await tx`ALTER TABLE runs ADD COLUMN IF NOT EXISTS window_id bigint`;
+        await tx`ALTER TABLE automation_reactions DROP CONSTRAINT IF EXISTS automation_reactions_source_run_id_fkey`;
+        await tx`ALTER TABLE automation_reactions RENAME COLUMN source_run_id TO window_id`;
+        const [orphanReaction] = await tx<{ id: number }[]>`
+          INSERT INTO automation_reactions (
+            organization_id, automation_id, window_id, reaction_type, tool_name, created_at
+          ) VALUES (
+            ${org.id}, ${legacyResult.automationId}, ${legacyResult.automationId},
+            'notification_sent', 'notify', '2026-08-18T12:00:00.000Z'
+          )
+          RETURNING id
+        `;
         const [linkedRun] = await tx<{ id: number }[]>`
           INSERT INTO runs (
             organization_id, run_type, automation_id, approval_status, status,
@@ -159,6 +187,7 @@ describe('Automation schema vocabulary', () => {
           RETURNING id
         `;
         await tx.unsafe(loadCanvasResultCutover());
+        await tx.unsafe(loadOrphanReactionCutover());
 
         const [run] = await tx`
           SELECT id, status, outcome, action_output, approved_input, run_metadata
@@ -211,6 +240,12 @@ describe('Automation schema vocabulary', () => {
         `;
         expect(Number(resultMapping.run_id)).toBe(Number(resultRun.id));
         expect(Number(resultMapping.head_event_id)).toBe(Number(legacyResult.legacyId));
+        const [preservedReaction] = await tx`
+          SELECT window_id
+          FROM automation_reactions
+          WHERE id = ${orphanReaction.id}
+        `;
+        expect(Number(preservedReaction.window_id)).toBe(Number(resultRun.id));
 
         const linkedRuns = await tx`
           SELECT id, action_output, approved_input, run_metadata

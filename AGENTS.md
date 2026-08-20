@@ -35,7 +35,7 @@
 6. Commit, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list.
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title).
 8. `make review` **once** on the settled HEAD; it posts the required `pi-review` status. Narrow path/content-gated safe classes skip the cross-harness review; this includes pure `packages/owletto` pointer bumps and exact `model:` literal swaps, but not mixed runtime and source changes. The submodule's own repo owns its content review.
-9. `make ui-review`. Non-Owletto changes and complete, forward-only Owletto pointer diffs confined to unhosted trees (`deploy/`, `apps/chrome/`, `apps/mac/`) pass as not applicable; other pointer changes need exact hosted proof (`ARTIFACT=<url>`; see the playbook).
+9. `make ui-review`. Non-Owletto changes and complete, forward-only Owletto pointer diffs confined to unhosted trees (`deploy/`, `apps/chrome/`, `apps/mac/`, `scripts/`) pass as not applicable; other pointer changes need exact hosted proof (`ARTIFACT=<url>`; see the playbook).
 10. `gh pr merge <n> --squash --admin` once green — never `--admin` past a check that has not reported. Lobu's required `integration` fan-in is absent from `gh pr checks` until it starts, not pending, so diff against the branch-protection list (playbook).
 11. Prod-visible surface? Verify live after rollout: gate on the **squash commit**, not your branch head, keeping the argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`. Record the result.
 

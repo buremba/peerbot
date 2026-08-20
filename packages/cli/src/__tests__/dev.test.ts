@@ -10,13 +10,17 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Credentials } from "../internal/credentials";
 import {
+  announceLocalSignIn,
   autoApplyLocalProject,
   findEnclosingMonorepoRoot,
+  getLocalSignInWarning,
   isSharedDatabaseUrl,
   resolveBackendBundle,
   shouldAutoApplyLocalProject,
   shouldRefuseSharedDatabaseUrl,
+  waitForServerReachable,
 } from "../commands/dev";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -313,6 +317,350 @@ describe("shouldAutoApplyLocalProject", () => {
         hasLobuConfig: false,
       })
     ).toBe(false);
+  });
+});
+
+describe("lobu run local sign-in diagnostics", () => {
+  const successfulResponse = () =>
+    new Response(
+      JSON.stringify({
+        session_token: "session-secret",
+        device_token: "device-secret",
+        user: { id: "user-1", email: "dev@example.com" },
+        organization: { slug: "local-install" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+  const dependencies = () => ({
+    waitForReachable: async () => true,
+    fetchImpl: async () => successfulResponse(),
+    addContextImpl: async () => undefined,
+    saveCredentialsImpl: async () => undefined,
+    setActiveOrgImpl: async () => undefined,
+    getCurrentContextNameImpl: async () => "local",
+    setCurrentContextImpl: async () => undefined,
+  });
+
+  test("keeps the current /health liveness contract", async () => {
+    const originalFetch = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      requested.push(String(input));
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      expect(await waitForServerReachable("http://127.0.0.1:8787", 100)).toBe(
+        true
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(requested).toEqual(["http://127.0.0.1:8787/health"]);
+  });
+
+  test("reports the stage when the server never becomes reachable", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      waitForReachable: async () => false,
+    });
+
+    expect(result).toMatchObject({
+      ready: false,
+      stage: "server_unreachable",
+    });
+  });
+
+  test("treats an external backend as an intentional skip", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", false, {
+      ...dependencies(),
+      fetchImpl: async () => {
+        throw new Error("must not call local-init");
+      },
+    });
+
+    expect(result).toEqual({ ready: false, skipped: "external_backend" });
+    expect(
+      getLocalSignInWarning(result, {
+        embedded: false,
+        hasLobuConfig: true,
+      })
+    ).toBeNull();
+  });
+
+  test("reports a local-init HTTP failure without reading its body", async () => {
+    let bodyRead = false;
+    const response = new Response(
+      JSON.stringify({ credential: "do-not-print" }),
+      { status: 503 }
+    );
+    const originalJson = response.json.bind(response);
+    response.json = async () => {
+      bodyRead = true;
+      return originalJson();
+    };
+
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () => response,
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_http",
+      detail: "HTTP 503",
+    });
+    expect(bodyRead).toBe(false);
+    expect(
+      getLocalSignInWarning(result, {
+        embedded: true,
+        hasLobuConfig: true,
+      })
+    ).toBe(
+      "Local sign-in failed during the local-init request (HTTP 503); project auto-apply was skipped."
+    );
+  });
+
+  test("reports a rejected local-init request without echoing its error", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () => {
+        throw new Error("credential=do-not-print");
+      },
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_http",
+      detail: "request failed after the server became reachable",
+    });
+    expect(JSON.stringify(result)).not.toContain("do-not-print");
+    expect(
+      getLocalSignInWarning(result, {
+        embedded: true,
+        hasLobuConfig: true,
+      })
+    ).toBe(
+      "Local sign-in failed during the local-init request (request failed after the server became reachable); project auto-apply was skipped."
+    );
+  });
+
+  test("reports an invalid local-init payload without echoing it", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ credential: "do-not-print" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response did not contain a session or device token",
+    });
+    expect(JSON.stringify(result)).not.toContain("do-not-print");
+    expect(
+      getLocalSignInWarning(result, {
+        embedded: true,
+        hasLobuConfig: true,
+      })
+    ).toBe(
+      "Local sign-in failed during the local-init response (response did not contain a session or device token); project auto-apply was skipped."
+    );
+  });
+
+  test("reports invalid JSON without persisting or echoing its body", async () => {
+    let persisted = false;
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () =>
+        new Response("credential=do-not-print", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      saveCredentialsImpl: async () => {
+        persisted = true;
+      },
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response was not valid JSON",
+    });
+    expect(persisted).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("do-not-print");
+  });
+
+  test("reports a non-object local-init payload instead of throwing", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () => Response.json(null),
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response did not contain a JSON object",
+    });
+  });
+
+  test("rejects wrong-type tokens before persisting credentials", async () => {
+    let persisted = false;
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () =>
+        Response.json({
+          session_token: { credential: "malformed-secret-shape" },
+          organization: { slug: "local-install" },
+        }),
+      saveCredentialsImpl: async () => {
+        persisted = true;
+      },
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response contained invalid field types",
+    });
+    expect(persisted).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("malformed-secret-shape");
+  });
+
+  test("classifies a wrong-type organization slug as a payload failure", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () =>
+        Response.json({
+          session_token: "session-secret",
+          organization: { slug: { invalid: true } },
+        }),
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response contained invalid field types",
+    });
+  });
+
+  test("falls back to a valid device token when the session token is empty", async () => {
+    let saved: Credentials | undefined;
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      fetchImpl: async () =>
+        Response.json({
+          session_token: "   ",
+          device_token: "device-secret",
+          organization: { slug: "local-install" },
+        }),
+      saveCredentialsImpl: async (credentials) => {
+        saved = credentials;
+      },
+    });
+
+    expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+    expect(saved).toMatchObject({
+      accessToken: "device-secret",
+      localWorkerToken: "device-secret",
+    });
+  });
+
+  test("reports local context setup failures without echoing the error", async () => {
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      addContextImpl: async () => {
+        throw new Error("credential=do-not-print");
+      },
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      stage: "context_setup",
+      detail: 'could not register or persist the "local" context',
+    });
+    expect(JSON.stringify(result)).not.toContain("do-not-print");
+    expect(
+      getLocalSignInWarning(result, {
+        embedded: true,
+        hasLobuConfig: true,
+      })
+    ).toBe(
+      'Local sign-in failed during local CLI context setup (could not register or persist the "local" context); project auto-apply was skipped.'
+    );
+  });
+
+  test("returns ready after registering the local context", async () => {
+    const calls: string[] = [];
+    const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+      ...dependencies(),
+      addContextImpl: async (name, url) => {
+        calls.push(`context:${name}:${url}`);
+      },
+      saveCredentialsImpl: async (_credentials, name) => {
+        calls.push(`credentials:${name}`);
+      },
+      setActiveOrgImpl: async (slug, name) => {
+        calls.push(`org:${slug}:${name}`);
+      },
+    });
+
+    expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+    expect(calls).toEqual([
+      "context:local:http://127.0.0.1:8787",
+      "credentials:local",
+      "org:local-install:local",
+    ]);
+    expect(
+      getLocalSignInWarning(result, {
+        embedded: true,
+        hasLobuConfig: true,
+      })
+    ).toBeNull();
+  });
+
+  test("warns only when an embedded project will skip auto-apply", () => {
+    const failure = {
+      ready: false as const,
+      stage: "local_init_http" as const,
+      detail: "HTTP 503",
+    };
+
+    expect(
+      getLocalSignInWarning(failure, {
+        embedded: true,
+        hasLobuConfig: true,
+      })
+    ).toBe(
+      "Local sign-in failed during the local-init request (HTTP 503); project auto-apply was skipped."
+    );
+    expect(
+      getLocalSignInWarning(failure, {
+        embedded: true,
+        hasLobuConfig: false,
+      })
+    ).toBeNull();
+  });
+
+  test("does not claim the server is running after any sign-in failure", () => {
+    const warning = getLocalSignInWarning(
+      {
+        ready: false,
+        stage: "server_unreachable",
+        detail: "the server did not answer /health within the startup window",
+      },
+      { embedded: true, hasLobuConfig: true }
+    );
+
+    expect(warning).toBe(
+      "Local sign-in failed during server startup (the server did not answer /health within the startup window); project auto-apply was skipped."
+    );
+    expect(warning).not.toContain("still running");
   });
 });
 

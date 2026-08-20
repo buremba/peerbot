@@ -729,7 +729,6 @@ async function queueWriteForApproval(
             ...initiatorColumns.initiatorRef,
           },
           status: 'pending_approval',
-          run_id: runId,
           ...currentMcpActivityEventMetadata(ctx),
         },
         authorName: ctx.clientId ?? 'agent',

@@ -70,7 +70,7 @@ async function getEntityTypeSchema(
 const AUTOMATION_PROVENANCE_KEYS = [
   'automation_id',
   'stable_key',
-  'window_id',
+  'run_id',
   'automation_output',
 ];
 

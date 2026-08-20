@@ -38,36 +38,36 @@ DELETE FROM connections WHERE organization_id = :'ORG' AND slug IN ('seed-gmail'
 INSERT INTO automations (
   organization_id, agent_id, name, slug, description, status,
   schedule, triggers, model_config, sources, created_by, automation_group_id,
-  created_at, updated_at, notification_channel, notification_priority, tags
+  created_at, updated_at, tags
 ) VALUES (
   :'ORG', 'owletto-default', 'Daily spend digest', 'daily-spend-digest',
   'Summarize yesterday''s card transactions and flag anomalies over $500.',
   'active', '0 9 * * *', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
-  :'USER', 0, now() - interval '6 days', now(), 'canvas', 'normal',
+  :'USER', 0, now() - interval '6 days', now(),
   ARRAY['seed-peek']::text[]
 ) RETURNING id AS w_spend \gset
 
 INSERT INTO automations (
   organization_id, agent_id, name, slug, description, status,
   schedule, triggers, model_config, sources, created_by, automation_group_id,
-  created_at, updated_at, notification_channel, notification_priority, tags
+  created_at, updated_at, tags
 ) VALUES (
   :'ORG', 'owletto-default', 'Inbox triage', 'inbox-triage',
   'Flag emails needing a reply and draft suggested responses.',
   'active', '*/30 * * * *', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
-  :'USER', 0, now() - interval '4 days', now(), 'canvas', 'normal',
+  :'USER', 0, now() - interval '4 days', now(),
   ARRAY['seed-peek']::text[]
 ) RETURNING id AS w_inbox \gset
 
 INSERT INTO automations (
   organization_id, agent_id, name, slug, description, status,
   schedule, triggers, model_config, sources, created_by, automation_group_id,
-  created_at, updated_at, notification_channel, notification_priority, tags
+  created_at, updated_at, tags
 ) VALUES (
   :'ORG', 'lobu-builder', 'Stale workspace automation', 'stale-workspace-automation',
   'Alert when a workspace has no activity for 7 days.',
   'active', '0 10 * * 1', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
-  :'USER', 0, now() - interval '3 days', now(), 'canvas', 'normal',
+  :'USER', 0, now() - interval '3 days', now(),
   ARRAY['seed-peek']::text[]
 ) RETURNING id AS w_stale \gset
 

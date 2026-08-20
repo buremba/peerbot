@@ -116,7 +116,6 @@ const phoenixRolloutTracker = defineAutomation({
   slug: "phoenix-rollout-tracker",
   name: "Phoenix rollout tracker",
   triggers: [every("0 9 * * 1")],
-  notification: { priority: "high", channel: "both" },
   tags: ["delivery", "weekly", "rollout"],
   minCooldownSeconds: 3600,
   skills: ["phoenix-rollout-tracker"],

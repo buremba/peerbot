@@ -1,28 +1,20 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { DbClient } from '../../../db/client';
 import { loadMigrationUpSection } from '../../../db/migration-loader';
-import { findCanvasHead } from '../../../utils/canvas-events';
-import { persistAutomationEventOutput } from '../../../utils/persist-automation-event-output';
-import {
-  AUTOMATION_EVENT_IDENTITY_NS,
-  computeStableKey,
-  formatAutomationEventIdentity,
-} from '../../../utils/stable-keys';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
-import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
+const CANVAS_REMOVAL_MIGRATION = '20260820120000_remove_canvas_runtime.sql';
+const CANVAS_RESULT_CUTOVER_START = '-- canvas-result-cutover:start';
+const CANVAS_RESULT_CUTOVER_END = '-- canvas-result-cutover:end';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
 const ENTITY_REWRITE_START = '-- entity-metadata-cutover:start';
 const ENTITY_REWRITE_END = '-- entity-metadata-cutover:end';
 const AUTHORED_QUERY_CUTOVER_START = '-- authored-query-cutover:start';
 const AUTHORED_QUERY_CUTOVER_END = '-- authored-query-cutover:end';
-const IDENTITY_BRIDGE_START = '-- automation-event-identity-bridge:start';
-const IDENTITY_BRIDGE_END = '-- automation-event-identity-bridge:end';
 
 class Rollback extends Error {}
 
@@ -50,6 +42,14 @@ function loadTraitRewrite(): string {
   return loadMarkedSection(TRAIT_REWRITE_START, TRAIT_REWRITE_END, 'connector trait rewrite');
 }
 
+function loadCanvasResultCutover(): string {
+  const up = loadMigrationUpSection(resolveMigrationsDir(), CANVAS_REMOVAL_MIGRATION);
+  const start = up.indexOf(CANVAS_RESULT_CUTOVER_START);
+  const end = up.indexOf(CANVAS_RESULT_CUTOVER_END);
+  if (start < 0 || end < start) throw new Error('Could not locate Canvas result cutover');
+  return up.slice(start + CANVAS_RESULT_CUTOVER_START.length, end);
+}
+
 describe('Automation schema vocabulary', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
@@ -63,17 +63,92 @@ describe('Automation schema vocabulary', () => {
     expect(up).toMatch(/legacy\.id,\s*'automation_event',\s*legacy\.identity_key/i);
   });
 
-  it('replays the complete migration up-side against the canonical schema', async () => {
-    const sql = getTestDb();
-    const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
-    await sql.unsafe(up);
-    await sql.unsafe(up);
-  });
-
   it('does not globally rewrite user-authored SQL, templates, or opaque run JSON', () => {
     const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
     expect(up).not.toMatch(/UPDATE\s+public\.(?:watchers|watcher_versions|view_template_versions)\b/i);
     expect(up).not.toMatch(/SET\s+\w+\s*=\s*replace\s*\(\s*replace\s*\([^;]*::text/is);
+  });
+
+  it('preserves a legacy runless skip-if-unchanged cursor as a completed run', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    const user = await createTestUser();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+      agentId: 'runless-canvas-cutover-agent',
+    });
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        const [automation] = await tx<{ id: number }[]>`
+          WITH next_id AS (
+            SELECT nextval('automations_id_seq')::int AS id
+          )
+          INSERT INTO automations (
+            id, organization_id, created_by, agent_id, automation_group_id,
+            name, slug
+          )
+          SELECT
+            id, ${org.id}, ${user.id}, ${agent.agentId}, id,
+            'Runless Canvas cutover', 'runless-canvas-cutover'
+          FROM next_id
+          RETURNING id
+        `;
+        const windowStart = '2026-08-18T00:00:00.000Z';
+        const windowEnd = '2026-08-19T00:00:00.000Z';
+        const [legacy] = await tx<{ id: number }[]>`
+          INSERT INTO events (
+            organization_id, entity_ids, origin_id, payload_type, payload_data,
+            metadata, semantic_type, automation_id, occurred_at, created_at
+          ) VALUES (
+            ${org.id}, '{}'::bigint[], 'runless-canvas-cutover', 'json_template', '{}'::jsonb,
+            ${tx.json({
+              automation_id: automation.id,
+              granularity: 'daily',
+              window_start: windowStart,
+              window_end: windowEnd,
+              content_analyzed: 0,
+              version_id: null,
+            })},
+            'canvas_state', ${automation.id}, ${windowEnd}, ${windowEnd}
+          )
+          RETURNING id
+        `;
+
+        await tx.unsafe(loadCanvasResultCutover());
+
+        const [run] = await tx`
+          SELECT id, status, outcome, action_output, approved_input, run_metadata
+          FROM runs
+          WHERE automation_id = ${automation.id} AND run_type = 'automation'
+        `;
+        expect(run).toMatchObject({
+          status: 'completed',
+          outcome: 'scoreable',
+          action_output: {},
+          approved_input: {
+            automation_id: automation.id,
+            dispatch_source: 'scheduled',
+            granularity: 'daily',
+            window_start: windowStart,
+            window_end: windowEnd,
+          },
+          run_metadata: { content_analyzed: 0, skipped_unchanged: true },
+        });
+        const [mapping] = await tx`
+          SELECT run_id, head_event_id
+          FROM canvas_run_map
+          WHERE legacy_id = ${legacy.id}
+        `;
+        expect(Number(mapping.run_id)).toBe(Number(run.id));
+        expect(Number(mapping.head_event_id)).toBe(Number(legacy.id));
+
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
   });
 
   it('fails the cutover when stored authored SQL still names a retired relation', async () => {
@@ -302,241 +377,6 @@ describe('Automation schema vocabulary', () => {
       if (!(error instanceof Rollback)) throw error;
     }
   });
-
-  it('keeps pre-cutover keyed output heads in the post-cutover supersede chain', async () => {
-    const sql = getTestDb();
-    const workspace = await TestWorkspace.create({
-      name: 'Identity bridge upgrade org',
-    });
-    const ownerUserId = workspace.users.owner.id;
-    const parent = await createTestEntity({
-      name: 'Identity bridge subject',
-      organization_id: workspace.org.id,
-      created_by: ownerUserId,
-    });
-    const agent = await createTestAgent({
-      organizationId: workspace.org.id,
-      ownerUserId,
-      agentId: 'identity-bridge-agent',
-    });
-    const [created] = await sql<{ id: number }[]>`
-      WITH next_id AS (
-        SELECT nextval('automations_id_seq')::int AS id
-      )
-      INSERT INTO automations (
-        id, organization_id, created_by, agent_id, automation_group_id,
-        name, slug, entity_ids
-      )
-      SELECT
-        id, ${workspace.org.id}, ${ownerUserId}, ${agent.agentId}, id,
-        'Identity bridge Automation', 'identity-bridge-automation', ARRAY[${parent.id}]::bigint[]
-      FROM next_id
-      RETURNING id
-    `;
-    const automationId = Number(created.id);
-    const [classifier] = await sql<{ id: number }[]>`
-      INSERT INTO classify_facet (
-        organization_id, slug, name, attribute_key, status,
-        automation_id, created_by
-      ) VALUES (
-        ${workspace.org.id}, 'identity-bridge-classifier',
-        'Identity bridge classifier', 'channel', 'active',
-        ${automationId}, ${ownerUserId}
-      )
-      RETURNING id
-    `;
-    const identityKey = formatAutomationEventIdentity(
-      'observation',
-      computeStableKey({ channel: 'z', mode: 'voice' }, ['channel', 'mode'])
-    );
-    const [legacy] = await sql<{ id: number }[]>`
-      INSERT INTO events (
-        organization_id, origin_id, title, payload_text, semantic_type, client_id,
-        metadata, identity_ns, identity_key, automation_id
-      ) VALUES (
-        ${workspace.org.id}, 'pre-cutover-keyed-head', 'Pre-cutover profile',
-        'Z voice legacy', 'observation', NULL,
-        ${sql.json({
-          channel: 'z',
-          mode: 'voice',
-          automation_output: 'profiles',
-          _lobu_idempotency_key: 'pre-cutover-keyed-head',
-        })},
-        'behavior_event', ${identityKey}, ${automationId}
-      )
-      RETURNING id
-    `;
-    await sql`
-      INSERT INTO event_classifications (
-        event_id, classifier_id, automation_id, window_id, "values", confidences,
-        source, is_manual, reasoning, met_threshold, threshold,
-        best_match_attribute, embedding_confidence, created_at, excerpts
-      ) VALUES (
-        ${legacy.id}, ${classifier.id}, ${automationId}, 9007,
-        ARRAY['social']::text[], ${sql.json({ social: 0.93 })}, 'user', true,
-        'manually confirmed', true, 0.8, 'social', 0.93,
-        '2026-08-15T12:00:00.000Z'::timestamptz,
-        ${sql.json({ social: 'voice profile' })}
-      )
-    `;
-
-    const bridge = loadMarkedSection(IDENTITY_BRIDGE_START, IDENTITY_BRIDGE_END, 'Automation event identity bridge');
-    await sql.unsafe(bridge);
-    await sql.unsafe(bridge);
-
-    const bridged = await sql<
-      {
-        id: number;
-        supersedes_event_id: number;
-        identity_ns: string;
-        payload_text: string;
-        metadata: Record<string, unknown>;
-      }[]
-    >`
-      SELECT id, supersedes_event_id, identity_ns, payload_text, metadata
-      FROM events
-      WHERE supersedes_event_id = ${legacy.id}
-    `;
-    expect(bridged).toHaveLength(1);
-    const canonical = bridged[0]!;
-    expect(canonical).toMatchObject({
-      supersedes_event_id: legacy.id,
-      identity_ns: AUTOMATION_EVENT_IDENTITY_NS,
-      payload_text: 'Z voice legacy',
-    });
-    expect(canonical.metadata).not.toHaveProperty('_lobu_idempotency_key');
-    const [legacyAfterBridge] = await sql<{ superseded_by: number | null }[]>`
-      SELECT superseded_by FROM events WHERE id = ${legacy.id}
-    `;
-    expect(legacyAfterBridge.superseded_by).toBe(canonical.id);
-    const classifications = await sql<
-      {
-        event_id: number;
-        classifier_id: number;
-        automation_id: number;
-        window_id: number;
-        values: string;
-        confidences: Record<string, number>;
-        source: string;
-        is_manual: boolean;
-        reasoning: string;
-        met_threshold: boolean;
-        threshold: string;
-        best_match_attribute: string;
-        embedding_confidence: string;
-        created_at: string;
-        excerpts: Record<string, string>;
-      }[]
-    >`
-      SELECT
-        event_id, classifier_id, automation_id, window_id, "values", confidences,
-        source, is_manual, reasoning, met_threshold, threshold,
-        best_match_attribute, embedding_confidence,
-        to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
-        excerpts
-      FROM event_classifications
-      WHERE event_id = ${canonical.id}
-    `;
-    expect(classifications).toHaveLength(1);
-    expect(classifications[0]).toMatchObject({
-      event_id: canonical.id,
-      classifier_id: classifier.id,
-      automation_id: automationId,
-      window_id: 9007,
-      values: '{social}',
-      confidences: { social: 0.93 },
-      source: 'user',
-      is_manual: true,
-      reasoning: 'manually confirmed',
-      met_threshold: true,
-      threshold: '0.8000',
-      best_match_attribute: 'social',
-      embedding_confidence: '0.9300',
-      excerpts: { social: 'voice profile' },
-    });
-    expect(classifications[0]?.created_at).toBe('2026-08-15T12:00:00.000Z');
-
-    await sql.begin((tx) =>
-      persistAutomationEventOutput({
-        tx: tx as unknown as DbClient,
-        rows: [{ content: 'Z voice v1', metadata: { channel: 'z', mode: 'voice' } }],
-        outputName: 'profiles',
-        output: { event: 'observation', key: ['channel', 'mode'] },
-        automationId,
-        versionId: null,
-        organizationId: workspace.org.id,
-        windowId: 9007,
-        canvasRevisionId: 9007,
-        runId: null,
-        boundEntityIds: [parent.id],
-        validContentIds: new Set<number>(),
-        occurredAt: new Date().toISOString(),
-        createdBy: ownerUserId,
-      })
-    );
-    const [postCutover] = await sql<{ supersedes_event_id: number | null }[]>`
-      SELECT supersedes_event_id
-      FROM events
-      WHERE organization_id = ${workspace.org.id} AND payload_text = 'Z voice v1'
-    `;
-    expect(postCutover.supersedes_event_id).toBe(canonical.id);
-  });
-
-  it('finds pre-cutover canvas rows through preserved physical attribution', async () => {
-    const sql = getTestDb();
-    const workspace = await TestWorkspace.create({
-      name: 'Canvas attribution upgrade org',
-    });
-    const ownerUserId = workspace.users.owner.id;
-    const agent = await createTestAgent({
-      organizationId: workspace.org.id,
-      ownerUserId,
-      agentId: 'canvas-attribution-agent',
-    });
-    const [created] = await sql<{ id: number }[]>`
-      WITH next_id AS (
-        SELECT nextval('automations_id_seq')::int AS id
-      )
-      INSERT INTO automations (
-        id, organization_id, created_by, agent_id, automation_group_id,
-        name, slug, entity_ids
-      )
-      SELECT
-        id, ${workspace.org.id}, ${ownerUserId}, ${agent.agentId}, id,
-        'Canvas attribution Automation', 'canvas-attribution-automation', '{}'::bigint[]
-      FROM next_id
-      RETURNING id
-    `;
-    const automationId = Number(created.id);
-    const period = {
-      automationId,
-      granularity: 'daily',
-      windowStart: '2026-08-14T00:00:00.000Z',
-    };
-    const [legacyCanvas] = await sql<{ id: number }[]>`
-      INSERT INTO events (
-        organization_id, automation_id, semantic_type, payload_data, metadata
-      ) VALUES (
-        ${workspace.org.id}, ${automationId}, 'canvas_state',
-        ${sql.json({ summary: 'historical canvas remains visible' })},
-        ${sql.json({
-          watcher_id: automationId,
-          granularity: period.granularity,
-          window_start: period.windowStart,
-          window_end: '2026-08-15T00:00:00.000Z',
-        })}
-      )
-      RETURNING id
-    `;
-
-    const head = await findCanvasHead(sql as unknown as DbClient, period);
-    expect(head).toMatchObject({
-      id: legacyCanvas.id,
-      rootEventId: legacyCanvas.id,
-      payloadData: { summary: 'historical canvas remains visible' },
-    });
-  });
-
   it('contains no live schema identifiers or definitions using retired product names', async () => {
     const sql = getTestDb();
     const rows = await sql<{ kind: string; name: string }[]>`

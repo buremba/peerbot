@@ -1,47 +1,4 @@
-/**
- * Window rollover for scheduled Automations.
- *
- * `canvas_windows` is a VIEW over `canvas_state` event chains: one row per chain
- * ROOT, content from the chain HEAD. The ROOT carries the period. So "did the
- * window roll over" is really "did a new root get created", and the only thing
- * that decides it is the (window_start, granularity) pair the run is dispatched
- * with — `findCanvasHead` matches on it, and a match means supersede-in-place
- * instead of a new period.
- *
- * The bug this pins: `computePendingWindow` chained the next window off the
- * previous window's `window_end`. That is only correct if `window_end` is an
- * EXCLUSIVE boundary, and prod stores both conventions in one table (measured
- * 2026-07-31: daily 29 inclusive `23:59:59.999` vs 32 exclusive `00:00:00`;
- * weekly 28 vs 2). Chaining off an inclusive end starts the next window at
- * `…T23:59:59.999Z` — a day minus a millisecond off — and 14 of 102 prod
- * windows are misaligned that way.
- *
- * Two distinct failures fall out, both silent:
- *
- *  1. The `windowEnd > currentPeriodEnd` clamp collapses a misaligned window to
- *     ZERO duration (`23:59:59.999` → `00:00:00`). Five such windows exist on
- *     prod and all five have `content_analyzed = 0` — an Automation that analyzed
- *     nothing and reported success.
- *  2. The misaligned start never matches a fresh period, so no new root is
- *     created, so `lastWindow` never advances, so the scheduler re-dispatches
- *     the same window forever. Automation 71 ran hourly for a full day writing
- *     into the previous day's window (dispatched `2026-07-30T23:59:59.999Z`,
- *     wrote `2026-07-30T00:00:00.000Z`).
- *
- * The fix must ALSO not run away in the other direction: granularity has no
- * 'hourly' (`AUTOMATION_TIME_GRANULARITIES` is daily/weekly/monthly/quarterly),
- * so an hourly cron necessarily gets a DAILY window and must re-dispatch the
- * SAME period all day. "Always advance one period" would mint tomorrow's window
- * at 00:01 and march into the future.
- *
- * Fixtures here are RELATIVE to the clock, not absolute dates. `computePendingWindow`
- * now floors the window at `now - 1 period` so a lagging Automation catches up in one
- * run, which means a fixture pinned to a fixed past date is always floored — and a
- * test about boundary conventions would silently become a test about the floor,
- * passing for the wrong reason. Seed a chain that is genuinely current and the
- * assertions stay about what they were written for. The floor itself is pinned
- * separately, below and in `__tests__/unit/automation-window-lag.test.ts`.
- */
+/** Scheduled Automation period rollover from completed run timestamps. */
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { computePendingWindow, nextAutomationWindowStart } from '../window-utils';
@@ -51,14 +8,9 @@ import {
   createTestOrganization,
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
+import { createAutomationRun } from '../../runs/queue-service';
 
-/**
- * Insert a canvas ROOT event for `automationId` covering [start, end).
- *
- * Written as a raw `canvas_state` event because that is what a window IS — the
- * view derives from it. `end` is caller-supplied precisely so both boundary
- * conventions can be exercised.
- */
+/** Insert a completed result run covering [start, end). */
 async function seedWindow(opts: {
   orgId: string;
   userId: string;
@@ -82,22 +34,19 @@ async function seedWindow(opts: {
     )
     ON CONFLICT (id) DO NOTHING
   `;
+  const run = await createAutomationRun({
+    organizationId: opts.orgId,
+    automationId: opts.automationId,
+    agentId: agent.agentId,
+    windowStart: opts.start,
+    windowEnd: opts.end,
+    dispatchSource: 'scheduled',
+  });
   await sql`
-    INSERT INTO events (
-      organization_id, origin_id, semantic_type, payload_type, payload_data,
-      occurred_at, created_by, automation_id, metadata
-    ) VALUES (
-      ${opts.orgId}, ${`canvas_${opts.automationId}_${opts.start}`}, 'canvas_state',
-      'json_template', ${sql.json({ items: [] } as never)},
-      ${opts.end}, ${opts.userId}, ${opts.automationId},
-      ${sql.json({
-        automation_id: opts.automationId,
-        granularity: opts.granularity,
-        window_start: opts.start,
-        window_end: opts.end,
-        content_analyzed: 0,
-      } as never)}
-    )
+    UPDATE runs SET status = 'completed', completed_at = ${opts.end},
+      action_output = '{}'::jsonb,
+      approved_input = approved_input || ${sql.json({ granularity: opts.granularity })}::jsonb
+    WHERE id = ${run.runId}
   `;
 }
 
@@ -242,8 +191,7 @@ describe('computePendingWindow', () => {
 
   // The other direction. An hourly cron gets a DAILY window (there is no hourly
   // granularity), so every run inside the same day must resolve to the SAME
-  // period — otherwise `replace_existing` can't refresh today's digest and the
-  // Automation mints future windows instead.
+  // period rather than minting future periods for later runs that day.
   it('re-dispatches the CURRENT period rather than minting a future one', async () => {
     const { orgId, userId } = await seedOrg();
     const automationId = 9004;

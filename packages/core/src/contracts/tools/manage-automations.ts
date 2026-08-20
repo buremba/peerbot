@@ -196,7 +196,7 @@ export const AutomationSourceSchema = Type.Object({
   // into the window's event set. Use it to feed a filtered set of entities the
   // agent should look at (e.g. duplicate-merge candidates) — the raw `id` it
   // projects is an entity id, not an `events.id`, so it must NOT go through the
-  // automation_window_events FK. A plain (non-context) SQL source stays event
+  // automation_run_events FK. A plain (non-context) SQL source stays event
   // content and its `id` must be an `events.id`.
   context: Type.Optional(Type.Boolean()),
 });
@@ -704,28 +704,6 @@ export const ManageAutomationsSchema = Type.Object(
           "[create/update] Which local CLI a device-pinned Automation runs on. Only meaningful alongside device_worker_id. Null (the default) uses whatever agent the device itself is set to. A kind the device has no executor for fails at dispatch, so this is validated here rather than accepted and discovered later.",
       })
     ),
-    notification_channel: Type.Optional(
-      Type.Union(
-        [
-          Type.Literal("canvas"),
-          Type.Literal("notification"),
-          Type.Literal("both"),
-        ],
-        {
-          description:
-            '[create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".',
-        }
-      )
-    ),
-    notification_priority: Type.Optional(
-      Type.Union(
-        [Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")],
-        {
-          description:
-            '[create/update] Priority class used by the dispatcher interrupt budget. Default "normal".',
-        }
-      )
-    ),
     delivery_target: Type.Optional(
       Type.Union([Type.Null(), AutomationDeliveryTargetSchema], {
         description:
@@ -790,12 +768,6 @@ export const ManageAutomationsSchema = Type.Object(
         }
       )
     ),
-    replace_existing: Type.Optional(
-      Type.Boolean({
-        description:
-          "[complete_window] Replace existing window for same period (default: false).",
-      })
-    ),
     window_token: Type.Optional(
       Type.String({
         description:
@@ -826,12 +798,6 @@ export const ManageAutomationsSchema = Type.Object(
           "[complete_window] Optional structured execution metadata for provenance (provider, session id, parameters, etc.).",
       })
     ),
-    automation_run_id: Type.Optional(
-      Type.Number({
-        description:
-          "[complete_window] Optional Automation run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.",
-      })
-    ),
     template_version_id: Type.Optional(
       Type.Number({
         description:
@@ -848,10 +814,10 @@ export const ManageAutomationsSchema = Type.Object(
     ),
 
     // Fields for action="submit_feedback" / "get_feedback"
-    window_id: Type.Optional(
+    run_id: Type.Optional(
       Type.Number({
         description:
-          "[submit_feedback] Required. [get_feedback] Optional filter. Window ID to attach feedback to.",
+          "[complete_window/submit_feedback] Required Automation run ID. [get_feedback] Optional filter.",
       })
     ),
     corrections: Type.Optional(
@@ -926,8 +892,6 @@ export type AutomationUpdatePatch = Pick<
   | "tags"
   | "device_worker_id"
   | "agent_kind"
-  | "notification_channel"
-  | "notification_priority"
   | "delivery_target"
   | "min_cooldown_seconds"
 >;
@@ -964,8 +928,7 @@ export function normalizeAutomationTags(values: unknown): string[] {
  * shape EXACTLY, incl. the ones that used to live only in the SQL params:
  *   - model_config ?? {}
  *   - tags → normalizeAutomationTags (trim/drop-empty/dedupe)
- *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
- *     min_cooldown_seconds ?? 0
+ *   - min_cooldown_seconds ?? 0
  *   - null-clearable fields (agent_id/device_worker_id/agent_kind,
  *     delivery_target, and execution_config) keep null (a real clear the write
  *     applies) — NOT coerced to undefined, which would hide the clear.
@@ -986,10 +949,6 @@ export function normalizeAutomationUpdatePatch(
   if (args.device_worker_id !== undefined)
     patch.device_worker_id = args.device_worker_id ?? null;
   if (args.agent_kind !== undefined) patch.agent_kind = args.agent_kind ?? null;
-  if (args.notification_channel !== undefined)
-    patch.notification_channel = args.notification_channel ?? "canvas";
-  if (args.notification_priority !== undefined)
-    patch.notification_priority = args.notification_priority ?? "normal";
   if (args.delivery_target !== undefined)
     patch.delivery_target = args.delivery_target ?? null;
   if (args.min_cooldown_seconds !== undefined)
@@ -1015,7 +974,7 @@ export const ManageAutomationsDeleteResultSchema = Type.Object({
 
 export const ManageAutomationsFeedbackItemSchema = Type.Object({
   id: Type.Integer(),
-  window_id: Type.Integer(),
+  run_id: Type.Integer(),
   field_path: Type.String(),
   mutation: Type.Union([
     Type.Literal("set"),
@@ -1036,7 +995,7 @@ export const ManageAutomationsPromotedEntitySchema = Type.Object({
   entity_type: Type.String(),
   metadata: Type.Record(Type.String(), Type.Unknown()),
   field_controls: Type.Record(Type.String(), Type.Unknown()),
-  window_id: Type.Union([Type.Integer(), Type.Null()]),
+  run_id: Type.Union([Type.Integer(), Type.Null()]),
   stable_key: Type.Union([Type.String(), Type.Null()]),
 });
 
@@ -1068,7 +1027,7 @@ export const ManageAutomationsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("complete_window"),
     automation_id: Type.String(),
-    window_id: Type.Integer(),
+    run_id: Type.Integer(),
     window_start: Type.String(),
     window_end: Type.String(),
     content_linked: Type.Integer(),
@@ -1121,7 +1080,7 @@ export const ManageAutomationsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("submit_feedback"),
     automation_id: Type.String(),
-    window_id: Type.Integer(),
+    run_id: Type.Integer(),
     feedback_ids: Type.Array(Type.Integer()),
   }),
   Type.Object({

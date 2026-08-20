@@ -994,7 +994,6 @@ const gmailTxAutomation = defineAutomation({
   slug: "gmail-tx",
   name: "Gmail financial-event extractor",
   triggers: [every("*/30 * * * *")],
-  notification: { priority: "low" },
   minCooldownSeconds: 300,
   tags: ["personal-finance", "gmail", "ingestion"],
   reactionsGuidance:

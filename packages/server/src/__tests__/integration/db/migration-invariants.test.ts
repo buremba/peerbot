@@ -146,13 +146,13 @@ describe('migration invariants', () => {
         SELECT indexname FROM pg_indexes
         WHERE schemaname = 'public'
           AND indexname IN (
-            'idx_runs_window_id',
+            'idx_runs_parent_run_id',
             'oauth_tokens_parent_token_id_idx',
             'oauth_tokens_organization_id_idx'
           )
       `;
       expect(present.map((r) => r.indexname).sort()).toEqual([
-        'idx_runs_window_id',
+        'idx_runs_parent_run_id',
         'oauth_tokens_organization_id_idx',
         'oauth_tokens_parent_token_id_idx',
       ]);

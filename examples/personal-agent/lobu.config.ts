@@ -1221,7 +1221,6 @@ const voiceProfileSynthesis = defineAutomation({
   name: "Voice profile synthesis",
   tags: ["voice", "identity", "social"],
   triggers: [every("40 6 * * 1", { skip_if_unchanged: false })],
-  notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 3600,
   agentKind: "opencode",
   deviceWorkerId: "e7806c72-9485-4a8c-a619-7e6bdcb14eaf",
@@ -1253,7 +1252,6 @@ const socialInterestRadar = defineAutomation({
   name: "Social interest radar",
   tags: ["social", "x", "linkedin", "notifications"],
   triggers: [every("25 * * * *", { skip_if_unchanged: false })],
-  notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 1800,
   agentKind: "opencode",
   deviceWorkerId: "e7806c72-9485-4a8c-a619-7e6bdcb14eaf",
@@ -1299,7 +1297,6 @@ const midasNetWorth = defineAutomation({
       skip_if_unchanged: false,
     }),
   ],
-  notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 300,
   tags: ["finance", "net-worth", "balance-sheet"],
   prompt:
@@ -1317,7 +1314,6 @@ const hourlyTaskCollaborator = defineAutomation({
   name: "Hourly Task Collaborator",
   model: "hetzner/DeepSeek-V4-Flash-0731",
   triggers: [every("0 * * * *")],
-  notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 300,
   outputs: {
     tasks: {
@@ -1366,7 +1362,6 @@ const duplicateEntityResolution = defineAutomation({
   slug: "duplicate-entity-resolution-real-v3-final",
   name: "Duplicate entity resolution — real contacts",
   tags: ["identity", "deduplication", "world-model"],
-  notification: { channel: "canvas", priority: "normal" },
   sources: {
     // context-only: duplicate candidates for analysis (not window body)
     people: context(

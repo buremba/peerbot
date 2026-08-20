@@ -252,9 +252,9 @@ describe('complete_window derives its schema from the entity type', () => {
     await expect(
       ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
+        run_id: runId,
         window_token: token,
         extracted_data: { problems: [{ category: 'Stability' }] },
-        run_metadata: { automation_run_id: runId },
       })
     ).rejects.toThrow(/does not match|name/i);
   });
@@ -273,9 +273,9 @@ describe('complete_window derives its schema from the entity type', () => {
     await expect(
       ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
+        run_id: runId,
         window_token: token,
         extracted_data: { problems: [{ name: 'App Crashes' }] },
-        run_metadata: { automation_run_id: runId },
       })
     ).rejects.toThrow(/does not match|category/i);
   });
@@ -299,19 +299,17 @@ describe('complete_window derives its schema from the entity type', () => {
       const error = await ctx.api.automations
         .completeWindow({
           automation_id: String(ctx.automationId),
+          run_id: runId,
           window_token: token,
           extracted_data: { problems: [{ category, name: 'App Crashes' }] },
-          run_metadata: { automation_run_id: runId },
         })
         .catch((caught: unknown) => caught);
 
       expect(error).toMatchObject({ name: 'ToolUserError', httpStatus: 422 });
       expect((error as Error).message).toMatch(expectedMessage);
       const durableRows = await ctx.sql<{ count: string }>`
-        SELECT count(*)::text AS count
-        FROM events
-        WHERE organization_id = ${ctx.workspace.org.id}
-          AND semantic_type = 'canvas_state'
+        SELECT count(*)::text AS count FROM runs
+        WHERE id = ${runId} AND action_output IS NOT NULL
       `;
       expect(durableRows[0].count).toBe('0');
     }
@@ -330,11 +328,11 @@ describe('complete_window derives its schema from the entity type', () => {
 
     const completion = (await ctx.api.automations.completeWindow({
       automation_id: String(ctx.automationId),
+      run_id: runId,
       window_token: token,
       extracted_data: {
         problems: [{ category: 'Stability', name: 'App Crashes' }],
       },
-      run_metadata: { automation_run_id: runId },
     })) as { action: string };
     expect(completion.action).toBe('complete_window');
 

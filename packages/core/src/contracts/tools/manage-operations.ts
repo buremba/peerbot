@@ -103,7 +103,7 @@ export const ExecuteAction = Type.Object({
   automation_source: Type.Optional(
     Type.Object({
       automation_id: Type.Number(),
-      window_id: Type.Number(),
+      run_id: Type.Number(),
     })
   ),
 });
@@ -299,9 +299,9 @@ export const ApprovalBatchScope = Type.Object(
 export const ApproveBatchAction = Type.Object({
   action: Type.Literal("approve_batch", {
     description:
-      "Approve many pending approvals at once. Either scope by window_id (an Automation run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.",
+      "Approve many pending approvals at once. Either scope by run_id (an Automation run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.",
   }),
-  window_id: Type.Optional(Type.Number()),
+  run_id: Type.Optional(Type.Number()),
   scope: Type.Optional(ApprovalBatchScope),
   run_ids: Type.Optional(
     Type.Array(Type.Integer({ minimum: 1 }), {
@@ -317,9 +317,9 @@ export const ApproveBatchAction = Type.Object({
 export const RejectBatchAction = Type.Object({
   action: Type.Literal("reject_batch", {
     description:
-      "Reject many pending approvals at once. Either scope by window_id (an Automation run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.",
+      "Reject many pending approvals at once. Either scope by run_id (an Automation run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.",
   }),
-  window_id: Type.Optional(Type.Number()),
+  run_id: Type.Optional(Type.Number()),
   scope: Type.Optional(ApprovalBatchScope),
   run_ids: Type.Optional(
     Type.Array(Type.Integer({ minimum: 1 }), {
@@ -468,8 +468,8 @@ export const ManageOperationsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("approve_batch"),
-    /** Present when the batch was scoped by window (Automation proposals). */
-    window_id: Type.Optional(Type.Integer()),
+    /** Present when the batch was scoped by an Automation run. */
+    run_id: Type.Optional(Type.Integer()),
     approved_count: Type.Integer(),
     failed_count: Type.Integer(),
     run_ids: Type.Array(Type.Integer()),
@@ -477,8 +477,8 @@ export const ManageOperationsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("reject_batch"),
-    /** Present when the batch was scoped by window (Automation proposals). */
-    window_id: Type.Optional(Type.Integer()),
+    /** Present when the batch was scoped by an Automation run. */
+    run_id: Type.Optional(Type.Integer()),
     rejected_count: Type.Integer(),
     run_ids: Type.Array(Type.Integer()),
     message: Type.String(),

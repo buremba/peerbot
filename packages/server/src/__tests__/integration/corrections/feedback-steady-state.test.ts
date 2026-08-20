@@ -15,7 +15,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { getRecentFeedbackSummary } from '../../../utils/automation-feedback';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
-  createCanvasWindow,
+  createAutomationResultRun,
   createTestAgent,
   createTestOrganization,
   createTestUser,
@@ -37,9 +37,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
       INSERT INTO automations (id, name, slug, created_by, organization_id, agent_id, automation_group_id)
       VALUES (${automationId}, 'w', 'w-fss', ${user.id}, ${org.id}, ${agent.agentId}, ${automationId})
     `;
-    // Canvas-on-events: the window is a canvas_state chain root; its event id is
-    // the window_id submit_feedback keys on.
-    const windowId = await createCanvasWindow({
+    const runId = await createAutomationResultRun({
       automationId,
       organizationId: org.id,
       granularity: 'daily',
@@ -52,7 +50,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     const submitted = await handleSubmitFeedback(
       {
         automation_id: automationId,
-        window_id: windowId,
+        run_id: runId,
         corrections: [
           { field_path: 'a', mutation: 'set', value: 'v', note: 'n' },
           { field_path: 'b', mutation: 'remove' },

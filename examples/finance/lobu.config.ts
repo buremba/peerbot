@@ -120,7 +120,6 @@ const reconciliationMonitor = defineAutomation({
   slug: "reconciliation-monitor",
   name: "Reconciliation monitor",
   triggers: [every("0 6 * * 1-5")],
-  notification: { priority: "high", channel: "both" },
   tags: ["finance", "reconciliation", "daily"],
   minCooldownSeconds: 3600,
   outputs: { alerts: { event: "observation" } },

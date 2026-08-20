@@ -115,7 +115,6 @@ const opportunityMatcher = defineAutomation({
   slug: "opportunity-matcher",
   name: "Opportunity matcher",
   triggers: [every("0 */12 * * *")],
-  notification: { priority: "normal" },
   tags: ["community", "matching"],
   minCooldownSeconds: 300,
   outputs: { signals: { event: "observation" } },

@@ -75,7 +75,11 @@ async function setup() {
     INSERT INTO automations (id, organization_id, slug, name, agent_id, created_by, automation_group_id, created_at, updated_at)
     VALUES (${automationId}, ${org.id}, 'gate-fail-closed', 'Gate Fail Closed', ${agent.agentId}, ${createdBy}, ${automationId}, NOW(), NOW())
   `;
-	return { sql, orgId: org.id, parentId: parent.id, createdBy, automationId };
+	const [run] = await sql<{ id: number }[]>`
+		INSERT INTO runs (organization_id, automation_id, run_type, status)
+		VALUES (${org.id}, ${automationId}, 'automation', 'completed') RETURNING id
+	`;
+	return { sql, orgId: org.id, parentId: parent.id, createdBy, automationId, runId: run.id };
 }
 
 async function promote(
@@ -90,7 +94,7 @@ async function promote(
 			output: ENTITY_OUTPUT,
 			automationId: ctx.automationId,
 			organizationId: ctx.orgId,
-			windowId: 1,
+			runId: ctx.runId,
 			parentEntityId: ctx.parentId,
 			createdBy: ctx.createdBy,
 			validContentIds: new Set<number>(),

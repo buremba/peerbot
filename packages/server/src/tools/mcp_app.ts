@@ -450,9 +450,9 @@ function isApprovalContentItem(value: unknown, runId: number): value is Approval
   return value.run_id === runId && value.interaction_type === 'approval';
 }
 
-function belongsToApprovalWindow(row: ApprovalContentItem): boolean {
-  const windowId = row.metadata?.window_id;
-  return windowId !== undefined && windowId !== null;
+function belongsToApprovalBatch(row: ApprovalContentItem): boolean {
+  const sourceRunId = row.metadata?.source_run_id;
+  return sourceRunId !== undefined && sourceRunId !== null;
 }
 
 type ApprovalCapability = {
@@ -506,7 +506,7 @@ function canIssueApprovalCapability(
     status === 'pending' &&
     ctx.tokenType === 'oauth' &&
     Boolean(ctx.userId && ctx.clientId && ctx.mcpSessionId) &&
-    !belongsToApprovalWindow(row)
+    !belongsToApprovalBatch(row)
   );
 }
 
@@ -688,7 +688,7 @@ const resolveApprovalImpl = async (
   if (current.interaction_status !== 'pending' || current.id !== capability.eventId) {
     throw new ToolUserError('This approval capability is stale; the run is no longer pending.', 409);
   }
-  if (belongsToApprovalWindow(current)) {
+  if (belongsToApprovalBatch(current)) {
     throw new ToolUserError('Batched proposals must be reviewed in Lobu.', 409);
   }
 

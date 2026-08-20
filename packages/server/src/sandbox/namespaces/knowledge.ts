@@ -42,7 +42,7 @@ interface KnowledgeSaveBase {
 	parent_event_id?: number;
 	idempotency_key?: string;
 	occurred_at?: string;
-	automation_source?: { automation_id: number; window_id: number };
+	automation_source?: { automation_id: number; run_id: number };
 }
 
 export type KnowledgeSaveInput =

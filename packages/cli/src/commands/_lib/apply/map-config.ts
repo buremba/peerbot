@@ -736,12 +736,6 @@ function mapAutomation(automation: Automation): DesiredAutomation {
     ...(automation.description ? { description: automation.description } : {}),
     triggers: triggers ?? [],
     ...(sources ? { sources } : {}),
-    ...(automation.notification?.channel
-      ? { notificationChannel: automation.notification.channel }
-      : {}),
-    ...(automation.notification?.priority
-      ? { notificationPriority: automation.notification.priority }
-      : {}),
     ...(automation.minCooldownSeconds !== undefined
       ? { minCooldownSeconds: automation.minCooldownSeconds }
       : {}),

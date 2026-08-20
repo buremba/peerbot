@@ -24,7 +24,7 @@ export interface OperationsExecuteInput {
 	 * Automation provenance when this operation fires from a reaction. Both ids are
 	 * numeric.
 	 */
-	automation_source?: { automation_id: number; window_id: number };
+	automation_source?: { automation_id: number; run_id: number };
 }
 
 export interface OperationsNamespace {

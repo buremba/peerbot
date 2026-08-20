@@ -147,7 +147,6 @@ const ctx: ReactionContext = {
   extracted_data: { summary: "Run the deterministic valuation." },
   entities: [],
   window: {
-    id: 91,
     run_id: 300,
     automation_id: 45,
     window_start: "2026-08-12T08:59:00.000Z",

@@ -168,7 +168,7 @@ export async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.automation_id AS automation_id, r.window_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.automation_id AS automation_id, r.parent_run_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
@@ -209,7 +209,7 @@ export async function handleGetRun(
   // a run visible in the list is always fetchable here. Only the chat-message
   // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
-    SELECT r.id, r.automation_id AS automation_id, r.window_id, r.connection_id, r.connector_key,
+    SELECT r.id, r.automation_id AS automation_id, r.parent_run_id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,

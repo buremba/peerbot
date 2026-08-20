@@ -1,7 +1,7 @@
 /**
  * complete_window action handler for manage_automations.
  *
- * Validates token, writes window + content links, processes classifications,
+ * Validates token, writes the run result + content links, processes classifications,
  * marks run completed, advances schedule, and runs reaction script.
  */
 
@@ -23,7 +23,6 @@ import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
 import { promoteAutomationEntityOutput } from '../../../utils/promote-keyed-entities';
 import type { DeferredMutation } from '../../../authz/entity-mutation-gate';
-import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { persistAutomationEventOutput } from '../../../utils/persist-automation-event-output';
@@ -112,33 +111,16 @@ export async function handleCompleteWindow(
 ): Promise<{
   action: 'complete_window';
   automation_id: string;
-  window_id: number;
+  run_id: number;
   window_start: string;
   window_end: string;
   content_linked: number;
-  /** False on idempotent replays that reused an existing window. */
-  window_created: boolean;
-  /** True when replace_existing superseded the head — the canvas changed, so
-   *  reactions fire and the schedule advances like a fresh completion. */
-  head_superseded: boolean;
-  /** Set only when the submitted payload was NOT stored because a head already
-   *  existed and `replace_existing` was not requested — otherwise this response
-   *  is indistinguishable from a successful write. Retry with
-   *  `replace_existing: true` to overwrite deliberately.
-   *
-   *  Attribution is best-effort: `already_completed` means the payload was
-   *  dropped but the writer could not be identified (events.client_id is FK'd
-   *  to oauth_clients, so PAT/device callers store NULL, and a manual-open
-   *  window may carry no run id). It is NOT a weaker form of the other two. */
-  skipped_reason?:
-    | 'replayed_own_completion'
-    | 'completed_by_other_client'
-    | 'already_completed';
+  /** Internal reaction gate; false on idempotent replays. */
+  completed_now: boolean;
   reaction_status: 'success' | 'failed' | 'skipped';
   reaction_error?: string;
   /** Set only on an eval replay (`executionMode = 'capture'`): the extraction
-   *  was recorded on the run's `dry_run_preview` and nothing was written. No
-   *  window exists, so `window_id` is 0. */
+   *  was recorded on the eval run's `dry_run_preview` and nothing was written. */
   captured?: true;
 }> {
   const sql = getDb();
@@ -153,15 +135,11 @@ export async function handleCompleteWindow(
   // (the pre-literal-prompt templating era), and the run-thread view reads it
   // back. A completion payload must never introduce or replace that key.
   delete provenanceMetadata.prompt_rendered;
-  // Public arg is `automation_run_id`; the persisted provenance jsonb key stays
-  // the internal `automation_run_id` (run_metadata is not part of the API surface).
-  const automationRunIdRaw = args.automation_run_id ?? provenanceMetadata.automation_run_id;
-  let automationRunId =
-    automationRunIdRaw !== undefined &&
-    automationRunIdRaw !== null &&
-    Number.isFinite(Number(automationRunIdRaw))
-      ? Number(automationRunIdRaw)
-      : null;
+  if (provenanceClientId) provenanceMetadata.client_id = provenanceClientId;
+  // The run row is the identity; never duplicate its id inside run_metadata.
+  delete provenanceMetadata.automation_run_id;
+  delete provenanceMetadata.run_id;
+  const runId = Number(args.run_id);
 
   // ============================================
   // STEP 1: Validate inputs (no DB calls)
@@ -183,6 +161,12 @@ export async function handleCompleteWindow(
     throw new ToolUserError(
       'extracted_data is required for complete_window action. ' +
         'This should contain the LLM analysis results (e.g., { sentiment: "positive", themes: [...] }).',
+      400
+    );
+  }
+  if (!Number.isSafeInteger(runId) || runId <= 0) {
+    throw new ToolUserError(
+      'run_id is required for complete_window. Use the run ID from the dispatch prompt or Automation list.',
       400
     );
   }
@@ -228,66 +212,6 @@ export async function handleCompleteWindow(
   const callerRunType =
     ctx.executionMode === 'capture' ? AUTOMATION_EVAL_RUN_TYPE : AUTOMATION_RUN_TYPE;
 
-  if (automationRunId == null) {
-    // Prefer an active (dispatched) run; otherwise a pending manual-open run
-    // (no agent/device pin) waiting for an external completer.
-    //
-    // Lane-scoped: this ordering prefers `running` and then the newest row —
-    // which, while an eval replay of this same Automation is in flight, is the
-    // eval. A live completer that omitted `automation_run_id` would otherwise
-    // adopt the eval's run and stamp a window onto it, breaking the "an eval
-    // never has a window" invariant PR 3 scores against.
-    const runRows = await sql`
-      SELECT id
-      FROM runs
-      WHERE automation_id = ${automationId}
-        AND run_type = ${callerRunType}
-        AND (
-          status = 'running'
-          OR (
-            status = 'pending'
-            AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
-            AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
-          )
-        )
-      ORDER BY
-        CASE WHEN status = 'running' THEN 0 ELSE 1 END,
-        created_at DESC
-      LIMIT 1
-    `;
-    if (runRows.length > 0 && runRows[0].id != null) {
-      automationRunId = Number(runRows[0].id);
-      provenanceMetadata.automation_run_id = automationRunId;
-    }
-  } else if (provenanceMetadata.automation_run_id == null) {
-    provenanceMetadata.automation_run_id = automationRunId;
-  }
-
-  // Manual-open runs (no agent, no device pin) pend for any connected MCP
-  // client — there is no claim step, so the completing client transitions the
-  // run pending->running here. Best-effort and race-safe: concurrent completers
-  // both see an active run, and the completion transition below is idempotent.
-  // Addressed runs (agent dispatch / device lane) never match this filter, so
-  // an external client cannot hijack a dispatched run.
-  if (automationRunId != null && Number.isFinite(automationRunId)) {
-    await sql`
-      UPDATE runs
-      SET status = 'running',
-          claimed_at = COALESCE(claimed_at, current_timestamp)
-      WHERE id = ${automationRunId}
-        AND automation_id = ${automationId}
-        -- Same lane scoping as the lookup above: a LIVE completer must not be
-        -- able to claim a pending eval by passing its run id. Its token carries
-        -- no capture claim, so it would run the live path and write a real
-        -- canvas for the window the eval was only supposed to replay. Nothing
-        -- mints manual-open evals today; the guard should not permit it anyway.
-        AND run_type = ${callerRunType}
-        AND status = 'pending'
-        AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
-        AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
-    `;
-  }
-
   // ============================================
   // STEP 2: Combined query - automation + classifiers + template schema
   // ============================================
@@ -300,34 +224,62 @@ export async function handleCompleteWindow(
   //   2. runs.approved_input.version_id (snapshotted at run-creation)
   //   3. automations.current_version_id (fallback for callers outside a run)
   //
-  // The run lookup is scoped by automation_id so a wrong/stale automation_run_id
+  // The run lookup is scoped by automation_id so a wrong or stale run_id
   // can't read another automation's snapshot.
   let snapshotVersionId: number | null =
     typeof args.template_version_id === 'number' ? args.template_version_id : null;
   let runTriggerSignals: unknown[] = [];
-  if (automationRunId != null) {
-    const runRows = await sql`
-      SELECT (approved_input->>'version_id')::bigint AS version_id,
-             approved_input
-      FROM runs
-      WHERE id = ${automationRunId} AND automation_id = ${automationId}
-      LIMIT 1
-    `;
-    if (
-      snapshotVersionId == null &&
-      runRows.length > 0 &&
-      runRows[0].version_id != null
-    ) {
-      snapshotVersionId = Number(runRows[0].version_id);
-    }
-    const approvedInput = runRows[0]?.approved_input;
-    if (approvedInput && typeof approvedInput === 'object') {
-      const input = approvedInput as {
-        trigger_signal?: unknown;
-        trigger_signals?: unknown[];
-      };
-      runTriggerSignals = automationTriggerSignals(input);
-    }
+  const runRows = await sql`
+    SELECT (r.approved_input->>'version_id')::bigint AS version_id,
+           r.approved_input
+    FROM runs r
+    JOIN automations a
+      ON a.id = r.automation_id
+     AND a.organization_id = r.organization_id
+    WHERE r.id = ${runId}
+      AND r.automation_id = ${automationId}
+      AND r.run_type = ${callerRunType}
+      AND (r.approved_input->>'window_start')::timestamptz = ${window_start}::timestamptz
+      AND (r.approved_input->>'window_end')::timestamptz = ${window_end}::timestamptz
+    LIMIT 1
+  `;
+  if (runRows.length === 0) {
+    throw new ToolUserError(
+      `Automation run ${runId} does not own the submitted period.`,
+      409
+    );
+  }
+
+  // Manual-open runs (no agent, no device pin) pend for any connected MCP
+  // client — there is no claim step, so the completing client transitions the
+  // run pending->running here. Claimed only after the period check above, so a
+  // client submitting a stale token leaves the run pending and retryable rather
+  // than stranding it 'running' until the stale sweeper times it out.
+  // Best-effort and race-safe: concurrent completers both see an active run,
+  // and the completion transition below is idempotent. Addressed runs (agent
+  // dispatch / device lane) never match this filter, so an external client
+  // cannot hijack a dispatched run.
+  await sql`
+    UPDATE runs
+    SET status = 'running',
+        claimed_at = COALESCE(claimed_at, current_timestamp)
+    WHERE id = ${runId}
+      AND automation_id = ${automationId}
+      AND run_type = ${callerRunType}
+      AND status = 'pending'
+      AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
+      AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
+  `;
+  if (snapshotVersionId == null && runRows[0].version_id != null) {
+    snapshotVersionId = Number(runRows[0].version_id);
+  }
+  const approvedInput = runRows[0].approved_input;
+  if (approvedInput && typeof approvedInput === 'object') {
+    const input = approvedInput as {
+      trigger_signal?: unknown;
+      trigger_signals?: unknown[];
+    };
+    runTriggerSignals = automationTriggerSignals(input);
   }
 
   // The version row must belong to this automation's group — prevents pinning
@@ -339,7 +291,6 @@ export async function handleCompleteWindow(
       i.entity_ids,
       i.organization_id,
       i.created_by,
-      i.triggers,
       wv.id as version_id,
       wv.outputs
     FROM automations i
@@ -398,26 +349,10 @@ export async function handleCompleteWindow(
   // guaranteed-live user (same FK), so it's the correct attribution.
   const automationOrgId = automationRows[0].organization_id as string;
   const automationCreatedBy = (automationRows[0].created_by as string | null) ?? null;
-  const automationTriggers = parseJson(automationRows[0].triggers);
-  const hasWorkspaceEventTrigger =
-    Array.isArray(automationTriggers) &&
-    automationTriggers.some(
-      (trigger) =>
-        trigger &&
-        typeof trigger === 'object' &&
-        (trigger as { kind?: unknown }).kind === 'event' &&
-        (trigger as { source?: unknown }).source === 'workspace'
-    );
-  const workspaceEventCausality =
-    automationRunId == null && hasWorkspaceEventTrigger
-      ? null
-      : deriveWorkspaceEventCausality(runTriggerSignals, Number(automationId));
-  if (workspaceEventCausality == null) {
-    logger.warn(
-      { automationId },
-      '[complete_window] workspace-event Automation completed without a run id; output persisted without downstream activation'
-    );
-  }
+  const workspaceEventCausality = deriveWorkspaceEventCausality(
+    runTriggerSignals,
+    Number(automationId)
+  );
   // entity_ids is bigint[]; the prod pool runs fetch_types:false, so postgres.js
   // hands it back as the literal string "{4}" (NOT a JS array) — parse it.
   const boundEntityIds = parsePgNumberArray(automationRows[0].entity_ids);
@@ -467,7 +402,7 @@ export async function handleCompleteWindow(
   // JSON Schema maxLength counts characters, while durable stable-key storage
   // is bounded in UTF-8 bytes and also rejects blank strings. Enforce the exact
   // encoder contract before opening the completion transaction or writing the
-  // Canvas so invalid model output is an actionable 422, not a mid-write error.
+  // run so invalid model output is an actionable 422, not a mid-write error.
   validateEntityOutputKeys(extractedData, outputs);
 
   // ============================================
@@ -522,49 +457,43 @@ export async function handleCompleteWindow(
   // ============================================
   // Everything above is validation and reads, so a capture run takes exactly
   // the same 400s a live run would and only the side effect diverges.
-  // Everything below is writes: the canvas supersede chain, entity promotion,
+  // Everything below is writes: the result run, entity promotion,
   // output events, classifications, the schedule cursor, and the reaction
   // script.
   //
   // This return is load-bearing, not defensive. An eval replays the SAME window
-  // as the run it scores, so the canvas chain root (automation + granularity +
-  // window_start) is identical — a `replace_existing` completion from an eval
-  // would supersede the REAL Automation's head and unlink its content. Returning
-  // here is also what keeps the reaction script from firing, since that block
-  // triggers on `content_linked > 0`.
+  // as the run it scores. Returning here keeps the replay read-only and prevents
+  // the reaction script from firing.
   //
   // The extraction is what PR 3 scores, so it is persisted where a captured
   // payload already belongs: `runs.dry_run_preview` (see
   // 20260731020000_runs_dry_run.sql). The `run_type` guard on the UPDATE means
   // a capture claim can never stamp a real Automation run.
   if (ctx.executionMode === 'capture') {
-    if (automationRunId != null) {
-      // MERGE, never assign. The capture guard appends `side_effects` to this
-      // same column during the turn, and finalize runs last — assigning here
-      // deletes every side effect the agent attempted first.
-      await sql`
-        UPDATE runs
-        SET dry_run = true,
-            dry_run_preview = coalesce(dry_run_preview, '{}'::jsonb) || ${sql.json({
-              captured: 'complete_window',
-              automation_id: String(automationId),
-              window_start,
-              window_end,
-              granularity,
-              extracted_data: cleanedExtractedData as never,
-              content_ids: batchContentIds.slice(0, CAPTURE_PREVIEW_CONTENT_CAP),
-              content_linked: batchContentIds.length,
-              content_ids_truncated: batchContentIds.length > CAPTURE_PREVIEW_CONTENT_CAP,
-              replace_existing: args.replace_existing === true,
-            })}::jsonb
-        WHERE id = ${automationRunId}
-          AND run_type = ${AUTOMATION_EVAL_RUN_TYPE}
-      `;
-    }
+    // MERGE, never assign. The capture guard appends `side_effects` to this
+    // same column during the turn, and finalize runs last — assigning here
+    // deletes every side effect the agent attempted first.
+    await sql`
+      UPDATE runs
+      SET dry_run = true,
+          dry_run_preview = coalesce(dry_run_preview, '{}'::jsonb) || ${sql.json({
+            captured: 'complete_window',
+            automation_id: String(automationId),
+            window_start,
+            window_end,
+            granularity,
+            extracted_data: cleanedExtractedData as never,
+            content_ids: batchContentIds.slice(0, CAPTURE_PREVIEW_CONTENT_CAP),
+            content_linked: batchContentIds.length,
+            content_ids_truncated: batchContentIds.length > CAPTURE_PREVIEW_CONTENT_CAP,
+          })}::jsonb
+      WHERE id = ${runId}
+        AND run_type = ${AUTOMATION_EVAL_RUN_TYPE}
+    `;
     logger.info(
       {
         evalCapture: true,
-        runId: automationRunId,
+        runId,
         automationId,
         window_start,
         window_end,
@@ -575,13 +504,11 @@ export async function handleCompleteWindow(
     return {
       action: 'complete_window' as const,
       automation_id: String(automationId),
-      // No window was created, so there is no id to report.
-      window_id: 0,
+      run_id: runId,
       window_start,
       window_end,
       content_linked: 0,
-      window_created: false,
-      head_superseded: false,
+      completed_now: false,
       reaction_status: 'skipped' as const,
       captured: true as const,
     };
@@ -599,195 +526,31 @@ export async function handleCompleteWindow(
   // the window commits.
   let deferredApprovals: DeferredMutation[] = [];
   const result = await sql.begin(async (tx) => {
-    // ============================================
-    // STEP 7: Canvas-on-events write — THE window storage.
-    //
-    // An automation "window" (canvas) is a supersede chain of
-    // `semantic_type='canvas_state'` events; the chain ROOT
-    // (supersedes_event_id IS NULL) is the window identity and its event id is
-    // the `windowId` returned by complete_window. A fresh completion inserts a
-    // root; `replace_existing` supersedes the current head instead of creating
-    // a second root — so the root id NEVER changes. Concurrent root inserts
-    // race on the partial unique index idx_canvas_chain_root → 23505 → 409;
-    // concurrent supersedes race on idx_events_superseded_by → 23505 → 409.
-    //
-    // Any other same-period completion is an idempotent no-op that returns the
-    // existing root — the agent loop can retry a period forever without
-    // duplicating a root or overwriting a successful head (LOBU-Q); a genuine
-    // re-analysis states replace_existing explicitly.
-    // ============================================
-    let windowId!: number;
-    let canvasRevisionId!: number;
-    let windowCreated = false;
-    let headSuperseded = false;
-    let skippedReason:
-      | 'replayed_own_completion'
-      | 'completed_by_other_client'
-      | 'already_completed'
-      | undefined;
-    const canvasEntityId = await ensureCanvasEntity({
-      tx,
-      automationId: Number(automationId),
-      organizationId: automationOrgId,
-      parentEntityId,
-      createdBy: automationCreatedBy,
-    });
-    const canvasEntityIds = canvasEntityId != null ? [canvasEntityId] : [];
-    // events.client_id has an FK to oauth_clients — but callers pass PAT/device
-    // ids verbatim (the legacy column had no FK, so they were accepted). Inside
-    // this transaction insertEvent's client-id-FK retry cannot engage (the
-    // first failed INSERT aborts the tx), so resolve validity up front and
-    // drop unknown ids to NULL rather than aborting the whole completion.
-    let canvasClientId: string | null = provenanceClientId;
-    if (canvasClientId) {
-      const knownClient = await tx`
-        SELECT 1 FROM oauth_clients WHERE id = ${canvasClientId} LIMIT 1
-      `;
-      if (knownClient.length === 0) canvasClientId = null;
+    const [lockedRun] = await tx`
+      SELECT status
+      FROM runs
+      WHERE id = ${runId}
+        AND organization_id = ${automationOrgId}
+        AND automation_id = ${automationId}
+        AND run_type = ${AUTOMATION_RUN_TYPE}
+      FOR UPDATE
+    `;
+    if (!lockedRun) {
+      throw new ToolUserError(`Automation run ${runId} not found.`, 404);
     }
-    const canvasPeriodMeta = {
-      automation_id: Number(automationId),
-      granularity: timeGranularity,
-      window_start,
-      window_end,
-      content_analyzed: batchContentIds.length,
-      version_id: resolvedVersionId,
-    };
-
-    const existingHead = await findCanvasHead(tx, {
-      automationId: Number(automationId),
-      granularity: timeGranularity,
-      windowStart: window_start,
-    });
-
-    if (existingHead && !args.replace_existing) {
-      // Idempotent replay / concurrent completion that already produced a head:
-      // never create a second root and never overwrite a successful head. The
-      // window identity is the existing chain root.
-      windowId = existingHead.rootEventId;
-      canvasRevisionId = existingHead.id;
-      // The caller's payload is DISCARDED here. Replaying your own completion
-      // and losing a race to another MCP client are indistinguishable from the
-      // outside — both just return the existing window — so a client that did
-      // real work has no way to know its output was dropped. Name which case
-      // this was so it can be logged or retried with replace_existing.
-      // Manual-open Automations (no agent, no device pin) are the shape where a
-      // second client can legitimately show up: the run pends for whoever
-      // claims it first.
-      // Attribution is best-effort and often UNAVAILABLE: events.client_id has
-      // an FK to oauth_clients, so `canvasClientId` above nulls out for PAT and
-      // device callers, and a manual-open window may carry no run id. Only
-      // claim a verdict backed by two present ids that actually match or
-      // differ — otherwise say plainly that the payload was dropped without
-      // guessing who wrote the head. Guessing 'other client' on absent ids
-      // would fire on every ordinary replay.
-      // Client identity OUTRANKS run identity, and the order matters. A
-      // manual-open Automation has ONE pending run that every client races for,
-      // so two different clients completing it both carry the same run id.
-      // Ranking the run first would report the loser as a self-replay in
-      // precisely the scenario this signal exists for. The run is only a
-      // fallback for callers with no registered client id.
-      const bothClients =
-        existingHead.clientId != null && provenanceClientId != null;
-      const bothRuns = existingHead.runId != null && automationRunId != null;
-      if (bothClients) {
-        skippedReason =
-          existingHead.clientId === provenanceClientId
-            ? 'replayed_own_completion'
-            : 'completed_by_other_client';
-      } else if (bothRuns) {
-        skippedReason =
-          existingHead.runId === automationRunId
-            ? 'replayed_own_completion'
-            : 'completed_by_other_client';
-      } else {
-        skippedReason = 'already_completed';
-      }
-    } else if (existingHead && args.replace_existing) {
-      // Supersede the current head, copying the root's period metadata. Loser of
-      // a concurrent supersede hits idx_events_superseded_by → 23505 → 409. The
-      // root id (window identity) never changes across a supersede.
-      windowId = existingHead.rootEventId;
-      try {
-        const replacement = await insertEvent(
-          {
-            entityIds: canvasEntityIds,
-            organizationId: automationOrgId,
-            originId: `canvas_${crypto.randomUUID()}`,
-            payloadType: 'json_template',
-            payloadData: cleanedExtractedData,
-            semanticType: 'canvas_state',
-            metadata: {
-              ...canvasPeriodMeta,
-              root_event_id: existingHead.rootEventId,
-            },
-            runId: automationRunId,
-            automationId: Number(automationId),
-            automationVersionId: resolvedVersionId,
-            occurredAt: producedAt,
-            createdBy: automationCreatedBy,
-            clientId: canvasClientId,
-            supersedesEventId: existingHead.id,
-          },
-          { sql: tx }
-        );
-        canvasRevisionId = Number(replacement.id);
-      } catch (err) {
-        if (isUniqueViolation(err, 'idx_events_superseded_by')) {
-          throw new ToolUserError(
-            `Canvas for Automation ${automationId} period ${window_start} was concurrently updated. Retry with the latest state.`,
-            409
-          );
-        }
-        throw err;
-      }
-      headSuperseded = true;
-      if (args.replace_existing) {
-        // An explicit replace states "this analysis covers THIS content set":
-        // clear the previous completion's links so STEP 8 re-links exactly the
-        // new batch.
-        await tx`DELETE FROM automation_window_events WHERE window_id = ${windowId}`;
-      }
-    } else {
-      // No chain yet → insert the ROOT. A root omits metadata.root_event_id (its
-      // id isn't known until after insert, and metadata is immutable); readers
-      // treat a missing root_event_id as "self", so the root id IS the window id.
-      // Superseders above stamp root_event_id explicitly for zero-traversal reads.
-      try {
-        const rootEvent = await insertEvent(
-          {
-            entityIds: canvasEntityIds,
-            organizationId: automationOrgId,
-            originId: `canvas_${crypto.randomUUID()}`,
-            payloadType: 'json_template',
-            payloadData: cleanedExtractedData,
-            semanticType: 'canvas_state',
-            metadata: canvasPeriodMeta,
-            runId: automationRunId,
-            automationId: Number(automationId),
-            automationVersionId: resolvedVersionId,
-            occurredAt: producedAt,
-            createdBy: automationCreatedBy,
-            clientId: canvasClientId,
-          },
-          { sql: tx }
-        );
-        windowId = Number(rootEvent.id);
-        canvasRevisionId = windowId;
-        windowCreated = true;
-        logger.info(
-          `[complete_window] Created canvas window ${windowId} for automation ${automationId} (${window_start} - ${window_end})`
-        );
-      } catch (err) {
-        if (isUniqueViolation(err, 'idx_canvas_chain_root')) {
-          throw new ToolUserError(
-            `Window already exists for Automation ${automationId} for period ${window_start} to ${window_end}. ` +
-              'Use replace_existing: true to replace it, or query a different time period.',
-            409
-          );
-        }
-        throw err;
-      }
+    if (lockedRun.status === 'completed') {
+      return {
+        action: 'complete_window' as const,
+        automation_id: String(automationId),
+        run_id: runId,
+        window_start,
+        window_end,
+        content_linked: 0,
+        completed_now: false,
+      };
+    }
+    if (lockedRun.status !== 'running' && lockedRun.status !== 'claimed') {
+      throw new ToolUserError(`Automation run ${runId} is no longer completable.`, 409);
     }
 
     // ============================================
@@ -795,19 +558,19 @@ export async function handleCompleteWindow(
     // Build VALUES clause for bulk insert
     // ============================================
     if (batchContentIds.length > 0) {
-      let nextWindowEventId = await getNextNumericId(tx, 'automation_window_events');
+      let nextWindowEventId = await getNextNumericId(tx, 'automation_run_events');
       const valuePlaceholders: string[] = [];
       const insertParams: unknown[] = [];
       let pIdx = 1;
       for (const contentId of batchContentIds) {
         valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, NOW())`);
-        insertParams.push(nextWindowEventId, windowId, contentId, Number(automationId));
+        insertParams.push(nextWindowEventId, runId, contentId, Number(automationId));
         nextWindowEventId += 1;
         pIdx += 4;
       }
 
       await tx.unsafe(
-        `INSERT INTO automation_window_events (id, window_id, event_id, automation_id, created_at)
+        `INSERT INTO automation_run_events (id, run_id, event_id, automation_id, created_at)
          VALUES ${valuePlaceholders.join(', ')}
          ON CONFLICT DO NOTHING`,
         insertParams
@@ -820,7 +583,7 @@ export async function handleCompleteWindow(
     const validContentIds = new Set(batchContentIds);
 
     // ============================================
-    // STEP 8.5: Persist declared entity and event outputs atomically with Canvas.
+    // STEP 8.5: Persist declared entity and event outputs atomically with the run.
     // ============================================
     const entityChanges = [] as Array<{
       entityId: number;
@@ -846,7 +609,7 @@ export async function handleCompleteWindow(
           output,
           automationId: Number(automationId),
           organizationId: automationOrgId,
-          windowId,
+          runId,
           parentEntityId,
           createdBy: automationCreatedBy,
           validContentIds,
@@ -862,9 +625,7 @@ export async function handleCompleteWindow(
           automationId: Number(automationId),
           versionId: resolvedVersionId,
           organizationId: automationOrgId,
-          windowId,
-          canvasRevisionId,
-          runId: automationRunId,
+          runId,
           boundEntityIds,
           validContentIds,
           occurredAt: producedAt,
@@ -873,8 +634,7 @@ export async function handleCompleteWindow(
         for (const event of persistedEvents) {
           if (
             event.change === 'unchanged' ||
-            !subscribedWorkspaceEventTypes.has(output.event) ||
-            workspaceEventCausality == null
+            !subscribedWorkspaceEventTypes.has(output.event)
           ) {
             continue;
           }
@@ -894,7 +654,7 @@ export async function handleCompleteWindow(
     await enqueueWorkspaceEventActivations(tx, workspaceEventActivations);
 
     // One run-level change set covers every entity output.
-    if (entityChanges.length > 0 && automationRunId && Number.isFinite(automationRunId)) {
+    if (entityChanges.length > 0) {
       // Count each kind explicitly. Deriving one by subtraction silently
       // mislabels every kind added later — `denied` would have counted as
       // `updated`, reporting a refusal as a write.
@@ -902,7 +662,7 @@ export async function handleCompleteWindow(
       const updatedCount = entityChanges.filter((c) => c.kind === 'updated').length;
       const deniedCount = entityChanges.filter((c) => c.kind === 'denied').length;
       const deniedSuffix = deniedCount > 0 ? ` + ${deniedCount} denied` : '';
-      const changeSetIdempotencyKey = `automation:${automationId}:run:${automationRunId}:change_set`;
+      const changeSetIdempotencyKey = `automation:${automationId}:run:${runId}:change_set`;
       const findChangeSet = () => tx<{ id: number }>`
         SELECT id FROM events
         WHERE organization_id = ${automationOrgId}
@@ -918,19 +678,18 @@ export async function handleCompleteWindow(
                 // id), so the timeline links only the rows that exist.
                 entityIds: entityChanges.map((c) => c.entityId).filter((id) => id > 0),
                 organizationId: automationOrgId,
-                originId: `run_${automationRunId}_changeset`,
+                originId: `run_${runId}_changeset`,
                 title: `Automation applied ${createdCount} new + ${updatedCount} updated${deniedSuffix}`,
                 content: `This run created ${createdCount} and updated ${updatedCount} entities${
                   deniedCount > 0 ? `; ${deniedCount} denied` : ''
                 }.`,
                 semanticType: 'change_set',
-                runId: automationRunId,
+                runId,
                 automationId: Number(automationId),
                 automationVersionId: resolvedVersionId,
                 metadata: {
                   _lobu_idempotency_key: changeSetIdempotencyKey,
                   kind: 'automation_change_set',
-                  window_id: windowId,
                   automation_id: Number(automationId),
                   created_count: createdCount,
                   updated_count: updatedCount,
@@ -959,97 +718,67 @@ export async function handleCompleteWindow(
     await processAutomationClassifications(
       tx,
       automationId,
-      windowId,
+      runId,
       extractedData,
       classifiers,
       validContentIds,
       env
     );
 
-    let runMarkedCompleted = false;
-    let completedDispatchSource: string | null = null;
-    if (automationRunId && Number.isFinite(automationRunId)) {
-      // Provenance now lives on the RUN row (model_used, run_metadata), not on
-      // the retired standalone window table. window_id is stamped to the canvas
-      // ROOT event id. Scope by automation_id so a wrong/stale automation_run_id
-      // (passed in run_metadata) cannot mark another automation's run completed
-      // against this automation's window. Stamp provenance whenever the run is
-      // still terminable so an idempotent replay refreshing a running run still
-      // records model/metadata.
-      const completedRows = await tx`
-        UPDATE runs
-        SET status = 'completed',
-            outcome = ${classifyRunOutcome({ status: "completed" })},
-            window_id = ${windowId},
-            model_used = COALESCE(
-              ${explicitProvenanceModel},
-              NULLIF(model_used, 'external-client'),
-              CASE
-                WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
-                ELSE 'external-client'
-              END
-            ),
-            run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)},
-            completed_at = current_timestamp,
-            error_message = NULL
-        WHERE id = ${automationRunId}
-          AND automation_id = ${automationId}
-          AND run_type = ${AUTOMATION_RUN_TYPE}
-          AND status IN ('running', 'claimed')
-        RETURNING id, approved_input->>'dispatch_source' AS dispatch_source
-      `;
-      runMarkedCompleted = completedRows.length > 0;
-      completedDispatchSource =
-        typeof completedRows[0]?.dispatch_source === 'string'
-          ? completedRows[0].dispatch_source
-          : null;
-      if (!runMarkedCompleted) {
-        // Idempotent replay against an already-completed run: keep window_id and
-        // provenance current without re-transitioning status or side effects.
-        await tx`
-          UPDATE runs
-          SET window_id = ${windowId},
-              model_used = COALESCE(
-                ${explicitProvenanceModel},
-                NULLIF(model_used, 'external-client'),
-                CASE
-                  WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
-                  ELSE 'external-client'
-                END
-              ),
-              run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
-          WHERE id = ${automationRunId}
-            AND automation_id = ${automationId}
-            AND run_type = ${AUTOMATION_RUN_TYPE}
-        `;
-      }
+    const [completedRun] = await tx`
+      UPDATE runs
+      SET status = 'completed',
+          outcome = ${classifyRunOutcome({ status: "completed" })},
+          action_output = ${tx.json(cleanedExtractedData)},
+          approved_input = COALESCE(approved_input, '{}'::jsonb) || ${tx.json({
+            window_start,
+            window_end,
+            granularity: timeGranularity,
+          })}::jsonb,
+          model_used = COALESCE(
+            ${explicitProvenanceModel},
+            NULLIF(model_used, 'external-client'),
+            CASE
+              WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
+              ELSE 'external-client'
+            END
+          ),
+          run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${tx.json({
+            ...provenanceMetadata,
+            content_analyzed: batchContentIds.length,
+          })},
+          completed_at = current_timestamp,
+          error_message = NULL
+      WHERE id = ${runId}
+        AND automation_id = ${automationId}
+        AND run_type = ${AUTOMATION_RUN_TYPE}
+        AND status IN ('running', 'claimed')
+      RETURNING approved_input->>'dispatch_source' AS dispatch_source
+    `;
+    if (!completedRun) {
+      throw new ToolUserError(`Automation run ${runId} is no longer completable.`, 409);
     }
 
     // Advance the schedule only when we actually did new work. Idempotent
     // replays (no window created, no run transitioned) must not push
     // next_run_at forward, or each retry would shift the schedule.
-    if (
-      (windowCreated || headSuperseded || runMarkedCompleted) &&
-      completedDispatchSource !== 'event'
-    ) {
+    if (completedRun.dispatch_source !== 'event') {
       await advanceAutomationSchedule(tx, automationId);
     }
 
     logger.info(
-      `[manage_automations] Completed window ${windowId} for automation ${automationId} ` +
+      `[manage_automations] Completed run ${runId} for automation ${automationId} ` +
         `(${window_start} - ${window_end}), linked ${batchContentIds.length} content items`
     );
 
     return {
       action: 'complete_window' as const,
       automation_id: String(automationId),
-      window_id: windowId,
+      run_id: runId,
       window_start,
       window_end,
       content_linked: batchContentIds.length,
-      window_created: windowCreated,
-      head_superseded: headSuperseded,
-      ...(skippedReason ? { skipped_reason: skippedReason } : {}),
+      completed_now: true,
     };
   });
 
@@ -1094,7 +823,7 @@ export async function handleCompleteWindow(
     const sql = automationMetaSql;
     const scriptRows = automationMetaRows;
     if (
-      (result.content_linked > 0 || result.window_created || result.head_superseded) &&
+      result.completed_now &&
       scriptRows.length > 0 &&
       scriptRows[0].reaction_script_compiled
     ) {
@@ -1131,8 +860,7 @@ export async function handleCompleteWindow(
           metadata: (e.metadata ?? {}) as Record<string, unknown>,
         })),
         window: {
-          id: result.window_id,
-          run_id: automationRunId,
+          run_id: result.run_id,
           automation_id: Number(result.automation_id),
           window_start: result.window_start,
           window_end: result.window_end,
@@ -1160,7 +888,7 @@ export async function handleCompleteWindow(
         await trackAutomationReaction({
           organizationId: orgId,
           automationId: Number(result.automation_id),
-          windowId: result.window_id,
+          sourceRunId: result.run_id,
           reactionType: 'script_execution',
           toolName: 'reaction_executor',
           toolArgs: { attempt },
@@ -1172,7 +900,7 @@ export async function handleCompleteWindow(
           logger.info(
             {
               automation_id: result.automation_id,
-              window_id: result.window_id,
+              run_id: result.run_id,
               attempt,
             },
             'Reaction script executed successfully (inline)'

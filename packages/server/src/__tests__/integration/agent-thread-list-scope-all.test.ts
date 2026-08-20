@@ -214,12 +214,12 @@ describe("listAgentThreads scope=all", () => {
 		// An automation + one of its run snapshots.
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Automation', 'active', 'notification', 'normal', 0, now(), now())`;
+        (id, organization_id, agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Automation', 'active', 0, now(), now())`;
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${OTHER_AUTOMATION_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Automation', 'active', 'notification', 'normal', 0, now(), now())`;
+        (id, organization_id, agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${OTHER_AUTOMATION_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Automation', 'active', 0, now(), now())`;
 		await sql`
 			INSERT INTO runs
 			  (run_type, status, organization_id, automation_id, approval_status,
@@ -231,10 +231,10 @@ describe("listAgentThreads scope=all", () => {
 		`;
 		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700001,
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID},
 			   'auto', ${sql.json({ prompt_rendered: "Rendered automation task" })},
 			   '2026-06-28T00:29:00Z', '2026-06-28T00:30:00Z')
 			RETURNING id`;
@@ -260,8 +260,8 @@ describe("listAgentThreads scope=all", () => {
 		// it drops out with no lifecycle sync anywhere.
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${ARCHIVED_AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Automation', 'archived', 'notification', 'normal', 0, now(), now())`;
+        (id, organization_id, agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${ARCHIVED_AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Automation', 'archived', 0, now(), now())`;
 		const [archivedRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
 			  (run_type, status, organization_id, automation_id, approval_status,
@@ -284,10 +284,10 @@ describe("listAgentThreads scope=all", () => {
 
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id, parent_run_id,
 			   approval_status, action_key, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${AUTOMATION_ID}, 700001,
+			  ('internal', 'pending', ${org}, ${AUTOMATION_ID}, ${automationRun.id},
 			   'pending', 'entity_field_change', now())
 			RETURNING id`;
 		await insertEvent({
@@ -638,10 +638,10 @@ describe("listAgentThreads scope=all", () => {
 		const sql = getTestDb();
 		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700004,
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID},
 			   'auto', ${sql.json({ prompt_rendered: "Dispatched automation task" })},
 			   '2026-06-28T04:30:00Z', '2026-06-28T04:31:00Z')
 			RETURNING id
@@ -690,10 +690,10 @@ describe("listAgentThreads scope=all", () => {
 		const sql = getTestDb();
 		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700002,
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID},
 			   'auto', '2026-06-28T04:00:00Z', '2026-06-28T04:01:00Z')
 			RETURNING id
 		`;
@@ -709,10 +709,10 @@ describe("listAgentThreads scope=all", () => {
 		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id, parent_run_id,
 			   approval_status, action_key, action_input, created_at, completed_at)
 			VALUES
-			  ('internal', 'cancelled', ${org}, ${AUTOMATION_ID}, 700002,
+			  ('internal', 'cancelled', ${org}, ${AUTOMATION_ID}, ${automationRun.id},
 			   'rejected', 'entity_change',
 			   ${sql.json({ source_run_id: automationRun.id, operation: "merge" })},
 			   '2026-06-28T04:01:00Z', '2026-06-28T04:02:00Z')
@@ -763,20 +763,20 @@ describe("listAgentThreads scope=all", () => {
 		const sql = getTestDb();
 		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700003,
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID},
 			   'auto', ${sql.json({ prompt_rendered: "Run without a transcript" })},
 			   '2026-06-28T05:00:00Z', '2026-06-28T05:01:00Z')
 			RETURNING id
 		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id, parent_run_id,
 			   approval_status, action_key, action_input, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${AUTOMATION_ID}, 700003,
+			  ('internal', 'pending', ${org}, ${AUTOMATION_ID}, ${automationRun.id},
 			   'pending', 'entity_change',
 			   ${sql.json({ source_run_id: automationRun.id, operation: "merge" })},
 			   '2026-06-28T05:01:00Z')

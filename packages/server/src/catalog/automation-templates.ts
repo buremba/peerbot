@@ -59,8 +59,6 @@ export const AUTOMATION_CATALOG_TEMPLATES: CatalogEntry[] = [
 			],
 			prompt:
 				"Review sources.content — each row is a feed Lobu hard-paused after consecutive failures. metadata.extra has last_error, consecutive_failures, connection_id, connector_key.\n\nFor each distinct feed that still needs attention (dedupe by feed_id / origin_id), decide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nIf sources.content is empty, do nothing (no notification).\nKeep it short. Prefer client.notifications.send to admins; do not unpause feeds automatically.\n",
-			notification_channel: "notification",
-			notification_priority: "high",
 			tags: ["platform", "feed-health"],
 		},
 	},

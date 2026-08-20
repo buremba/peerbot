@@ -300,7 +300,7 @@ export default async (
     throw new Error("Product activity digest requires a durable run id");
   }
 
-  // Sub-hour schedules share a daily Canvas window. Use the last delivered
+  // Sub-hour schedules share a daily analysis period. Use the last delivered
   // digest as a durable cursor so every newly ingested row is reported once.
   const previousRows = (await client.query(`
     SELECT created_at
@@ -397,7 +397,7 @@ export default async (
     idempotency_key: `product-activity-digest:run:${runId}`,
     automation_source: {
       automation_id: ctx.window.automation_id,
-      window_id: ctx.window.id,
+      run_id: ctx.window.run_id,
     },
   });
 };

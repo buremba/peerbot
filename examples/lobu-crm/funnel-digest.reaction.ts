@@ -48,7 +48,7 @@ export default async (
     body: digest.content,
     automation_source: {
       automation_id: ctx.window.automation_id,
-      window_id: ctx.window.id,
+      run_id: ctx.window.run_id,
     },
   });
 };

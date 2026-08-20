@@ -2,8 +2,7 @@
  * Tool: get_automation (Incremental Time Windows)
  *
  * Query a single automation's analysis windows by date range and granularity.
- * Returns time-windowed automation data sourced from canvas_state event chains
- * (a window = one canvas_state supersede chain; its ROOT event id is window_id).
+ * Returns time-windowed Automation results sourced directly from runs.
  */
 
 import {
@@ -184,7 +183,7 @@ export type GetAutomationResult = Static<typeof GetAutomationResultSchema>;
 
 /** Row type for window query results (from buildWindowsSelectClause) */
 interface WindowRow {
-  window_id: number;
+  run_id: number;
   automation_id: string;
   automation_name: string;
   granularity: string;
@@ -203,7 +202,7 @@ interface WindowRow {
 
 /** Row type for classification stats query results */
 interface ClassificationStatsRow {
-  window_id: number;
+  run_id: number;
   classifier_slug: string;
   value: string;
   count: number;
@@ -231,7 +230,7 @@ interface AutomationQueryRow {
   sources: AutomationSource[] | null;
   reaction_script: string | null;
   organization_id: string | null;
-  automation_run_id: number | null;
+  latest_run_id: number | null;
   automation_run_status: string | null;
   automation_run_outcome: string | null;
   automation_run_error: string | null;
@@ -368,7 +367,11 @@ async function getAutomationImpl(
 
   const finalGranularity = args.granularity;
 
-  const whereClauses: string[] = [];
+  const whereClauses: string[] = [
+    `iw.run_type = 'automation'`,
+    `iw.status = 'completed'`,
+    `iw.action_output IS NOT NULL`,
+  ];
   const params: any[] = [];
 
   const addParam = (value: any): string => {
@@ -384,15 +387,15 @@ async function getAutomationImpl(
   }
 
   if (parsedSince) {
-    whereClauses.push(`iw.window_end >= ${addParam(parsedSince)}`);
+    whereClauses.push(`(iw.approved_input->>'window_end')::timestamptz >= ${addParam(parsedSince)}`);
   }
 
   if (parsedUntil) {
-    whereClauses.push(`iw.window_start <= ${addParam(parsedUntil)}`);
+    whereClauses.push(`(iw.approved_input->>'window_start')::timestamptz <= ${addParam(parsedUntil)}`);
   }
 
   if (finalGranularity) {
-    whereClauses.push(`iw.granularity = ${addParam(finalGranularity)}`);
+    whereClauses.push(`iw.approved_input->>'granularity' = ${addParam(finalGranularity)}`);
   }
 
   const whereClause = whereClauses.length > 0 ? whereClauses.join(' AND ') : '1=1';
@@ -400,7 +403,8 @@ async function getAutomationImpl(
   const windowsQuery = `
     ${buildWindowsSelectClause()}
     WHERE ${whereClause}
-    ORDER BY iw.window_start DESC, iw.granularity ASC
+    ORDER BY (iw.approved_input->>'window_start')::timestamptz DESC,
+             iw.approved_input->>'granularity' ASC
     LIMIT ${addParam(pageSize)}
     OFFSET ${addParam(offset)}
   `;
@@ -464,7 +468,7 @@ async function getAutomationImpl(
   // ============================================
 
   const typedWindows = windows as unknown as WindowRow[];
-  const windowIds = typedWindows.map((w) => ensureNumber(w.window_id));
+  const runIds = typedWindows.map((w) => ensureNumber(w.run_id));
   const classificationStatsMap: Map<number, Record<string, Record<string, number>>> = new Map();
 
   // Reaction-script execution log per window (newest first). One batched
@@ -472,22 +476,22 @@ async function getAutomationImpl(
   // response. Surfaced on each window so the UI can show what the reaction
   // did (or why it failed).
   const reactionsMap: Map<number, AutomationWindowReaction[]> = new Map();
-  if (windowIds.length > 0) {
+  if (runIds.length > 0) {
     // PG array literal, not a JS array bind: the pool runs fetch_types:false,
     // so postgres.js ships a one-element JS array as a scalar and PG throws
     // `malformed array literal` (same trap as the reconciler regression
     // documented in automation-contract.test.ts).
-    const windowIdsLiteral = `{${windowIds.join(',')}}`;
+    const runIdsLiteral = `{${runIds.join(',')}}`;
     const reactionRows = (await sql.unsafe(
-      `SELECT id, window_id, reaction_type, tool_name, tool_args, tool_result, created_at
+      `SELECT id, source_run_id, reaction_type, tool_name, tool_args, tool_result, created_at
        FROM automation_reactions
-       WHERE window_id = ANY($1::bigint[])
+       WHERE source_run_id = ANY($1::bigint[])
        ORDER BY created_at DESC
        LIMIT 500`,
-      [windowIdsLiteral]
+      [runIdsLiteral]
     )) as unknown as Array<{
       id: number;
-      window_id: number;
+      source_run_id: number;
       reaction_type: string;
       tool_name: string;
       tool_args: Record<string, unknown> | null;
@@ -495,7 +499,7 @@ async function getAutomationImpl(
       created_at: string;
     }>;
     for (const r of reactionRows) {
-      const wid = ensureNumber(r.window_id);
+      const wid = ensureNumber(r.source_run_id);
       const list = reactionsMap.get(wid) ?? [];
       list.push({
         id: ensureNumber(r.id),
@@ -572,13 +576,18 @@ async function getAutomationImpl(
         sv.outputs as sel_version_outputs,
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
-        (SELECT MAX(window_end) FROM canvas_windows WHERE automation_id = i.id) as latest_window_end,
+        (SELECT MAX((approved_input->>'window_end')::timestamptz) FROM runs
+          WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
+            AND action_output IS NOT NULL) as latest_window_end,
         -- Latest window START drives the next_window preview, so it chains off
         -- exactly what computePendingWindow chains off. Chaining the preview off
         -- the END instead makes the two disagree by a full period on a legacy
         -- row stored with an inclusive 23:59:59.999 end.
-        (SELECT window_start FROM canvas_windows WHERE automation_id = i.id
-          ORDER BY window_start DESC LIMIT 1) as latest_window_start,
+        (SELECT (approved_input->>'window_start')::timestamptz FROM runs
+          WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
+            AND action_output IS NOT NULL
+            AND approved_input->>'window_start' IS NOT NULL
+          ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
@@ -588,7 +597,7 @@ async function getAutomationImpl(
            AND ei.namespace IN (${namespacesLiteral})
         ) as entity_scopes,
         -- Latest run via lateral
-        wr.id as automation_run_id,
+        wr.id as latest_run_id,
         wr.status as automation_run_status,
         wr.outcome as automation_run_outcome,
         wr.error_message as automation_run_error,
@@ -612,28 +621,28 @@ async function getAutomationImpl(
     : null;
 
   logger.info(
-    { windowIds, includeClassificationSummary },
+    { runIds, includeClassificationSummary },
     '[get_automation] Checking classification stats'
   );
-  if (windowIds.length > 0 && includeClassificationSummary) {
+  if (runIds.length > 0 && includeClassificationSummary) {
     try {
-      logger.info({ windowCount: windowIds.length }, '[get_automation] Fetching classification stats');
+      logger.info({ runCount: runIds.length }, '[get_automation] Fetching classification stats');
       const statsResult = await sql.unsafe(
         `
         SELECT
-          iwc.window_id,
+          iwc.run_id,
           cc.slug as classifier_slug,
           value as value,
           CAST(COUNT(*) AS INTEGER) as count
-        FROM automation_window_events iwc
+        FROM automation_run_events iwc
         JOIN event_classifications cls ON iwc.event_id = cls.event_id
         JOIN classify_facet cc ON cls.classifier_id = cc.id
         CROSS JOIN unnest(cls."values") AS t(value)
-        WHERE iwc.window_id IN (${windowIds.map((_: unknown, i: number) => `$${i + 1}`).join(', ')})
-        GROUP BY iwc.window_id, cc.slug, value
-        ORDER BY iwc.window_id, cc.slug, count DESC
+        WHERE iwc.run_id IN (${runIds.map((_: unknown, i: number) => `$${i + 1}`).join(', ')})
+        GROUP BY iwc.run_id, cc.slug, value
+        ORDER BY iwc.run_id, cc.slug, count DESC
       `,
-        windowIds
+        runIds
       );
 
       logger.info(
@@ -641,16 +650,16 @@ async function getAutomationImpl(
         '[get_automation] Got classification stats'
       );
       for (const row of statsResult as unknown as ClassificationStatsRow[]) {
-        const windowId = ensureNumber(row.window_id);
-        let windowStats = classificationStatsMap.get(windowId);
-        if (!windowStats) {
-          windowStats = {};
-          classificationStatsMap.set(windowId, windowStats);
+        const runId = ensureNumber(row.run_id);
+        let runStats = classificationStatsMap.get(runId);
+        if (!runStats) {
+          runStats = {};
+          classificationStatsMap.set(runId, runStats);
         }
-        if (!windowStats[row.classifier_slug]) {
-          windowStats[row.classifier_slug] = {};
+        if (!runStats[row.classifier_slug]) {
+          runStats[row.classifier_slug] = {};
         }
-        windowStats[row.classifier_slug][row.value] = row.count;
+        runStats[row.classifier_slug][row.value] = row.count;
       }
       logger.info(
         {
@@ -661,7 +670,7 @@ async function getAutomationImpl(
       );
     } catch (error) {
       // Log but don't fail if classification stats query fails
-      logger.warn({ error, windowIds }, '[get_automation] Failed to fetch classification stats');
+      logger.warn({ error, runIds }, '[get_automation] Failed to fetch classification stats');
     }
   }
 
@@ -683,14 +692,14 @@ async function getAutomationImpl(
   // Windows are sorted by window_start DESC, so "next" in array is "previous" chronologically
   const formattedWindows: AutomationWindow[] = typedWindows.map((w, index, arr) => {
     const previousWindow = arr[index + 1]; // Next in array = previous chronologically
-    const windowIdNum = ensureNumber(w.window_id);
-    const stats = classificationStatsMap.get(windowIdNum);
+    const runId = ensureNumber(w.run_id);
+    const stats = classificationStatsMap.get(runId);
     const extractedData = parseJsonObject(w.extracted_data);
     const previousExtractedData = previousWindow
       ? parseJsonObject(previousWindow.extracted_data)
       : undefined;
     return {
-      window_id: ensureNumber(w.window_id),
+      run_id: ensureNumber(w.run_id),
       automation_id: String(w.automation_id),
       automation_name: w.automation_name,
       granularity: w.granularity,
@@ -710,7 +719,7 @@ async function getAutomationImpl(
       execution_time_ms: w.execution_time_ms ?? 0,
       created_at: ensureIsoString(w.created_at, w.window_end) ?? '',
       version_id: w.version_id ?? undefined,
-      reactions: reactionsMap.get(windowIdNum),
+      reactions: reactionsMap.get(runId),
     };
   });
 
@@ -813,9 +822,9 @@ async function getAutomationImpl(
       ...(availableVersions !== undefined && { available_versions: availableVersions }),
       reaction_script: automationRow.reaction_script || undefined,
       automation_run:
-        automationRow.automation_run_id && automationRow.automation_run_status
+        automationRow.latest_run_id && automationRow.automation_run_status
           ? {
-              run_id: Number(automationRow.automation_run_id),
+              run_id: Number(automationRow.latest_run_id),
               status: automationRow.automation_run_status as
                 | 'pending'
                 | 'claimed'
@@ -846,7 +855,7 @@ async function getAutomationImpl(
   // ============================================
   // Step 6.5: Compute pending analysis info
   // ============================================
-  // Count content NOT in any window for this automation (using automation_window_events)
+  // Count content not yet analyzed by any run of this automation.
   // Calculate next window bounds based on schedule
   // Generate processing instructions for client-driven Automation generation
 
@@ -908,7 +917,7 @@ async function getAutomationImpl(
     const noAutomationParams = [...entityLinkOnlyParams, effectiveBound];
 
     const notInWindowClause = `NOT EXISTS (
-        SELECT 1 FROM automation_window_events iwc
+        SELECT 1 FROM automation_run_events iwc
         WHERE iwc.event_id = f.id AND iwc.automation_id = $1
       )`;
 
@@ -951,7 +960,7 @@ async function getAutomationImpl(
           sql.unsafe(
             `SELECT DATE_TRUNC('month', f.occurred_at) as month, COUNT(DISTINCT f.id) as linked
               FROM current_event_records f
-              JOIN automation_window_events iwc ON f.id = iwc.event_id
+              JOIN automation_run_events iwc ON f.id = iwc.event_id
               WHERE ${entityScopeCondition}
                 ${occurredAtBound ? `AND ${occurredAtBound}` : ''}
                 AND iwc.automation_id = $1

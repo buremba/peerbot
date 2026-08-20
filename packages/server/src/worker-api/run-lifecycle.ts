@@ -995,7 +995,7 @@ const MISSING_COMPLETE_WINDOW_NUDGE =
 	"Device CLI exited without calling completeWindow. Re-run the Automation task and " +
 	"finalize via the lobu skill + CLI (preferred): " +
 	"`lobu memory exec` with client.knowledge.read({ automation_id }) then " +
-	"client.automations.completeWindow({ window_token, extracted_data, automation_run_id }). " +
+	"client.automations.completeWindow({ window_token, extracted_data, run_id }). " +
 	"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
 
 /**
@@ -1056,7 +1056,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	// remain authoritative if this read races another terminal path.
 	const runRows = (await sql`
     SELECT id, organization_id, automation_id, approved_input, run_type,
-           claimed_at, claimed_by, status, window_id
+           claimed_at, claimed_by, status
     FROM runs
     WHERE id = ${runId}
     LIMIT 1
@@ -1069,7 +1069,6 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		claimed_at: string | Date | null;
 		claimed_by: string | null;
 		status: string;
-		window_id: number | null;
 	}>;
 	const run = runRows[0];
 	if (!run) return c.json({ error: "Run not found" }, 404);
@@ -1301,24 +1300,18 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			return c.json({
 				ok: true,
 				status: "completed",
-				window_id: run.window_id,
+				run_id: runId,
 				idempotent: true,
 			});
 		}
-		if (run.window_id != null) {
-			const agentKind =
+		const agentKind =
 				typeof approved.agent_kind === "string" &&
 				(approved.agent_kind as string).trim()
 					? (approved.agent_kind as string).trim()
 					: null;
-			// Deterministic provenance from the system of record (the run's pinned
-			// agent_kind): the agent isn't trusted to self-report `model` through
-			// complete_window, so runs it left on the pipeline default get the device
-			// stamp. An explicit model passed by the agent wins. Provenance now lives
-			// on the RUN row (model_used / run_metadata.execution_time_ms), not the
-			// retired standalone window table — the canvas is the window projection and
-			// reads pull execution_time_ms from run timestamps / run_metadata.
-			await sql`
+		// The run's pinned agent_kind is trusted device provenance. An explicit
+		// model passed by the agent still wins.
+		await sql`
         UPDATE runs
         SET model_used = CASE
               WHEN model_used = 'external-client' OR model_used IS NULL
@@ -1344,14 +1337,13 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
             END
         WHERE id = ${runId}
       `;
-		}
 		await sql`
       UPDATE automations
       SET last_fired_at = NOW(), updated_at = NOW()
       WHERE id = ${automationId}
     `;
 		emitCompletionEvent("completed");
-		return c.json({ ok: true, status: "completed", window_id: run.window_id });
+		return c.json({ ok: true, status: "completed", run_id: runId });
 	}
 
 	// Already failed/timed out (a concurrent report, the reconciler, or the
@@ -1374,7 +1366,6 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			status: "completed",
 			extraSet: sql`,
         outcome = ${classifyRunOutcome({ status: "completed" })},
-        window_id = NULL,
         error_message = NULL,
         model_used = COALESCE(
           NULLIF(model_used, 'external-client'),
@@ -1414,7 +1405,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			ok: true,
 			status: "completed",
 			reason_code: "event_turn",
-			window_id: null,
+			run_id: runId,
 		});
 	}
 

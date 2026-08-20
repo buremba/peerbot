@@ -1,3 +1,4 @@
+import { getNextNumericId } from "../../tools/admin/helpers/db-helpers";
 import { getTestDb } from "./test-db";
 
 export async function createTestAutomationSubscription(opts: {
@@ -66,13 +67,6 @@ export async function createTestAutomationSubscription(opts: {
 		)
 		ON CONFLICT (id) DO NOTHING
 	`;
-	const ids = await sql<{ automation_id: number; version_id: number }>`
-		SELECT
-		  nextval('automations_id_seq')::integer AS automation_id,
-		  nextval('automation_template_versions_id_seq')::integer AS version_id
-	`;
-	const automationId = ids[0]!.automation_id;
-	const versionId = ids[0]!.version_id;
 	const platform = opts.platform ?? connection.connector_key;
 	const prefix = `${platform}:`;
 	const nativeChannelId = opts.channelId.startsWith(prefix)
@@ -94,33 +88,37 @@ export async function createTestAutomationSubscription(opts: {
 			skip_if_unchanged: false,
 		},
 	];
-	await sql`
-		INSERT INTO automations (
-			id, name, slug, description, organization_id, entity_ids,
-			triggers, agent_id, model_config, execution_config, sources, version,
-			current_version_id, tags, status, created_by, automation_group_id
-		) VALUES (
-			${automationId}, ${`Messages in ${opts.channelId}`}, ${`test-chat-${automationId}`},
-			'Test chat subscription', ${opts.organizationId}, '{}'::bigint[],
-			${sql.json(triggers)}, ${opts.agentId}, '{}'::jsonb,
-			${opts.model ? sql.json({ model: opts.model }) : null}, '[]'::jsonb, 1,
-			NULL, ARRAY['system:chat-link']::text[], 'active', ${createdBy}, ${automationId}
-		)
-	`;
-	await sql`
-		INSERT INTO automation_versions (
-			id, automation_id, version, name, prompt, version_sources,
-			change_notes, created_by
-		) VALUES (
-			${versionId}, ${automationId}, 1, ${`Messages in ${opts.channelId}`},
-			'Respond helpfully to the incoming message.', '[]'::jsonb,
-			'Test subscription', ${createdBy}
-		)
-	`;
-	await sql`
-		UPDATE automations SET current_version_id = ${versionId}
-		WHERE id = ${automationId}
-	`;
+	await sql.begin(async (tx) => {
+		const automationId = await getNextNumericId(tx, "automations");
+		const versionId = await getNextNumericId(tx, "automation_versions");
+		await tx`
+			INSERT INTO automations (
+				id, name, slug, description, organization_id, entity_ids,
+				triggers, agent_id, model_config, execution_config, sources, version,
+				current_version_id, tags, status, created_by, automation_group_id
+			) VALUES (
+				${automationId}, ${`Messages in ${opts.channelId}`}, ${`test-chat-${automationId}`},
+				'Test chat subscription', ${opts.organizationId}, '{}'::bigint[],
+				${tx.json(triggers)}, ${opts.agentId}, '{}'::jsonb,
+				${opts.model ? tx.json({ model: opts.model }) : null}, '[]'::jsonb, 1,
+				NULL, ARRAY['system:chat-link']::text[], 'active', ${createdBy}, ${automationId}
+			)
+		`;
+		await tx`
+			INSERT INTO automation_versions (
+				id, automation_id, version, name, prompt, version_sources,
+				change_notes, created_by
+			) VALUES (
+				${versionId}, ${automationId}, 1, ${`Messages in ${opts.channelId}`},
+				'Respond helpfully to the incoming message.', '[]'::jsonb,
+				'Test subscription', ${createdBy}
+			)
+		`;
+		await tx`
+			UPDATE automations SET current_version_id = ${versionId}
+			WHERE id = ${automationId}
+		`;
+	});
 }
 
 export async function archiveTestAutomationSubscriptions(opts: {

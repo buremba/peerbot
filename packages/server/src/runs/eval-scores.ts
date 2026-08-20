@@ -21,7 +21,7 @@
  *
  * Scores are `semantic_type='eval_score'` events with NULL payload_text and
  * NULL feed_id — the structural exclusion from embedding, search and feed reads
- * that `canvas_state` established. Identity is
+ * that run results established. Identity is
  * `{ ns: 'eval_score', key: '<runId>:<metric>' }`, backed by a partial unique
  * index over chain roots (20260807170010), so a second replica scoring the same
  * run cannot double-write. Rescoring supersedes the head rather than editing it.

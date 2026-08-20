@@ -40,11 +40,11 @@ async function pinAutomation(opts: {
   await sql`
     INSERT INTO automations (
       id, status, created_by, organization_id, agent_id, automation_group_id,
-      notification_channel, notification_priority, min_cooldown_seconds,
+      min_cooldown_seconds,
       device_worker_id, slug, created_at, updated_at
     ) VALUES (
       ${id}, ${opts.status ?? 'active'}, ${opts.createdBy}, ${opts.orgId}, ${opts.agentId}, ${id},
-      'notification', 'normal', 300, ${opts.deviceWorkerId}, ${`w-${id}`}, NOW(), NOW()
+      300, ${opts.deviceWorkerId}, ${`w-${id}`}, NOW(), NOW()
     )
   `;
 }

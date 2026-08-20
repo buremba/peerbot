@@ -172,7 +172,7 @@ describe("normalizeAutomationSources source.context classification", () => {
 		]);
 		// kind:'entity' means its rows reach the agent but are excluded from the
 		// window's content_ids (see automation-mode allContent), so the entity `id`
-		// never hits the automation_window_events → events(id) foreign key.
+		// never hits the automation_run_events → events(id) foreign key.
 		expect(normalized.kind).toBe("entity");
 	});
 

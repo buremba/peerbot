@@ -32,10 +32,10 @@ export interface ContentSearchOptions {
    * never retrieve them through the public read path.
    */
   exclude_workspace_audit?: boolean;
-  window_id?: number; // Filter by automation window ID
-  /** Events linked in any window for this automation (`automation_window_events`). */
+  run_id?: number; // Filter by Automation run ID
+  /** Events analyzed by any run of this automation (`automation_run_events`). */
   analyzed_by_automation_id?: number;
-  exclude_automation_id?: number; // Exclude content already in any window for this automation
+  exclude_automation_id?: number; // Exclude content already analyzed by any run of this automation
   /** Restrict to events this Automation WROTE (events.automation_id). The
    *  counterpart to analyzed_by_automation_id, which is what it READ. */
   produced_by_automation_id?: number;

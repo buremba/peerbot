@@ -283,8 +283,6 @@ export function buildAttributionAndOwned(
       sources: p.sources,
       reactions_guidance: p.reactionsGuidance,
       device_worker_id: p.deviceWorkerId,
-      notification_channel: p.notificationChannel,
-      notification_priority: p.notificationPriority,
       min_cooldown_seconds: p.minCooldownSeconds,
       tags: p.tags,
       agent_kind: p.agentKind,

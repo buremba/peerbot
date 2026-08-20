@@ -74,16 +74,12 @@ describe("normalizeAutomationUpdatePatch", () => {
     expect((clearPatch as Record<string, unknown>).delivery_target).toBeNull();
   });
 
-  it("notification defaults: channel→'canvas', priority→'normal', cooldown→0", () => {
+  it("defaults a cleared cooldown to zero", () => {
     const p = normalizeAutomationUpdatePatch(
       update({
-        notification_channel: null as never,
-        notification_priority: null as never,
         min_cooldown_seconds: null as never,
       })
     );
-    expect(p.notification_channel).toBe("canvas");
-    expect(p.notification_priority).toBe("normal");
     expect(p.min_cooldown_seconds).toBe(0);
   });
 
@@ -98,7 +94,6 @@ describe("normalizeAutomationUpdatePatch", () => {
           },
         ],
         tags: ["a"],
-        notification_channel: "both",
       })
     );
     expect(p).toMatchObject({
@@ -110,7 +105,6 @@ describe("normalizeAutomationUpdatePatch", () => {
         },
       ],
       tags: ["a"],
-      notification_channel: "both",
     });
   });
 

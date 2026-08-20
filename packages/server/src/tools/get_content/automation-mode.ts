@@ -386,19 +386,7 @@ export async function fingerprintAutomationSources(args: {
   const sourceState = Object.fromEntries(
     Object.entries(result.sourcesContent).map(([sourceName, sourceRows]) => [
       sourceName,
-      sourceRows
-        .filter((sourceRow) => {
-          if (typeof sourceRow !== 'object' || sourceRow === null) return true;
-          const record = sourceRow as Record<string, unknown>;
-          if (record.semantic_type !== 'canvas_state') return true;
-          const metadata = record.metadata;
-          return !(
-            typeof metadata === 'object' &&
-            metadata !== null &&
-            Number((metadata as Record<string, unknown>).automation_id) === args.automationId
-          );
-        })
-        .sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+      sourceRows.sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
     ])
   );
   const fingerprint = createHash('sha256')
@@ -632,7 +620,8 @@ export async function handleAutomationMode(
   // Generate signed JWT window token with the exact content IDs returned to
   // the worker. complete_window uses these IDs directly, so window bookkeeping
   // matches what the agent actually saw.
-  // NOTE: window_id is NOT included - it will be created by complete_window.
+  // The signed content set is independent of run identity. complete_window
+  // receives the run id separately from the dispatch prompt or Automation list.
   const windowToken = await generateWindowToken(
     {
       automation_id: automationId,
@@ -676,7 +665,7 @@ export async function handleAutomationMode(
           DATE_TRUNC('month', c.occurred_at) as month,
           COUNT(DISTINCT c.id) as linked
         FROM current_event_records c
-        JOIN automation_window_events iwc ON c.id = iwc.event_id
+        JOIN automation_run_events iwc ON c.id = iwc.event_id
         WHERE c.entity_ids && ARRAY[${entityIdPlaceholders}]::bigint[]
           AND iwc.automation_id = $${sourceEntityIds.length + 1}
         GROUP BY DATE_TRUNC('month', c.occurred_at)

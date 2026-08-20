@@ -104,7 +104,7 @@ describe('buildWorkspaceInstructions render fixes', () => {
         ${sql.json({
           type: 'object',
           properties: {
-            window_id: { type: 'number', description: 'Automation window that produced it' },
+            birding_window_id: { type: 'number', description: 'Birding window that produced it' },
             automation_id: { type: 'number', description: 'Automation that wrote it' },
             observer_count: { type: 'number', description: 'Number of bird observers' },
           },
@@ -228,7 +228,7 @@ describe('buildWorkspaceInstructions render fixes', () => {
     expect(out).toContain('A club for bird observers');
     expect(out).toContain('observer_count (Number of bird observers)');
     expect(out).not.toContain('automation_id');
-    expect(out).toContain('window_id (Automation window that produced it)');
+    expect(out).toContain('birding_window_id (Birding window that produced it)');
   });
 
   it('renders relationship type descriptions', async () => {

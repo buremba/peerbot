@@ -948,8 +948,6 @@ export async function executePlan(
           sources: w.sources,
           reactions_guidance: w.reactionsGuidance,
           device_worker_id: w.deviceWorkerId,
-          notification_channel: w.notificationChannel,
-          notification_priority: w.notificationPriority,
           min_cooldown_seconds: w.minCooldownSeconds,
           tags: w.tags,
           agent_kind: w.agentKind,
@@ -1005,14 +1003,6 @@ export async function executePlan(
               : {}),
             ...(scalarForUpdate.includes("device_worker_id")
               ? { device_worker_id: w.deviceWorkerId ?? null }
-              : {}),
-            ...(scalarForUpdate.includes("notification_channel") &&
-            w.notificationChannel
-              ? { notification_channel: w.notificationChannel }
-              : {}),
-            ...(scalarForUpdate.includes("notification_priority") &&
-            w.notificationPriority
-              ? { notification_priority: w.notificationPriority }
               : {}),
             ...(scalarForUpdate.includes("min_cooldown_seconds") &&
             w.minCooldownSeconds !== undefined

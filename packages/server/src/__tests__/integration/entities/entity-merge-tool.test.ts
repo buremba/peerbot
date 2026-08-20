@@ -355,11 +355,11 @@ describe("manage_entity merge action", () => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6001, ${org.id}, 'personal-agent', ${user.id}, 6001, 'Duplicate merge',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 
 		const automationCtx = {
@@ -911,11 +911,11 @@ describe("manage_entity merge action", () => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6021, ${org.id}, 'personal-agent', ${user.id}, 6021, 'Initiator automation',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 
 		const queued = (await manageEntity(
@@ -965,11 +965,11 @@ describe("manage_entity merge action", () => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6022, ${org.id}, 'other-agent', ${user.id}, 6022, 'Someone elses automation',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 
 		const queued = (await manageEntity(
@@ -977,7 +977,7 @@ describe("manage_entity merge action", () => {
 				action: "merge",
 				entity_id: loser.id,
 				winner_entity_id: winner.id,
-				automation_source: { automation_id: 6022, window_id: 1 },
+				automation_source: { automation_id: 6022, run_id: 1 },
 			},
 			env,
 			{
@@ -1088,19 +1088,19 @@ describe("manage_entity merge action", () => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority, min_cooldown_seconds,
+			   status, min_cooldown_seconds,
 			   created_at, updated_at)
 			VALUES
 			  (6009, ${org.id}, 'personal-agent', ${user.id}, 6009,
-			   'Strict duplicate resolution', 'active', 'canvas', 'normal', 0,
+			   'Strict duplicate resolution', 'active', 0,
 			   now(), now())
 		`;
 		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('automation', 'completed', ${org.id}, 6009, 7001, 'auto', now(), now())
+			  ('automation', 'completed', ${org.id}, 6009, 'auto', now(), now())
 			RETURNING id
 		`;
 
@@ -1117,7 +1117,6 @@ describe("manage_entity merge action", () => {
 				userId: null,
 				agentId: "personal-agent",
 				actingAutomationId: 6009,
-				actingWindowId: 7001,
 				actingRunId: automationRun.id,
 			} as ToolContext,
 		)) as unknown as {
@@ -1136,14 +1135,13 @@ describe("manage_entity merge action", () => {
 		expect(Number(merged.merged_into)).toBe(winner.id);
 		expect(merged.deleted_at).not.toBeNull();
 		const [operation] = await sql`
-			SELECT decision, source_run_id, window_id, status
+			SELECT decision, source_run_id, status
 			FROM entity_merge_operations
 			WHERE organization_id = ${org.id}
 		`;
 		expect(operation).toMatchObject({
 			decision: "auto_merge",
 			source_run_id: automationRun.id,
-			window_id: 7001,
 			status: "active",
 		});
 	});
@@ -1196,19 +1194,19 @@ describe("manage_entity merge action", () => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority, min_cooldown_seconds,
+			   status, min_cooldown_seconds,
 			   created_at, updated_at)
 			VALUES
 			  (${seed}, ${org.id}, 'personal-agent', ${user.id}, ${seed},
-			   'Escalating duplicate resolution', 'active', 'canvas', 'normal', 0,
+			   'Escalating duplicate resolution', 'active', 0,
 			   now(), now())
 		`;
 		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, automation_id, window_id,
+			  (run_type, status, organization_id, automation_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('automation', 'completed', ${org.id}, ${seed}, ${seed + 1000}, 'auto', now(), now())
+			  ('automation', 'completed', ${org.id}, ${seed}, 'auto', now(), now())
 			RETURNING id
 		`;
 		const agentCtx = {
@@ -1216,7 +1214,6 @@ describe("manage_entity merge action", () => {
 			userId: null,
 			agentId: "personal-agent",
 			actingAutomationId: seed,
-			actingWindowId: seed + 1000,
 			actingRunId: automationRun.id,
 		} as ToolContext;
 		return { org, user, sql, winner, loser, agentCtx };
@@ -1463,11 +1460,11 @@ export default (row) => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority,
+			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
 			  (6010, ${org.id}, 'personal-agent', ${user.id}, 6010,
-			   'Duplicate discovery', 'active', 'canvas', 'normal', 0, now(), now())
+			   'Duplicate discovery', 'active', 0, now(), now())
 		`;
 
 		const result = await manageEntity(
@@ -1517,11 +1514,11 @@ export default (row) => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority,
+			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
 			  (6013, ${org.id}, 'personal-agent', ${user.id}, 6013,
-			   'Default person resolution', 'active', 'canvas', 'normal', 0,
+			   'Default person resolution', 'active', 0,
 			   now(), now())
 		`;
 
@@ -1602,11 +1599,11 @@ export default (row) => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority,
+			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
 			  (6012, ${org.id}, 'personal-agent', ${user.id}, 6012,
-			   'Individual duplicate review', 'active', 'canvas', 'normal', 0,
+			   'Individual duplicate review', 'active', 0,
 			   now(), now())
 		`;
 
@@ -1655,11 +1652,11 @@ export default (row) => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority,
+			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
 			  (6011, ${org.id}, 'personal-agent', ${user.id}, 6011,
-			   'Rejected resolution', 'active', 'canvas', 'normal', 0, now(), now())
+			   'Rejected resolution', 'active', 0, now(), now())
 		`;
 		const automationCtx = {
 			...ctx(org.id, user.id, "owner"),
@@ -1736,30 +1733,37 @@ export default (row) => {
 		await sql`
 			INSERT INTO automations
 			  (id, organization_id, agent_id, created_by, automation_group_id, name,
-			   status, notification_channel, notification_priority,
+			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
 			  (6014, ${org.id}, 'personal-agent', ${user.id}, 6014,
-			   'Cross-window resolution', 'active', 'canvas', 'normal', 0,
+			   'Cross-window resolution', 'active', 0,
 			   now(), now())
 		`;
-		const automationCtx = (windowId: number) =>
+		const sourceRuns = await sql<{ id: number }[]>`
+			INSERT INTO runs (organization_id, automation_id, run_type, status)
+			VALUES
+				(${org.id}, 6014, 'automation', 'completed'),
+				(${org.id}, 6014, 'automation', 'completed')
+			RETURNING id
+		`;
+		const automationCtx = (runId: number) =>
 			({
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
 				actingAutomationId: 6014,
-				actingWindowId: windowId,
+				actingRunId: runId,
 			}) as ToolContext;
 		const first = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			automationCtx(7101),
+			automationCtx(sourceRuns[0].id),
 		)) as unknown as { approval_run_id: number };
 		const second = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			automationCtx(7102),
+			automationCtx(sourceRuns[1].id),
 		)) as unknown as { approval_run_id: number };
 		expect(second.approval_run_id).not.toBe(first.approval_run_id);
 
@@ -1888,11 +1892,11 @@ export default (row) => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6003, ${org.id}, 'personal-agent', ${user.id}, 6003, 'Group duplicate merge',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 
 		const queued = (await manageEntity(
@@ -1979,11 +1983,11 @@ export default (row) => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6004, ${org.id}, 'personal-agent', ${user.id}, 6004, 'Stale group merge',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 		const queued = (await manageEntity(
 			{
@@ -2038,11 +2042,11 @@ export default (row) => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6015, ${org.id}, 'personal-agent', ${user.id}, 6015, 'Identity staleness',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 
 		const queued = (await manageEntity(
@@ -2212,11 +2216,11 @@ export default (row) => {
 		await sql`
       INSERT INTO automations
         (id, organization_id, agent_id, created_by, automation_group_id, name,
-         status, notification_channel, notification_priority, min_cooldown_seconds,
+         status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (6002, ${org.id}, 'personal-agent', ${user.id}, 6002, 'Stale duplicate merge',
-         'active', 'canvas', 'normal', 0, now(), now())
+         'active', 0, now(), now())
     `;
 
 		const queued = (await manageEntity(

@@ -1200,8 +1200,6 @@ interface AutomationProjection {
   reactionsGuidance?: string | null;
   deviceWorkerId?: string | null;
   model?: string | null;
-  notificationChannel?: string | null;
-  notificationPriority?: string | null;
   minCooldownSeconds?: number | null;
   tags?: string[] | null;
   agentKind?: string | null;
@@ -1248,14 +1246,6 @@ export const projectDesiredAutomation = (
       : typeof remote?.execution_config?.model === "string"
         ? (remote.execution_config.model as string)
         : null,
-  notificationChannel:
-    d.notificationChannel !== undefined
-      ? d.notificationChannel
-      : (remote?.notification_channel ?? null),
-  notificationPriority:
-    d.notificationPriority !== undefined
-      ? d.notificationPriority
-      : (remote?.notification_priority ?? null),
   minCooldownSeconds:
     d.minCooldownSeconds !== undefined
       ? d.minCooldownSeconds
@@ -1288,8 +1278,6 @@ const projectRemoteAutomation = (
     typeof w.execution_config?.model === "string"
       ? (w.execution_config.model as string)
       : null,
-  notificationChannel: w.notification_channel ?? null,
-  notificationPriority: w.notification_priority ?? null,
   minCooldownSeconds: w.min_cooldown_seconds ?? null,
   tags: w.tags ?? [],
   agentKind: w.agent_kind ?? null,
@@ -1426,18 +1414,6 @@ function diffAutomation(
     desired.deviceWorkerId !== (remote.device_worker_id ?? undefined)
   ) {
     scalar.push("device_worker_id");
-  }
-  if (
-    desired.notificationChannel !== undefined &&
-    desired.notificationChannel !== (remote.notification_channel ?? undefined)
-  ) {
-    scalar.push("notification_channel");
-  }
-  if (
-    desired.notificationPriority !== undefined &&
-    desired.notificationPriority !== (remote.notification_priority ?? undefined)
-  ) {
-    scalar.push("notification_priority");
   }
   if (
     desired.minCooldownSeconds !== undefined &&

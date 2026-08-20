@@ -13,7 +13,7 @@ import {
 } from "../automations/workspace-event-contract";
 import { intervals } from "../config/intervals";
 import type { DbClient } from "../db/client";
-import { getDb, parsePgNumberArray, pgTextArray } from "../db/client";
+import { getDb, pgTextArray } from "../db/client";
 import { getInternalGatewayUrl } from "../gateway/config/index";
 import { incrementCounter, setGauge } from "../gateway/metrics/prometheus";
 import type { Env } from "../index";
@@ -28,24 +28,16 @@ import { materializeDueItems } from "../scheduled/due-materializer";
 import { markStaleRunsAsTimeout } from "../scheduled/stale-run-sweeper";
 import { fingerprintAutomationSources } from "../tools/get_content/automation-mode";
 import { nextRunAt } from "../utils/cron";
-import { ensureCanvasEntity, findCanvasHead } from "../utils/canvas-events";
-import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { ToolUserError } from "../utils/errors";
-import { isUniqueViolation } from "../utils/pg-errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import {
-	automationOutputOccurredAt,
-	computePendingWindow,
-} from "../utils/window-utils";
+import { computePendingWindow } from "../utils/window-utils";
 import {
 	advanceScheduleAfterTerminalFailure,
 	advanceAutomationSchedule,
 } from "./schedule-cursor";
 import {
-	findWindowIdForRun,
-	markAutomationRunCompleted,
 	resolveAutomationRunsByMessageIds,
 } from "./run-completion";
 import {
@@ -296,69 +288,23 @@ async function enqueueAutomationRunForRecord(
 	return queued;
 }
 
-async function persistSkippedAutomationWindow(
+async function completeSkippedAutomationRun(
 	sql: DbClient,
-	automation: DueAutomationRow,
+	runId: number,
 	granularity: AutomationTimeGranularity,
-	windowStart: Date,
-	windowEnd: Date,
 ): Promise<void> {
-	try {
-		await sql.begin(async (tx) => {
-			const period = {
-				automationId: automation.id,
-				granularity,
-				windowStart: windowStart.toISOString(),
-			};
-			if (await findCanvasHead(tx, period)) return;
-
-			const entityIds = parsePgNumberArray(automation.entity_ids);
-			const canvasEntityId = await ensureCanvasEntity({
-				tx,
-				automationId: automation.id,
-				organizationId: automation.organization_id,
-				parentEntityId: entityIds[0] ?? null,
-				createdBy: automation.created_by,
-			});
-			await insertEvent(
-				{
-					entityIds: canvasEntityId == null ? [] : [canvasEntityId],
-					organizationId: automation.organization_id,
-					originId: `canvas_skip_${randomUUID()}`,
-					payloadType: "json_template",
-					payloadData: {},
-					semanticType: "canvas_state",
-					metadata: {
-						automation_id: automation.id,
-						granularity,
-						window_start: windowStart.toISOString(),
-						window_end: windowEnd.toISOString(),
-						content_analyzed: 0,
-						version_id:
-							automation.current_version_id == null
-								? null
-								: Number(automation.current_version_id),
-					},
-					// `computePendingWindow` resolves to the CURRENT period whenever the
-					// cursor has caught up, so `windowEnd` is a future instant for the
-					// whole period. Third writer of this stamp — see
-					// `automationOutputOccurredAt`.
-					occurredAt: automationOutputOccurredAt(windowEnd),
-					automationId: automation.id,
-					automationVersionId:
-						automation.current_version_id == null
-							? null
-							: Number(automation.current_version_id),
-					createdBy: automation.created_by,
-				},
-				{ sql: tx },
-			);
-		});
-	} catch (error) {
-		// Two scheduler replicas can fingerprint the same due period. The unique
-		// canvas-root index makes the cursor write a DB-mediated idempotent race.
-		if (!isUniqueViolation(error, "idx_canvas_chain_root")) throw error;
-	}
+	await sql`
+		UPDATE runs
+		SET status = 'completed',
+		    outcome = ${classifyRunOutcome({ status: "completed" })},
+		    action_output = '{}'::jsonb,
+		    approved_input = COALESCE(approved_input, '{}'::jsonb)
+		      || jsonb_build_object('granularity', ${granularity}::text),
+		    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
+		      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
+		    completed_at = current_timestamp
+		WHERE id = ${runId} AND status = 'pending'
+	`;
 }
 
 export async function enqueueAutomationRunForAutomation(
@@ -443,41 +389,7 @@ export async function reconcileAutomationRuns(
 	db?: DbClient
 ): Promise<ReconcileAutomationRunsResult> {
 	const sql = db ?? getDb();
-	// Canvas-on-events: an active run that already produced a canvas window (the
-	// completion committed the canvas_state event but the run status update didn't
-	// stick) is reconciled to 'completed'. A fresh completion stamps its run_id on
-	// the chain ROOT; a replace_existing completion stamps the superseding HEAD —
-	// so join runs → ANY canvas member on run_id and resolve the window identity
-	// via metadata.root_event_id (a root omits it → its own id). Scoped to
-	// canvas_state so it never matches tab_event/tab_snapshot BROWSER rows
-	// carrying run_id.
-	const rows = await sql`
-    SELECT r.id, r.dispatched_message_id,
-           COALESCE((ww.metadata->>'root_event_id')::bigint, ww.id) AS window_id
-    FROM runs r
-    JOIN events ww
-      ON ww.run_id = r.id
-     AND ww.semantic_type = 'canvas_state'
-    WHERE r.run_type = 'automation'
-      AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-    ORDER BY r.created_at ASC
-    LIMIT 100
-  `;
-
 	let reconciled = 0;
-
-	for (const row of rows) {
-		const runId = Number((row as { id: unknown }).id);
-		const windowId = Number((row as { window_id: unknown }).window_id);
-		const fallbackModel =
-			typeof (row as { dispatched_message_id?: unknown })
-				.dispatched_message_id === "string"
-				? "lobu-agent"
-				: undefined;
-
-		await markAutomationRunCompleted(sql, runId, windowId, fallbackModel);
-		reconciled++;
-	}
 
 	// Find the (small) set of active automation runs awaiting a dispatched
 	// message. If there are none — the common steady state — skip the heavy
@@ -598,7 +510,7 @@ export async function sweepStaleAutomationRuns(
 	);
 	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
 		// Both lanes: this is a pure status UPDATE with no schedule-cursor or
-		// canvas side effect, so terminating a crashed eval cannot touch the
+		// live result side effect, so terminating a crashed eval cannot touch the
 		// Automation it replays. Without it a `running` eval never reaches a
 		// terminal state and its same-lane claim guard wedges the eval lane.
 		// `finalizeStalePendingAutomationRuns` above stays automation-only on
@@ -877,13 +789,22 @@ export async function materializeDueAutomationRuns(
 					sourceState.empty ||
 					previous[0]?.fingerprint === sourceState.fingerprint
 				) {
-					await persistSkippedAutomationWindow(
+					const skippedRun = await enqueueAutomationRunForRecord(
 						sql,
 						automation,
-						granularity,
-						windowStart,
-						windowEnd,
+						"scheduled",
+						sourceFingerprint,
 					);
+					// `created: false` means this reused an already-active run that a
+					// concurrent replica materialized for real work. Completing that
+					// row as "skipped" would silently kill a live dispatch.
+					if (skippedRun.created) {
+						await completeSkippedAutomationRun(
+							sql,
+							skippedRun.runId,
+							granularity,
+						);
+					}
 					await advanceAutomationSchedule(sql, automation.id);
 					logger.info(
 						{ automationId: automation.id, empty: sourceState.empty },
@@ -1103,13 +1024,12 @@ export function buildDispatchMessage(params: {
 		"Required steps:",
 		`1. Call query_sdk with a script that runs client.knowledge.read({ automation_id: ${params.automationId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}", limit: 25${workspaceContentIds.length > 0 ? `, content_ids: [${workspaceContentIds.join(", ")}]` : ""}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Keep the returned window_token from every page you actually analyze.`,
 		`2. Follow the Automation instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id. Collect that page's window_token too; do this for every additional page you actually analyze.`,
-		`3. Call run_sdk with a script that runs client.automations.completeWindow({ window_tokens: [all window_token values from pages you actually analyzed], extracted_data, automation_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Pass exactly one token per page you actually analyzed, including the first page.`,
+		`3. Call run_sdk with a script that runs client.automations.completeWindow({ window_tokens: [all window_token values from pages you actually analyzed], extracted_data, run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Pass exactly one token per page you actually analyzed, including the first page.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
 			{
 				executor: params.executor ?? "lobu-agent",
 				...(params.agentId ? { agent_id: params.agentId } : {}),
-				automation_run_id: params.runId,
 				dispatch_source: params.payload.dispatch_source,
 				...(params.sessionAgentId ? { session_agent_id: params.sessionAgentId } : {}),
 			},
@@ -1342,16 +1262,6 @@ async function dispatchAutomationRun(
 			"Automation run is missing a valid dispatch payload."
 		);
 		return "failed";
-	}
-
-	// Already-produced window for this exact run (e.g. retry after crash, or an
-	// external complete_window whose tx committed the canvas but lost the status
-	// update). No provenance stamp: the window can predate this dispatch, so
-	// being claimed for the platform agent does NOT prove the agent produced it.
-	const existingWindowId = await findWindowIdForRun(sql, run.id);
-	if (existingWindowId) {
-		await markAutomationRunCompleted(sql, run.id, existingWindowId);
-		return "reconciled";
 	}
 
 	if (

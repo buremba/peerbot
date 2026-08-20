@@ -9,7 +9,6 @@ const context = {
   extracted_data: { run: true, exclude_email: "emrekabakci@gmail.com" },
   entities: [],
   window: {
-    id: 99,
     run_id: 1234,
     automation_id: 42,
     window_start: "2026-08-13T12:00:00.000Z",
@@ -103,7 +102,7 @@ describe("Lobu Team product activity digest reaction", () => {
       title: "Lobu production activity digest",
       recipients: "admins",
       idempotency_key: "product-activity-digest:run:1234",
-      automation_source: { automation_id: 42, window_id: 99 },
+      automation_source: { automation_id: 42, run_id: 1234 },
     });
     const serializedCard = JSON.stringify(notification?.card);
     expect(serializedCard).toContain("Ada Lovelace");

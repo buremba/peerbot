@@ -633,13 +633,12 @@ export async function dispatchChromeActionToExtension(params: {
 
   let createdByUserId = visibilityUserId;
   let automationId: number | null = null;
-  let windowId: number | null = null;
   let activatedDeviceWorkerId: string | null = null;
   let activationTabId: number | null = null;
   let activationTargetUrls: string[] = [];
   if (parentRunId != null) {
     const parentRows = (await sql`
-      SELECT created_by_user_id, automation_id, window_id,
+      SELECT created_by_user_id, automation_id,
              activated_by_device_worker_id, activation_tab_id,
              activation_target_urls
       FROM runs
@@ -649,7 +648,6 @@ export async function dispatchChromeActionToExtension(params: {
     `) as Array<{
       created_by_user_id: string | null;
       automation_id: number | null;
-      window_id: number | null;
       activated_by_device_worker_id: string | null;
       activation_tab_id: number | null;
       activation_target_urls: string | string[] | null;
@@ -663,8 +661,6 @@ export async function dispatchChromeActionToExtension(params: {
     createdByUserId = parentRows[0].created_by_user_id;
     automationId =
       parentRows[0].automation_id == null ? null : Number(parentRows[0].automation_id);
-    windowId =
-      parentRows[0].window_id == null ? null : Number(parentRows[0].window_id);
     activatedDeviceWorkerId = parentRows[0].activated_by_device_worker_id;
     activationTabId =
       parentRows[0].activation_tab_id == null
@@ -786,7 +782,7 @@ export async function dispatchChromeActionToExtension(params: {
       requireCompiledCode: false,
       createdByUserId,
       automationId,
-      windowId,
+      parentRunId,
     });
     runId = claim.runId;
   } catch (err) {

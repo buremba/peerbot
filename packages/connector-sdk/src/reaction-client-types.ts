@@ -48,7 +48,7 @@ export interface KnowledgeSaveInput {
   /** Stable producer key used to collapse reaction retries. */
   idempotency_key?: string;
   occurred_at?: string;
-  automation_source?: { automation_id: number; window_id: number };
+  automation_source?: { automation_id: number; run_id: number };
 }
 
 export interface KnowledgeReadInput {
@@ -144,7 +144,7 @@ export interface NotificationsSendInput {
    */
   semantic_type?: string;
   /** Attribution when sent from an automation reaction. */
-  automation_source?: { automation_id: number; window_id: number };
+  automation_source?: { automation_id: number; run_id: number };
   /**
    * Turn the notification into a human question on the existing approval rail.
    * `{}` is a binary Approve/Reject decision; a field-shaped schema renders a
@@ -288,7 +288,7 @@ export interface ReactionClient {
         urls: string[];
         expires_in_seconds?: number;
       };
-      automation_source?: { automation_id: number; window_id: number };
+      automation_source?: { automation_id: number; run_id: number };
     }): Promise<{
       status?:
         | "completed"

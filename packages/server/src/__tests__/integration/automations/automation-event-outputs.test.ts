@@ -22,6 +22,24 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
+async function createResultRun(
+  sql: DbClient,
+  organizationId: string,
+  automationId: number
+): Promise<number> {
+  const [run] = await sql<{ id: number }>`
+    INSERT INTO runs (
+      organization_id, run_type, automation_id, approval_status,
+      status, action_output, completed_at
+    ) VALUES (
+      ${organizationId}, 'automation', ${automationId}, 'auto',
+      'completed', '{}'::jsonb, current_timestamp
+    )
+    RETURNING id
+  `;
+  return Number(run.id);
+}
+
 describe('Automation event outputs', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
@@ -95,7 +113,7 @@ describe('Automation event outputs', () => {
     ).resolves.toMatchObject({ valid: true });
   });
 
-  it('appends multiple run-linked events and deduplicates a completion retry', async () => {
+  it('appends multiple events linked to their producing run', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Automation Event Output Org' });
     await ensureMemberEntityType(workspace.org.id);
@@ -238,15 +256,12 @@ describe('Automation event outputs', () => {
       ],
     };
 
-    const complete = () =>
-      api.automations.completeWindow({
-        automation_id: String(automationId),
-        window_token: knowledge.window_token,
-        extracted_data: extracted,
-        automation_run_id: queued.runId,
-      });
-    const firstCompletion = (await complete()) as { window_id: number };
-    await complete();
+    await api.automations.completeWindow({
+      automation_id: String(automationId),
+      window_token: knowledge.window_token,
+      extracted_data: extracted,
+      run_id: queued.runId,
+    });
 
     const rows = await sql<{
       id: number;
@@ -311,40 +326,6 @@ describe('Automation event outputs', () => {
             task.action_input.payload.eventId
       )
     ).toBe(true);
-
-    await api.automations.completeWindow({
-      automation_id: String(automationId),
-      window_token: knowledge.window_token,
-      extracted_data: {
-        ...extracted,
-        observations: [
-          ...extracted.observations,
-          {
-            title: 'Missing ancestry observation',
-            content: 'Persist this output without restarting its causal chain.',
-            metadata: { rank: 3 },
-          },
-        ],
-      },
-    });
-    const missingAncestryEvents = await sql<{ id: number }>`
-      SELECT id
-      FROM events
-      WHERE organization_id = ${workspace.org.id}
-        AND automation_id = ${automationId}
-        AND metadata->>'automation_output' = 'observations'
-        AND metadata->>'rank' = '3'
-    `;
-    expect(missingAncestryEvents).toHaveLength(1);
-    expect(
-      await sql`
-        SELECT id
-        FROM runs
-        WHERE run_type = 'task'
-          AND action_key = 'activate-workspace-event'
-          AND action_input->'payload'->>'eventId' = ${String(missingAncestryEvents[0]?.id)}
-      `
-    ).toHaveLength(0);
 
     const observationTask = activationTasks.find((task) =>
       observations.some(
@@ -549,7 +530,7 @@ describe('Automation event outputs', () => {
     );
 
     // A source-derived idempotency key is intentionally stronger than the
-    // Canvas-revision retry key: a later run that rediscovers the same post
+    // positional retry key: a later run that rediscovers the same post
     // reuses the original event instead of appending a duplicate.
     const laterRun = await createAutomationRun({
       organizationId: workspace.org.id,
@@ -568,8 +549,6 @@ describe('Automation event outputs', () => {
         automationId,
         versionId: null,
         organizationId: workspace.org.id,
-        windowId: firstCompletion.window_id,
-        canvasRevisionId: firstCompletion.window_id,
         runId: laterRun.runId,
         boundEntityIds: [parent.id],
         validContentIds: new Set([source.id]),
@@ -593,8 +572,6 @@ describe('Automation event outputs', () => {
           automationId,
           versionId: null,
           organizationId: workspace.org.id,
-          windowId: firstCompletion.window_id,
-          canvasRevisionId: firstCompletion.window_id,
           runId: laterRun.runId,
           boundEntityIds: [parent.id],
           validContentIds: new Set([source.id]),
@@ -644,25 +621,28 @@ describe('Automation event outputs', () => {
       occurredAt: new Date().toISOString(),
       createdBy: ownerUserId,
     };
-    const persist = (rows: unknown[], windowId: number) =>
-      sql.begin((tx) =>
+    const persist = async (rows: unknown[]) => {
+      const runId = await createResultRun(
+        sql as unknown as DbClient,
+        workspace.org.id,
+        automationId
+      );
+      return sql.begin((tx) =>
         persistAutomationEventOutput({
           tx: tx as unknown as DbClient,
           rows,
-          windowId,
-          canvasRevisionId: windowId,
-          runId: null,
+          runId,
           ...baseParams,
         })
       );
+    };
 
     // Run 1: two profiles under distinct keys.
     await persist(
       [
         { content: 'X voice v1', metadata: { channel: 'x', mode: 'voice' } },
         { content: 'X taste v1', metadata: { channel: 'x', mode: 'taste' } },
-      ],
-      9001
+      ]
     );
     let rows = await sql<{
       id: number;
@@ -681,7 +661,7 @@ describe('Automation event outputs', () => {
 
     // Run 2: refine only the x:voice profile. The new event supersedes the old
     // head; x:taste is untouched and still a head.
-    await persist([{ content: 'X voice v2', metadata: { channel: 'x', mode: 'voice' } }], 9002);
+    await persist([{ content: 'X voice v2', metadata: { channel: 'x', mode: 'voice' } }]);
     rows = await sql<{
       id: number;
       payload_text: string;
@@ -716,7 +696,7 @@ describe('Automation event outputs', () => {
       )
       RETURNING id
     `;
-    await persist([{ content: 'X voice v3', metadata: { channel: 'x', mode: 'voice' } }], 9003);
+    await persist([{ content: 'X voice v3', metadata: { channel: 'x', mode: 'voice' } }]);
     const v3 = await sql<{ id: number; supersedes_event_id: number | null }>`
       SELECT id, supersedes_event_id
       FROM events
@@ -749,7 +729,7 @@ describe('Automation event outputs', () => {
       )
       RETURNING id
     `;
-    await persist([{ content: 'Y voice v1', metadata: { channel: 'y', mode: 'voice' } }], 9006);
+    await persist([{ content: 'Y voice v1', metadata: { channel: 'y', mode: 'voice' } }]);
     const adoptedNext = await sql<{ supersedes_event_id: number | null }>`
       SELECT supersedes_event_id
       FROM events
@@ -761,15 +741,14 @@ describe('Automation event outputs', () => {
     // message comes from computeStableKey — the one validator — so it names the
     // offending field rather than the declaration as a whole.
     await expect(
-      persist([{ content: 'no key', metadata: { channel: 'x' } }], 9004)
+      persist([{ content: 'no key', metadata: { channel: 'x' } }])
     ).rejects.toThrow(/invalid key \(channel, mode\).*'mode' must be present/);
     await expect(
       persist(
         [
           { content: 'dup 1', metadata: { channel: 'y', mode: 'voice' } },
           { content: 'dup 2', metadata: { channel: 'y', mode: 'voice' } },
-        ],
-        9005
+        ]
       )
     ).rejects.toThrow(/duplicate key/);
   });
@@ -829,8 +808,13 @@ describe('Automation event outputs', () => {
       wrapped.savepoint = tx.savepoint.bind(tx);
       return wrapped;
     };
-    const persist = (event: 'observation' | 'draft_reply') =>
-      sql.begin((tx) =>
+    const persist = async (event: 'observation' | 'draft_reply') => {
+      const runId = await createResultRun(
+        sql as unknown as DbClient,
+        workspace.org.id,
+        automationId
+      );
+      return sql.begin((tx) =>
         persistAutomationEventOutput({
           tx: pauseAfterInitialLookup(tx as unknown as DbClient),
           rows: [{ content: `${event} result`, idempotency_key: 'shared-source' }],
@@ -839,15 +823,14 @@ describe('Automation event outputs', () => {
           automationId,
           versionId: null,
           organizationId: workspace.org.id,
-          windowId: 1,
-          canvasRevisionId: 1,
-          runId: null,
+          runId,
           boundEntityIds: [parent.id],
           validContentIds: new Set(),
           occurredAt: new Date().toISOString(),
           createdBy: ownerUserId,
         })
       );
+    };
 
     const results = await Promise.allSettled([
       persist('observation'),
@@ -862,84 +845,7 @@ describe('Automation event outputs', () => {
     });
   });
 
-  it('appends changed unkeyed output for a Canvas replacement and deduplicates its retry', async () => {
-    const sql = getTestDb();
-    const workspace = await TestWorkspace.create({ name: 'Automation Event Replacement Org' });
-    const ownerUserId = workspace.users.owner.id;
-    const parent = await createTestEntity({
-      name: 'Observed account',
-      organization_id: workspace.org.id,
-      created_by: ownerUserId,
-    });
-    const agent = await createTestAgent({
-      organizationId: workspace.org.id,
-      ownerUserId,
-      agentId: 'event-replacement-agent',
-    });
-    const api = await TestApiClient.for({
-      organizationId: workspace.org.id,
-      userId: ownerUserId,
-      memberRole: 'owner',
-    });
-    const created = (await api.automations.create({
-      entity_id: parent.id,
-      slug: 'event-replacement-automation',
-      prompt: 'Return one observation.',
-      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      outputs: { observations: { event: 'observation' } },
-      agent_id: agent.agentId,
-    })) as { automation_id: string };
-    const automationId = Number(created.automation_id);
-    await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
-
-    const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-    const pending = await computePendingWindow(sql as unknown as DbClient, automationId, granularity);
-    await createTestEvent({
-      entity_id: parent.id,
-      organization_id: workspace.org.id,
-      content: 'A source event for this window.',
-      occurred_at: new Date(pending.windowStart.getTime() + 60 * 60 * 1000),
-    });
-    const knowledge = (await api.knowledge.read({ automation_id: automationId })) as {
-      window_token: string;
-    };
-
-    const first = (await api.automations.completeWindow({
-      automation_id: String(automationId),
-      window_token: knowledge.window_token,
-      extracted_data: { observations: [{ content: 'First analysis.' }] },
-    })) as { window_id: number };
-    const replace = () =>
-      api.automations.completeWindow({
-        automation_id: String(automationId),
-        window_token: knowledge.window_token,
-        extracted_data: { observations: [{ content: 'Replacement analysis.' }] },
-        replace_existing: true,
-      });
-    const replacement = (await replace()) as { window_id: number };
-    expect(replacement.window_id).toBe(first.window_id);
-
-    await api.automations.completeWindow({
-      automation_id: String(automationId),
-      window_token: knowledge.window_token,
-      extracted_data: { observations: [{ content: 'Replacement analysis.' }] },
-    });
-
-    const outputs = await sql<{ content: string; revision_id: string }>`
-      SELECT payload_text AS content, metadata->>'window_revision_id' AS revision_id
-      FROM events
-      WHERE organization_id = ${workspace.org.id}
-        AND metadata->>'automation_output' = 'observations'
-      ORDER BY id
-    `;
-    expect(outputs.map((row) => row.content)).toEqual([
-      'First analysis.',
-      'Replacement analysis.',
-    ]);
-    expect(new Set(outputs.map((row) => row.revision_id)).size).toBe(2);
-  });
-
-  it('gives each source item its own origin_id across runs sharing one Canvas revision', async () => {
+  it('gives each source item its own origin_id across runs in one period', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Origin Id Org' });
     const ownerUserId = workspace.users.owner.id;
@@ -968,13 +874,15 @@ describe('Automation event outputs', () => {
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 
-    // Prod shape (Automation 71, "Social interest radar"): an hourly Automation whose
-    // runs all append to the SAME Canvas revision for the day. Each run ranks a
-    // different post and carries that post's own origin_id as idempotency_key,
-    // so every row is a genuinely distinct source item — not a retry.
-    const canvasRevisionId = 4828152;
-    const persistOne = (idempotencyKey: string, content: string) =>
-      sql.begin((tx) =>
+    // Each run ranks a different post and carries that post's own origin_id as
+    // idempotency_key, so every row is a distinct source item, not a retry.
+    const persistOne = async (idempotencyKey: string, content: string) => {
+      const runId = await createResultRun(
+        sql as unknown as DbClient,
+        workspace.org.id,
+        automationId
+      );
+      return sql.begin((tx) =>
         persistAutomationEventOutput({
           tx: tx as unknown as DbClient,
           rows: [{ content, idempotency_key: idempotencyKey }],
@@ -983,15 +891,14 @@ describe('Automation event outputs', () => {
           automationId,
           versionId: null,
           organizationId: workspace.org.id,
-          windowId: canvasRevisionId,
-          canvasRevisionId,
-          runId: null,
+          runId,
           boundEntityIds: [parent.id],
           validContentIds: new Set<number>(),
           occurredAt: new Date().toISOString(),
           createdBy: ownerUserId,
         })
       );
+    };
 
     const first = await persistOne('2085196582245355991', 'johnzabroski / x');
     const second = await persistOne(
@@ -1006,7 +913,7 @@ describe('Automation event outputs', () => {
     // ...and therefore two different stable identities. Deriving origin_id from
     // the array index instead made every run's item N collide, so one origin_id
     // resolved to a set of unrelated posts (prod: 8 live rows under
-    // automation_71_signals_canvas_4819569_4, each a different author).
+    // one legacy positional identity, each a different author).
     expect(second[0].origin_id).not.toBe(first[0].origin_id);
 
     const live = await sql<{ origin_id: string; payload_text: string }>`

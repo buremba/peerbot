@@ -1009,22 +1009,12 @@ function formatManageAutomationsResult(result: any, _options: FormatterOptions):
     if (result.view_url) {
       md += `- **View**: [${result.view_url}](${result.view_url})\n`;
     }
-    // External submission fields
-    if (result.window_id) {
-      md += '\n### Window Created\n\n';
-      md += `- **Window ID**: \`${result.window_id}\`\n`;
-      md += `- **Period**: ${new Date(result.window_start).toLocaleDateString()} - ${new Date(result.window_end).toLocaleDateString()}\n`;
-      md += `- **Content Linked**: ${result.content_linked}\n`;
-      if (result.replaced_existing) {
-        md += '- **Note**: Replaced existing window\n';
-      }
-    }
   }
 
   if (action === 'complete_window') {
     md += '## ✅ Window Completed\n\n';
     md += `- **Automation ID**: \`${result.automation_id}\`\n`;
-    md += `- **Window ID**: \`${result.window_id}\`\n`;
+    md += `- **Run ID**: \`${result.run_id}\`\n`;
     md += `- **Period**: ${result.window_start?.substring(0, 10)} - ${result.window_end?.substring(0, 10)}\n`;
     md += `- **Content Linked**: ${result.content_linked}\n`;
   }

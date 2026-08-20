@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../index';
+import { createAutomationRun } from '../../runs/queue-service';
 import {
   dispatchChromeAction,
   TARGET_BROWSER_CONNECTION_INPUT_KEY,
@@ -77,15 +78,15 @@ describe('dispatchChromeAction target browser routing', () => {
     orgId: string,
     createdByUserId?: string,
     automationId?: number,
-    windowId?: number
+    parentRunId?: number
   ): Promise<number> {
     const [run] = (await sql`
       INSERT INTO runs (
         organization_id, run_type, action_key, status, claimed_by, claimed_at,
-        created_by_user_id, automation_id, window_id
+        created_by_user_id, automation_id, parent_run_id
       ) VALUES (
         ${orgId}, 'action', 'prepare_reply', 'running', 'connector-worker-1', NOW(),
-        ${createdByUserId ?? null}, ${automationId ?? null}, ${windowId ?? null}
+        ${createdByUserId ?? null}, ${automationId ?? null}, ${parentRunId ?? null}
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -255,17 +256,14 @@ describe('dispatchChromeAction target browser routing', () => {
       FROM next_id
       RETURNING id
     `;
-    const [window] = await sql`
-      INSERT INTO events (
-        organization_id, semantic_type, payload_type, payload_data,
-        automation_id, metadata, occurred_at, created_at, created_by
-      ) VALUES (
-        ${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
-        ${Number(automation.id)},
-        ${sql.json({ automation_id: Number(automation.id) })}, NOW(), NOW(), ${creator.id}
-      )
-      RETURNING id
-    `;
+    const sourceRun = await createAutomationRun({
+      organizationId: org.id,
+      automationId: Number(automation.id),
+      agentId: agent.agentId,
+      windowStart: '2026-08-10T00:00:00.000Z',
+      windowEnd: '2026-08-10T01:00:00.000Z',
+      dispatchSource: 'manual',
+    }, sql);
     const [worker] = await sql`
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
@@ -290,7 +288,7 @@ describe('dispatchChromeAction target browser routing', () => {
       org.id,
       undefined,
       Number(automation.id),
-      Number(window.id)
+      sourceRun.runId
     );
 
     const responsePromise = app.request('/dispatch', {
@@ -309,7 +307,7 @@ describe('dispatchChromeAction target browser routing', () => {
 
     await vi.waitFor(async () => {
       const childRows = await sql`
-        SELECT id, created_by_user_id, automation_id, window_id
+        SELECT id, created_by_user_id, automation_id, parent_run_id
         FROM runs
         WHERE organization_id = ${org.id}
           AND connector_key = 'chrome'
@@ -321,7 +319,7 @@ describe('dispatchChromeAction target browser routing', () => {
       const child = childRows[0];
       expect(child.created_by_user_id).toBeNull();
       expect(Number(child.automation_id)).toBe(Number(automation.id));
-      expect(Number(child.window_id)).toBe(Number(window.id));
+      expect(Number(child.parent_run_id)).toBe(runId);
       await sql`
         UPDATE runs
         SET status = 'completed', action_output = '{}'::jsonb, completed_at = NOW()

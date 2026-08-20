@@ -36,7 +36,6 @@ import {
 import { advanceAutomationSchedule } from "../../../automations/schedule-cursor";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
-	createCanvasWindow,
 	createTestAgent,
 	createTestEntity,
 	createTestEvent,
@@ -164,56 +163,6 @@ describe("automation contract", () => {
 		expect(payload.dispatch_source).toBe("scheduled");
 	});
 
-	it("reconciles a queued automation run when a correlated window already exists", async () => {
-		const { sql, dbClient, workspace, automationId, agent } =
-			await createAutomatedAutomation();
-
-		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-		const { windowStart, windowEnd } = await computePendingWindow(
-			dbClient,
-			automationId,
-			granularity
-		);
-		const queued = await createAutomationRun({
-			organizationId: workspace.org.id,
-			automationId,
-			agentId: agent.agentId,
-			windowStart: windowStart.toISOString(),
-			windowEnd: windowEnd.toISOString(),
-			dispatchSource: "scheduled",
-		});
-
-		// Canvas-on-events: the correlated window is a canvas_state chain root
-		// stamped with this run_id — what the reconciler joins runs to.
-		const windowRootId = await createCanvasWindow({
-			automationId,
-			organizationId: workspace.org.id,
-			granularity: "daily",
-			windowStart,
-			windowEnd,
-			extractedData: { summary: "External completion" },
-			contentAnalyzed: 1,
-			runId: queued.runId,
-			modelUsed: "external-client",
-			runMetadata: { source: "external", automation_run_id: queued.runId },
-		});
-
-		const result = await dispatchPendingAutomationRuns({
-			db: dbClient,
-			runIds: [queued.runId],
-		});
-		const [run] = await sql`
-      SELECT status, window_id, model_used
-      FROM runs
-      WHERE id = ${queued.runId}
-    `;
-
-		expect(result.reconciled).toBe(1);
-		expect(String(run.status)).toBe("completed");
-		expect(Number(run.window_id)).toBe(windowRootId);
-		expect(String(run.model_used)).toBe("external-client");
-	});
-
 	it("completes a queued automation run from complete_window provenance", async () => {
 		const { sql, dbClient, workspace, api, entityId, automationId, agent } =
 			await createAutomatedAutomation();
@@ -288,26 +237,28 @@ describe("automation contract", () => {
 
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
+			run_id: queued.runId,
 			window_token: content.window_token,
 			extracted_data: { summary: "Automated automation summary" },
 			run_metadata: {
 				executor: "lobu-agent",
 				agent_id: agent.agentId,
-				automation_run_id: queued.runId,
+				run_id: queued.runId,
 				dispatch_source: "scheduled",
 				prompt_rendered: "forged by completion payload",
 			},
-		})) as { action: string; window_id: number };
+		})) as { action: string; run_id: number };
 
 		const [run] = await sql`
-      SELECT status, window_id, model_used, run_metadata
+      SELECT status, action_output, model_used, run_metadata
       FROM runs
       WHERE id = ${queued.runId}
     `;
 
 		expect(completion.action).toBe("complete_window");
 		expect(String(run.status)).toBe("completed");
-		expect(Number(run.window_id)).toBe(completion.window_id);
+		expect(completion.run_id).toBe(queued.runId);
+		expect(run.action_output).toEqual({ summary: "Automated automation summary" });
 		expect(String(run.model_used)).toBe("lobu-agent");
 		// The forged prompt_rendered from the completion payload must be
 		// stripped — that key is reserved for historical server-stamped runs.
@@ -317,6 +268,7 @@ describe("automation contract", () => {
 		expect((run.run_metadata as Record<string, unknown>).executor).toBe(
 			"lobu-agent"
 		);
+		expect((run.run_metadata as Record<string, unknown>).run_id).toBeUndefined();
 	});
 
 	it("skips automation runs pinned to a device worker (#802)", async () => {
@@ -404,6 +356,8 @@ describe("automation contract", () => {
 		})) as {
 			content: Array<{ id: number; occurred_at: string }>;
 			window_token: string;
+			window_start: string;
+			window_end: string;
 			page: {
 				has_more: boolean;
 				next_cursor?: { occurred_at: string; id: number };
@@ -438,17 +392,25 @@ describe("automation contract", () => {
 			events[3].id,
 		]);
 		expect(page2.page.has_more).toBe(true);
+		const run = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			windowStart: page1.window_start,
+			windowEnd: page1.window_end,
+			dispatchSource: "manual",
+		});
 
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
+			run_id: run.runId,
 			window_tokens: [page1.window_token, page2.window_token],
 			extracted_data: { summary: "Summary across two pages" },
-		})) as { action: string; window_id: number; content_linked: number };
+		})) as { action: string; run_id: number; content_linked: number };
 
 		const links = await sql`
       SELECT event_id
-      FROM automation_window_events
-      WHERE window_id = ${completion.window_id}
+      FROM automation_run_events
+      WHERE run_id = ${completion.run_id}
       ORDER BY event_id
     `;
 
@@ -487,31 +449,35 @@ describe("automation contract", () => {
 			},
 			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
+		const run = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			windowStart,
+			windowEnd,
+			dispatchSource: "manual",
+		});
 
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
+			run_id: run.runId,
 			window_token: windowToken,
 			extracted_data: { summary: "Summary from exact content IDs" },
-		})) as { action: string; window_id: number; content_linked: number };
+		})) as { action: string; run_id: number; content_linked: number };
 
-		// Canvas-on-events: window_id is the canvas ROOT event id; content_analyzed
-		// lives in the chain member's metadata. Content links are keyed to the root
-		// event id (re-keyed window_id).
-		const [window] = await sql`
-      SELECT (metadata->>'content_analyzed')::int AS content_analyzed
-      FROM events
-      WHERE id = ${completion.window_id}
-        AND semantic_type = 'canvas_state'
+		const [completedRun] = await sql`
+      SELECT (run_metadata->>'content_analyzed')::int AS content_analyzed
+      FROM runs
+      WHERE id = ${completion.run_id}
     `;
 		const links = await sql`
       SELECT event_id
-      FROM automation_window_events
-      WHERE window_id = ${completion.window_id}
+      FROM automation_run_events
+      WHERE run_id = ${completion.run_id}
     `;
 
 		expect(completion.action).toBe("complete_window");
 		expect(completion.content_linked).toBe(1);
-		expect(Number(window.content_analyzed)).toBe(1);
+		expect(Number(completedRun.content_analyzed)).toBe(1);
 		expect(links.map((row) => Number(row.event_id))).toEqual([event.id]);
 	});
 
@@ -522,7 +488,7 @@ describe("automation contract", () => {
 	//     → server-side dispatcher refuses to claim (#802 covers this; checked
 	//       above by the "skips automation runs pinned to a device worker" test)
 	//     → device posts to /api/workers/me/runs/:id/complete-automation
-	//         which persists the canvas root + advances last_fired_at.
+	//         which stores the run result + advances last_fired_at.
 	describe("device-pinned execution (#798)", () => {
 		it("persists automations.device_worker_id and agent_kind into approved_input on materialization", async () => {
 			const { sql, automationId } = await createAutomatedAutomation();
@@ -599,15 +565,16 @@ describe("automation contract", () => {
 			};
 			const completion = (await api.automations.completeWindow({
 				automation_id: String(automationId),
+				run_id: queued.runId,
 				window_token: content.window_token,
 				extracted_data: { summary: "Looked at 5 events, no anomalies." },
 				model: "device-cli:claude-code",
 				run_metadata: {
 					source: "device_worker",
 					agent_kind: "claude-code",
-					automation_run_id: queued.runId,
+					run_id: queued.runId,
 				},
-			})) as { window_id: number };
+			})) as { run_id: number };
 
 			// The subprocess exits; the dispatcher posts the exit report.
 			const response = await post(
@@ -626,40 +593,30 @@ describe("automation contract", () => {
 			const json = (await response.json()) as {
 				ok: boolean;
 				status: string;
-				window_id?: number;
+				run_id?: number;
 			};
 			expect(json.ok).toBe(true);
 			expect(json.status).toBe("completed");
-			expect(Number(json.window_id)).toBe(completion.window_id);
+			expect(Number(json.run_id)).toBe(completion.run_id);
 
 			const [run] = await sql`
-        SELECT status, completed_at, window_id, exit_code, exit_reason
+        SELECT status, completed_at, action_output, exit_code, exit_reason
         FROM runs
         WHERE id = ${queued.runId}
       `;
 			expect(String(run.status)).toBe("completed");
 			expect(run.completed_at).not.toBeNull();
-			expect(Number(run.window_id)).toBe(completion.window_id);
+			expect(run.action_output).toEqual({
+				summary: "Looked at 5 events, no anomalies.",
+			});
 			expect(Number(run.exit_code)).toBe(0);
 			expect(String(run.exit_reason)).toBe("ok");
 
-			// Canvas-on-events: extracted_data lives on the chain HEAD event
-			// (window_id = canvas root id); provenance (model_used + execution time)
-			// now lives on the RUN row, stamped by the exit report.
-			const [window] = await sql`
-        SELECT payload_data AS extracted_data
-        FROM events
-        WHERE id = ${run.window_id}
-          AND semantic_type = 'canvas_state'
-      `;
 			const [runProvenance] = await sql`
         SELECT model_used, (run_metadata->>'execution_time_ms')::int AS execution_time_ms
         FROM runs
         WHERE id = ${queued.runId}
       `;
-			expect(window.extracted_data as Record<string, unknown>).toEqual({
-				summary: "Looked at 5 events, no anomalies.",
-			});
 			expect(Number(runProvenance.execution_time_ms)).toBe(1234);
 			expect(String(runProvenance.model_used)).toBe("device-cli:claude-code");
 
@@ -729,12 +686,12 @@ describe("automation contract", () => {
 			};
 			await api.automations.completeWindow({
 				automation_id: String(automationId),
+				run_id: queued.runId,
 				window_token: content.window_token,
 				extracted_data: { summary: "No-duration exit report case." },
 				run_metadata: {
 					source: "device_worker",
 					agent_kind: "claude-code",
-					automation_run_id: queued.runId,
 				},
 			});
 
@@ -801,16 +758,17 @@ describe("automation contract", () => {
 			};
 			const completion = (await api.automations.completeWindow({
 				automation_id: String(automationId),
+				run_id: queued.runId,
 				window_token: content.window_token,
 				extracted_data: { summary: "Device-run result, no server content." },
-				run_metadata: { source: "device_worker", automation_run_id: queued.runId },
+				run_metadata: { source: "device_worker", run_id: queued.runId },
 			})) as {
-				window_id: number;
+				run_id: number;
 				content_linked: number;
 				reaction_status: string;
 			};
 
-			// Zero content linked, yet the reaction FIRED (window_created gate).
+      // Zero content linked, yet the reaction fired for the completed run.
 			// This test pins the gate + the log surface, not the sandbox itself:
 			// runtimes without an isolated-vm build report 'failed' (the sandbox
 			// suite covers executor health), so assert "attempted", never
@@ -820,7 +778,7 @@ describe("automation contract", () => {
 
 			const reactionRows = await sql`
         SELECT reaction_type, tool_name FROM automation_reactions
-        WHERE window_id = ${completion.window_id}
+        WHERE source_run_id = ${completion.run_id}
       `;
 			expect(reactionRows.length).toBeGreaterThan(0);
 			expect(String(reactionRows[0].reaction_type)).toBe("script_execution");
@@ -830,258 +788,16 @@ describe("automation contract", () => {
 				automation_id: String(automationId),
 			})) as {
 				windows: Array<{
-					window_id: number;
+					run_id: number;
 					reactions?: Array<{ tool_name: string }>;
 				}>;
 			};
 			const window = detail.windows.find(
-				(w) => w.window_id === completion.window_id
+				(w) => w.run_id === completion.run_id
 			);
 			expect(window).toBeDefined();
 			expect(window?.reactions?.length ?? 0).toBeGreaterThan(0);
 			expect(window?.reactions?.[0].tool_name).toBe("reaction_executor");
-		});
-
-		// Canvas-on-events: replace_existing supersedes the head instead of
-		// deleting+recreating the window row, so window_created is false — the
-		// head_superseded gate must fire reactions for a zero-content replace
-		// (legacy parity: the recreate set window_created=true and reactions ran).
-		it("fires the reaction script on a zero-content replace_existing (head_superseded gate)", async () => {
-			const { api, automationId } = await createAutomatedAutomation();
-			await api.automations.setReactionScript({
-				automation_id: String(automationId),
-				reaction_script: "export default async function reaction() { return; }",
-			});
-			const windowStart = new Date(
-				Date.now() - 2 * 60 * 60 * 1000
-			).toISOString();
-			const windowEnd = new Date().toISOString();
-			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
-			const mint = () =>
-				generateWindowToken(
-					{
-						automation_id: automationId,
-						window_start: windowStart,
-						window_end: windowEnd,
-						granularity: "daily",
-						content_count: 0,
-						content_ids: [],
-					},
-					env
-				);
-
-			const first = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v1" },
-			})) as { window_id: number };
-
-			const replaced = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v2 re-analysis" },
-				replace_existing: true,
-			})) as {
-				window_id: number;
-				window_created: boolean;
-				head_superseded: boolean;
-				content_linked: number;
-				reaction_status: string;
-			};
-
-			// Same root identity, no new window, no content — yet the canvas CHANGED,
-			// so the reaction must be attempted (never 'skipped'; 'failed' is fine on
-			// runtimes without an isolated-vm build, as in the content-less test).
-			expect(replaced.window_id).toBe(first.window_id);
-			expect(replaced.window_created).toBe(false);
-			expect(replaced.head_superseded).toBe(true);
-			expect(replaced.content_linked).toBe(0);
-			expect(replaced.reaction_status).not.toBe("skipped");
-		});
-
-		// A completion that lands on an existing head WITHOUT replace_existing
-		// silently discards the caller's payload. Replaying your own completion
-		// and losing the window to another MCP client produce identical responses,
-		// so a client that did real work cannot tell its output was dropped.
-		// skipped_reason names which case it was.
-		it("reports skipped_reason when a completion is discarded onto an existing head", async () => {
-			const { api, automationId } = await createAutomatedAutomation();
-			const windowStart = new Date(
-				Date.now() - 2 * 60 * 60 * 1000
-			).toISOString();
-			const windowEnd = new Date().toISOString();
-			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
-			const mint = () =>
-				generateWindowToken(
-					{
-						automation_id: automationId,
-						window_start: windowStart,
-						window_end: windowEnd,
-						granularity: "daily",
-						content_count: 0,
-						content_ids: [],
-					},
-					env
-				);
-
-			// events.client_id is FK'd to oauth_clients, so an unregistered id is
-			// stored as NULL and attribution silently degrades. Register both
-			// clients so the attributed branches are actually exercised — without
-			// these rows the assertions below pass only as 'already_completed'.
-			const sql = getTestDb();
-			for (const id of ["mcp-client-a", "mcp-client-b"]) {
-				await sql`
-					INSERT INTO oauth_clients (id, client_id_issued_at, redirect_uris, client_name)
-					VALUES (${id}, NOW(), ARRAY['https://example.test/cb'], ${id})
-					ON CONFLICT (id) DO NOTHING
-				`;
-			}
-
-			const first = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v1" },
-				client_id: "mcp-client-a",
-			})) as { window_id: number; skipped_reason?: string };
-			// The write that actually stored a payload carries no skip reason.
-			expect(first.skipped_reason).toBeUndefined();
-
-			// Same client → a harmless replay of its own completion.
-			const replay = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v2 discarded" },
-				client_id: "mcp-client-a",
-			})) as {
-				window_id: number;
-				window_created: boolean;
-				skipped_reason?: string;
-			};
-			expect(replay.window_id).toBe(first.window_id);
-			expect(replay.window_created).toBe(false);
-			expect(replay.skipped_reason).toBe("replayed_own_completion");
-
-			// A different MCP client hitting the same window is the case worth
-			// distinguishing: its payload is dropped even though it did the work.
-			const other = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v3 from another client" },
-				client_id: "mcp-client-b",
-			})) as { window_id: number; skipped_reason?: string };
-			expect(other.window_id).toBe(first.window_id);
-			expect(other.skipped_reason).toBe("completed_by_other_client");
-		});
-
-		// Attribution degrades honestly. A caller with no registered client id
-		// (PAT / device — events.client_id ends up NULL) still learns its payload
-		// was dropped, but the response must NOT claim another client wrote the
-		// head. Guessing 'completed_by_other_client' here would fire on every
-		// ordinary unattributed replay and make the field useless.
-		it("reports already_completed when the head writer cannot be attributed", async () => {
-			const { api, automationId } = await createAutomatedAutomation();
-			const windowStart = new Date(
-				Date.now() - 3 * 60 * 60 * 1000
-			).toISOString();
-			const windowEnd = new Date().toISOString();
-			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
-			const mint = () =>
-				generateWindowToken(
-					{
-						automation_id: automationId,
-						window_start: windowStart,
-						window_end: windowEnd,
-						granularity: "daily",
-						content_count: 0,
-						content_ids: [],
-					},
-					env
-				);
-
-			const first = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v1" },
-			})) as { window_id: number; skipped_reason?: string };
-			expect(first.skipped_reason).toBeUndefined();
-
-			const second = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "v2 discarded" },
-			})) as { window_id: number; skipped_reason?: string };
-			expect(second.window_id).toBe(first.window_id);
-			expect(second.skipped_reason).toBe("already_completed");
-		});
-
-		// The open manual lane has ONE pending run that every client races for, so
-		// both racers carry the SAME run id while having DIFFERENT client ids.
-		// Client identity must outrank the run, or the loser is reported as a
-		// self-replay in exactly the case this signal exists for.
-		it("prefers client identity over the shared run id when clients race one run", async () => {
-			const { api, automationId } = await createAutomatedAutomation();
-			const sql = getTestDb();
-			for (const id of ["race-client-a", "race-client-b"]) {
-				await sql`
-					INSERT INTO oauth_clients (id, client_id_issued_at, redirect_uris, client_name)
-					VALUES (${id}, NOW(), ARRAY['https://example.test/cb'], ${id})
-					ON CONFLICT (id) DO NOTHING
-				`;
-			}
-			// events.run_id is FK'd to runs, so the shared run must really exist.
-			// Inserted directly: `trigger` needs the embedded gateway, which this
-			// harness does not boot.
-			const [orgRow] = await sql<{ organization_id: string }[]>`
-				SELECT organization_id FROM automations WHERE id = ${automationId}
-			`;
-			const [runRow] = await sql<{ id: number }[]>`
-				INSERT INTO runs
-					(organization_id, run_type, automation_id, status, approval_status, created_at)
-				VALUES
-					(${orgRow.organization_id}, 'automation', ${automationId}, 'running', 'auto', current_timestamp)
-				RETURNING id
-			`;
-			const sharedRunId = Number(runRow.id);
-			expect(sharedRunId).toBeGreaterThan(0);
-
-			const windowStart = new Date(
-				Date.now() - 4 * 60 * 60 * 1000
-			).toISOString();
-			const windowEnd = new Date().toISOString();
-			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
-			const mint = () =>
-				generateWindowToken(
-					{
-						automation_id: automationId,
-						window_start: windowStart,
-						window_end: windowEnd,
-						granularity: "daily",
-						content_count: 0,
-						content_ids: [],
-					},
-					env
-				);
-
-			const winner = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "winner" },
-				client_id: "race-client-a",
-				automation_run_id: sharedRunId,
-			})) as { window_id: number; skipped_reason?: string };
-			expect(winner.skipped_reason).toBeUndefined();
-
-			// Same run, different client. Ranking sameRun first would call this a
-			// self-replay; it is another client losing the race.
-			const loser = (await api.automations.completeWindow({
-				automation_id: String(automationId),
-				window_token: await mint(),
-				extracted_data: { summary: "loser" },
-				client_id: "race-client-b",
-				automation_run_id: sharedRunId,
-			})) as { window_id: number; skipped_reason?: string };
-			expect(loser.window_id).toBe(winner.window_id);
-			expect(loser.skipped_reason).toBe("completed_by_other_client");
 		});
 
 		// Fail closed: the agent exiting cleanly WITHOUT calling complete_window
@@ -1150,13 +866,13 @@ describe("automation contract", () => {
 			expect(String(json.nudge ?? json.error ?? "")).toContain("automation_id");
 
 			const [runAfterResume] = await sql`
-        SELECT status, error_message, window_id, output_tail,
+        SELECT status, error_message, action_output, output_tail,
                approved_input->>'finalize_nudge_count' AS finalize_nudge_count
         FROM runs WHERE id = ${queued.runId}
       `;
 			expect(String(runAfterResume.status)).toBe("running");
 			expect(Number(runAfterResume.finalize_nudge_count)).toBe(1);
-			expect(runAfterResume.window_id).toBeNull();
+			expect(runAfterResume.action_output).toBeNull();
 			expect(String(runAfterResume.output_tail)).toContain("nothing to report");
 
 			// Second clean exit with no window exhausts the budget → terminal fail.
@@ -1184,16 +900,11 @@ describe("automation contract", () => {
 			expect(String(json2.error)).toMatch(/completeWindow/);
 
 			const [run] = await sql`
-        SELECT status, error_message, window_id, output_tail FROM runs WHERE id = ${queued.runId}
+        SELECT status, error_message, action_output, output_tail FROM runs WHERE id = ${queued.runId}
       `;
 			expect(String(run.status)).toBe("failed");
 			expect(String(run.error_message)).toMatch(/completeWindow/);
-			expect(run.window_id).toBeNull();
-
-			const windows = await sql`
-        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
-      `;
-			expect(windows).toHaveLength(0);
+			expect(run.action_output).toBeNull();
 
 			// Schedule must still advance so the automation doesn't re-fire forever.
 			const [after] =
@@ -1377,28 +1088,23 @@ describe("automation contract", () => {
 			const json = (await response.json()) as {
 				status: string;
 				reason_code?: string;
-				window_id?: number | null;
+				run_id?: number | null;
 			};
 			expect(json.status).toBe("completed");
 			expect(json.reason_code).toBe("event_turn");
-			expect(json.window_id).toBeNull();
+			expect(json.run_id).toBe(queued.runId);
 
 			const [run] = await sql`
-        SELECT status, window_id, exit_reason, model_used,
+        SELECT status, action_output, exit_reason, model_used,
                run_metadata->>'execution_time_ms' AS execution_time_ms
         FROM runs WHERE id = ${queued.runId}
       `;
 			expect(String(run.status)).toBe("completed");
-			expect(run.window_id).toBeNull();
+			expect(run.action_output).toBeNull();
 			expect(String(run.exit_reason)).toBe("ok");
 			expect(String(run.model_used)).toBe("device-cli:claude-code");
 			expect(Number(run.execution_time_ms)).toBe(40);
 
-			// No completeWindow happened, so no canvas may be minted.
-			const windows = await sql`
-        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
-      `;
-			expect(windows).toHaveLength(0);
 
 			// A duplicate report is a no-op ack, not a second completion.
 			const dupe = await post(
@@ -1475,21 +1181,16 @@ describe("automation contract", () => {
 			expect(json.status).toBe("failed");
 
 			const [run] = await sql`
-        SELECT status, error_message, window_id, exit_code, exit_reason
+        SELECT status, error_message, action_output, exit_code, exit_reason
         FROM runs
         WHERE id = ${queued.runId}
       `;
 			expect(String(run.status)).toBe("failed");
 			expect(String(run.error_message)).toBe(error);
-			// No canvas_state root event on failure.
-			expect(run.window_id).toBeNull();
+			expect(run.action_output).toBeNull();
 			expect(Number(run.exit_code)).toBe(127);
 			expect(String(run.exit_reason)).toBe("crash");
 
-			const windows = await sql`
-        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
-      `;
-			expect(windows).toHaveLength(0);
 
 			const [automation] = await sql`
         SELECT next_run_at FROM automations WHERE id = ${automationId}
@@ -1617,8 +1318,7 @@ describe("automation contract", () => {
 			expect(afterMs).toBeGreaterThan(Date.now() - 1000);
 		});
 
-		// Pi review #3: a second concurrent completion must be idempotent — no
-		// duplicate canvas_state root event, no 500, status reflects the winner.
+		// A second concurrent completion must be idempotent and reflect the winner.
 		// Duplicate exit reports on a FAILED run must be idempotent: the second
 		// report acks without re-failing or double-advancing the schedule
 		// (failRun's RETURNING guard).
@@ -1698,10 +1398,6 @@ describe("automation contract", () => {
 				advancedOnce
 			);
 
-			const windowsForRun = await sql`
-        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
-      `;
-			expect(windowsForRun).toHaveLength(0);
 		});
 
 		// Pi review round-2 #A: device spoof — a same-user token bound to worker
@@ -1775,15 +1471,10 @@ describe("automation contract", () => {
 
 			// Run must still be 'running' — nothing was completed.
 			const [run] = await sql`
-        SELECT status, window_id FROM runs WHERE id = ${queued.runId}
+        SELECT status, action_output FROM runs WHERE id = ${queued.runId}
       `;
 			expect(String(run.status)).toBe("running");
-			expect(run.window_id).toBeNull();
-			// No canvas_state root event was created.
-			const windows = await sql`
-        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
-      `;
-			expect(windows).toHaveLength(0);
+			expect(run.action_output).toBeNull();
 		});
 	});
 
@@ -1960,37 +1651,6 @@ describe("automation contract", () => {
 			expect(String(run.error_message)).toContain("completeWindow");
 		});
 
-		it("completes the run immediately when a window exists", async () => {
-			const messageId = randomUUID();
-			const { sql, workspace, runId, automationId, windowStart, windowEnd } =
-				await makeRunningAutomationRun(messageId);
-			// Canvas-on-events: the "window" is a canvas_state chain root stamped with
-			// this run_id (what findWindowIdForRun keys on).
-			const windowRootId = await createCanvasWindow({
-				automationId,
-				organizationId: workspace.org.id,
-				granularity: "daily",
-				windowStart,
-				windowEnd,
-				extractedData: { summary: "done" },
-				contentAnalyzed: 1,
-				runId,
-				modelUsed: "test-model",
-				runMetadata: { automation_run_id: runId },
-			});
-			const window = { id: windowRootId };
-
-			await makeHeadlessConsumer().handleThreadResponse({
-				id: "job-headless-2",
-				data: terminalPayload(messageId, runId),
-			} as never);
-
-			const [run] =
-				await sql`SELECT status, window_id FROM runs WHERE id = ${runId}`;
-			expect(String(run.status)).toBe("completed");
-			expect(Number(run.window_id)).toBe(Number(window.id));
-		});
-
 		it("fails the run immediately on a worker error row (was: 2h stale sweep)", async () => {
 			const messageId = randomUUID();
 			const { sql, runId } = await makeRunningAutomationRun(messageId);
@@ -2026,7 +1686,7 @@ describe("automation contract", () => {
 		});
 
 		// Move the run to an active state with a dispatched_message_id and no
-		// canvas_state root event — mirrors prod's stuck run 146501 exactly, so the
+		// result output — mirrors prod's stuck run 146501 exactly, so the
 		// first reconcile query is a no-op and execution reaches the buggy
 		// dispatched-id containment query.
 		await sql`
@@ -2535,315 +2195,8 @@ describe("automation contract", () => {
 	});
 });
 
-// ============================================
-// Canvas-on-events contract
-// ============================================
-describe("canvas-on-events window completion", () => {
-	async function completeOnce(
-		overrides: {
-			extracted_data?: Record<string, unknown>;
-			replace_existing?: boolean;
-			client_id?: string;
-		} = {}
-	) {
-		const { sql, workspace, api, entityId, automationId } =
-			await createAutomatedAutomation();
-		const event = await createTestEvent({
-			entity_id: entityId,
-			organization_id: workspace.org.id,
-			content: "Canvas event content.",
-			occurred_at: new Date(Date.now() - 60 * 60 * 1000),
-		});
-		const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-		const windowEnd = new Date().toISOString();
-		const windowToken = await generateWindowToken(
-			{
-				automation_id: automationId,
-				window_start: windowStart,
-				window_end: windowEnd,
-				granularity: "daily",
-				content_count: 1,
-				content_ids: [event.id],
-			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
-		);
-		const completion = (await api.automations.completeWindow({
-			automation_id: String(automationId),
-			window_token: windowToken,
-			extracted_data: overrides.extracted_data ?? {
-				summary: "v1 canvas summary",
-			},
-			replace_existing: overrides.replace_existing ?? false,
-			...(overrides.client_id ? { client_id: overrides.client_id } : {}),
-		})) as { action: string; window_id: number };
-		return {
-			sql,
-			workspace,
-			api,
-			automationId,
-			windowStart,
-			windowEnd,
-			windowToken,
-			completion,
-		};
-	}
 
-	it("emits a canvas_state ROOT event on window completion", async () => {
-		const { sql, automationId } = await completeOnce({
-			extracted_data: { summary: "hello canvas" },
-		});
-		const rows = await sql`
-      SELECT id, payload_data, supersedes_event_id, metadata->>'granularity' AS granularity
-      FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
-    `;
-		expect(rows).toHaveLength(1);
-		expect(rows[0].supersedes_event_id).toBeNull();
-		expect(rows[0].granularity).toBe("daily");
-		expect((rows[0].payload_data as Record<string, unknown>).summary).toBe(
-			"hello canvas"
-		);
-	});
-
-	it("completes with a PAT/device client_id that is not an oauth_clients row", async () => {
-		// Reproduces the sdk-e2e failure: events.client_id has an FK to
-		// oauth_clients (unlike the retired window table, which stored PAT ids
-		// verbatim). The canvas insert runs inside the completion tx, where
-		// insertEvent's client-id-FK retry can't engage (the first failed INSERT
-		// aborts the tx) — so complete_window must pre-validate and stamp NULL.
-		const { sql, automationId, completion } = await completeOnce({
-			extracted_data: { summary: "pat canvas" },
-			client_id: "pat_nonexistent_e2e",
-		});
-		expect(completion.action).toBe("complete_window");
-
-		const [root] = await sql`
-      SELECT id, client_id, payload_data FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
-    `;
-		expect(root.client_id).toBeNull();
-		expect((root.payload_data as Record<string, unknown>).summary).toBe(
-			"pat canvas"
-		);
-		// The canvas root IS the window (window_id = root event id).
-		expect(Number(root.id)).toBe(completion.window_id);
-	});
-
-	it("a same-period completion without replace_existing is an idempotent no-op", async () => {
-		// Retrying a period never grows the chain or overwrites a successful head —
-		// even with different data. A genuine re-analysis must state
-		// replace_existing explicitly.
-		const { sql, api, automationId, windowStart, windowEnd, completion } =
-			await completeOnce({
-				extracted_data: { summary: "v1" },
-			});
-
-		const retryToken = await generateWindowToken(
-			{
-				automation_id: automationId,
-				window_start: windowStart,
-				window_end: windowEnd,
-				granularity: "daily",
-				content_count: 0,
-				content_ids: [],
-			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
-		);
-		const retry = (await api.automations.completeWindow({
-			automation_id: String(automationId),
-			window_token: retryToken,
-			extracted_data: { summary: "v2 changed but not a replace" },
-		})) as { window_id: number; window_created: boolean };
-
-		// Same window identity returned; chain unchanged; head still v1.
-		expect(retry.window_id).toBe(completion.window_id);
-		expect(retry.window_created).toBe(false);
-		const chain = await sql`
-      SELECT payload_data FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
-    `;
-		expect(chain).toHaveLength(1);
-		expect((chain[0].payload_data as Record<string, unknown>).summary).toBe(
-			"v1"
-		);
-	});
-
-	it("replace_existing supersedes the head, keeping the root id stable", async () => {
-		const { sql, api, automationId, windowStart, windowEnd, workspace } =
-			await completeOnce({
-				extracted_data: { summary: "v1" },
-			});
-
-		const [root] = await sql`
-      SELECT id FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
-        AND supersedes_event_id IS NULL
-    `;
-		const rootId = Number(root.id);
-
-		// A second completion for the SAME period with replace_existing supersedes.
-		const event =
-			await sql`SELECT id FROM events WHERE organization_id = ${workspace.org.id} AND semantic_type <> 'canvas_state' LIMIT 1`;
-		const windowToken = await generateWindowToken(
-			{
-				automation_id: automationId,
-				window_start: windowStart,
-				window_end: windowEnd,
-				granularity: "daily",
-				content_count: 1,
-				content_ids: [Number(event[0].id)],
-			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
-		);
-		await api.automations.completeWindow({
-			automation_id: String(automationId),
-			window_token: windowToken,
-			extracted_data: { summary: "v2" },
-			replace_existing: true,
-		});
-
-		// Still exactly one ROOT, with the SAME id.
-		const roots = await sql`
-      SELECT id FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
-        AND supersedes_event_id IS NULL
-    `;
-		expect(roots).toHaveLength(1);
-		expect(Number(roots[0].id)).toBe(rootId);
-
-		// The HEAD is the superseding v2 event; it stamps root_event_id = rootId.
-		const head = await sql`
-      SELECT id, payload_data, (metadata->>'root_event_id')::bigint AS root_event_id
-      FROM events e
-      WHERE e.semantic_type = 'canvas_state'
-        AND (e.metadata->>'automation_id')::bigint = ${automationId}
-        AND NOT EXISTS (SELECT 1 FROM events n WHERE n.supersedes_event_id = e.id)
-    `;
-		expect(head).toHaveLength(1);
-		expect((head[0].payload_data as Record<string, unknown>).summary).toBe(
-			"v2"
-		);
-		expect(Number(head[0].root_event_id)).toBe(rootId);
-
-		// The read flip surfaces the HEAD payload via get_automation.
-		const view = (await api.automations.get({
-			automation_id: String(automationId),
-		})) as {
-			windows: Array<{ extracted_data: Record<string, unknown> }>;
-		};
-		expect(view.windows[0].extracted_data.summary).toBe("v2");
-	});
-
-	it("replace_existing re-links exactly the new content set (no stale links)", async () => {
-		// The root id is stable across a replace, so STEP 8's ON CONFLICT DO
-		// NOTHING alone would UNION old+new links. An explicit replace states
-		// "this analysis covers THIS content set" — legacy parity (the old path
-		// deleted the window row and its links) requires the old links to go.
-		const { sql, workspace, api, entityId, automationId } =
-			await createAutomatedAutomation();
-		const eventA = await createTestEvent({
-			entity_id: entityId,
-			organization_id: workspace.org.id,
-			content: "Replace-links content A.",
-			occurred_at: new Date(Date.now() - 60 * 60 * 1000),
-		});
-		const eventB = await createTestEvent({
-			entity_id: entityId,
-			organization_id: workspace.org.id,
-			content: "Replace-links content B.",
-			occurred_at: new Date(Date.now() - 30 * 60 * 1000),
-		});
-		const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-		const windowEnd = new Date().toISOString();
-		const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
-
-		const tokenA = await generateWindowToken(
-			{
-				automation_id: automationId,
-				window_start: windowStart,
-				window_end: windowEnd,
-				granularity: "daily",
-				content_count: 1,
-				content_ids: [eventA.id],
-			},
-			env
-		);
-		const first = (await api.automations.completeWindow({
-			automation_id: String(automationId),
-			window_token: tokenA,
-			extracted_data: { summary: "v1 over A" },
-		})) as { window_id: number };
-
-		const tokenB = await generateWindowToken(
-			{
-				automation_id: automationId,
-				window_start: windowStart,
-				window_end: windowEnd,
-				granularity: "daily",
-				content_count: 1,
-				content_ids: [eventB.id],
-			},
-			env
-		);
-		const second = (await api.automations.completeWindow({
-			automation_id: String(automationId),
-			window_token: tokenB,
-			extracted_data: { summary: "v2 over B" },
-			replace_existing: true,
-		})) as { window_id: number };
-
-		// Same window identity (the canvas root), but the links are exactly the
-		// replace's content set — eventA's stale link is gone.
-		expect(second.window_id).toBe(first.window_id);
-		const links = await sql`
-      SELECT event_id FROM automation_window_events WHERE window_id = ${first.window_id}
-    `;
-		expect(links).toHaveLength(1);
-		expect(Number(links[0].event_id)).toBe(Number(eventB.id));
-	});
-
-	it("superseded canvas states are masked from current_event_records", async () => {
-		const { sql, api, automationId, windowStart, windowEnd, workspace } =
-			await completeOnce({
-				extracted_data: { summary: "v1" },
-			});
-		const event =
-			await sql`SELECT id FROM events WHERE organization_id = ${workspace.org.id} AND semantic_type <> 'canvas_state' LIMIT 1`;
-		const windowToken = await generateWindowToken(
-			{
-				automation_id: automationId,
-				window_start: windowStart,
-				window_end: windowEnd,
-				granularity: "daily",
-				content_count: 1,
-				content_ids: [Number(event[0].id)],
-			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
-		);
-		await api.automations.completeWindow({
-			automation_id: String(automationId),
-			window_token: windowToken,
-			extracted_data: { summary: "v2" },
-			replace_existing: true,
-		});
-
-		const current = await sql`
-      SELECT payload_data FROM current_event_records
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
-    `;
-		// Only the HEAD (v2) is current; the superseded v1 root is masked.
-		expect(current).toHaveLength(1);
-		expect((current[0].payload_data as Record<string, unknown>).summary).toBe(
-			"v2"
-		);
-	});
-
+describe("automation schedule advancement", () => {
 	// Manual triggers complete through the same advanceAutomationSchedule as
 	// scheduled runs, but with next_run_at already sitting on the upcoming cron
 	// tick. Advancing from max(now, next_run_at) compounded that: every manual

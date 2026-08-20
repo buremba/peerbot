@@ -181,7 +181,7 @@ describe("manage_operations get_run — internal runs", () => {
 				})},
 				${automationId}, 'completed', 'auto',
 				'automation',
-				${db.json({ automation_id: automationId, window_id: 17, run_id: 18 })},
+				${db.json({ automation_id: automationId, run_id: 18 })},
 				now(), now()
 			)
 			RETURNING id
@@ -197,7 +197,6 @@ describe("manage_operations get_run — internal runs", () => {
 		expect(listedRun?.automation_id).toBe(automationId);
 		expect(listedRun?.initiator_ref).toEqual({
 			automation_id: automationId,
-			window_id: 17,
 			run_id: 18,
 		});
 		expect(listedRun?.input).toEqual({
@@ -211,7 +210,6 @@ describe("manage_operations get_run — internal runs", () => {
 		expect(got.automation_id).toBe(automationId);
 		expect(got.initiator_ref).toEqual({
 			automation_id: automationId,
-			window_id: 17,
 			run_id: 18,
 		});
 		expect(got.input).toEqual({

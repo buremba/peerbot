@@ -104,9 +104,8 @@ interface InsertEventParams {
    *
    * Set it on the first write. A supersede copies producer/source lineage
    * from the predecessor — omit or null cannot drop it. A later number
-   * restamps this version (new run / prompt version). Self-exclusion keys
-   * on this column; human canvas corrections stay visible via
-   * `metadata.correction`, not by clearing the stamp.
+   * restamps this version (new run / prompt version). Self-exclusion keys on
+   * this column; human corrections do not clear the producer stamp.
    */
   automationId?: number | null;
   automationVersionId?: number | null;
@@ -732,7 +731,7 @@ async function queueWorkspaceEventActivation(args: {
   eventId: number;
   eventType: string;
   producerAutomationId: number | null;
-  actingRun: { runId: number | null; windowId: number | null } | null;
+  actingRunId: number | null;
 }): Promise<void> {
   try {
     const subscribed = await findSubscribedWorkspaceEventTypes(
@@ -744,11 +743,11 @@ async function queueWorkspaceEventActivation(args: {
     // genuinely starts a chain. Resolved only after the subscription check, so
     // an unsubscribed org never pays for the lookup.
     const inherited =
-      args.producerAutomationId == null || args.actingRun == null
+      args.producerAutomationId == null || args.actingRunId == null
         ? null
         : await loadRunEventCausality(
             args.organizationId,
-            args.actingRun,
+            args.actingRunId,
             args.producerAutomationId
           );
     const sql = getDb();
@@ -830,10 +829,10 @@ export async function insertConnectionlessAuditEvent(
       producerAutomationId,
       // Only the ambient scope knows the run; an explicitly-passed producer
       // carries no run reference, so such a row starts its own chain.
-      actingRun:
+      actingRunId:
         actingScope != null &&
         actingScope.automationId === producerAutomationId
-          ? { runId: actingScope.runId, windowId: actingScope.windowId }
+          ? actingScope.runId
           : null,
     });
     return inserted;

@@ -86,7 +86,7 @@ export default async (
   const connectionId = Number(connRows[0].id);
   const automationSource = {
     automation_id: ctx.window.automation_id,
-    window_id: ctx.window.id,
+    run_id: ctx.window.run_id,
   };
 
   // (1) Search for the restaurant the run chose.

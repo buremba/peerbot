@@ -134,7 +134,6 @@ const boardActionTracker = defineAutomation({
   slug: "board-action-tracker",
   name: "Board action tracker",
   triggers: [every("0 8 * * *")],
-  notification: { priority: "high", channel: "both" },
   tags: ["leadership", "daily", "board"],
   agentKind: "notifier",
   skills: ["board-action-tracker"],

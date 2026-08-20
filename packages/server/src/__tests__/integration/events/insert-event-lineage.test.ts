@@ -3,16 +3,11 @@
  * the predecessor inside insertEvent — omit or null cannot drop it. A later
  * number restamps this version's producer/run.
  *
- * Human canvas corrections keep the producer stamp and stay visible because
- * self-exclusion excepts canvas_state + metadata.correction. Tombstones keep
- * the stamp and stay hidden.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import { supersedeActionEvent } from '../../../tools/admin/approval-events';
-import { TOMBSTONE_SEMANTIC_TYPE } from '../../../tools/constants';
-import { executeDataSources } from '../../../utils/execute-data-sources';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -387,81 +382,4 @@ describe('insertEvent lineage on supersede', () => {
     });
   });
 
-  it('shows a human canvas correction, but not other self-produced rows or its tombstone', async () => {
-    const org = await createTestOrganization();
-    const user = await createTestUser();
-    const automation = await insertAutomation(org.id, user.id, 'lineage-visibility');
-
-    const output = await insertEvent({
-      entityIds: [],
-      organizationId: org.id,
-      originId: 'produced-output',
-      title: 'produced',
-      content: 'produced',
-      semanticType: 'observation',
-      automationId: automation.id,
-      occurredAt: new Date('2026-08-01T12:00:00Z'),
-    });
-
-    const spoofedCorrection = await insertEvent({
-      entityIds: [],
-      organizationId: org.id,
-      originId: 'produced-correction-flag',
-      title: 'still produced',
-      content: 'still produced',
-      semanticType: 'observation',
-      automationId: automation.id,
-      metadata: { correction: true },
-      occurredAt: new Date('2026-08-01T12:30:00Z'),
-    });
-
-    const correction = await insertEvent({
-      entityIds: [],
-      organizationId: org.id,
-      originId: 'produced-correction',
-      title: 'corrected',
-      content: 'corrected',
-      semanticType: 'canvas_state',
-      metadata: { correction: true },
-      occurredAt: new Date('2026-08-01T13:00:00Z'),
-      supersedesEventId: Number(output.id),
-    });
-
-    const sql = getTestDb();
-    const afterCorrection = await executeDataSources(
-      { stories: { query: 'SELECT id, semantic_type FROM events ORDER BY id' } },
-      { organizationId: org.id, excludeProducedByAutomationId: automation.id },
-      sql
-    );
-    const correctionIds = (afterCorrection.stories ?? []).map((row) =>
-      Number((row as { id: number }).id)
-    );
-    expect(correctionIds).toContain(Number(correction.id));
-    expect(correctionIds).not.toContain(Number(output.id));
-    expect(correctionIds).not.toContain(Number(spoofedCorrection.id));
-
-    const tombstone = await insertEvent({
-      entityIds: [],
-      organizationId: org.id,
-      originId: `tomb_${Number(correction.id)}`,
-      semanticType: TOMBSTONE_SEMANTIC_TYPE,
-      payloadType: 'empty',
-      content: null,
-      metadata: { tombstone: true, deleted_event_id: Number(correction.id) },
-      supersedesEventId: Number(correction.id),
-    });
-
-    const afterTombstone = await executeDataSources(
-      { stories: { query: 'SELECT id, semantic_type FROM events ORDER BY id' } },
-      { organizationId: org.id, excludeProducedByAutomationId: automation.id },
-      sql
-    );
-    const tombstoneIds = (afterTombstone.stories ?? []).map((row) =>
-      Number((row as { id: number }).id)
-    );
-    expect(tombstoneIds).not.toContain(Number(tombstone.id));
-    expect(await lineageOf(Number(tombstone.id))).toMatchObject({
-      automation_id: automation.id,
-    });
-  });
 });

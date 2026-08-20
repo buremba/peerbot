@@ -32,9 +32,7 @@ export interface PersistAutomationEventOutputParams {
    *  Null only for a completion resolved outside a run and outside a version. */
   versionId: number | null;
   organizationId: string;
-  windowId: number;
-  canvasRevisionId: number;
-  runId: number | null;
+  runId: number;
   boundEntityIds: number[];
   validContentIds: Set<number>;
   occurredAt: string;
@@ -136,11 +134,8 @@ async function findCurrentHeadByIdentity(
  * — the source item's own stable id, so this names the row identically on every
  * run that rediscovers it.
  *
- * Exported because `events/backfill-automation-output-origin-id.ts` re-stamps the
- * rows written before this derivation existed, and a backfill that reimplements
- * the encoding in SQL drifts from the writer the moment either changes.
  */
-export function automationOutputOriginId(
+function automationOutputOriginId(
   automationId: number,
   outputName: string,
   idempotencyKey: string
@@ -148,7 +143,7 @@ export function automationOutputOriginId(
   return `automation_${automationId}_${outputName}_key_${idempotencyKey}`;
 }
 
-/** Persist one declared event array atomically with its Canvas window. */
+/** Persist one declared event array atomically with its Automation run. */
 export async function persistAutomationEventOutput(
   params: PersistAutomationEventOutputParams
 ): Promise<InsertedEvent[]> {
@@ -168,7 +163,7 @@ export async function persistAutomationEventOutput(
     seenIdempotencyKeys.add(draft.idempotency_key);
   }
   const inserted: InsertedEvent[] = [];
-  const producer = `canvas:${params.canvasRevisionId}`;
+  const producer = `run:${params.runId}`;
 
   for (let index = 0; index < params.rows.length; index++) {
     const draft = params.rows[index] as EventDraft;
@@ -255,9 +250,9 @@ export async function persistAutomationEventOutput(
     // The row's identity, and the origin_id that must name it. A model-supplied
     // `idempotency_key` is the source item's own stable id, so it identifies the
     // row across runs; without one the row is only identifiable as its slot in
-    // this Canvas revision. origin_id is DERIVED from the same identity rather
+    // this Automation run. origin_id is DERIVED from the same identity rather
     // than stamped positionally: an hourly Automation's runs all append to one
-    // Canvas revision, so `..._${index}` named item N of every run the same
+    // result period, so `..._${index}` named item N of every run the same
     // thing. Prod Automation 71 put 8 unrelated posts under
     // `automation_71_signals_canvas_4819569_4` — distinct rows, each correctly
     // deduped by its idempotency key, all sharing one origin_id. That breaks the
@@ -294,8 +289,6 @@ export async function persistAutomationEventOutput(
       _lobu_idempotency_key: idempotencyKey,
       automation_id: params.automationId,
       automation_output: params.outputName,
-      window_id: params.windowId,
-      window_revision_id: params.canvasRevisionId,
     };
     const writeEvent = (headId: number | null) =>
       params.tx.savepoint((sp) =>

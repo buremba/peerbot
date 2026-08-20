@@ -34,7 +34,6 @@ export async function readAutomationRunThreads(args: {
 			reason: string | null;
 			status: string;
 			reviewedByName: string | null;
-			windowId: number | null;
 		}>;
 		automaticActions: Array<{
 			type: "entity-merge-result";
@@ -70,7 +69,6 @@ export async function readAutomationRunThreads(args: {
 		snapshot_jsonl: string | null;
 		run_id: number;
 		status: string;
-		window_id: number | null;
 		prompt: string | null;
 	}>`
 		WITH selected_runs AS (
@@ -88,7 +86,7 @@ export async function readAutomationRunThreads(args: {
 		)
 		SELECT snapshot.conversation_id,
 		       COALESCE(snapshot.created_at, r.completed_at, r.created_at) AS created_at,
-		       snapshot.snapshot_jsonl, r.id AS run_id, r.status, r.window_id,
+		       snapshot.snapshot_jsonl, r.id AS run_id, r.status,
 		       -- run_metadata->>'prompt_rendered' only exists on historical runs
 		       -- from the templating era; current runs read the version's
 		       -- literal prompt.
@@ -153,7 +151,6 @@ export async function readAutomationRunThreads(args: {
 				reason: string | null;
 				status: string;
 				reviewedByName: string | null;
-				windowId: number | null;
 			}>,
 			automaticActions: [] as Array<{
 				type: "entity-merge-result";
@@ -182,13 +179,9 @@ export async function readAutomationRunThreads(args: {
 		};
 	});
 	const runIds = runs.map((run) => run.runId);
-	const windowIds = rows.flatMap((row) =>
-		row.window_id == null ? [] : [Number(row.window_id)],
-	);
 
 	// Approval cards are durable events rather than transcript JSONL parts. Read
-	// them separately, then attach each to its producing automation run by durable
-	// source_run_id (new rows) or window_id (legacy rows).
+	// them separately, then attach each child to its causal parent run.
 	const approvalRows = await sql<{
 		event_id: number;
 		run_id: number;
@@ -200,8 +193,7 @@ export async function readAutomationRunThreads(args: {
 		resource_kind: string | null;
 		reason: string | null;
 		tool: string | null;
-		window_id: number | null;
-		source_run_id: number | null;
+		parent_run_id: number;
 		interaction_status: string;
 		reviewed_by_name: string | null;
 	}>`
@@ -217,12 +209,7 @@ export async function readAutomationRunThreads(args: {
 		       e.metadata->>'tool' AS tool,
 		       e.interaction_status,
 		       e.metadata->>'reviewed_by_name' AS reviewed_by_name,
-		       r.window_id,
-		       CASE
-		         WHEN r.action_input->>'source_run_id' ~ '^[0-9]+$'
-		         THEN (r.action_input->>'source_run_id')::bigint
-		         ELSE NULL
-		       END AS source_run_id
+		       r.parent_run_id
 		FROM current_event_records e
 		JOIN runs r ON r.id = e.run_id
 		JOIN automations w
@@ -232,13 +219,7 @@ export async function readAutomationRunThreads(args: {
 		  AND w.agent_id = ${agentId}
 		  AND r.automation_id = ${automationId}
 		  AND e.interaction_type = 'approval'
-		  AND (
-		    (
-		      r.action_input->>'source_run_id' ~ '^[0-9]+$'
-		      AND (r.action_input->>'source_run_id')::bigint = ANY(${pgBigintArray(runIds)}::bigint[])
-		    )
-		    OR r.window_id = ANY(${pgBigintArray(windowIds)}::bigint[])
-		  )
+		  AND r.parent_run_id = ANY(${pgBigintArray(runIds)}::bigint[])
 		ORDER BY e.run_id
 	`;
 	const actions = approvalRows.map((row) => {
@@ -261,8 +242,7 @@ export async function readAutomationRunThreads(args: {
 				? (rawProposal as { args: Record<string, unknown> }).args
 				: rawProposal;
 		return {
-			parentRunId: row.source_run_id == null ? null : Number(row.source_run_id),
-			windowId: row.window_id == null ? null : Number(row.window_id),
+			parentRunId: Number(row.parent_run_id),
 			type: "tool-approval" as const,
 			eventId: Number(row.event_id),
 			runId: Number(row.run_id),
@@ -279,17 +259,8 @@ export async function readAutomationRunThreads(args: {
 	});
 
 	const runById = new Map(runs.map((run) => [run.runId, run]));
-	const runByWindow = new Map<number, (typeof runs)[number]>();
-	for (const row of rows) {
-		if (row.window_id == null || runByWindow.has(Number(row.window_id)))
-			continue;
-		const run = runById.get(Number(row.run_id));
-		if (run) runByWindow.set(Number(row.window_id), run);
-	}
 	for (const { parentRunId, ...action } of actions) {
-		const run =
-			(parentRunId == null ? undefined : runById.get(parentRunId)) ??
-			(action.windowId == null ? undefined : runByWindow.get(action.windowId));
+		const run = runById.get(parentRunId);
 		if (!run) continue;
 		run.actions.push(action);
 		if (action.status === "pending") run.pendingActionCount += 1;

@@ -19,6 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { pgTextArray } from "../../../db/client";
 import type { Env } from "../../../index";
 import { buildClientSDK } from "../../../sandbox/client-sdk";
+import { createAutomationRun } from "../../../runs/queue-service";
 import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
@@ -66,7 +67,7 @@ describe("notify input_schema — agent asks a human", () => {
 	let agentCtx: AuthContext;
 	let automationCtx: AuthContext;
 	let automationId: number;
-	let windowId: number;
+	let sourceRunId: number;
 
 	const baseCtx = (
 		userId: string,
@@ -115,28 +116,19 @@ describe("notify input_schema — agent asks a human", () => {
 			`;
 		});
 		automationId = Number(automation.id);
-		const [window] = await sql`
-			INSERT INTO events (
-				organization_id, semantic_type, payload_type, payload_data,
-				automation_id, metadata, occurred_at, created_at, created_by
-			) VALUES (
-				${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
-				${automationId},
-				${sql.json({
-					automation_id: automationId,
-					granularity: "hour",
-					window_start: "2026-08-10T00:00:00.000Z",
-					window_end: "2026-08-10T01:00:00.000Z",
-				})},
-				NOW(), NOW(), ${owner.id}
-			)
-			RETURNING id
-		`;
-		windowId = Number(window.id);
+		const sourceRun = await createAutomationRun({
+			organizationId: org.id,
+			automationId,
+			agentId: "asking-agent",
+			windowStart: "2026-08-10T00:00:00.000Z",
+			windowEnd: "2026-08-10T01:00:00.000Z",
+			dispatchSource: "manual",
+		}, sql);
+		sourceRunId = sourceRun.runId;
 		automationCtx = {
 			...baseCtx(owner.id, null),
 			actingAutomationId: automationId,
-			actingWindowId: windowId,
+			actingRunId: sourceRunId,
 		};
 	});
 
@@ -1026,7 +1018,7 @@ describe("notify input_schema — agent asks a human", () => {
 				},
 				automation_source: {
 					automation_id: automationId,
-					window_id: windowId,
+					run_id: sourceRunId,
 				},
 			},
 			TEST_ENV,
@@ -1035,15 +1027,15 @@ describe("notify input_schema — agent asks a human", () => {
 
 		const sql = getTestDb();
 		const [run] = await sql`
-			SELECT automation_id, window_id
+			SELECT automation_id, parent_run_id
 			FROM runs WHERE id = ${sent.run_id}
 		`;
 		expect(Number(run.automation_id)).toBe(automationId);
-		expect(Number(run.window_id)).toBe(windowId);
+		expect(Number(run.parent_run_id)).toBe(sourceRunId);
 
 		const [reaction] = await sql`
 			SELECT run_id FROM automation_reactions
-			WHERE automation_id = ${automationId} AND window_id = ${windowId}
+			WHERE automation_id = ${automationId} AND source_run_id = ${sourceRunId}
 			ORDER BY id DESC LIMIT 1
 		`;
 		expect(Number(reaction.run_id)).toBe(sent.run_id);
@@ -1088,19 +1080,14 @@ describe("notify input_schema — agent asks a human", () => {
 			`;
 		});
 		const victimAutomationId = Number(victimAutomation.id);
-		const [victimWindow] = await sql`
-			INSERT INTO events (
-				organization_id, semantic_type, payload_type, payload_data,
-				automation_id, metadata, occurred_at, created_at, created_by
-			) VALUES (
-				${victimOrg.id}, 'canvas_state', 'json_template', '{}'::jsonb,
-				${victimAutomationId},
-				${sql.json({ automation_id: victimAutomationId })},
-				NOW(), NOW(), ${victimOwner.id}
-			)
-			RETURNING id
-		`;
-		const victimWindowId = Number(victimWindow.id);
+		const victimRun = await createAutomationRun({
+			organizationId: victimOrg.id,
+			automationId: victimAutomationId,
+			agentId: "victim-agent",
+			windowStart: "2026-08-10T00:00:00.000Z",
+			windowEnd: "2026-08-10T01:00:00.000Z",
+			dispatchSource: "manual",
+		}, sql);
 
 		const sent = await send({
 			title: "Forged cross-org review",
@@ -1108,14 +1095,14 @@ describe("notify input_schema — agent asks a human", () => {
 			input_schema: { type: "object" },
 			automation_source: {
 				automation_id: victimAutomationId,
-				window_id: victimWindowId,
+				run_id: victimRun.runId,
 			},
 		});
 		const [run] = await sql`
-			SELECT automation_id, window_id FROM runs WHERE id = ${sent.run_id}
+			SELECT automation_id, parent_run_id FROM runs WHERE id = ${sent.run_id}
 		`;
 		expect(run.automation_id).toBeNull();
-		expect(run.window_id).toBeNull();
+		expect(run.parent_run_id).toBeNull();
 		const linked = await sql`
 			SELECT id FROM automation_reactions WHERE run_id = ${sent.run_id}
 		`;
@@ -1125,10 +1112,10 @@ describe("notify input_schema — agent asks a human", () => {
 		// cannot borrow a run or Automation from a different organization.
 		await sql`
 			INSERT INTO automation_reactions (
-				organization_id, automation_id, window_id, reaction_type,
+				organization_id, automation_id, source_run_id, reaction_type,
 				tool_name, tool_args, run_id
 			) VALUES (
-				${orgId}, ${victimAutomationId}, ${victimWindowId},
+				${orgId}, ${victimAutomationId}, ${victimRun.runId},
 				'notification_sent', 'notify',
 				${sql.json({ title: "Forged cross-org review" })}, ${sent.run_id}
 			)
@@ -1204,7 +1191,7 @@ describe("notify input_schema — agent asks a human", () => {
 				SELECT id FROM automation_reactions
 				WHERE organization_id = ${orgId}
 				  AND automation_id = ${automationId}
-				  AND window_id = ${windowId}
+				  AND source_run_id = ${sourceRunId}
 				  AND run_id = ${retry.run_id}
 				  AND tool_name = 'notify'
 			`;

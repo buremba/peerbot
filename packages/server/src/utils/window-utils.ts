@@ -102,25 +102,21 @@ export function foldUnprocessedRanges(
  * Returns a period-aligned window of exactly one granularity period:
  * `[aligned start, start + 1 period)`. The end is EXCLUSIVE.
  *
- * Chains off the last window's `window_start`, never its `window_end`. Using
+ * Chains off the last completed run's `window_start`, never its `window_end`. Using
  * the end assumes it is an exclusive boundary, and it is not reliably one:
- * windows are written by agents through `complete_window`, and prod holds both
- * conventions in the same table (measured 2026-07-31 — daily: 29 rows ending
+ * periods are written by agents through `complete_window`, and historical data
+ * holds both conventions (measured 2026-07-31 — daily: 29 rows ending
  * `23:59:59.999` vs 32 ending `00:00:00`; weekly: 28 vs 2). Chaining off an
- * inclusive end starts the next window a day-minus-a-millisecond early, which
- * then (a) collapses to a ZERO-length window once clamped — five such windows
- * exist on prod, every one with `content_analyzed = 0` — and (b) never matches
- * a fresh period in `findCanvasHead`, so no new chain root is created, so this
- * function keeps returning the same window forever (Automation 71 spent a full
- * day re-completing the previous day's window).
+ * inclusive end starts the next period a day-minus-a-millisecond early, which
+ * then collapses to a zero-length period once clamped.
  *
- * Re-aligning the stored start also makes the 14 already-misaligned prod rows
- * self-heal on their next run, with no migration rewriting window identities.
+ * Re-aligning the stored start also makes already-misaligned rows self-heal on
+ * their next run.
  *
  * The period never runs ahead of the clock: `AUTOMATION_TIME_GRANULARITIES` has
  * no 'hourly', so an hourly cron necessarily gets a DAILY window and every run
- * inside a day must resolve to that SAME day for `replace_existing` to refresh
- * it. Advancing unconditionally would mint tomorrow's window at 00:01 and march
+ * inside a day must resolve to that same day. Advancing unconditionally would
+ * mint tomorrow's window at 00:01 and march
  * into the future. Hence the clamp to the current period rather than a cap on
  * the end — a clamped END is what produced the zero-length windows.
  */
@@ -141,11 +137,10 @@ export async function computePendingWindow(
 }
 
 /**
- * The Automation's window cursor: the start of the latest period it has a canvas
- * chain root for, or null if it has none.
+ * The Automation's cursor: the start of its latest completed result period.
  *
- * `canvas_windows` holds one row per root, so this is a bounded per-Automation
- * lookup, not a history aggregation. Ordered by `window_start` because that is
+ * Completed Automation runs make this a bounded per-Automation lookup. Ordered
+ * by `window_start` because that is
  * the field being chained; ordering by `window_end` would re-introduce the
  * boundary ambiguity documented on `computePendingWindow`. Zero-content windows
  * count as durable cursor progress too, otherwise empty periods get reprocessed
@@ -160,10 +155,14 @@ export async function readWindowCursor(
   automationId: number
 ): Promise<Date | null> {
   const rows = await sql`
-    SELECT window_start
-    FROM canvas_windows
+    SELECT (approved_input->>'window_start')::timestamptz AS window_start
+    FROM runs
     WHERE automation_id = ${automationId}
-    ORDER BY window_start DESC
+      AND run_type = 'automation'
+      AND status = 'completed'
+      AND action_output IS NOT NULL
+      AND approved_input->>'window_start' IS NOT NULL
+    ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST
     LIMIT 1
   `;
   return rows.length > 0 ? new Date(rows[0].window_start as string) : null;
@@ -215,10 +214,7 @@ export function parseAutomationWindowDate(value: string): Date {
  * completed after it closed and tells the truth for one still open.
  *
  * Shared rather than inlined because the stamp has more than one writer:
- * `complete-window.ts` writes the canvas/change-set/observation head and
- * `feedback.ts` writes the correction that supersedes it. When only the first
- * clamped, correcting an open window's canvas made it vanish — the uncorrected
- * head was visible and its correction was not.
+ * `complete-window.ts` writes run output and `feedback.ts` writes a correction.
  */
 export function automationOutputOccurredAt(windowEnd: string | Date): string {
   const endMs = new Date(windowEnd).getTime();
@@ -480,42 +476,53 @@ export function nextAutomationWindowStart(
  * @returns SQL SELECT ... FROM ... JOIN fragment (without WHERE clause)
  */
 /**
- * Windows read from the `canvas_windows` view — one row per canvas chain ROOT,
- * live extracted_data from the chain HEAD, provenance from the head's run (see
- * migration 20260703000000). `iw.id` is the ROOT event id (the window
- * identity), so link tables re-keyed to root ids match.
+ * Results read directly from completed Automation runs.
  */
 /** FROM fragment for callers that need `iw` joined to versions (the SELECT clause). */
 export function buildWindowsFromWithVersions(): string {
-  return `canvas_windows iw
+  return `runs iw
     JOIN automations i ON iw.automation_id = i.id
     LEFT JOIN automation_versions automation_v ON i.current_version_id = automation_v.id
-    LEFT JOIN automation_versions window_v ON iw.version_id = window_v.id`;
+    LEFT JOIN automation_versions window_v
+      ON window_v.id = CASE
+        WHEN iw.approved_input->>'version_id' ~ '^\\d+$'
+          THEN (iw.approved_input->>'version_id')::bigint
+        ELSE NULL
+      END`;
 }
 
 /** Bare FROM fragment for the COUNT(*) pagination fallback (no version joins). */
 export function buildWindowsCountFromClause(): string {
-  return `canvas_windows iw
+  return `runs iw
     JOIN automations i ON iw.automation_id = i.id`;
 }
 
 export function buildWindowsSelectClause(): string {
   return `
     SELECT
-      iw.id as window_id,
+      iw.id as run_id,
       iw.automation_id,
       COALESCE(window_v.name, automation_v.name, i.name) as automation_name,
-      iw.granularity,
-      iw.window_start,
-      iw.window_end,
-      iw.content_analyzed,
-      iw.extracted_data as extracted_data,
+      iw.approved_input->>'granularity' as granularity,
+      (iw.approved_input->>'window_start')::timestamptz as window_start,
+      (iw.approved_input->>'window_end')::timestamptz as window_end,
+      COALESCE(
+        CASE WHEN iw.run_metadata->>'content_analyzed' ~ '^\\d+$'
+          THEN (iw.run_metadata->>'content_analyzed')::bigint END,
+        (SELECT COUNT(*) FROM automation_run_events link WHERE link.run_id = iw.id)
+      ) as content_analyzed,
+      iw.action_output as extracted_data,
       iw.model_used,
-      iw.client_id,
+      NULLIF(iw.run_metadata->>'client_id', '') as client_id,
       iw.run_metadata,
-      iw.execution_time_ms,
+      COALESCE(
+        CASE WHEN iw.run_metadata->>'execution_time_ms' ~ '^\\d+$'
+          THEN (iw.run_metadata->>'execution_time_ms')::bigint END,
+        CASE WHEN iw.completed_at IS NOT NULL AND iw.claimed_at IS NOT NULL
+          THEN (EXTRACT(EPOCH FROM (iw.completed_at - iw.claimed_at)) * 1000)::bigint END
+      ) as execution_time_ms,
       iw.created_at,
-      iw.version_id,
+      window_v.id as version_id,
       CAST(COUNT(*) OVER () AS INTEGER) as total_count
     FROM ${buildWindowsFromWithVersions()}
   `.trim();

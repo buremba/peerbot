@@ -51,7 +51,6 @@ export interface MergeResolutionProvenance {
 	decision: "auto_merge" | "human";
 	sourceRunId?: number | null;
 	automationId?: number | null;
-	windowId?: number | null;
 	policyHash?: string | null;
 	evidence?: ResolutionEvidence[];
 }
@@ -560,11 +559,10 @@ async function applyMergeInTransaction(
 	await tx`
     INSERT INTO entity_merge_operations
       (organization_id, winner_entity_id, loser_entity_id, source_run_id,
-       automation_id, window_id, decision, policy_hash, evidence, ledger, merged_by)
+       automation_id, decision, policy_hash, evidence, ledger, merged_by)
     VALUES
       (${orgId}, ${winnerId}, ${loserId}, ${resolution.sourceRunId ?? null},
-       ${resolution.automationId ?? null}, ${resolution.windowId ?? null},
-       ${resolution.decision}, ${resolution.policyHash ?? null},
+       ${resolution.automationId ?? null}, ${resolution.decision}, ${resolution.policyHash ?? null},
        ${tx.json(resolution.evidence ?? [])}, ${tx.json(ledger)}, ${mergedBy})
   `;
 

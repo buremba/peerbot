@@ -190,10 +190,7 @@ export default async (
     return;
   }
 
-  const runPredicate =
-    ctx.window.run_id != null
-      ? `run_id = ${Number(ctx.window.run_id)}`
-      : `metadata->>'window_id' = '${Number(ctx.window.id)}'`;
+  const runPredicate = `run_id = ${Number(ctx.window.run_id)}`;
   const deliveredSignals = (await client.query(
     `SELECT id, author_name, metadata FROM events
      WHERE ${runPredicate}
@@ -221,7 +218,7 @@ export default async (
 
   const automationSource = {
     automation_id: ctx.automation.id,
-    window_id: ctx.window.id,
+    run_id: ctx.window.run_id,
   };
   for (const draft of deliveredDrafts) {
     const connectionId = Number(draft.metadata.source_connection_id);

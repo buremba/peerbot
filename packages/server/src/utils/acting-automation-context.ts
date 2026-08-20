@@ -25,19 +25,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 interface ActingAutomationScope {
   automationId: number;
-  /**
-   * The automation run driving this call, when the lane exposes one. Reaction
-   * sessions carry it; agent tool calls do not (see `notify.ts`), which is why
-   * {@link ActingAutomationScope.windowId} exists as the second route to the
-   * same run.
-   */
+  /** The automation run driving this call. */
   runId: number | null;
-  /**
-   * The automation-run window driving this call. Resolves to the same run via
-   * `runs.window_id`, covering the agent and device lanes where only a
-   * caller-declared `automation_source` is available.
-   */
-  windowId: number | null;
 }
 
 const actingAutomationContext =
@@ -54,7 +43,6 @@ export function runWithActingAutomation<T>(
   acting: {
     automationId: number | null | undefined;
     runId?: number | null;
-    windowId?: number | null;
   },
   fn: () => T
 ): T {
@@ -65,7 +53,6 @@ export function runWithActingAutomation<T>(
     {
       automationId: acting.automationId,
       runId: acting.runId ?? null,
-      windowId: acting.windowId ?? null,
     },
     fn
   );
@@ -82,7 +69,6 @@ export function runWithActingAutomation<T>(
 export function getActingAutomationScope(): {
   automationId: number;
   runId: number | null;
-  windowId: number | null;
 } | null {
   return actingAutomationContext.getStore() ?? null;
 }

@@ -68,7 +68,7 @@ export function buildCreateDeferral(args: {
 	/** Fields the rule escalated — what the approver is consenting to. */
 	escalatedFields?: string[];
 	automationId?: number | null;
-	windowId?: number | null;
+	parentRunId?: number | null;
 }): DeferredMutation {
 	const name =
 		typeof args.entityData.name === "string" ? args.entityData.name : undefined;
@@ -84,7 +84,6 @@ export function buildCreateDeferral(args: {
 				proposal: args.proposal,
 				escalated_fields: args.escalatedFields,
 				automation_id: args.automationId ?? null,
-				window_id: args.windowId ?? null,
 				attribution: args.attribution,
 				reason:
 					args.reason ??
@@ -94,7 +93,7 @@ export function buildCreateDeferral(args: {
 						args.entityData.entity_type,
 						name,
 					),
-			}),
+			}, args.parentRunId ?? null),
 	};
 }
 
@@ -112,7 +111,7 @@ export function buildFieldChangeDeferral(args: {
 	/** Fields the rule escalated — what the approver is consenting to. */
 	escalatedFields?: string[];
 	automationId?: number | null;
-	windowId?: number | null;
+	parentRunId?: number | null;
 }): DeferredMutation {
 	return {
 		display: {
@@ -128,12 +127,11 @@ export function buildFieldChangeDeferral(args: {
 				current: args.current,
 				escalated_fields: args.escalatedFields,
 				automation_id: args.automationId ?? null,
-				window_id: args.windowId ?? null,
 				attribution: args.attribution,
 				reason:
 					args.reason ??
 					fieldChangeReason(args.attribution, Object.keys(args.fields)),
-			}),
+			}, args.parentRunId ?? null),
 	};
 }
 
@@ -212,7 +210,7 @@ async function evaluate(
 				proposal: req.proposal,
 				attribution: req.attribution,
 				automationId: req.automationId,
-				windowId: req.windowId,
+				parentRunId: req.parentRunId,
 			}),
 		};
 	}
@@ -245,7 +243,6 @@ async function evaluate(
 						metadata?: Record<string, unknown> | null;
 					},
 					automation_id: req.automationId ?? null,
-					window_id: req.windowId ?? null,
 					attribution: req.attribution,
 					reason: reasonFor(
 						req.attribution,
@@ -253,7 +250,7 @@ async function evaluate(
 						req.entityTypeSlug,
 						name,
 					),
-				}),
+				}, req.parentRunId ?? null),
 		},
 	};
 }

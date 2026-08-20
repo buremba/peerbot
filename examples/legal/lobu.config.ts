@@ -120,7 +120,6 @@ const contractReviewTracker = defineAutomation({
   slug: "contract-review-tracker",
   name: "Contract review tracker",
   triggers: [every("0 8 * * 1-5")],
-  notification: { priority: "high" },
   tags: ["legal", "contract", "daily"],
   minCooldownSeconds: 1800,
   reactionsGuidance:

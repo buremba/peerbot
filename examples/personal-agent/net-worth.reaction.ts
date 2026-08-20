@@ -1202,7 +1202,7 @@ async function notifyNeedsAttention(
     idempotency_key: `${IDEMPOTENCY_PREFIX}:needs-attention:week:${isoWeekInTimeZone(ctx.window.window_end, "Europe/London")}`,
     automation_source: {
       automation_id: ctx.automation.id,
-      window_id: ctx.window.id,
+      run_id: ctx.window.run_id,
     },
   });
 }
@@ -1341,7 +1341,7 @@ export default async function runNetWorthSnapshot(
         idempotency_key: `${IDEMPOTENCY_PREFIX}:quotes:week:${week}:batch:${index + 1}`,
         automation_source: {
           automation_id: ctx.automation.id,
-          window_id: ctx.window.id,
+          run_id: ctx.window.run_id,
         },
       });
       if (operation.status !== "completed") {
@@ -1382,7 +1382,7 @@ export default async function runNetWorthSnapshot(
     idempotency_key: `${IDEMPOTENCY_PREFIX}:snapshot:week:${week}`,
     automation_source: {
       automation_id: ctx.automation.id,
-      window_id: ctx.window.id,
+      run_id: ctx.window.run_id,
     },
   });
   const persistedSnapshot = saved.created
@@ -1394,7 +1394,7 @@ export default async function runNetWorthSnapshot(
     idempotency_key: `${IDEMPOTENCY_PREFIX}:notification:week:${week}`,
     automation_source: {
       automation_id: ctx.automation.id,
-      window_id: ctx.window.id,
+      run_id: ctx.window.run_id,
     },
   });
 }

@@ -65,6 +65,24 @@ async function createRaceAutomation(sql: Sql, organizationId: string): Promise<n
   return Number(row.id);
 }
 
+async function createResultRun(
+  sql: Sql,
+  organizationId: string,
+  automationId: number
+): Promise<number> {
+  const [run] = await sql<{ id: number }[]>`
+    INSERT INTO runs (
+      organization_id, automation_id, run_type, status, approved_input,
+      action_output, completed_at
+    ) VALUES (
+      ${organizationId}, ${automationId}, 'automation', 'completed', '{}'::jsonb,
+      '{}'::jsonb, NOW()
+    )
+    RETURNING id
+  `;
+  return Number(run.id);
+}
+
 describe('Automation keyed event outputs > concurrent runs', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
@@ -77,13 +95,13 @@ describe('Automation keyed event outputs > concurrent runs', () => {
     const automationId = await createRaceAutomation(sql, organizationId);
 
     /** One Automation run persisting a single keyed draft. */
-    const persistRun = (tx: DbClient, canvasRevisionId: number) =>
+    const persistRun = (tx: DbClient, runId: number) =>
       persistAutomationEventOutput({
         tx,
         rows: [
           {
             title: 'Voice profile',
-            content: `Refinement from canvas ${canvasRevisionId}.`,
+            content: `Refinement from run ${runId}.`,
             metadata: { channel: 'x', mode: 'taste' },
           },
         ],
@@ -92,12 +110,7 @@ describe('Automation keyed event outputs > concurrent runs', () => {
         automationId,
         versionId: null,
         organizationId,
-        windowId: 1,
-        // A distinct canvas revision per run — that is what a real second run
-        // produces, and it keeps the two runs off the idempotency-key index so
-        // the keyed identity is the only thing that can prevent a duplicate.
-        canvasRevisionId,
-        runId: null,
+        runId,
         boundEntityIds: [],
         validContentIds: new Set<number>(),
         occurredAt: new Date().toISOString(),
@@ -115,8 +128,10 @@ describe('Automation keyed event outputs > concurrent runs', () => {
       releaseA = resolve;
     });
 
+    const runAId = await createResultRun(sql, organizationId, automationId);
+    const runBId = await createResultRun(sql, organizationId, automationId);
     const runA = sql.begin(async (tx) => {
-      await persistRun(tx as unknown as DbClient, 1001);
+      await persistRun(tx as unknown as DbClient, runAId);
       signalAInserted();
       await aMayCommit;
     });
@@ -127,7 +142,7 @@ describe('Automation keyed event outputs > concurrent runs', () => {
     // the constraint working — so awaiting B here would deadlock the test
     // against itself rather than exercise the race.
     const runB = sql.begin(async (tx) => {
-      await persistRun(tx as unknown as DbClient, 1002);
+      await persistRun(tx as unknown as DbClient, runBId);
     });
 
     // Releasing A here directly would be a COIN FLIP, not a race: A usually
@@ -184,13 +199,13 @@ describe('Automation keyed event outputs > concurrent runs', () => {
     const automationId = await createRaceAutomation(sql, organizationId);
 
     /** One Automation run persisting a single keyed draft. */
-    const persistRun = (tx: DbClient, canvasRevisionId: number) =>
+    const persistRun = (tx: DbClient, runId: number) =>
       persistAutomationEventOutput({
         tx,
         rows: [
           {
             title: 'Voice profile',
-            content: `Refinement from canvas ${canvasRevisionId}.`,
+            content: `Refinement from run ${runId}.`,
             metadata: { channel: 'x', mode: 'taste' },
           },
         ],
@@ -199,9 +214,7 @@ describe('Automation keyed event outputs > concurrent runs', () => {
         automationId,
         versionId: null,
         organizationId,
-        windowId: 1,
-        canvasRevisionId,
-        runId: null,
+        runId,
         boundEntityIds: [],
         validContentIds: new Set<number>(),
         occurredAt: new Date().toISOString(),
@@ -211,8 +224,9 @@ describe('Automation keyed event outputs > concurrent runs', () => {
     // probe and both try to supersede. (The first test starts from NO head,
     // which collides on the ROOT index; this one needs a head so both inserts
     // are successors of the SAME row and collide on idx_events_superseded_by.)
+    const seedRunId = await createResultRun(sql, organizationId, automationId);
     await sql.begin(async (tx) => {
-      await persistRun(tx as unknown as DbClient, 2000);
+      await persistRun(tx as unknown as DbClient, seedRunId);
     });
     const seedHead = await sql<{ id: number }[]>`
       SELECT id FROM events
@@ -235,15 +249,17 @@ describe('Automation keyed event outputs > concurrent runs', () => {
       releaseA = resolve;
     });
 
+    const runAId = await createResultRun(sql, organizationId, automationId);
+    const runBId = await createResultRun(sql, organizationId, automationId);
     const runA = sql.begin(async (tx) => {
-      await persistRun(tx as unknown as DbClient, 2001);
+      await persistRun(tx as unknown as DbClient, runAId);
       signalAInserted();
       await aMayCommit;
     });
 
     await aInserted;
     const runB = sql.begin(async (tx) => {
-      await persistRun(tx as unknown as DbClient, 2002);
+      await persistRun(tx as unknown as DbClient, runBId);
     });
 
     try {

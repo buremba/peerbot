@@ -200,10 +200,24 @@ describe('getContent > score path honours forwarded filters', () => {
 
     const sql = getTestDb();
     await sql`
-      INSERT INTO automation_window_events (window_id, event_id, automation_id)
+      INSERT INTO automations
+        (id, organization_id, created_by, automation_group_id, name, slug, agent_id)
       VALUES
-        (${chatgptEventId}, ${chatgptEventId}, ${AUTOMATION_A}),
-        (${cliEventId}, ${cliEventId}, ${AUTOMATION_B})
+        (${AUTOMATION_A}, ${org.id}, ${user.id}, ${AUTOMATION_A}, 'Score A', 'score-a', ${AGENT_A}),
+        (${AUTOMATION_B}, ${org.id}, ${user.id}, ${AUTOMATION_B}, 'Score B', 'score-b', ${AGENT_B})
+    `;
+    const resultRuns = await sql<{ id: number }[]>`
+      INSERT INTO runs (organization_id, automation_id, run_type, status)
+      VALUES
+        (${org.id}, ${AUTOMATION_A}, 'automation', 'completed'),
+        (${org.id}, ${AUTOMATION_B}, 'automation', 'completed')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO automation_run_events (run_id, event_id, automation_id)
+      VALUES
+        (${resultRuns[0].id}, ${chatgptEventId}, ${AUTOMATION_A}),
+        (${resultRuns[1].id}, ${cliEventId}, ${AUTOMATION_B})
     `;
 
     ctx = {

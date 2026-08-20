@@ -13,7 +13,7 @@
  *     causal chain (`workspace-event-enqueue.ts`)
  *   - a NONEXISTENT id fails the `events_automation_id_fkey` constraint, and
  *     because audit writes are fire-and-forget the row is dropped entirely
- *   - a declared window belonging to a DIFFERENT Automation batches this
+ *   - a declared run belonging to a DIFFERENT Automation batches this
  *     proposal into that Automation's approval card
  *
  * `notify.ts` has validated this field for exactly these reasons since it was
@@ -28,44 +28,44 @@ import { getDb } from '../db/client';
 /** The Automation a durable write is attributed to, after verification. */
 interface AutomationAttribution {
   automationId: number | null;
-  windowId: number | null;
+  runId: number | null;
 }
 
 /**
  * The `automation_source` shape every tool contract declares.
  *
  * Both halves are required: `manage_entity`, `save_content`, and `notify` all
- * type `window_id` as `Type.Number()`, so a declaration missing one is malformed
+ * type `run_id` as `Type.Number()`, so a declaration missing one is malformed
  * input, not a partial one to honor.
  */
 interface DeclaredAutomationSource {
   automation_id: number;
-  window_id: number;
+  run_id: number;
 }
 
 /** The parts of a ToolContext this resolution reads. */
 interface ActingAutomationSession {
   organizationId: string;
   actingAutomationId?: number | null;
-  actingWindowId?: number | null;
+  actingRunId?: number | null;
 }
 
 /**
  * Drop a declared source unless the Automation belongs to this organization AND
- * the window belongs to that Automation.
+ * the run belongs to that Automation.
  *
  * The pairing is the half that is easy to miss: an org member can name their own
- * Automation next to someone else's `window_id` and land the proposal in that
- * window's approval card. `notify.ts` has paired the two the same way since it
+ * Automation next to someone else's `run_id` and land the proposal in that
+ * run's approval card. `notify.ts` has paired the two the same way since it
  * was added.
  *
  * Returns null rather than throwing: attribution is a provenance hint, and a bad
  * hint should cost the caller its attribution, not fail their tool call.
  */
 export async function verifiedAutomationSource(
-  declared: { automationId: number; windowId: number } | null,
+  declared: { automationId: number; runId: number } | null,
   organizationId: string
-): Promise<{ automationId: number; windowId: number } | null> {
+): Promise<{ automationId: number; runId: number } | null> {
   if (!declared) return null;
   // `getDb()` is reached only AFTER the guard, and never as a default parameter:
   // a default is evaluated at call time, so it would run on every call — the
@@ -74,10 +74,11 @@ export async function verifiedAutomationSource(
   const rows = await getDb()<{ id: number }>`
     SELECT a.id
     FROM automations a
-    JOIN canvas_windows w
-      ON w.id = ${declared.windowId}
-     AND w.automation_id = a.id
-     AND w.organization_id = a.organization_id
+    JOIN runs run
+      ON run.id = ${declared.runId}
+     AND run.automation_id = a.id
+     AND run.organization_id = a.organization_id
+     AND run.run_type = 'automation'
     WHERE a.id = ${declared.automationId}
       AND a.organization_id = ${organizationId}
     LIMIT 1
@@ -86,16 +87,15 @@ export async function verifiedAutomationSource(
 }
 
 /**
- * The Automation and window a write surface should record.
+ * The Automation and run a write surface should record.
  *
- * The trusted session identity wins outright — including its window. Letting a
- * declared window through on a reaction session is what would let a script retag
+ * The trusted session identity wins outright — including its run. Letting a
+ * declared run through on a reaction session is what would let a script retag
  * its deferral into another Automation's approval batch, which is the precedence
  * every call site's comment already claimed without the code enforcing it.
  *
  * Off-session, the declared source is honored only once verified. An unverified
- * declaration yields no attribution at all rather than a half-applied one: a
- * window without its Automation names a batch nothing owns.
+ * declaration yields no attribution at all rather than a half-applied one.
  */
 export async function resolveAutomationAttribution(
   ctx: ActingAutomationSession,
@@ -104,13 +104,13 @@ export async function resolveAutomationAttribution(
   if (ctx.actingAutomationId != null) {
     return {
       automationId: ctx.actingAutomationId,
-      windowId: ctx.actingWindowId ?? null,
+      runId: ctx.actingRunId ?? null,
     };
   }
-  if (!declared) return { automationId: null, windowId: null };
+  if (!declared) return { automationId: null, runId: null };
   const verified = await verifiedAutomationSource(
-    { automationId: declared.automation_id, windowId: declared.window_id },
+    { automationId: declared.automation_id, runId: declared.run_id },
     ctx.organizationId
   );
-  return verified ?? { automationId: null, windowId: null };
+  return verified ?? { automationId: null, runId: null };
 }

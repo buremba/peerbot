@@ -1,6 +1,6 @@
 /**
  * Standard parameter-building helpers for the listing path:
- * buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL.
+ * buildStandardParams, buildStandardWhereSql, RUN_JOIN_SQL.
  */
 
 import { pgTextArray } from '../../db/client';
@@ -33,7 +33,7 @@ export function buildStandardParams(
     options.platform ?? null,
     extra.sinceDate?.toISOString() ?? null,
     extra.untilDate?.toISOString() ?? null,
-    options.window_id ?? null,
+    options.run_id ?? null,
     options.engagement_min ?? null,
     options.engagement_max ?? null,
     options.classification_source ?? null,
@@ -78,7 +78,7 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
           AND ($2::text IS NULL OR f.connector_key = $2::text)
           AND ($3::timestamptz IS NULL OR f.occurred_at >= $3::timestamptz)
           AND ($4::timestamptz IS NULL OR f.occurred_at <= $4::timestamptz)
-          AND ($5::int IS NULL OR iwf.window_id = $5::int)
+          AND ($5::int IS NULL OR iwf.run_id = $5::int)
           AND ($6::numeric IS NULL OR f.score >= $6::numeric)
           AND ($7::numeric IS NULL OR f.score <= $7::numeric)
           AND ($8::text IS NULL OR EXISTS (
@@ -93,7 +93,7 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
           AND ($13::text[] IS NULL OR f.metadata->>'mcp_session_id' = ANY($13::text[]))`;
 }
 
-export const WINDOW_JOIN_SQL = `LEFT JOIN automation_window_events iwf
+export const RUN_JOIN_SQL = `LEFT JOIN automation_run_events iwf
           ON iwf.event_id = f.id
           AND ($5::int IS NOT NULL)
-          AND iwf.window_id = $5::int`;
+          AND iwf.run_id = $5::int`;

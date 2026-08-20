@@ -19,18 +19,18 @@ export async function getRecentFeedbackSummary(
   limit = 20
 ): Promise<string | undefined> {
   const sql = getDb();
-  // A correction's metadata.window_id is the canvas ROOT event id; the
-  // canvas_windows view resolves the period (LEFT JOIN — tombstoned roots null).
   const feedback = await sql`
         SELECT DISTINCT ON (e.metadata->>'field_path')
                e.metadata->>'field_path' AS field_path,
                e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value,
                e.metadata->>'note' AS note,
-               e.created_at, w.window_start, w.window_end
+               e.created_at,
+               (w.approved_input->>'window_start')::timestamptz AS window_start,
+               (w.approved_input->>'window_end')::timestamptz AS window_end
         FROM events e
-        LEFT JOIN canvas_windows w
-          ON w.id = (e.metadata->>'window_id')::bigint
+        LEFT JOIN runs w
+          ON w.id = e.run_id
         WHERE e.semantic_type = 'correction'
           AND (e.metadata->>'automation_id')::bigint = ${automationId}
         ORDER BY e.metadata->>'field_path', e.created_at DESC
@@ -41,8 +41,7 @@ export async function getRecentFeedbackSummary(
 
   const lines: string[] = ['## Past Corrections from User Feedback'];
   for (const row of feedback) {
-    // window_start/window_end come from the canvas root event; guard against a
-    // correction whose root was tombstoned (LEFT JOIN → null).
+    // Guard historical corrections whose source run is no longer available.
     const start = row.window_start
       ? new Date(row.window_start as string).toISOString().split('T')[0]
       : '?';

@@ -37,6 +37,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
+import { createAutomationRun } from "../../../runs/queue-service";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
 import { getContent } from "../../../tools/get_content";
 import { handleAutomationMode } from "../../../tools/get_content/automation-mode";
@@ -160,16 +161,37 @@ describe("An Automation's output is visible when written and still not its own i
 			userId,
 		})) as unknown as AutomationContent;
 
+	/** The claimed run that owns the dispatched period — completion writes its
+	 *  result onto this row, so it must exist and be active first. */
+	const claimRunForWindow = async (
+		automationId: number,
+		dispatched: AutomationContent,
+	): Promise<number> => {
+		const queued = await createAutomationRun({
+			organizationId: orgId,
+			automationId,
+			windowStart: dispatched.window_start,
+			windowEnd: dispatched.window_end,
+			dispatchSource: "scheduled",
+		});
+		await sql`
+			UPDATE runs SET status = 'running', claimed_at = NOW()
+			WHERE id = ${queued.runId}
+		`;
+		return queued.runId;
+	};
+
 	const complete = async (
 		automationId: number,
-		windowToken: string,
+		dispatched: AutomationContent,
 		signals: Array<{ content: string; title: string }>,
 	) => {
 		const completion = await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
-				window_token: windowToken,
+				run_id: await claimRunForWindow(automationId, dispatched),
+				window_token: dispatched.window_token,
 				extracted_data: {
 					signals: signals.map((s) => ({
 						...s,
@@ -197,7 +219,7 @@ describe("An Automation's output is visible when written and still not its own i
 		automationId: number,
 	): Promise<AutomationContent> => {
 		const warmup = await dispatch(automationId);
-		await complete(automationId, warmup.window_token, []);
+		await complete(automationId, warmup, []);
 		const open = await dispatch(automationId);
 		expect(open.window_start).not.toBe(warmup.window_start);
 		return open;
@@ -206,22 +228,19 @@ describe("An Automation's output is visible when written and still not its own i
 	/** Run one whole window: dispatch it, then complete it with one event output. */
 	const produceSignal = async (automationId: number, content: string) => {
 		const dispatched = await advanceToOpenWindow(automationId);
-		await complete(automationId, dispatched.window_token, [
-			{ content, title: content },
-		]);
+		await complete(automationId, dispatched, [{ content, title: content }]);
 		return dispatched;
 	};
 
-	// Keyed on the metadata the writer stamps, not on `run_id`. `complete_window`
-	// invoked directly carries no run row, so a join through `runs.automation_id`
-	// would silently return nothing and every assertion below would pass vacuously.
+	// Use the event's physical Automation attribution rather than duplicating the
+	// run lookup or relying on client-visible metadata.
 	const readOutputRows = async (automationId: number) =>
 		sql<{ id: number; occurred_at: string; created_at: string }[]>`
 			SELECT e.id, e.occurred_at, e.created_at
 			FROM events e
 			WHERE e.organization_id = ${orgId}
 			  AND e.semantic_type = 'observation'
-			  AND (e.metadata->>'automation_id')::int = ${automationId}
+			  AND e.automation_id = ${automationId}
 			ORDER BY e.id
 		`;
 

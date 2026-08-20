@@ -67,25 +67,24 @@ describe("scheduled Automation unchanged gate", () => {
 			skipped: 1,
 		});
 		const runs = await sql`
-			SELECT id FROM runs
+			SELECT id, approved_input->>'window_start' AS window_start,
+			       approved_input->>'window_end' AS window_end, run_metadata
+			FROM runs
 			WHERE automation_id = ${automationId} AND run_type = 'automation'
 		`;
-		expect(runs).toHaveLength(0);
+		expect(runs).toHaveLength(1);
+		expect(runs[0].run_metadata).toMatchObject({
+			content_analyzed: 0,
+			skipped_unchanged: true,
+		});
 		const [automation] = await sql`
 			SELECT next_run_at > current_timestamp AS advanced
 			FROM automations WHERE id = ${automationId}
 		`;
 		expect(automation?.advanced).toBe(true);
 
-		const [skippedWindow] = await sql`
-			SELECT window_start, window_end, content_analyzed
-			FROM canvas_windows
-			WHERE automation_id = ${automationId}
-		`;
-		expect(skippedWindow).toMatchObject({ content_analyzed: 0 });
-
 		const nextOccurredAt = new Date(
-			new Date(skippedWindow.window_end as string).getTime() + 30_000,
+			new Date(runs[0].window_end as string).getTime() + 30_000,
 		);
 		await sql`
 			INSERT INTO events (
@@ -112,9 +111,11 @@ describe("scheduled Automation unchanged gate", () => {
 			SELECT approved_input
 			FROM runs
 			WHERE automation_id = ${automationId} AND run_type = 'automation'
+			ORDER BY id DESC
+			LIMIT 1
 		`;
 		expect(nextRun.approved_input).toMatchObject({
-			window_start: new Date(skippedWindow.window_end as string).toISOString(),
+			window_start: new Date(runs[0].window_end as string).toISOString(),
 		});
 	});
 
@@ -161,9 +162,16 @@ describe("scheduled Automation unchanged gate", () => {
 		expect(first).toMatchObject({ runsCreated: 0, skipped: 1 });
 		expect(second).toMatchObject({ runsCreated: 0, skipped: 1 });
 		const runs = await sql`
-			SELECT id FROM runs
+			SELECT id, status, run_metadata FROM runs
 			WHERE automation_id = ${automationId} AND run_type = 'automation'
 		`;
-		expect(runs).toHaveLength(0);
+		expect(runs).toHaveLength(2);
+		expect(runs.every((run) => run.status === "completed")).toBe(true);
+		expect(
+			runs.every(
+				(run) =>
+					(run.run_metadata as Record<string, unknown>).skipped_unchanged === true,
+			),
+		).toBe(true);
 	});
 });

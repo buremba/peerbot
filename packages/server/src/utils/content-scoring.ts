@@ -38,11 +38,11 @@ interface NormalizedScoreFilters {
   engagement_min?: number;
   engagement_max?: number;
   // Additional filters to match searchContentByText
-  window_id?: number;
+  run_id?: number;
   /** Restrict to content some automation has analyzed. The handler always passed
    *  this; the builder used to ignore it — the same dropped-filter class. */
   analyzed_by_automation_id?: number;
-  exclude_automation_id?: number; // Exclude content already in any window for this automation
+  exclude_automation_id?: number; // Exclude content already analyzed by any run of this automation
   /** Restrict to events this Automation WROTE (events.automation_id). */
   produced_by_automation_id?: number;
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
@@ -205,11 +205,11 @@ async function buildFilterConditionsAndJoins(
     filterConditions.push(`f.score <= $${paramIndex++}::numeric`);
   }
 
-  if (filters?.window_id !== undefined) {
-    const validatedWindowId = validateNumericId(filters.window_id, 'window_id');
-    additionalJoins.push('JOIN automation_window_events iwc ON iwc.event_id = f.id');
-    params.push(validatedWindowId);
-    filterConditions.push(`iwc.window_id = $${paramIndex++}`);
+  if (filters?.run_id !== undefined) {
+    const validatedRunId = validateNumericId(filters.run_id, 'run_id');
+    additionalJoins.push('JOIN automation_run_events iwc ON iwc.event_id = f.id');
+    params.push(validatedRunId);
+    filterConditions.push(`iwc.run_id = $${paramIndex++}`);
   }
 
   if (filters?.analyzed_by_automation_id !== undefined) {
@@ -219,7 +219,7 @@ async function buildFilterConditionsAndJoins(
     );
     params.push(validatedAutomationId);
     filterConditions.push(`EXISTS (
-      SELECT 1 FROM automation_window_events iwc
+      SELECT 1 FROM automation_run_events iwc
       WHERE iwc.event_id = f.id AND iwc.automation_id = $${paramIndex++}
     )`);
   }
@@ -237,7 +237,7 @@ async function buildFilterConditionsAndJoins(
     const validatedAutomationId = validateNumericId(filters.exclude_automation_id, 'exclude_automation_id');
     params.push(validatedAutomationId);
     filterConditions.push(`NOT EXISTS (
-      SELECT 1 FROM automation_window_events exc_iwc
+      SELECT 1 FROM automation_run_events exc_iwc
       WHERE exc_iwc.event_id = f.id AND exc_iwc.automation_id = $${paramIndex++}
     )`);
   }

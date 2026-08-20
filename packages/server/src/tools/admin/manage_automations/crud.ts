@@ -329,7 +329,7 @@ export async function handleCreate(
         current_version_id, tags, status, created_by, created_at, updated_at,
         automation_group_id,
         device_worker_id, agent_kind,
-        notification_channel, notification_priority, min_cooldown_seconds,
+        min_cooldown_seconds,
         delivery_target, execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
@@ -342,8 +342,6 @@ export async function handleCreate(
         'active', ${createdBy}, NOW(), NOW(),
         ${automationId},
         ${args.device_worker_id ?? null}, ${args.agent_kind ?? null},
-        ${args.notification_channel ?? 'canvas'},
-        ${args.notification_priority ?? 'normal'},
         ${args.min_cooldown_seconds ?? 0},
         ${toJsonParam(tx, deliveryTarget)},
         ${toJsonParam(tx, args.execution_config)},
@@ -462,8 +460,6 @@ export async function handleCreate(
         execution_config: args.execution_config ?? null,
         sources,
         tags: args.tags ?? [],
-        notification_channel: args.notification_channel ?? 'canvas',
-        notification_priority: args.notification_priority ?? 'normal',
         delivery_target: deliveryTarget,
         min_cooldown_seconds: args.min_cooldown_seconds ?? 0,
         prompt: args.prompt ?? '',
@@ -632,8 +628,6 @@ export async function handleUpdate(
   if (args.tags !== undefined) updatedFields.push('tags');
   if (args.device_worker_id !== undefined) updatedFields.push('device_worker_id');
   if (args.agent_kind !== undefined) updatedFields.push('agent_kind');
-  if (args.notification_channel !== undefined) updatedFields.push('notification_channel');
-  if (args.notification_priority !== undefined) updatedFields.push('notification_priority');
   if (args.delivery_target !== undefined) updatedFields.push('delivery_target');
   if (args.min_cooldown_seconds !== undefined) updatedFields.push('min_cooldown_seconds');
 
@@ -682,8 +676,6 @@ export async function handleUpdate(
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
       agent_kind = CASE WHEN ${has('agent_kind')} THEN ${patch.agent_kind ?? null} ELSE agent_kind END,
-      notification_channel = CASE WHEN ${has('notification_channel')} THEN ${patch.notification_channel ?? 'canvas'} ELSE notification_channel END,
-      notification_priority = CASE WHEN ${has('notification_priority')} THEN ${patch.notification_priority ?? 'normal'} ELSE notification_priority END,
       delivery_target = CASE WHEN ${has('delivery_target')} THEN ${toJsonParam(sql, patch.delivery_target)} ELSE delivery_target END,
       min_cooldown_seconds = CASE WHEN ${has('min_cooldown_seconds')} THEN ${patch.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
     WHERE id = ${args.automation_id} AND organization_id = ${ctx.organizationId}

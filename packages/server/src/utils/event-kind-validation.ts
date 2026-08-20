@@ -12,7 +12,7 @@
 import { getDb } from '../db/client';
 import { formatAjvError, getAjv } from './ajv-singleton';
 import { exceedsValidationLimits, isEmptyObject } from './metadata-limits';
-import { resolvePlatformEventKind } from './platform-event-kinds';
+import { resolvePlatformNotificationKind } from './platform-notification-kinds';
 import { TtlCache } from './ttl-cache';
 
 // ============================================
@@ -325,7 +325,7 @@ export async function resolveEventKindDefinition(
   const memberKinds = await getMemberEventKinds(orgId);
   // Platform kinds are the LAST resort, so an org that declares the same slug
   // keeps ownership of how it renders.
-  return memberKinds?.[semanticType] ?? resolvePlatformEventKind(semanticType);
+  return memberKinds?.[semanticType] ?? resolvePlatformNotificationKind(semanticType);
 }
 
 /**

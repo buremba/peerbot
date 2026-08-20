@@ -8,7 +8,7 @@ import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	ENTITY_CHANGE_APPROVAL_KIND,
 	INVITATION_RECEIVED_KIND,
-} from "../utils/platform-event-kinds";
+} from "../utils/platform-notification-kinds";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";

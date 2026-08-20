@@ -39,7 +39,7 @@ note rather than drawn dead.
 
 ## Platform event kinds
 
-`utils/platform-event-kinds.ts` declares the kinds the platform emits, consulted
+`utils/platform-notification-kinds.ts` declares the kinds the platform emits, consulted
 as the **last** resort in `resolveEventKindDefinition` so an org that declares
 the same slug still wins. Each kind declares a `metadataSchema` (and, where the
 interesting content is a list, a hand-authored `jsonTemplate`):

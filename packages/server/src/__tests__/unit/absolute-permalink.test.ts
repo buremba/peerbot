@@ -1,4 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import {
+	__resetPublicOriginCachesForTests,
+	__setLocalFrontendForTests,
+} from "../../utils/public-origin";
 import { toAbsolutePermalink } from "../../utils/url-builder";
 
 /**
@@ -8,6 +12,11 @@ import { toAbsolutePermalink } from "../../utils/url-builder";
  * is what stands between an approval card and no notification at all.
  */
 describe("toAbsolutePermalink", () => {
+	afterEach(() => {
+		__resetPublicOriginCachesForTests();
+		__setLocalFrontendForTests(undefined);
+	});
+
 	it("absolutises a relative permalink against the configured origin", () => {
 		expect(
 			toAbsolutePermalink("/acme/memory?run_ids=991", "https://app.lobu.ai"),
@@ -29,5 +38,17 @@ describe("toAbsolutePermalink", () => {
 	it("returns undefined for nothing to link", () => {
 		expect(toAbsolutePermalink(null, "https://app.lobu.ai")).toBeUndefined();
 		expect(toAbsolutePermalink(undefined, "https://app.lobu.ai")).toBeUndefined();
+	});
+
+	it("returns undefined when no public origin is configured", () => {
+		// A backend-only deployment falls back to the hosted UI, so pinning a
+		// local frontend is what makes "no origin at all" reachable. The caller
+		// then omits the button — a card with no button still delivers, which a
+		// message Slack rejected does not.
+		delete process.env.PUBLIC_GATEWAY_URL;
+		// Reset FIRST — it clears the local-frontend pin too.
+		__resetPublicOriginCachesForTests();
+		__setLocalFrontendForTests(true);
+		expect(toAbsolutePermalink("/acme/memory?run_ids=991")).toBeUndefined();
 	});
 });

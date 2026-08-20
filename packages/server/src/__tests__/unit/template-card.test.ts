@@ -376,6 +376,38 @@ describe("table headers", () => {
 			["Cost", "low"],
 		]);
 	});
+
+	it("names the data-driven table by the prop the web renderer reads", () => {
+		// That form is titled with `title`, not `caption`, so reading only
+		// `caption` would label the same table differently on the two surfaces.
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "table", props: { title: "Risks" }, data: "{{risks}}", columns: ["risk_name"] },
+				],
+			},
+			data: { risks: [{ risk_name: "Leak" }] },
+		});
+		expect(kids(card).find((c) => c.type === "table")?.caption).toBe("Risks");
+	});
+
+	it("drops a table whose declared columns are empty", () => {
+		// `columns: []` resolves every row to no cells at all — a table with no
+		// columns, which is not a shape to hand the adapter.
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Risks" },
+					{ type: "table", data: "{{risks}}", columns: [] },
+				],
+			},
+			data: { risks: [{ risk_name: "Leak" }] },
+		});
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+		expect(texts(card)).toEqual(["Risks"]);
+	});
 });
 
 describe("decision actions", () => {
@@ -436,7 +468,8 @@ describe("platform limits", () => {
 			data: { a: "1", b: "2" },
 		});
 		// Two columns become fields, so there is no header row to leave blank.
-		// Rectangularity for real tables is pinned by the ragged-row test above.
+		// Rectangularity for real tables is pinned by the ragged-row test in
+		// "structural edge cases".
 		expect(kids(card).some((c) => c.type === "table")).toBe(false);
 		expect(pairs(card)).toEqual([
 			["A", "1"],
@@ -447,6 +480,13 @@ describe("platform limits", () => {
 
 describe("template-declared controls", () => {
 	const bound = (props: Record<string, unknown>) => ({ type: "button", props });
+
+	// A failed assertion must not leave the configured origin behind for the
+	// sibling suites, which assert on its absence.
+	afterEach(() => {
+		delete process.env.PUBLIC_GATEWAY_URL;
+		__resetPublicOriginCachesForTests();
+	});
 
 	it("renders a button whose action the bridge can actually route", () => {
 		const card = buildKindCard({
@@ -505,6 +545,42 @@ describe("template-declared controls", () => {
 			data: {},
 		});
 		expect(buttons(card).map((b) => b.url)).toEqual(["https://lobu.ai/runbook"]);
+	});
+
+	it("absolutises a link button's url — Slack takes it verbatim", () => {
+		// A relative button url is answered with `invalid_blocks`, which drops the
+		// whole message. Same rule as the strip, applied at the button.
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "link-button", props: { label: "Open", url: "/acme/memory?run_ids=1" } }],
+			},
+			data: {},
+		});
+		expect(buttons(card).map((b) => b.url)).toEqual([
+			"https://app.lobu.ai/acme/memory?run_ids=1",
+		]);
+	});
+
+	it("degrades a link button we cannot vouch for to its label", () => {
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Runbook" },
+					{ type: "link-button", props: { label: "Open", url: "javascript:alert(1)" } },
+				],
+			},
+			data: {},
+		});
+		expect(buttons(card)).toEqual([]);
+		// The label is not lost with the control — a dead button costs the whole
+		// message, a plain label costs nothing.
+		expect(texts(card)).toEqual(["Runbook\nOpen"]);
 	});
 
 	it("resolves {{path}} interpolation in a control label", () => {
@@ -824,8 +900,11 @@ describe("the context strip", () => {
 	it("keeps the label as plain text when the url cannot be absolutised", () => {
 		// No configured origin and no local frontend would normally fall back to
 		// the hosted UI; pinning both is what makes "unresolvable" reachable.
-		__setLocalFrontendForTests(true);
+		// Reset FIRST: the reset clears the local-frontend pin as well, so pinning
+		// before it leaves the answer up to whether this checkout happens to have
+		// a built bundle — green here, red in CI.
 		__resetPublicOriginCachesForTests();
+		__setLocalFrontendForTests(true);
 		const card = ctx(
 			[
 				{
@@ -853,7 +932,6 @@ describe("the context strip", () => {
 					children: [{ type: "text", content: "Ada" }],
 				},
 			],
-			// eslint-disable-next-line no-script-url -- the point of the test
 			{ url: "javascript:alert(1)" },
 		);
 		expect(strip(card)).toBe("Ada");
@@ -896,7 +974,9 @@ describe("the context strip", () => {
 		];
 		expect(strip(ctx(children, { type: "Person", name: "Ada" }))).toBe("*Person* · Ada");
 		expect(strip(ctx(children, { type: "Person" }))).toBe("*Person*");
-		expect(strip(ctx(children, { name: "Ada" }))).toBe("· Ada");
+		// The first value absent is the case the authored-separator rule cannot
+		// cover on its own: the strip drops the `·` left with nothing before it.
+		expect(strip(ctx(children, { name: "Ada" }))).toBe("Ada");
 	});
 
 	it("does not turn a body into a card the template could not draw", () => {

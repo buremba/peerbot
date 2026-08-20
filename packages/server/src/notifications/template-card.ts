@@ -144,23 +144,39 @@ const PASSTHROUGH = new Set([
 ]);
 
 /**
- * Slack renders a link as `<url|label>`, and ONLY for an absolute http(s) one:
- * a relative href there is drawn as literal `<...>` junk, and a `javascript:`
- * one is a link we would be vouching for. Anything else keeps the label as
- * plain text — a name without a link still reads, a broken link does not.
+ * The absolute http(s) form of a template-authored url, or undefined when there
+ * is none worth handing to chat.
+ *
+ * Both link surfaces need exactly this: Slack draws `<url|label>` only for an
+ * absolute http(s) url (a relative one shows as literal `<...>` junk), and it
+ * takes a button `url` verbatim — answering a relative one with
+ * `invalid_blocks`, which drops the WHOLE message rather than the button.
+ *
+ * A scheme we did not choose is never absolutised into one we did: without that
+ * check `javascript:alert(1)` has no `http` prefix, so it would fall through to
+ * the origin join and come back out as a link — to a dead path on our own
+ * domain, from a card the reader trusts.
  */
-const contextLink = (rawUrl: string, label: string): string => {
-	const text = escapeSlackText(label);
+function safeAbsoluteUrl(rawUrl: string): string | undefined {
 	const trimmed = rawUrl.trim();
-	// A scheme we did not choose is never absolutised into one we did: without
-	// this, `javascript:alert(1)` has no `http` prefix, so it falls through to
-	// the origin join below and comes back out as a link — to a dead path on our
-	// own domain, from a card the reader trusts.
-	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) return text;
+	if (!trimmed) return undefined;
+	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
+		return undefined;
+	}
 	// An in-app permalink is stored relative so the inbox resolves it against
 	// whatever origin the reader is on; chat has no origin to resolve against.
 	const url = toAbsolutePermalink(trimmed);
-	if (!url || !/^https?:\/\//i.test(url)) return text;
+	return url && /^https?:\/\//i.test(url) ? url : undefined;
+}
+
+/**
+ * A link inside the strip. No usable url keeps the label as plain text — a name
+ * without a link still reads, a broken link does not.
+ */
+const contextLink = (rawUrl: string, label: string): string => {
+	const text = escapeSlackText(label);
+	const url = safeAbsoluteUrl(rawUrl);
+	if (!url) return text;
 	// `>` would close the link early and `|` would re-split it, so neither can
 	// survive inside the URL half.
 	return /[<>|]/.test(url) ? text : `<${url}|${text}>`;
@@ -225,16 +241,19 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 			];
 		}
 		if (type === "link-button" || type === "link" || type === "a") {
-			const url = str(props.url || props.href);
-			if (!url) return [];
+			const raw = str(props.url || props.href);
+			if (!raw) return [];
+			const label = clamp(str(props.label) || textOf(children) || raw, 75);
+			// Slack takes a button url verbatim and answers a relative or non-http
+			// one with `invalid_blocks` — dropping the WHOLE message, not just the
+			// button. With no url to vouch for, the label degrades to text: a name
+			// without a link still reads, and the strip renders it the same way.
+			const url = safeAbsoluteUrl(raw);
+			if (!url) return [{ kind: "text", text: label }];
 			return [
 				{
 					kind: "action",
-					element: LinkButton({
-						url,
-						label: clamp(str(props.label) || textOf(children) || url, 75),
-						style: buttonStyle(props.style),
-					}),
+					element: LinkButton({ url, label, style: buttonStyle(props.style) }),
 				},
 			];
 		}
@@ -353,6 +372,9 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 				),
 				MAX_COLS,
 			);
+			// `columns: []` resolves to a table with no cells at all — nothing to
+			// show, so drop it rather than hand the adapter an empty shape.
+			if (width === 0) return [];
 			// A label/value table has no column names to show, and Slack would draw
 			// the header row as an empty band above it. `Fields` is the native shape
 			// for exactly this pair, so use it rather than a table missing its head.
@@ -389,7 +411,9 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 					child: Table({
 						// The caption is announced by Slack above the table and defaults
 						// to the literal "Table"; name the thing being shown instead.
-						caption: str(props.caption, "Details"),
+						// The data-driven form names itself with `title` (that is the
+						// prop the web renderer reads), so accept either.
+						caption: str(props.caption ?? props.title, "Details"),
 						pageSize: TABLE_PAGE_SIZE,
 						// Blank only when the template declared no header row and the
 						// shape is not a label/value pair — we will not invent names.
@@ -400,16 +424,18 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 			];
 		}
 		if (type === "context") {
-			// Segments are authored, not inferred: the template writes its own
-			// separators inside the same `if` as the value they follow, so an
-			// absent value takes its separator with it and the strip never opens
-			// or closes on a dangling `·`.
+			// Segments are authored, not inferred: the template writes each
+			// separator inside the same `if` as the value it introduces, so an
+			// absent value takes its separator with it. That rule cannot cover the
+			// FIRST value being absent — the next segment's `·` then has nothing
+			// before it — so the strip drops a leading separator itself.
 			const text = children
 				.map(contextInline)
 				.filter((part) => part.length > 0)
 				.join(" ")
 				.replace(/\s+/g, " ")
-				.trim();
+				.trim()
+				.replace(/^·\s*/, "");
 			return text ? [{ kind: "context", text: clamp(text, MAX_CONTEXT_CHARS) }] : [];
 		}
 		if (type === "divider" || type === "hr") {
@@ -534,9 +560,11 @@ function fragsToChildren(frags: Frag[]): {
  * `<!channel>` in it pings the room from a trusted card.
  *
  * And the body is written for the TEXT fallback, where there is no button, so
- * it ends with a link to the very page this card already offers as one. Drop
- * the line carrying that link — matched on the URL, not on its wording — or the
- * card reads "Review: Review in Lobu" directly above a Review in Lobu button.
+ * it ends with a review link — usually to the very page this card already
+ * offers as one. Drop the line carrying THAT url, matched on the url rather
+ * than its wording, or the card reads "Review: Review in Lobu" directly above a
+ * Review in Lobu button. A body link to anywhere else is a second destination,
+ * so it stays.
  */
 function bodyTextFor(
 	body: string | null | undefined,

@@ -325,7 +325,16 @@ function createServerForContext(
             ? [{ type: 'noauth' as const }, ...t.securitySchemes]
             : t.securitySchemes
           : undefined;
-        const appMeta = mcpAppsSupported ? t._meta : undefined;
+        // The app binding ships to every client, negotiated or not:
+        // `resources/list` already advertises the app unconditionally, and some
+        // hosts (claude.ai) render apps without declaring the extension, so
+        // gating the binding on the declared capability left them an app they
+        // could see but never bind — no iframe mounted at all. `_meta` is inert
+        // to a client that does not understand it, so text-only callers are
+        // unaffected. What stays gated is the visibility filter above: app-only
+        // tools remain hidden from clients that did not negotiate (hidden, not
+        // disabled — `tools/call` still dispatches them, so a rendered card can
+        // drive its own resolver).
         return {
           name: t.name,
           description: t.description,
@@ -333,10 +342,10 @@ function createServerForContext(
           ...(t.annotations && { annotations: t.annotations }),
           ...(t.outputSchema && { outputSchema: t.outputSchema }),
           ...(securitySchemes && { securitySchemes }),
-          ...(appMeta || securitySchemes
+          ...(t._meta || securitySchemes
             ? {
                 _meta: {
-                  ...(appMeta ?? {}),
+                  ...(t._meta ?? {}),
                   // MCP Apps 2025-11-25 retains `_meta.securitySchemes` as the
                   // compatibility mirror for hosts that predate the top-level field.
                   ...(securitySchemes && { securitySchemes }),
@@ -491,14 +500,17 @@ function createServerForContext(
         Array.isArray(attachedMeta?.['mcp/www_authenticate']) &&
         attachedMeta['mcp/www_authenticate'].length > 0;
       const softError = isSoftErrorResult(publicResult) || attachedAuthChallenge;
-      const uiResourceUri = mcpAppsSupported
-        ? (tool?.mcpMeta?.ui as { resourceUri?: unknown } | undefined)?.resourceUri
-        : undefined;
+      const uiResourceUri = (
+        tool?.mcpMeta?.ui as { resourceUri?: unknown } | undefined
+      )?.resourceUri;
       // The standard MCP Apps linkage lives on the tool descriptor. ChatGPT's
       // compatibility path also reads openai/outputTemplate from the concrete
       // successful tool result before it fetches and mounts the resource. Keep
-      // the URI server-authored and omit it for clients that did not negotiate
-      // Apps support so headless callers retain their text-only result path.
+      // the URI server-authored and send it to every client, for the same
+      // reason the descriptor carries it unconditionally: a host that ignores
+      // `_meta` keeps its text-only result path, while a host that renders
+      // apps without declaring the extension can still bind the result to the
+      // resource we advertised.
       const appResultMeta =
         typeof uiResourceUri === 'string'
           ? { 'openai/outputTemplate': uiResourceUri }

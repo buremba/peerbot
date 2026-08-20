@@ -6,11 +6,15 @@
  * update_connector_auth, update_connector_default_config.
  */
 
-import { getErrorMessage } from "@lobu/core";
+import { getErrorMessage, parseJsonObject } from "@lobu/core";
 import { getDb } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
 import logger from "../../../../utils/logger";
+import {
+	actionModesChanged,
+	denyNonHumanActionModesWrite,
+} from "./action-modes-guard";
 import type { ToolContext } from "../../../registry";
 import {
 	getInstalledConnectorSource,
@@ -20,7 +24,6 @@ import {
 	rollbackConnectorVersion,
 	toggleConnectorLoginEnabled,
 	uninstallConnectorDefinition,
-	updateActiveConnectorDefinitionField,
 	updateInstalledConnectorSource,
 	validateConnectorSource,
 } from "../../../../catalog/connector-definitions";
@@ -420,16 +423,41 @@ export async function handleUpdateConnectorDefaultConfig(
 	args: Extract<ConnectionsArgs, { action: "update_connector_default_config" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
-	const updated = await updateActiveConnectorDefinitionField(
-		args.connector_key,
-		ctx.organizationId,
-		(sql) =>
-			sql`default_connection_config = ${sql.json(args.default_connection_config)}`,
+	// This is a full replacement, so removal is a modes change too. Compare and
+	// write under one row lock to preserve a concurrent human edit.
+	const sql = getDb();
+	const outcome = await sql.begin(
+		async (tx): Promise<"not_found" | { error: string } | null> => {
+			const rows = (await tx`
+				SELECT default_connection_config
+				FROM connector_definitions
+				WHERE key = ${args.connector_key}
+					AND organization_id = ${ctx.organizationId}
+					AND status = 'active'
+				FOR UPDATE
+			`) as unknown as Array<{ default_connection_config: unknown }>;
+			if (rows.length === 0) return "not_found";
+			const storedDefaults = parseJsonObject(rows[0].default_connection_config);
+			if (actionModesChanged(storedDefaults, args.default_connection_config)) {
+				const denied = denyNonHumanActionModesWrite(ctx);
+				if (denied) return denied;
+			}
+			await tx`
+				UPDATE connector_definitions
+				SET default_connection_config = ${tx.json(args.default_connection_config)},
+					updated_at = NOW()
+				WHERE key = ${args.connector_key}
+					AND organization_id = ${ctx.organizationId}
+					AND status = 'active'
+			`;
+			return null;
+		},
 	);
 
-	if (!updated) {
+	if (outcome === "not_found") {
 		return { error: `Connector '${args.connector_key}' not found` };
 	}
+	if (outcome) return outcome;
 
 	recordToolConfigChange(ctx, {
 		resourceKind: "connector-definition",
@@ -449,5 +477,4 @@ export async function handleUpdateConnectorDefaultConfig(
 		connector_key: args.connector_key,
 	};
 }
-
 

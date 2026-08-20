@@ -417,7 +417,17 @@ export async function upsertChatConnectionProjection(
       },
       display_name = EXCLUDED.display_name,
       status = EXCLUDED.status,
-      config = EXCLUDED.config,
+      -- The chat config fold cannot express action_modes (parseConfig's
+      -- Value.Clean strips keys outside the platform schema), so a re-apply
+      -- or reinstall can never INTEND to change the modes map — yet a wholesale
+      -- EXCLUDED.config replacement silently dropped human-set modes, the
+      -- same removal class the manage_connections gates close. Carry the
+      -- stored map forward atomically in the same statement.
+      config = CASE
+        WHEN connections.config ? 'action_modes'
+        THEN EXCLUDED.config || jsonb_build_object('action_modes', connections.config->'action_modes')
+        ELSE EXCLUDED.config
+      END,
       credential_mode = EXCLUDED.credential_mode,
       error_message = EXCLUDED.error_message,
       updated_at = now()

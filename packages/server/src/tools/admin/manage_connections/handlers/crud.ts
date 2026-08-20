@@ -37,6 +37,11 @@ import {
   getOperationsSummary,
   getOperationsSummaryBatch,
 } from "../../../../operations/connector-operations";
+import {
+  actionModesChanged,
+  denyNonHumanActionModesWrite,
+  hasActionModes,
+} from "./action-modes-guard";
 import { projectConnectionForReader } from "../public-projection";
 import {
   getAuthProfileById,
@@ -636,6 +641,11 @@ export async function handleCreate(
 	args: Extract<ConnectionsArgs, { action: "create" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+  // Refuse before connector installation or any other create-path side effect.
+  if (hasActionModes(args.config)) {
+    const denied = denyNonHumanActionModesWrite(ctx);
+    if (denied) return denied;
+  }
   const sql = getDb();
   const { organizationId, userId } = ctx;
 	const createResumeCall = buildSafeConnectionResumeCall(
@@ -717,7 +727,6 @@ export async function handleCreate(
 	) {
 		return { error: JIRA_WEBHOOK_ADMIN_ONLY_ERROR };
 	}
-
 	// Schema-declared secret config keys for this connector — used to redact the
 	// `RETURNING *` row before it is serialized back to the caller.
 	const createSecretKeys = connectorSecretKeysFromSchemas({
@@ -1882,7 +1891,7 @@ export async function handleUpdate(
     // Re-reading the config FOR UPDATE inside the same transaction as the
     // UPDATE makes the restore source the row the write is actually based on.
     // Mirrors the shape manage_feeds already uses for handleUpdateFeed.
-    updated = await sql.begin(async (tx) => {
+    const updateOutcome = await sql.begin(async (tx) => {
       const lockedRows = await tx`
         SELECT config
         FROM connections
@@ -1891,7 +1900,7 @@ export async function handleUpdate(
           AND deleted_at IS NULL
         FOR UPDATE
       `;
-      if (lockedRows.length === 0) return [];
+      if (lockedRows.length === 0) return { rows: [] };
       const lockedConfig = parseJsonObject(
         (lockedRows[0] as { config: unknown }).config,
       );
@@ -1912,6 +1921,18 @@ export async function handleUpdate(
             );
       const lockedConnectionConfig = lockedSplit?.connectionConfig ?? null;
       const lockedReplaceConfig = lockedConnectionConfig ?? {};
+
+      // Compare against the locked row so a stale agent round-trip cannot
+      // overwrite a concurrent human edit. This mirrors the shallow SQL merge.
+      const lockedResultingConfig = replaceConfig
+        ? lockedReplaceConfig
+        : lockedConnectionConfig
+          ? { ...lockedConfig, ...lockedConnectionConfig }
+          : lockedConfig;
+      if (actionModesChanged(lockedConfig, lockedResultingConfig)) {
+        const denied = denyNonHumanActionModesWrite(ctx);
+        if (denied) return { denial: denied };
+      }
 
       const rows = await tx`
         UPDATE connections
@@ -1962,8 +1983,12 @@ export async function handleUpdate(
             AND deleted_at IS NULL
         `;
       }
-      return rows;
+      return { rows };
     });
+    if ("denial" in updateOutcome && updateOutcome.denial) {
+      return updateOutcome.denial;
+    }
+    updated = updateOutcome.rows;
     if (updated.length === 0) return { error: "Connection not found" };
   } catch (err) {
     if (isConnectionSlugUniqueViolation(err) && updateExplicitSlug) {

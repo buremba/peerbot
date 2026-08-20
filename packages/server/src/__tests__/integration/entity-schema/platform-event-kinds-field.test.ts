@@ -17,6 +17,7 @@ import { manageEntitySchema } from '../../../tools/admin/manage_entity_schema';
 import { platformEventKinds } from '../../../automations/platform-event-catalog';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestOrganization } from '../../setup/test-fixtures';
+import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import type { ToolContext } from '../../../tools/registry';
 
 describe('manage_entity_schema list exposes the platform event catalog', () => {
@@ -25,6 +26,9 @@ describe('manage_entity_schema list exposes the platform event catalog', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'Platform Kinds Org' });
+    // Seed $member's built-in event_kinds so the leak guard below inspects a
+    // real declared registry instead of an empty table.
+    await ensureMemberEntityType(org.id);
     ctx = {
       organizationId: org.id,
       userId: null,
@@ -66,6 +70,9 @@ describe('manage_entity_schema list exposes the platform event catalog', () => {
       slug: string;
       event_kinds: Record<string, unknown> | null;
     }>;
+    // Vacuity guard: the seeded $member registry must be here, or the loop
+    // below inspects nothing and proves nothing.
+    expect(rows.length).toBeGreaterThan(0);
     const platformKeys = Object.keys(platformEventKinds());
     for (const row of rows) {
       for (const key of Object.keys(row.event_kinds ?? {})) {

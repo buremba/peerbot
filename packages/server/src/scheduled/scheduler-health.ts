@@ -8,6 +8,7 @@
 import { intervals } from '../config/intervals';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import logger from '../utils/logger';
 import { EXECUTING_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
@@ -56,18 +57,57 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
   const issues: string[] = [];
 
   try {
-    // Get feed counts
+    // Get feed counts.
+    //
+    // A feed whose connection is pinned to an offline device for EXECUTION is
+    // held back on purpose (check-due-feeds.ts): only that device can claim the
+    // run, so the feed stays past next_run_at until the device polls again.
+    // Counting those as overdue would put this endpoint in a permanent 503 for
+    // the ordinary case of a closed laptop — the same "train operators to
+    // ignore it" failure the approval-TTL grace below avoids.
+    //
+    // This drops no signal: a pinned device that has gone silent is already an
+    // operator-facing alert on its own hours-scale threshold (`device_stale` in
+    // connectors/connector-health.ts). "Is the scheduler firing" and "is that
+    // laptop on" are different questions, answered on different surfaces.
+    //
+    // The device predicate must stay the exact complement of the scheduler's,
+    // browser-affinity carve-out included: a chrome-extension pin on a
+    // non-chrome connector still runs on the fleet, so such a feed is genuinely
+    // overdue.
     const feedStats = await sql`
+      WITH scheduling AS (
+        SELECT
+          f.status,
+          f.next_run_at,
+          EXISTS (
+            SELECT 1
+            FROM connections c
+            JOIN device_workers dw ON dw.id = c.device_worker_id
+            WHERE c.id = f.connection_id
+              AND dw.last_seen_at <= current_timestamp
+                - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+              AND NOT COALESCE(
+                dw.platform = 'chrome-extension'
+                  AND c.connector_key NOT LIKE 'chrome%',
+                false
+              )
+          ) AS device_deferred
+        FROM feeds f
+        WHERE f.deleted_at IS NULL
+      )
       SELECT
         CAST(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS INTEGER) as active_feeds,
-        CAST(SUM(CASE WHEN status = 'active' AND next_run_at < current_timestamp THEN 1 ELSE 0 END) AS INTEGER) as overdue_feeds,
+        CAST(SUM(CASE
+          WHEN status = 'active' AND next_run_at < current_timestamp AND NOT device_deferred
+            THEN 1 ELSE 0
+        END) AS INTEGER) as overdue_feeds,
         MAX(CASE
-          WHEN status = 'active' AND next_run_at < current_timestamp
+          WHEN status = 'active' AND next_run_at < current_timestamp AND NOT device_deferred
             THEN EXTRACT(EPOCH FROM (current_timestamp - next_run_at)) / 3600.0
           ELSE NULL
         END) as max_overdue_hours
-      FROM feeds
-      WHERE deleted_at IS NULL
+      FROM scheduling
     `;
 
     const activeFeeds = Number(feedStats[0]?.active_feeds || 0);

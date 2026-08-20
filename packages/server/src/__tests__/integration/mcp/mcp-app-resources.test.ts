@@ -1062,6 +1062,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const creationSessionId = await initSession(`/mcp/${org.slug}`, {
       agentId: actingAgent.agentId,
     });
+    const hostConversationId = 'chatgpt-approval-conversation';
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
@@ -1074,6 +1075,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
             agent_id: 'mcp-app-approval-agent',
             name: 'MCP App Approval Agent',
           },
+          _meta: { 'openai/session': hostConversationId },
         },
       },
       headers: { 'mcp-session-id': creationSessionId },
@@ -1100,6 +1102,13 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     `;
     const runId = Number(approval?.run_id);
     expect(runId).toBeGreaterThan(0);
+    await getDb()`
+      UPDATE mcp_client_conversations
+      SET title = 'Release approval E2E'
+      WHERE organization_id = ${org.id}
+        AND client_id = ${client.client_id}
+        AND conversation_id = ${hostConversationId}
+    `;
 
     // Possessing a valid app capability does not replace the canonical human
     // authority check. A plain member can read the shared approval card but
@@ -1161,7 +1170,6 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       sessionToken: writeToken,
       agentId: actingAgent.agentId,
     });
-    const hostConversationId = 'chatgpt-approval-conversation';
     const renderResponse = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
@@ -1289,6 +1297,18 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       expect.objectContaining({
         title: expect.stringMatching(/rejected/i),
         actions: [],
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'text',
+            label: 'Conversation',
+            value: expect.stringContaining('Release approval E2E'),
+          }),
+          expect.objectContaining({
+            type: 'text',
+            label: 'Decision',
+            value: expect.stringMatching(/^Rejected by .+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/),
+          }),
+        ]),
       })
     );
 
@@ -1366,14 +1386,25 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
   });
 
   it('renders a completed approval once and preserves its submitted form values', async () => {
+    const [automation] = await getDb()<{ id: number }>`
+      INSERT INTO automations (
+        organization_id, agent_id, created_by, automation_group_id, name
+      ) VALUES (
+        ${org.id}, ${actingAgent.agentId}, ${owner.id}, 0, 'Hourly approval sweep'
+      )
+      RETURNING id
+    `;
     const [run] = await getDb()<{ id: number }>`
-      INSERT INTO runs (organization_id, run_type, status, approval_status, action_output)
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, action_output, automation_id
+      )
       VALUES (
         ${org.id},
         'internal',
         'completed',
         'approved',
-        ${getDb().json({ answer: { reviewer_note: 'Looks good', release_window: 'Tomorrow' } })}
+        ${getDb().json({ answer: { reviewer_note: 'Looks good', release_window: 'Tomorrow' } })},
+        ${automation.id}
       )
       RETURNING id
     `;
@@ -1402,6 +1433,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       interactionOutput: {
         answer: { reviewer_note: 'Looks good', release_window: 'Tomorrow' },
       },
+      metadata: { reviewed_by_name: 'Legacy Reviewer' },
     });
 
     const sessionId = await initSession(`/mcp/${org.slug}`);
@@ -1426,8 +1458,20 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         actions: [],
         blocks: expect.arrayContaining([
           expect.objectContaining({
+            type: 'text',
+            label: 'Automation',
+            value: 'Hourly approval sweep',
+          }),
+          expect.objectContaining({
             type: 'form',
             initialValues: { reviewer_note: 'Looks good', release_window: 'Tomorrow' },
+          }),
+          expect.objectContaining({
+            type: 'text',
+            label: 'Decision',
+            value: expect.stringMatching(
+              /^Completed by Legacy Reviewer · \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/
+            ),
           }),
         ]),
       })
@@ -1513,6 +1557,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(serialized).not.toContain('plaintext-schema-api-key');
     expect(serialized).not.toContain('plaintext-form-api-key');
     expect(serialized).toContain('[redacted]');
+    expect(view.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'Source', value: 'Direct request' }),
+      ])
+    );
     expect(view.title.length).toBeLessThanOrEqual(200);
     expect(view.blocks.length).toBeLessThanOrEqual(100);
     expect(view.actions.length).toBeLessThanOrEqual(10);

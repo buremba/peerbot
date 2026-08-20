@@ -31,17 +31,19 @@ function bounded(value: string, max = 240): string {
 		: normalized;
 }
 
+export function actionOriginLabel(kind: ActionOrigin["kind"]): string {
+	return kind === "automation"
+		? "Automation"
+		: kind === "conversation"
+			? "Conversation"
+			: "Source";
+}
+
 export function actionOriginSubtitle(
 	origin: ActionOrigin | null | undefined,
 ): string | undefined {
 	if (!origin?.label.trim()) return undefined;
-	const prefix =
-		origin.kind === "automation"
-			? "Automation"
-			: origin.kind === "conversation"
-				? "Conversation"
-				: "Source";
-	return `${prefix}: ${escapeSlackText(bounded(origin.label))}`;
+	return `${actionOriginLabel(origin.kind)}: ${escapeSlackText(bounded(origin.label))}`;
 }
 
 export function addActionOrigin(
@@ -56,7 +58,7 @@ export function addActionOrigin(
 	};
 }
 
-function formatUtc(value: string | Date | null | undefined): string | null {
+export function formatUtc(value: string | Date | null | undefined): string | null {
 	if (!value) return null;
 	const date = value instanceof Date ? value : new Date(value);
 	if (Number.isNaN(date.getTime())) return null;

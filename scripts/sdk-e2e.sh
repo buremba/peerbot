@@ -638,17 +638,27 @@ VT_V1="$(vt_version)"
 [ -n "$VT_V1" ] || fail "company view template was not applied (no default version — declarative viewTemplate broken)"
 echo "✓ apply set entity-type view template (company default v$VT_V1)"
 
+# Read the pending period before dispatch so the instant fixed mock reply cannot
+# requeue the run between trigger and this deterministic completion.
+RK="$RUN_DIR/read-knowledge.json"
+api read_knowledge "{\"automation_id\":$AUTOMATION_ID}" > "$RK" 2>/dev/null \
+  || { cat "$RK" >&2; fail "read_knowledge (automation mode) failed"; }
+WINDOW_TOKEN="$(jget window_token < "$RK")"
+[ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
+
 # Trigger the automation — exercise the FULL dispatch path. This mints an internal
 # service token (needs the `lobu-internal` oauth_client, ensured by
-# getLobuServiceToken) and dispatches an automation run to a spawned worker. We
-# assert the trigger returns a run_id, that dispatch did NOT fail on the service
-# token (the regression this guards — a missing `lobu-internal` client fails
-# every automation run), and that an automation worker session actually started.
+# getLobuServiceToken) and dispatches an automation run to a spawned worker.
 TW="$RUN_DIR/trigger-automation.json"
 api manage_automations "{\"action\":\"trigger\",\"automation_id\":\"$AUTOMATION_ID\"}" > "$TW" 2>/dev/null \
   || { cat "$TW" >&2; fail "automation trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 [ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "automation trigger did not dispatch a run (no run_id)"; }
+
+CW="$RUN_DIR/complete-window.json"
+api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=Number(process.argv[3]);process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,run_id:r,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$AUTOMATION_ID" "$TRIG_RUN_ID")" > "$CW" 2>/dev/null \
+  || { cat "$CW" >&2; fail "complete_window failed"; }
+grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 grep -qi "Failed to generate an embedded Lobu service token" "$RUN_LOG" \
   && fail "automation dispatch failed on the service token (lobu-internal oauth_client missing)"
 for _ in $(seq 1 30); do
@@ -657,23 +667,7 @@ for _ in $(seq 1 30); do
 done
 grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run" "$RUN_LOG" \
   || fail "automation run ${TRIG_RUN_ID} did not dispatch to a worker"
-echo "✓ automation trigger dispatched a run to a worker (run_id=$TRIG_RUN_ID)"
-
-# Deterministic reaction drive: read_knowledge over the window holding the
-# connector events → window_token → complete_window with extracted_data. The
-# window has linked content (the synced pulse event), so the reaction fires.
-SINCE="$(node -e 'process.stdout.write("2000-01-01")')"
-UNTIL="$(node -e 'const d=new Date(Date.now()+86400000);process.stdout.write(d.toISOString().slice(0,10))')"
-RK="$RUN_DIR/read-knowledge.json"
-api read_knowledge "{\"automation_id\":$AUTOMATION_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$RK" 2>/dev/null \
-  || { cat "$RK" >&2; fail "read_knowledge (automation mode) failed"; }
-WINDOW_TOKEN="$(jget window_token < "$RK")"
-[ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
-
-CW="$RUN_DIR/complete-window.json"
-api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$AUTOMATION_ID")" > "$CW" 2>/dev/null \
-  || { cat "$CW" >&2; fail "complete_window failed"; }
-grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
+echo "✓ automation trigger dispatched and completed one run (run_id=$TRIG_RUN_ID)"
 
 # Assert the reaction's side effect: a SDKE2E_REACTION_OK knowledge event exists.
 # query_sql auto-scopes to the org and auto-adds ORDER BY/LIMIT, so we pass a
@@ -707,13 +701,19 @@ grep -q '"companies"' "$PUB" && grep -q '"observations"' "$PUB" \
 grep -q 'keying_config' "$PUB" && { cat "$PUB" >&2; fail "retired keying_config leaked through the public Automation API"; }
 
 PUB_RK="$RUN_DIR/publisher-read-knowledge.json"
-api read_knowledge "{\"automation_id\":$PUBLISHER_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$PUB_RK" 2>/dev/null \
+api read_knowledge "{\"automation_id\":$PUBLISHER_ID}" > "$PUB_RK" 2>/dev/null \
   || { cat "$PUB_RK" >&2; fail "publisher read_knowledge failed"; }
 PUB_WINDOW_TOKEN="$(jget window_token < "$PUB_RK")"
 [ -n "$PUB_WINDOW_TOKEN" ] || { cat "$PUB_RK" >&2; fail "publisher read_knowledge returned no window_token"; }
 
+PUB_TRIGGER="$RUN_DIR/publisher-trigger.json"
+api manage_automations "{\"action\":\"trigger\",\"automation_id\":\"$PUBLISHER_ID\"}" > "$PUB_TRIGGER" 2>/dev/null \
+  || { cat "$PUB_TRIGGER" >&2; fail "publisher trigger failed"; }
+PUB_RUN_ID="$(jget run_id < "$PUB_TRIGGER" 2>/dev/null || echo)"
+[ -n "$PUB_RUN_ID" ] || { cat "$PUB_TRIGGER" >&2; fail "publisher trigger did not dispatch a run (no run_id)"; }
+
 PUB_CW="$RUN_DIR/publisher-complete-window.json"
-api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,window_token:t,extracted_data:{companies:[{name:"SDK E2E Output Co",domain:"sdk-output.example"}],observations:[{title:"SDK E2E observation",content:"SDKE2E_OUTPUT_EVENT",metadata:{amount:42},idempotency_key:"sdk-e2e-output-observation"}]},run_metadata:{executor:"sdk-e2e"}}))' "$PUB_WINDOW_TOKEN" "$PUBLISHER_ID")" > "$PUB_CW" 2>/dev/null \
+api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=Number(process.argv[3]);process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,run_id:r,window_token:t,extracted_data:{companies:[{name:"SDK E2E Output Co",domain:"sdk-output.example"}],observations:[{title:"SDK E2E observation",content:"SDKE2E_OUTPUT_EVENT",metadata:{amount:42},idempotency_key:"sdk-e2e-output-observation"}]},run_metadata:{executor:"sdk-e2e"}}))' "$PUB_WINDOW_TOKEN" "$PUBLISHER_ID" "$PUB_RUN_ID")" > "$PUB_CW" 2>/dev/null \
   || { cat "$PUB_CW" >&2; fail "publisher complete_window failed"; }
 
 OUTPUT_ENTITY="$RUN_DIR/output-entity.json"

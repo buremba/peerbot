@@ -300,12 +300,16 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     // (poll's ON CONFLICT preserves it via COALESCE + a SELECT-then-reject
     // check, and the gateway's capability authorization uses the stored
     // platform rather than whatever the bearer self-reports).
+    // The label is recorded on insert only: a re-mint carries whatever the
+    // client self-reports (a headless daemon sends its hostname), which must
+    // not clobber a name the user set on the Devices page — same reason poll's
+    // ON CONFLICT leaves it alone. `PATCH /api/me/devices/:id` owns it after
+    // first registration.
     const upsertDeviceWorker = (db: typeof sql) => db`
       INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label, organization_id)
       VALUES (${userId}, ${workerId}, ${platform}, ${db.json([])}, ${label}, ${organizationId})
       ON CONFLICT (user_id, worker_id) DO UPDATE
-        SET last_seen_at = NOW(),
-            label = COALESCE(EXCLUDED.label, device_workers.label)
+        SET last_seen_at = NOW()
     `;
 
     let created: { id: number; token: string };
@@ -409,8 +413,10 @@ const DEVICE_LABEL_MAX_LEN = 80;
  *
  *  - `label` — human display name (Devices page). Empty/null clears it so the
  *    UI falls back to the platform label ("Chrome", "Mac", …). Poll heartbeats
- *    only overwrite when the device itself sends a non-null label, so a
- *    user-set name sticks across Chrome extension / Mac app check-ins.
+ *    never overwrite a stored label — it is recorded at first registration (or
+ *    child-token mint) and after that changes only through this endpoint, so a
+ *    user-set name sticks even against a headless daemon that reports its
+ *    hostname as `label` on every poll.
  *  - `organization_id` — re-attach to a different workspace the caller belongs
  *    to. Moving un-pins and pauses the connections (and their feeds) it backed
  *    in the previous workspace.

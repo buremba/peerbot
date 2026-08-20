@@ -375,7 +375,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           platform = COALESCE(device_workers.platform, EXCLUDED.platform),
           app_version = EXCLUDED.app_version,
           capabilities = EXCLUDED.capabilities,
-          label = COALESCE(EXCLUDED.label, device_workers.label),
+          -- label is deliberately absent: it is recorded on insert and owned by
+          -- the user afterwards (PATCH /api/me/devices/:id). A heartbeat that
+          -- wrote it back would clobber a Devices-page rename on the next poll,
+          -- since a headless daemon self-reports its hostname every time.
           organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
           connector_manifests = CASE
             WHEN ${connectorManifestsAccepted} THEN EXCLUDED.connector_manifests

@@ -103,6 +103,11 @@ export const PollRequestSchema = Type.Object({
   capabilities: Type.Optional(Type.Record(Type.String(), Type.Boolean())),
   platform: Type.Optional(Type.String()),
   app_version: Type.Optional(Type.String()),
+  /**
+   * Display name for the device, applied only when this poll is the device's
+   * first registration. Later polls ignore it — the name belongs to the user
+   * once they set one on the Devices page (`PATCH /api/me/devices/:id`).
+   */
   label: Type.Optional(Type.String()),
   connector_manifests: Type.Optional(Type.Unknown()),
   /**

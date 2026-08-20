@@ -146,6 +146,56 @@ describe('headless device mint (mint-child-token)', () => {
     expect(pats[1].revoked_at).toBeNull();
   });
 
+  it('a re-mint cannot overwrite a stored device label', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Label' });
+    const user = await createTestUser({ email: 'headless-mint-label@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+    const app = mintApp(user.id);
+
+    const first = await app.request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'headless', label: 'herdr-box' }),
+      },
+      TEST_ENV
+    );
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { worker_id: string };
+
+    // The user renames it on the Devices page (PATCH /api/me/devices/:id
+    // lands exactly this state).
+    await sql`
+      UPDATE device_workers SET label = 'Build box'
+      WHERE user_id = ${user.id} AND worker_id = ${firstBody.worker_id}
+    `;
+
+    // Daemon restarts and re-registers, still self-reporting its hostname.
+    const second = await app.request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          platform: 'headless',
+          worker_id: firstBody.worker_id,
+          label: 'herdr-box',
+        }),
+      },
+      TEST_ENV
+    );
+    expect(second.status).toBe(200);
+
+    const rows = (await sql`
+      SELECT label FROM device_workers
+      WHERE user_id = ${user.id} AND worker_id = ${firstBody.worker_id}
+    `) as unknown as Array<{ label: string | null }>;
+    expect(rows[0].label).toBe('Build box');
+  });
+
   it('does not reuse a chrome-extension worker_id when re-minting as headless', async () => {
     const sql = getTestDb();
     const personalOrg = await createTestOrganization({ name: 'Personal Cross' });

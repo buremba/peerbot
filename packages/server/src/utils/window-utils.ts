@@ -161,7 +161,8 @@ export async function readWindowCursor(
       AND run_type = 'automation'
       AND status = 'completed'
       AND action_output IS NOT NULL
-    ORDER BY (approved_input->>'window_start')::timestamptz DESC
+      AND approved_input->>'window_start' IS NOT NULL
+    ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST
     LIMIT 1
   `;
   return rows.length > 0 ? new Date(rows[0].window_start as string) : null;

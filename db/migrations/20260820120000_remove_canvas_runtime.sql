@@ -137,7 +137,7 @@ WHERE run.id = mapping.run_id;
 -- existed when the child was created; trusted initiator_ref.run_id wins when
 -- present because it was stamped directly by the creating run.
 WITH parent_for_child AS (
-  SELECT child.id AS child_id, child.run_type, COALESCE((
+  SELECT child.id AS child_id, child.run_type AS child_run_type, COALESCE((
     SELECT member.run_id
     FROM canvas_members member
     WHERE member.legacy_id = current.legacy_id
@@ -152,7 +152,7 @@ WITH parent_for_child AS (
 )
 UPDATE public.runs child
 SET window_id = CASE
-  WHEN parent.run_type = 'automation' OR parent.parent_run_id = child.id THEN NULL
+  WHEN parent.child_run_type = 'automation' OR parent.parent_run_id = child.id THEN NULL
   ELSE parent.parent_run_id
 END
 FROM parent_for_child parent
@@ -307,6 +307,7 @@ WHERE event.automation_id IS NOT NULL
 UPDATE public.events
 SET metadata = metadata - 'run_id'
 WHERE run_id IS NOT NULL
+  AND automation_id IS NOT NULL
   AND metadata ? 'run_id';
 
 WITH source_for_entity AS (

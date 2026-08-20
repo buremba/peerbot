@@ -584,7 +584,9 @@ async function getAutomationImpl(
         -- row stored with an inclusive 23:59:59.999 end.
         (SELECT (approved_input->>'window_start')::timestamptz FROM runs
           WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
-          ORDER BY (approved_input->>'window_start')::timestamptz DESC LIMIT 1) as latest_window_start,
+            AND action_output IS NOT NULL
+            AND approved_input->>'window_start' IS NOT NULL
+          ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))

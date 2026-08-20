@@ -2,12 +2,14 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import { getAutomation } from "../../../tools/get_automation";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
+import { nextAutomationWindowStart } from "../../../utils/window-utils";
 import { initWorkspaceProvider } from "../../../workspace";
-import { cleanupTestDatabase } from "../../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createAutomationResultRun,
 	createTestAgent,
 	createTestEntity,
+	createTestEvent,
 	seedOwnerContext,
 } from "../../setup/test-fixtures";
 
@@ -38,6 +40,7 @@ describe("Automation window vocabulary", () => {
 				name: "Window vocab",
 				prompt: "Summarize.",
 				agent_id: agent.agentId,
+				triggers: [{ kind: "schedule", cron: "0 0 * * *" }],
 				sources: [
 					{
 						name: "src",
@@ -55,14 +58,32 @@ describe("Automation window vocabulary", () => {
 		const automationId = Number(created.automation_id);
 		expect(Number.isFinite(automationId)).toBe(true);
 
+		const windowStart = "2026-07-21T00:00:00.000Z";
 		await createAutomationResultRun({
 			automationId: automationId,
 			organizationId: org.id,
 			granularity: "day",
-			windowStart: "2026-07-21T00:00:00.000Z",
+			windowStart,
 			windowEnd: "2026-07-22T00:00:00.000Z",
 			entityIds: [entity.id],
 			extractedData: { summary: "window" },
+		});
+		const turnRunId = await createAutomationResultRun({
+			automationId,
+			organizationId: org.id,
+			windowStart: "2026-08-01T00:00:00.000Z",
+			windowEnd: "2026-08-02T00:00:00.000Z",
+		});
+		const sql = getTestDb();
+		await sql`
+			UPDATE runs
+			SET approved_input = approved_input - 'window_start' - 'window_end'
+			WHERE id = ${turnRunId}
+		`;
+		await createTestEvent({
+			entity_id: entity.id,
+			content: "Pending after the completed window",
+			occurred_at: new Date("2026-08-01T12:00:00.000Z"),
 		});
 
 		const detail = await getAutomation(
@@ -70,11 +91,14 @@ describe("Automation window vocabulary", () => {
 			{} as Env,
 			ctx,
 		);
-		expect(detail.windows).toHaveLength(1);
+		expect(detail.windows).toHaveLength(2);
 
 		const window = detail.windows[0];
 		expect(String(window.automation_id)).toBe(String(automationId));
 		expect(window.automation_name).toBe("Window vocab");
 		expect(detail.automation?.slug).toBe("window-vocab");
+		expect(detail.pending_analysis?.next_window?.start).toBe(
+			nextAutomationWindowStart(new Date(windowStart), new Date(), "daily").toISOString(),
+		);
 	});
 });

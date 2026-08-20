@@ -28,7 +28,7 @@
 ## Ship a change
 1. `make task-setup NAME=<slug>` → work in `.claude/worktrees/<slug>/`.
 2. Reproduce red → fix → prove green, and paste both outputs in the PR. Cannot reproduce = report the dead end; never ship a speculative fix.
-3. Iterate on focused tests: `bun test <path>`, or `cd packages/server && bunx vitest run <path>` for vitest suites. `make pre-pr` catches the cheap common misses; the full graph runs on GitHub CI for the PR.
+3. Iterate on focused tests: `bun test <path>`, or `cd packages/server && node node_modules/.bin/vitest run <path>` for vitest suites — **never `bunx vitest`**, which ignores `singleFork` and fabricates failures (`packages/server/AGENTS.md`). `make pre-pr` catches the cheap common misses; the full graph runs on GitHub CI for the PR.
 4. `make review-fix` on the settled diff, then re-read what it touched. Safe-class changes self-skip before selecting an LLM. Otherwise it runs BEFORE the first `make review` — never iterate `make review` as a find-fix loop, since each posted round costs a review + CI cycle.
 5. Stage by explicit path, then run `make pre-pr` (build + typecheck + knip + biome + naming) BEFORE committing and pushing — the pre-commit hook runs biome in FAIL mode (no auto-fix) plus typecheck, so if you skip the local gates, CI's format/lint check is the first thing that catches a slip (it has, more than once). GitHub CI is the gate: `make review` fails unless CI is green for HEAD (override: `REVIEW_ALLOW_LOCAL_BUILD=1`).
 6. Commit, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list.

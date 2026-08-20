@@ -6,8 +6,10 @@ const PACKAGE_ROOT = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   // Anchor vitest to this package so test-db.ts's `process.cwd()`-based
   // migration resolution works the same way whether `vitest` is invoked from
-  // the repo root (e.g. via `bunx vitest --config packages/...`) or from
-  // inside the package.
+  // the repo root (e.g. via `node node_modules/.bin/vitest --config packages/...`)
+  // or from inside the package. Run it under NODE, never `bunx vitest` — bun
+  // ignores the `singleFork` setting below and fabricates failures (see
+  // `packages/server/AGENTS.md`).
   root: PACKAGE_ROOT,
   test: {
     globalSetup: ["./src/__tests__/setup/global-setup.ts"],

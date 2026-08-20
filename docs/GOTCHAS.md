@@ -17,6 +17,8 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | An embedding reads back as a string, not `number[]` | DB & SQL |
 | squawk / migration job exits non-zero on a warning | DB & SQL |
 | `ERR_RESOLVE_PACKAGE_ENTRY_FAIL` in integration setup | Testing |
+| Fake `Access denied: ... not found in your organization` in a local vitest run | Testing |
+| Fake `deadlock detected` in a local vitest run | Testing |
 | `could not create shared memory segment: No space left on device` | Testing |
 | A mock that works alone but not in the suite | Testing |
 | A server that is "healthy" suspiciously fast | Testing |
@@ -79,6 +81,8 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 **Read the actual SQL before scoping performance work.** A review agent claiming "JSONB full scan" is a claim, not a measurement — a PK-anchored JSONB extract is microseconds. `EXPLAIN ANALYZE` before you denormalize anything.
 
 ## Testing
+
+**`bunx vitest` does not honour `singleFork`, and fabricates failures.** Integration files then execute concurrently against one database, so one file's `beforeEach(cleanupTestDatabase)` truncates another file's fixtures mid-test. It surfaces as convincing but entirely fake `Access denied: one or more ... were not found in your organization` and `deadlock detected`. The tell is **two PIDs in the log**. Same cwd, same files: `bunx vitest` gave 4 failed, `node node_modules/.bin/vitest` gave 61/61 passed. Use the CI invocation: `cd packages/server && node node_modules/.bin/vitest run <files>`. CI is safe structurally — `vitest.config.ts` sets `pool: "forks"` + `singleFork: true` and each of the 3 shards gets its own runner and Postgres — so this produces **no false passes**, only wasted debugging.
 
 **Hoisted `vi.mock()` silently fails in the server *integration* suite.** That run shares a module registry across files, so a test that is green alone loads the real module in CI. Use `vi.resetModules()` + `vi.doMock(...)` + a dynamic `await import()` *after* the mock, with an `afterEach` that resets modules and un-mocks. Always verify by co-running siblings — `vitest run <fileA> <fileB>` — because green-alone is not green-in-suite.
 

@@ -10,6 +10,7 @@
 import type { DbClient } from '../db/client';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import logger from '../utils/logger';
 import { createSyncRun } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
@@ -50,6 +51,36 @@ export async function materializeDueFeeds(env: Env, db?: DbClient): Promise<Chec
         -- next_run_at NULL, so it could never match anyway (belt and suspenders).
         AND f.kind = 'collected'
         AND f.virtual IS NOT TRUE
+        -- A connection pinned for EXECUTION can only run while that device is
+        -- polling. In worker-api/poll.ts the fleet lane (1A) takes a pinned
+        -- connection only for a page-activated run, and createSyncRun leaves
+        -- activation_kind NULL, so a scheduled sync is never one; the device
+        -- lanes take it only when the pin matches the polling device. A run
+        -- queued now would therefore just age into a worker_claim_timeout.
+        -- Leave the feed past next_run_at instead, so the first tick after that
+        -- device polls picks it up.
+        --
+        -- A chrome-extension pin on a non-chrome connector is NOT an execution
+        -- pin — it means "scrape with this browser", and poll.ts keeps the
+        -- parent sync on the fleet (lane 1A claims it; the extension's own lane
+        -- explicitly refuses it). Those feeds must keep syncing while the
+        -- browser is closed, so they are never deferred here.
+        AND (
+          c.device_worker_id IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM device_workers dw
+            WHERE dw.id = c.device_worker_id
+              AND (
+                dw.last_seen_at > current_timestamp
+                  - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+                OR (
+                  dw.platform = 'chrome-extension'
+                  AND c.connector_key NOT LIKE 'chrome%'
+                )
+              )
+          )
+        )
         AND f.next_run_at <= current_timestamp
         AND NOT EXISTS (
           SELECT 1 FROM runs r

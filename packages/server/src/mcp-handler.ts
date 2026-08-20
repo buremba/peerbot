@@ -869,12 +869,6 @@ function buildJsonRpcErrorResponse(
 
 const FULL_MCP_ACCEPT = 'application/json, text/event-stream';
 
-// Check whether the original client accepts SSE responses.
-function clientAcceptsSSE(req: Request): boolean {
-  const accept = req.headers.get('accept') ?? '';
-  return accept.includes('text/event-stream');
-}
-
 // The SDK transport requires both application/json and text/event-stream in
 // Accept. Normalize so clients that omit SSE aren't rejected with 406.
 function normalizeAcceptHeader(req: Request): Request {
@@ -890,25 +884,6 @@ function normalizeAcceptHeader(req: Request): Request {
     body: req.body,
     duplex: 'half',
   });
-}
-
-// Convert an SSE response to plain JSON for clients that don't accept SSE.
-// Extracts the last `data:` payload from the event stream.
-async function sseToJson(response: Response): Promise<Response> {
-  const body = await response.text();
-  const lines = body.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line.startsWith('data:')) {
-      const json = line.slice(5).trim();
-      // Carry over all headers except content-type and content-length
-      const headers = new Headers(response.headers);
-      headers.set('content-type', 'application/json');
-      headers.delete('content-length');
-      return new Response(json, { status: response.status, headers });
-    }
-  }
-  return response;
 }
 
 // -----------------------------------------------------------------------------
@@ -1008,22 +983,15 @@ export function withSSEHeartbeat(response: Response, signal?: AbortSignal): Resp
   });
 }
 
-// Wrap transport.handleRequest: if the client didn't ask for SSE, convert the
-// SSE response back to plain JSON so simple clients get what they expect.
-async function handleAndMaybeConvert(
+// Wrap transport.handleRequest. POST responses are always JSON (the transport
+// is built with `enableJsonResponse: true`); only the standalone GET
+// notification stream is SSE, and that is what the heartbeat below keeps alive.
+async function handleTransportRequest(
   transport: WebStandardStreamableHTTPServerTransport,
-  req: Request,
-  wantsSSE: boolean
+  req: Request
 ): Promise<Response> {
   const rawJson = req.headers.get('x-mcp-format')?.toLowerCase() === 'json';
   const response = await mcpRequestFormat.run({ rawJson }, () => transport.handleRequest(req));
-  if (
-    req.method === 'POST' &&
-    !wantsSSE &&
-    response.headers.get('content-type')?.includes('text/event-stream')
-  ) {
-    return sseToJson(response);
-  }
   // Inject SSE heartbeat pings to keep the stream alive through proxies.
   // Thread the inbound request's AbortSignal so abnormal disconnects clear
   // the interval (same root cause as PR #833/#845).
@@ -1164,7 +1132,6 @@ async function initializeRecoveredSession(
 // ---------------------------------------------------------------------------
 
 export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response> {
-  const wantsSSE = clientAcceptsSSE(c.req.raw);
   const req = normalizeAcceptHeader(c.req.raw);
   const sessionId = req.headers.get('mcp-session-id') ?? undefined;
 
@@ -1332,7 +1299,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       }
     }
 
-    return handleAndMaybeConvert(session.transport, req, wantsSSE);
+    return handleTransportRequest(session.transport, req);
   }
 
   // Stale session ID with non-initialize request → require a fresh initialize.
@@ -1372,7 +1339,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
             );
           }
           await recordMcpClientActivity(c.env, recoveredAuthCtx, req);
-          return handleAndMaybeConvert(transport, req, wantsSSE);
+          return handleTransportRequest(transport, req);
         }
 
         await deletePersistedSession(sessionId);
@@ -1439,7 +1406,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       () => randomUUID()
     );
     await server.connect(transport);
-    const response = await handleAndMaybeConvert(transport, req, wantsSSE);
+    const response = await handleTransportRequest(transport, req);
     await persistSessionState(transport.sessionId, authCtx);
     return response;
   }

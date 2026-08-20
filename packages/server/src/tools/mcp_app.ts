@@ -353,7 +353,7 @@ function belongsToApprovalWindow(row: ApprovalContentItem): boolean {
 }
 
 type ApprovalCapability = {
-  v: 1 | 2;
+  v: 2;
   runId: number;
   eventId: number;
   organizationId: string;
@@ -367,14 +367,14 @@ type ApprovalCapability = {
 function isApprovalCapability(value: unknown): value is ApprovalCapability {
   if (!isRecord(value)) return false;
   return (
-    (value.v === 1 || value.v === 2) &&
+    value.v === 2 &&
     Number.isInteger(value.runId) &&
     Number.isInteger(value.eventId) &&
     typeof value.organizationId === 'string' &&
     typeof value.userId === 'string' &&
     typeof value.clientId === 'string' &&
     typeof value.sessionId === 'string' &&
-    (value.v === 1 || value.conversationId === null || typeof value.conversationId === 'string') &&
+    (value.conversationId === null || typeof value.conversationId === 'string') &&
     typeof value.expiresAt === 'number'
   );
 }
@@ -413,7 +413,7 @@ function issueApprovalCapability(row: ApprovalContentItem, ctx: ToolContext): st
 }
 
 function approvalCapabilityMatchesHost(capability: ApprovalCapability, ctx: ToolContext): boolean {
-  if (capability.v === 2 && capability.conversationId) {
+  if (capability.conversationId) {
     return capability.conversationId === ctx.mcpConversationId;
   }
   return capability.sessionId === ctx.mcpSessionId;

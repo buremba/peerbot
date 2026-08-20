@@ -134,11 +134,8 @@ async function findCurrentHeadByIdentity(
  * — the source item's own stable id, so this names the row identically on every
  * run that rediscovers it.
  *
- * Exported because `events/backfill-automation-output-origin-id.ts` re-stamps the
- * rows written before this derivation existed, and a backfill that reimplements
- * the encoding in SQL drifts from the writer the moment either changes.
  */
-export function automationOutputOriginId(
+function automationOutputOriginId(
   automationId: number,
   outputName: string,
   idempotencyKey: string

@@ -31,10 +31,10 @@ import { Hono } from "hono";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import type { SettingsTokenPayload } from "../auth/settings/token-service.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
-import { getDb } from "../../db/client.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { invalidateMembershipRoleCache } from "../../workspace/multi-tenant.js";
+import { buildApiConversationId } from "../services/api-conversation-id.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import type { ThreadSession } from "../session.js";
@@ -42,6 +42,7 @@ import {
   ensureDbForGatewayTests,
   resetTestDatabase,
   seedAgentRow,
+  seedOrgMembership,
 } from "./helpers/db-setup.js";
 
 const AGENT_ORG = "org-agent-use-test";
@@ -60,28 +61,6 @@ function sessionFor(userId: string): SettingsTokenPayload {
   // Mirrors the embedded authProvider: better-auth user → external identity,
   // no oauthUserId, so the lookup key is `userId`.
   return { userId, platform: "external", exp: Date.now() + 60_000 };
-}
-
-async function seedUser(userId: string): Promise<void> {
-  await getDb()`
-    INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
-    VALUES (${userId}, ${userId}, ${`${userId}@test`}, true, now(), now())
-    ON CONFLICT (id) DO NOTHING
-  `;
-}
-
-async function seedMembership(
-  orgId: string,
-  userId: string,
-  role: string
-): Promise<void> {
-  await seedUser(userId);
-  await getDb()`
-    INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
-    VALUES (${`m-${orgId}-${userId}`}, ${orgId}, ${userId}, ${role}, now())
-    ON CONFLICT (id) DO NOTHING
-  `;
-  invalidateMembershipRoleCache(orgId, userId);
 }
 
 function makeSessionManager() {
@@ -191,13 +170,19 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
     await seedAgentRow("placeholder-outsider", {
       organizationId: OUTSIDER_ORG,
     });
+    await seedAgentRow(AGENT_ID, {
+      organizationId: OUTSIDER_ORG,
+      ownerPlatform: "external",
+      ownerUserId: OUTSIDER_ID,
+    });
 
     // The agent's owner is deliberately a plain member: `use` follows
     // membership, `manage` follows role, and the two are independent.
-    await seedMembership(AGENT_ORG, AGENT_OWNER_ID, "member");
-    await seedMembership(AGENT_ORG, MEMBER_ID, "member");
-    await seedMembership(AGENT_ORG, ADMIN_ID, "admin");
-    await seedMembership(OUTSIDER_ORG, OUTSIDER_ID, "owner");
+    await seedOrgMembership(AGENT_ORG, AGENT_OWNER_ID, "member");
+    await seedOrgMembership(AGENT_ORG, MEMBER_ID, "member");
+    await seedOrgMembership(AGENT_ORG, ADMIN_ID, "admin");
+    await seedOrgMembership(OUTSIDER_ORG, OUTSIDER_ID, "owner");
+    await seedOrgMembership(OUTSIDER_ORG, MEMBER_ID, "member");
     // The outsider must not be a member of the agent's org.
     invalidateMembershipRoleCache(AGENT_ORG, OUTSIDER_ID);
   }, 60_000);
@@ -221,11 +206,68 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
     );
 
     expect(res.status).toBe(201);
+    const expectedKey = buildApiConversationId({
+      agentId: AGENT_ID,
+      userId: MEMBER_ID,
+      organizationId: AGENT_ORG,
+      threadId: "member-thread",
+    });
+    expect(((await res.json()) as { agentId: string }).agentId).toBe(
+      expectedKey
+    );
     const stored = sessions.getStored();
     // Stamped with the AGENT's org (not the caller's ambient default), and with
     // the authenticated human — the field the own-conversation check reads.
     expect(stored?.organizationId).toBe(AGENT_ORG);
     expect(stored?.createdByUserId).toBe(MEMBER_ID);
+    expect(stored?.conversationId).toBe(expectedKey);
+    expect(sessions.store.get(expectedKey)).toBe(stored);
+  });
+
+  test("the same agent id remains isolated across organizations", async () => {
+    setAuthProvider(() => sessionFor(MEMBER_ID));
+    const shared = makeSessionManager();
+    const { app } = makeApp(
+      userAgentsStore,
+      agentMetadataStore,
+      CALLER_DEFAULT_ORG,
+      shared
+    );
+
+    const inAgentOrg = await postCreate(
+      app,
+      { thread: "same-thread" },
+      { "x-lobu-org": AGENT_ORG }
+    );
+    const inOutsiderOrg = await postCreate(
+      app,
+      { thread: "same-thread" },
+      { "x-lobu-org": OUTSIDER_ORG }
+    );
+
+    expect(inAgentOrg.status).toBe(201);
+    expect(inOutsiderOrg.status).toBe(201);
+    const agentOrgKey = buildApiConversationId({
+      agentId: AGENT_ID,
+      userId: MEMBER_ID,
+      organizationId: AGENT_ORG,
+      threadId: "same-thread",
+    });
+    const outsiderOrgKey = buildApiConversationId({
+      agentId: AGENT_ID,
+      userId: MEMBER_ID,
+      organizationId: OUTSIDER_ORG,
+      threadId: "same-thread",
+    });
+    expect(((await inAgentOrg.json()) as { agentId: string }).agentId).toBe(
+      agentOrgKey
+    );
+    expect(((await inOutsiderOrg.json()) as { agentId: string }).agentId).toBe(
+      outsiderOrgKey
+    );
+    expect(shared.store.get(agentOrgKey)?.organizationId).toBe(AGENT_ORG);
+    expect(shared.store.get(outsiderOrgKey)?.organizationId).toBe(OUTSIDER_ORG);
+    expect(shared.store.size).toBe(2);
   });
 
   test("the agent's owner is still authorized (regression)", async () => {
@@ -258,6 +300,27 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
 
     expect(res.status).toBe(403);
     expect(sessions.getStored()).toBeNull();
+  });
+
+  test("a Bearer request cannot borrow a settings cookie's membership", async () => {
+    setAuthProvider(() => sessionFor(MEMBER_ID));
+    const { app, sessions } = makeApp(
+      userAgentsStore,
+      agentMetadataStore,
+      AGENT_ORG
+    );
+
+    const res = await postCreate(
+      app,
+      { thread: "mixed-auth" },
+      {
+        "x-lobu-org": AGENT_ORG,
+        Authorization: "Bearer pat-or-oauth-token",
+      }
+    );
+
+    expect(res.status).toBe(403);
+    expect(sessions.store.size).toBe(0);
   });
 
   test("a non-member naming the workspace is still denied", async () => {
@@ -377,8 +440,60 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
       { "x-lobu-org": AGENT_ORG }
     );
     expect(clobber.status).toBe(403);
-    // The owner's session is untouched.
-    expect(shared.getStored()?.createdByUserId).toBe(AGENT_OWNER_ID);
+    const ownerKey = buildApiConversationId({
+      agentId: AGENT_ID,
+      userId: AGENT_OWNER_ID,
+      organizationId: AGENT_ORG,
+      threadId: "shared-thread",
+    });
+    // The owner's exact session is untouched.
+    expect(shared.store.get(ownerKey)?.createdByUserId).toBe(AGENT_OWNER_ID);
+  });
+
+  test("a member cannot resume or replace an unstamped legacy session", async () => {
+    const shared = makeSessionManager();
+    const legacyKey = buildApiConversationId({
+      agentId: AGENT_ID,
+      userId: AGENT_OWNER_ID,
+      organizationId: AGENT_ORG,
+      threadId: "legacy-thread",
+    });
+    const legacySession: ThreadSession = {
+      conversationId: legacyKey,
+      channelId: `api_${AGENT_OWNER_ID}`,
+      userId: AGENT_OWNER_ID,
+      threadCreator: AGENT_OWNER_ID,
+      lastActivity: 123,
+      createdAt: 100,
+      status: "active",
+      agentId: AGENT_ID,
+      organizationId: AGENT_ORG,
+    };
+    shared.store.set(legacyKey, legacySession);
+
+    setAuthProvider(() => sessionFor(MEMBER_ID));
+    const member = makeApp(
+      userAgentsStore,
+      agentMetadataStore,
+      CALLER_DEFAULT_ORG,
+      shared
+    );
+    const body = { userId: AGENT_OWNER_ID, thread: "legacy-thread" };
+
+    expect(
+      (await postCreate(member.app, body, { "x-lobu-org": AGENT_ORG })).status
+    ).toBe(403);
+    expect(
+      (
+        await postCreate(
+          member.app,
+          { ...body, forceNew: true },
+          { "x-lobu-org": AGENT_ORG }
+        )
+      ).status
+    ).toBe(403);
+    expect(shared.store.get(legacyKey)).toBe(legacySession);
+    expect(shared.store.size).toBe(1);
   });
 
   test("an org admin keeps oversight of a member's session", async () => {

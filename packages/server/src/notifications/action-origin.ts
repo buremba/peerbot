@@ -114,7 +114,14 @@ export async function resolveInteractionActionOrigin(params: {
 }): Promise<ActionOrigin> {
 	if (params.organizationId && params.source === "automation-run") {
 		const run = parseAutomationRunConversationId(params.conversationId ?? "");
-		if (run) return automationOrigin(params.organizationId, run.automationId);
+		if (run) {
+			return automationOrigin(params.organizationId, run.automationId).catch(
+				() => ({
+					kind: "automation",
+					label: `Automation #${run.automationId}`,
+				}),
+			);
+		}
 		return { kind: "automation", label: "Automation run" };
 	}
 	const fallback = `${platformName(params.platform)} conversation`;
@@ -131,20 +138,24 @@ export async function resolveInteractionActionOrigin(params: {
 export async function resolveActionOrigin(
 	ctx: ToolContext,
 ): Promise<ActionOrigin> {
-	if (ctx.actingAutomationId != null) {
-		return automationOrigin(ctx.organizationId, ctx.actingAutomationId);
-	}
-	const mcpActivity = currentMcpActivityAttribution(ctx);
-	if (mcpActivity) {
-		return mcpConversationOrigin(ctx.organizationId, mcpActivity);
-	}
-	if (ctx.sourceContext?.conversationId) {
-		return resolveConversationActionOrigin({
-			organizationId: ctx.organizationId,
-			platform: ctx.sourceContext.platform,
-			conversationId: ctx.sourceContext.conversationId,
-			agentId: ctx.agentId,
-		});
+	try {
+		if (ctx.actingAutomationId != null) {
+			return await automationOrigin(ctx.organizationId, ctx.actingAutomationId);
+		}
+		const mcpActivity = currentMcpActivityAttribution(ctx);
+		if (mcpActivity) {
+			return await mcpConversationOrigin(ctx.organizationId, mcpActivity);
+		}
+		if (ctx.sourceContext?.conversationId) {
+			return await resolveConversationActionOrigin({
+				organizationId: ctx.organizationId,
+				platform: ctx.sourceContext.platform,
+				conversationId: ctx.sourceContext.conversationId,
+				agentId: ctx.agentId,
+			});
+		}
+	} catch {
+		// Provenance is display-only and must never fail the action itself.
 	}
 	return { kind: "direct", label: "Direct request" };
 }

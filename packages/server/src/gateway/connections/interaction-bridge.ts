@@ -1109,17 +1109,23 @@ export function registerActionHandlers(
             { requestId, decision },
 						"Tool approval click with no pending invocation — likely expired",
           );
+					const expiredResolution = {
+						status: "expired" as const,
+						detail:
+							"Re-send your last message to create a new approval request.",
+					};
 					const expiredCard = settleActionCard(
 						Card({ children: [CardText("*Tool Approval*")] }),
-						{
-							status: "expired",
-							detail:
-								"Re-send your last message to create a new approval request.",
-						},
+						expiredResolution,
 					);
 					const edited = await editClickedCard(event, expiredCard);
 					try {
-						if (!edited) await sent.edit({ card: expiredCard });
+						if (!edited) {
+							await sent.edit({
+								card: expiredCard,
+								fallbackText: actionResolutionText(expiredResolution),
+							});
+						}
 					} catch {
 						// best effort
 					}

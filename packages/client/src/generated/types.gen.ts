@@ -935,7 +935,7 @@ export type ManageEntityData = {
      */
     force_delete_tree?: boolean;
     /**
-     * [delete] Preflight only: report what the delete would remove/detach without mutating anything
+     * [delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.
      */
     dry_run?: boolean;
     /**
@@ -1300,6 +1300,7 @@ export type ManageEntityResponses = {
         loser_entity_ids?: Array<number>;
         moved_identities: number;
         repointed_edges: number;
+        dry_run?: boolean;
         resolution?: {
           decision: "auto_merge" | "human";
           reason: string;

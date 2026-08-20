@@ -25,6 +25,7 @@ import {
 	applyEntityChangeProposal,
 	proposeEntityMerge,
 } from "../../../tools/admin/entity-field-approval";
+import { manageEntity } from "../../../tools/admin/manage_entity";
 import { createEntity } from "../../../utils/entity-management";
 import { applyMerge, applyMergeGroup } from "../../../utils/entity-merge";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -286,6 +287,52 @@ describe("write rules at the merge kernel", () => {
 
 		const after = await readRow(loser.id);
 		expect(after.merged_into).toBe(winner.id);
+	}, 60_000);
+
+	it("previews a rule refusal on a dry run, mutating nothing", async () => {
+		// Without this, the first anyone learns a merge is blocked is a failed 409.
+		const { org, user, invoices } = await seedInvoices(denyMergeCompiled);
+		const [loser, winner] = invoices;
+
+		const res = (await manageEntity(
+			{
+				action: "merge",
+				entity_id: loser.id,
+				winner_entity_id: winner.id,
+				dry_run: true,
+			} as Parameters<typeof manageEntity>[0],
+			TEST_ENV,
+			ctxFor(org.id, user.id),
+		)) as Record<string, unknown>;
+
+		expect(res.dry_run).toBe(true);
+		expect(res.message).toMatch(/would NOT be applied/);
+		expect(res.message).toMatch(/cannot be merged away/);
+
+		// A preview enforces nothing AND mutates nothing.
+		const after = await readRow(loser.id);
+		expect(after.deleted_at).toBeNull();
+		expect(after.merged_into).toBeNull();
+	}, 60_000);
+
+	it("says a legal merge would be applied, and still does not apply it", async () => {
+		const { org, user, invoices } = await seedInvoices(denyDeleteOnlyCompiled);
+		const [loser, winner] = invoices;
+
+		const res = (await manageEntity(
+			{
+				action: "merge",
+				entity_id: loser.id,
+				winner_entity_id: winner.id,
+				dry_run: true,
+			} as Parameters<typeof manageEntity>[0],
+			TEST_ENV,
+			ctxFor(org.id, user.id),
+		)) as Record<string, unknown>;
+
+		expect(res.message).toMatch(/would be applied/);
+		expect(res.message).not.toMatch(/would NOT be applied/);
+		expect((await readRow(loser.id)).merged_into).toBeNull();
 	}, 60_000);
 
 	it("leaves an unruled type exactly as cheap as before", async () => {

@@ -19,11 +19,11 @@ type TemplateNode = Record<string, unknown>;
 
 /**
  * One renderable field from a metadata schema: its key, its annotations, and
- * the label every surface must agree on. Exported so chat delivery derives
- * fields from the SAME ordering, hiding and labelling rules as the web/MCP
- * default template, rather than reimplementing them and drifting.
+ * the label every surface must agree on. File-local: chat reaches these rules
+ * through the template `buildDefaultEntityTemplate` emits, not by calling the
+ * field walker itself, so there is one path rather than two that can drift.
  */
-export interface SchemaField {
+interface SchemaField {
   key: string;
   def: SchemaProperty;
   label: string;
@@ -59,7 +59,7 @@ function labelFor(key: string, def: SchemaProperty): string {
  * Field order honors a numeric `x-table-column` annotation when present,
  * otherwise declaration order. Fields annotated `x-hidden` are skipped.
  */
-export function orderedSchemaFields(
+function orderedSchemaFields(
   metadataSchema: Record<string, unknown> | null | undefined
 ): SchemaField[] | null {
   const properties = (metadataSchema as { properties?: unknown } | null | undefined)?.properties;

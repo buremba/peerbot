@@ -570,6 +570,21 @@ describe("entity change approvals render through their kind", () => {
 		expect(rows(card)[0][2]).toBe(hostile);
 	});
 
+	it("flattens the Markdown body into the subtitle — mrkdwn is not Markdown", () => {
+		// This is the real approval body: `escapeMarkdownText` backslashes and a
+		// `[Review in Lobu](url)` link that the card already carries as a button.
+		// Rendered raw through `mrkdwn()`, every one of those shows literally.
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "create_issue", connection: "GitHub", input: {} },
+			subtitle:
+				"A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/runs/42)",
+		});
+		expect(card.subtitle).toBe(
+			"A queued action on Mac Shell is waiting.\n\nReview: Review in Lobu",
+		);
+	});
+
 	it("escapes the subtitle — the adapter renders it as mrkdwn", () => {
 		// The subtitle is the notification body, and an approval body carries the
 		// connection name, which we do not author. `blocks.js` puts it through

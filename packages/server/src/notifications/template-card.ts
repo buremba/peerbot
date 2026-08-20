@@ -35,6 +35,7 @@ import {
 	Image,
 	LinkButton,
 	type LinkButtonElement,
+	markdownToPlainText,
 	Select,
 	type SelectElement,
 	SelectOption,
@@ -436,11 +437,15 @@ export function buildKindCard(params: {
 
 	return Card({
 		title: params.title,
-		// The adapter renders the subtitle through `mrkdwn()` (a context block), and
-		// the body is not ours — an approval body carries the connection name. Raw,
-		// a `<!channel>` in it pings the room from inside a trusted card. Escaped
-		// like every other mrkdwn surface here.
-		subtitle: params.subtitle ? escapeSlackText(params.subtitle) : undefined,
+		// The subtitle is the notification's Markdown body, and the adapter renders
+		// it through `mrkdwn()` — which is NOT Markdown, so `**bold**`, the
+		// backslashes `escapeMarkdownText` left behind, and `[Review in Lobu](url)`
+		// would all show literally. Flatten with the SDK's own converter, then
+		// escape: the body is not ours (an approval body carries the connection
+		// name), and raw, a `<!channel>` in it pings the room from a trusted card.
+		subtitle: params.subtitle
+			? escapeSlackText(markdownToPlainText(params.subtitle))
+			: undefined,
 		children,
 	});
 }

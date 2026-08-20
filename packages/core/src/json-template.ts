@@ -202,15 +202,6 @@ export type TemplateNode = Record<string, unknown>;
 export const STRUCTURAL_NODE_TYPES = ["text", "data", "if", "each"] as const;
 export type StructuralNodeType = (typeof STRUCTURAL_NODE_TYPES)[number];
 
-export function isStructuralNodeType(
-  value: unknown
-): value is StructuralNodeType {
-  return (
-    typeof value === "string" &&
-    (STRUCTURAL_NODE_TYPES as readonly string[]).includes(value)
-  );
-}
-
 /**
  * Resolve a `data` path against the render scope.
  *

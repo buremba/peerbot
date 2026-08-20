@@ -284,9 +284,9 @@ export type SaveMemoryData = {
      */
     occurred_at?: string;
     /**
-     * Structured metadata — validated against the entity type schema or semantic_type schema
+     * Structured metadata, validated against the metadata schema for the selected event kind when non-empty. Omit when no structured metadata is needed; an absent value is treated as {}.
      */
-    metadata: {
+    metadata?: {
       [key: string]: unknown;
     };
     /**

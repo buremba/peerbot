@@ -198,7 +198,7 @@ export const searchMemory = <ThrowOnError extends boolean = false>(
 /**
  * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory
  *
- * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; MCP App calls also echo bounded payloads for inline display. Semantic search indexing is asynchronous and reported as `indexing_status`.
+ * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; the result also echoes the bounded saved payload for inline display.
  */
 export const saveMemory = <ThrowOnError extends boolean = false>(
   options: Options<SaveMemoryData, ThrowOnError>,
@@ -345,7 +345,7 @@ export const manageEntitySchema = <ThrowOnError extends boolean = false>(
 /**
  * Connection and connector lifecycle
  *
- * Connection and connector lifecycle. Workflow: browse via `manage_catalog`, install with action `install_connector`, then `connect` (creates a connection + auth link in one call; returns a connect_url for the user — poll `get` until status='active').
+ * Connection and connector lifecycle. Use `manage_catalog` → `install_connector` → `connect`; poll `get` until active. Setting, changing, or removing `action_modes` or connector `default_connection_config` requires a human web session; agents/tokens may only round-trip the map unchanged.
  */
 export const manageConnections = <ThrowOnError extends boolean = false>(
   options: Options<ManageConnectionsData, ThrowOnError>,

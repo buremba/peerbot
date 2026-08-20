@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { verifyWorkerToken } from "@lobu/core";
+import { AUTOMATION_RUN_SOURCE } from "../automation-run-session.js";
 import { buildAutomationRunWorkerAccess } from "../services/automation-run-worker-token.js";
 
 // Minting encrypts with ENCRYPTION_KEY. The gateway lane runs many files in one
@@ -38,6 +39,7 @@ describe("Automation run WorkerToken parity", () => {
     expect(claims.conversationId).toBe(access.conversationId);
     expect(claims.channelId).toBe("api_automation_120");
     expect(claims.platform).toBe("api");
+    expect(claims.source).toBe(AUTOMATION_RUN_SOURCE);
   });
 
   test("rejects a non-canonical conversation id", () => {

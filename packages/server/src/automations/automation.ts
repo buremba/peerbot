@@ -15,6 +15,7 @@ import { intervals } from "../config/intervals";
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
 import { getInternalGatewayUrl } from "../gateway/config/index";
+import { AUTOMATION_RUN_SOURCE } from "../gateway/automation-run-session";
 import { incrementCounter, setGauge } from "../gateway/metrics/prometheus";
 import type { Env } from "../index";
 import { isLobuGatewayRunning } from "../lobu/gateway";
@@ -1188,7 +1189,7 @@ const LOBU_MEMORY_MCP_ID = "lobu-memory";
 // now that flat admin tools are omitted from MCP tools/list.
 const AUTOMATION_REQUIRED_TOOLS = ["query_sdk", "run_sdk"];
 
-async function preflightAutomationMemoryTools(params: {
+export async function preflightAutomationMemoryTools(params: {
 	organizationId: string;
 	agentId: string;
 	runId: number;
@@ -1203,6 +1204,7 @@ async function preflightAutomationMemoryTools(params: {
 			agentId: params.agentId,
 			organizationId: params.organizationId,
 			platform: "api",
+			source: AUTOMATION_RUN_SOURCE,
 			sessionKey: `automation_${params.runId}`,
 		}
 	);

@@ -5,6 +5,16 @@ import { decrypt, encrypt } from "../utils/encryption";
 const logger = createLogger("worker-auth");
 
 /**
+ * Fast envelope check for the AES-GCM worker-token wire format.
+ *
+ * This does not authenticate or decrypt the token. Call {@link verifyWorkerToken}
+ * before trusting any claim.
+ */
+export function looksLikeWorkerToken(token: string): boolean {
+  return /^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/i.test(token);
+}
+
+/**
  * Worker authentication using encrypted conversation ID.
  * Token format: encrypted(JSON payload of thread metadata).
  */

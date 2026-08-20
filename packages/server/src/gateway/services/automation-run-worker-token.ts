@@ -1,4 +1,5 @@
 import { generateWorkerToken } from "@lobu/core";
+import { AUTOMATION_RUN_SOURCE } from "../automation-run-session.js";
 
 export interface AutomationRunWorkerAccess {
   conversationId: string;
@@ -44,6 +45,7 @@ export function buildAutomationRunWorkerAccess(args: {
       agentId: args.agentId,
       organizationId: args.organizationId,
       platform: "api",
+      source: AUTOMATION_RUN_SOURCE,
       sessionKey: userId,
     }),
   };

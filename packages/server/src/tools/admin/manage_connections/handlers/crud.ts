@@ -37,6 +37,11 @@ import {
   getOperationsSummary,
   getOperationsSummaryBatch,
 } from "../../../../operations/connector-operations";
+import {
+	actionModesChanged,
+	denyNonHumanActionModesWrite,
+	hasActionModes,
+} from "./action-modes-guard";
 import { projectConnectionForReader } from "../public-projection";
 import {
   getAuthProfileById,
@@ -716,6 +721,12 @@ export async function handleCreate(
 		)
 	) {
 		return { error: JIRA_WEBHOOK_ADMIN_ONLY_ERROR };
+	}
+	// Presence-based on create: a fresh connection has no modes yet, so any
+	// mode arriving here IS the change.
+	if (hasActionModes(args.config)) {
+		const denied = denyNonHumanActionModesWrite(ctx);
+		if (denied) return denied;
 	}
 
 	// Schema-declared secret config keys for this connector — used to redact the
@@ -1775,6 +1786,12 @@ export async function handleUpdate(
 		)
 	) {
 		return { error: JIRA_WEBHOOK_ADMIN_ONLY_ERROR };
+	}
+	// Changed-only, so an agent round-tripping a read config (which carries the
+	// current modes verbatim) can keep editing every other key.
+	if (actionModesChanged(existingConfig, resultingConfig)) {
+		const denied = denyNonHumanActionModesWrite(ctx);
+		if (denied) return denied;
 	}
 	const willBeConsentOnly =
 		parseJsonObject(resultingConfig).consent_only === true;

@@ -29,6 +29,10 @@ import {
   resolveConnectionDisplayName,
   resolveConnectionVisibility,
 } from "../../helpers/connection-helpers";
+import {
+	denyNonHumanActionModesWrite,
+	hasActionModes,
+} from "./action-modes-guard";
 import { assertEntityIdsInOrg } from "../../helpers/db-helpers";
 import {
   buildAppInstallationSetupUrl,
@@ -83,6 +87,14 @@ async function handleConnectImpl(
 	ctx: ToolContext,
 	requireManaged: boolean,
 ): Promise<ManageConnectionsResult> {
+	// Same presence rule as create: connect mints the row, so any mode arriving
+	// here IS the change. One chokepoint covers `connect` and `connect_managed`
+	// (which delegates here) — otherwise the create gate is trivially routed
+	// around by connecting instead.
+	if (hasActionModes(args.config)) {
+		const denied = denyNonHumanActionModesWrite(ctx);
+		if (denied) return denied;
+	}
   const sql = getDb();
   const { organizationId, userId } = ctx;
 	const resumeCall = buildSafeConnectionResumeCall(

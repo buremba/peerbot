@@ -11,6 +11,10 @@ import { getDb } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
 import logger from "../../../../utils/logger";
+import {
+	denyNonHumanActionModesWrite,
+	hasActionModes,
+} from "./action-modes-guard";
 import type { ToolContext } from "../../../registry";
 import {
 	getInstalledConnectorSource,
@@ -420,6 +424,13 @@ export async function handleUpdateConnectorDefaultConfig(
 	args: Extract<ConnectionsArgs, { action: "update_connector_default_config" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+	// Defaults seed every future connection's config, so modes planted here
+	// become that connection's approval overrides — same human-only surface as
+	// a direct action_modes edit.
+	if (hasActionModes(args.default_connection_config)) {
+		const denied = denyNonHumanActionModesWrite(ctx);
+		if (denied) return denied;
+	}
 	const updated = await updateActiveConnectorDefinitionField(
 		args.connector_key,
 		ctx.organizationId,

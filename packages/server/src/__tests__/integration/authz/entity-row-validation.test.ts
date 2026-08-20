@@ -13,12 +13,15 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
+import { applyEntityChangeProposal } from "../../../tools/admin/entity-field-approval";
+import { manageEntity } from "../../../tools/admin/manage_entity";
 import type { ToolContext } from "../../../tools/registry";
 import {
 	createEntity,
 	deleteEntity,
 	updateEntity,
 } from "../../../utils/entity-management";
+import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
@@ -84,6 +87,15 @@ export default (row) => {
 };
 `;
 
+/** PROBE an unusable escalation that cannot be replayed by any field grant. */
+const ESCALATE_NO_FIELDS_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.changed("$deleted") && row.next.$deleted) {
+    row.escalate([], "review without a field");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 
 // esbuild costs ~100ms per call, so compile each rule once for the whole file.
@@ -91,6 +103,7 @@ let invoiceCompiled: string;
 let ticketCompiled: string;
 let escalateDeleteCompiled: string;
 let escalateOtherFieldCompiled: string;
+let escalateNoFieldsCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -154,6 +167,29 @@ async function rowExists(id: number): Promise<boolean> {
     SELECT id FROM entities WHERE id = ${id}
   `;
 	return rows.length > 0;
+}
+
+async function readRunActionInput(
+	organizationId: string,
+	runId: number,
+): Promise<Record<string, unknown>> {
+	const sql = getTestDb();
+	const [run] = await sql<{ action_input: unknown }[]>`
+		SELECT action_input FROM runs
+		WHERE id = ${runId} AND organization_id = ${organizationId}
+	`;
+	if (!run) throw new Error(`Approval run ${runId} was not persisted`);
+	return (typeof run.action_input === "string"
+		? JSON.parse(run.action_input)
+		: run.action_input) as Record<string, unknown>;
+}
+
+async function countRuns(organizationId: string): Promise<number> {
+	const [row] = await getTestDb()<{ count: number }[]>`
+		SELECT COUNT(*)::int AS count FROM runs
+		WHERE organization_id = ${organizationId}
+	`;
+	return Number(row?.count ?? 0);
 }
 
 async function seedOrg(name: string) {
@@ -220,16 +256,19 @@ async function seedEscalatingDoc() {
 
 describe("entity row validation at the physical writer", () => {
 	beforeAll(async () => {
+		await initWorkspaceProvider();
 		[
 			invoiceCompiled,
 			ticketCompiled,
 			escalateDeleteCompiled,
 			escalateOtherFieldCompiled,
+			escalateNoFieldsCompiled,
 		] = await Promise.all([
 			compileEntityRule(INVOICE_RULE),
 			compileEntityRule(TICKET_RULE),
 			compileEntityRule(ESCALATE_DELETE_RULE),
 			compileEntityRule(ESCALATE_OTHER_FIELD_RULE),
+			compileEntityRule(ESCALATE_NO_FIELDS_RULE),
 		]);
 	}, 60_000);
 
@@ -564,16 +603,182 @@ describe("entity row validation at the physical writer", () => {
 	});
 
 	/**
-	 * `force_delete_tree` is the OTHER way a caller reaches destruction, and it
-	 * does not go past the soft-delete seam at all: it walks the tree and hands
-	 * the ids to `hardDeleteEntityRows`. Left ungoverned, "a posted invoice cannot
-	 * be deleted" would have meant "cannot be deleted without passing
-	 * force_delete_tree=true" — a control with a published bypass.
-	 *
-	 * It answers to `$deleted`, the same name the soft path uses, because a hard
-	 * delete is not a lesser destruction than a tombstone. (Contrast merge, which
-	 * earned its own `$merged_into`: merging a duplicate into its canonical record
-	 * is a correction, so freezing deletion must not freeze dedupe.)
+	 * `manage_entity` turns a row rule's `$deleted` escalation into a persisted
+	 * delete card. The approval replay itself is covered by
+	 * `entity-approval-atomic-apply.test.ts`.
+	 */
+	describe("escalate mints a delete card", () => {
+		it("queues the delete for approval instead of erroring", async () => {
+			const { org, user, doc } = await seedEscalatingDoc();
+
+			const res = (await manageEntity(
+				{ action: "delete", entity_id: doc.id },
+				TEST_ENV,
+				ctxFor(org.id, { userId: user.id }),
+			)) as {
+				success: boolean;
+				approval_queued?: boolean;
+				approval_run_id?: number;
+				message: string;
+			};
+
+			expect(res.success).toBe(false);
+			expect(res.approval_queued).toBe(true);
+			expect(res.approval_run_id).toEqual(expect.any(Number));
+			expect(res.message).toMatch(/second pair of eyes/);
+			const proposal = await readRunActionInput(
+				org.id,
+				res.approval_run_id ?? -1,
+			);
+			expect(proposal.operation).toBe("delete");
+			expect(proposal.reason).toEqual(expect.stringMatching(/second pair of eyes/));
+			expect(await readDeletedAt(doc.id)).toBeNull();
+		}, 60_000);
+
+		it("delays delete cleanup until the approval replay", async () => {
+			const sql = getTestDb();
+			const { org, user } = await seedOrg("Escalating member delete");
+			await seedType(org.id, "$member", escalateDeleteCompiled);
+			const email = "pending-member@example.com";
+			const member = await createEntity(
+				{
+					entity_type: "$member",
+					name: "Pending member",
+					organization_id: org.id,
+					created_by: user.id,
+					metadata: { email },
+				} as Parameters<typeof createEntity>[0],
+				{ skipHooks: true },
+			);
+			await sql`
+				INSERT INTO invitation (
+					id, "organizationId", email, role, status,
+					"expiresAt", "inviterId", "createdAt"
+				) VALUES (
+					gen_random_uuid()::text, ${org.id}, ${email}, 'member', 'pending',
+					NOW() + interval '48 hours', ${user.id}, NOW()
+				)
+			`;
+
+			const ctx = ctxFor(org.id, { userId: user.id });
+			const result = (await manageEntity(
+				{ action: "delete", entity_id: member.id },
+				TEST_ENV,
+				ctx,
+			)) as { approval_queued?: boolean; approval_run_id?: number };
+
+			expect(result.approval_queued).toBe(true);
+			let [invitation] = await sql<{ status: string }[]>`
+				SELECT status FROM invitation
+				WHERE "organizationId" = ${org.id} AND email = ${email}
+			`;
+			expect(invitation.status).toBe("pending");
+			expect(await readDeletedAt(member.id)).toBeNull();
+
+			const proposal = await readRunActionInput(
+				org.id,
+				result.approval_run_id ?? -1,
+			);
+			await sql.begin(async (tx) => {
+				await applyEntityChangeProposal(proposal as never, ctx, TEST_ENV, tx);
+			});
+
+			[invitation] = await sql<{ status: string }[]>`
+				SELECT status FROM invitation
+				WHERE "organizationId" = ${org.id} AND email = ${email}
+			`;
+			expect(invitation.status).toBe("canceled");
+			expect(await readDeletedAt(member.id)).not.toBeNull();
+		}, 60_000);
+
+		it("carries force_delete_tree onto the card", async () => {
+			const { org, user, doc } = await seedEscalatingDoc();
+
+			const res = (await manageEntity(
+				{ action: "delete", entity_id: doc.id, force_delete_tree: true },
+				TEST_ENV,
+				ctxFor(org.id, { userId: user.id }),
+			)) as { approval_run_id?: number };
+
+			const proposal = await readRunActionInput(
+				org.id,
+				res.approval_run_id ?? -1,
+			);
+			expect(proposal.force_delete_tree).toBe(true);
+		}, 60_000);
+
+		/**
+		 * The gate that keeps the card honest. A delete card's replay grants exactly
+		 * `$deleted`; an escalate naming anything else would mint a card that throws
+		 * the moment it is approved, wasting a reviewer's decision. Those keep
+		 * failing closed.
+		 */
+		it("does NOT mint a card for an escalate naming another field", async () => {
+			const { org, user } = await seedOrg("Escalates elsewhere, tool");
+			await seedType(org.id, "doc", escalateOtherFieldCompiled);
+			const doc = await createEntity({
+				entity_type: "doc",
+				name: "DOC-OTHER-TOOL",
+				organization_id: org.id,
+				created_by: user.id,
+				metadata: { status: "open" },
+			} as Parameters<typeof createEntity>[0]);
+
+			await expect(
+				manageEntity(
+					{ action: "delete", entity_id: doc.id },
+					TEST_ENV,
+					ctxFor(org.id, { userId: user.id }),
+				),
+			).rejects.toThrow(/status/);
+
+			expect(await readDeletedAt(doc.id)).toBeNull();
+			expect(await countRuns(org.id)).toBe(0);
+		}, 60_000);
+
+		it("does NOT mint a card for an escalation with no fields", async () => {
+			const { org, user } = await seedOrg("Escalates no fields, tool");
+			await seedType(org.id, "doc", escalateNoFieldsCompiled);
+			const doc = await createEntity({
+				entity_type: "doc",
+				name: "DOC-NO-FIELDS-TOOL",
+				organization_id: org.id,
+				created_by: user.id,
+				metadata: {},
+			} as Parameters<typeof createEntity>[0]);
+
+			await expect(
+				manageEntity(
+					{ action: "delete", entity_id: doc.id },
+					TEST_ENV,
+					ctxFor(org.id, { userId: user.id }),
+				),
+			).rejects.toThrow(/approval required/);
+
+			expect(await readDeletedAt(doc.id)).toBeNull();
+			expect(await countRuns(org.id)).toBe(0);
+		}, 60_000);
+
+		/** A deny is not an escalate. Approval can never launder an illegal state. */
+		it("does NOT mint a card for a deny", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			await expect(
+				manageEntity(
+					{ action: "delete", entity_id: invoice.id },
+					TEST_ENV,
+					ctxFor(org.id, { userId: user.id }),
+				),
+			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
+
+			expect(await readDeletedAt(invoice.id)).toBeNull();
+			expect(await countRuns(org.id)).toBe(0);
+		}, 60_000);
+	});
+
+	/**
+	 * `force_delete_tree` walks the tree and reaches the rule seam as `$deleted`
+	 * before it removes any row, so a frozen descendant blocks the whole delete.
 	 */
 	describe("force delete", () => {
 		it("denies force-deleting a frozen row, and the row survives", async () => {

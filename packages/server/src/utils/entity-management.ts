@@ -1592,7 +1592,9 @@ export async function deleteEntity(
   // Validate write access (uses PG for auth tables)
   await requireWriteAccess(pgSql, entityId, ctx);
 
-  // Run beforeDelete hook (a dry run mutates nothing, so hooks stay silent)
+  // Resolve the hook now, but do not run its cleanup until the row rule has
+  // accepted the delete. The write transaction validates again under lock.
+  let runBeforeDeleteHook: (() => Promise<void>) | null = null;
   if (!opts?.skipHooks && !opts?.dryRun) {
     const entityRow = await sql`
       SELECT et.slug AS entity_type, e.metadata
@@ -1601,16 +1603,19 @@ export async function deleteEntity(
       WHERE e.id = ${entityId} AND e.deleted_at IS NULL
     `;
     if (entityRow.length > 0) {
-      const hooks = getEntityHooks(entityRow[0].entity_type as string);
-      if (hooks?.beforeDelete) {
-        await hooks.beforeDelete(
-          {
-            id: entityId,
-            entity_type: entityRow[0].entity_type as string,
-            metadata: entityRow[0].metadata as Record<string, unknown> | null,
-          },
-          { organizationId: ctx.organizationId, userId: ctx.userId }
-        );
+      const beforeDelete = getEntityHooks(
+        entityRow[0].entity_type as string
+      )?.beforeDelete;
+      if (beforeDelete) {
+        runBeforeDeleteHook = () =>
+          beforeDelete(
+            {
+              id: entityId,
+              entity_type: entityRow[0].entity_type as string,
+              metadata: entityRow[0].metadata as Record<string, unknown> | null,
+            },
+            { organizationId: ctx.organizationId, userId: ctx.userId }
+          );
       }
     }
   }
@@ -1699,6 +1704,16 @@ export async function deleteEntity(
         dry_run: true,
         tree: report,
       };
+    }
+
+    if (runBeforeDeleteHook) {
+      await validateEntityRowPatchGrantingApprovedFields({
+        tx: sql,
+        ids: entityTreeIds,
+        patch: { softDelete: true },
+        approvedFields: opts?.approvedFields ?? [],
+      });
+      await runBeforeDeleteHook();
     }
 
     // Deletion predicate for automations/feeds: only rows whose entity set is
@@ -1942,6 +1957,15 @@ export async function deleteEntity(
       deleted: 0,
       dry_run: true,
     };
+  }
+  if (runBeforeDeleteHook) {
+    await validateEntityRowPatchGrantingApprovedFields({
+      tx: sql,
+      ids: [entityId],
+      patch: { softDelete: true },
+      approvedFields: opts?.approvedFields ?? [],
+    });
+    await runBeforeDeleteHook();
   }
   // Soft delete: stamp deleted_at, governed by the type's write rules.
   //

@@ -7,7 +7,10 @@
  * lives in manage_operations next to `supersedeActionEvent`.
  */
 
-import { validateEntityRowPatchGrantingApprovedFields } from "../../authz/entity-row-validation";
+import {
+	RESERVED_COLUMN_NAMES,
+	validateEntityRowPatchGrantingApprovedFields,
+} from "../../authz/entity-row-validation";
 import { createHash } from "node:crypto";
 import {
 	ApprovalAttribution,
@@ -1380,7 +1383,7 @@ export async function applyEntityChangeProposal(
 		// name the merge seam proposes. A `deny` still throws — approval cannot
 		// make an illegal merge legal.
 		return applyMergeGroupInTransaction(
-			{ ...params, approvedFields: ["$merged_into"] },
+			{ ...params, approvedFields: [RESERVED_COLUMN_NAMES.mergedInto] },
 			db,
 		);
 	}
@@ -1396,6 +1399,6 @@ export async function applyEntityChangeProposal(
 		deleteProposal.force_delete_tree ?? false,
 		env,
 		ctx,
-		{ approvedFields: ["$deleted"] },
+		{ approvedFields: [RESERVED_COLUMN_NAMES.softDelete] },
 	);
 }

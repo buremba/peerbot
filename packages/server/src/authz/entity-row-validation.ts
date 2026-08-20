@@ -45,7 +45,7 @@ export type ValidatedEntityRowPatch = EntityRowPatch & {
 export interface EntityRowValidationVerdict {
 	outcome: "deny" | "escalate";
 	reason: string;
-	/** Fields the rule named when escalating. Empty for a deny. */
+	/** Fields the rule named when escalating; empty when it named none. */
 	fields: string[];
 	/** The row judged, or null for a create — there is no row yet. */
 	entityId: number | null;
@@ -57,22 +57,18 @@ export interface EntityRowValidationVerdict {
  * Throwing rather than returning a verdict is deliberate: it makes failing
  * closed the DEFAULT for every caller. Only a caller with approval machinery to
  * route an escalation into opts in by catching this and reading {@link verdict}
- * — `updateEntity`, and automation promotion (`promote-keyed-entities`). Link
- * auto-create and eval scaffolding have nowhere to queue a card, so for them a
- * rule that asked for review must stop the write — which is exactly what an
- * uncaught throw does.
+ * — `updateEntity`, automation promotion (`promote-keyed-entities`), and
+ * `manage_entity` deletion. Link auto-create and eval scaffolding have nowhere
+ * to queue a card, so for them a rule that asked for review must stop the write
+ * — which is exactly what an uncaught throw does.
  *
  * Soft-delete (`deleteEntity`) and merge (`applyMergeInTransaction`) are the
- * in-between cases, and the distinction is WHO asked for the review. The POLICY
- * gate can queue a delete or merge card, and applying that card grants
- * `$deleted` or `$merged_into` — the one field each card can be said to have
- * approved — so a rule escalating on it no longer dead-ends an approval a human
- * already gave. But a rule escalate does not itself mint a card:
- * `manage_entity`'s delete and merge paths have no `EntityRowValidationError`
- * catch (only its CREATE path does), so an escalate with no policy card behind
- * it fails closed like link auto-create. A `deny` stops the write either way,
- * and the hard (force) delete reaches this seam under the same `$deleted` name,
- * so freezing a row freezes both delete paths.
+ * in-between cases. The policy gate can queue either card, and `manage_entity`
+ * also turns a delete rule's `$deleted` escalation into a delete card. Applying
+ * those cards grants `$deleted` or `$merged_into` — the one field each card can
+ * be said to have approved. Callers without approval machinery still fail
+ * closed. A `deny` stops the write either way, and force delete reaches this seam
+ * under the same `$deleted` name, so freezing a row freezes both delete paths.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;
@@ -115,7 +111,7 @@ const UNGOVERNED_COLUMNS: ReadonlySet<string> = new Set([
  * `$merged_into` one namespace with the rest, so a rule reads
  * `row.next.$merged_into` exactly as it reads `row.next.$deleted`.
  */
-const RESERVED_COLUMN_NAMES: Readonly<Record<string, string>> = {
+export const RESERVED_COLUMN_NAMES: Readonly<Record<string, string>> = {
 	name: "$name",
 	slug: "$slug",
 	parentId: "$parent_id",

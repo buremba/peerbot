@@ -172,6 +172,26 @@ export const AutomationPollContextSchema = Type.Object({
   user: Type.Object({
     user_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   }),
+  // Non-macOS device execution only: the per-run lobu-memory MCP session.
+  // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
+  // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
+  // PAT is bound to the user's personal org and can't authenticate to a
+  // team-org Automation). `mcp_url` is the gateway MCP proxy endpoint
+  // (`{PUBLIC_GATEWAY_URL}/mcp/lobu-memory`), which validates the worker
+  // token and promotes it into a direct-auth MCP session for the token's org.
+  // The daemon hands both to the spawned CLI as its MCP wiring and as
+  // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
+  // agent for this run. Absent when the run has no usable assigned agent, or
+  // when minting failed — the daemon then falls back to its own wiring. macOS
+  // is exempt: Owletto's bridge dispatches with its own credential machinery.
+  agent_session: Type.Optional(
+    Type.Object({
+      conversation_id: Type.String(),
+      mcp_url: Type.String(),
+      token: Type.String(),
+      expires_at: Type.Number(),
+    })
+  ),
 });
 
 /**

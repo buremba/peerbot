@@ -12,6 +12,13 @@ import {
   automationTriggerSignals,
   isWorkspaceEventTriggerSignal,
 } from '../automations/workspace-event-contract';
+import {
+  buildDispatchMessage,
+  ensureAutomationAgentExists,
+  parseAutomationRunPayload,
+} from '../automations/automation';
+import { buildAutomationRunWorkerAccess } from '../gateway/services/automation-run-worker-token';
+import { resolvePublicGatewayUrl } from '../utils/public-origin';
 import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
@@ -653,6 +660,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND ${deviceWorkerId}::uuid IS NOT NULL
               AND r.approved_input ? 'device_worker_id'
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
+              AND (
+                'automations.execute' = ANY(${pgTextArray(authorizedCapabilities)}::text[])
+                OR ${effectivePlatform}::text = 'macos'
+              )
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
               AND (
                 ${agentKindsParam}::text[] IS NULL
@@ -749,6 +760,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         cd.required_capability AS connector_required_capability,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS automation_name,
+        w.agent_id AS automation_agent_id,
         w.slug AS automation_slug,
         w.agent_kind AS automation_agent_kind,
         w.notification_channel AS automation_notification_channel,
@@ -840,6 +852,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     window_id: number | null;
     organization_id: string;
     automation_name: string | null;
+    automation_agent_id: string | null;
     automation_slug: string | null;
     automation_agent_kind: string | null;
     automation_notification_channel: string | null;
@@ -913,6 +926,69 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         ...pollMetadata,
       });
     }
+    let devicePrompt = automationInstructions;
+    let agentSession: { conversation_id: string; mcp_url: string; token: string; expires_at: number } | undefined;
+    if (effectivePlatform !== 'macos' && row.automation_id != null) {
+      const runPayload = parseAutomationRunPayload(approved);
+      const agentId =
+        typeof approved['agent_id'] === 'string' && approved['agent_id'].trim()
+          ? approved['agent_id'].trim()
+          : row.automation_agent_id?.trim() || null;
+      if (
+        runPayload &&
+        agentId &&
+        (await ensureAutomationAgentExists(sql, row.organization_id, agentId))
+      ) {
+        devicePrompt = buildDispatchMessage({
+          automationId: row.automation_id,
+          runId: row.run_id,
+          agentId,
+          payload: runPayload,
+          automationInstructions: automationInstructions ?? undefined,
+          executor: 'device',
+        });
+        // Per-run Automation agent session (same WorkerToken identity as the
+        // server-side dispatcher's agent session) — never the device's PAT,
+        // which is bound to the user's personal org and can't authenticate to
+        // a team-org Automation. The daemon injects the token into the spawned
+        // CLI (env + MCP wiring) against the gateway MCP proxy endpoint.
+        //
+        // Minting encrypts, so it can throw (missing/short ENCRYPTION_KEY). The
+        // run is ALREADY claimed by this point, so letting that escape would 500
+        // the poll and strand it `running` — the exact wedge the claim gate
+        // exists to prevent. Degrade to the pre-session dispatch instead.
+        try {
+          const access = buildAutomationRunWorkerAccess({
+            agentId,
+            automationId: row.automation_id,
+            runId: row.run_id,
+            organizationId: row.organization_id,
+          });
+          agentSession = {
+            conversation_id: access.conversationId,
+            mcp_url: `${resolvePublicGatewayUrl()}/mcp/lobu-memory`,
+            token: access.token,
+            expires_at: access.expiresAt,
+          };
+        } catch (err) {
+          devicePrompt = automationInstructions;
+          logger.error(
+            { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId, err },
+            '[poll] failed to mint the Automation run session; dispatching instructions-only'
+          );
+        }
+      } else {
+        // No assigned agent (or no parseable run payload): dispatch the
+        // pre-session shape — instructions prompt + exit-report completion on
+        // the daemon's own wiring — rather than failing a run that used to
+        // execute. Only runs with a real agent identity get a minted session.
+        logger.warn(
+          { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId },
+          '[poll] headless automation has no usable assigned agent; dispatching instructions-only (no run-scoped MCP session)'
+        );
+      }
+    }
+
     return c.json({
       ...pollMetadata,
       run_id: row.run_id,
@@ -943,7 +1019,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           // id/name/slug), so a scheduled automation's local CLI got a bare
           // "process this" and improvised; shipping it lets the device run the
           // real prompt. Null only if the automation has no version row.
-          prompt: automationInstructions,
+          prompt: devicePrompt,
           // The derived extraction contract (entity-typed → derived from that
           // entity type's metadata_schema; untyped → null). The dispatcher embeds
           // it in the prompt as the output contract: the CLI must finish with a
@@ -968,6 +1044,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           user: {
             user_id: effectiveWorkerUserId ?? null,
           },
+          ...(agentSession ? { agent_session: agentSession } : {}),
         },
       },
     });

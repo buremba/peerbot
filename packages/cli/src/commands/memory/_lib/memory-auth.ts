@@ -21,7 +21,10 @@ export function normalizeMcpUrl(input: string): string {
   url.search = "";
   if (!url.pathname || url.pathname === "/") {
     url.pathname = "/mcp";
-  } else if (!url.pathname.startsWith("/mcp")) {
+  } else if (
+    !url.pathname.startsWith("/mcp") &&
+    !url.pathname.includes("/mcp/")
+  ) {
     url.pathname = `${url.pathname.replace(/\/+$/, "")}/mcp`;
   }
   return url.toString().replace(/\/+$/, "");
@@ -121,6 +124,9 @@ export async function resolveOrg(
 ): Promise<string | undefined> {
   if (orgFlag) return orgFlag;
   if (process.env.LOBU_MEMORY_ORG) return process.env.LOBU_MEMORY_ORG;
+  // Explicit runtime bearer + MCP URL is self-contained; do not rewrite a mounted endpoint with ambient org state.
+  if (process.env.LOBU_API_TOKEN?.trim() && process.env.LOBU_MEMORY_URL?.trim())
+    return undefined;
   if (session?.org) return session.org;
   return getActiveOrg(context);
 }

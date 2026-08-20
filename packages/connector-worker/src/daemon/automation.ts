@@ -16,11 +16,13 @@
  * drift.
  *
  * Unlike connector children (which inherit a small system-env allowlist), the
- * spawned agent CLI must run as the user: it inherits the daemon's environment
- * (PATH, HOME, the user's CLI credentials) minus the `WORKER_API_TOKEN` env
- * var, so the child cannot act as the worker/poll loop — it authenticates
- * through its own `~/.config/lobu` credentials or the MCP bearer wired
- * per-spec (deliberately the daemon's own bearer, as in the Mac dispatcher).
+ * spawned agent CLI runs in the user's environment (PATH, HOME) minus the
+ * `WORKER_API_TOKEN` env var, so the child cannot act as the worker/poll loop.
+ * Its Lobu credential is the poll envelope's per-run `agent_session` when the
+ * server minted one (see `resolveAutomationRunAccess`): the run authenticates
+ * as the Automation's assigned agent, not as the daemon or the user's ambient
+ * CLI session. The daemon's own bearer remains only the fallback for a run the
+ * server sent no session for — an older server, or one that could not mint.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -270,31 +272,65 @@ function buildMcp(
   return { mcpArgs, mcpEnv, cleanup };
 }
 
+/** The credential set one automation run's spawned CLI executes with. */
+export interface AutomationRunAccess {
+  /** Lobu MCP wiring for the CLI's mcp config (buildMcp). */
+  wiring: { url: string; bearer?: string } | undefined;
+  /** Extra env for the child process (LOBU_API_TOKEN / LOBU_MEMORY_URL). */
+  env: Record<string, string>;
+}
+
+/**
+ * Resolve what credential the spawned CLI runs with. When the poll envelope
+ * carries a per-run `agent_session`, the CLI authenticates as the automation's
+ * assigned agent for exactly this run: the session token goes into the MCP
+ * wiring AND into LOBU_API_TOKEN/LOBU_MEMORY_URL, which `lobu memory` prefers
+ * over the device's ambient CLI session — so an unattended run never acts as
+ * the human user or the daemon. Without a session (older server, or a run with
+ * no usable assigned agent) fall back to the daemon's own wiring, the
+ * pre-session dispatch path.
+ */
+export function resolveAutomationRunAccess(
+  payload: AutomationPollPayload,
+  daemonWiring: { url: string; bearer?: string } | undefined
+): AutomationRunAccess {
+  const session = payload.context.agent_session;
+  if (!session) return { wiring: daemonWiring, env: {} };
+  return {
+    wiring: { url: session.mcp_url, bearer: session.token },
+    env: {
+      LOBU_API_TOKEN: session.token,
+      LOBU_MEMORY_URL: session.mcp_url,
+    },
+  };
+}
+
 /** Spawn one CLI run and classify how it ended. */
 async function runCli(
   spec: AgentSpec,
   prompt: string,
   config: AutomationPollPayload['automation']['execution_config'],
-  mcpWiring: { url: string; bearer?: string } | undefined,
+  access: AutomationRunAccess,
   timeoutMs: number,
   binaryPath?: string
 ): Promise<ExecutorResult> {
   const binary = binaryPath ?? locateBinary(spec.binaryName);
   if (!binary || !existsSync(binary)) throw new ExecutableNotFoundError(spec.binaryName);
 
-  const { mcpArgs, mcpEnv, cleanup } = buildMcp(spec, mcpWiring);
+  const { mcpArgs, mcpEnv, cleanup } = buildMcp(spec, access.wiring);
   try {
     const args = buildArguments(spec, prompt, config, mcpArgs, timeoutMs / 1000);
     const started = Date.now();
 
     // Inherit the user's environment (PATH, HOME, CLI credentials) but drop
     // WORKER_API_TOKEN so the child cannot act as the worker/poll loop itself.
-    // The same bearer is still wired into the child's MCP config on purpose
+    // The run's bearer is wired into the child's MCP config on purpose
     // (buildMcp above) — that is how the spawned CLI reaches Lobu tools, same
     // as the Mac `AutomationDispatcher`; what we withhold is the daemon role.
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.WORKER_API_TOKEN;
     for (const [key, value] of Object.entries(mcpEnv)) env[key] = value;
+    for (const [key, value] of Object.entries(access.env)) env[key] = value;
     // GUI/app-launched daemons can have a stripped PATH; re-add common installs.
     const extraPath = searchDirs().join(':');
     const currentPath = env.PATH ?? '/usr/bin:/bin';
@@ -481,7 +517,7 @@ export async function executeAutomationRun(
         spec,
         prompt,
         payload.automation.execution_config,
-        client.mcpWiring,
+        resolveAutomationRunAccess(payload, client.mcpWiring),
         timeoutMs,
         cfg.binaryOverrides?.[spec.kind]
       );

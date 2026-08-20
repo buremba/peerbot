@@ -116,9 +116,12 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
 }
 
 /**
- * Execute a run (sync, action, or automation).
+ * Execute a run (sync, action, automation, embed_backfill, or auth).
  *
- * Dispatches to sync, action, or automation execution based on run_type.
+ * Dispatches by `run_type` and NEVER throws: every lane reports its own
+ * terminal state via the lane-appropriate `client.complete*` endpoint, and an
+ * unexpected error here is likewise terminated before it can leave a claimed
+ * run stuck `running` (the daemon's fire-and-forget `.catch` only logs).
  */
 export async function executeRun(
   client: ExecutorClient,
@@ -130,23 +133,73 @@ export async function executeRun(
   // Fold the gateway's authoritative egress config in once so every downstream
   // mode handler gets the same non-downgradable policy and operator exemptions.
   const env = resolveEffectiveEnv(workerEnv, job);
-  switch (job.run_type) {
-    case 'action':
-      return executeActionRun(client, job, env, cfg);
-    case 'automation':
-      // Device workers (user-scoped auth) may be handed an automation run when
-      // the automation is pinned to their device. Spawn the local agent CLI and
-      // report the process exit via /complete-automation. Trusted fleet workers
-      // never reach this arm — the poll endpoint's automation claim branch is
-      // unreachable for them — but if a run does slip through (deploy skew), the
-      // dispatcher reports the failure rather than stomping the run.
-      return executeAutomationRun(client, job, cfg);
-    case 'embed_backfill':
-      return executeEmbedBackfillRun(client, job, env, cfg);
-    case 'auth':
-      return executeAuthRun(client, job, env, cfg);
-    default:
-      return executeSyncRun(client, job, env, cfg);
+  try {
+    switch (job.run_type) {
+      case 'action':
+        return await executeActionRun(client, job, env, cfg);
+      case 'automation':
+        // Device workers (user-scoped auth) may be handed an automation run when
+        // the automation is pinned to their device. Spawn the local agent CLI and
+        // report the process exit via /complete-automation. Trusted fleet workers
+        // never reach this arm — the poll endpoint's automation claim branch is
+        // unreachable for them — but if a run does slip through (deploy skew), the
+        // dispatcher reports the failure rather than stomping the run.
+        return await executeAutomationRun(client, job, cfg);
+      case 'embed_backfill':
+        return await executeEmbedBackfillRun(client, job, env, cfg);
+      case 'auth':
+        return await executeAuthRun(client, job, env, cfg);
+      default:
+        return await executeSyncRun(client, job, env, cfg);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.info(
+      `[executor] Unhandled ${job.run_type ?? 'unknown'} run ${job.run_id} failure:`,
+      message
+    );
+    if (job.run_id) {
+      try {
+        if (job.run_type === 'action') {
+          await client.completeAction({
+            run_id: job.run_id,
+            worker_id: client.id,
+            status: 'failed',
+            error_message: message,
+          });
+        } else if (job.run_type === 'auth') {
+          await client.completeAuth({
+            run_id: job.run_id,
+            worker_id: client.id,
+            status: 'failed',
+            error_message: message,
+          });
+        } else if (job.run_type === 'automation') {
+          // Automation runs terminate ONLY via /complete-automation — the sync
+          // /complete endpoint would finalize the run row but skip the
+          // automation-side bookkeeping (schedule advance, failure accounting),
+          // wedging the schedule the way a stuck run would.
+          await client.completeAutomation(job.run_id, {
+            worker_id: client.id,
+            output: '',
+            error: message,
+            duration_ms: 0,
+            exit_reason: 'crash',
+          });
+        } else {
+          await client.complete({
+            run_id: job.run_id,
+            worker_id: client.id,
+            status: 'failed',
+            error_message: message,
+            items_collected: 0,
+          });
+        }
+      } catch (completeErr) {
+        log.info('[executor] Terminal completion after unhandled failure errored:', completeErr);
+      }
+    }
+    return { itemsCollected: 0, error: message };
   }
 }
 

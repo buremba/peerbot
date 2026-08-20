@@ -339,6 +339,50 @@ describe("manage_automations — builder gate e2e", () => {
 		expect(eventRows[0]?.interaction_status).toBe("completed");
 	});
 
+	it("approve from a write-scoped human session (no mcp:admin) still applies the held mutation", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "write-scope-approved",
+				name: "Write Scope Approved",
+				prompt: "Track write-scope approvals.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			agentCtx
+		)) as PendingApproval;
+		expect(created.status).toBe("pending_approval");
+
+		// resolve_approval intentionally requires only mcp:write. After validating
+		// its app capability, it calls manage_operations with a human context that
+		// preserves those scopes. The owner's role authorizes the decision; applying
+		// it must not re-enter the fresh-call mcp:admin gate.
+		const writeScopedOwnerCtx = baseCtx(orgId, ownerId, "owner", [
+			"mcp:read",
+			"mcp:write",
+		]);
+		const approveRes = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: created.run_id },
+			TEST_ENV,
+			writeScopedOwnerCtx
+		)) as { approved?: true; error?: string };
+		expect(approveRes.error).toBeUndefined();
+		expect(approveRes.approved).toBe(true);
+
+		const sql = getTestDb();
+		const runRows = await sql`
+			SELECT approval_status, status, error_message FROM runs
+			WHERE id = ${created.run_id} AND organization_id = ${orgId}
+		`;
+		expect(runRows[0]?.approval_status).toBe("approved");
+		expect(runRows[0]?.error_message).toBeNull();
+		expect(runRows[0]?.status).toBe("completed");
+
+		expect(await automationExists(orgId, "write-scope-approved")).toBe(true);
+	});
+
 	it("reject cancels the held create: no automation, run cancelled, event superseded 'rejected'", async () => {
 		const created = (await executeTool(
 			"manage_automations",

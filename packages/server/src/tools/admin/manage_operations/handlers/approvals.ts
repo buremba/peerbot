@@ -188,6 +188,11 @@ interface BuilderApprovalHandler {
 	/**
 	 * Apply the held proposal on approval (the family's write handler).
 	 *
+	 * Dispatch directly rather than through the routed tool surface: the approval
+	 * path already verifies a human with authority, while resolve_approval itself
+	 * intentionally requires only mcp:write. Re-entering routeAction would add a
+	 * fresh-call mcp:admin gate after the run has been claimed.
+	 *
 	 * `input` is what the HUMAN supplied with their decision (`approve({ input })`),
 	 * distinct from the agent-authored `proposal`. It was previously accepted by
 	 * the tool contract and then dropped on the floor here, so a form-shaped

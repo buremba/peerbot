@@ -65,7 +65,11 @@ import {
 	type RelationshipColumnSpec,
 	updateEntity,
 } from "../../utils/entity-management";
-import { applyMergeGroup, applyUnmerge } from "../../utils/entity-merge";
+import {
+	applyMergeGroup,
+	applyUnmerge,
+	previewMerge,
+} from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
 import {
 	recordChangeEvent,
@@ -817,6 +821,31 @@ async function handleMerge(
 				identities: identities.get(loserId) ?? [],
 			})),
 		});
+	}
+
+	// Preflight: report the rule verdict without mutating and without queuing.
+	// Placed after the role gate (a principal who may not merge gets no preview)
+	// and before the review branch below — a dry run must never create an
+	// approval, exactly as on the delete path.
+	if (args?.dry_run) {
+		const preview = await previewMerge({
+			orgId: ctx.organizationId,
+			loserIds,
+			winnerId,
+		});
+		return {
+			action: "merge",
+			success: true,
+			message: preview.refused
+				? `Dry run: the merge would NOT be applied — ${preview.reason}`
+				: "Dry run: the merge would be applied",
+			winner_entity_id: winnerId,
+			loser_entity_id: loserIds[0],
+			loser_entity_ids: loserIds,
+			moved_identities: 0,
+			repointed_edges: 0,
+			dry_run: true,
+		};
 	}
 
 	if (actor.kind !== "user" && resolution?.decision === "review") {

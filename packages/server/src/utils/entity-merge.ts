@@ -36,7 +36,10 @@ import {
 	type ResolutionEvidence,
 } from "../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../entity-resolution/staleness";
-import { validateEntityRowMergeGrantingApprovedFields } from "../authz/entity-row-validation";
+import {
+	EntityRowValidationError,
+	validateEntityRowMergeGrantingApprovedFields,
+} from "../authz/entity-row-validation";
 import { transitionEntityMergeRows } from "./entity-management";
 import logger from "./logger";
 import {
@@ -91,6 +94,42 @@ export interface ApplyMergeGroupParams {
 	expectedResolutionFingerprint?: string;
 	/** See {@link ApplyMergeParams.approvedFields}. */
 	approvedFields?: readonly string[];
+}
+
+/**
+ * Preflight a merge against the type's write rules WITHOUT mutating anything.
+ *
+ * The mirror of `deleteEntity`'s dry run, and it exists for the same reason: a
+ * rule refusal should be visible before someone commits to the merge, not
+ * discovered as a failed 409 afterwards.
+ *
+ * Reads on the POOL deliberately. A preview enforces nothing, so there is no
+ * check for a concurrent write to overtake — the verdict is advisory by
+ * construction, and `applyMergeInTransaction` re-asks it under lock. This is
+ * the same exemption `deleteEntity`'s dry run takes.
+ *
+ * Waives nothing: `approvedFields` is empty, so an escalate reports as
+ * "approval required" exactly as it would refuse a real merge with no card
+ * behind it.
+ */
+export async function previewMerge(
+	params: { orgId: string; loserIds: number[]; winnerId: number },
+	db: DbClient = getDb(),
+): Promise<{ refused: boolean; reason: string | null }> {
+	const loserIds = [...new Set(params.loserIds)].sort((a, b) => a - b);
+	if (loserIds.length === 0) return { refused: false, reason: null };
+	try {
+		await validateEntityRowMergeGrantingApprovedFields({
+			tx: db,
+			loserIds,
+			mergedInto: params.winnerId,
+			approvedFields: [],
+		});
+	} catch (err) {
+		if (!(err instanceof EntityRowValidationError)) throw err;
+		return { refused: true, reason: err.verdict.reason };
+	}
+	return { refused: false, reason: null };
 }
 
 /**

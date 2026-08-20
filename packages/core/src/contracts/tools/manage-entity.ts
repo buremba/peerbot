@@ -233,7 +233,7 @@ export const ManageEntitySchema = Type.Object({
   dry_run: Type.Optional(
     Type.Boolean({
       description:
-        "[delete] Preflight only: report what the delete would remove/detach without mutating anything",
+        "[delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.",
     })
   ),
 
@@ -543,6 +543,9 @@ export const ManageEntityResultSchema = Type.Union([
       loser_entity_ids: Type.Optional(Type.Array(Type.Integer())),
       moved_identities: Type.Integer(),
       repointed_edges: Type.Integer(),
+      // Preflight only. A dry run reports the rule verdict and writes nothing,
+      // so moved_identities/repointed_edges are 0 and mean "not attempted".
+      dry_run: Type.Optional(Type.Boolean()),
       resolution: Type.Optional(
         Type.Object({
           decision: Type.Union([

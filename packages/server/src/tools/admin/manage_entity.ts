@@ -98,6 +98,7 @@ import { buildEntityUrl } from "../../utils/url-builder";
 import { trackAutomationReaction } from "../../utils/automation-reactions";
 import { isAdminOrOwnerRole } from "../access-control";
 import { MEMBER_ENTITY_TYPE_SLUG } from "../constants";
+import { resolveAutomationAttribution } from "../../automations/automation-source";
 import type { ToolContext } from "../registry";
 import { withValidatedArgs } from "../validate-args";
 import {
@@ -238,7 +239,22 @@ async function manageEntityImpl(
   const result = await runManageEntity(args, env, ctx);
 
   // Track automation reaction for mutating actions
-	if (args.automation_source && "action" in result) {
+	// Reaction tracking took the declared source verbatim — no session
+	// precedence, no ownership check — so an unowned id credited another
+	// Automation's feedback record. Still gated on the caller HAVING declared a
+	// source: resolving one for every reaction session would start tracking
+	// mutations that were never tracked before, which is a product change, not
+	// this fix.
+	const reactionAttribution = args.automation_source
+		? await resolveAutomationAttribution(ctx, args.automation_source)
+		: null;
+	// A reaction record is keyed by BOTH ids, so a source that resolves without a
+	// window has nothing to record against.
+	if (
+		reactionAttribution?.automationId != null &&
+		reactionAttribution.windowId != null &&
+		"action" in result
+	) {
     const reactionType =
 			result.action === "create"
 				? "entity_created"
@@ -254,8 +270,8 @@ async function manageEntityImpl(
           : args.entity_id;
       await trackAutomationReaction({
         organizationId: ctx.organizationId,
-        automationId: args.automation_source.automation_id,
-        windowId: args.automation_source.window_id,
+        automationId: reactionAttribution.automationId,
+        windowId: reactionAttribution.windowId,
         reactionType,
 				toolName: "manage_entity",
         toolArgs: {
@@ -340,6 +356,13 @@ async function handleCreate(
 		metadata: entityData.metadata ?? {},
 	};
 	const actor = await actingPrincipalFor(args, ctx);
+	// Resolved once for the create path: the gate, the deferral, and the audit
+	// row it produces must all name the SAME Automation, or an approval card and
+	// its provenance disagree about who proposed the row.
+	const createAttribution = await resolveAutomationAttribution(
+		ctx,
+		args.automation_source
+	);
 	const attribution = attributionFor(actor);
 	const createDecision = await runMutationGate({
 		action: "create",
@@ -347,12 +370,8 @@ async function handleCreate(
 		principalKind: actor.kind,
 		sql: getDb(),
 		attribution,
-		// The TRUSTED reaction-session automation/window WINS (same precedence as
-		// resolveActingPrincipal): a reaction can't retag its deferral into another
-		// automation's approval batch by passing a foreign automation_source. The
-		// caller-supplied source is only honored OUTSIDE a reaction session.
-		automationId: ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
-		windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
+		automationId: createAttribution.automationId,
+		windowId: createAttribution.windowId,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
@@ -411,9 +430,8 @@ async function handleCreate(
 			// Exactly what the approver consents to; a later, different escalation
 			// still needs its own card.
 			escalatedFields: err.verdict.fields,
-			automationId:
-				ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
-			windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
+			automationId: createAttribution.automationId,
+			windowId: createAttribution.windowId,
 		}).queue(ctx, env);
 		return {
 			action: "create",
@@ -566,12 +584,18 @@ async function handleUpdate(
 		updateData.affirm_fields = args.affirm_fields;
 
 	const updateActor = await actingPrincipalFor(args, ctx);
+	// Update records only the window (the batch key); the Automation itself comes
+	// from the acting principal. It still resolves through the shared rule so a
+	// declared window cannot outlive the Automation that failed verification.
+	const updateAttribution = await resolveAutomationAttribution(
+		ctx,
+		args.automation_source
+	);
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
 		attribution: attributionFor(updateActor),
 		principalId: updateActor.id,
-		// Trusted reaction-session window WINS — see the create path.
-		windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
+		windowId: updateAttribution.windowId,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
 	});
@@ -733,6 +757,12 @@ async function handleMerge(
 	if (actor.kind === "user" && !isAdminOrOwnerRole(ctx.memberRole)) {
 		throw new ToolUserError("Only an admin or owner may merge entities", 403);
 	}
+	// Both merge outcomes — the queued proposal and the auto-merge decision —
+	// record the same Automation, so resolve it once for the handler.
+	const mergeAttribution = await resolveAutomationAttribution(
+		ctx,
+		args.automation_source
+	);
 	const loserIds = [
 		...new Set(
 			args.duplicate_entity_ids ?? (args.entity_id ? [args.entity_id] : []),
@@ -870,10 +900,8 @@ async function handleMerge(
 				entity_ids: loserIds,
 				winner_entity_id: winnerId,
 				evidence: resolution.evidence,
-				automation_id:
-					ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
-				window_id:
-					ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
+				automation_id: mergeAttribution.automationId,
+				window_id: mergeAttribution.windowId,
 				source_run_id: ctx.actingRunId ?? null,
 				policy_hash: resolution.policyHash,
 				resolution_fingerprint: resolution.fingerprint,
@@ -927,14 +955,8 @@ async function handleMerge(
 					: {
 							decision: "auto_merge",
 							sourceRunId: ctx.actingRunId ?? null,
-							automationId:
-								ctx.actingAutomationId ??
-								args.automation_source?.automation_id ??
-								null,
-							windowId:
-								ctx.actingWindowId ??
-								args.automation_source?.window_id ??
-								null,
+							automationId: mergeAttribution.automationId,
+							windowId: mergeAttribution.windowId,
 							policyHash: resolution?.policyHash ?? null,
 							evidence: resolution?.evidence ?? [],
 						},
@@ -1450,6 +1472,10 @@ async function handleDelete(
 	}
 
 	const deleteActor = await actingPrincipalFor(args, ctx);
+	const deleteAttribution = await resolveAutomationAttribution(
+		ctx,
+		args?.automation_source
+	);
 	const attribution = attributionFor(deleteActor);
 	const current = {
 		id: entity.id,
@@ -1465,9 +1491,8 @@ async function handleDelete(
 		principalKind: deleteActor.kind,
 		sql: getDb(),
 		attribution,
-		// Trusted reaction-session automation/window WINS — see the create path.
-		automationId: ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
-		windowId: ctx.actingWindowId ?? args?.automation_source?.window_id ?? null,
+		automationId: deleteAttribution.automationId,
+		windowId: deleteAttribution.windowId,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,

@@ -5,8 +5,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { verifiedAutomationSource } from '../automations/automation-source';
 import { runWithActingAutomation } from '../utils/acting-automation-context';
-import { getDb } from '../db/client';
 import type { Context } from 'hono';
 import { isToolError, retryWithBackoff, ToolError } from '@lobu/core';
 import {
@@ -406,30 +406,6 @@ export async function executeTool(
  * anyway — its `retryable` flag is advisory for the agent.
  */
 const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
-
-/**
- * Drop a declared source that does not name an Automation in this organization.
- *
- * Returns null rather than throwing: attribution is a provenance hint, and a
- * bad hint should cost the caller its attribution, not fail their tool call.
- * The window is not paired to the Automation here — `loadRunEventCausality`
- * scopes its run lookup to the producing Automation, so a foreign window
- * inherits nothing.
- */
-export async function verifiedAutomationSource(
-  declared: { automationId: number; windowId: number | null } | null,
-  organizationId: string
-): Promise<{ automationId: number; windowId: number | null } | null> {
-  if (!declared) return null;
-  const rows = await getDb()<{ id: number }>`
-    SELECT id
-    FROM automations
-    WHERE id = ${declared.automationId}
-      AND organization_id = ${organizationId}
-    LIMIT 1
-  `;
-  return rows[0] ? declared : null;
-}
 
 /**
  * The `automation_source` an agent declared on this call.

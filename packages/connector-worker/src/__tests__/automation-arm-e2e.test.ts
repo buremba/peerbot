@@ -448,7 +448,7 @@ describe('automation arm e2e', () => {
     expect(completions[0].body.exit_reason).toBe('error_message');
   });
 
-  test('a terminal heartbeat conflict stops the CLI without posting a stale completion', async () => {
+  test('a terminal heartbeat conflict stops the CLI and reports its device exit', async () => {
     completions = [];
     script = [{ status: 'completed' }];
     heartbeatStatus = 409;
@@ -467,8 +467,11 @@ describe('automation arm e2e', () => {
     const elapsedMs = Date.now() - startedAt;
 
     expect(result).toEqual({ itemsCollected: 0 });
-    // The run the server already finalized must not be reported on again.
-    expect(completions).toHaveLength(0);
+    // The server's terminal-safe completion path retains device provenance and
+    // duration without replacing the outcome that made heartbeat return 409.
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('ok');
+    expect(completions[0].body.exit_signal).toBe('SIGTERM');
     expect(readFileSync(heartbeatConflictTerminated, 'utf8')).toBe('SIGTERM');
     const childPid = Number(readFileSync(heartbeatConflictPid, 'utf8'));
     expect(() => process.kill(childPid, 0)).toThrow();

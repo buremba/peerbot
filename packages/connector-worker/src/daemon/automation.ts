@@ -497,7 +497,8 @@ function taskkillWindowsTree(proc: ChildProcess, force: boolean): Promise<boolea
 /**
  * Keep the supervisor alive until Windows has had its forced tree-kill chance.
  * Killing only the supervisor after a failed graceful `taskkill /T` would
- * orphan the real CLI and make its numeric tree root unusable.
+ * orphan the real CLI and make its numeric tree root unusable. Exported, with
+ * its collaborators injectable, only so that ordering is testable off Windows.
  */
 export async function terminateWindowsProcessTree(
   proc: ChildProcess,
@@ -780,15 +781,11 @@ async function runCli(
         terminalHeartbeatGraceMs
       );
       target = gracefulExit.target;
-      if (!target) {
-        cancelled = true;
-        // The exit report is discarded below, so the signal it took is moot.
-        await terminateChild(proc);
-        supervisorSettled = true;
-      } else {
-        cleanupSignal = await terminateChild(proc);
-        supervisorSettled = true;
-      }
+      // Either way the tree must go: a CLI that exited still leaves the
+      // supervisor and any descendants it spawned holding the group.
+      cancelled = !target;
+      cleanupSignal = await terminateChild(proc);
+      supervisorSettled = true;
     } else if (timedOut) {
       killedSignal = await terminateChild(proc);
       supervisorSettled = true;
@@ -813,13 +810,11 @@ async function runCli(
       awaitDrain(stderrPromise, proc.stderr!, drainDeadlineMs),
     ]);
 
-    if (cancelled) throw new AutomationRunNoLongerActiveError();
-
     const label = spec.binaryName;
     const exitCode = target?.exitCode ?? null;
     const targetSignal = target?.signalCode ?? null;
     const exitSignal =
-      killedSignal ?? (targetSignal != null ? `signal:${targetSignal}` : null);
+      killedSignal ?? cleanupSignal ?? (targetSignal != null ? `signal:${targetSignal}` : null);
 
     let exitReason: WorkerExitReason;
     let errorMessage: string | null;
@@ -838,7 +833,13 @@ async function runCli(
       target?.error ||
       ''
     ).slice(-DETAIL_TAIL_CHARS);
-    if (timedOut) {
+    if (cancelled) {
+      // The server owns the terminal outcome, but complete-automation remains
+      // terminal-safe so it can retain device provenance and duration. Report
+      // this intentional local stop as clean instead of inventing a failure.
+      exitReason = 'ok';
+      errorMessage = null;
+    } else if (timedOut) {
       exitReason = 'timeout';
       const deadline = `${label} exited via ${killedSignal ?? 'SIGTERM'} after ${Math.trunc(timeoutMs / 1000)}s timeout`;
       // The deadline alone says nothing about WHY the CLI stalled, and a
@@ -979,6 +980,9 @@ export async function executeAutomationRun(
             `[executor] Automation run ${runId} is no longer active; waiting for the local CLI to exit`
           );
           runAbort.abort();
+          // The outcome is already settled server-side; stop beating at a run
+          // that will 409 for the rest of the terminal grace.
+          clearInterval(heartbeat);
         }
         return;
       }
@@ -1082,8 +1086,8 @@ export async function dispatchAutomationResumeLoop(
       result = await io.run(finalizeNudge);
     } catch (err) {
       if (err instanceof AutomationRunNoLongerActiveError) {
-        // The server already owns this run's outcome; the CLI has been stopped.
-        // Reporting an exit now would stomp whatever it settled on.
+        // The terminal heartbeat landed before this round spawned, so there is
+        // no local process exit or device metadata to report.
         return { itemsCollected: 0 };
       }
       // Unambiguous: nothing has been reported yet. Missing binary is a

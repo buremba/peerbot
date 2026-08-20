@@ -1,0 +1,500 @@
+/**
+ * Live virtual-feed reads for DEVICE-backed connectors.
+ *
+ * `readVirtualFeed` (connector-pushdown.ts) reads a virtual feed by resolving
+ * the connector's COMPILED code and running its `query()` / `search()` in the
+ * connector subprocess. A device-manifest connector (`whatsapp.local`,
+ * `apple.*`, `os.shell`, …) has no compiled code at all — it is metadata-only
+ * on the server and implemented natively on the paired device — so that path
+ * cannot serve it.
+ *
+ * This module is the missing seam. It reuses the EXISTING device transport
+ * end to end rather than inventing a second one:
+ *
+ *   1. `createConnectorOperationRun({ approvalMode: 'device' })` enqueues an
+ *      ephemeral `run_type='action'` row (the same helper
+ *      `manage_operations.execute` and `dispatch-chrome-action` use).
+ *   2. The paired device claims it on its next `/api/workers/poll` — the pin
+ *      and capability rules in poll.ts already cover `run_type='action'` on a
+ *      device-pinned connection, so no claim-path change was needed.
+ *   3. The device POSTs `/api/workers/complete-action` with the rows.
+ *   4. `waitForDeviceActionRun` observes the terminal row and returns.
+ *
+ * The contract is connector-agnostic: any device connector that declares a
+ * feed with `virtual: true` in its manifest `feeds_schema` opts in, and
+ * implements the reserved {@link DEVICE_VIRTUAL_FEED_ACTION_KEY} action
+ * natively. The action key is reserved protocol, deliberately NOT declared in
+ * `actions_schema` — declaring it would flip `supportsExecute` and publish a
+ * read seam as a user-invokable operation.
+ *
+ * Retains NOTHING: no events, no checkpoint, no feed state, no embeddings. The
+ * rows DO transit Postgres — the `runs` row is how a result crosses from the
+ * device to whichever replica is waiting, and that is also what makes this
+ * multi-replica safe — but the caller's filters and the device's rows are
+ * scrubbed off that row the moment the read returns, on every path. "Virtual"
+ * means uncopied, not un-transmitted.
+ */
+
+import { getDb, pgTextArray } from '../db/client';
+import { createConnectorOperationRun } from '../runs/queue-service';
+import { classifyRunOutcome } from '../runs/run-outcome';
+import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
+import { DEVICE_ONLINE_WINDOW_SECONDS, describeDeviceLastSeen } from '../utils/device-liveness';
+import logger from '../utils/logger';
+import { DEVICE_VIRTUAL_FEED_ACTION_KEY } from './device-virtual-feed-protocol';
+
+/**
+ * The waiter this module calls. Production always uses the imported one; the
+ * slot exists so a test can make the wait FAIL.
+ *
+ * Why a slot and not `vi.mock`: `packages/server/vitest.config.ts` sets
+ * `isolate: false` so one Postgres-backed module graph is shared by every test
+ * file. Under that setting whether a module mock takes effect depends on which
+ * file imported `connector-pushdown` first, which made the two waiter-failure
+ * cases pass alone and time out in a full run. A slot is load-order
+ * independent.
+ *
+ * @internal
+ */
+type DeviceActionWaiter = typeof waitForDeviceActionRun;
+let deviceActionWaiter: DeviceActionWaiter = waitForDeviceActionRun;
+
+/**
+ * TEST ONLY — not part of any public, SDK, or cross-package surface. Swaps the
+ * waiter used by {@link readDeviceVirtualFeed}; pass `null` to restore the
+ * production one. The only caller is
+ * `__tests__/integration/connectors/device-virtual-feed-read`, which resets it
+ * in `beforeEach`.
+ *
+ * @internal
+ */
+export function __setDeviceActionWaiterForTest(waiter: DeviceActionWaiter | null): void {
+  deviceActionWaiter = waiter ?? waitForDeviceActionRun;
+}
+
+/** Row cap a live device read will ever ask for, whatever the caller passed. */
+export const DEVICE_VIRTUAL_FEED_MAX_LIMIT = 500;
+/** Row count asked for when the caller names none. */
+export const DEVICE_VIRTUAL_FEED_DEFAULT_LIMIT = 50;
+/**
+ * Deepest page a live read will ask a device for. Paging is not the point of a
+ * live feed — an unbounded offset is a full archive scan per request, paid on
+ * the user's laptop — so it is fenced rather than left to the caller.
+ */
+export const DEVICE_VIRTUAL_FEED_MAX_OFFSET = 10_000;
+
+export interface DeviceVirtualFeedParams {
+  organizationId: string;
+  /** feeds.id — already resolved + visibility-fenced by the caller. */
+  feedId: number;
+  feedKey: string;
+  /** Feed config, merged with the connection config by the caller. */
+  feedConfig: Record<string, unknown>;
+  connectionId: number;
+  connectorKey: string;
+  /** `connections.device_worker_id` — the execution pin, or null when unpinned. */
+  deviceWorkerId: string | null;
+  /** `connector_definitions.required_capability` for the capability pre-check. */
+  requiredCapability: string | null;
+  terms?: string[];
+  limit?: number;
+  offset?: number;
+  sort?: { column: string; order: 'asc' | 'desc' };
+  /**
+   * Caller's deadline. Ambient recall (`search_memory`) gives a live feed a few
+   * seconds, not the 60s pre-claim + 95s post-claim device budget — a question
+   * asked in chat cannot wait on a sleeping laptop. Aborting is not the same as
+   * abandoning: the waiter stops polling, finalizes the run as `timeout`, and
+   * the cleanup in {@link readDeviceVirtualFeed} still scrubs it, so no work is
+   * left orphaned behind a `Promise.race` the caller walked away from.
+   */
+  signal?: AbortSignal;
+}
+
+export interface DeviceVirtualFeedResult {
+  rows: Record<string, unknown>[];
+  columns: { name: string; type: string }[];
+  total?: number;
+}
+
+/** The `action_input` a device receives for a live virtual-feed read. */
+export interface DeviceVirtualFeedRequest {
+  feed_key: string;
+  /** Feed + connection config. Structured filters only — never SQL. */
+  config: Record<string, unknown>;
+  /**
+   * Recall terms. Non-empty means "keyword recall"; empty/absent means a plain
+   * ordered read. Mirrors the `search()` vs `query()` split on the compiled path.
+   */
+  terms: string[];
+  limit: number;
+  offset: number;
+  /**
+   * Requested ordering, or null for the connector's declared default. A device
+   * that cannot honour the named column MUST fail the run rather than silently
+   * return a different order.
+   */
+  sort: { column: string; order: 'asc' | 'desc' } | null;
+}
+
+/**
+ * True when the org's selected active definition is a METADATA-ONLY native
+ * device connector — the only shape this seam can serve.
+ *
+ * `runtime != null` alone is not that signal. `connector_definitions.runtime`
+ * is descriptive metadata (platforms, nix inputs); a perfectly ordinary
+ * compiled connector may carry it and must keep using the compiled pushdown,
+ * whose `query()`/`search()` is a strictly better read path than a device
+ * round-trip. What makes a connector unservable by that path is the absence of
+ * a bundle: `resolveConnectorCodeForKey` throws, and there is nothing to run.
+ *
+ * So the discriminator is the conjunction: runtime metadata AND no compiled
+ * code for the selected version. Pinning is NOT part of it — a pin says which
+ * machine executes, not whether server-side code exists.
+ */
+export function isMetadataOnlyDeviceConnector(
+  runtime: unknown,
+  hasCompiledCode: boolean
+): boolean {
+  return runtime != null && !hasCompiledCode;
+}
+
+/** Clamp a caller-supplied row window into the device read budget. */
+export function clampDeviceVirtualFeedWindow(limit?: number, offset?: number): {
+  limit: number;
+  offset: number;
+} {
+  const rawLimit = Number.isFinite(limit) ? Number(limit) : DEVICE_VIRTUAL_FEED_DEFAULT_LIMIT;
+  const rawOffset = Number.isFinite(offset) ? Number(offset) : 0;
+  return {
+    limit: Math.max(1, Math.min(DEVICE_VIRTUAL_FEED_MAX_LIMIT, Math.floor(rawLimit))),
+    offset: Math.max(0, Math.min(DEVICE_VIRTUAL_FEED_MAX_OFFSET, Math.floor(rawOffset))),
+  };
+}
+
+/**
+ * Normalize whatever the device POSTed into the virtual-feed read shape.
+ *
+ * A device is an untrusted-shape producer here: `runs.action_output` is
+ * arbitrary JSON. Anything that isn't `{ rows: object[] }` is a protocol
+ * violation and throws, so a malformed device reply surfaces as an error
+ * instead of an empty result the caller reads as "no messages".
+ */
+export function normalizeDeviceVirtualFeedOutput(output: unknown): DeviceVirtualFeedResult {
+  if (output == null || typeof output !== 'object' || Array.isArray(output)) {
+    throw new Error('device returned a malformed virtual-feed result (expected an object)');
+  }
+  const record = output as Record<string, unknown>;
+  if (!Array.isArray(record.rows)) {
+    throw new Error('device returned a malformed virtual-feed result (missing `rows` array)');
+  }
+  const rows = record.rows.map((row, index) => {
+    if (row == null || typeof row !== 'object' || Array.isArray(row)) {
+      throw new Error(`device returned a malformed virtual-feed row at index ${index}`);
+    }
+    return row as Record<string, unknown>;
+  });
+  const columns = Array.isArray(record.columns)
+    ? record.columns.flatMap((column) => {
+        if (column == null || typeof column !== 'object' || Array.isArray(column)) return [];
+        const { name, type } = column as { name?: unknown; type?: unknown };
+        if (typeof name !== 'string' || name.length === 0) return [];
+        return [{ name, type: typeof type === 'string' && type ? type : 'text' }];
+      })
+    : [];
+  const total = typeof record.total === 'number' && Number.isFinite(record.total)
+    ? record.total
+    : undefined;
+  return { rows, columns, total };
+}
+
+/**
+ * Pre-flight the device BEFORE enqueueing. Without this a read against a
+ * sleeping Mac parks a run for the full queue budget and then reports a
+ * timeout — 60s to say something the server already knew. Returns null when a
+ * device can plausibly serve the read.
+ */
+async function describeUnservableDevice(
+  p: DeviceVirtualFeedParams
+): Promise<string | null> {
+  const sql = getDb();
+  if (p.deviceWorkerId) {
+    // Reached THROUGH the connection, not by device id alone. The id comes off
+    // a row this caller may not own end-to-end, and the diagnostic below quotes
+    // the device's label and last-poll time — a corrupt or cross-org
+    // `device_worker_id` would otherwise report another tenant's machine back
+    // to this org in an error string. Joining through the connection means we
+    // can only ever describe the device this org's own connection pins.
+    //
+    // Deliberately NOT `dw.organization_id = p.organizationId`: that column is
+    // the device's HOME org, and poll.ts supports a device pinned into a second
+    // org. Fencing on it would break a legitimate cross-org pin.
+    const rows = (await sql`
+      SELECT dw.label, dw.last_seen_at, dw.capabilities,
+             dw.last_seen_at > now() - ${`${DEVICE_ONLINE_WINDOW_SECONDS} seconds`}::interval AS online
+      FROM connections c
+      JOIN device_workers dw ON dw.id = c.device_worker_id
+      WHERE c.id = ${p.connectionId}
+        AND c.organization_id = ${p.organizationId}
+        AND dw.id = ${p.deviceWorkerId}::uuid
+      LIMIT 1
+    `) as Array<{
+      label: string | null;
+      last_seen_at: Date | string | null;
+      capabilities: unknown;
+      online: boolean;
+    }>;
+    const device = rows[0];
+    const name = device?.label ? `device "${device.label}"` : 'the paired device';
+    if (!device) return 'the connection is pinned to a device this workspace cannot reach';
+    if (!device.online) return `${name} is offline (${describeDeviceLastSeen(device.last_seen_at)})`;
+    const capabilities = Array.isArray(device.capabilities) ? (device.capabilities as string[]) : [];
+    if (p.requiredCapability && !capabilities.includes(p.requiredCapability)) {
+      return `${name} no longer grants '${p.requiredCapability}'`;
+    }
+    return null;
+  }
+
+  // Unpinned. The question is which org a device may serve WITHOUT a pin, and
+  // it is narrower than "an org the owner belongs to".
+  //
+  // poll.ts branch 1B gates the unpinned claim on `baseOrgScopeIds` — the
+  // worker TOKEN's bound org plus the owner's personal org. Only one of those
+  // two is derivable here: no token has been presented at preflight time, so
+  // the bound org is unknowable. Joining `member` instead would NOT mirror
+  // `baseOrgScopeIds`; it is strictly wider. A device owner can belong to many
+  // team orgs while their token is bound to none of them, and this preflight
+  // would then report "servable" for a run branch 1B will never claim — trading
+  // an instant, actionable error for a 60-second queue timeout.
+  //
+  // So the durable lane is the personal org: a device is automatically servable
+  // in the org its owner's account IS. Read from
+  // `organization.metadata->>'personal_org_for_user_id'` rather than
+  // `device_workers.organization_id`, which is set once at pairing and goes
+  // stale the moment the device is re-anchored.
+  //
+  // A shared org with no pin is refused with the fix, not a diagnosis: pinning
+  // the connection is what makes it servable, and the pinned branch above
+  // already supports that across home orgs.
+  const [target] = (await sql`
+    SELECT CASE
+             WHEN o.metadata IS NULL THEN NULL
+             ELSE (o.metadata::jsonb)->>'personal_org_for_user_id'
+           END AS personal_owner_user_id
+    FROM connections c
+    JOIN "organization" o ON o.id = c.organization_id
+    WHERE c.id = ${p.connectionId}
+      AND c.organization_id = ${p.organizationId}
+    LIMIT 1
+  `) as Array<{ personal_owner_user_id: string | null }>;
+  if (!target) return 'the connection is not visible to this workspace';
+  if (!target.personal_owner_user_id) {
+    return (
+      'this connection is not pinned to a device — pin it to the device that should serve it, ' +
+      'because only a personal workspace serves an unpinned device connection automatically'
+    );
+  }
+
+  const rows = (await sql`
+    SELECT 1
+    FROM device_workers dw
+    WHERE dw.user_id = ${target.personal_owner_user_id}
+      AND dw.last_seen_at > now() - ${`${DEVICE_ONLINE_WINDOW_SECONDS} seconds`}::interval
+      AND (
+        ${p.requiredCapability}::text IS NULL
+        OR dw.capabilities @> ${sql.json([p.requiredCapability ?? ''])}
+      )
+    LIMIT 1
+  `) as Array<unknown>;
+  if (rows.length === 0) {
+    return p.requiredCapability
+      ? `no online device is serving '${p.requiredCapability}'`
+      : 'no online device can serve this connection';
+  }
+  return null;
+}
+
+/**
+ * Read a device-backed virtual feed live. Throws with an actionable message on
+ * offline / timeout / device-reported error; never returns a partial result.
+ */
+export async function readDeviceVirtualFeed(
+  p: DeviceVirtualFeedParams
+): Promise<DeviceVirtualFeedResult> {
+  const unservable = await describeUnservableDevice(p);
+  if (unservable) {
+    throw new Error(
+      `Live read of feed '${p.feedKey}' is unavailable: ${unservable}. ` +
+        'Open the Lobu/Owletto app on the paired Mac and try again.'
+    );
+  }
+
+  // The preflight is two DB round-trips against a laptop-liveness window. An
+  // ambient read on a 5s budget can genuinely spend its deadline in there, and
+  // enqueueing after that creates a transport run whose only future is to be
+  // cancelled — a row holding the caller's terms, briefly claimable, for a read
+  // nobody is waiting on. Check here, where the cheapest correct answer is to
+  // not start.
+  if (p.signal?.aborted) {
+    throw new Error(
+      `Live read of feed '${p.feedKey}' was cut short by the caller's read deadline ` +
+        'before the request reached the paired device.'
+    );
+  }
+
+  const { limit, offset } = clampDeviceVirtualFeedWindow(p.limit, p.offset);
+  const request: DeviceVirtualFeedRequest = {
+    feed_key: p.feedKey,
+    config: p.feedConfig,
+    terms: (p.terms ?? []).map((term) => term.trim()).filter(Boolean),
+    limit,
+    offset,
+    sort: p.sort ?? null,
+  };
+
+  const run = await createConnectorOperationRun({
+    organizationId: p.organizationId,
+    connectionId: p.connectionId,
+    connectorKey: p.connectorKey,
+    operationKey: DEVICE_VIRTUAL_FEED_ACTION_KEY,
+    operationInput: request as unknown as Record<string, unknown>,
+    approvalMode: 'device',
+    // Metadata-only device connectors have no compiled bundle by construction.
+    requireCompiledCode: false,
+  });
+
+  // The run row is the TRANSPORT, not a record. `complete-action` persists the
+  // device's rows into `runs.action_output`, and `action_input` holds the
+  // caller's recall terms and filters — both would then sit in Postgres for the
+  // run-retention window, which is exactly the durable copy a virtual feed
+  // promises not to make.
+  //
+  // The WAIT is inside the try on purpose. Scrubbing only after it returns
+  // leaves the payload behind on the path where it never returns at all — a
+  // dropped connection or a query error inside the poll loop throws, and the
+  // run row keeps a full page of the user's WhatsApp messages. Every path from
+  // the INSERT onward has to reach the cleanup.
+  //
+  // The cleanup also TERMINALIZES a run that is still in flight. Blanking the
+  // payload alone is not enough on the throw path: the run can still be
+  // pending, a device can claim it after the blanking, and `complete-action`
+  // would write a fresh page of messages back into the row we just cleared.
+  // Marking it `timeout` in the same statement closes that window —
+  // `finalizeRun` only transitions a `running` run claimed by the poster, so a
+  // late completion becomes a no-op.
+  try {
+    return deliver(p, await deviceActionWaiter(run.runId, p.organizationId, p.signal));
+  } finally {
+    await scrubVirtualFeedRunPayload(run.runId, p.organizationId, p.feedKey);
+  }
+}
+
+/** Statuses from which a live-read run can still be claimed or completed. */
+const NON_TERMINAL_RUN_STATUSES = ['pending', 'claimed', 'running'] as const;
+
+/**
+ * Blank the caller's filters and the device's rows off a virtual-feed run, and
+ * close it if it is still in flight. The run row itself survives as the audit
+ * trail that a live read happened, with no trace of what was read.
+ *
+ * One statement, so scrubbing and terminalizing cannot interleave with a device
+ * claiming the run. An ALREADY-terminal run keeps its status, outcome, and
+ * timing untouched — the read's verdict is the caller's to report, not this
+ * cleanup's to overwrite.
+ *
+ * Fenced to the reserved action key (plus org + run id) so it can never touch a
+ * real operation's output. Never throws — failing to scrub must be logged, not
+ * turned into a failed read the caller retries, which would only create another
+ * unscrubbed run.
+ */
+async function scrubVirtualFeedRunPayload(
+  runId: number,
+  organizationId: string,
+  feedKey: string
+): Promise<void> {
+  const sql = getDb();
+  const inFlight = pgTextArray([...NON_TERMINAL_RUN_STATUSES]);
+  try {
+    await sql`
+      UPDATE runs
+      SET action_output = NULL,
+          action_input = ${sql.json({ scrubbed: true, feed_key: feedKey })},
+          status = CASE WHEN status = ANY(${inFlight}::text[]) THEN 'timeout' ELSE status END,
+          outcome = CASE
+            WHEN status = ANY(${inFlight}::text[])
+              THEN ${classifyRunOutcome({ status: 'timeout' })}
+            ELSE outcome
+          END,
+          completed_at = CASE
+            WHEN status = ANY(${inFlight}::text[]) THEN current_timestamp
+            ELSE completed_at
+          END,
+          error_message = CASE
+            WHEN status = ANY(${inFlight}::text[])
+              THEN ${`Virtual feed '${feedKey}' live read was abandoned before the device answered.`}
+            ELSE error_message
+          END
+      WHERE id = ${runId}
+        AND organization_id = ${organizationId}
+        AND run_type = 'action'
+        AND action_key = ${DEVICE_VIRTUAL_FEED_ACTION_KEY}
+    `;
+  } catch (err) {
+    logger.error(
+      { runId, organizationId, feedKey, err: err instanceof Error ? err.message : String(err) },
+      '[device-virtual-feed] failed to scrub live-read payload off the run row'
+    );
+  }
+}
+
+/**
+ * Turn a finished device action into the caller's result, or an error. Exported
+ * for test: short of an aborted wait, the timeout branch is otherwise only
+ * reachable after a full queue budget has elapsed.
+ */
+export function deliver(
+  p: DeviceVirtualFeedParams,
+  outcome: Awaited<ReturnType<typeof waitForDeviceActionRun>>
+): DeviceVirtualFeedResult {
+  if (outcome.status === 'timeout') {
+    // An ABORTED wait is not a device timeout, and must not be reported as one:
+    // the device may be perfectly healthy and simply slower than the deadline
+    // this particular caller could afford. Reporting a queue budget here would
+    // send the reader off diagnosing a device that was never given one.
+    if (p.signal?.aborted) {
+      throw new Error(
+        `Live read of feed '${p.feedKey}' was cut short by the caller's read deadline ` +
+          'before the paired device answered.'
+      );
+    }
+    // No duration is quoted here: `waitForDeviceActionRun` already names the
+    // phase-specific budget in `error_message` (60s pre-claim, 95s post-claim),
+    // and this caller cannot tell which phase it lost. Quoting the 60s queue
+    // budget would mislabel a run a device CLAIMED and then hung on as a 60s
+    // timeout when it actually waited 95s.
+    throw new Error(
+      `Live read of feed '${p.feedKey}' timed out: ${
+        outcome.error_message ?? 'the paired device did not respond'
+      }`
+    );
+  }
+  if (outcome.status === 'failed') {
+    throw new Error(
+      `Live read of feed '${p.feedKey}' failed on the paired device: ${
+        outcome.error_message ?? 'unknown device error'
+      }`
+    );
+  }
+
+  const result = normalizeDeviceVirtualFeedOutput(outcome.output);
+  logger.debug(
+    {
+      feedId: p.feedId,
+      feedKey: p.feedKey,
+      connectorKey: p.connectorKey,
+      rows: result.rows.length,
+    },
+    '[device-virtual-feed] live read served by paired device'
+  );
+  return result;
+}

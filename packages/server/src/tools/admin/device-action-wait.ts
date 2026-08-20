@@ -41,6 +41,35 @@ export async function describeRunDeviceLastSeen(
   }
 }
 
+/**
+ * Sleep between polls, but wake IMMEDIATELY on abort.
+ *
+ * A plain `setTimeout` would hold an aborted wait for the rest of the poll
+ * interval before the loop noticed, and the caller's run stays in flight —
+ * claimable, and still holding its payload — for that whole window. Callers
+ * with a short deadline (ambient recall) measure their budget in a handful of
+ * poll intervals, so "up to 500ms late" is a meaningful share of it.
+ *
+ * The listener is always removed: this runs once per poll for the life of the
+ * wait, and a signal that outlives the loop would otherwise accumulate them.
+ */
+async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return;
+  }
+  if (abortSignal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      abortSignal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    abortSignal.addEventListener('abort', done, { once: true });
+  });
+}
+
 // Deadline strategy: two phases.
 //
 //   - PRE-CLAIM (status='pending'): how long the device has to even
@@ -126,7 +155,7 @@ export async function waitForDeviceActionRun(
     } else {
       if (now >= queueDeadline) break;
     }
-    await new Promise((r) => setTimeout(r, POLL_MS));
+    await sleepUnlessAborted(POLL_MS, abortSignal);
   }
 
   // Which phase timed out decides what the operator needs to hear. A run that

@@ -24,6 +24,8 @@ import type { Env } from '../../../index';
 import { readVirtualFeed } from '../../../lib/connector-pushdown';
 import { materializeDueFeeds } from '../../../scheduled/check-due-feeds';
 import { createAuthProfile } from '../../../utils/auth-profiles';
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
+import { compileConnectorSource } from '../../../utils/connector-compiler';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { addUserToOrganization, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
@@ -178,6 +180,37 @@ describe('virtual feed flag (Slice 2)', () => {
     expect(ok.rows.length).toBe(3);
   }, 60_000);
 
+  // Routing regression: `connector_definitions.runtime` is DESCRIPTIVE metadata
+  // (platforms, nix inputs), not a durable "device-only" claim. A connector that
+  // declares one and still has code — as this bundled one does, with
+  // `connector_versions.compiled_code IS NULL` and its source on disk — must keep
+  // the compiled pushdown. Routing it to a device would demote a real `query()`
+  // to a round-trip and fail outright wherever no device is paired.
+  it('keeps a runtime-declaring COMPILED connector on the pushdown, not the device seam', async () => {
+    const db = getTestDb();
+    await db`
+      UPDATE connector_definitions
+      SET runtime = ${db.json({ platforms: ['macos', 'linux'], nix: { packages: ['postgresql'] } })}
+      WHERE key = 'postgres' AND organization_id = ${orgId}
+    `;
+    try {
+      const res = await readVirtualFeed({ scope: ownerScope(), feedId: orgFeedId, limit: 10 });
+      // Real rows from the connector's own query(), so the compiled path ran.
+      expect(res.rows.map((r) => r.name).sort()).toEqual(['apple', 'apricot', 'banana']);
+      // And no device action run was enqueued behind it.
+      const actions = await db`
+        SELECT count(*)::int AS n FROM runs
+        WHERE organization_id = ${orgId} AND run_type = 'action'
+      `;
+      expect(Number((actions[0] as { n: number }).n)).toBe(0);
+    } finally {
+      await db`
+        UPDATE connector_definitions SET runtime = NULL
+        WHERE key = 'postgres' AND organization_id = ${orgId}
+      `;
+    }
+  }, 60_000);
+
   it('refuses to read a NON-virtual feed live', async () => {
     await expect(
       readVirtualFeed({ scope: ownerScope(), feedId: nonVirtualFeedId })
@@ -198,5 +231,165 @@ describe('virtual feed flag (Slice 2)', () => {
     await expect(
       readVirtualFeed({ scope: ownerScope(), feedId: pausedId })
     ).rejects.toThrow(/not found or not accessible/i);
+  }, 60_000);
+});
+
+/**
+ * Which virtual feeds take the DEVICE seam, and which stay on the compiled
+ * pushdown.
+ *
+ * `connector_definitions.runtime` is descriptive metadata (platforms, nix
+ * inputs). On its own it is not a durable "no server code" signal, so routing
+ * asks the same question the EXECUTION resolver asks: does
+ * `resolveConnectorCodeForKey` → `resolveConnectorCode` have something to run?
+ * That is `connector_versions.compiled_code`, or a bundled source file on disk —
+ * and nothing else.
+ *
+ * `source_path` is deliberately excluded, and this file pins that. It appears in
+ * queue-service's `resolveActiveConnectorVersion`, but that is a laxer READINESS
+ * gate; `resolveConnectorCode` never loads it. Device manifests set it to
+ * `device-manifest://…` precisely as a non-executable marker, so adopting the
+ * laxer union would classify every device connector as having code and break
+ * this routing outright.
+ */
+
+const RUNTIME_META = { platforms: ['macos', 'linux'], nix: { packages: ['ffmpeg'] } };
+
+const COMPILED_KEY = 'demo.routing.compiled';
+const SOURCE_PATH_ONLY_KEY = 'demo.routing.source_path_only';
+
+const COMPILED_SOURCE = `
+export class MyConnector {
+  definition = {
+    key: '${COMPILED_KEY}',
+    name: 'Compiled With Runtime',
+    version: '1.0.0',
+    feeds: { rows: { name: 'Rows' } },
+  };
+  async sync() { return { items: [] }; }
+  async execute() { return { success: true, output: {} }; }
+  async query() {
+    return {
+      rows: [{ id: 1, name: 'from compiled query()' }],
+      columns: [{ name: 'id', type: 'integer' }, { name: 'name', type: 'text' }],
+      total: 1,
+    };
+  }
+}
+`;
+
+describe('virtual feed routing — device seam vs compiled pushdown', () => {
+  let routingOrgId: string;
+  let routingUserId: string;
+  let compiledFeedId: number;
+  let sourcePathFeedId: number;
+
+  const routingScope = (): AuthzScope => ({
+    organizationId: routingOrgId,
+    principal: routingUserId,
+  });
+
+  /** A definition + connection + virtual feed for one connector key. */
+  async function seedRoutingConnector(opts: {
+    key: string;
+    compiledCode: string | null;
+    sourcePath: string | null;
+  }): Promise<number> {
+    const db = getTestDb();
+    await db`
+      INSERT INTO connector_definitions
+        (key, name, version, runtime, feeds_schema, auth_schema, organization_id, status,
+         created_at, updated_at)
+      VALUES (${opts.key}, ${opts.key}, '1.0.0', ${db.json(RUNTIME_META)},
+              ${db.json({ rows: { key: 'rows', virtual: true } })}, ${db.json({})},
+              ${routingOrgId}, 'active', NOW(), NOW())
+    `;
+    await db`
+      INSERT INTO connector_versions
+        (connector_key, version, compiled_code, source_path, compile_config_hash, created_at)
+      VALUES (${opts.key}, '1.0.0', ${opts.compiledCode}, ${opts.sourcePath},
+              ${opts.compiledCode ? COMPILE_CONFIG_HASH : null}, NOW())
+    `;
+    const [conn] = await db`
+      INSERT INTO connections
+        (organization_id, connector_key, slug, display_name, status, visibility,
+         created_by, created_at, updated_at)
+      VALUES (${routingOrgId}, ${opts.key}, ${`c-${opts.key}`}, ${opts.key}, 'active',
+              'org', ${routingUserId}, NOW(), NOW())
+      RETURNING id
+    `;
+    const [feed] = await db`
+      INSERT INTO feeds
+        (organization_id, connection_id, feed_key, status, virtual, kind, config,
+         created_at, updated_at)
+      VALUES (${routingOrgId}, ${Number((conn as { id: number }).id)}, 'rows', 'active', true,
+              'virtual', ${db.json({})}, NOW(), NOW())
+      RETURNING id
+    `;
+    return Number((feed as { id: number }).id);
+  }
+
+  beforeAll(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({ name: 'VFeedRouting' });
+    routingOrgId = org.id;
+    const user = await createTestUser({ email: 'vfeed-routing@test.com' });
+    routingUserId = user.id;
+    await addUserToOrganization(user.id, org.id, 'owner');
+
+    // Representation 1: a stored compiled artifact.
+    const compiled = await compileConnectorSource(COMPILED_SOURCE);
+    compiledFeedId = await seedRoutingConnector({
+      key: COMPILED_KEY,
+      compiledCode: compiled.compiledCode,
+      sourcePath: null,
+    });
+
+    // The device-manifest shape: NO compiled code, NO bundled file on disk, and
+    // a `source_path` that is a marker rather than loadable source.
+    sourcePathFeedId = await seedRoutingConnector({
+      key: SOURCE_PATH_ONLY_KEY,
+      compiledCode: null,
+      sourcePath: `device-manifest://macos/${SOURCE_PATH_ONLY_KEY}@1.0.0`,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await cleanupTestDatabase();
+  });
+
+  // Representation 1 of "has runnable code": a STORED compiled artifact.
+  it('keeps a runtime-declaring connector with STORED compiled code on the pushdown', async () => {
+    const res = await readVirtualFeed({ scope: routingScope(), feedId: compiledFeedId });
+    // Rows produced by the connector's own query(), so the compiled path ran.
+    expect(res.rows).toEqual([{ id: 1, name: 'from compiled query()' }]);
+    const actions = await getTestDb()`
+      SELECT count(*)::int AS n FROM runs
+      WHERE organization_id = ${routingOrgId} AND run_type = 'action'
+    `;
+    expect(Number((actions[0] as { n: number }).n)).toBe(0);
+  }, 60_000);
+
+  // Representation 2 — a BUNDLED on-disk source with compiled_code NULL — is
+  // covered by the postgres fixture in the suite above ('keeps a
+  // runtime-declaring COMPILED connector on the pushdown, not the device seam').
+
+  // The negative, and the reason routing must not borrow queue-service's laxer
+  // runnable union: `source_path` alone is NOT executable code. If it counted,
+  // every device-manifest connector would be misrouted to the compiled path and
+  // die in resolveConnectorCodeForKey instead of reaching its paired Mac.
+  it('routes a runtime connector whose only artifact is a source_path to the device seam', async () => {
+    const error = await readVirtualFeed({
+      scope: routingScope(),
+      feedId: sourcePathFeedId,
+    }).then(
+      () => null,
+      (err: Error) => err
+    );
+    if (!error) throw new Error('expected the read to be refused');
+    // The DEVICE seam's preflight spoke, not the compiled resolver. That is the
+    // routing assertion: a compiled-path failure would say "No compiled code".
+    expect(error.message).toMatch(/Live read of feed 'rows' is unavailable/);
+    expect(error.message).not.toMatch(/No compiled code/);
   }, 60_000);
 });

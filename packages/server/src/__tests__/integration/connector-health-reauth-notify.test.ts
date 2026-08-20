@@ -11,7 +11,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runConnectorHealthCheck } from '../../connectors/connector-health';
-import { BROWSER_SESSION_EXPIRED_KIND } from '../../utils/platform-event-kinds';
+import { BROWSER_SESSION_EXPIRED_KIND } from '../../utils/platform-notification-kinds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { addUserToOrganization, createTestOrganization, createTestUser } from '../setup/test-fixtures';
 

@@ -1,5 +1,5 @@
 /**
- * Conformance for the platform event kind registry.
+ * Conformance for the platform notification kind registry.
  *
  * Every kind here is a contract between a trigger that writes `payloadData` and
  * a template that reads it, and nothing at runtime tells you when the two drift
@@ -15,8 +15,8 @@ import { STRUCTURAL_NODE_TYPES } from "@lobu/core/json-template";
 import { describe, expect, it } from "bun:test";
 import {
 	ENTITY_CHANGE_APPROVAL_KIND,
-	PLATFORM_EVENT_KINDS,
-} from "../../utils/platform-event-kinds";
+	PLATFORM_NOTIFICATION_KINDS,
+} from "../../utils/platform-notification-kinds";
 import { validateJsonTemplate } from "../../utils/validate-json-template";
 
 type Node = Record<string, unknown>;
@@ -61,9 +61,9 @@ function boundRoots(node: unknown, scoped: Set<string>, out: Set<string>): void 
 	boundRoots(n.children, scoped, out);
 }
 
-const entries = Object.entries(PLATFORM_EVENT_KINDS);
+const entries = Object.entries(PLATFORM_NOTIFICATION_KINDS);
 
-describe("platform event kinds", () => {
+describe("platform notification kinds", () => {
 	it("declares at least the families the triggers emit", () => {
 		expect(entries.length).toBeGreaterThanOrEqual(5);
 	});
@@ -153,7 +153,7 @@ describe("context separators keep their trailing space", () => {
 		}
 	}
 
-	for (const [slug, kind] of Object.entries(PLATFORM_EVENT_KINDS)) {
+	for (const [slug, kind] of Object.entries(PLATFORM_NOTIFICATION_KINDS)) {
 		if (!kind.jsonTemplate) continue;
 		it(`${slug}: every separator literal ends with a space`, () => {
 			const literals: string[] = [];
@@ -170,7 +170,7 @@ describe("context separators keep their trailing space", () => {
 		// reaching into `if`/`span`, which is exactly where separators live.
 		const literals: string[] = [];
 		contextLiterals(
-			PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND].jsonTemplate,
+			PLATFORM_NOTIFICATION_KINDS[ENTITY_CHANGE_APPROVAL_KIND].jsonTemplate,
 			false,
 			literals,
 		);

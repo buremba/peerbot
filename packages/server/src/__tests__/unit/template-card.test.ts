@@ -21,10 +21,10 @@ import {
 import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	ENTITY_CHANGE_APPROVAL_KIND,
-	PLATFORM_EVENT_KINDS,
-} from "../../utils/platform-event-kinds";
+	PLATFORM_NOTIFICATION_KINDS,
+} from "../../utils/platform-notification-kinds";
 
-const APPROVAL_KIND = PLATFORM_EVENT_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
+const APPROVAL_KIND = PLATFORM_NOTIFICATION_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
 
 type Card = NonNullable<ReturnType<typeof buildKindCard>>;
 const kids = (card: Card | null) =>
@@ -775,7 +775,7 @@ describe("structural edge cases", () => {
 });
 
 describe("entity change approvals render through their kind", () => {
-	const KIND = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+	const KIND = PLATFORM_NOTIFICATION_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
 	const build = (data: Record<string, unknown>) =>
 		buildKindCard({
 			metadataSchema: KIND.metadataSchema,
@@ -928,7 +928,7 @@ describe("entity change approvals render through their kind", () => {
 		// (400) on the way in, so the only value that still overflows the field
 		// budget afterwards is one that escaping expands — 400 ampersands become
 		// 2000 characters, and the cut lands inside the last `&amp;`.
-		const KIND = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+		const KIND = PLATFORM_NOTIFICATION_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
 		const card = buildKindCard({
 			metadataSchema: KIND.metadataSchema,
 			jsonTemplate: KIND.jsonTemplate,
@@ -1181,7 +1181,7 @@ describe("the context strip", () => {
 	});
 
 	it("puts the connector operation's identity in the strip, its input in the body", () => {
-		const kind = PLATFORM_EVENT_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
+		const kind = PLATFORM_NOTIFICATION_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
 		const card = buildKindCard({
 			metadataSchema: kind.metadataSchema,
 			jsonTemplate: kind.jsonTemplate,
@@ -1196,7 +1196,7 @@ describe("the context strip", () => {
 	});
 
 	it("links the entity under review from the approval strip", () => {
-		const kind = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+		const kind = PLATFORM_NOTIFICATION_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
 		const card = buildKindCard({
 			metadataSchema: kind.metadataSchema,
 			jsonTemplate: kind.jsonTemplate,

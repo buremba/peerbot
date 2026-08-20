@@ -1,6 +1,12 @@
 /**
- * Event kinds the PLATFORM emits, as opposed to the ones an org authors in
- * `$member.event_kinds`.
+ * Notification kinds the PLATFORM emits, as opposed to the event kinds an org
+ * authors in `$member.event_kinds`.
+ *
+ * Named for what these are — renderable notifications — and NOT after the
+ * unrelated `platform_event_kinds` catalog on `manage_entity_schema`, which
+ * lists the `<subject>.<op>` audit events an Automation trigger can subscribe
+ * to (`automations/platform-event-catalog.ts`). Two different vocabularies met
+ * under one name once the catalog shipped; this is the notification one.
  *
  * Event-kind resolution is otherwise entirely org-authored, which is right for
  * content an org models itself. But a notification the platform raises — an
@@ -25,7 +31,7 @@ export const CONNECTION_AUTHORIZATION_KIND = "connection_authorization_needed";
 export const BROWSER_SESSION_EXPIRED_KIND = "browser_session_expired";
 export const INVITATION_RECEIVED_KIND = "invitation_received";
 
-export const PLATFORM_EVENT_KINDS: Readonly<
+export const PLATFORM_NOTIFICATION_KINDS: Readonly<
 	Record<string, EventKindDefinition>
 > = {
 	/**
@@ -336,8 +342,8 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 	},
 };
 
-export function resolvePlatformEventKind(
+export function resolvePlatformNotificationKind(
 	semanticType: string,
 ): EventKindDefinition | null {
-	return PLATFORM_EVENT_KINDS[semanticType] ?? null;
+	return PLATFORM_NOTIFICATION_KINDS[semanticType] ?? null;
 }

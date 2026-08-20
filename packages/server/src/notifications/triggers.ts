@@ -8,7 +8,7 @@ import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	ENTITY_CHANGE_APPROVAL_KIND,
 	INVITATION_RECEIVED_KIND,
-} from "../utils/platform-event-kinds";
+} from "../utils/platform-notification-kinds";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
@@ -325,7 +325,7 @@ export function formatActionApprovalBody(params: {
  * that cannot carry the human's input would report success while discarding it.
  *
  * Entity and operation approvals never come through here: they render through
- * their platform event kinds in `notifyActionApprovalNeeded`.
+ * their platform notification kinds in `notifyActionApprovalNeeded`.
  */
 export function buildActionApprovalCard(params: {
 	runId?: number;
@@ -476,7 +476,7 @@ export async function notifyActionApprovalNeeded(params: {
 	details?: ActionApprovalDetails;
 	/**
 	 * Set ONLY for a connector operation (`run_type = 'action'`). Its presence
-	 * is what routes the notification through the platform event kind and puts
+	 * is what routes the notification through the platform notification kind and puts
 	 * Approve/Reject on the chat card — builder runs (`manage_automations`,
 	 * `manage_agents`) also arrive without `details`, but the chat click handler
 	 * cannot decide them, so they must not be inferred into this family.
@@ -508,7 +508,7 @@ export async function notifyActionApprovalNeeded(params: {
 			type: "action_approval_needed",
 			title: formatActionApprovalTitle(params.actionKey, params.details),
 			body: formatActionApprovalBody(params),
-			// Both approval families render through a platform event kind, so the
+			// Both approval families render through a platform notification kind, so the
 			// chat post, the Memory view and MCP apps all show the SAME table from
 			// one declaration instead of each surface formatting the payload again.
 			...(operation

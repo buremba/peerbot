@@ -20,7 +20,10 @@ import {
   type ViewTemplateTab,
 } from '@lobu/core/contracts/tools/manage-entity-schema';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
-import { isPlatformEventType } from '../../automations/platform-event-catalog';
+import {
+  isPlatformEventType,
+  platformEventKinds,
+} from '../../automations/platform-event-catalog';
 import { compileEntityRule } from '../../authz/entity-rule-executor';
 import { type DbClient, getDb } from '../../db/client';
 import { validateMetricReadModes } from '../../metrics/read-mode';
@@ -355,6 +358,9 @@ async function etHandleList(
 		schema_type: 'entity_type',
 		action: 'list',
 		entity_types: entityTypes,
+		// Computed, never stored — same catalog trigger validation consults, so
+		// the picker cannot drift from what a subscription will accept.
+		platform_event_kinds: platformEventKinds(),
 		list_scope: args.list_scope ?? 'accessible',
 		organization_id: ctx.organizationId,
 	};

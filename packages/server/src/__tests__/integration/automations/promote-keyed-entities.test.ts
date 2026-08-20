@@ -620,19 +620,18 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     expect(Number(cards[0].c)).toBeGreaterThan(0);
 
-    // ...and the change set records no denial, because nothing was refused.
+    // ...and nothing was refused. complete-window writes a change_set only when
+    // the window produced at least one change (`entityChanges.length > 0`), and a
+    // held create produces none — so the absence of the event IS the assertion.
+    // Guarding this behind `if (changeSet)` would make it never run: reporting the
+    // deferral as a refusal writes a change_set, which is exactly what must fail.
     const [changeSet] = await sql`
       SELECT metadata FROM current_event_records
       WHERE run_id = ${runId}
         AND organization_id = ${workspace.org.id}
         AND semantic_type = 'change_set'
     `;
-    if (changeSet) {
-      const meta = changeSet.metadata as Record<string, unknown>;
-      expect(Number(meta.denied_count ?? 0)).toBe(0);
-      const changes = (meta.changes ?? []) as Array<{ kind: string }>;
-      expect(changes.filter((c) => c.kind === 'denied')).toHaveLength(0);
-    }
+    expect(changeSet).toBeUndefined();
   });
 
   it('is idempotent across a same-window replay — no duplicate entities', async () => {

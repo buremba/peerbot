@@ -80,7 +80,7 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 ## Testing
 
-**Hoisted `vi.mock()` silently fails in the server *integration* suite.** That run shares a module registry across files, so a test that is green alone loads the real module in CI. Use `vi.resetModules()` + `vi.doMock(...)` + a dynamic `await import()` *after* the mock, with an `afterEach` that resets modules and un-mocks. Always verify by co-running siblings — `vitest run <fileA> <fileB>` — because green-alone is not green-in-suite.
+**Hoisted `vi.mock()` silently fails in the server *integration* suite.** That run shares a module registry across files, so a test that is green alone loads the real module in CI. Use `vi.resetModules()` + `vi.doMock(...)` + a dynamic `await import()` *after* the mock, with an `afterEach` that resets modules and un-mocks. Always verify by co-running siblings — `cd packages/server && bun run test -- run <fileA> <fileB>` — because green-alone is not green-in-suite.
 
 **`ERR_RESOLVE_PACKAGE_ENTRY_FAIL` during integration global setup.** `@lobu/pgvector-embedded` is not built. `cd packages/pgvector-embedded && bun run build`.
 

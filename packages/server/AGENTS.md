@@ -64,7 +64,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - `make dev` uses shared brew Postgres with one DB per branch. `LOBU_EMBEDDED=1 make dev` / `make dev-embedded` uses embedded per-worktree Postgres.
 - Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs. Read your worktree's `PORT` from `.env.local` — it is not 8787.
 - Smoke a booted server: `curl -s localhost:$PORT/api/health` (readiness is `/health/ready`). The SPA is pathless at `:$PORT`; the agent API is under `:$PORT/lobu`. "It booted" is not "it works" — drive the path you changed.
-- Validation: the root gates (see root `AGENTS.md`) plus the relevant server `bun test` / `make test-integration` suites.
+- Validation: the root gates (see root `AGENTS.md`) plus the relevant server suites. Run bun:test files with `bun test <path>`. Run Vitest files with `bun run test -- run <path>` from `packages/server`, or the whole DB-backed suite with `make test-integration`; never use `bunx vitest` for server Vitest because integration files share one Postgres and require Node's configured `forks.singleFork` execution.
 
 ## Slackbot MCP integration
 - Slackbot is an MCP client. A Slack app exposes tools/resources only with `mcp:connect` bot scope plus an `mcp_servers` manifest block; after scope changes, reinstall the app.

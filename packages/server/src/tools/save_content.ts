@@ -185,10 +185,12 @@ export const SaveContentSchema = Type.Object({
       description: 'When the event actually happened (ISO 8601). Defaults to now if omitted.',
     })
   ),
-  metadata: Type.Record(Type.String(), Type.Any(), {
-    description:
-      'Structured metadata — validated against the entity type schema or semantic_type schema',
-  }),
+  metadata: Type.Optional(
+    Type.Record(Type.String(), Type.Any(), {
+      description:
+        'Structured metadata, validated against the metadata schema for the selected event kind when non-empty. Omit when no structured metadata is needed; an absent value is treated as {}.',
+    })
+  ),
   supersedes_event_id: Type.Optional(
     Type.Number({
       description:

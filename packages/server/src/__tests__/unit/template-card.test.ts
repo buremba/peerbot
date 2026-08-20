@@ -334,6 +334,31 @@ describe("table headers", () => {
 		expect(rows(card)).toEqual([["Email", "a@x", "b@x"]]);
 	});
 
+	it("takes every header row out of the body, not just the promoted one", () => {
+		// A `thead` may declare more than one `tr` (a grouped header). Only the
+		// first can become Slack's header row; the rest must not fall through and
+		// render as data indistinguishable from the record.
+		const th = (t: string) => ({ type: "th", children: [{ type: "text", content: t }] });
+		const td = (t: string) => ({ type: "td", children: [{ type: "text", content: t }] });
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "table", children: [
+						{ type: "thead", children: [
+							{ type: "tr", children: [th("Change"), th("Change")] },
+							{ type: "tr", children: [th("Current"), th("Proposed")] },
+						] },
+						{ type: "tbody", children: [{ type: "tr", children: [td("Eng"), td("Staff Eng")] }] },
+					] },
+				],
+			},
+			data: {},
+		});
+		expect(headers(card)).toEqual(["Change", "Change"]);
+		expect(rows(card)).toEqual([["Eng", "Staff Eng"]]);
+	});
+
 	it("treats a row of th + td as data, not a header", () => {
 		// The default template's `th` is a per-row LABEL, not a column name. Only a
 		// row of nothing but `th` is a header — HTML's own rule.
@@ -457,6 +482,35 @@ describe("platform limits", () => {
 		const cell = pairs(card)[0][1];
 		expect(cell.length).toBeLessThanOrEqual(400);
 		expect(cell.endsWith("…")).toBe(true);
+	});
+
+	it("chunks a long field run instead of losing its tail", () => {
+		// Slack caps fields per SECTION at 10 — a cap on the block, not on what
+		// the card may show. Slicing to 10 made a 15-row entity-create proposal
+		// silently lose rows 11+, and the reader approves a record with no sign
+		// anything is missing.
+		const rows = Array.from({ length: 15 }, (_, i) => ({
+			type: "tr",
+			children: [
+				{ type: "th", children: [{ type: "text", content: `Field ${i + 1}` }] },
+				{ type: "td", children: [{ type: "text", content: `value ${i + 1}` }] },
+			],
+		}));
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [{ type: "table", children: [{ type: "tbody", children: rows }] }],
+			},
+			data: {},
+		});
+		expect(pairs(card)).toHaveLength(15);
+		expect(pairs(card)[14]).toEqual(["Field 15", "value 15"]);
+		// Split across sections, none of which breaches Slack's cap.
+		const blocks = kids(card).filter((c) => c.type === "fields");
+		expect(blocks).toHaveLength(2);
+		for (const block of blocks) {
+			expect((block.children as unknown[]).length).toBeLessThanOrEqual(10);
+		}
 	});
 
 	it("uses fields, not a headless table, for a label/value schema", () => {

@@ -66,6 +66,8 @@ const MAX_CELL_CHARS = 400;
 /** Slack paginates a native table; show the whole record rather than page 1. */
 const TABLE_PAGE_SIZE = 100;
 const MAX_TEXT_CHARS = 1900;
+/** Slack's per-`section` field cap. A longer run is chunked, never truncated. */
+const MAX_FIELDS_PER_SECTION = 10;
 /**
  * The strip is one Slack text object (3000). Kept well under it because a
  * context block is small grey type: past a line or two it stops being chrome
@@ -376,9 +378,12 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 				// Slack's native table ALWAYS renders its first row as the header, so
 				// a declared header row has to be lifted out of the body — left in
 				// place it would be drawn twice: once as an empty band, once as data.
-				const headerRow = walked.find((r) => r.header);
-				headers = headerRow ? headerRow.cells : [];
-				rows = walked.filter((r) => r !== headerRow).map((r) => r.cells);
+				// EVERY header row leaves the body, not just the one promoted: a
+				// `thead` may declare more than one `tr`, and the leftovers would
+				// render as data indistinguishable from the record.
+				const headerRows = walked.filter((r) => r.header);
+				headers = headerRows[0]?.cells ?? [];
+				rows = walked.filter((r) => !r.header).map((r) => r.cells);
 			}
 			rows = rows.slice(0, MAX_ROWS);
 			if (rows.length === 0) return [];
@@ -509,21 +514,29 @@ function fragsToChildren(frags: Frag[]): {
 		const batch = pendingFields;
 		pendingFields = [];
 		if (batch.length === 0) return;
-		children.push(
-			Fields(
-				// Slack rejects the message past 10 fields per section, and applies
-				// its 2000-char cap to the RENDERED `*label*\nvalue`, so the two
-				// share one budget.
-				batch.slice(0, 10).map((f) => {
-					const label = escapeSlackText(f.label);
-					return Field({
-						label,
-						value:
-							clamp(escapeSlackText(f.value), MAX_TEXT_CHARS - label.length) || "—",
-					});
-				}),
-			),
-		);
+		// Slack rejects the message past 10 fields per SECTION — a cap on the
+		// block, not on what we may show — so a longer run is chunked across
+		// several. It used to be sliced to 10, which was survivable while only a
+		// schema's own header fields came through here and became a silent
+		// truncation the moment a label/value TABLE was routed to fields: a
+		// 15-row entity-create `proposal` lost rows 11+, and the reader approved
+		// a record with no sign that anything was missing.
+		for (let start = 0; start < batch.length; start += MAX_FIELDS_PER_SECTION) {
+			children.push(
+				Fields(
+					batch.slice(start, start + MAX_FIELDS_PER_SECTION).map((f) => {
+						const label = escapeSlackText(f.label);
+						// Slack applies its 2000-char cap to the RENDERED
+						// `*label*\nvalue`, so the two share one budget.
+						return Field({
+							label,
+							value:
+								clamp(escapeSlackText(f.value), MAX_TEXT_CHARS - label.length) || "—",
+						});
+					}),
+				),
+			);
+		}
 	};
 	const flush = () => {
 		flushText();

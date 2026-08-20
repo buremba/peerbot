@@ -38,6 +38,34 @@ interface DevOptions {
   unsafeSharedDb?: boolean;
 }
 
+export type LocalSignInFailureStage =
+  | "server_unreachable"
+  | "local_init_http"
+  | "local_init_payload"
+  | "context_setup";
+
+export type LocalSignInResult =
+  | { ready: true; localOrgSlug?: string }
+  | { ready: false; skipped: "external_backend" }
+  | {
+      ready: false;
+      stage: LocalSignInFailureStage;
+      detail?: string;
+    };
+
+export interface LocalSignInDependencies {
+  waitForReachable: (url: string) => Promise<boolean>;
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>;
+  addContextImpl: (name: string, url: string) => Promise<unknown>;
+  saveCredentialsImpl: (
+    credentials: Credentials,
+    contextName: string
+  ) => Promise<unknown>;
+  setActiveOrgImpl: (slug: string, contextName: string) => Promise<unknown>;
+  getCurrentContextNameImpl: () => Promise<string>;
+  setCurrentContextImpl: (contextName: string) => Promise<unknown>;
+}
+
 function connectorRefKey(ref: ConnectorRef): string {
   return typeof ref === "string" ? ref : new ref().definition.key;
 }
@@ -403,7 +431,19 @@ export async function devCommand(
   // persists the session as the `local` CLI context so `lobu chat -c local`
   // works without a separate `lobu login`.
   void announceLocalSignIn(gatewayUrl, mode === "embedded").then(
-    async ({ ready: localContextReady, localOrgSlug }) => {
+    async (localSignIn) => {
+      const localContextReady = localSignIn.ready;
+      const localOrgSlug = localSignIn.ready
+        ? localSignIn.localOrgSlug
+        : undefined;
+      const hasLobuConfig = existsSync(join(cwd, "lobu.config.ts"));
+      const signInWarning = getLocalSignInWarning(localSignIn, {
+        embedded: mode === "embedded",
+        hasLobuConfig,
+      });
+      if (signInWarning) {
+        console.warn(chalk.yellow(`  ${signInWarning}`));
+      }
       // Once the `local` context is confirmed registered + active, push the
       // project's lobu.config.ts into the embedded DB so the scaffolded agent is
       // usable via `lobu chat -c local …` with no separate `lobu apply`.
@@ -414,7 +454,7 @@ export async function devCommand(
         shouldAutoApplyLocalProject({
           mode,
           localContextReady,
-          hasLobuConfig: existsSync(join(cwd, "lobu.config.ts")),
+          hasLobuConfig,
         })
       ) {
         await autoApplyLocalProject(cwd, gatewayUrl, localOrgSlug);
@@ -596,63 +636,167 @@ export function resolveBackendBundle(
  * gateway, persist the session as that context's bearer credential, and
  * print a deep-link URL the user can click to land logged into the SPA.
  *
- * Best-effort: a failure here (server not ready, /local-init refused
- * because real users exist, etc.) just skips the banner. The endpoint is
- * loopback-only and idempotent so it's safe to fire unconditionally.
+ * Best-effort: a failure here (server not ready, /local-init refused because
+ * real users exist, etc.) returns a credential-safe diagnostic stage. The
+ * caller warns only when a local project would otherwise have auto-applied.
+ * The endpoint is loopback-only and idempotent so it's safe to fire
+ * unconditionally.
  */
-async function announceLocalSignIn(
+const defaultLocalSignInDependencies: LocalSignInDependencies = {
+  waitForReachable: waitForServerReachable,
+  fetchImpl: (url, init) => fetch(url, init),
+  addContextImpl: addContext,
+  saveCredentialsImpl: saveCredentials,
+  setActiveOrgImpl: setActiveOrg,
+  getCurrentContextNameImpl: getCurrentContextName,
+  setCurrentContextImpl: setCurrentContext,
+};
+
+export async function announceLocalSignIn(
   gatewayUrl: string,
-  embedded: boolean
-): Promise<{ ready: boolean; localOrgSlug?: string }> {
+  embedded: boolean,
+  dependencies: LocalSignInDependencies = defaultLocalSignInDependencies
+): Promise<LocalSignInResult> {
   // Poll briefly so the announce lands AFTER the server's own startup
   // banner without racing it.
-  const reachable = await waitForServerReachable(gatewayUrl);
-  if (!reachable) return { ready: false };
+  const reachable = await dependencies.waitForReachable(gatewayUrl);
+  if (!reachable) {
+    return {
+      ready: false,
+      stage: "server_unreachable",
+      detail: "the server did not answer /health within the startup window",
+    };
+  }
 
   // Only the embedded path seeds the bootstrap user → /local-init will refuse
   // on an external-Postgres deployment with real signups. Skip the network
   // call entirely in that case to keep the banner quiet.
-  if (!embedded) return { ready: false };
+  if (!embedded) return { ready: false, skipped: "external_backend" };
 
+  let res: Response;
   try {
-    const res = await fetch(`${gatewayUrl}/api/local-init`, {
+    res = await dependencies.fetchImpl(`${gatewayUrl}/api/local-init`, {
       method: "POST",
       headers: { "X-Lobu-Client": "lobu-run" },
     });
-    if (!res.ok) return { ready: false };
-    const body = (await res.json()) as {
-      device_token?: string;
-      session_token?: string;
-      user?: { id?: string; email?: string; name?: string };
-      organization?: { id?: string; slug?: string; name?: string };
+  } catch {
+    return {
+      ready: false,
+      stage: "local_init_http",
+      detail: "request failed after the server became reachable",
     };
-    // CLI's default token is the Better Auth session token; session auth
-    // carries the user's org membership and works for admin REST + MCP calls.
-    // Persist the companion worker PAT too for the gateway agent API, which
-    // still authenticates that surface via worker/OAuth bearer tokens. The
-    // same session token is passed to the browser deep-link URL so the SPA
-    // hook reaches /api/exchange-token → Better Auth session cookie.
-    const cliToken = body.session_token ?? body.device_token;
-    if (!cliToken) return { ready: false };
+  }
+  if (!res.ok) {
+    return {
+      ready: false,
+      stage: "local_init_http",
+      detail: `HTTP ${res.status}`,
+    };
+  }
 
+  let parsedBody: unknown;
+  try {
+    parsedBody = await res.json();
+  } catch {
+    return {
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response was not valid JSON",
+    };
+  }
+  if (
+    !parsedBody ||
+    typeof parsedBody !== "object" ||
+    Array.isArray(parsedBody)
+  ) {
+    return {
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response did not contain a JSON object",
+    };
+  }
+  const body = parsedBody as Record<string, unknown>;
+  const optionalRecord = (
+    value: unknown
+  ): Record<string, unknown> | null | undefined => {
+    if (value == null) return undefined;
+    return typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  };
+  const user = optionalRecord(body.user);
+  const organization = optionalRecord(body.organization);
+  const hasInvalidStringField = (
+    record: Record<string, unknown>,
+    field: string
+  ) => record[field] !== undefined && typeof record[field] !== "string";
+  if (
+    user === null ||
+    organization === null ||
+    hasInvalidStringField(body, "session_token") ||
+    hasInvalidStringField(body, "device_token") ||
+    (user &&
+      ["id", "email", "name"].some((field) =>
+        hasInvalidStringField(user, field)
+      )) ||
+    (organization &&
+      ["id", "slug", "name"].some((field) =>
+        hasInvalidStringField(organization, field)
+      ))
+  ) {
+    return {
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response contained invalid field types",
+    };
+  }
+  const nonEmptyString = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    return trimmed === "" ? undefined : trimmed;
+  };
+  const sessionToken = nonEmptyString(body.session_token);
+  const deviceToken = nonEmptyString(body.device_token);
+  const userId = nonEmptyString(user?.id);
+  const userEmail = nonEmptyString(user?.email);
+  const userName = nonEmptyString(user?.name);
+  const orgSlug = nonEmptyString(organization?.slug);
+
+  // CLI's default token is the Better Auth session token; session auth
+  // carries the user's org membership and works for admin REST + MCP calls.
+  // Persist the companion worker PAT too for the gateway agent API, which
+  // still authenticates that surface via worker/OAuth bearer tokens. The
+  // same session token is passed to the browser deep-link URL so the SPA
+  // hook reaches /api/exchange-token → Better Auth session cookie.
+  const cliToken = sessionToken ?? deviceToken;
+  if (!cliToken) {
+    return {
+      ready: false,
+      stage: "local_init_payload",
+      detail: "response did not contain a session or device token",
+    };
+  }
+
+  try {
     const contextName = "local";
-    await addContext(contextName, gatewayUrl);
+    await dependencies.addContextImpl(contextName, gatewayUrl);
     const creds: Credentials = {
       accessToken: cliToken,
-      ...(body.device_token ? { localWorkerToken: body.device_token } : {}),
-      ...(body.user?.email ? { email: body.user.email } : {}),
-      ...(body.user?.name ? { name: body.user.name } : {}),
-      ...(body.user?.id ? { userId: body.user.id } : {}),
+      ...(deviceToken ? { localWorkerToken: deviceToken } : {}),
+      ...(userEmail ? { email: userEmail } : {}),
+      ...(userName ? { name: userName } : {}),
+      ...(userId ? { userId } : {}),
     };
-    await saveCredentials(creds, contextName);
+    await dependencies.saveCredentialsImpl(creds, contextName);
     // Bind the bootstrap org slug returned by /api/local-init to the
     // context. Without this, `lobu apply -c local` errors with
     // "No organization selected" until the user manually runs
     // `lobu org set <slug>`. The server is the source of truth — it
     // auto-provisioned this org for the install operator.
-    const orgSlug = body.organization?.slug?.trim();
     if (orgSlug) {
-      await setActiveOrg(orgSlug, contextName).catch(() => undefined);
+      await dependencies
+        .setActiveOrgImpl(orgSlug, contextName)
+        .catch(() => undefined);
     }
     // Auto-switch the active context so plain `lobu apply` / `lobu chat`
     // from any shell hit this loopback server instead of whatever cloud
@@ -661,9 +805,9 @@ async function announceLocalSignIn(
     // `local`; `lobu run` from a shell previously on `lobu` cloud prints
     // the switch.
     try {
-      const current = await getCurrentContextName();
+      const current = await dependencies.getCurrentContextNameImpl();
       if (current !== contextName) {
-        await setCurrentContext(contextName);
+        await dependencies.setCurrentContextImpl(contextName);
         process.stderr.write(
           `Switched active context to "${contextName}" (lobu run)\n`
         );
@@ -673,10 +817,10 @@ async function announceLocalSignIn(
     }
 
     const url = new URL(gatewayUrl);
-    url.searchParams.set("lobu_token", body.session_token ?? cliToken);
+    url.searchParams.set("lobu_token", cliToken);
     console.log();
     console.log(
-      chalk.green(`  Signed in as ${body.user?.email ?? "Local Developer"}.`)
+      chalk.green(`  Signed in as ${userEmail ?? "Local Developer"}.`)
     );
     console.log(chalk.dim(`    Web UI:   `) + chalk.cyan(url.toString()));
     console.log(
@@ -690,12 +834,39 @@ async function announceLocalSignIn(
     // cloud org must not redirect the local apply — that 404s silently).
     return { ready: true, localOrgSlug: orgSlug };
   } catch {
-    // Swallow — the banner is best-effort.
-    return { ready: false };
+    return {
+      ready: false,
+      stage: "context_setup",
+      detail: 'could not register or persist the "local" context',
+    };
   }
 }
 
-async function waitForServerReachable(
+const localSignInStageLabels: Record<LocalSignInFailureStage, string> = {
+  server_unreachable: "server startup",
+  local_init_http: "the local-init request",
+  local_init_payload: "the local-init response",
+  context_setup: "local CLI context setup",
+};
+
+export function getLocalSignInWarning(
+  result: LocalSignInResult,
+  options: { embedded: boolean; hasLobuConfig: boolean }
+): string | null {
+  if (
+    !options.embedded ||
+    !options.hasLobuConfig ||
+    result.ready ||
+    !("stage" in result)
+  ) {
+    return null;
+  }
+
+  const detail = result.detail ? ` (${result.detail})` : "";
+  return `Local sign-in failed during ${localSignInStageLabels[result.stage]}${detail}; project auto-apply was skipped.`;
+}
+
+export async function waitForServerReachable(
   url: string,
   timeoutMs = 30_000
 ): Promise<boolean> {

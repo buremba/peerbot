@@ -40,7 +40,10 @@ import {
   isValidAgentId,
   touchAgentLastUsed,
 } from './lobu/stores/postgres-stores';
-import { LOBU_INTERACTION_RESOURCE_URI } from './mcp-app-resource-uris';
+import {
+  isLobuInteractionResourceUri,
+  LOBU_INTERACTION_RESOURCE_URI,
+} from './mcp-app-resource-uris';
 import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
   mcpSessionMap,
@@ -377,7 +380,16 @@ function createServerForContext(
         contents: [{ uri, mimeType: 'text/markdown', text: skill.text }],
       };
     }
-    const app = MCP_APP_RESOURCES[uri];
+    // A host reads the id it captured from `resources/list` at connect time,
+    // not the one in the tool result it just received, so a superseded version
+    // still arrives here for the life of that connection. Resolve any of them
+    // to the one interaction shell we serve, and echo back the id that was
+    // asked for — that is what the host keys its cache on.
+    const app =
+      MCP_APP_RESOURCES[uri] ??
+      (isLobuInteractionResourceUri(uri)
+        ? MCP_APP_RESOURCES[LOBU_INTERACTION_RESOURCE_URI]
+        : undefined);
     if (!app) throw new Error(`Unknown resource: ${uri}`);
     const html = await renderMcpAppTemplate(
       app.appDir,

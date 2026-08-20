@@ -1465,8 +1465,12 @@ async function handleDelete(
 		return {
 			action: "delete",
 			success: true,
+			// A rule refusal outranks the policy gate here. Telling someone their
+			// delete "would be queued for approval" when a rule already refused it
+			// promises a review that cannot help: approval waives an escalate, and
+			// it can never launder a deny.
 			message:
-				deleteDecision.outcome === "defer"
+				deleteDecision.outcome === "defer" && !preview.refused
 					? `${preview.message} (a real delete would be queued for approval)`
 					: preview.message,
 			deleted_count: 0,

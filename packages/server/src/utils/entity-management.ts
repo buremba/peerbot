@@ -14,7 +14,6 @@ import type {
 } from "../authz/entity-row-validation";
 import {
 	EntityRowValidationError,
-	unvalidatedEntityRowPatch,
 	validateEntityRowInsertGrantingApprovedFields,
 	validateEntityRowPatch,
 	validateEntityRowPatchGrantingApprovedFields,
@@ -1517,12 +1516,29 @@ export async function deleteEntity(
 	force: boolean = false,
 	env: Env,
 	ctx: ToolContext,
-	opts?: { skipHooks?: boolean; dryRun?: boolean },
+	opts?: {
+		skipHooks?: boolean;
+		dryRun?: boolean;
+		/**
+		 * Set only when this call IS the application of a delete a human already
+		 * approved, so a rule that escalates on the delete does not escalate the
+		 * very delete its escalation asked for — the dead end
+		 * `validateEntityRowPatchGrantingApprovedFields` exists to prevent for
+		 * field edits. An ordinary caller passes nothing and an escalate stops it.
+		 */
+		approvedFields?: readonly string[];
+	},
 ): Promise<{
   message: string;
   deleted: number;
   dry_run?: boolean;
   tree?: ForceDeleteTreeReport;
+  /**
+   * Dry run only: a write rule refuses this delete. Structured rather than left
+   * for the caller to sniff out of `message`, because a caller that pattern-
+   * matched the prose would silently start lying the day the wording changed.
+   */
+  refused?: true;
 }> {
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
@@ -1791,27 +1807,74 @@ export async function deleteEntity(
   }
 
   if (opts?.dryRun) {
+    // Preview the RULE too, or the preview lies. Soft delete is rule-governed
+    // now, so reporting "would be soft-deleted" for a row a rule refuses is
+    // exactly backwards for the one caller who asked before committing.
+    //
+    // A pool read is right HERE, and only here: a dry run enforces nothing, so
+    // there is no check for a concurrent write to overtake. The verdict is
+    // advisory by construction — the real delete below re-asks it under lock.
+    try {
+      await validateEntityRowPatchGrantingApprovedFields({
+        tx: sql,
+        ids: [entityId],
+        patch: { softDelete: true },
+        approvedFields: opts?.approvedFields ?? [],
+      });
+    } catch (err) {
+      if (!(err instanceof EntityRowValidationError)) throw err;
+      return {
+        message: `Dry run: entity would NOT be deleted — ${err.verdict.reason}`,
+        deleted: 0,
+        dry_run: true,
+        refused: true,
+      };
+    }
     return {
       message: 'Dry run: entity would be soft-deleted',
       deleted: 0,
       dry_run: true,
     };
   }
-  // Soft delete: stamp deleted_at. Stays a single pool-level statement, so the
-  // semantic layer's existing transaction boundary is unchanged.
-  // KNOWN GAP: state rules do not cover soft-delete. Validating here would mean
-  // reading and writing on the same POOL handle (this path is deliberately a
-  // single pool-level statement, not a transaction), so the check could be
-  // overtaken between read and write. A racy check that looks like enforcement
-  // is worse than an honest exemption; closing this needs a transaction
-  // boundary, which is a separate change.
-  await patchEntityRows({
-    tx: sql,
-    ids: [entityId],
-    patch: unvalidatedEntityRowPatch({
-      patch: { softDelete: true },
-      reason: 'soft-delete runs outside a transaction; see KNOWN GAP above',
-    }),
+  // Soft delete: stamp deleted_at, governed by the type's write rules.
+  //
+  // The rule sees `$deleted` flip to true, so freezing a row stops it being
+  // tombstoned and not merely edited. This closes the KNOWN GAP that used to sit
+  // here: the check was skipped because a pool-level read-then-write could be
+  // overtaken between the two, and a racy check that looks like enforcement is
+  // worse than an honest exemption. The transaction boundary is what makes it
+  // honest — the `FOR UPDATE` below holds the row from the moment the rule judges
+  // it until the tombstone commits, so no concurrent write can change the state
+  // the verdict was based on.
+  //
+  // Scope is the soft-delete path only. `force` above hard-deletes the tree
+  // through `hardDeleteEntityRows`, which no rule sees: freezing a row does not
+  // survive a force delete.
+  //
+  // A deny throws rather than returning: approval cannot launder an illegal
+  // state into a legal one. An escalate throws too UNLESS this call is the
+  // application of a delete a human already approved — see `approvedFields`.
+  await withEntityWriteTransaction(sql, async (tx) => {
+    // Lock first: the rule must judge the state that will actually be deleted.
+    const locked = await tx<{ id: number }>`
+      SELECT id FROM entities
+      WHERE id = ${entityId} AND deleted_at IS NULL
+      FOR UPDATE
+    `;
+    // Already tombstoned. `patchEntityRows` would no-op on its own
+    // `deleted_at IS NULL` guard, exactly as the unlocked statement did; stopping
+    // here also keeps a tenant rule from judging a row this call cannot write.
+    if (locked.length === 0) return;
+    await patchEntityRows({
+      tx,
+      ids: [entityId],
+      patch: await validateEntityRowPatchGrantingApprovedFields({
+        tx,
+        ids: [entityId],
+        patch: { softDelete: true },
+        approvedFields: opts?.approvedFields ?? [],
+      }),
+    });
   });
 
   return {

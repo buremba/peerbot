@@ -61,6 +61,16 @@ export interface EntityRowValidationVerdict {
  * link auto-create and eval scaffolding have nowhere to queue a card, so for
  * them a rule that asked for review must stop the write — which is exactly what
  * an uncaught throw does.
+ *
+ * Soft-delete (`deleteEntity`) is the in-between case, and the distinction is
+ * WHO asked for the review. The POLICY gate can queue a delete card, and
+ * applying that card grants `$deleted` — the one field a delete card can be said
+ * to have approved — so a rule escalating on `$deleted` no longer dead-ends an
+ * approval a human already gave. But a rule escalate does not itself mint a
+ * card: `manage_entity`'s delete path has no `EntityRowValidationError` catch
+ * (only its CREATE path does), so an escalate with no policy card behind it
+ * fails closed like merge and link auto-create. A `deny` stops the delete either
+ * way, and a hard delete never reaches this seam at all.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;
@@ -80,9 +90,9 @@ export class EntityRowValidationError extends Error {
  *
  * The complement (`metadata`, `name`, `slug`, `parentId`, `content`,
  * `softDelete`) IS governed: freezing a document has to stop a rename, not
- * merely a metadata edit. `softDelete` is governed by this seam but no
- * soft-delete caller routes through it yet — see the KNOWN GAP in
- * `deleteEntity`.
+ * merely a metadata edit, and it has to stop the row being tombstoned out from
+ * under the rule that froze it. (A hard delete removes the row without a patch,
+ * so it never passes through here — see `deleteEntity`.)
  */
 const UNGOVERNED_COLUMNS: ReadonlySet<string> = new Set([
 	"currentViewTemplateVersionId",
@@ -218,7 +228,13 @@ export async function validateEntityRowPatch(params: {
  * enforcement, and the script's allowlist/exemption list can be edited.
  *
  * Same handle/#2818 contract as {@link validateEntityRowPatch}: only the
- * caller's transaction handle, never `getDb()`.
+ * caller's transaction handle, never `getDb()` — because a read on one pooled
+ * connection followed by a write on another can be overtaken in between.
+ *
+ * The single exception is a caller that WRITES NOTHING: `deleteEntity`'s dry
+ * run passes the pool deliberately, because a preview enforces nothing and so
+ * has no check for a concurrent write to overtake. If a call can commit, it
+ * owes this function a transaction.
  *
  * Rows are grouped by their type's compiled rule so each distinct rule runs in
  * ONE isolate over its whole group. Per-row isolates do not scale — measured at

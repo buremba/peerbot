@@ -28,8 +28,15 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
-import { createEntity, updateEntity } from "../../../utils/entity-management";
-import { applyEntityFieldChangeProposal } from "../../../tools/admin/entity-field-approval";
+import {
+	createEntity,
+	updateEntity,
+} from "../../../utils/entity-management";
+import {
+	applyEntityChangeProposal,
+	applyEntityFieldChangeProposal,
+	proposeEntityDelete,
+} from "../../../tools/admin/entity-field-approval";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
 import {
@@ -53,8 +60,18 @@ export default (row) => {
 };
 `;
 
+/** Escalates on the DELETE itself, so applying the card re-asks the same question. */
+const ESCALATE_ON_DELETE_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.changed("$deleted") && row.next.$deleted) {
+    row.escalate(["$deleted"], "deleting an invoice needs sign-off");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 let escalateOnSizeCompiled: string;
+let escalateOnDeleteCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -144,7 +161,10 @@ async function persistedProposal(organizationId: string): Promise<{
 describe("an escalated card applies atomically or not at all", () => {
 	beforeAll(async () => {
 		await initWorkspaceProvider();
-		escalateOnSizeCompiled = await compileEntityRule(ESCALATE_ON_SIZE_RULE);
+		[escalateOnSizeCompiled, escalateOnDeleteCompiled] = await Promise.all([
+			compileEntityRule(ESCALATE_ON_SIZE_RULE),
+			compileEntityRule(ESCALATE_ON_DELETE_RULE),
+		]);
 	}, 60_000);
 
 	beforeEach(async () => {
@@ -284,5 +304,71 @@ describe("an escalated card applies atomically or not at all", () => {
 		// check past escalated cards would strand this card instead.
 		expect(after.vendor).toBe("HUMAN");
 		expect(after.notes).toBe("n1");
+	}, 60_000);
+});
+
+/**
+ * A DELETE card is the same promise as an update card: what the human approved
+ * must be what applying it performs.
+ *
+ * Soft delete is now governed by write rules, so a rule may escalate on
+ * `$deleted`. Applying the card re-runs that rule against the same row, so
+ * without a grant it escalates a second time and throws — the card is minted, a
+ * human approves it, and the delete still never happens. That dead end is what
+ * this covers, end to end through the PERSISTED card rather than a hand-built
+ * proposal.
+ */
+describe("an approved DELETE card is honoured despite the rule that escalated it", () => {
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+	});
+
+	it("applies the persisted delete card and tombstones the row", async () => {
+		const sql = getTestDb();
+		const { org, user, invoice } = await seed();
+
+		// The rule escalates on any delete of this type.
+		await sql`
+      UPDATE entity_types SET rules_compiled = ${escalateOnDeleteCompiled}
+      WHERE organization_id = ${org.id} AND slug = 'invoice'
+    `;
+
+		const ctx = ctxFor(org.id, { userId: user.id });
+		await proposeEntityDelete(ctx, {
+			entity_id: invoice.id,
+			entity_type: "invoice",
+			name: invoice.name,
+			force_delete_tree: false,
+		} as Parameters<typeof proposeEntityDelete>[1]);
+
+		// Read back what the card actually stored — a hand-built proposal would
+		// pass with the propose->persist->apply plumbing severed.
+		const [queued] = await sql<{ action_input: unknown }[]>`
+      SELECT action_input FROM runs
+      WHERE organization_id = ${org.id}
+      ORDER BY id DESC LIMIT 1
+    `;
+		const proposal = (
+			typeof queued.action_input === "string"
+				? JSON.parse(queued.action_input)
+				: queued.action_input
+		) as Record<string, unknown>;
+		expect(proposal.entity_id).toBe(invoice.id);
+		expect(proposal.operation).toBe("delete");
+
+		// Apply INSIDE a transaction, because that is what production does:
+		// approvals.ts wraps the whole claim+confirm+apply in `sql.begin` and
+		// hands `completeApproval` the tx. Passing the pool here would skip the
+		// one shape worth proving — `deleteEntity` opens its OWN transaction on a
+		// SECOND pooled connection while this one is still open, and takes
+		// `FOR UPDATE` on a row the outer tx has not locked.
+		await sql.begin(async (tx) => {
+			await applyEntityChangeProposal(proposal as never, ctx, TEST_ENV, tx);
+		});
+
+		const [row] = await sql<{ deleted_at: Date | null }[]>`
+      SELECT deleted_at FROM entities WHERE id = ${invoice.id}
+    `;
+		expect(row.deleted_at).not.toBeNull();
 	}, 60_000);
 });

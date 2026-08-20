@@ -1378,10 +1378,17 @@ export async function applyEntityChangeProposal(
 		return applyMergeGroupInTransaction(params, db);
 	}
 	const deleteProposal = asDeleteProposal(proposal);
+	// The grant comes from the write this card REPLAYS. A delete card's entire
+	// content is the delete, so `$deleted` — and only `$deleted` — is what the
+	// human approved. Without it a rule that escalates on the delete is a dead
+	// end: the card is minted, a human approves, and applying re-runs the rule,
+	// escalates again, and throws. An escalate naming anything else is still not
+	// covered and still stops the apply, which is the point of a scoped grant.
 	return deleteEntity(
 		deleteProposal.entity_id,
 		deleteProposal.force_delete_tree ?? false,
 		env,
 		ctx,
+		{ approvedFields: ["$deleted"] },
 	);
 }

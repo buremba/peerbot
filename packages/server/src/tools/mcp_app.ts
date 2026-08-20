@@ -388,9 +388,19 @@ function canIssueApprovalCapability(
   clientId: string;
   mcpSessionId: string;
 } {
+  // Deliberately NOT gated on `ctx.mcpAppsSupported`. That flag answers "did
+  // the client announce the Apps extension", which is a different question
+  // from "can this client render a card and call back through it" — claude.ai
+  // renders while announcing nothing, so gating here left its card showing
+  // Approve/Reject it could never obtain the right to press.
+  //
+  // This widens who receives the capability without widening what it reaches:
+  // the token stays bound to org/user/client/session with a TTL, and
+  // `resolve_approval` stays absent from `tools/list` for a non-declaring
+  // client, so the model cannot invoke it — only the rendered card can, via
+  // `tools/call`. The conditions kept below are the ones carrying real weight.
   return (
     status === 'pending' &&
-    ctx.mcpAppsSupported === true &&
     ctx.tokenType === 'oauth' &&
     Boolean(ctx.userId && ctx.clientId && ctx.mcpSessionId) &&
     !belongsToApprovalWindow(row)
@@ -546,9 +556,13 @@ const resolveApprovalImpl = async (
   ctx: ToolContext
 ): Promise<LobuView> => {
   const capability = readApprovalCapability(ctx.mcpAppApprovalCapability);
+  // Drops `ctx.mcpAppsSupported` for the same reason issuance does — and it
+  // has to drop it in the SAME change, or a card holding a freshly-issued
+  // capability gets a 403 on every press. What remains authenticates the round
+  // trip: the capability must name this run, org, user and client, still be
+  // bound to the calling host, and not have expired.
   if (
     capability.runId !== args.run_id ||
-    ctx.mcpAppsSupported !== true ||
     capability.organizationId !== ctx.organizationId ||
     capability.userId !== ctx.userId ||
     capability.clientId !== ctx.clientId ||

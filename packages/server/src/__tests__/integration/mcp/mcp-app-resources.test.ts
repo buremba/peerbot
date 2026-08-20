@@ -948,7 +948,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?._meta?.['mcp/www_authenticate']).toBeUndefined();
   });
 
-  it('still binds the app for a client that did not advertise MCP Apps, while keeping app-only tools hidden', async () => {
+  it('binds the app and completes an approval for a client that did not advertise MCP Apps, while keeping app-only tools hidden', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`, {
       advertiseMcpApps: false,
     });
@@ -1021,19 +1021,41 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     const renderBody = await renderResponse.json();
     expect(renderBody.result?.isError).not.toBe(true);
-    // The binding ships even without negotiation, but the app-only approval
-    // capability does not: the binding names a surface, the capability grants
-    // the power to act through it.
     expect(renderBody.result?._meta?.['openai/outputTemplate']).toBe(
       LOBU_INTERACTION_RESOURCE_URI
     );
-    expect(renderBody.result?._meta?.['lobu/approval-capability']).toBeUndefined();
-    // The registered approval reader still carries the viewer role, while the
-    // app-only approval capability is withheld from this non-App client.
+    const capability = renderBody.result?._meta?.['lobu/approval-capability'];
+    expect(typeof capability).toBe('string');
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(renderBody.result?.structuredContent?.actions).toEqual([
+      expect.objectContaining({ id: 'approve', tool: 'resolve_approval' }),
+      expect.objectContaining({ id: 'reject', tool: 'resolve_approval' }),
       expect.objectContaining({ id: 'review', href: expect.stringMatching(/^https?:\/\//) }),
     ]);
+    const rejectResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'non-declaring-reject',
+        method: 'tools/call',
+        params: {
+          name: 'resolve_approval',
+          arguments: {
+            run_id: runId,
+            decision: 'reject',
+            _meta: { 'lobu/approval-capability': capability },
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    expect((await rejectResponse.json()).result?.isError).not.toBe(true);
+
+    const [settled] = await getDb()<{ approval_status: string }>`
+      SELECT approval_status FROM runs
+      WHERE id = ${runId} AND organization_id = ${org.id}
+    `;
+    expect(settled).toMatchObject({ approval_status: 'rejected' });
   });
 
   it('keeps an approval mutation text-only and resolves it only with the hidden app capability', async () => {

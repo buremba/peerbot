@@ -52,9 +52,8 @@ describe('saveContent > json_template save-side schema', () => {
       scopedToOrg: false,
       allowCrossOrg: true,
       scopes: ['mcp:write'],
-      // The render-payload echo below is gated on an MCP App caller; without
-      // this the save still succeeds but returns the compact receipt only.
-      mcpAppsSupported: true,
+      // A direct (non-headless) call echoes the render payload below; only a
+      // nested SDK save with `headlessResult` keeps the compact receipt.
     };
   });
 

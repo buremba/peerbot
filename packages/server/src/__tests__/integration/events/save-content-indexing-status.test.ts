@@ -44,7 +44,7 @@ describe('saveContent > honest indexing status', () => {
     await addUserToOrganization(user.id, org.id, 'owner');
   });
 
-  function ctx(mcpAppsSupported = false): ToolContext {
+  function ctx(headlessResult = false): ToolContext {
     return {
       organizationId: org.id,
       userId: user.id,
@@ -55,7 +55,7 @@ describe('saveContent > honest indexing status', () => {
       allowCrossOrg: true,
       scopes: ['mcp:write'],
       sourceContext: null,
-      mcpAppsSupported,
+      headlessResult,
     } as ToolContext;
   }
 
@@ -68,7 +68,7 @@ describe('saveContent > honest indexing status', () => {
         metadata: {},
       } as never,
       {} as never,
-      ctx(true)
+      ctx()
     );
 
     // Durable storage is synchronous — always reported, always exact-readable.
@@ -76,9 +76,9 @@ describe('saveContent > honest indexing status', () => {
     expect(result.durable_at).toBe(result.created_at);
     expect(result.exact_read.content_ids).toEqual([result.id]);
 
-    // For an MCP App caller the result echoes the persisted row, so the ordinary
-    // text save — not just the json_template one — carries its own body back with
-    // no second read. The non-App shape is pinned by the next test.
+    // A direct tool call echoes the persisted row, so the ordinary text save —
+    // not just the json_template one — carries its own body back with no second
+    // read. The headless shape is pinned by the next test.
     expect(result.payload_type).toBe('text');
     expect(result.payload_text).toBe(
       'A memory whose embedding the async backfill has not produced yet.'
@@ -103,11 +103,11 @@ describe('saveContent > honest indexing status', () => {
         metadata: {},
       } as never,
       {} as never,
-      ctx()
+      ctx(true)
     );
     expect(result.indexing_status).toBe('pending');
-    // No MCP App to render an inline card, so the payload echo is withheld and
-    // the caller keeps the compact receipt plus the exact-read id.
+    // A headless nested SDK save mounts no card, so the payload echo is
+    // withheld and the caller keeps the compact receipt plus the exact-read id.
     expect(result.payload_type).toBeUndefined();
 
     // Simulate the backfill/worker writing the chunk-0 embedding under the

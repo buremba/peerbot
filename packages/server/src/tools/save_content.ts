@@ -696,16 +696,27 @@ async function saveContentImpl(
   }
 
   // Read real semantic-index readiness for this specific event rather than
-  // asserting a fixed 'pending'. For MCP App callers, also read the persisted
-  // payload for the inline card; other surfaces keep their compact receipt. The
-  // per-column CASE keeps that a single round trip — a caller that cannot render
-  // the payload never pays to ship it.
+  // asserting a fixed 'pending', and read back the persisted payload the inline
+  // card renders.
+  //
+  // This used to be gated on the caller having negotiated MCP Apps, on the
+  // theory that a client which cannot render the payload should not pay to ship
+  // it. That theory died on prod: claude.ai renders the card while declaring no
+  // Apps capability at all, so the gate handed it a card with no body. The
+  // declaration is not a usable proxy for "can render" — the tool binding
+  // stopped being gated on it for the same reason (see mcp-handler.ts) — and
+  // the payload has to follow the binding, or the host mounts an empty widget.
+  //
+  // The cost is small and bounded: this is the content the caller just sent us,
+  // echoed back to the surface that displays it. What still opts out is a
+  // nested SDK save inside `run_sdk`, which mounts no card of its own — see
+  // `headlessResult`. The per-column CASE keeps that a single round trip.
   // `needsEmbeddingSql` is the same predicate the embed backfill and worker use,
   // so callers can never disagree with the pipeline on what "indexed" means.
   // Embeddings are usually produced by the async backfill (so this is 'pending'),
   // but when one is supplied inline the row is already searchable.
   const savedId = Number(row.id);
-  const shouldReadInlinePayload = ctx.mcpAppsSupported === true;
+  const shouldReadInlinePayload = ctx.headlessResult !== true;
   const [savedEvent] = await sql`
     SELECT
       CASE WHEN ${shouldReadInlinePayload} THEN e.payload_type END AS payload_type,
@@ -754,9 +765,9 @@ async function saveContentImpl(
     semantic_type: semanticType,
     // When present, this is the exact durable payload, not the caller's
     // arguments: it keeps idempotent retries honest and gives MCP App hosts the
-    // same event the Lobu Activity UI reads from Postgres. Absent for non-App
-    // callers and for oversized events, which keep the compact receipt and the
-    // exact-read id rather than exceeding the App snapshot limit.
+    // same event the Lobu Activity UI reads from Postgres. Absent for headless
+    // nested SDK saves and for oversized events, which keep the compact receipt
+    // and the exact-read id rather than exceeding the App snapshot limit.
     ...(boundedInlinePayload ?? {}),
     created_at: String(row.created_at),
     // Row is committed by now; exact reads by id are available from this instant.

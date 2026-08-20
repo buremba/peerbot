@@ -189,7 +189,11 @@ export function buildClientSDK(
 	// client.knowledge.save inside run_sdk has no card of its own, so it must
 	// keep the compact SDK receipt instead of echoing the saved payload into a
 	// headless result.
-	const headlessCtx: ToolContext = { ...ctx, mcpAppsSupported: false };
+	const headlessCtx: ToolContext = {
+		...ctx,
+		mcpAppsSupported: false,
+		headlessResult: true,
+	};
 	ctx = opts?.abortSignal
 		? { ...headlessCtx, abortSignal: opts.abortSignal }
 		: headlessCtx;

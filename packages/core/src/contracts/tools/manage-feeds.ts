@@ -31,13 +31,13 @@ export const ListFeedsAction = Type.Object({
   status: Type.Optional(
     Type.Union([Type.Literal("active"), Type.Literal("paused")], {
       description:
-        "Filter by desired lifecycle status. Only 'active' and 'paused' are real feed statuses — a feed that keeps failing stays 'active' (or auto-pauses). Use `health` to find failing feeds.",
+        "Filter by desired lifecycle status. Only 'active' and 'paused' are real feed statuses — a feed that keeps failing stays 'active' (or auto-pauses). Use `health` to find failing feeds that are still active on non-paused connections.",
     })
   ),
   health: Type.Optional(
     Type.Union([Type.Literal("healthy"), Type.Literal("failing")], {
       description:
-        "Filter by runtime health, independent of lifecycle status. 'failing' = last sync failed or the feed has one or more consecutive failures; 'healthy' = otherwise. Surfaces active-but-failing feeds the `status` filter cannot.",
+        "Filter by runtime health for active feeds on non-paused connections; paused feeds and feeds on paused connections are excluded. 'failing' = last sync failed or the feed has one or more consecutive failures; 'healthy' = otherwise. Surfaces active-but-failing feeds the `status` filter cannot.",
     })
   ),
   ...PaginationFields,
@@ -150,7 +150,7 @@ export const UpdateFeedAction = Type.Object({
   status: Type.Optional(
     Type.Union([Type.Literal("active"), Type.Literal("paused")], {
       description:
-        "Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set — a failing feed stays active; use the `list_feeds` action's `health: failing` filter to find failing feeds.",
+        "Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set — a failing feed stays active; use the `list_feeds` action's `health: failing` filter to find failing active feeds.",
     })
   ),
   display_name: Type.Optional(Type.String()),

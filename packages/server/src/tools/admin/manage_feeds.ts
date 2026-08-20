@@ -179,14 +179,24 @@ async function handleListFeeds(
   if (args.status) {
     where = sql`${where} AND f.status = ${args.status}`;
   }
-  // Runtime health, independent of lifecycle status: a feed keeps `status =
-  // 'active'` while its syncs fail (until it crosses the auto-pause threshold),
-  // so `status` alone can never surface active-but-failing feeds. 'failing' =
-  // the last sync failed OR at least one consecutive failure is recorded.
-  if (args.health === 'failing') {
-    where = sql`${where} AND (f.last_sync_status = 'failed' OR COALESCE(f.consecutive_failures, 0) > 0)`;
-  } else if (args.health === 'healthy') {
-    where = sql`${where} AND f.last_sync_status IS DISTINCT FROM 'failed' AND COALESCE(f.consecutive_failures, 0) = 0`;
+  // Runtime health applies only to feeds in the active lifecycle. A feed keeps
+  // `status = 'active'` while its syncs fail — until `shouldHardPauseFeed`
+  // auto-pauses it — so `status` alone cannot surface active-but-failing feeds.
+  // Once the feed or its parent connection is paused, its last outcome is
+  // lifecycle history rather than current health, so the guard scopes BOTH
+  // branches and such a row comes back as neither failing nor healthy. This
+  // mirrors `isPaused` in connectors/feed-health-semantics.ts, so the filter
+  // and the `attention` each row carries cannot disagree — a row the filter
+  // called 'healthy' never renders as attention 'paused'. `health` combined
+  // with `status: 'paused'` is therefore an empty intersection by
+  // construction.
+  if (args.health) {
+    where = sql`${where} AND f.status = 'active' AND c.status <> 'paused'`;
+    if (args.health === 'failing') {
+      where = sql`${where} AND (f.last_sync_status = 'failed' OR COALESCE(f.consecutive_failures, 0) > 0)`;
+    } else {
+      where = sql`${where} AND f.last_sync_status IS DISTINCT FROM 'failed' AND COALESCE(f.consecutive_failures, 0) = 0`;
+    }
   }
   if (args.feed_ids?.length) {
     where = sql`${where} AND f.id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;

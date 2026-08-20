@@ -35,7 +35,10 @@ import {
 	deferEntityCreate,
 	runMutationGate,
 } from "../../authz/entity-mutation-gate";
-import { EntityRowValidationError } from "../../authz/entity-row-validation";
+import {
+	EntityRowValidationError,
+	RESERVED_COLUMN_NAMES,
+} from "../../authz/entity-row-validation";
 import {
 	type ActingPrincipal,
 	evaluateEntityMutation,
@@ -106,7 +109,7 @@ import {
 	toEntityInfo,
 } from "../view-urls";
 import { defineFlatActionTool, flatAction } from "./action-tool";
-import { proposeEntityMerge } from "./entity-field-approval";
+import { proposeEntityDelete, proposeEntityMerge } from "./entity-field-approval";
 
 export { ManageEntityResultSchema, ManageEntitySchema };
 
@@ -1525,7 +1528,52 @@ async function handleDelete(
 		} as ManageEntityResult;
 	}
 
-	const result = await deleteEntity(entityId, force, env, ctx);
+	let result: Awaited<ReturnType<typeof deleteEntity>>;
+	try {
+		result = await deleteEntity(entityId, force, env, ctx);
+	} catch (err) {
+		// Row rules run after the principal gate — under lock inside the delete
+		// transaction, and once on the pool beforehand when the type has a
+		// beforeDelete hook, so the hook's cleanup never precedes the verdict.
+		// Route only an escalation the delete card can replay; denies and unrelated
+		// fields still fail closed.
+		if (
+			!(err instanceof EntityRowValidationError) ||
+			err.verdict.outcome !== "escalate" ||
+			err.verdict.fields.length !== 1 ||
+			err.verdict.fields[0] !== RESERVED_COLUMN_NAMES.softDelete
+		) {
+			throw err;
+		}
+		const queued = await proposeEntityDelete(ctx, {
+			entity_id: entityId,
+			force_delete_tree: force,
+			current,
+			automation_id:
+				ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
+			window_id: ctx.actingWindowId ?? args?.automation_source?.window_id ?? null,
+			attribution,
+			reason: err.verdict.reason,
+		});
+		return {
+			action: "delete",
+			success: false,
+			message: `Delete needs approval: ${err.verdict.reason}`,
+			deleted_count: 0,
+			approval_queued: true,
+			approval_url: queued.approvalUrl,
+			approval_run_id: queued.runId,
+			approval_action: "delete",
+			approval_proposal: {
+				entity_id: entity.id,
+				entity_type: entity.entity_type,
+				name: entity.name,
+				force_delete_tree: force,
+			},
+			approval_current: current,
+			approval_attribution: attribution,
+		} as ManageEntityResult;
+	}
 
 	return {
 		action: "delete",

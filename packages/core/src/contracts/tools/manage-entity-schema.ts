@@ -340,6 +340,19 @@ export const ManageEntitySchemaResultSchema = Type.Union([
     schema_type: Type.Literal("entity_type"),
     action: Type.Literal("list"),
     entity_types: Type.Array(EntityTypeRowSchema),
+    /**
+     * Event types the PLATFORM emits, which no entity type declares.
+     *
+     * A dedicated field rather than a synthetic `$platform` entity type: the
+     * events tab builds its content-kind dropdown from the same entity-type
+     * list, and a pseudo type would offer platform events as savable content
+     * kinds. Trigger pickers union this with the declared `event_kinds`;
+     * content surfaces ignore it.
+     */
+    platform_event_kinds: Type.Record(
+      Type.String(),
+      Type.Object({ description: Type.String() })
+    ),
     list_scope: Type.Union([
       Type.Literal("accessible"),
       Type.Literal("organization"),

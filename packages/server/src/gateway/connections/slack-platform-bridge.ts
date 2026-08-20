@@ -2,6 +2,16 @@ import { createLogger } from "@lobu/core";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { PlatformConnection } from "./types.js";
+import { escapeSlackText, joinSectionLines } from "../../utils/slack-text";
+import { cardToBlockKit } from "@chat-adapter/slack";
+import {
+	Actions,
+	Card,
+	type CardChild,
+	CardText,
+	Divider,
+	LinkButton,
+} from "chat";
 
 const logger = createLogger("slack-platform-bridge");
 
@@ -243,31 +253,22 @@ function humanizeSource(platform: string | null): string | null {
 }
 
 /** Escape Slack mrkdwn control chars so titles can't inject formatting. */
-function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 /** Render the "Recent activity" list as a single section, or `[]` if empty. */
-function recentBlocks(
-  recent: SlackHomeRecentItem[],
-): Record<string, unknown>[] {
+function recentChildren(recent: SlackHomeRecentItem[]): CardChild[] {
   if (recent.length === 0) return [];
   const lines = recent.map((item) => {
-    const title = escapeMrkdwn(item.title);
+    const title = escapeSlackText(item.title);
     const source = humanizeSource(item.platform);
     // `<!date^…>` renders in the viewer's own timezone; the pipe text is the
     // fallback Slack shows if it can't resolve the token.
     const when = `<!date^${item.ts}^{date_short_pretty}|recently>`;
     return source
-      ? `• *${title}*  ·  ${escapeMrkdwn(source)}  ·  ${when}`
+      ? `• *${title}*  ·  ${escapeSlackText(source)}  ·  ${when}`
       : `• *${title}*  ·  ${when}`;
   });
   return [
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*Recent activity*\n${lines.join("\n")}` },
-    },
-    { type: "divider" },
+    CardText(joinSectionLines(lines, { header: "*Recent activity*" }).text),
+    Divider(),
   ];
 }
 
@@ -276,44 +277,41 @@ function recentBlocks(
  * context line of org-wide counts. Returns `[]` when there's nowhere to link
  * (no public URL), so the home tab still renders without it.
  */
-function dashboardBlocks(
+function dashboardChildren(
   webBaseUrl: string | undefined,
   context: SlackHomeContext | null,
-): Record<string, unknown>[] {
+): CardChild[] {
   if (!webBaseUrl) return [];
   const base = trimTrailingSlash(webBaseUrl);
   const dashboardUrl = context?.orgSlug ? `${base}/${context.orgSlug}` : base;
 
-  const blocks: Record<string, unknown>[] = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Your dashboard*\nBrowse everything I've captured, review entities, and tune what I watch.",
-      },
-      accessory: {
-        type: "button",
-        text: { type: "plain_text", text: "Open dashboard ↗" },
+  // The button was a section `accessory`; the card AST has no equivalent, so it
+  // becomes its own actions row. Slightly taller, and the trade the AST buys:
+  // one converter, one escaper, one set of platform limits.
+  const children: CardChild[] = [
+    CardText(
+      "*Your dashboard*\nBrowse everything I've captured, review entities, and tune what I watch.",
+    ),
+    Actions([
+      LinkButton({
         url: dashboardUrl,
+        label: "Open dashboard ↗",
         style: "primary",
-      },
-    },
+      }),
+    ]),
   ];
 
   if (context && (context.entitiesTracked > 0 || context.capturedToday > 0)) {
-    blocks.push({
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `:bar_chart: ${context.entitiesTracked.toLocaleString()} tracked  ·  ${context.capturedToday.toLocaleString()} captured today`,
-        },
-      ],
-    });
+    children.push(
+      CardText(
+        `:bar_chart: ${context.entitiesTracked.toLocaleString()} tracked  ·  ${context.capturedToday.toLocaleString()} captured today`,
+        { style: "muted" },
+      ),
+    );
   }
 
-  blocks.push({ type: "divider" });
-  return blocks;
+  children.push(Divider());
+  return children;
 }
 
 /**
@@ -321,10 +319,10 @@ function dashboardBlocks(
  * Relative `resource_url`s are made absolute against the web origin so Slack can
  * link them. Returns `[]` when the inbox is empty/absent.
  */
-function notificationBlocks(
+function notificationChildren(
   webBaseUrl: string | undefined,
   inbox: SlackHomeInbox | null,
-): Record<string, unknown>[] {
+): CardChild[] {
   if (!inbox || inbox.items.length === 0) return [];
   const base = webBaseUrl ? trimTrailingSlash(webBaseUrl) : undefined;
   const absolute = (url: string): string =>
@@ -334,7 +332,7 @@ function notificationBlocks(
 
   const lines = inbox.items.map((item) => {
     const dot = item.isRead ? ":white_circle:" : ":large_blue_circle:";
-    const title = escapeMrkdwn(item.title);
+    const title = escapeSlackText(item.title);
     return item.url
       ? `${dot} <${absolute(item.url)}|${title}>`
       : `${dot} ${title}`;
@@ -343,13 +341,7 @@ function notificationBlocks(
     inbox.unreadCount > 0
       ? `*Notifications* · ${inbox.unreadCount} unread`
       : "*Notifications*";
-  return [
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `${header}\n${lines.join("\n")}` },
-    },
-    { type: "divider" },
-  ];
+  return [CardText(joinSectionLines(lines, { header }).text), Divider()];
 }
 
 /**
@@ -360,37 +352,25 @@ function notificationBlocks(
  * (which logs them in and routes there). `/{slug}/agents` is intentionally NOT
  * used — it redirects to `/{slug}`. Returns `[]` with no web URL.
  */
-function setupBlocks(
+function setupChildren(
   webBaseUrl: string | undefined,
   orgSlug: string | null,
-): Record<string, unknown>[] {
+): CardChild[] {
   if (!webBaseUrl) return [];
   const base = trimTrailingSlash(webBaseUrl);
   const setupUrl = orgSlug ? `${base}/${orgSlug}` : base;
   return [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Set up your own agent*\nConnect an agent to this DM so I can answer from your own data.",
-      },
-      accessory: {
-        type: "button",
-        text: { type: "plain_text", text: "Set up your agent ↗" },
-        url: setupUrl,
-        style: "primary",
-      },
-    },
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: "Already have a code? Run `/lobu link <code>` here. Get a code from your dashboard or `lobu run`.",
-        },
-      ],
-    },
-    { type: "divider" },
+    CardText(
+      "*Set up your own agent*\nConnect an agent to this DM so I can answer from your own data.",
+    ),
+    Actions([
+      LinkButton({ url: setupUrl, label: "Set up your agent ↗", style: "primary" }),
+    ]),
+    CardText(
+      "Already have a code? Run `/lobu link <code>` here. Get a code from your dashboard or `lobu run`.",
+      { style: "muted" },
+    ),
+    Divider(),
   ];
 }
 
@@ -411,15 +391,15 @@ async function buildSlackHomeBlocks(
     DEFAULT_SLACK_APP_NAME;
   const isPreview = connection.settings?.previewMode === true;
 
-  const blocks: unknown[] = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*${botName}* :wave:\n\nI watch your tools, build shared memory, and act on your goals. Mention me in any channel, or send me a DM, to start a thread.`,
-      },
-    },
-    { type: "divider" },
+  // Built as card children and converted ONCE at the end. The App Home used to
+  // hand-write Block Kit, which is how it grew its own escaper and its own
+  // (missing) length limits; going through the AST means it inherits whatever
+  // the message path already enforces.
+  const children: CardChild[] = [
+    CardText(
+      `*${botName}* :wave:\n\nI watch your tools, build shared memory, and act on your goals. Mention me in any channel, or send me a DM, to start a thread.`,
+    ),
+    Divider(),
   ];
 
   // Personal notifications, for users who've linked a Lobu identity. Scoped by
@@ -442,7 +422,7 @@ async function buildSlackHomeBlocks(
       "Failed to resolve Slack home notifications; rendering without them",
     );
   }
-  blocks.push(...notificationBlocks(deps.publicGatewayUrl, inbox));
+  children.push(...notificationChildren(deps.publicGatewayUrl, inbox));
 
   if (!isPreview && connection.organizationId) {
     let context: SlackHomeContext | null = null;
@@ -455,25 +435,23 @@ async function buildSlackHomeBlocks(
         "Failed to resolve Slack home dashboard context; rendering link without counts",
       );
     }
-    blocks.push(...dashboardBlocks(deps.publicGatewayUrl, context));
-    blocks.push(...recentBlocks(context?.recent ?? []));
+    children.push(...dashboardChildren(deps.publicGatewayUrl, context));
+    children.push(...recentChildren(context?.recent ?? []));
   }
 
   if (isPreview) {
-    blocks.push(...setupBlocks(deps.publicGatewayUrl, inbox?.orgSlug ?? null));
+    children.push(...setupChildren(deps.publicGatewayUrl, inbox?.orgSlug ?? null));
   }
 
-  blocks.push({
-    type: "section",
-    text: {
-      type: "mrkdwn",
-      text: isPreview
+  children.push(
+    CardText(
+      isPreview
         ? "Mention me in a channel or DM me to start a thread. `/lobu help` lists the commands."
         : "*Tips*\n• Mention me in a channel, or DM me directly.\n• `/lobu help` lists the built-in commands.\n• Integrations that need you to sign in will also prompt you with a button right in the thread.",
-    },
-  });
+    ),
+  );
 
-  return blocks;
+  return cardToBlockKit(Card({ children }));
 }
 
 /** Extract something useful out of a Slack `WebAPIPlatformError` (or anything). */

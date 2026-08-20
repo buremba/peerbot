@@ -16,20 +16,15 @@
  * owletto while still catching the mistakes that matter.
  *
  * Mirrors owletto's `jsonTemplateSchema` node shape (json-renderer/types.ts) —
- * keep the node kinds + VALUE_FORMATS in sync if the DSL grows.
+ * keep the node kinds in sync if the DSL grows. The `format` directives are
+ * shared with the renderers via `@lobu/core/json-template`.
  */
 
-/** Display-format directives a `data` node may request (see format-value.ts). */
-const VALUE_FORMATS = new Set([
-	"currency",
-	"date",
-	"url",
-	"enum",
-	"boolean",
-	"number",
-	"auto",
-	"text",
-]);
+import {
+	isValueFormat,
+	STRUCTURAL_NODE_TYPES,
+	VALUE_FORMATS,
+} from "@lobu/core/json-template";
 
 class TemplateValidationError extends Error {}
 
@@ -82,7 +77,11 @@ function validateNode(node: unknown, path: string): void {
 		fail(path, "node is missing a string `type`");
 	}
 
-	switch (type) {
+	// The structural set is shared with the renderers (`STRUCTURAL_NODE_TYPES`)
+	// so the two cannot disagree about which types the DSL owns; the handling
+	// below is deliberately its own, because validation fails on a malformed
+	// node where rendering skips it.
+	switch (type as (typeof STRUCTURAL_NODE_TYPES)[number]) {
 		case "text": {
 			if (typeof node.content !== "string") {
 				fail(path, "a text node requires a string `content`");
@@ -95,7 +94,7 @@ function validateNode(node: unknown, path: string): void {
 			}
 			if (
 				node.format !== undefined &&
-				(typeof node.format !== "string" || !VALUE_FORMATS.has(node.format))
+				!isValueFormat(node.format)
 			) {
 				fail(
 					`${path}.format`,
@@ -205,5 +204,3 @@ function walkHandlers(node: unknown, path: string): void {
 		});
 	}
 }
-
-export { VALUE_FORMATS };

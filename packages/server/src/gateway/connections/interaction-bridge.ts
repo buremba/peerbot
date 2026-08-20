@@ -165,12 +165,38 @@ async function resolveSlackActionReviewer(params: {
 	return { userId, role };
 }
 
-async function resolveEntityApprovalRun(
+/**
+ * Look up a run this Slack card is allowed to decide.
+ *
+ * Two families qualify, and NOTHING else — the query is the allowlist:
+ *
+ * 1. Entity field/entity changes (`run_type = 'internal'`, one of
+ *    ENTITY_CHANGE_ACTION_KEYS). Their proposal lives in `action_input`.
+ * 2. Connector operations (`run_type = 'action'`). The card now names the
+ *    operation, connection and input, so the decision is informed — which is
+ *    what previously made deciding from chat unsafe, not the execution path:
+ *    the click already runs through `manage_operations approve|reject` with a
+ *    Slack identity verified against an org admin/owner and real `process.env`,
+ *    exactly as the web approval does.
+ *
+ * A run outside both families reports `not_found`, so its card falls back to
+ * the "Review in Lobu" link rather than acting on something unrecognised.
+ *
+ * Exported for testing: this query IS the authorization boundary for deciding
+ * a run from chat, so it is tested directly against a real DB rather than
+ * inferred from the click handler.
+ */
+export async function resolveEntityApprovalRun(
 	runId: number,
 	organizationId: string,
 ): Promise<{
 	state: "pending" | "approved" | "rejected" | "not_found";
-	/** action_input.owner_user_id — the field owner allowed to decide this run. */
+	/**
+	 * action_input.owner_user_id — the field owner allowed to decide an entity
+	 * change. Always null for a connector operation: there `action_input` is the
+	 * agent-authored operation input, so reading an owner out of it would let
+	 * the agent nominate its own approver.
+	 */
 	ownerUserId: string | null;
 }> {
 	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
@@ -179,12 +205,17 @@ async function resolveEntityApprovalRun(
 		approval_status: string | null;
 		owner_user_id: string | null;
 	}>`
-    SELECT id, approval_status, action_input->>'owner_user_id' AS owner_user_id
+    SELECT id, approval_status,
+      CASE WHEN run_type = 'internal'
+        THEN action_input->>'owner_user_id'
+      END AS owner_user_id
     FROM runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
-      AND run_type = 'internal'
-      AND action_key = ANY(${actionKeys}::text[])
+      AND (
+        (run_type = 'internal' AND action_key = ANY(${actionKeys}::text[]))
+        OR run_type = 'action'
+      )
     LIMIT 1
   `;
 	if (rows.length !== 1) return { state: "not_found", ownerUserId: null };
@@ -895,9 +926,8 @@ export function registerActionHandlers(
 
 		if (!thread || !actionId) return;
 
-		// Handle durable run approvals from notification cards. This path is
-		// intentionally scoped to entity_field_change: approving connector actions
-		// from chat needs a separate env-safe execution path.
+		// Handle durable run approvals from notification cards. Scope is enforced
+		// by resolveEntityApprovalRun's query, not here.
 		if (actionId.startsWith("run-approval:")) {
 			const [, runIdPart, decisionPart] = actionId.split(":");
 			const runId = Number(runIdPart);
@@ -921,7 +951,7 @@ export function registerActionHandlers(
 						? "This change was already approved."
 						: runState === "rejected"
 							? "This change was already rejected."
-							: "This approval can’t be completed from Slack yet. Use the Review in Lobu link.";
+							: "I couldn’t find a pending approval for this card in this workspace. Use the Review in Lobu link.";
 				try {
 					await thread.post(message);
 				} catch {

@@ -17,6 +17,18 @@
 /** A render-DSL node. Kept loose — the owletto json-renderer owns the vocabulary. */
 type TemplateNode = Record<string, unknown>;
 
+/**
+ * One renderable field from a metadata schema: its key, its annotations, and
+ * the label every surface must agree on. File-local: chat reaches these rules
+ * through the template `buildDefaultEntityTemplate` emits, not by calling the
+ * field walker itself, so there is one path rather than two that can drift.
+ */
+interface SchemaField {
+  key: string;
+  def: SchemaProperty;
+  label: string;
+}
+
 interface SchemaProperty {
   title?: unknown;
   description?: unknown;
@@ -47,9 +59,9 @@ function labelFor(key: string, def: SchemaProperty): string {
  * Field order honors a numeric `x-table-column` annotation when present,
  * otherwise declaration order. Fields annotated `x-hidden` are skipped.
  */
-export function buildDefaultEntityTemplate(
+function orderedSchemaFields(
   metadataSchema: Record<string, unknown> | null | undefined
-): TemplateNode | null {
+): SchemaField[] | null {
   const properties = (metadataSchema as { properties?: unknown } | null | undefined)?.properties;
   if (!properties || typeof properties !== 'object') return null;
 
@@ -58,14 +70,22 @@ export function buildDefaultEntityTemplate(
   );
   if (entries.length === 0) return null;
 
-  const ordered = entries
+  return entries
     .map(([key, def], i) => {
       const col = def?.['x-table-column'];
       return { key, def: def ?? {}, order: typeof col === 'number' ? col : i + 1000 };
     })
-    .sort((a, b) => a.order - b.order);
+    .sort((a, b) => a.order - b.order)
+    .map(({ key, def }) => ({ key, def, label: labelFor(key, def) }));
+}
 
-  const rows: TemplateNode[] = ordered.map(({ key, def }) => ({
+export function buildDefaultEntityTemplate(
+  metadataSchema: Record<string, unknown> | null | undefined
+): TemplateNode | null {
+  const ordered = orderedSchemaFields(metadataSchema);
+  if (!ordered) return null;
+
+  const rows: TemplateNode[] = ordered.map(({ key, label }) => ({
     type: 'tr',
     children: [
       {
@@ -74,7 +94,7 @@ export function buildDefaultEntityTemplate(
           className:
             'text-left align-top pr-4 py-1.5 font-medium text-muted-foreground whitespace-nowrap',
         },
-        children: [{ type: 'text', content: labelFor(key, def) }],
+        children: [{ type: 'text', content: label }],
       },
       {
         type: 'td',

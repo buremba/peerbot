@@ -6,9 +6,11 @@ import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
+import { resolveEventKindDefinition } from "../utils/event-kind-validation";
 import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
+import { buildKindCard } from "./template-card";
 
 interface CreateNotificationParams {
 	organizationId: string;
@@ -25,14 +27,26 @@ interface CreateNotificationParams {
 	 * Event semantic type (kind) for the notification's content. When set, the
 	 * event carries THIS semantic_type with an `empty` payload type, so the event-kind
 	 * render tail synthesizes the render template from the kind's `jsonTemplate`
-	 * (the same path every other `empty` event takes). Omit for the default
-	 * `notification` semantic type + plain text body — the ask/approval path
-	 * always omits it, keeping its `notification` marker and its separate
-	 * interaction-event supersede chain.
+	 * (the same path every other `empty` event takes), and chat delivery builds
+	 * its card from the same kind's `metadataSchema`. Omit for the default
+	 * `notification` semantic type + plain text body.
+	 *
+	 * Setting this does not cost a notification its `notification` marker or its
+	 * interaction supersede chain. Notification identity is row presence in
+	 * `notification_targets`, not `semantic_type` (see content-search/params),
+	 * and the interaction chain lives on the separate pending-approval event —
+	 * this event carries no interaction fields at all.
 	 */
 	semanticType?: string;
 	/** Structured payload bound to the event kind's render template. */
 	payloadData?: Record<string, unknown>;
+	/**
+	 * Run this notification's card may decide, rendering Approve/Reject on the
+	 * chat card. The click is authorized in the interaction bridge against a
+	 * chat identity that maps to an org admin/owner — setting this does not by
+	 * itself grant anyone the decision.
+	 */
+	decisionRunId?: number | null;
 	resourceType?: string | null;
 	resourceId?: string | null;
 	resourceUrl?: string | null;
@@ -446,6 +460,42 @@ async function recordDeliveryError(
 	}
 }
 
+/**
+ * Build the chat card for a notification from its event kind.
+ *
+ * Only kind-bearing notifications qualify: without a `semanticType` there is no
+ * kind to resolve, which is exactly the plain-text case. Resolution failure is
+ * never fatal — the caller falls back to the markdown body, so a missing kind
+ * costs formatting, never delivery.
+ */
+async function resolveNotificationKindCard(
+	params: Omit<CreateNotificationParams, "userId">,
+): Promise<CardElement | null> {
+	if (!params.semanticType) return null;
+	try {
+		const kind = await resolveEventKindDefinition(
+			params.semanticType,
+			params.organizationId,
+		);
+		if (!kind) return null;
+		return buildKindCard({
+			metadataSchema: kind.metadataSchema,
+			jsonTemplate: kind.jsonTemplate,
+			data: params.payloadData ?? {},
+			title: params.title,
+			subtitle: params.body ?? undefined,
+			url: params.resourceUrl,
+			decisionRunId: params.decisionRunId,
+		});
+	} catch (err) {
+		logger.warn(
+			{ err, semanticType: params.semanticType, orgId: params.organizationId },
+			"[Notifications] Could not build the event kind card for chat — falling back to text",
+		);
+		return null;
+	}
+}
+
 async function deliverToBotConnections(
 	params: Omit<CreateNotificationParams, "userId">,
 	eventId: number,
@@ -455,8 +505,15 @@ async function deliverToBotConnections(
 	if (!manager) return;
 
 	const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
-	// A rich card takes precedence over the markdown body for the channel post.
-	const content = params.card ? { card: params.card } : { markdown: text };
+	// Card precedence, richest first:
+	//   1. an explicit `card` — the caller built it, so it wins outright;
+	//   2. the notification's own event kind, whose render template gives chat
+	//      the same content the Memory view shows. This is what stops a caller
+	//      authoring its content twice (`payloadData` for web, a hand-built card
+	//      for chat) and drifting between them;
+	//   3. the markdown body.
+	const card = params.card ?? (await resolveNotificationKindCard(params));
+	const content = card ? { card } : { markdown: text };
 	const deliveryPlan = await resolveNotificationDeliveryPlan({
 		organizationId: params.organizationId,
 		automationId: params.automationId,

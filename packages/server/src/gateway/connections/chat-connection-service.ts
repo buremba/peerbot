@@ -149,8 +149,13 @@ async function validateProviderIdentity(
 ): Promise<Record<string, unknown>> {
 	const metadata: Record<string, unknown> = {};
 	if (isSlackConfig(config)) {
-		const botToken = config.botToken;
-		if (!botToken) throw new Error("Slack bot token is required");
+		// Since @chat-adapter/slack 4.38, `botToken` may be a lazy resolver rather
+		// than a literal, so the adapter can fetch a per-workspace token on demand.
+		// authTest needs the resolved value.
+		const configured = config.botToken;
+		if (!configured) throw new Error("Slack bot token is required");
+		const botToken =
+			typeof configured === "function" ? await configured() : configured;
 		const identity = await createSlackWebApi().authTest(botToken);
 		metadata.teamId = identity.teamId;
 	}

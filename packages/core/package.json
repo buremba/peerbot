@@ -21,6 +21,12 @@
     "!**/*.map"
   ],
   "exports": {
+    "./json-template": {
+      "types": "./dist/json-template.d.ts",
+      "bun": "./src/json-template.ts",
+      "import": "./dist/json-template.js",
+      "require": "./dist/json-template.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",

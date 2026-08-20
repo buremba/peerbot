@@ -2,6 +2,14 @@ import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
+import {
+	BROWSER_SESSION_EXPIRED_KIND,
+	CONNECTION_AUTHORIZATION_KIND,
+	CONNECTOR_OPERATION_APPROVAL_KIND,
+	ENTITY_CHANGE_APPROVAL_KIND,
+	INVITATION_RECEIVED_KIND,
+} from "../utils/platform-event-kinds";
+import { escapeSlackText } from "../utils/slack-text";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
@@ -40,24 +48,6 @@ type EntityChangeApprovalDetails = {
 export type ActionApprovalDetails =
 	| FieldChangeApprovalDetails
 	| EntityChangeApprovalDetails;
-
-/**
- * Escape user/agent-controlled text before it lands in Slack mrkdwn. Without
- * this, a proposed field value containing `<!channel>` pings the room from
- * inside a trusted approval card, and `<https://evil|Review in Lobu>` spoofs
- * the review link.
- *
- * Slack-only: the persisted in-app body is Markdown source, not Slack mrkdwn.
- * Storing Slack's HTML entities there couples plain-text consumers to Slack
- * escaping. The Markdown emitter neutralises its own injection vectors via
- * `escapeMarkdownText`.
- */
-function escapeSlackText(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-}
 
 /**
  * Escape user/agent-controlled text for the in-app Markdown body (GFM, so
@@ -538,7 +528,27 @@ export async function notifyActionApprovalNeeded(params: {
 	requesterUserId?: string | null;
 	mcpActivity?: McpActivityAttribution | null;
 	details?: ActionApprovalDetails;
+	/**
+	 * Set ONLY for a connector operation (`run_type = 'action'`). Its presence
+	 * is what routes the notification through the platform event kind and puts
+	 * Approve/Reject on the chat card — builder runs (`manage_automations`,
+	 * `manage_agents`) also arrive without `details`, but the chat click handler
+	 * cannot decide them, so they must not be inferred into this family.
+	 */
+	operation?: {
+		/** Human-readable operation name. */
+		name: string;
+		/** The operation's input, rendered so the decision can be made from chat. */
+		input: Record<string, unknown>;
+	} | null;
 }): Promise<void> {
+	const operation = params.operation ?? null;
+	// The render model is already the shape a template wants — a couple of
+	// scalars plus `diffs` / `proposal` lists — so the kind's `each` walks it
+	// directly rather than a formatter flattening it into one paragraph.
+	const entityChange = params.details
+		? (buildApprovalRenderModel(params.details) as unknown as Record<string, unknown>)
+		: null;
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
 		// Run-scoped, via the shared permalink resolver — same reasoning as the
 		// approval_url: the pending event is superseded on approve→complete, but the
@@ -552,18 +562,27 @@ export async function notifyActionApprovalNeeded(params: {
 			type: "action_approval_needed",
 			title: formatActionApprovalTitle(params.actionKey, params.details),
 			body: formatActionApprovalBody(params),
-			card: buildActionApprovalCard({
-				runId: params.runId,
-				approvalUrl: params.approvalUrl,
-				details: params.details,
-				// approvalUrl deliberately omitted from the summary: the card already
-				// carries it as the link button, and the body's "Review: …" line next
-				// to an identical button reads as a rendering bug.
-				summary: formatActionApprovalBody({
-					connectionName: params.connectionName,
-					details: params.details,
-				}),
-			}),
+			// Both approval families render through a platform event kind, so the
+			// chat post, the Memory view and MCP apps all show the SAME table from
+			// one declaration instead of each surface formatting the payload again.
+			...(operation
+				? {
+						semanticType: CONNECTOR_OPERATION_APPROVAL_KIND,
+						payloadData: {
+							operation: operation.name,
+							connection: params.connectionName ?? null,
+							input: operation.input,
+						},
+						decisionRunId: params.runId,
+					}
+				: {}),
+			...(entityChange
+				? {
+						semanticType: ENTITY_CHANGE_APPROVAL_KIND,
+						payloadData: entityChange,
+						decisionRunId: params.runId,
+					}
+				: {}),
 			resourceType: "event",
 			resourceId: String(params.eventId),
 			resourceUrl,
@@ -597,13 +616,18 @@ export async function notifyConnectionPermissionRequest(params: {
 	connectUrl?: string;
 }): Promise<void> {
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
-		const urlLine = params.connectUrl
-			? `\n\nAuthorize: ${params.connectUrl}`
-			: "";
+		// No "Authorize: <url>" line glued into the body any more: the card
+		// carries the destination as a link button, and the inbox has the
+		// resource URL, so interpolating it here only duplicated it as prose.
 		return {
 			type: "connection_permission_request",
 			title: `Connection "${params.connectorKey}" needs authorization`,
-			body: `A new connection was created and requires OAuth authorization.${urlLine}`,
+			body: "A new connection was created and requires OAuth authorization.",
+			semanticType: CONNECTION_AUTHORIZATION_KIND,
+			payloadData: {
+				connector: params.connectorKey,
+				status: "Waiting for OAuth authorization",
+			},
 			resourceType: "connection",
 			resourceId: String(params.connectionId),
 			// Land on the connection that needs OAuth — not the bare connectors index.
@@ -631,12 +655,15 @@ export async function notifyBrowserAuthExpired(params: {
 	await notifyOrgAdmins(params.orgId, (orgSlug) => ({
 		type: "browser_auth_expired",
 		title: `${params.connectorKey} needs sign-in`,
-		body: params.authProfileSlug
-			? "Session needs re-authentication.\n" +
-				"Enable remote debugging in Chrome: chrome://inspect/#remote-debugging\n" +
-				`Or run: lobu memory browser-auth --connector ${params.connectorKey} --auth-profile-slug ${params.authProfileSlug}`
-			: `Your ${params.connectorKey} session has expired, so syncing has stopped. ` +
-				`Open ${params.connectorKey} in the browser where your Owletto extension runs and sign in to resume.`,
+		body: "Syncing has stopped until the session is renewed.",
+		semanticType: BROWSER_SESSION_EXPIRED_KIND,
+		payloadData: {
+			connector: params.connectorKey,
+			status: "Session expired — syncing stopped",
+			fix: params.authProfileSlug
+				? `Run: lobu memory browser-auth --connector ${params.connectorKey} --auth-profile-slug ${params.authProfileSlug}`
+				: `Open ${params.connectorKey} in the browser where your Owletto extension runs and sign in.`,
+		},
 		resourceType: "connection",
 		resourceId: String(params.connectionId),
 		// Connection detail is where re-auth / browser profile is managed —
@@ -663,6 +690,11 @@ export async function notifyInvitationReceived(params: {
 	await sendNotification(params.orgId, [params.userId], {
 		type: "invitation_received",
 		title: `You've been invited to ${params.orgName}`,
+		semanticType: INVITATION_RECEIVED_KIND,
+		payloadData: {
+			organization: params.orgName,
+			invitedBy: params.inviterName ?? null,
+		},
 		body: `You were invited${inviterLabel} to join the organization.`,
 		resourceType: "invitation",
 		resourceId: params.invitationId,

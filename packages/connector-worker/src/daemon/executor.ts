@@ -62,6 +62,8 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
 export interface ExecutorConfig {
   batchSize: number;
   heartbeatIntervalMs: number;
+  /** Grace for a CLI that completed the run over MCP and is winding down. */
+  terminalHeartbeatGraceMs?: number;
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;

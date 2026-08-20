@@ -68,6 +68,8 @@ export interface AutomationExecutorConfig {
   insideClaude?: boolean;
   /** Stops a pending parent handoff during daemon shutdown. */
   shutdownSignal?: AbortSignal;
+  /** Grace for a CLI that completed the run over MCP and is winding down. */
+  terminalHeartbeatGraceMs?: number;
   /**
    * Agent to use when the Automation names no `agent_kind`.
    *
@@ -105,12 +107,127 @@ const DETAIL_TAIL_CHARS = 500;
 const LOCAL_MAX_ROUNDS = 8;
 const EXIT_REPORT_DELIVERY_ATTEMPTS = 3;
 const EXIT_REPORT_RETRY_DELAY_MS = 2000;
+const TERMINAL_HEARTBEAT_GRACE_MS = 15_000;
+const SUPPORTS_PROCESS_GROUPS = process.platform !== 'win32';
+const POSIX_TREE_TERM_GRACE_MS = 3000;
+const PROCESS_REAP_GRACE_MS = 5000;
+
+/**
+ * Keep a process-group leader alive after the actual CLI exits. The daemon can
+ * then clean up descendants through an identity that the kernel cannot recycle
+ * underneath it. The supervisor deliberately ignores SIGTERM; the CLI and its
+ * descendants still receive the group signal, while the supervisor remains the
+ * ownership anchor until the daemon releases or SIGKILLs it.
+ */
+export const CLI_SUPERVISOR_SOURCE = String.raw`
+const { spawn } = require('node:child_process');
+const [binary, ...args] = process.argv.slice(1);
+let targetFinished = false;
+let parentLost = false;
+let target;
+const keepAlive = setInterval(() => {}, 2147483647);
+const send = (message) => {
+  try { process.send?.(message); } catch {}
+};
+const finish = (code, signal, error) => {
+  if (targetFinished) return;
+  targetFinished = true;
+  if (!parentLost) send({ type: 'target-exit', code, signal, error });
+};
+const stopAfterParentLoss = () => {
+  if (parentLost) return;
+  parentLost = true;
+  clearInterval(keepAlive);
+
+  if (process.platform === 'win32') {
+    // Keep this process alive as the tree root until taskkill gets its chance.
+    // The timer is deliberately ref'ed: parent loss must not let the supervisor
+    // exit before the owned CLI tree has been addressed.
+    try {
+      const killer = spawn('taskkill', ['/PID', String(process.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      killer.once('error', () => {});
+    } catch {}
+    setTimeout(() => {
+      try { target?.kill('SIGKILL'); } catch {}
+      process.exit(1);
+    }, 3000);
+    return;
+  }
+
+  // This detached supervisor is still the live session/group leader, so its
+  // own negative pid cannot have been recycled. Ignore SIGTERM here while the
+  // target and descendants get a graceful window, then kill the complete group
+  // including this anchor so parent loss cannot leave an immortal orphan.
+  try {
+    process.kill(-process.pid, 'SIGTERM');
+  } catch {
+    try { target?.kill('SIGTERM'); } catch {}
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-process.pid, 'SIGKILL');
+    } catch {
+      try { target?.kill('SIGKILL'); } catch {}
+      process.exit(1);
+    }
+  }, 3000);
+};
+process.on('SIGTERM', () => {});
+process.once('disconnect', stopAfterParentLoss);
+process.on('message', (message) => {
+  if (message?.type !== 'release' || !targetFinished) return;
+  clearInterval(keepAlive);
+  process.exit(0);
+});
+if (!binary) {
+  finish(127, null, 'automation supervisor missing target binary');
+} else {
+  try {
+    target = spawn(binary, args, {
+      env: process.env,
+      stdio: ['ignore', 'inherit', 'inherit'],
+      windowsHide: true,
+    });
+  } catch (error) {
+    finish(127, null, error instanceof Error ? error.message : String(error));
+  }
+  target?.once('error', (error) => {
+    finish(127, null, error instanceof Error ? error.message : String(error));
+  });
+  target?.once('exit', (code, signal) => finish(code, signal, null));
+}
+setImmediate(() => {
+  if (!process.connected) stopAfterParentLoss();
+});
+`;
+
+interface TargetExit {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  error: string | null;
+}
+
+interface SupervisedCli {
+  supervisor: ChildProcess;
+  targetExit: Promise<TargetExit>;
+}
 
 /** Sentinel for "binary not on PATH" so it maps to a distinct exit reason. */
 class ExecutableNotFoundError extends Error {
   constructor(name: string) {
     super(`${name} binary not found on PATH`);
     this.name = 'ExecutableNotFoundError';
+  }
+}
+
+/** The server has already finalized or released this claimed run. */
+class AutomationRunNoLongerActiveError extends Error {
+  constructor() {
+    super('automation run is no longer active');
+    this.name = 'AutomationRunNoLongerActiveError';
   }
 }
 
@@ -170,30 +287,302 @@ async function awaitDrain(
   return pending;
 }
 
-/** Wait for the child to exit, or report the timeout lapsed. */
-function waitForExit(
-  proc: ChildProcess,
-  timeoutMs: number
-): Promise<{ timedOut: boolean }> {
+/** Wait for the supervised CLI to exit, the timeout to lapse, or cancellation. */
+function waitForTargetExit(
+  targetExit: Promise<TargetExit>,
+  timeoutMs: number,
+  abortSignal?: AbortSignal
+): Promise<{ timedOut: boolean; aborted: boolean; target?: TargetExit }> {
   return new Promise((resolve) => {
     let settled = false;
-    const onExit = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ timedOut: false });
-      }
+    const settle = (outcome: {
+      timedOut: boolean;
+      aborted: boolean;
+      target?: TargetExit;
+    }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      abortSignal?.removeEventListener('abort', onAbort);
+      resolve(outcome);
     };
+    const onAbort = () => settle({ timedOut: false, aborted: true });
     const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        proc.removeListener('exit', onExit);
-        resolve({ timedOut: true });
-      }
+      settle({ timedOut: true, aborted: false });
     }, timeoutMs);
+    timer.unref?.();
+    targetExit.then((target) => settle({ timedOut: false, aborted: false, target }));
+    if (abortSignal?.aborted) onAbort();
+    else abortSignal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Wait a bounded interval for a signal sent to the child to take effect. */
+function waitForSignalledExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => settle(true);
+    const timer = setTimeout(() => settle(false), timeoutMs);
     timer.unref?.();
     proc.once('exit', onExit);
   });
+}
+
+type ProcessGroupOwner = Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode'>;
+
+/**
+ * Signal a POSIX group only while its supervisor is a live ownership anchor.
+ * Once the anchor has exited, its numeric pid/pgid may refer to an unrelated
+ * future process group and must never be used as a negative-pid signal target.
+ * Exported only so the PID-reuse safety invariant has a direct regression test.
+ */
+export function signalOwnedPosixProcessGroup(
+  owner: ProcessGroupOwner,
+  signal: NodeJS.Signals,
+  sendSignal: typeof process.kill = process.kill
+): boolean {
+  if (
+    !SUPPORTS_PROCESS_GROUPS ||
+    owner.pid == null ||
+    owner.exitCode !== null ||
+    owner.signalCode !== null
+  ) {
+    return false;
+  }
+  try {
+    sendSignal(-owner.pid, signal);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw err;
+  }
+}
+
+/** Read a snapshot of one POSIX group without signalling its numeric id. */
+function listPosixProcessGroupMembers(pgid: number): Promise<number[] | null> {
+  const psBinary = existsSync('/bin/ps')
+    ? '/bin/ps'
+    : existsSync('/usr/bin/ps')
+      ? '/usr/bin/ps'
+      : 'ps';
+  return new Promise((resolve) => {
+    let proc: ChildProcess;
+    try {
+      proc = spawn(psBinary, ['-axo', 'pid=,pgid='], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    let output = '';
+    const settle = (members: number[] | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(members);
+    };
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL');
+      settle(null);
+    }, 1000);
+    timer.unref?.();
+    proc.stdout?.setEncoding('utf8');
+    proc.stdout?.on('data', (chunk: string) => {
+      if (output.length < 4 * 1024 * 1024) output += chunk;
+    });
+    proc.once('error', () => settle(null));
+    proc.once('close', (code) => {
+      if (code !== 0) {
+        settle(null);
+        return;
+      }
+      const members: number[] = [];
+      for (const line of output.split('\n')) {
+        const [pidText, pgidText] = line.trim().split(/\s+/);
+        const pid = Number(pidText);
+        const rowPgid = Number(pgidText);
+        if (Number.isInteger(pid) && rowPgid === pgid) members.push(pid);
+      }
+      settle(members);
+    });
+  });
+}
+
+/** Ask the supervisor to release its non-reusable group identity and reap it. */
+async function releaseSupervisor(proc: ChildProcess, timeoutMs = 1000): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return true;
+  let sent = false;
+  try {
+    if (proc.connected) {
+      proc.send?.({ type: 'release' });
+      sent = true;
+    }
+  } catch {}
+  if (sent && (await waitForSignalledExit(proc, timeoutMs))) return true;
+  // Direct ChildProcess.kill uses the still-owned process handle; never turn a
+  // failed release into a negative-pgid signal after the anchor might be gone.
+  proc.kill('SIGKILL');
+  await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
+  return false;
+}
+
+/**
+ * Wait until SIGTERM leaves only the supervisor in its group. Before releasing
+ * the anchor, freeze the group and take a second snapshot so no live member can
+ * fork across the observation. A process outside this new session cannot join
+ * the group, so releasing the sole remaining supervisor is then race-free.
+ */
+async function waitForOwnedPosixTreeToQuiesce(
+  proc: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> {
+  const pgid = proc.pid;
+  if (pgid == null) return false;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const members = await listPosixProcessGroupMembers(pgid);
+    if (members == null) return false;
+    if (members.length === 1 && members[0] === pgid) {
+      if (!signalOwnedPosixProcessGroup(proc, 'SIGSTOP')) return false;
+      const frozenMembers = await listPosixProcessGroupMembers(pgid);
+      if (frozenMembers?.length === 1 && frozenMembers[0] === pgid) {
+        if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
+        return releaseSupervisor(proc);
+      }
+      // The anchor is still live and stopped, so this cannot target a reused id.
+      if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
+    }
+    await sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+  }
+  return false;
+}
+
+/** Windows has no negative-pid process groups; taskkill supplies bounded tree cleanup. */
+function taskkillWindowsTree(proc: ChildProcess, force: boolean): Promise<boolean> {
+  if (proc.pid == null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const killer = spawn(
+      'taskkill',
+      ['/PID', String(proc.pid), '/T', ...(force ? ['/F'] : [])],
+      { stdio: 'ignore', windowsHide: true }
+    );
+    let settled = false;
+    const settle = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => {
+      killer.kill();
+      settle(false);
+    }, 3000);
+    timer.unref?.();
+    killer.once('error', () => settle(false));
+    killer.once('exit', (code) => settle(code === 0));
+  });
+}
+
+/**
+ * Keep the supervisor alive until Windows has had its forced tree-kill chance.
+ * Killing only the supervisor after a failed graceful `taskkill /T` would
+ * orphan the real CLI and make its numeric tree root unusable.
+ */
+export async function terminateWindowsProcessTree(
+  proc: ChildProcess,
+  terminateTree: typeof taskkillWindowsTree = taskkillWindowsTree,
+  waitForExit: typeof waitForSignalledExit = waitForSignalledExit
+): Promise<'SIGTERM' | 'SIGKILL'> {
+  const gracefulTreeKillSent = await terminateTree(proc, false);
+  if (gracefulTreeKillSent && (await waitForExit(proc, 3000))) return 'SIGTERM';
+
+  // If taskkill itself is unavailable, direct ChildProcess.kill remains the
+  // best-effort fallback. It cannot guarantee cleanup of an already-orphaned
+  // descendant, so use it only after the forced tree attempt has failed.
+  if (!(await terminateTree(proc, true))) proc.kill('SIGKILL');
+  await waitForExit(proc, PROCESS_REAP_GRACE_MS);
+  return 'SIGKILL';
+}
+
+/**
+ * Stop the complete CLI process tree, escalating to SIGKILL if any POSIX group
+ * member ignores SIGTERM. Returns the signal that actually ended it, which the
+ * timeout branch reports as `exit_signal`.
+ */
+async function terminateChild(proc: ChildProcess): Promise<'SIGTERM' | 'SIGKILL'> {
+  if (SUPPORTS_PROCESS_GROUPS) {
+    if (!signalOwnedPosixProcessGroup(proc, 'SIGTERM')) {
+      proc.kill('SIGTERM');
+      await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
+      return 'SIGTERM';
+    }
+    if (await waitForOwnedPosixTreeToQuiesce(proc, POSIX_TREE_TERM_GRACE_MS)) {
+      return 'SIGTERM';
+    }
+    if (!signalOwnedPosixProcessGroup(proc, 'SIGKILL')) proc.kill('SIGKILL');
+    await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
+    return 'SIGKILL';
+  }
+
+  return terminateWindowsProcessTree(proc);
+}
+
+/** Spawn the real CLI beneath a persistent process-group ownership anchor. */
+function spawnSupervisedCli(
+  binary: string,
+  args: string[],
+  env: NodeJS.ProcessEnv
+): SupervisedCli {
+  const supervisor = spawn(
+    process.execPath,
+    ['-e', CLI_SUPERVISOR_SOURCE, '--', binary, ...args],
+    {
+      detached: SUPPORTS_PROCESS_GROUPS,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      windowsHide: true,
+    }
+  );
+  const targetExit = new Promise<TargetExit>((resolve) => {
+    let settled = false;
+    const settle = (target: TargetExit) => {
+      if (settled) return;
+      settled = true;
+      resolve(target);
+    };
+    supervisor.on('message', (message: unknown) => {
+      if (typeof message !== 'object' || message == null) return;
+      const value = message as Record<string, unknown>;
+      if (value.type !== 'target-exit') return;
+      settle({
+        exitCode: typeof value.code === 'number' ? value.code : null,
+        signalCode: typeof value.signal === 'string' ? (value.signal as NodeJS.Signals) : null,
+        error: typeof value.error === 'string' ? value.error : null,
+      });
+    });
+    supervisor.once('error', (error) => {
+      settle({ exitCode: null, signalCode: null, error: error.message });
+    });
+    supervisor.once('exit', (code, signal) => {
+      settle({
+        exitCode: code,
+        signalCode: signal,
+        error: 'automation process supervisor exited before reporting the CLI outcome',
+      });
+    });
+  });
+  return { supervisor, targetExit };
 }
 
 /** Assemble argv from the spec + execution config, mirroring `SpecExecutor`. */
@@ -334,12 +723,20 @@ async function runCli(
   config: AutomationPollPayload['automation']['execution_config'],
   access: AutomationRunAccess,
   timeoutMs: number,
-  binaryPath?: string
+  binaryPath?: string,
+  abortSignal?: AbortSignal,
+  terminalHeartbeatGraceMs = TERMINAL_HEARTBEAT_GRACE_MS
 ): Promise<ExecutorResult> {
+  // One AbortController spans every finalize/resume round. If a terminal 409
+  // landed while the prior exit report was in flight, do not start stale work.
+  if (abortSignal?.aborted) throw new AutomationRunNoLongerActiveError();
+
   const binary = binaryPath ?? locateBinary(spec.binaryName);
   if (!binary || !existsSync(binary)) throw new ExecutableNotFoundError(spec.binaryName);
 
   const { mcpArgs, mcpEnv, cleanup } = buildMcp(spec, access.wiring);
+  let supervisor: ChildProcess | undefined;
+  let supervisorSettled = false;
   try {
     const args = buildArguments(spec, prompt, config, mcpArgs, timeoutMs / 1000);
     const started = Date.now();
@@ -360,33 +757,50 @@ async function runCli(
       env.PATH = `${extraPath}:${currentPath}`;
     }
 
-    const proc = spawn(binary, args, {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const supervised = spawnSupervisedCli(binary, args, env);
+    const proc = supervised.supervisor;
+    supervisor = proc;
 
-    const stdoutPromise = drain(proc.stdout, STDOUT_CAP);
-    const stderrPromise = drain(proc.stderr, STDERR_CAP);
+    const stdoutPromise = drain(proc.stdout!, STDOUT_CAP);
+    const stderrPromise = drain(proc.stderr!, STDERR_CAP);
 
-    const { timedOut } = await waitForExit(proc, timeoutMs);
+    const initialExit = await waitForTargetExit(supervised.targetExit, timeoutMs, abortSignal);
+    const { timedOut, aborted } = initialExit;
+    let target = initialExit.target;
+    let cancelled = false;
     let killedSignal: string | null = null;
-    if (timedOut) {
-      proc.kill('SIGTERM');
-      killedSignal = 'SIGTERM';
-      await sleep(3000);
-      if (proc.exitCode === null && proc.signalCode === null) {
-        proc.kill('SIGKILL');
-        killedSignal = 'SIGKILL';
+    let cleanupSignal: string | null = null;
+    if (aborted) {
+      // A 409 is also the normal post-complete_window state. Let a CLI that is
+      // already winding down exit and report its device-side metadata. The
+      // supervisor remains the non-reusable tree owner throughout the grace,
+      // so a normally exiting leader cannot orphan its remaining descendants.
+      const gracefulExit = await waitForTargetExit(
+        supervised.targetExit,
+        terminalHeartbeatGraceMs
+      );
+      target = gracefulExit.target;
+      if (!target) {
+        cancelled = true;
+        // The exit report is discarded below, so the signal it took is moot.
+        await terminateChild(proc);
+        supervisorSettled = true;
+      } else {
+        cleanupSignal = await terminateChild(proc);
+        supervisorSettled = true;
       }
-      // Bounded wait for the process to be reaped so the pipes flush.
-      await Promise.race([
-        new Promise((resolve) => proc.once('exit', resolve)),
-        sleep(5000),
-      ]);
+    } else if (timedOut) {
+      killedSignal = await terminateChild(proc);
+      supervisorSettled = true;
+      target = await supervised.targetExit;
+    } else {
+      await releaseSupervisor(proc);
+      supervisorSettled = true;
     }
 
     // A SIGKILLed child gets a short flush window; a clean exit gets a long one.
-    const drainDeadlineMs = killedSignal === 'SIGKILL' ? 2000 : 60_000;
+    const drainDeadlineMs =
+      cancelled || killedSignal === 'SIGKILL' || cleanupSignal === 'SIGKILL' ? 2000 : 60_000;
     // Both pipes must race the SAME clock. Awaiting them in sequence gave
     // stderr a fresh deadline only after stdout's had expired, so a grandchild
     // holding both ends cost 2x the deadline (measured: 120s for a child that
@@ -395,14 +809,17 @@ async function runCli(
       { data: stdoutData, truncated: stdoutTruncated },
       { data: stderrData },
     ] = await Promise.all([
-      awaitDrain(stdoutPromise, proc.stdout, drainDeadlineMs),
-      awaitDrain(stderrPromise, proc.stderr, drainDeadlineMs),
+      awaitDrain(stdoutPromise, proc.stdout!, drainDeadlineMs),
+      awaitDrain(stderrPromise, proc.stderr!, drainDeadlineMs),
     ]);
 
+    if (cancelled) throw new AutomationRunNoLongerActiveError();
+
     const label = spec.binaryName;
-    const exitCode = proc.exitCode;
+    const exitCode = target?.exitCode ?? null;
+    const targetSignal = target?.signalCode ?? null;
     const exitSignal =
-      killedSignal ?? (proc.signalCode != null ? `signal:${proc.signalCode}` : null);
+      killedSignal ?? (targetSignal != null ? `signal:${targetSignal}` : null);
 
     let exitReason: WorkerExitReason;
     let errorMessage: string | null;
@@ -410,10 +827,16 @@ async function runCli(
     // back to stdout. `claude` prints its fatal on stdout ("Credit balance is
     // too low") and leaves stderr empty, so reading stderr alone reported the
     // most likely real failure as a bare "exited with non-zero status 1" with
-    // the cause only in output_tail; `opencode` logs to stderr instead. Bounded
-    // because this lands in `runs.error_message`, and stderr is capped at 1 MiB.
+    // the cause only in output_tail; `opencode` logs to stderr instead. The
+    // supervisor's error is the last resort: on SIGKILL escalation the whole
+    // group dies before the supervisor can report, and its synthetic message
+    // must not mask what the CLI actually wrote. Bounded because this lands in
+    // `runs.error_message`, and stderr is capped at 1 MiB.
     const detail = (
-      stderrData.toString('utf8').trim() || stdoutData.toString('utf8').trim()
+      stderrData.toString('utf8').trim() ||
+      stdoutData.toString('utf8').trim() ||
+      target?.error ||
+      ''
     ).slice(-DETAIL_TAIL_CHARS);
     if (timedOut) {
       exitReason = 'timeout';
@@ -426,9 +849,9 @@ async function runCli(
     } else if (exitCode === 0) {
       exitReason = 'ok';
       errorMessage = null;
-    } else if (proc.signalCode != null) {
+    } else if (targetSignal != null) {
       exitReason = 'crash';
-      errorMessage = `${label} exited via signal (status=${proc.signalCode})`;
+      errorMessage = `${label} exited via signal (status=${targetSignal})`;
     } else {
       exitReason = 'error_message';
       errorMessage =
@@ -450,6 +873,18 @@ async function runCli(
       durationMs,
     };
   } finally {
+    if (
+      supervisor &&
+      !supervisorSettled &&
+      supervisor.exitCode === null &&
+      supervisor.signalCode === null
+    ) {
+      await terminateChild(supervisor).catch(() => {
+        try {
+          supervisor?.kill('SIGKILL');
+        } catch {}
+      });
+    }
     cleanup();
   }
 }
@@ -535,8 +970,18 @@ export async function executeAutomationRun(
 
   // Heartbeat the run while the CLI executes so the server's stale-run sweeper
   // can distinguish a live turn from an abandoned one.
+  const runAbort = new AbortController();
   const heartbeat = setInterval(() => {
     client.heartbeat(runId).catch((err) => {
+      if (err instanceof WorkerHttpError && err.status === 409) {
+        if (!runAbort.signal.aborted) {
+          log.info(
+            `[executor] Automation run ${runId} is no longer active; waiting for the local CLI to exit`
+          );
+          runAbort.abort();
+        }
+        return;
+      }
       log.debug('[executor] Automation heartbeat failed:', err);
     });
   }, cfg.heartbeatIntervalMs ?? 30_000);
@@ -606,7 +1051,9 @@ export async function executeAutomationRun(
         payload.automation.execution_config,
         resolveAutomationRunAccess(payload, client.mcpWiring),
         timeoutMs,
-        cfg.binaryOverrides?.[spec.kind]
+        cfg.binaryOverrides?.[spec.kind],
+        runAbort.signal,
+        cfg.terminalHeartbeatGraceMs
       );
     },
     deliver: (result, finalizeAttempt) =>
@@ -634,6 +1081,11 @@ export async function dispatchAutomationResumeLoop(
     try {
       result = await io.run(finalizeNudge);
     } catch (err) {
+      if (err instanceof AutomationRunNoLongerActiveError) {
+        // The server already owns this run's outcome; the CLI has been stopped.
+        // Reporting an exit now would stomp whatever it settled on.
+        return { itemsCollected: 0 };
+      }
       // Unambiguous: nothing has been reported yet. Missing binary is a
       // configuration problem, not a crash.
       const reason: WorkerExitReason =

@@ -7,6 +7,8 @@ import {
   buildArguments,
   deliverExitReport,
   dispatchAutomationResumeLoop,
+  signalOwnedPosixProcessGroup,
+  terminateWindowsProcessTree,
   type AutomationRunIo,
   type ExecutorResult,
 } from '../daemon/automation.js';
@@ -27,6 +29,56 @@ function okResult(): ExecutorResult {
     durationMs: 1,
   };
 }
+
+describe('POSIX process-group ownership', () => {
+  test('an exited supervisor never signals a numerically reused process group', () => {
+    if (process.platform === 'win32') return;
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const sendSignal = ((pid: number, signal: NodeJS.Signals | number) => {
+      signals.push({ pid, signal });
+      return true;
+    }) as typeof process.kill;
+
+    // Model the exact reuse hazard: the old ChildProcess still carries 4242,
+    // but exitCode proves its ownership ended and a new group may now own 4242.
+    const staleOwner = { pid: 4242, exitCode: 0, signalCode: null };
+    expect(signalOwnedPosixProcessGroup(staleOwner, 'SIGKILL', sendSignal)).toBe(false);
+    expect(signals).toEqual([]);
+
+    const liveOwner = { pid: 4242, exitCode: null, signalCode: null };
+    expect(signalOwnedPosixProcessGroup(liveOwner, 'SIGTERM', sendSignal)).toBe(true);
+    expect(signals).toEqual([{ pid: -4242, signal: 'SIGTERM' }]);
+  });
+});
+
+describe('Windows process-tree termination', () => {
+  test('a failed graceful tree kill escalates the tree before touching the supervisor', async () => {
+    const treeKillCalls: boolean[] = [];
+    const directSignals: NodeJS.Signals[] = [];
+    const proc = {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+      kill: (signal: NodeJS.Signals) => {
+        directSignals.push(signal);
+        return true;
+      },
+    } as unknown as import('node:child_process').ChildProcess;
+
+    const result = await terminateWindowsProcessTree(
+      proc,
+      async (_owner, force) => {
+        treeKillCalls.push(force);
+        return force;
+      },
+      async () => true
+    );
+
+    expect(result).toBe('SIGKILL');
+    expect(treeKillCalls).toEqual([false, true]);
+    expect(directSignals).toEqual([]);
+  });
+});
 
 /** Scripted resume-loop IO. `deliver` is a single-shot script (the retry logic
  * lives in `deliverExitReport`, tested separately). */

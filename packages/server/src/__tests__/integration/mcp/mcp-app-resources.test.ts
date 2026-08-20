@@ -515,6 +515,13 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         visibility: ['model', 'app'],
       })
     );
+    // The binding above ships regardless of negotiation; what proves the
+    // negotiated flag survived recovery is the app-only tool staying listed.
+    expect(
+      body.result?.tools?.some(
+        (entry: { name?: string }) => entry.name === 'resolve_approval'
+      )
+    ).toBe(true);
   });
 
   it('returns the exact saved event payload for the save_memory App card', async () => {
@@ -948,7 +955,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?._meta?.['mcp/www_authenticate']).toBeUndefined();
   });
 
-  it('keeps the text fallback when the client does not advertise MCP Apps support', async () => {
+  it('still binds the app for a client that did not advertise MCP Apps, while keeping app-only tools hidden', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`, {
       advertiseMcpApps: false,
     });
@@ -967,8 +974,19 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const tool = body.result?.tools?.find(
       (entry: { name?: string }) => entry.name === 'get_approval'
     );
-    expect(tool?._meta?.ui).toBeUndefined();
+    // The binding ships to every client: `resources/list` already advertises
+    // the app unconditionally, and a host that renders apps without declaring
+    // the extension (claude.ai) could otherwise see the app but never bind it.
+    expect(tool?._meta?.ui).toEqual(
+      expect.objectContaining({ resourceUri: LOBU_INTERACTION_RESOURCE_URI })
+    );
+    expect(tool?._meta?.['openai/outputTemplate']).toBe(LOBU_INTERACTION_RESOURCE_URI);
+    // A client that ignores `_meta` is unaffected: the human-readable surface
+    // is unchanged.
     expect(typeof tool?.description).toBe('string');
+    // What stays gated is the tool filter: an app-only tool is still withheld
+    // from a client that never negotiated (hidden, not disabled — `tools/call`
+    // still dispatches it, so a rendered card can drive its own resolver).
     expect(
       body.result?.tools?.some(
         (entry: { name?: string }) => entry.name === 'resolve_approval'
@@ -1010,8 +1028,13 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     const renderBody = await renderResponse.json();
     expect(renderBody.result?.isError).not.toBe(true);
+    // The binding ships even without negotiation, but the app-only approval
+    // capability does not: the binding names a surface, the capability grants
+    // the power to act through it.
+    expect(renderBody.result?._meta?.['openai/outputTemplate']).toBe(
+      LOBU_INTERACTION_RESOURCE_URI
+    );
     expect(renderBody.result?._meta?.['lobu/approval-capability']).toBeUndefined();
-    expect(renderBody.result?._meta?.['openai/outputTemplate']).toBeUndefined();
     // The registered approval reader still carries the viewer role, while the
     // app-only approval capability is withheld from this non-App client.
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');

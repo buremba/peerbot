@@ -1,5 +1,41 @@
 # Changelog
 
+## [15.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.1.0...lobu-v15.2.0) (2026-08-20)
+
+
+### Features
+
+* **authz:** govern force_delete_tree with the same $deleted rule the soft path uses ([#2963](https://github.com/lobu-ai/lobu/issues/2963)) ([64b2d8b](https://github.com/lobu-ai/lobu/commit/64b2d8b7f51725e4b218e243d1aa6c8743bffe8a))
+* **authz:** govern merge with entity write rules, under its own name ([#2950](https://github.com/lobu-ai/lobu/issues/2950)) ([5da9664](https://github.com/lobu-ai/lobu/commit/5da9664e850a7c73ba9e68272452bc5279e2b783))
+* **automations:** execute headless device Automations on a per-run agent session ([#2943](https://github.com/lobu-ai/lobu/issues/2943)) ([42a230d](https://github.com/lobu-ai/lobu/commit/42a230d7f143d128e986b04256b968c5734b4454))
+* **automations:** expose the platform event catalog to trigger pickers ([#2959](https://github.com/lobu-ai/lobu/issues/2959)) ([8818450](https://github.com/lobu-ai/lobu/commit/8818450208fd1d93ea2a6dc3ef39e8d073a4b1f2))
+* **ci:** let ui-review skip the screenshot when a range has no UI surface ([#2993](https://github.com/lobu-ai/lobu/issues/2993)) ([97808ba](https://github.com/lobu-ai/lobu/commit/97808ba7aba7bea07b6e05ec3aee18fadd6d37fa))
+* **entities:** preview a merge's rule verdict with dry_run ([#2958](https://github.com/lobu-ai/lobu/issues/2958)) ([02114cf](https://github.com/lobu-ai/lobu/commit/02114cfbb2529d63514ad30fdbdf4a6248638685))
+* **merge:** card a merge the write rule escalates instead of failing it closed ([#2984](https://github.com/lobu-ai/lobu/issues/2984)) ([b96dbb1](https://github.com/lobu-ai/lobu/commit/b96dbb11d316fe86f3ad06eb7f4092c725221a95))
+
+
+### Bug Fixes
+
+* **approvals:** apply builder-run proposals without re-entering the fresh-call scope gate ([#2981](https://github.com/lobu-ai/lobu/issues/2981)) ([276f42e](https://github.com/lobu-ai/lobu/commit/276f42e21d1dc2cbb07058e40d62175fe131d462))
+* **authz:** verify a declared automation_source at every write surface ([#2967](https://github.com/lobu-ai/lobu/issues/2967)) ([6496ad4](https://github.com/lobu-ai/lobu/commit/6496ad4a05d1b7c6aa3da2526dfa2096a3e7bc0b))
+* **automations:** bound audit-mediated cascades and verify declared sources ([#2952](https://github.com/lobu-ai/lobu/issues/2952)) ([4328258](https://github.com/lobu-ai/lobu/commit/4328258c617be6b943ce9f8cf700c5969ecb9539))
+* **connections:** gate action_modes writes to human web sessions ([#2961](https://github.com/lobu-ai/lobu/issues/2961)) ([304c95c](https://github.com/lobu-ai/lobu/commit/304c95c6dbdf4847e3902d9abbd341d8f182dc62))
+* **devices:** expire child tokens and stop the mint chain at depth 1 ([#2962](https://github.com/lobu-ai/lobu/issues/2962)) ([d9b9af8](https://github.com/lobu-ai/lobu/commit/d9b9af82938883a060b922736065293f8c9eb451))
+* **devices:** stop poll and re-mint heartbeats from clobbering a user-set device label ([#2957](https://github.com/lobu-ai/lobu/issues/2957)) ([a1428ba](https://github.com/lobu-ai/lobu/commit/a1428baacb7634f507535a814945666d679f856f))
+* **entities:** let a merged record be force-deleted instead of wedging on its ledger ([#2970](https://github.com/lobu-ai/lobu/issues/2970)) ([162cb90](https://github.com/lobu-ai/lobu/commit/162cb901f48ace88a4ac79ba6dd7e5f416a696e2))
+* **entities:** route a delete rule's escalate into an approval card ([#2971](https://github.com/lobu-ai/lobu/issues/2971)) ([7b7c7d9](https://github.com/lobu-ai/lobu/commit/7b7c7d9ca746b22d27e60a330843794bcfd07f99))
+* **feeds:** defer offline device syncs ([#2989](https://github.com/lobu-ai/lobu/issues/2989)) ([276940a](https://github.com/lobu-ai/lobu/commit/276940a6934ae8ca8ee3e162a306dc79bc5cf785))
+* **feeds:** exclude paused feeds from health filters ([#2992](https://github.com/lobu-ai/lobu/issues/2992)) ([ec1d511](https://github.com/lobu-ai/lobu/commit/ec1d5110e05887474803f5cf12467a577b628e88))
+* **mcp:** echo the saved payload to every card, not only negotiated clients ([#2968](https://github.com/lobu-ai/lobu/issues/2968)) ([3fd9c00](https://github.com/lobu-ai/lobu/commit/3fd9c00ca54fdfadc6e7efa177a5325c92f4435f))
+* **mcp:** issue and redeem the approval capability without the Apps declaration ([#2973](https://github.com/lobu-ai/lobu/issues/2973)) ([2b3c899](https://github.com/lobu-ai/lobu/commit/2b3c8997415774dfbf2f1c65c1a963a9ee82ba33))
+* **mcp:** resolve superseded interaction resource URIs to the current shell ([#2949](https://github.com/lobu-ai/lobu/issues/2949)) ([b96f172](https://github.com/lobu-ai/lobu/commit/b96f17264fc4fb7792c9f831d855beb5c34b42f3))
+* **mcp:** send the App binding to every client, not only negotiated ones ([#2960](https://github.com/lobu-ai/lobu/issues/2960)) ([7f8862e](https://github.com/lobu-ai/lobu/commit/7f8862e10ae1418628ce0c6fde25934c06f691f5))
+* **server:** require Node for Vitest suites ([#2991](https://github.com/lobu-ai/lobu/issues/2991)) ([ad3a668](https://github.com/lobu-ai/lobu/commit/ad3a6684ada45a8fe641a3054ebbf15c6178254d))
+* **server:** settle terminal chat action cards ([#2985](https://github.com/lobu-ai/lobu/issues/2985)) ([c778c72](https://github.com/lobu-ai/lobu/commit/c778c725422b8a6fa3d65e2d5a707e3dc339a2f6))
+* **server:** show approval decision provenance ([#2990](https://github.com/lobu-ai/lobu/issues/2990)) ([4783797](https://github.com/lobu-ai/lobu/commit/478379740ee661e4eefdcfcf91e7b9c0bb4d770e))
+* **tools:** make save_memory metadata optional ([#2975](https://github.com/lobu-ai/lobu/issues/2975)) ([1244c05](https://github.com/lobu-ai/lobu/commit/1244c05dc06268d344a15de3304526b076b3d3e7))
+* **workers:** mint an org-scoped MCP URL a spawned CLI can actually open ([#2974](https://github.com/lobu-ai/lobu/issues/2974)) ([180a694](https://github.com/lobu-ai/lobu/commit/180a69460c1d5762d83b3b21661efe8fdc8d5bd3))
+
 ## [15.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.0.0...lobu-v15.1.0) (2026-08-20)
 
 

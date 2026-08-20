@@ -7,16 +7,15 @@ import {
 } from "../../notifications/triggers";
 
 /**
- * Golden-pins approval card/body rendering for all four structured shapes
- * (field change, entity create, entity delete, entity merge) plus the generic
- * fallback. The in-app and Slack expectations differ where their markup
- * syntaxes require different escaping.
+ * Golden-pins the approval TITLE and Markdown BODY for all four structured
+ * shapes (field change, entity create, entity delete, entity merge) plus the
+ * generic fallback.
+ *
+ * Chat rendering is deliberately absent here: entity approvals reach Slack
+ * through the `entity_change_approval` event kind now, so their card is pinned
+ * by `template-card.test.ts` against the same template the web and MCP
+ * surfaces walk. `buildActionApprovalCard` survives only for asks.
  */
-
-function cardText(card: ReturnType<typeof buildActionApprovalCard>): string {
-	const first = (card as { children: Array<{ content?: string }> }).children[0];
-	return first.content ?? "";
-}
 
 describe("approval notification rendering", () => {
 	test("field change: body + card with escaping, diff lines, why, review link", () => {
@@ -44,13 +43,6 @@ describe("approval notification rendering", () => {
 				"\nField is protected: severity (currently set by you).\n" +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/42)",
 		);
-		expect(cardText(buildActionApprovalCard({ runId: 42, approvalUrl, details }))).toBe(
-			"*Requested by:* Automation &lt;One&gt;\n" +
-				"*Entity:* <https://app.lobu.ai/acme/topic/app-crashes|App &amp; Crashes>\n" +
-				"\n*Severity*\n~high~\n→ critical\n" +
-				"\n*Name*\n~Old Name~\n→ New &lt;Name&gt;\n" +
-				"\n*Why approval is needed:* Field is protected: severity (currently set by you).",
-		);
 	});
 
 	test("field change without name/url/reason: id fallback link, why fallback, leading blank in card", () => {
@@ -65,10 +57,6 @@ describe("approval notification rendering", () => {
 			"**An automation** wants to update Topic (#9):\n" +
 				'- Status: ~Not set~\n→ { "nested": true }\n' +
 				"\nThis change needs a human approval before it is applied.",
-		);
-		expect(cardText(buildActionApprovalCard({ details }))).toBe(
-			'\n*Status*\n~Not set~\n→ { "nested": true }\n' +
-				"\n*Why approval is needed:* This change needs a human approval before it is applied.",
 		);
 	});
 
@@ -91,13 +79,6 @@ describe("approval notification rendering", () => {
 				"- Entity type: topic\n- Name: Slow & Loading\n- Parent id: 3\n" +
 				'\nAn automation proposes creating topic "Slow & Loading".\n' +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/44)",
-		);
-		expect(cardText(buildActionApprovalCard({ runId: 44, approvalUrl, details }))).toBe(
-			"*Requested by:* An automation\n" +
-				"*Entity:* Slow &amp; Loading\n" +
-				"\n*Proposed action:* Create this entity\n" +
-				"*Entity type:* topic\n*Name:* Slow &amp; Loading\n*Parent id:* 3\n" +
-				'\n*Why approval is needed:* An automation proposes creating topic "Slow &amp; Loading".',
 		);
 	});
 
@@ -132,12 +113,6 @@ describe("approval notification rendering", () => {
 				"- Entity id: 11\n- Entity type: topic\n" + String.raw`- Name: Old \<Topic\>` + "\n- Force delete tree: false\n" +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/45)",
 		);
-		expect(cardText(buildActionApprovalCard({ runId: 45, details }))).toBe(
-			"*Requested by:* An agent\n" +
-				"*Entity:* <https://app.lobu.ai/acme/topic/old-topic|Old Topic>\n" +
-				"\n*Proposed action:* Delete this entity\n" +
-				"*Entity id:* 11\n*Entity type:* topic\n*Name:* Old &lt;Topic&gt;\n*Force delete tree:* false",
-		);
 	});
 
 	test("entity merge: names both entities and renders a merge action", () => {
@@ -163,15 +138,12 @@ describe("approval notification rendering", () => {
 		expect(formatActionApprovalBody({ details })).toContain(
 			"**An automation** wants to merge Duplicate Person (#12).",
 		);
-		expect(cardText(buildActionApprovalCard({ details }))).toContain(
-			"*Proposed action:* Merge these entities",
-		);
 	});
 
-	test("escaping is per-surface: Markdown neutralises link/emphasis, Slack neutralises mrkdwn", () => {
-		// One hostile name, two surfaces. The Markdown body must not let it forge a
-		// link or bold run; the Slack card must not let it ping the channel or
-		// spoof `<url|label>`. Neither surface may leak the OTHER's escaping.
+	test("Markdown escaping neutralises link and emphasis delimiters", () => {
+		// One hostile name. The Markdown body must not let it forge a link or a
+		// bold run, and Slack's entity escaping must not leak into it — the chat
+		// side of this pair is pinned in `template-card.test.ts`.
 		const details: ActionApprovalDetails = {
 			kind: "entity_change",
 			operation: "delete",
@@ -195,18 +167,6 @@ describe("approval notification rendering", () => {
 		expect(body).toContain(
 			"\n\n" + String.raw`\# \[Review \[nested\]\](https://evil)`,
 		);
-
-		const card = cardText(buildActionApprovalCard({ details }));
-		// Slack: angle brackets/ampersand entity-escaped so `<!channel>` is inert.
-		expect(card).toContain(
-			"*Requested by:* [Review [nested]](https://evil)",
-		);
-		expect(card).toContain(
-			"*Entity:* *Urgent* &lt;!channel&gt; &amp; [click](https://evil)",
-		);
-		// The Markdown backslashes must not bleed into the Slack surface.
-		expect(card).not.toContain("\\*");
-		expect(card).not.toContain("\\[");
 	});
 
 	test("markdown escaping covers strikethrough, autolinks, and unmatched brackets", () => {
@@ -310,6 +270,33 @@ describe("approval notification rendering", () => {
 			},
 		});
 		expect(body).toContain("- Severity: ~high~\n→ critical");
+	});
+
+	test("an ask that takes no input still gets decision buttons", () => {
+		// The one surviving caller. `inputSchema: null` is the caller ASSERTING
+		// the decision carries no answer — omitting it must not get buttons that
+		// would discard one.
+		const card = buildActionApprovalCard({
+			runId: 47,
+			approvalUrl: "https://app.lobu.ai/acme/runs/47",
+			summary: "Ship it?",
+			inputSchema: null,
+		});
+		const actions = (
+			card as unknown as {
+				children: Array<{
+					type: string;
+					children?: Array<{ id?: string; url?: string }>;
+				}>;
+			}
+		).children
+			.filter((c) => c.type === "actions")
+			.flatMap((c) => c.children ?? []);
+		expect(actions.map((a) => a.id ?? a.url)).toEqual([
+			"run-approval:47:approve",
+			"run-approval:47:reject",
+			"https://app.lobu.ai/acme/runs/47",
+		]);
 	});
 
 	test("generic action: no card, connection fallback body", () => {

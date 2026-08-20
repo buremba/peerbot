@@ -9,7 +9,6 @@ import {
 	ENTITY_CHANGE_APPROVAL_KIND,
 	INVITATION_RECEIVED_KIND,
 } from "../utils/platform-event-kinds";
-import { escapeSlackText } from "../utils/slack-text";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
@@ -117,10 +116,6 @@ export function formatFieldChangeAction(
 
 function formatReviewLink(url: string): string {
 	return `[Review in Lobu](${url})`;
-}
-
-function formatCardLink(label: string, url: string): string {
-	return `<${url}|${escapeSlackText(label.replace(/[<>|]/g, ""))}>`;
 }
 
 /**
@@ -294,38 +289,6 @@ function renderApprovalBody(
 	return lines.join("\n");
 }
 
-/** Slack mrkdwn card text (bold labels, `<url|label>` links). */
-function renderApprovalCardText(model: ApprovalRenderModel): string {
-	const lines: string[] = [];
-	if (model.requestedBy)
-		lines.push(`*Requested by:* ${escapeSlackText(model.requestedBy)}`);
-	if (model.entityName) {
-		lines.push(
-			`*Entity:* ${
-				model.entityUrl
-					? formatCardLink(model.entityName, model.entityUrl)
-					: escapeSlackText(model.entityName)
-			}`,
-		);
-	}
-	if (model.diffs) {
-		for (const d of model.diffs)
-			lines.push(
-				"",
-				`*${d.label}*`,
-				`~${escapeSlackText(d.current)}~\n→ ${escapeSlackText(d.proposed)}`,
-			);
-	}
-	if (model.action) {
-		lines.push("", `*Proposed action:* ${model.action}`);
-		for (const p of model.proposal)
-			lines.push(`*${p.label}:* ${escapeSlackText(p.value)}`);
-	}
-	if (model.why)
-		lines.push("", `*Why approval is needed:* ${escapeSlackText(model.why)}`);
-	return lines.join("\n");
-}
-
 export function formatActionApprovalBody(params: {
 	connectionName?: string;
 	approvalUrl?: string;
@@ -353,24 +316,21 @@ export function formatActionApprovalBody(params: {
 }
 
 /**
- * The chat card for an approval, on the SAME affordance rule the web row uses.
+ * The chat card for an ask, on the SAME affordance rule the web row uses.
  *
  * Sharing `resolveAskAffordance` is the point: the decision "can this be
  * settled in one click, or does it need real input?" is derived once from the
- * schema and answered identically on every surface. It previously returned
- * undefined for anything that was not an entity change, so Automation and agent
- * write approvals reached Slack with NO card and no way to act.
+ * schema and answered identically on every surface. Decision-only asks get
+ * Approve/Reject; anything needing input gets the review link ONLY — a button
+ * that cannot carry the human's input would report success while discarding it.
  *
- * Decision-only approvals get Approve/Reject. Anything needing input gets the
- * review link ONLY — never buttons. A button that cannot carry the human's
- * input would report success while discarding it, which is exactly the defect
- * this whole change set exists to remove.
+ * Entity and operation approvals never come through here: they render through
+ * their platform event kinds in `notifyActionApprovalNeeded`.
  */
 export function buildActionApprovalCard(params: {
 	runId?: number;
 	approvalUrl?: string;
-	details?: ActionApprovalDetails;
-	/** Fallback body when there is no entity diff to render (e.g. an ask). */
+	/** The card body — for an ask, the question being put to the approver. */
 	summary?: string | null;
 	/**
 	 * The interaction's answer schema. `null` asserts "this decision takes no
@@ -380,30 +340,18 @@ export function buildActionApprovalCard(params: {
 	 */
 	inputSchema?: Record<string, unknown> | null;
 }) {
-	const isEntityDetail =
-		params.details != null &&
-		["entity_field_change", "entity_change"].includes(params.details.kind);
-	const cardText = isEntityDetail
-		? renderApprovalCardText(
-				buildApprovalRenderModel(params.details as ActionApprovalDetails),
-			)
-		: (params.summary?.trim() ?? "");
-
-	// Entity approvals provably carry no input schema (they hold their proposal
-	// in `runs.action_input`, not an answer schema), so they stay decidable from
-	// chat. Everything else must SAY it takes no input to get buttons.
-	const decisionOnly = isEntityDetail
-		? true
-		: params.inputSchema !== undefined &&
-			resolveAskAffordance(params.inputSchema).kind === "binary";
-
-	// With neither an entity diff nor decision buttons, the card would carry a
-	// review link and nothing else — which the markdown body already says. Fall
-	// back to the body rather than emitting a card that only repeats it.
-	if (!isEntityDetail && !decisionOnly) return undefined;
+	// Only a no-input decision is decidable from chat. Without buttons the card
+	// would carry a review link and nothing else, which the markdown body
+	// already says — so fall back to the body rather than repeat it.
+	if (
+		params.inputSchema === undefined ||
+		resolveAskAffordance(params.inputSchema).kind !== "binary"
+	) {
+		return undefined;
+	}
 
 	const actions = [];
-	if (params.runId && decisionOnly) {
+	if (params.runId) {
 		actions.push(
 			Button({
 				id: `run-approval:${params.runId}:approve`,
@@ -423,13 +371,11 @@ export function buildActionApprovalCard(params: {
 	}
 	if (params.approvalUrl) {
 		actions.push(
-			LinkButton({
-				url: params.approvalUrl,
-				label: decisionOnly ? "Review in Lobu" : "Answer in Lobu",
-			}),
+			LinkButton({ url: params.approvalUrl, label: "Review in Lobu" }),
 		);
 	}
 
+	const cardText = params.summary?.trim() ?? "";
 	return Card({
 		children: [
 			...(cardText ? [CardText(cardText)] : []),

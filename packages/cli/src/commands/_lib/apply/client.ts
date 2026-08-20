@@ -380,10 +380,10 @@ interface ApplyClientConfig {
    * The deployment this run is restoring, sent as `x-lobu-rollback-of`. Set by
    * `lobu rollback` only. The server refuses mutating apply-run requests while
    * promotions are paused; rollbacks are exempt, because rolling back FURTHER is
-   * the main thing an operator does while paused — and a rollback sets the pause
-   * AFTER posting its summary, so without this a second rollback would be
-   * blocked by the pause the first one created. The server verifies the named
-   * deployment exists in the org rather than trusting the header.
+   * the main thing an operator does while paused. A rollback sets the pause
+   * BEFORE its first mutation, so without this it would be blocked by its own
+   * pause. The server verifies the named deployment is a restorable snapshot in
+   * the org rather than trusting the header.
    */
   rollbackOf?: string;
 }

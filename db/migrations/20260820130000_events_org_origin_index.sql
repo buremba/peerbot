@@ -1,4 +1,5 @@
 -- migrate:up transaction:false
+-- lobu:no-quiesce
 
 -- The promotions-pause gate verifies a claimed rollback by probing for the
 -- deployment it says it is undoing:
@@ -23,7 +24,24 @@
 -- cross-sync identity already keys on (see root AGENTS.md on origin_id).
 --
 -- CONCURRENTLY + transaction:false: `events` is the largest table and cannot
--- take a writes-blocking build.
+-- take a writes-blocking build. Heal an INVALID same-named carcass inline so
+-- an interrupted concurrent build is repaired on retry before IF NOT EXISTS.
+DO $heal$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'idx_events_org_origin'
+      AND NOT i.indisvalid
+  ) THEN
+    EXECUTE 'DROP INDEX public.idx_events_org_origin';
+  END IF;
+END
+$heal$;
+
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_org_origin
   ON public.events (organization_id, origin_id);
 

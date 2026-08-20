@@ -273,6 +273,15 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     return;
   }
 
+  // Close the re-promotion window BEFORE the first rollback mutation. The
+  // client carries x-lobu-rollback-of, so this rollback remains allowed while
+  // ordinary applies stop at the server gate. If pausing fails, do not perform
+  // a rollback that CI could immediately overwrite.
+  await client.setDeploymentPause({
+    applyId: newApplyId,
+    rollbackOf: opts.applyId,
+  });
+
   // ── Execute: pins first (catalog correctness for everything after) ────────
   let rollbackErr: unknown;
   try {
@@ -374,28 +383,18 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     );
   }
 
-  if (!rollbackErr) {
-    try {
-      await client.setDeploymentPause({
-        applyId: newApplyId,
-        rollbackOf: opts.applyId,
-      });
-      printText(
-        [
-          "",
-          chalk.yellow("Deployments are now PAUSED for this org."),
-          "Reconcile your config repo (e.g. `git revert` the bad change), then run:",
-          "  lobu apply --resume",
-        ].join("\n")
-      );
-    } catch (err) {
-      printText(
-        chalk.yellow(
-          `Warning: could not pause deployments (${err instanceof Error ? err.message : String(err)}) — a CI apply may re-promote the rolled-back config.`
-        )
-      );
-    }
-  }
+  printText(
+    [
+      "",
+      chalk.yellow(
+        rollbackErr
+          ? "Deployments remain PAUSED after the incomplete rollback."
+          : "Deployments are now PAUSED for this org."
+      ),
+      "Reconcile your config repo (e.g. `git revert` the bad change), then run:",
+      "  lobu apply --resume",
+    ].join("\n")
+  );
 
   if (rollbackErr) throw rollbackErr;
 }

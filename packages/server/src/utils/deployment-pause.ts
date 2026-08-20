@@ -14,20 +14,23 @@
  * The seam is the apply header. `x-lobu-apply-id` marks a request as part of a
  * `lobu apply` run, so gating on it freezes promotions without freezing the
  * product: interactive edits from Owletto and one-off API calls carry no such
- * header and are unaffected.
+ * header and are unaffected. This is deliberately a workflow guard, not an
+ * authorization credential: it stops cooperating `lobu apply` clients from
+ * accidentally re-promoting, but an otherwise-authorized caller can omit the
+ * header and remains free to make an ordinary one-off edit.
  *
  * Read-tier calls stay allowed. `lobu apply` reads current config to compute
  * its diff, and `--dry-run` is how an operator inspects what a resume would do;
  * blocking reads would make a paused org undiagnosable.
  *
  * Rollbacks stay allowed. Rolling back FURTHER, because the first rollback did
- * not fix it, is the main thing an operator does while paused — and
- * `rollback-cmd` posts its summary BEFORE setting the pause, so a blanket block
- * would strand the escape hatch behind the pause its own predecessor created.
- * A rollback declares itself with `x-lobu-rollback-of`, which is VERIFIED
- * against a real deployment in this org rather than trusted: a forged header
- * has to name a deployment that actually exists, and permanently mislabels the
- * run as a rollback in the audit log.
+ * not fix it, is the main thing an operator does while paused. `rollback-cmd`
+ * sets the pause before its first mutation to close the re-promotion window, so
+ * a blanket block would strand the rollback behind the pause it just created.
+ * A rollback declares itself with `x-lobu-rollback-of`, which is checked
+ * against a real, restorable deployment in the already-authorized org. The
+ * header classifies a CLI workflow; it is not an authentication credential and
+ * never chooses the user or organization.
  */
 
 import { getDb } from '../db/client';
@@ -38,6 +41,28 @@ export interface DeploymentPauseState {
   applyId: string | null;
   rollbackOf: string | null;
   pausedBy: string | null;
+}
+
+/** Whether this org owns a deployment snapshot the rollback CLI can restore. */
+export async function isRestorableDeployment(
+  organizationId: string,
+  applyId: string
+): Promise<boolean> {
+  const sql = getDb();
+  const target = await sql`
+    SELECT 1
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND origin_id = ${`deployment_${applyId}`}
+      AND semantic_type = 'change'
+      AND metadata->>'category' = 'deployment'
+      AND metadata->>'apply_id' = ${applyId}
+      AND metadata->>'status' IN ('succeeded', 'partial_failure')
+      AND jsonb_typeof(payload_data->'manifest') = 'object'
+      AND jsonb_typeof(payload_data->'manifest'->'state') = 'object'
+    LIMIT 1
+  `;
+  return target.length > 0;
 }
 
 /** Thrown when a paused org receives a mutating apply-run request. */
@@ -83,22 +108,19 @@ export async function getBlockingPause(params: {
   if (rows.length === 0) return null;
 
   // A rollback may proceed, but only if its claim checks out: the deployment it
-  // says it is undoing has to exist in THIS org. Shape validation alone would
-  // make the header a bypass for anyone who can spell `apl_`.
-  if (rollbackOf) {
-    const target = await sql`
-      SELECT 1
-      FROM events
-      WHERE organization_id = ${organizationId}
-        AND origin_id = ${`deployment_${rollbackOf}`}
-      LIMIT 1
-    `;
-    if (target.length > 0) return null;
-  }
+  // says it is undoing has to be a restorable deployment in THIS org. An event
+  // with a colliding origin_id, a blocked drift report, or a pre-snapshot
+  // deployment is not a rollback target and must not turn into an exemption.
+  if (rollbackOf && (await isRestorableDeployment(organizationId, rollbackOf))) return null;
 
   const row = rows[0];
   return {
-    pausedAt: row.paused_at ?? null,
+    pausedAt:
+      row.paused_at instanceof Date
+        ? row.paused_at.toISOString()
+        : typeof row.paused_at === 'string'
+          ? row.paused_at
+          : null,
     applyId: row.apply_id ?? null,
     rollbackOf: row.rollback_of ?? null,
     pausedBy: row.paused_by ?? null,
@@ -117,7 +139,7 @@ export async function assertDeploymentsNotPaused(
  * Hono-side pause check for the auth funnel. Returns a 409 to short-circuit, or
  * null to let the request through.
  *
- * Two exemptions carry the design and must travel together:
+ * Three exemptions carry the design:
  *
  *  - Tool-proxy calls are left to `executeTool`'s own guard. Apply's READS go
  *    through that proxy as POSTs (`manage_entity_schema` list, `manage_feeds`
@@ -125,6 +147,9 @@ export async function assertDeploymentsNotPaused(
  *    and break `--dry-run` against a paused org — the exact carve-out the
  *    feature promises. The proxy decides read-vs-write from the tool args, which
  *    is the only signal that is actually correct there.
+ *  - `POST /deployments` records the outcome after the apply has stopped. It is
+ *    audit-only (the route independently validates admin authority and the
+ *    summary body), so blocking it would erase the evidence of a refused run.
  *  - `DELETE /deployments/pause` is how `lobu apply --resume` clears the pause.
  *    Gating it would make the pause unexitable.
  *
@@ -146,8 +171,10 @@ export async function checkApplyPause(
   const method = c.req.method.toUpperCase();
   if (method === 'GET' || method === 'HEAD') return null;
 
-  // `--resume` has to be able to clear the pause it is exiting.
-  if (method === 'DELETE' && c.req.path.endsWith('/deployments/pause')) return null;
+  // These are exact routes, not suffix matches: an unrelated endpoint named
+  // `*/deployments/pause` must not inherit either escape hatch.
+  if (method === 'POST' && /^\/api\/[^/]+\/deployments\/?$/.test(c.req.path)) return null;
+  if (method === 'DELETE' && /^\/api\/[^/]+\/deployments\/pause\/?$/.test(c.req.path)) return null;
 
   const pause = await getBlockingPause({
     organizationId: (c.get('organizationId') as string | null) ?? null,

@@ -5,11 +5,14 @@
  * secret (or the literal sentinel) anywhere.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { REDACTED_SENTINEL } from "@lobu/core";
+import * as clientModule from "../client.js";
 import { buildDeploymentManifest } from "../deployment.js";
 import type { DesiredState } from "../desired-state.js";
-import { sanitizeSnapshotState } from "../rollback-cmd.js";
+import { rollbackCommand, sanitizeSnapshotState } from "../rollback-cmd.js";
+
+afterEach(() => mock.restore());
 
 function stateWithSecrets(): DesiredState {
   return {
@@ -141,5 +144,86 @@ describe("sanitizeSnapshotState", () => {
     expect(droppedSlugs).toEqual(["hn-main"]);
     expect(JSON.stringify(pinned.state)).not.toContain(REDACTED_SENTINEL);
     expect(JSON.stringify(dropped.state)).not.toContain(REDACTED_SENTINEL);
+  });
+});
+
+describe("rollback pause ordering", () => {
+  function emptyState(): DesiredState {
+    return {
+      agents: [],
+      prune: false,
+      memorySchema: { entityTypes: [], relationshipTypes: [] },
+      automations: [],
+      connectors: { definitions: [], authProfiles: [], connections: [] },
+      providers: [],
+      requiredSecrets: [],
+    };
+  }
+
+  function rollbackClient(opts: { pauseFails?: boolean } = {}) {
+    const calls: string[] = [];
+    const record = (name: string) => calls.push(name);
+    const client = {
+      getDeployment: mock(async () => ({
+        applyId: "apl_11111111-2222-3333-4444-555555555555",
+        status: "succeeded",
+        createdAt: null,
+        gitSha: null,
+        manifest: {
+          version: 1,
+          state: emptyState(),
+          connector_versions: { "zz.probe": "1.0.0" },
+        },
+      })),
+      listConnectors: mock(async () => [
+        { key: "zz.probe", installed: true, version: "2.0.0" },
+      ]),
+      listAgents: mock(async () => []),
+      listEntityTypes: mock(async () => []),
+      listRelationshipTypes: mock(async () => []),
+      listAutomations: mock(async () => []),
+      listInferenceProviders: mock(async () => []),
+      setDeploymentPause: mock(async () => {
+        record("pause");
+        if (opts.pauseFails) throw new Error("pause unavailable");
+      }),
+      rollbackConnectorVersion: mock(async () => record("mutation")),
+      listOrgs: mock(async () => [{ id: "org_1", slug: "acme" }]),
+      postDeploymentSummary: mock(async () => record("summary")),
+    };
+    spyOn(clientModule, "resolveApplyClient").mockResolvedValue({
+      client: client as never,
+      apiBaseUrl: "http://api.test",
+      orgSlug: "acme",
+    });
+    return { calls, client };
+  }
+
+  test("sets the server pause before the first rollback mutation", async () => {
+    const { calls } = rollbackClient();
+
+    await rollbackCommand({
+      applyId: "apl_11111111-2222-3333-4444-555555555555",
+      cwd: "/",
+      yes: true,
+    });
+
+    expect(calls).toEqual(["pause", "mutation", "summary"]);
+  });
+
+  test("fails closed without mutating when the pause cannot be set", async () => {
+    const { calls, client } = rollbackClient({ pauseFails: true });
+
+    await expect(
+      rollbackCommand({
+        applyId: "apl_11111111-2222-3333-4444-555555555555",
+        cwd: "/",
+        yes: true,
+      })
+    ).rejects.toThrow("pause unavailable");
+
+    expect(calls).toEqual(["pause"]);
+    expect(client.rollbackConnectorVersion).not.toHaveBeenCalled();
+    expect(client.postDeploymentSummary).not.toHaveBeenCalled();
   });
 });

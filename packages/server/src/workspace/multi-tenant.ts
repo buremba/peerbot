@@ -1,5 +1,4 @@
 import { looksLikeWorkerToken, verifyWorkerToken } from '@lobu/core';
-import { checkApplyPause } from '../utils/deployment-pause';
 import { getAuthConfig as getAuthConfigFromEnv } from '../auth/config';
 import { createAuth } from '../auth/index';
 import { OAuthProvider } from '../auth/oauth/provider';
@@ -15,6 +14,7 @@ import { getDb } from '../db/client';
 import { getRevokedTokenStore } from '../gateway/auth/revoked-token-store';
 import { resolveRestToolGetRoute } from '../http/rest-tool-routes';
 import type { Env } from '../index';
+import { checkApplyPause } from '../utils/deployment-pause';
 import logger from '../utils/logger';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import type {
@@ -268,13 +268,14 @@ export class MultiTenantProvider implements WorkspaceProvider {
       if (overrides.session !== undefined) c.set('session', overrides.session as any);
       if (overrides.authSource !== undefined) c.set('authSource', overrides.authSource);
       // Promotions pause, enforced at the ONE point every authenticated request
-      // passes through. `lobu apply` mutates config across ~25 endpoints spread
-      // over the tool proxy and several routers; gating them individually
-      // guarantees the next one added misses it, and gating the deployment
-      // SUMMARY route enforces nothing (it is written after the mutations, and
-      // the CLI swallows its failure). Sitting here means a route added later is
-      // covered by construction — and a route that somehow bypasses this is
-      // unauthenticated, a far louder bug.
+      // passes through. `lobu apply` mutates config across a dozen-plus
+      // endpoints spread over the tool proxy and several routers; gating them
+      // individually guarantees the next one added misses it, and gating the
+      // deployment SUMMARY route enforces nothing (it is written after the
+      // mutations, and the CLI swallows its failure). Sitting here means a
+      // route added later is covered by construction — a route that skips this
+      // funnel resolves no org at all, and `getBlockingPause` treats that as
+      // ungated.
       //
       // Ordered cheapest-first: the header read costs a map lookup and is absent
       // on every request that is not part of an apply run, so nothing outside

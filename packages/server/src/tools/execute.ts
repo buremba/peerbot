@@ -14,6 +14,7 @@ import {
   hasRequiredMcpScope,
   isPublicReadable,
   SCOPE_CHECK_NOT_APPLICABLE,
+  type ToolAccessLevel,
 } from '../auth/tool-access';
 import type { Env } from '../index';
 import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
@@ -171,7 +172,11 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
  */
 const ORG_AGNOSTIC_TOOLS = new Set(['list_organizations']);
 
-export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthContext): void {
+export function checkToolAccess(
+  toolName: string,
+  args: unknown,
+  authCtx: AuthContext
+): ToolAccessLevel {
   if (ORG_AGNOSTIC_TOOLS.has(toolName)) {
     if (!authCtx.isAuthenticated) {
       throw new Error('Authentication required.');
@@ -183,7 +188,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
         'This MCP session does not include read access. Reconnect with read access to list organizations.'
       );
     }
-    return;
+    return 'read';
   }
 
   if (!authCtx.organizationId) {
@@ -239,6 +244,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
     adminScope:
       'This MCP session does not include admin access. Reconnect with admin access after an owner grants the role.',
   });
+  return requiredAccess;
 }
 
 /**
@@ -256,27 +262,20 @@ export async function executeTool(
   env: Env,
   authCtx: AuthContext
 ): Promise<unknown> {
-  checkToolAccess(toolName, args, authCtx);
+  const requiredAccess = checkToolAccess(toolName, args, authCtx);
 
   // Promotions pause, enforced where config is actually mutated. `lobu apply`
   // writes through these tools, so this is the chokepoint that binds every
   // caller — including a CI job posting straight at the API with a PAT, which
   // the CLI-side check never could. Read-tier calls and non-apply traffic pass
-  // through untouched; see `assertDeploymentsNotPaused`.
-  const pauseTool = getTool(toolName);
-  if (pauseTool && !ORG_AGNOSTIC_TOOLS.has(toolName)) {
-    await assertDeploymentsNotPaused({
-      organizationId: authCtx.organizationId,
-      applyId: authCtx.applyId ?? null,
-      rollbackOf: authCtx.rollbackOf ?? null,
-      isReadOnly:
-        getRequiredAccessLevel(
-          toolName,
-          args,
-          isAuthorizationReadOnly(pauseTool)
-        ) === 'read',
-    });
-  }
+  // through untouched, which also covers the org-agnostic tools below (they
+  // are read-tier by construction); see `assertDeploymentsNotPaused`.
+  await assertDeploymentsNotPaused({
+    organizationId: authCtx.organizationId,
+    applyId: authCtx.applyId ?? null,
+    rollbackOf: authCtx.rollbackOf ?? null,
+    isReadOnly: requiredAccess === 'read',
+  });
 
   // Org-agnostic tools get a minimal context with just userId
   if (ORG_AGNOSTIC_TOOLS.has(toolName)) {

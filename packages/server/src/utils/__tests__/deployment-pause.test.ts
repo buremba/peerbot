@@ -4,9 +4,10 @@
  * This guard sits in the auth funnel, so a wrong answer either freezes a
  * product that should still be editable, or waves through the CI re-promotion
  * the pause exists to stop. Both failures are silent, so every branch of the
- * decision gets a case here — including the two exemptions that are easy to
- * lose in a refactor: the tool proxy owns its own read/write signal, and
- * `--resume` must be able to clear the pause it is exiting.
+ * decision gets a case here — including the three exemptions that are easy to
+ * lose in a refactor: the tool proxy owns its own read/write signal, the
+ * audit-summary POST records a refused run, and `--resume` must be able to
+ * clear the pause it is exiting.
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
@@ -50,8 +51,13 @@ async function seedDeployment(applyId: string): Promise<void> {
   const sql = getDb();
   await sql`
     INSERT INTO events (organization_id, origin_id, semantic_type, payload_data, metadata)
-    VALUES (${ORG}, ${`deployment_${applyId}`}, 'change', '{}'::jsonb,
-            ${JSON.stringify({ category: 'deployment' })}::jsonb)
+    VALUES (${ORG}, ${`deployment_${applyId}`}, 'change',
+            ${sql.json({ manifest: { state: {} } })},
+            ${sql.json({
+              category: 'deployment',
+              apply_id: applyId,
+              status: 'succeeded',
+            })})
   `;
 }
 
@@ -129,6 +135,21 @@ describe('promotions pause — the funnel decision', () => {
     ).toBe('allowed');
     // …but a DELETE anywhere else is still a mutation.
     expect(await verdict(ctx({ method: 'DELETE' }))).toBe('blocked');
+    expect(
+      await verdict(
+        ctx({ method: 'DELETE', path: '/api/org-pause-gate/agents/deployments/pause' })
+      )
+    ).toBe('blocked');
+  });
+
+  test('allows only the exact audit-summary POST after a blocked apply', async () => {
+    await pauseOrg();
+    expect(
+      await verdict(ctx({ method: 'POST', path: '/api/org-pause-gate/deployments' }))
+    ).toBe('allowed');
+    expect(
+      await verdict(ctx({ method: 'POST', path: '/api/org-pause-gate/agents/deployments' }))
+    ).toBe('blocked');
   });
 
   test('lets a genuine rollback through while paused', async () => {
@@ -146,6 +167,52 @@ describe('promotions pause — the funnel decision', () => {
     ).toBe('blocked');
   });
 
+  test('rejects a malformed rollback claim', async () => {
+    await pauseOrg();
+    expect(
+      await verdict(ctx({ method: 'POST', rollbackOf: 'deployment_apl_not-valid' }))
+    ).toBe('blocked');
+  });
+
+  test('rejects a matching origin id that is not a restorable deployment', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    await sql`
+      INSERT INTO events (organization_id, origin_id, semantic_type, payload_data, metadata)
+      VALUES (${ORG}, ${`deployment_${ROLLED_BACK}`}, 'change', '{}'::jsonb,
+              ${JSON.stringify({ category: 'config', apply_id: ROLLED_BACK })}::jsonb)
+    `;
+    await pauseOrg();
+
+    expect(await verdict(ctx({ method: 'POST', rollbackOf: ROLLED_BACK }))).toBe('blocked');
+  });
+
+  test('rejects blocked and snapshot-less deployment targets', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    await sql`
+      INSERT INTO events (organization_id, origin_id, semantic_type, payload_data, metadata)
+      VALUES
+        (${ORG}, 'deployment_apl_blocked', 'change',
+         ${sql.json({ manifest: { state: {} } })},
+         ${sql.json({
+           category: 'deployment',
+           apply_id: 'apl_blocked',
+           status: 'blocked',
+         })}),
+        (${ORG}, 'deployment_apl_snapshotless', 'change', '{}'::jsonb,
+         ${sql.json({
+           category: 'deployment',
+           apply_id: 'apl_snapshotless',
+           status: 'succeeded',
+         })})
+    `;
+    await pauseOrg();
+
+    expect(await verdict(ctx({ method: 'POST', rollbackOf: 'apl_blocked' }))).toBe('blocked');
+    expect(await verdict(ctx({ method: 'POST', rollbackOf: 'apl_snapshotless' }))).toBe('blocked');
+  });
+
   test('rejects a rollback claim naming another org’s deployment', async () => {
     const { getDb } = await import('../../db/client.js');
     const sql = getDb();
@@ -155,8 +222,13 @@ describe('promotions pause — the funnel decision', () => {
     `;
     await sql`
       INSERT INTO events (organization_id, origin_id, semantic_type, payload_data, metadata)
-      VALUES ('org-other', ${`deployment_${ROLLED_BACK}`}, 'change', '{}'::jsonb,
-              ${JSON.stringify({ category: 'deployment' })}::jsonb)
+      VALUES ('org-other', ${`deployment_${ROLLED_BACK}`}, 'change',
+              ${sql.json({ manifest: { state: {} } })},
+              ${sql.json({
+                category: 'deployment',
+                apply_id: ROLLED_BACK,
+                status: 'succeeded',
+              })})
     `;
     await pauseOrg();
     expect(await verdict(ctx({ method: 'POST', rollbackOf: ROLLED_BACK }))).toBe('blocked');
@@ -188,6 +260,50 @@ describe('promotions pause — the funnel decision', () => {
     ).not.toBeNull();
   });
 
+  test('the real tool executor refuses a classified mutation before its handler', async () => {
+    await pauseOrg();
+    const { executeTool } = await import('../../tools/execute.js');
+    const { DeploymentsPausedError } = await import('../deployment-pause.js');
+
+    let caught: unknown;
+    try {
+      await executeTool(
+        'manage_entity_schema',
+        { action: 'create', schema_type: 'entity_type', slug: 'must-not-exist' },
+        {} as never,
+        {
+          organizationId: ORG,
+          tokenOrganizationId: ORG,
+          userId: 'u1',
+          memberRole: 'owner',
+          agentId: null,
+          requestedAgentId: null,
+          isAuthenticated: true,
+          clientId: 'pause-test',
+          scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+          tokenType: 'pat',
+          requestUrl: 'http://test.local/api/org-pause-gate/manage_entity_schema',
+          baseUrl: 'http://test.local',
+          scopedToOrg: true,
+          allowCrossOrg: false,
+          applyId: RUNNING_APPLY,
+          rollbackOf: null,
+        }
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(DeploymentsPausedError);
+    const { getDb } = await import('../../db/client.js');
+    const [row] = await getDb()`
+      SELECT count(*)::int AS count
+      FROM entity_types
+      WHERE organization_id = ${ORG} AND slug = 'must-not-exist'
+    `;
+    expect(row?.count).toBe(0);
+  });
+
   test('ignores traffic that is not part of an apply run', async () => {
     await pauseOrg();
     const { getBlockingPause } = await import('../deployment-pause.js');
@@ -201,5 +317,76 @@ describe('promotions pause — the funnel decision', () => {
         isReadOnly: false,
       })
     ).toBeNull();
+  });
+
+  test('treats a malformed apply id as non-apply traffic', async () => {
+    await pauseOrg();
+    const { checkApplyPause } = await import('../deployment-pause.js');
+
+    expect(
+      await checkApplyPause(ctx({ method: 'POST' }) as never, 'not-an-apply-id', null)
+    ).toBeNull();
+  });
+
+  test('never blocks when authentication resolved no organization', async () => {
+    await pauseOrg();
+    expect(await verdict(ctx({ method: 'POST', organizationId: null }))).toBe('allowed');
+  });
+
+  test('normalizes the database timestamp at the in-process boundary', async () => {
+    await pauseOrg();
+    const { getBlockingPause } = await import('../deployment-pause.js');
+    const pause = await getBlockingPause({
+      organizationId: ORG,
+      applyId: RUNNING_APPLY,
+      rollbackOf: null,
+      isReadOnly: false,
+    });
+
+    expect(typeof pause?.pausedAt).toBe('string');
+    expect(pause?.pausedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('rollback verification has a non-partial index-backed plan', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    const [catalog] = await sql`
+      SELECT i.indpred IS NULL AS non_partial
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = 'idx_events_org_origin'
+    `;
+    expect(catalog?.non_partial).toBe(true);
+
+    const plans = await sql.begin(async (tx) => {
+      await tx`SET LOCAL enable_seqscan = off`;
+      const production = await tx`
+        EXPLAIN (FORMAT JSON)
+        SELECT 1
+        FROM events
+        WHERE organization_id = ${ORG}
+          AND origin_id = ${`deployment_${ROLLED_BACK}`}
+          AND semantic_type = 'change'
+          AND metadata->>'category' = 'deployment'
+          AND metadata->>'apply_id' = ${ROLLED_BACK}
+          AND metadata->>'status' IN ('succeeded', 'partial_failure')
+          AND jsonb_typeof(payload_data->'manifest') = 'object'
+          AND jsonb_typeof(payload_data->'manifest'->'state') = 'object'
+        LIMIT 1
+      `;
+      const orgOrigin = await tx`
+        EXPLAIN (FORMAT JSON)
+        SELECT 1
+        FROM events
+        WHERE organization_id = ${ORG}
+          AND origin_id = ${`deployment_${ROLLED_BACK}`}
+        LIMIT 1
+      `;
+      return { production, orgOrigin };
+    });
+    expect(JSON.stringify(plans.production)).toContain('Index Scan');
+    expect(JSON.stringify(plans.production)).not.toContain('Seq Scan');
+    expect(JSON.stringify(plans.orgOrigin)).toContain('idx_events_org_origin');
   });
 });

@@ -11,6 +11,7 @@ import type { AuthInfo } from '../auth/oauth/types';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { isPublicReadable } from '../auth/tool-access';
 import { getDb } from '../db/client';
+import { getRevokedTokenStore } from '../gateway/auth/revoked-token-store';
 import { resolveRestToolGetRoute } from '../http/rest-tool-routes';
 import type { Env } from '../index';
 import logger from '../utils/logger';
@@ -272,14 +273,32 @@ export class MultiTenantProvider implements WorkspaceProvider {
       return (await next()) ?? undefined;
     }
 
-    // 1) Embedded worker direct-auth for the in-process lobu-memory MCP.
-    // The gateway MCP proxy sets this header after validating/issuing the worker
-    // token. Treat it as an internal admin-scoped MCP session for the URL org so
-    // unattended automation runs can use memory tools without a second OAuth loop.
-    if (authHeader?.startsWith('Bearer ') && c.req.header('x-lobu-memory-direct-auth') === '1') {
-      const workerToken = authHeader.slice(7);
-      const tokenData = verifyWorkerToken(workerToken);
+    // 1) Worker-token direct-auth for the in-process lobu-memory MCP. The
+    // gateway proxy marks this lane explicitly; spawned Automation CLIs cannot
+    // attach that internal header, so a verified worker bearer on an MCP route
+    // enters the same lane. Non-worker bearers still fall through to PAT,
+    // OAuth, or session auth.
+    const directAuthHeader = c.req.header('x-lobu-memory-direct-auth') === '1';
+    const directAuthBearer =
+      authHeader?.startsWith('Bearer ') && (directAuthHeader || isMcpRoute)
+        ? authHeader.slice(7)
+        : null;
+    const directAuthTokenData =
+      directAuthBearer && /^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/i.test(directAuthBearer)
+        ? verifyWorkerToken(directAuthBearer)
+        : null;
+    if (directAuthBearer && (directAuthHeader || directAuthTokenData)) {
+      const tokenData = directAuthTokenData;
       if (!tokenData) {
+        return c.json(
+          { error: 'invalid_token', error_description: 'Invalid or expired worker token' },
+          401,
+          {
+            'WWW-Authenticate': bearerChallenge('invalid_token'),
+          }
+        );
+      }
+      if (tokenData.jti && (await getRevokedTokenStore().isRevoked(tokenData.jti))) {
         return c.json(
           { error: 'invalid_token', error_description: 'Invalid or expired worker token' },
           401,
@@ -292,6 +311,24 @@ export class MultiTenantProvider implements WorkspaceProvider {
         return c.json(
           { error: 'invalid_request', error_description: 'Organization slug required in URL' },
           400
+        );
+      }
+      if (!tokenData.organizationId) {
+        return c.json(
+          { error: 'invalid_token', error_description: 'Worker token missing organization context' },
+          401,
+          {
+            'WWW-Authenticate': bearerChallenge('invalid_token'),
+          }
+        );
+      }
+      if (tokenData.organizationId !== requestedOrgId) {
+        return c.json(
+          {
+            error: 'insufficient_scope',
+            error_description: 'Worker token is not valid for this organization',
+          },
+          403
         );
       }
       if (!tokenData.agentId) {

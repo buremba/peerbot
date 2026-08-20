@@ -18,7 +18,7 @@ import {
   parseAutomationRunPayload,
 } from '../automations/automation';
 import { buildAutomationRunWorkerAccess } from '../gateway/services/automation-run-worker-token';
-import { resolvePublicGatewayUrl } from '../utils/public-origin';
+import { resolvePublicOrigin } from '../utils/public-origin';
 import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
@@ -746,6 +746,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         r.automation_id,
         r.window_id,
         r.organization_id,
+        org.slug AS organization_slug,
         r.created_at AS run_created_at,
         r.auth_profile_id AS run_auth_profile_id,
         f.feed_key,
@@ -773,6 +774,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         wv.skills AS automation_skills,
         wv.outputs AS automation_outputs
       FROM runs r
+      LEFT JOIN organization org ON org.id = r.organization_id
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
       LEFT JOIN LATERAL (
@@ -854,6 +856,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     automation_id: number | null;
     window_id: number | null;
     organization_id: string;
+    organization_slug: string | null;
     automation_name: string | null;
     automation_agent_id: string | null;
     automation_slug: string | null;
@@ -954,13 +957,21 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         // server-side dispatcher's agent session) — never the device's PAT,
         // which is bound to the user's personal org and can't authenticate to
         // a team-org Automation. The daemon injects the token into the spawned
-        // CLI (env + MCP wiring) against the gateway MCP proxy endpoint.
+        // CLI (env + MCP wiring).
+        //
+        // Use the org-scoped direct endpoint: the gateway MCP proxy owns its
+        // upstream session lifecycle and cannot serve a raw client's initialize.
         //
         // Minting encrypts, so it can throw (missing/short ENCRYPTION_KEY). The
         // run is ALREADY claimed by this point, so letting that escape would 500
         // the poll and strand it `running` — the exact wedge the claim gate
         // exists to prevent. Degrade to the pre-session dispatch instead.
         try {
+          if (!row.organization_slug) {
+            throw new Error(
+              `organization ${row.organization_id} has no slug to scope the MCP session URL`
+            );
+          }
           const access = buildAutomationRunWorkerAccess({
             agentId,
             automationId: row.automation_id,
@@ -969,7 +980,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           });
           agentSession = {
             conversation_id: access.conversationId,
-            mcp_url: `${resolvePublicGatewayUrl()}/mcp/lobu-memory`,
+            mcp_url: `${resolvePublicOrigin(c.req.url)}/mcp/${encodeURIComponent(row.organization_slug)}`,
             token: access.token,
             expires_at: access.expiresAt,
           };

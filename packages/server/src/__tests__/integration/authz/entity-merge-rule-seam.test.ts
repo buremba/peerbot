@@ -12,9 +12,9 @@
  * tenant must be able to freeze deletion without freezing dedupe. The
  * discriminating test below is the one that proves the two are separable.
  *
- * Scope: the LOSER's tombstone only. The winner's metadata patch and the
- * redirect repoint are deliberately not governed here — see the kernel comment
- * in `entity-merge.ts`.
+ * Scope: the LOSER's tombstone only. The winner's metadata patch, the redirect
+ * repoint, and unmerge are declared exemptions with their reasons spelled out on
+ * `transitionEntityMergeRows` in `entity-management.ts`.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";

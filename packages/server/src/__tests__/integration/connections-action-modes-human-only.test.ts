@@ -28,6 +28,10 @@ import {
 	createTestConnectorDefinition,
 	seedOwnerContext,
 } from "../setup/test-fixtures";
+import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store";
+import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store";
+import { upsertSlackInstallByTeam } from "../../lobu/stores/slack-installations";
+import { SecretStoreRegistry } from "../../gateway/secrets/index";
 
 const CONNECTOR_KEY = "os.shell";
 const sql = getTestDb();
@@ -375,6 +379,66 @@ describe("connection action_modes writes are human-only", () => {
 
 			expect(result.success).toBe(true);
 			expect((await storedDefaults())?.action_modes).toBeUndefined();
+		});
+	});
+
+	// The chat projection replaces `config` wholesale on its conflict path, and
+	// the chat fold can never carry `action_modes` (parseConfig's Value.Clean
+	// strips it) — so before the CASE-preservation in connections-projection.ts,
+	// ANY re-apply or OAuth reinstall silently dropped human-set modes: the same
+	// removal class the manage_connections gates close, through a writer that
+	// never even sees the map.
+	describe("chat projection preserves stored modes", () => {
+		it("a Slack reinstall carries human-set action_modes forward", async () => {
+			const previousKey = process.env.ENCRYPTION_KEY;
+			process.env.ENCRYPTION_KEY =
+				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+			try {
+				const installationStore = createPostgresAppInstallationStore();
+				const postgresSecrets = new PostgresSecretStore();
+				const secretStore = new SecretStoreRegistry(postgresSecrets, {
+					secret: postgresSecrets,
+				});
+				const install = await upsertSlackInstallByTeam(
+					installationStore,
+					secretStore,
+					orgId,
+					"TMODESKEEP",
+					{ teamName: "Modes Keep Co", botToken: "xoxb-modes-original" },
+				);
+				// A human set modes through the web UI after install.
+				await sql`
+					UPDATE connections
+					SET config = config || '{"action_modes":{"send_message":"approval"}}'::jsonb
+					WHERE organization_id = ${orgId} AND slug = ${install.id}
+				`;
+
+				const [planted] = (await sql`
+					SELECT config FROM connections
+					WHERE organization_id = ${orgId} AND slug = ${install.id}
+				`) as unknown as Array<{ config: Record<string, unknown> }>;
+				expect(planted?.config?.action_modes).toEqual({
+					send_message: "approval",
+				});
+
+				// Reinstall (rotated token) — hits the projection's conflict path.
+				await upsertSlackInstallByTeam(
+					installationStore,
+					secretStore,
+					orgId,
+					"TMODESKEEP",
+					{ teamName: "Modes Keep Co", botToken: "xoxb-modes-rotated" },
+				);
+
+				const [row] = (await sql`
+					SELECT config FROM connections
+					WHERE organization_id = ${orgId} AND slug = ${install.id}
+				`) as unknown as Array<{ config: Record<string, unknown> }>;
+				expect(row.config.action_modes).toEqual({ send_message: "approval" });
+			} finally {
+				if (previousKey === undefined) delete process.env.ENCRYPTION_KEY;
+				else process.env.ENCRYPTION_KEY = previousKey;
+			}
 		});
 	});
 });

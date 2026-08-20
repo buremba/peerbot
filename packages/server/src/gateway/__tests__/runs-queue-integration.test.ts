@@ -178,17 +178,24 @@ describe("RunsQueue — deferral retries (isDeferralError contract)", () => {
       done = true;
     });
 
+    // Poll the ROW, not the in-handler `done` flag. `done` is set inside the
+    // handler, which returns before the queue writes `status='completed'` — so
+    // waiting on it and then reading the row is a read-too-early race that
+    // reports `claimed` on a loaded runner. The companion test below already
+    // polls the row for exactly this reason.
+    const sql = getDb();
+    let rows: { status: string; attempts: number | string }[] = [];
     const start = Date.now();
-    while (!done && Date.now() - start < 5000) {
+    while (rows[0]?.status !== "completed" && Date.now() - start < 5000) {
       await new Promise((r) => setTimeout(r, 50));
+      rows = [
+        ...(await sql<{ status: string; attempts: number | string }>`
+          SELECT status, attempts FROM runs WHERE queue_name = 'test-deferral'
+        `),
+      ];
     }
     expect(done).toBe(true);
     expect(calls).toBe(3);
-
-    const sql = getDb();
-    const rows = await sql<{ status: string; attempts: number | string }>`
-      SELECT status, attempts FROM runs WHERE queue_name = 'test-deferral'
-    `;
     expect(rows[0]?.status).toBe("completed");
     expect(Number(rows[0]?.attempts ?? -1)).toBe(0);
   });

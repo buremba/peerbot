@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { runWithActingAutomation } from '../utils/acting-automation-context';
+import { getDb } from '../db/client';
 import type { Context } from 'hono';
 import { isToolError, retryWithBackoff, ToolError } from '@lobu/core';
 import {
@@ -312,9 +313,31 @@ export async function executeTool(
   // caller-declared `automation_source` for an agent or device running a
   // window. Setting it once here rather than at each audit writer is what keeps
   // provenance from drifting as writers are added.
+  // A declared source is caller input. Verify it against this org before it can
+  // reach `events.automation_id` — an unowned id would misattribute the audit
+  // row (and inherit that Automation's causal chain), and a nonexistent one
+  // would fail the FK and DROP the audit row entirely, since audit writes are
+  // fire-and-forget. Same rule `notify.ts` already applies to this field.
+  // Skipped whenever a trusted reaction identity is present, and skipped
+  // entirely when nothing was declared, so ordinary tool calls pay nothing.
+  const declaredSource =
+    toolContext.actingAutomationId != null
+      ? null
+      : await verifiedAutomationSource(
+          declaredAutomationSource(args),
+          toolContext.organizationId
+        );
   const runHandler = () =>
     runWithActingAutomation(
-      toolContext.actingAutomationId ?? declaredAutomationSourceId(args),
+      {
+        automationId:
+          toolContext.actingAutomationId ?? declaredSource?.automationId,
+        // The run is what carries causal ancestry. Reaction sessions have it
+        // directly; agent and device lanes carry `actingRunId = null`, so the
+        // declared window is the second route to the same run.
+        runId: toolContext.actingRunId ?? null,
+        windowId: toolContext.actingWindowId ?? declaredSource?.windowId ?? null,
+      },
       () =>
         trackMCPToolCall(toolName, args, () =>
           tool.handler(args, env, toolContext)
@@ -385,21 +408,53 @@ export async function executeTool(
 const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
 
 /**
- * The `automation_source.automation_id` an agent declared on this call.
+ * The `automation_source` an agent declared on this call.
  *
  * Self-declared and therefore advisory — an agent that omits it is attributed
  * to nothing, exactly as today. The reaction identity checked first is
  * server-set and cannot be forged, so the non-forgeable source always wins.
+ *
+ * The window travels with the automation id because it is the agent lane's
+ * only route to the driving run, and the run is what carries causal ancestry.
  */
-function declaredAutomationSourceId(
+/**
+ * Drop a declared source that does not name an Automation in this organization.
+ *
+ * Returns null rather than throwing: attribution is a provenance hint, and a
+ * bad hint should cost the caller its attribution, not fail their tool call.
+ */
+export async function verifiedAutomationSource(
+  declared: { automationId: number; windowId: number | null } | null,
+  organizationId: string
+): Promise<{ automationId: number; windowId: number | null } | null> {
+  if (!declared) return null;
+  const rows = await getDb()<{ id: number }>`
+    SELECT id
+    FROM automations
+    WHERE id = ${declared.automationId}
+      AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+  return rows[0] ? declared : null;
+}
+
+function declaredAutomationSource(
   args: Record<string, unknown>
-): number | null {
+): { automationId: number; windowId: number | null } | null {
   const source = args.automation_source;
   if (!source || typeof source !== 'object') return null;
-  const id = (source as { automation_id?: unknown }).automation_id;
-  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0
-    ? id
-    : null;
+  const positiveInteger = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      ? value
+      : null;
+  const automationId = positiveInteger(
+    (source as { automation_id?: unknown }).automation_id
+  );
+  if (automationId == null) return null;
+  return {
+    automationId,
+    windowId: positiveInteger((source as { window_id?: unknown }).window_id),
+  };
 }
 
 /** True when a thrown value is a retryable typed error. */

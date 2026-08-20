@@ -7,10 +7,11 @@
 
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
-import { getActingAutomationId } from './acting-automation-context';
+import { getActingAutomationScope } from './acting-automation-context';
 import {
   enqueueWorkspaceEventActivations,
   findSubscribedWorkspaceEventTypes,
+  loadRunEventCausality,
 } from '../automations/workspace-event-enqueue';
 import {
   AUDIT_EVENT_TYPE_METADATA_KEY,
@@ -714,19 +715,24 @@ interface ChangeEventParams {
  * id, and `createAutomationEventRun` dedupes per Automation on the
  * `workspace-event:<id>` delivery id even if a second task is ever queued.
  *
- * Causality is read off the row itself rather than passed in: a row with no
- * producer is a root (empty ancestry, depth 1), and a row produced by an
- * Automation names that Automation as its own causal path. That is what stops
- * an Automation waking itself on the audit exhaust of its own write — the
- * matcher skips any Automation already in `causal_automation_ids`, and
- * `activateWorkspaceEventTask` rejects a payload whose ancestry disagrees with
- * the row's producer.
+ * Causality comes from the producer and the run that produced it. A row with
+ * no producer is a root (empty ancestry, depth 1). A row produced by an
+ * Automation names that Automation as its own causal path, which stops it
+ * waking itself — the matcher skips any Automation already in
+ * `causal_automation_ids`, and `activateWorkspaceEventTask` rejects a payload
+ * whose ancestry disagrees with the row's producer.
+ *
+ * When the producing run itself came from a workspace event, the row INHERITS
+ * that run's ancestry instead of starting over. Without inheriting, an
+ * A -> B -> A cascade would run forever: each audit row would be a fresh root
+ * at depth 1, so the depth cap could never accrue across hops.
  */
 async function queueWorkspaceEventActivation(args: {
   organizationId: string;
   eventId: number;
   eventType: string;
   producerAutomationId: number | null;
+  actingRun: { runId: number | null; windowId: number | null } | null;
 }): Promise<void> {
   try {
     const subscribed = await findSubscribedWorkspaceEventTypes(
@@ -734,18 +740,30 @@ async function queueWorkspaceEventActivation(args: {
       [args.eventType]
     );
     if (!subscribed.has(args.eventType)) return;
+    // Inherit the producing run's chain when there is one; otherwise this row
+    // genuinely starts a chain. Resolved only after the subscription check, so
+    // an unsubscribed org never pays for the lookup.
+    const inherited =
+      args.producerAutomationId == null || args.actingRun == null
+        ? null
+        : await loadRunEventCausality(
+            args.organizationId,
+            args.actingRun,
+            args.producerAutomationId
+          );
     const sql = getDb();
     await sql.begin(async (tx) => {
       await enqueueWorkspaceEventActivations(tx, [
         {
           organizationId: args.organizationId,
           eventId: args.eventId,
-          rootEventIds: [args.eventId],
+          rootEventIds: inherited?.rootEventIds ?? [args.eventId],
           causalAutomationIds:
-            args.producerAutomationId == null
+            inherited?.causalAutomationIds ??
+            (args.producerAutomationId == null
               ? []
-              : [args.producerAutomationId],
-          depth: 1,
+              : [args.producerAutomationId]),
+          depth: inherited?.depth ?? 1,
         },
       ]);
     });
@@ -794,8 +812,9 @@ export async function insertConnectionlessAuditEvent(
   // Who caused this change. An explicit id wins over ambient scope so a writer
   // that already resolved its producer keeps saying so; absent both, the row is
   // a genuine root (a person, a cron tick, a connector sync).
+  const actingScope = getActingAutomationScope();
   const producerAutomationId =
-    params.automationId ?? getActingAutomationId();
+    params.automationId ?? actingScope?.automationId ?? null;
 
   try {
     const inserted = await insertEvent({
@@ -809,6 +828,13 @@ export async function insertConnectionlessAuditEvent(
       eventId: inserted.id,
       eventType: formattedEventType,
       producerAutomationId,
+      // Only the ambient scope knows the run; an explicitly-passed producer
+      // carries no run reference, so such a row starts its own chain.
+      actingRun:
+        actingScope != null &&
+        actingScope.automationId === producerAutomationId
+          ? { runId: actingScope.runId, windowId: actingScope.windowId }
+          : null,
     });
     return inserted;
   } catch (error) {

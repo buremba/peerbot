@@ -12,8 +12,12 @@
  * something an assertion could drift away from.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { buildKindCard } from "../../notifications/template-card";
+import {
+	__resetPublicOriginCachesForTests,
+	__setLocalFrontendForTests,
+} from "../../utils/public-origin";
 import {
 	CONNECTOR_OPERATION_APPROVAL_KIND,
 	ENTITY_CHANGE_APPROVAL_KIND,
@@ -53,6 +57,16 @@ function pairs(card: Card | null): string[][] {
 /** Column headers of the first table, which Slack renders as its first row. */
 const headers = (card: Card | null) =>
 	(kids(card).find((c) => c.type === "table")?.headers as string[]) ?? [];
+/**
+ * The card's opening prose — the notification body, which is a leading `text`
+ * child now that the subtitle slot belongs to the context strip.
+ */
+const body = (card: Card | null) => {
+	const first = kids(card)[0];
+	return first?.type === "text" ? (first.content as string) : undefined;
+};
+/** The context strip: one Slack `context` block, carried as the subtitle. */
+const strip = (card: Card | null) => card?.subtitle;
 const texts = (card: Card | null) =>
 	kids(card)
 		.filter((c) => c.type === "text")
@@ -267,17 +281,17 @@ describe("Slack escaping is per destination", () => {
 	});
 });
 
-describe("the subtitle's duplicate review link", () => {
+describe("the body's duplicate review link", () => {
 	it("drops the body line that links to the page the button already opens", () => {
 		// The body is written for the TEXT fallback, where there is no button.
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
 			data: { operation: "run", connection: "Mac Shell", input: {} },
-			subtitle:
-				"A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/acme/memory?run_ids=42)",
+			body: "A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/acme/memory?run_ids=42)",
 			url: "https://app.lobu.ai/acme/memory?run_ids=42",
 		});
-		expect(card?.subtitle).toBe("A queued action on Mac Shell is waiting.");
+		expect(body(card)).toBe("A queued action on Mac Shell is waiting.");
 		expect(buttons(card).map((b) => b.url)).toContain(
 			"https://app.lobu.ai/acme/memory?run_ids=42",
 		);
@@ -286,11 +300,12 @@ describe("the subtitle's duplicate review link", () => {
 	it("keeps a link that points somewhere the card does NOT already offer", () => {
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
 			data: { operation: "run", connection: "Mac Shell", input: {} },
-			subtitle: "See [the runbook](https://wiki.example/runbook) first.",
+			body: "See [the runbook](https://wiki.example/runbook) first.",
 			url: "https://app.lobu.ai/acme/memory?run_ids=42",
 		});
-		expect(card?.subtitle).toBe("See the runbook first.");
+		expect(body(card)).toBe("See the runbook first.");
 	});
 });
 
@@ -646,14 +661,14 @@ describe("entity change approvals render through their kind", () => {
 				{ label: "Domain", value: "acme.example" },
 			],
 		});
-		// The proposal is a label/value pair, so it lands in fields — under its own
-		// caption, so "Entity: Acme Robotics" (context) cannot be mistaken for
+		// Type and Entity identify the card, so they are in the strip, not the
+		// body. The proposal is a label/value pair, so it lands in fields — under
+		// its own caption, so the strip's "Acme Robotics" cannot be mistaken for
 		// "Name: Acme Robotics" (the value being approved).
+		expect(strip(card)).toBe("*Company* · Acme Robotics");
 		expect(texts(card)).toContain("*Proposed change*");
 		expect(pairs(card)).toEqual([
 			["Action", "Create this entity"],
-			["Type", "Company"],
-			["Entity", "Acme Robotics"],
 			["Name", "Acme Robotics"],
 			["Domain", "acme.example"],
 		]);
@@ -669,10 +684,10 @@ describe("entity change approvals render through their kind", () => {
 			proposal: [],
 			diffs: [{ label: "Amount", current: "$1,200", proposed: "$18,400" }],
 		});
-		const fieldLabels = kids(card)
-			.filter((c) => c.type === "fields")
-			.flatMap((c) => (c.children as Array<{ label: string }>).map((f) => f.label));
-		expect(fieldLabels).toEqual(["Type"]);
+		// Nothing optional resolved, so the fields block never opens — and the
+		// strip is the type alone rather than a `·` with nothing after it.
+		expect(pairs(card)).toEqual([]);
+		expect(strip(card)).toBe("*Deal*");
 	});
 
 	it("escapes the mrkdwn header fields but not the raw_text table cells", () => {
@@ -686,43 +701,43 @@ describe("entity change approvals render through their kind", () => {
 			proposal: [],
 			diffs: [{ label: "Bio", current: null, proposed: hostile }],
 		});
-		const entityField = kids(card)
-			.filter((c) => c.type === "fields")
-			.flatMap((c) => c.children as Array<{ label: string; value: string }>)
-			.find((f) => f.label === "Entity");
-		expect(entityField?.value).toBe(
-			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
+		// The strip goes out as mrkdwn, so a raw `<!channel>` in an entity name
+		// would ping the room from a trusted card and a raw `<url|text>` would
+		// render a link spoofing the genuine one.
+		expect(strip(card)).toBe(
+			"*Person* · &lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
 		);
 		// Cells go out as raw_text, which Slack never parses — escaping here would
 		// show the reader a literal `&lt;`.
 		expect(rows(card)[0][2]).toBe(hostile);
 	});
 
-	it("flattens the Markdown body into the subtitle — mrkdwn is not Markdown", () => {
+	it("flattens the Markdown body — mrkdwn is not Markdown", () => {
 		// This is the real approval body: `escapeMarkdownText` backslashes and a
 		// `[Review in Lobu](url)` link that the card already carries as a button.
 		// Rendered raw through `mrkdwn()`, every one of those shows literally.
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
 			data: { operation: "create_issue", connection: "GitHub", input: {} },
-			subtitle:
-				"A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/runs/42)",
+			body: "A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/runs/42)",
 		});
-		expect(card.subtitle).toBe(
+		expect(body(card)).toBe(
 			"A queued action on Mac Shell is waiting.\n\nReview: Review in Lobu",
 		);
 	});
 
-	it("escapes the subtitle — the adapter renders it as mrkdwn", () => {
-		// The subtitle is the notification body, and an approval body carries the
+	it("escapes the body — the adapter renders it as mrkdwn", () => {
+		// The body is the notification body, and an approval body carries the
 		// connection name, which we do not author. `blocks.js` puts it through
 		// `mrkdwn()`, so a raw `<!channel>` would ping the room from a trusted card.
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
+			jsonTemplate: APPROVAL_KIND.jsonTemplate,
 			data: { operation: "create_issue", connection: "GitHub", input: {} },
-			subtitle: "<!channel> approve <https://evil.example|Review in Lobu>",
+			body: "<!channel> approve <https://evil.example|Review in Lobu>",
 		});
-		expect(card.subtitle).toBe(
+		expect(body(card)).toBe(
 			"&lt;!channel&gt; approve &lt;https://evil.example|Review in Lobu&gt;",
 		);
 	});
@@ -742,5 +757,209 @@ describe("entity change approvals render through their kind", () => {
 			"run-approval:991:reject",
 			"https://app.lobu.ai/runs/991",
 		]);
+	});
+});
+
+/**
+ * The context strip — the card's identity line, which the Slack adapter emits
+ * as a `context` block above the body.
+ *
+ * Everything here is about it staying TRUE rather than looking right: a link
+ * that cannot be opened from chat is worse than a name with no link, a control
+ * has no inline form at all, and a value the template did not resolve must take
+ * its separator with it instead of leaving the strip opening on a `·`.
+ */
+describe("the context strip", () => {
+	const ctx = (children: unknown[], data: Record<string, unknown> = {}) =>
+		buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "context", children },
+					{ type: "text", content: "body" },
+				],
+			},
+			data,
+		});
+
+	afterEach(() => {
+		delete process.env.PUBLIC_GATEWAY_URL;
+		__resetPublicOriginCachesForTests();
+		__setLocalFrontendForTests(undefined);
+	});
+
+	it("renders a link as Slack's `<url|label>`, not as a button", () => {
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "data", path: "name" }],
+				},
+			],
+			{ url: "https://app.lobu.ai/acme/person/ada", name: "Ada Lovelace" },
+		);
+		expect(strip(card)).toBe("<https://app.lobu.ai/acme/person/ada|Ada Lovelace>");
+		// A context block holds no controls, so the link must NOT also have been
+		// promoted into the actions row.
+		expect(buttons(card)).toEqual([]);
+	});
+
+	it("absolutises a relative permalink — chat has no origin to resolve against", () => {
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "/acme/person/ada" },
+		);
+		expect(strip(card)).toBe("<https://app.lobu.ai/acme/person/ada|Ada>");
+	});
+
+	it("keeps the label as plain text when the url cannot be absolutised", () => {
+		// No configured origin and no local frontend would normally fall back to
+		// the hosted UI; pinning both is what makes "unresolvable" reachable.
+		__setLocalFrontendForTests(true);
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "/acme/person/ada" },
+		);
+		expect(strip(card)).toBe("Ada");
+	});
+
+	it("refuses to vouch for a non-http scheme", () => {
+		// With an origin configured, an unabsolutisable url is the ONLY thing
+		// standing between `javascript:` and a rendered link — without the scheme
+		// guard the origin join turns it into one.
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			// eslint-disable-next-line no-script-url -- the point of the test
+			{ url: "javascript:alert(1)" },
+		);
+		expect(strip(card)).toBe("Ada");
+	});
+
+	it("drops a control rather than drawing a label that cannot be pressed", () => {
+		// `@name` is the DSL's action binding, so this button IS routable — it
+		// reaches the strip as a real control and is dropped there because a
+		// context block holds none, not because it failed to resolve.
+		const card = ctx([
+			{ type: "text", content: "Person" },
+			{
+				type: "button",
+				props: { label: "Approve", onClick: "@run-approval:1:approve" },
+			},
+		]);
+		expect(strip(card)).toBe("Person");
+		// It is dropped from the strip, not relocated into the actions row.
+		expect(buttons(card)).toEqual([]);
+	});
+
+	it("takes an absent value's separator with it", () => {
+		const children = [
+			{
+				type: "if",
+				condition: "type",
+				then: { type: "strong", children: [{ type: "data", path: "type" }] },
+			},
+			{
+				type: "if",
+				condition: "name",
+				then: {
+					type: "span",
+					children: [
+						{ type: "text", content: "·" },
+						{ type: "data", path: "name" },
+					],
+				},
+			},
+		];
+		expect(strip(ctx(children, { type: "Person", name: "Ada" }))).toBe("*Person* · Ada");
+		expect(strip(ctx(children, { type: "Person" }))).toBe("*Person*");
+		expect(strip(ctx(children, { name: "Ada" }))).toBe("· Ada");
+	});
+
+	it("does not turn a body into a card the template could not draw", () => {
+		// The body is the same prose the markdown fallback already carries. A
+		// template that resolved to nothing must still fall back rather than
+		// produce a card that says nothing the fallback did not.
+		expect(
+			buildKindCard({
+				jsonTemplate: {
+					type: "card",
+					children: [
+						{ type: "if", condition: "never", then: { type: "text", content: "x" } },
+					],
+				},
+				data: {},
+				body: "A queued action is waiting.",
+			}),
+		).toBeNull();
+	});
+
+	it("is absent, not empty, when nothing in it resolved", () => {
+		expect(strip(ctx([{ type: "data", path: "missing" }]))).toBeUndefined();
+	});
+
+	it("escapes strip content — it goes out as mrkdwn", () => {
+		const card = ctx([{ type: "data", path: "name" }], {
+			name: "<!channel> & <https://evil.example|Review in Lobu>",
+		});
+		expect(strip(card)).toBe(
+			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
+		);
+	});
+
+	it("puts the connector operation's identity in the strip, its input in the body", () => {
+		const kind = PLATFORM_EVENT_KINDS[CONNECTOR_OPERATION_APPROVAL_KIND];
+		const card = buildKindCard({
+			metadataSchema: kind.metadataSchema,
+			jsonTemplate: kind.jsonTemplate,
+			data: {
+				operation: "Deploy to production",
+				connection: "Acme Shell",
+				input: { cmd: "helm upgrade lobu ./chart" },
+			},
+		});
+		expect(strip(card)).toBe("*Operation* Deploy to production · via Acme Shell");
+		expect(pairs(card).map((p) => p[0])).toEqual(["Input"]);
+	});
+
+	it("links the entity under review from the approval strip", () => {
+		const kind = PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND];
+		const card = buildKindCard({
+			metadataSchema: kind.metadataSchema,
+			jsonTemplate: kind.jsonTemplate,
+			data: {
+				entityTypeLabel: "Person",
+				entityName: "Ada Lovelace",
+				entityUrl: "https://app.lobu.ai/acme/person/ada-lovelace",
+				requestedBy: "nightly-triage",
+				diffs: [{ label: "Email", current: "a@old", proposed: "a@new" }],
+			},
+		});
+		expect(strip(card)).toBe(
+			"*Person* · <https://app.lobu.ai/acme/person/ada-lovelace|Ada Lovelace> · requested by nightly-triage",
+		);
 	});
 });

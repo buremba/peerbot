@@ -45,6 +45,7 @@ import {
 } from "chat";
 import { resolveEntityRender } from "../utils/default-entity-template";
 import { escapeSlackText } from "../utils/slack-text";
+import { toAbsolutePermalink } from "../utils/url-builder";
 
 /** Slack degrades a table past these to an ASCII code fence; keep it native. */
 const MAX_ROWS = 100;
@@ -65,6 +66,12 @@ const MAX_CELL_CHARS = 400;
 /** Slack paginates a native table; show the whole record rather than page 1. */
 const TABLE_PAGE_SIZE = 100;
 const MAX_TEXT_CHARS = 1900;
+/**
+ * The strip is one Slack text object (3000). Kept well under it because a
+ * context block is small grey type: past a line or two it stops being chrome
+ * and starts competing with the record it introduces.
+ */
+const MAX_CONTEXT_CHARS = 900;
 
 function clamp(value: string, max: number): string {
 	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -76,7 +83,13 @@ function clamp(value: string, max: number): string {
  * child on its own.
  */
 type Frag =
-	| { kind: "text"; text: string }
+	| { kind: "text"; text: string; strong?: boolean }
+	/**
+	 * One rendered context strip — already mrkdwn, already escaped. It leaves the
+	 * body entirely: `buildKindCard` lifts it into the card's SUBTITLE, which the
+	 * Slack adapter emits as a `context` block.
+	 */
+	| { kind: "context"; text: string }
 	| { kind: "cell"; text: string; th: boolean }
 	| { kind: "row"; cells: string[]; header: boolean }
 	| { kind: "field"; label: string; value: string }
@@ -129,6 +142,55 @@ const PASSTHROUGH = new Set([
 	"thead",
 	"fragment",
 ]);
+
+/**
+ * Slack renders a link as `<url|label>`, and ONLY for an absolute http(s) one:
+ * a relative href there is drawn as literal `<...>` junk, and a `javascript:`
+ * one is a link we would be vouching for. Anything else keeps the label as
+ * plain text — a name without a link still reads, a broken link does not.
+ */
+const contextLink = (rawUrl: string, label: string): string => {
+	const text = escapeSlackText(label);
+	const trimmed = rawUrl.trim();
+	// A scheme we did not choose is never absolutised into one we did: without
+	// this, `javascript:alert(1)` has no `http` prefix, so it falls through to
+	// the origin join below and comes back out as a link — to a dead path on our
+	// own domain, from a card the reader trusts.
+	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) return text;
+	// An in-app permalink is stored relative so the inbox resolves it against
+	// whatever origin the reader is on; chat has no origin to resolve against.
+	const url = toAbsolutePermalink(trimmed);
+	if (!url || !/^https?:\/\//i.test(url)) return text;
+	// `>` would close the link early and `|` would re-split it, so neither can
+	// survive inside the URL half.
+	return /[<>|]/.test(url) ? text : `<${url}|${text}>`;
+};
+
+/**
+ * One frag as inline strip content. A control has no inline form — a button
+ * cannot be pressed inside a context block — so it contributes nothing rather
+ * than a dead label.
+ */
+function contextInline(frag: Frag): string {
+	switch (frag.kind) {
+		case "text":
+			return frag.strong
+				? `*${escapeSlackText(frag.text)}*`
+				: escapeSlackText(frag.text);
+		case "cell":
+			return escapeSlackText(frag.text);
+		case "field":
+			return `${escapeSlackText(frag.label)}: ${escapeSlackText(frag.value)}`;
+		case "action":
+			return frag.element.type === "link-button"
+				? contextLink(frag.element.url, frag.element.label)
+				: "";
+		case "context":
+			return frag.text;
+		default:
+			return "";
+	}
+}
 
 const textOf = (frags: Frag[]): string =>
 	frags
@@ -337,6 +399,19 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 				},
 			];
 		}
+		if (type === "context") {
+			// Segments are authored, not inferred: the template writes its own
+			// separators inside the same `if` as the value they follow, so an
+			// absent value takes its separator with it and the strip never opens
+			// or closes on a dangling `·`.
+			const text = children
+				.map(contextInline)
+				.filter((part) => part.length > 0)
+				.join(" ")
+				.replace(/\s+/g, " ")
+				.trim();
+			return text ? [{ kind: "context", text: clamp(text, MAX_CONTEXT_CHARS) }] : [];
+		}
 		if (type === "divider" || type === "hr") {
 			return [{ kind: "block", child: Divider() }];
 		}
@@ -345,6 +420,12 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 			const body = textOf(children) || str(props.value);
 			return body ? [{ kind: "text", text: `\`\`\`\n${body}\n\`\`\`` }] : [];
 		}
+		// Emphasis is only carried where the surface has a form for it (the strip);
+		// everywhere else it stays prose, as it always has.
+		if (type === "strong" || type === "b") {
+			const body = textOf(children) || str(props.children) || str(props.value);
+			return body ? [{ kind: "text", text: body, strong: true }] : [];
+		}
 		if (
 			type === "markdown" ||
 			type === "badge" ||
@@ -352,7 +433,6 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 			type === "h1" ||
 			type === "h2" ||
 			type === "h3" ||
-			type === "strong" ||
 			type === "em" ||
 			type === "label"
 		) {
@@ -369,9 +449,11 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 function fragsToChildren(frags: Frag[]): {
 	children: CardChild[];
 	actions: ActionElement[];
+	context: string[];
 } {
 	const children: CardChild[] = [];
 	const actions: ActionElement[] = [];
+	const context: string[] = [];
 	let pendingText: string[] = [];
 	let pendingFields: Array<{ label: string; value: string }> = [];
 
@@ -410,6 +492,12 @@ function fragsToChildren(frags: Frag[]): {
 			actions.push(frag.element);
 			continue;
 		}
+		// Strip content is chrome for the whole card, not a child of wherever the
+		// template happened to declare it, so it leaves the body stream entirely.
+		if (frag.kind === "context") {
+			context.push(frag.text);
+			continue;
+		}
 		if (frag.kind === "field") {
 			flushText();
 			pendingFields.push(frag);
@@ -427,13 +515,18 @@ function fragsToChildren(frags: Frag[]): {
 		else pendingText.push(frag.text);
 	}
 	flush();
-	return { children, actions };
+	return { children, actions, context };
 }
 
 /**
- * The card's subtitle, from the notification's Markdown body.
+ * The card's opening prose, from the notification's Markdown body.
  *
- * Two things have to happen. The adapter renders the subtitle through
+ * It is a SECTION, not the subtitle: the subtitle slot is the Slack `context`
+ * block, which the template's own strip claims (see the `context` component).
+ * A context block is small grey type — right for "Person · Ada Lovelace ·
+ * run #991", wrong for the sentence saying what is being asked.
+ *
+ * Two things have to happen to the body first. The adapter renders it through
  * `mrkdwn()`, which is NOT Markdown, so `**bold**`, the backslashes
  * `escapeMarkdownText` left behind, and `[Review in Lobu](url)` would all show
  * literally — flatten with the SDK's own converter, then escape, because the
@@ -445,18 +538,18 @@ function fragsToChildren(frags: Frag[]): {
  * the line carrying that link — matched on the URL, not on its wording — or the
  * card reads "Review: Review in Lobu" directly above a Review in Lobu button.
  */
-function subtitleFor(
-	subtitle: string | null | undefined,
+function bodyTextFor(
+	body: string | null | undefined,
 	url: string | null | undefined,
 ): string | undefined {
-	if (!subtitle) return undefined;
-	const body = url
-		? subtitle
+	if (!body) return undefined;
+	const withoutDuplicateLink = url
+		? body
 				.split("\n")
 				.filter((line) => !line.includes(`](${url})`))
 				.join("\n")
-		: subtitle;
-	const flattened = markdownToPlainText(body).trim();
+		: body;
+	const flattened = markdownToPlainText(withoutDuplicateLink).trim();
 	return flattened ? escapeSlackText(flattened) : undefined;
 }
 
@@ -465,7 +558,8 @@ export function buildKindCard(params: {
 	jsonTemplate?: Record<string, unknown> | null;
 	data: Record<string, unknown>;
 	title?: string;
-	subtitle?: string;
+	/** The notification's Markdown body, rendered as the card's opening prose. */
+	body?: string;
 	/** Permalink to the event, so the full rendering is always one click away. */
 	url?: string | null;
 	/**
@@ -484,9 +578,14 @@ export function buildKindCard(params: {
 
 	const unsupported = new Set<string>();
 	const unroutable = new Set<string>();
-	const { children, actions: templateActions } = fragsToChildren(
+	const {
+		children,
+		actions: templateActions,
+		context,
+	} = fragsToChildren(
 		walkTemplate(template, params.data, makeCardVisitor(unroutable), unsupported),
 	);
+
 	if (unroutable.size > 0) {
 		const names = [...unroutable].sort();
 		children.push(
@@ -504,9 +603,16 @@ export function buildKindCard(params: {
 		);
 	}
 
-	// Checked only after the notes above: a card whose every control was dropped
-	// still has something true to say, and saying it beats silence.
+	// Checked only after the notes above, and BEFORE the body is prepended: the
+	// body is the same prose the markdown fallback already carries, so counting
+	// it here would turn "the template rendered nothing" into a card that says
+	// nothing the fallback did not.
 	if (children.length === 0 && templateActions.length === 0) return null;
+
+	// Ahead of everything the template drew: the body says what is being asked,
+	// and the record below it is the evidence for that ask.
+	const body = bodyTextFor(params.body, params.url);
+	if (body) children.unshift(CardText(clamp(body, MAX_TEXT_CHARS)));
 
 	const actions: ActionElement[] = [...templateActions];
 	if (params.decisionRunId) {
@@ -537,7 +643,9 @@ export function buildKindCard(params: {
 
 	return Card({
 		title: params.title,
-		subtitle: subtitleFor(params.subtitle, params.url),
+		// Several `context` nodes read as one strip; the separator is ours here
+		// because no template authored the space between two of its own blocks.
+		subtitle: context.length > 0 ? clamp(context.join(" · "), MAX_CONTEXT_CHARS) : undefined,
 		children,
 	});
 }

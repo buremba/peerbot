@@ -1564,6 +1564,13 @@ export type ManageEntitySchemaResponses = {
             } | null;
           }>;
         }>;
+        platform_event_kinds: {
+          [key: string]:
+            | unknown
+            | {
+                description: string;
+              };
+        };
         list_scope: "accessible" | "organization";
         organization_id: string;
       }

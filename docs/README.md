@@ -11,6 +11,12 @@ docs below for shipped semantics.
 - **`AUTOMATIONS.md`** — the Automation primitive contract: triggers, sources,
   outputs, chaining, and their safety limits.
 
+## Active design
+
+- **`design/access-resources.md`** — consolidation of Lobu's shipped
+  connector-resource ACL foundation into one visibility-envelope model for
+  generic entities, ERP data, actions, agents, and derived outputs.
+
 ## Build
 
 - **`connector-authoring.md`** — when and how to write a custom connector

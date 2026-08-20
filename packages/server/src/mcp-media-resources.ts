@@ -42,11 +42,11 @@ function nonNegativeInteger(value: unknown): number | null {
     : null;
 }
 
-export function runAttachmentResourceUri(runId: number, index: number): string {
+function runAttachmentResourceUri(runId: number, index: number): string {
   return `lobu://run/${runId}/attachment/${index}`;
 }
 
-export function eventAttachmentResourceUri(eventId: number, index: number): string {
+function eventAttachmentResourceUri(eventId: number, index: number): string {
   return `lobu://event/${eventId}/attachment/${index}`;
 }
 

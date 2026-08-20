@@ -2,7 +2,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 const MCP_RESULT_CONTENT = Symbol('lobu.mcp-result-content');
 
-export type McpResultContentBlock = CallToolResult['content'][number];
+type McpResultContentBlock = CallToolResult['content'][number];
 
 type ResultWithMcpContent = {
   [MCP_RESULT_CONTENT]?: McpResultContentBlock[];

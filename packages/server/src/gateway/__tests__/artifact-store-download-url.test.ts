@@ -60,6 +60,7 @@ describe("ArtifactStore.buildDownloadUrl", () => {
     const read = await env.artifactStore.read(artifactId);
     expect(read?.metadata.filename).toBe("note.txt");
   });
+
   test("enforces immutable internal bindings and supports cleanup", async () => {
     const binding = runArtifactBinding(42);
     const { artifactId } = await env.artifactStore.publish({
@@ -78,5 +79,4 @@ describe("ArtifactStore.buildDownloadUrl", () => {
     await env.artifactStore.delete(artifactId);
     expect(await env.artifactStore.read(artifactId)).toBeNull();
   });
-
 });

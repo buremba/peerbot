@@ -2,11 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ArtifactStore,
   runArtifactBinding,
 } from '../../gateway/files/artifact-store';
+import * as lobuGateway from '../../lobu/gateway';
 import {
   deleteMaterializedArtifacts,
   materializeActionOutputAttachments,
@@ -23,9 +24,13 @@ describe('materializeActionOutputAttachments', () => {
       '12345678901234567890123456789012'
     ).toString('base64');
     artifactStore = new ArtifactStore(artifactsDir);
+    vi.spyOn(lobuGateway, 'getLobuCoreServices').mockReturnValue({
+      getArtifactStore: () => artifactStore,
+    });
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
     else process.env.ENCRYPTION_KEY = previousEncryptionKey;
     rmSync(artifactsDir, { recursive: true, force: true });
@@ -46,8 +51,7 @@ describe('materializeActionOutputAttachments', () => {
             size_bytes: bytes.length,
           },
         ],
-      },
-      artifactStore
+      }
     );
 
     expect(output.asset_local_id).toBe('photo-123');
@@ -71,6 +75,7 @@ describe('materializeActionOutputAttachments', () => {
     expect(stored).toBeTruthy();
     expect(await readFile(stored!.filePath)).toEqual(bytes);
   });
+
   it('deletes partial publishes when a later attachment publish fails', async () => {
     let publishCalls = 0;
     let firstArtifactId: string | undefined;
@@ -84,6 +89,9 @@ describe('materializeActionOutputAttachments', () => {
       },
       delete: (artifactId: string) => artifactStore.delete(artifactId),
     };
+    vi.mocked(lobuGateway.getLobuCoreServices).mockReturnValue({
+      getArtifactStore: () => flakyStore,
+    });
 
     await expect(
       materializeActionOutputAttachments(
@@ -103,8 +111,7 @@ describe('materializeActionOutputAttachments', () => {
               data: Buffer.from('second').toString('base64'),
             },
           ],
-        },
-        flakyStore
+        }
       )
     ).rejects.toThrow('second publish failed');
 
@@ -124,14 +131,12 @@ describe('materializeActionOutputAttachments', () => {
             data: Buffer.from('abandoned').toString('base64'),
           },
         ],
-      },
-      artifactStore
+      }
     );
     expect(publishedArtifactIds).toHaveLength(1);
     expect(await artifactStore.read(publishedArtifactIds[0])).toBeTruthy();
 
-    await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
+    await deleteMaterializedArtifacts(publishedArtifactIds);
     expect(await artifactStore.read(publishedArtifactIds[0])).toBeNull();
   });
-
 });

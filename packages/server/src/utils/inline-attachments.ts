@@ -89,7 +89,6 @@ function publicGatewayUrl(): string {
  */
 export async function materializeInlineAttachments<T extends StreamItemLike>(
   items: T[],
-  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">,
   bindingForItem?: (item: T) => string | undefined
 ): Promise<{
   items: T[];
@@ -97,7 +96,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
   publishedArtifactIds: string[];
 }> {
   const coreServices = getLobuCoreServices();
-  const artifactStore = artifactStoreOverride ?? coreServices?.getArtifactStore?.();
+  const artifactStore = coreServices?.getArtifactStore?.();
   if (!artifactStore) {
     return { items, pendingTranscriptions: [], publishedArtifactIds: [] };
   }
@@ -198,8 +197,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
 /** Materialize connector-style attachments returned by a device action. */
 export async function materializeActionOutputAttachments(
   runId: number,
-  actionOutput: Record<string, unknown>,
-  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">
+  actionOutput: Record<string, unknown>
 ): Promise<{
   output: Record<string, unknown>;
   publishedArtifactIds: string[];
@@ -209,7 +207,6 @@ export async function materializeActionOutputAttachments(
   }
   const { items, publishedArtifactIds } = await materializeInlineAttachments(
     [{ id: `action:${runId}`, attachments: actionOutput.attachments }],
-    artifactStoreOverride,
     () => runArtifactBinding(runId)
   );
   return {
@@ -218,13 +215,10 @@ export async function materializeActionOutputAttachments(
   };
 }
 
-export async function deleteMaterializedArtifacts(
-  artifactIds: string[],
-  artifactStoreOverride?: Pick<ArtifactStore, "delete">
-): Promise<void> {
+export async function deleteMaterializedArtifacts(artifactIds: string[]): Promise<void> {
   if (artifactIds.length === 0) return;
   const coreServices = getLobuCoreServices();
-  const artifactStore = artifactStoreOverride ?? coreServices?.getArtifactStore?.();
+  const artifactStore = coreServices?.getArtifactStore?.();
   if (!artifactStore) return;
   const results = await Promise.allSettled(
     artifactIds.map((artifactId) => artifactStore.delete(artifactId))

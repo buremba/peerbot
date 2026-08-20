@@ -1,16 +1,21 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Context } from 'hono';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { getDb } from '../../../db/client';
 import {
   ArtifactStore,
   eventArtifactBinding,
   runArtifactBinding,
 } from '../../../gateway/files/artifact-store';
+import type { Env } from '../../../index';
+import * as lobuGateway from '../../../lobu/gateway';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { insertEvent } from '../../../utils/insert-event';
+import { completeActionRun, streamContent } from '../../../worker-api';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -21,6 +26,22 @@ import {
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
+
+function mockWorkerCtx(body: unknown): {
+  ctx: Context<{ Bindings: Env }>;
+  result: () => { body: unknown; status: number };
+} {
+  let captured: { body: unknown; status: number } = { body: undefined, status: 200 };
+  const ctx = {
+    req: { json: async () => body },
+    var: {},
+    json: (responseBody: unknown, status?: number) => {
+      captured = { body: responseBody, status: status ?? 200 };
+      return captured as unknown as Response;
+    },
+  } as unknown as Context<{ Bindings: Env }>;
+  return { ctx, result: () => captured };
+}
 
 describe('MCP media resources', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
@@ -91,37 +112,99 @@ describe('MCP media resources', () => {
     return sessionId!;
   }
 
-  it('returns durable event attachments as MCP resources', async () => {
+  it('materializes streamed media with connection-over-feed binding and reads its resource', async () => {
     const imageBytes = Buffer.from('durable-event-image');
-    const artifact = await artifactStore.publish({
-      buffer: imageBytes,
-      filename: 'memory-photo.webp',
-      contentType: 'image/webp',
-      publicGatewayUrl: 'http://localhost',
-      binding: eventArtifactBinding({
-        organizationId: org.id,
-        originId: 'mcp-media-event',
-      }),
-    });
-    const event = await insertEvent({
-      entityIds: [],
-      organizationId: org.id,
-      originId: 'mcp-media-event',
-      title: 'Memory photo',
-      payloadType: 'media',
-      content: '',
-      semanticType: 'photo',
-      attachments: [
+    const sql = getDb();
+    const [connection] = await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, status, visibility, slug, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'rss', 'active', 'org', 'mcp-media-stream', NOW(), NOW()
+      )
+      RETURNING id
+    `;
+    const connectionId = Number(connection!.id);
+    const [feed] = await sql`
+      INSERT INTO feeds (
+        organization_id, connection_id, feed_key, status, created_at, updated_at
+      ) VALUES (
+        ${org.id}, ${connectionId}, 'items', 'active', NOW(), NOW()
+      )
+      RETURNING id
+    `;
+    const feedId = Number(feed!.id);
+    const [run] = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, feed_id, connection_id, connector_key,
+        connector_version, status, claimed_by, created_at
+      ) VALUES (
+        ${org.id}, 'sync', ${feedId}, ${connectionId}, 'rss', '1.0.0',
+        'running', 'worker-mcp-media', NOW()
+      )
+      RETURNING id
+    `;
+    const runId = Number(run!.id);
+    const { ctx, result } = mockWorkerCtx({
+      run_id: runId,
+      worker_id: 'worker-mcp-media',
+      items: [
         {
-          kind: 'image',
-          filename: 'memory-photo.webp',
-          mime_type: 'image/webp',
-          artifact_id: artifact.artifactId,
-          download_url: artifact.downloadUrl,
-          size_bytes: imageBytes.length,
+          id: 'mcp-media-event',
+          title: 'Memory photo',
+          payload_text: 'A streamed photo',
+          payload_type: 'media',
+          occurred_at: new Date().toISOString(),
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'memory-photo.webp',
+              mime_type: 'image/webp',
+              data: imageBytes.toString('base64'),
+            },
+          ],
         },
       ],
     });
+    const coreServices = vi
+      .spyOn(lobuGateway, 'getLobuCoreServices')
+      .mockReturnValue({ getArtifactStore: () => artifactStore });
+    try {
+      await streamContent(ctx);
+    } finally {
+      coreServices.mockRestore();
+    }
+    expect(result()).toMatchObject({ status: 200, body: { total_items: 1 } });
+
+    const [event] = await sql`
+      SELECT id, attachments
+      FROM events
+      WHERE organization_id = ${org.id}
+        AND origin_id = 'mcp-media-event'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    const eventId = Number(event!.id);
+    const attachment = (event!.attachments as Array<Record<string, unknown>>)[0]!;
+    const artifactId = String(attachment.artifact_id);
+    expect(
+      await artifactStore.read(artifactId, {
+        binding: eventArtifactBinding({
+          organizationId: org.id,
+          connectionId,
+          feedId,
+          originId: 'mcp-media-event',
+        }),
+      })
+    ).toBeTruthy();
+    expect(
+      await artifactStore.read(artifactId, {
+        binding: eventArtifactBinding({
+          organizationId: org.id,
+          feedId,
+          originId: 'mcp-media-event',
+        }),
+      })
+    ).toBeNull();
 
     const sessionId = await initSession();
     const path = `/mcp/${org.slug}`;
@@ -133,7 +216,7 @@ describe('MCP media resources', () => {
         params: {
           name: 'run_sdk',
           arguments: {
-            script: `export default async (_ctx, client) => client.knowledge.read({ content_ids: [${event.id}] });`,
+            script: `export default async (_ctx, client) => client.knowledge.read({ content_ids: [${eventId}] });`,
           },
         },
       },
@@ -149,7 +232,7 @@ describe('MCP media resources', () => {
     expect(resource).toEqual(
       expect.objectContaining({
         type: 'resource_link',
-        uri: `lobu://event/${event.id}/attachment/0`,
+        uri: `lobu://event/${eventId}/attachment/0`,
         name: 'memory-photo.webp',
         mimeType: 'image/webp',
         size: imageBytes.length,
@@ -172,6 +255,39 @@ describe('MCP media resources', () => {
       mimeType: 'image/webp',
       blob: imageBytes.toString('base64'),
     });
+
+    const artifactsBeforeFailedInsert = (await readdir(artifactsDir)).sort();
+    const failedInsert = mockWorkerCtx({
+      run_id: runId,
+      worker_id: 'worker-mcp-media',
+      items: [
+        {
+          id: 'mcp-media-invalid-event',
+          title: 'Invalid streamed photo',
+          payload_text: 'This insert must fail',
+          payload_type: 'media',
+          occurred_at: 'not-a-timestamp',
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'invalid.webp',
+              mime_type: 'image/webp',
+              data: Buffer.from('must-be-cleaned').toString('base64'),
+            },
+          ],
+        },
+      ],
+    });
+    const failedInsertServices = vi
+      .spyOn(lobuGateway, 'getLobuCoreServices')
+      .mockReturnValue({ getArtifactStore: () => artifactStore });
+    try {
+      await streamContent(failedInsert.ctx);
+    } finally {
+      failedInsertServices.mockRestore();
+    }
+    expect(failedInsert.result().status).toBe(500);
+    expect((await readdir(artifactsDir)).sort()).toEqual(artifactsBeforeFailedInsert);
   });
 
   it('does not let a resource URI bypass workspace authorization', async () => {
@@ -225,6 +341,149 @@ describe('MCP media resources', () => {
     const body = await response.json();
     expect(body.result).toBeUndefined();
     expect(body.error?.message).toContain('Unknown resource');
+  });
+
+  it('fails safely for invalid, missing, and oversized resources', async () => {
+    const oversizedBytes = Buffer.alloc(20 * 1024 * 1024 + 1, 1);
+    const artifact = await artifactStore.publish({
+      buffer: oversizedBytes,
+      filename: 'oversized.bin',
+      contentType: 'application/octet-stream',
+      publicGatewayUrl: 'http://localhost',
+      binding: eventArtifactBinding({
+        organizationId: org.id,
+        originId: 'oversized-mcp-media-event',
+      }),
+    });
+    const event = await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: 'oversized-mcp-media-event',
+      title: 'Oversized attachment',
+      payloadType: 'media',
+      content: '',
+      semanticType: 'file',
+      attachments: [
+        {
+          kind: 'file',
+          filename: 'oversized.bin',
+          mime_type: 'application/octet-stream',
+          artifact_id: artifact.artifactId,
+          size_bytes: oversizedBytes.length,
+        },
+      ],
+    });
+    const sessionId = await initSession();
+    const path = `/mcp/${org.slug}`;
+
+    for (const uri of [
+      'lobu://event/not-a-number/attachment/0',
+      `lobu://event/${event.id}/attachment/99`,
+    ]) {
+      const response = await post(path, {
+        body: {
+          jsonrpc: '2.0',
+          id: `invalid-${uri}`,
+          method: 'resources/read',
+          params: { uri },
+        },
+        headers: { 'mcp-session-id': sessionId },
+        token,
+      });
+      const body = await response.json();
+      expect(body.result).toBeUndefined();
+      expect(body.error?.message).toContain('Unknown resource');
+    }
+
+    const oversizedResponse = await post(path, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'oversized-resource',
+        method: 'resources/read',
+        params: { uri: `lobu://event/${event.id}/attachment/0` },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const oversizedBody = await oversizedResponse.json();
+    expect(oversizedBody.result).toBeUndefined();
+    expect(oversizedBody.error?.message).toContain('limit 20971520');
+  });
+
+  it('cleans action artifacts when finalization rolls back or commits zero rows', async () => {
+    const sql = getDb();
+    const [rollbackRun, finalizedRun] = await Promise.all([
+      sql`
+        INSERT INTO runs (
+          organization_id, run_type, status, approval_status, claimed_by, action_key
+        ) VALUES (
+          ${org.id}, 'action', 'running', 'approved', 'worker-media-cleanup', 'capture'
+        )
+        RETURNING id
+      `.then((rows) => rows[0]),
+      sql`
+        INSERT INTO runs (
+          organization_id, run_type, status, approval_status, claimed_by, action_key
+        ) VALUES (
+          ${org.id}, 'action', 'completed', 'auto', 'worker-media-cleanup', 'capture'
+        )
+        RETURNING id
+      `.then((rows) => rows[0]),
+    ]);
+    const artifactsBefore = (await readdir(artifactsDir)).sort();
+    const coreServices = vi
+      .spyOn(lobuGateway, 'getLobuCoreServices')
+      .mockReturnValue({ getArtifactStore: () => artifactStore });
+
+    try {
+      const rollback = mockWorkerCtx({
+        run_id: Number(rollbackRun!.id),
+        worker_id: 'worker-media-cleanup',
+        status: 'success',
+        action_output: {
+          attachments: [
+            {
+              filename: 'rollback.jpg',
+              mime_type: 'image/jpeg',
+              data: Buffer.from('rollback-artifact').toString('base64'),
+            },
+          ],
+        },
+      });
+      await completeActionRun(rollback.ctx);
+      expect(rollback.result().status).toBe(500);
+      expect((rollback.result().body as { error?: string }).error).toContain(
+        'approval card is missing'
+      );
+
+      const zeroRows = mockWorkerCtx({
+        run_id: Number(finalizedRun!.id),
+        worker_id: 'worker-media-cleanup',
+        status: 'success',
+        action_output: {
+          attachments: [
+            {
+              filename: 'already-finalized.jpg',
+              mime_type: 'image/jpeg',
+              data: Buffer.from('zero-row-artifact').toString('base64'),
+            },
+          ],
+        },
+      });
+      await completeActionRun(zeroRows.ctx);
+      expect(zeroRows.result()).toMatchObject({
+        status: 200,
+        body: { success: false, reason: 'already_finalized' },
+      });
+    } finally {
+      coreServices.mockRestore();
+    }
+
+    expect((await readdir(artifactsDir)).sort()).toEqual(artifactsBefore);
+    const [runAfterRollback] = await sql`
+      SELECT status FROM runs WHERE id = ${Number(rollbackRun!.id)}
+    `;
+    expect(runAfterRollback!.status).toBe('running');
   });
 
   it('rejects an artifact grafted from another authorized resource', async () => {
@@ -306,8 +565,14 @@ describe('MCP media resources', () => {
       filename: 'candidate.jpg',
       contentType: 'image/jpeg',
       publicGatewayUrl: 'http://localhost',
+      ttlMs: -1,
       binding: runArtifactBinding(runId),
     });
+    const expiredToken = new URL(artifact.downloadUrl).searchParams.get('token');
+    expect(expiredToken).toBeTruthy();
+    expect(artifactStore.validateDownloadToken(expiredToken!, artifact.artifactId).valid).toBe(
+      false
+    );
     await sql`
       UPDATE runs
       SET action_output = ${sql.json({

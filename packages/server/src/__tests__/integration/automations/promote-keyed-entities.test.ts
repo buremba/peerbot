@@ -566,6 +566,74 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(changes.every((c) => (c.denied?.reason ?? '').length > 0)).toBe(true);
   });
 
+  it("a create=approval policy on the OWNING AGENT cards the create instead of refusing it", async () => {
+    // The sibling of the deny case above, and the branch that separates the two.
+    // 'approval' and 'deny' both stop the inline insert, but only one is a refusal:
+    // a held create must be QUEUED, and must not be written into the change set as
+    // denied — recording it as a refusal makes the caller skip the carding branch,
+    // so the row reads as rejected and the approval it was owed is never queued.
+    // Drives the real `write_approval_policies` resolver through complete_window,
+    // not a test interceptor.
+    const ctx = await setupKeyedAutomation();
+    const { sql, workspace, automationId, parentEntityId, agent } = ctx;
+
+    const policyRows = await sql<{ id: number }>`
+      INSERT INTO write_approval_policies
+        (organization_id, resource_class, principal_kind, principal_id)
+      VALUES (${workspace.org.id}, 'entity', 'agent', ${agent.agentId})
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO write_policy_action_effects (policy_id, action, effect)
+      VALUES (${Number(policyRows[0].id)}, 'create', 'approval')
+    `;
+
+    await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    await completeWithToken(ctx, token, runId);
+
+    // Held, not written: no promotion claimed an identity.
+    const promoted = await sql<{ c: number }>`
+      SELECT COUNT(*)::int AS c
+      FROM entity_identities
+      WHERE organization_id = ${workspace.org.id}
+        AND namespace = 'automation_key'
+        AND identifier LIKE ${`${automationId}::%`}
+    `;
+    expect(Number(promoted[0].c)).toBe(0);
+
+    // Held, not refused: an approval card exists for the create...
+    const cards = await sql<{ c: number }>`
+      SELECT COUNT(*)::int AS c
+      FROM current_event_records
+      WHERE organization_id = ${workspace.org.id}
+        AND semantic_type = 'operation'
+        AND interaction_type = 'approval'
+        AND interaction_status = 'pending'
+    `;
+    expect(Number(cards[0].c)).toBeGreaterThan(0);
+
+    // ...and nothing was refused. complete-window writes a change_set only when
+    // the window produced at least one change (`entityChanges.length > 0`), and a
+    // held create produces none — so the absence of the event IS the assertion.
+    // Guarding this behind `if (changeSet)` would make it never run: reporting the
+    // deferral as a refusal writes a change_set, which is exactly what must fail.
+    const [changeSet] = await sql`
+      SELECT metadata FROM current_event_records
+      WHERE run_id = ${runId}
+        AND organization_id = ${workspace.org.id}
+        AND semantic_type = 'change_set'
+    `;
+    expect(changeSet).toBeUndefined();
+  });
+
   it('is idempotent across a same-window replay — no duplicate entities', async () => {
     const ctx = await setupKeyedAutomation();
     const { sql, workspace, automationId, parentEntityId } = ctx;

@@ -13,11 +13,12 @@ import { isInProcessSystemCall } from './access-control';
 import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
+import { VIRTUAL_FEED_RECALL_BUDGET_MS } from '../config/intervals';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import type { ContentItem } from '@lobu/connector-sdk';
 import type { FeedReader, SourceKind } from '../lib/feed-reader';
-import { readVirtualFeed } from '../lib/connector-pushdown';
+import { readVirtualFeed, type ReadVirtualFeedResult } from '../lib/connector-pushdown';
 import {
   connectionLinkedEntityIdsSql,
   connectionLinkedToBusinessEntitySql,
@@ -776,6 +777,51 @@ const conversationSource: RecallSource = {
 };
 
 /**
+ * Read one virtual feed under the AMBIENT recall deadline.
+ *
+ * Two mechanisms, because one is not enough:
+ *
+ *   - the ABORT tells the reader to stop. The device seam threads it into
+ *     `waitForDeviceActionRun`, which stops polling and finalizes its transport
+ *     run as `timeout`, and `readDeviceVirtualFeed`'s cleanup then scrubs it.
+ *     Without this, walking away from the promise would leave a live run
+ *     holding a page of the user's messages until the 60s queue budget lapsed.
+ *   - the RACE bounds wall clock regardless. A compiled connector's `search()`
+ *     runs in a subprocess with no cancellation seam, so the abort alone cannot
+ *     promise the caller anything; the race can.
+ *
+ * The underlying promise keeps running after a race loss (that is what lets the
+ * abort-driven cleanup finish), so its eventual rejection is absorbed here —
+ * the race below owns the verdict this caller sees.
+ */
+async function readVirtualFeedWithinRecallBudget(
+  params: Parameters<typeof readVirtualFeed>[0]
+): Promise<ReadVirtualFeedResult> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = readVirtualFeed({ ...params, signal: controller.signal });
+  pending.catch(() => {
+    // Owned by the race below; also absorbed so a post-deadline rejection is
+    // never an unhandled one.
+  });
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(
+        new Error(
+          `live recall exceeded its ${VIRTUAL_FEED_RECALL_BUDGET_MS}ms budget`
+        )
+      );
+    }, VIRTUAL_FEED_RECALL_BUDGET_MS);
+  });
+  try {
+    return await Promise.race([pending, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * `virtual` — live rows from opt-in virtual feeds. A virtual feed participates
  * in ambient recall ONLY when its `config.recall === true`; most virtual feeds
  * exist to be SQL-addressable (query_sql) and must NOT tax every search_memory
@@ -831,7 +877,7 @@ const virtualSource: RecallSource = {
     const blocks = await Promise.all(
       candidates.map(async (f): Promise<VirtualFeedRows | null> => {
         try {
-          const live = await readVirtualFeed({
+          const live = await readVirtualFeedWithinRecallBudget({
             scope: gate,
             feedId: f.id,
             terms: [ctx.query as string],

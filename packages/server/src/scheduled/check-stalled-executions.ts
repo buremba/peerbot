@@ -42,7 +42,7 @@ import type { ReservedSql } from 'postgres';
 import { maybeEmitFeedAutoPausedAfterFailure } from '../automations/platform-events';
 import { intervals } from '../config/intervals';
 import { feedBackoff } from '../connectors/feed-backoff';
-import { getDb } from '../db/client';
+import { type DbClient, getDb } from '../db/client';
 import type { Env } from '../index';
 import { classifyRunOutcome } from '../runs/run-outcome';
 import {
@@ -52,12 +52,115 @@ import {
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { reconcileAutomationRuns, sweepStaleAutomationRuns } from '../automations/automation';
+import {
+  DEVICE_VIRTUAL_FEED_ACTION_KEY,
+  DEVICE_VIRTUAL_FEED_SCRUB_GRACE_SECONDS,
+} from '../lib/device-virtual-feed-protocol';
 import { buildStaleRunWhereSql } from './stale-run-sweeper';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
  *  Picked from the >2^31 range to avoid collisions with the queue-NOTIFY
  *  channel ids and the due-feeds lock; the high bits are arbitrary. */
 const REAPER_ADVISORY_LOCK_KEY = 0x726e7372; // 'rnsr' — runs-reaper
+
+/** Statuses a live-read run can still be claimed or completed from. */
+const VIRTUAL_FEED_IN_FLIGHT_STATUSES = "('pending', 'claimed', 'running')";
+
+/**
+ * The only in-flight status this sweep may terminalize on an expired horizon.
+ *
+ * `runs.expires_at` on a device action is the UNCLAIMED claim horizon, not an
+ * execution deadline — queue-service stamps it so an unclaimed run cannot sit
+ * pending forever, and poll.ts enforces it only against `status = 'pending'`
+ * (both the candidate scan and the claiming UPDATE). A CLAIMED run is a device
+ * actually working: WhatsApp queries a real archive, and one claimed a second
+ * before expiry is legitimately still running. Timing it out here would kill
+ * live work on a clock that was never about execution.
+ *
+ * Claimed/running failures stay with the heartbeat/coarse reaper below — the
+ * claim stamps `last_heartbeat_at`, so that predicate governs them properly.
+ * Once IT terminalizes them, the terminal-grace lane here clears their payload
+ * on a later tick, so nothing is left holding rows either way.
+ */
+const VIRTUAL_FEED_EXPIRABLE_STATUS = "'pending'";
+
+const VIRTUAL_FEED_ORPHAN_MESSAGE =
+  'Live virtual-feed read expired without a device answer (swept by the run reaper).';
+
+/**
+ * Scrub abandoned device virtual-feed read runs, set-wise.
+ *
+ * A live read carries the caller's recall terms in `action_input` and a page of
+ * the device's rows in `action_output` — the transport that lets a result cross
+ * from a laptop to whichever replica is waiting. `readDeviceVirtualFeed` clears
+ * both in a `finally`, which covers every path the gateway process survives. It
+ * covers none of the paths where it does not: an OOM kill, a pod eviction, a
+ * rolling deploy mid-read. The promise that a virtual feed keeps no copy cannot
+ * rest on a process staying alive, so the same guarantee is re-asserted from
+ * the reaper, which any replica runs.
+ *
+ * Two lanes, one statement:
+ *   - TERMINAL rows past the grace window are scrubbed, keeping their status,
+ *     outcome and timing — the read's verdict belongs to whoever ran it.
+ *   - UNCLAIMED (`pending`) rows whose claim horizon (`expires_at`) has lapsed
+ *     are timed out AND scrubbed, so a device that wakes up late cannot claim
+ *     one and post a fresh page of messages into a row nobody is waiting on.
+ *     Only `pending` — see {@link VIRTUAL_FEED_EXPIRABLE_STATUS}; a claimed run
+ *     is a device mid-query and is the heartbeat reaper's to judge.
+ *
+ * The grace is what keeps this from racing a HEALTHY waiter: a run marked
+ * `completed` seconds ago is about to be read by a poller on a 500ms cadence
+ * that will scrub it itself, and sweeping instantly would turn an ordinary read
+ * into an empty result.
+ *
+ * Idempotent: a scrubbed row no longer matches (no output, and its input
+ * carries the `scrubbed` marker), so repeat ticks are no-ops. Fenced to the
+ * reserved action key, so no real operation's input or output is ever touched.
+ */
+export async function sweepAbandonedVirtualFeedReadRuns(
+  sql: Pick<DbClient, 'unsafe'>
+): Promise<number> {
+  const result = await sql.unsafe(
+    `UPDATE runs
+     SET action_output = NULL,
+         -- Keep the feed key: it is protocol, not user content, and it is the
+         -- only thing that makes the surviving audit row legible.
+         action_input = jsonb_build_object(
+           'scrubbed', true,
+           'feed_key', action_input->>'feed_key'
+         ),
+         status = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+                    THEN 'timeout' ELSE status END,
+         outcome = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+                     THEN $2 ELSE outcome END,
+         completed_at = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+                          THEN current_timestamp ELSE completed_at END,
+         error_message = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+                           THEN $3 ELSE error_message END
+     WHERE run_type = 'action'
+       AND action_key = $1
+       -- Already-clean rows must not match, or every tick would rewrite them.
+       AND (
+         action_output IS NOT NULL
+         OR (action_input IS NOT NULL AND NOT jsonb_exists(action_input, 'scrubbed'))
+       )
+       AND (
+         (status NOT IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+          AND COALESCE(completed_at, created_at)
+              <= current_timestamp - ($4::int * interval '1 second'))
+         OR (status = ${VIRTUAL_FEED_EXPIRABLE_STATUS}
+             AND expires_at IS NOT NULL
+             AND expires_at <= current_timestamp)
+       )`,
+    [
+      DEVICE_VIRTUAL_FEED_ACTION_KEY,
+      classifyRunOutcome({ status: 'timeout' }),
+      VIRTUAL_FEED_ORPHAN_MESSAGE,
+      DEVICE_VIRTUAL_FEED_SCRUB_GRACE_SECONDS,
+    ]
+  );
+  return Number(result.count ?? 0);
+}
 
 interface ReapStaleRunsResult {
   /** Whether the advisory lock was acquired. False means another pod is
@@ -108,6 +211,25 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
     }
 
     try {
+      // First, and independently of the staleness predicate below: a crashed
+      // gateway leaves live virtual-feed reads holding user rows. This is a
+      // retention guarantee, not a queue-health one, so it runs even when
+      // nothing else is stale.
+      try {
+        const scrubbed = await sweepAbandonedVirtualFeedReadRuns(reserved);
+        if (scrubbed > 0) {
+          logger.warn(
+            { scrubbed },
+            '[reaper] Scrubbed abandoned device virtual-feed read runs'
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { error: String(err) },
+          '[reaper] Failed to scrub abandoned device virtual-feed read runs'
+        );
+      }
+
       const heartbeatErrorMessage = 'worker_heartbeat_lost';
       const claimErrorMessage = 'worker_claim_timeout';
       // Failure-backoff / auto-pause policy shared with the completion path

@@ -19,6 +19,8 @@
  * - unmerge: Reverse a ledger-backed merge when its after-state is unchanged
  */
 
+import { randomUUID } from "node:crypto";
+
 import {
 	ApprovalAttribution,
 	type ApprovalAttribution as ApprovalAttributionType,
@@ -75,6 +77,7 @@ import {
 	previewMerge,
 } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
+import { persistEntityWritePolicyDenial } from "../../utils/entity-write-denial-audit";
 import {
 	recordChangeEvent,
 	recordEdgeChangeEvent,
@@ -382,6 +385,17 @@ async function handleCreate(
 		proposal,
 	});
 	if (createDecision.outcome === "deny") {
+		await persistEntityWritePolicyDenial({
+			ctx,
+			attemptId: randomUUID(),
+			operation: "create",
+			reason: createDecision.reason,
+			entityId: null,
+			entityType: args.entity_type,
+			entityOrganizationId: null,
+			actor,
+			automationId: createAttribution.automationId,
+		});
 		throw new ToolUserError(createDecision.reason, 403);
 	}
 	if (createDecision.outcome === "defer") {
@@ -1547,6 +1561,17 @@ async function handleDelete(
 		current,
 	});
 	if (deleteDecision.outcome === "deny") {
+		await persistEntityWritePolicyDenial({
+			ctx,
+			attemptId: randomUUID(),
+			operation: "delete",
+			reason: deleteDecision.reason,
+			entityId: entity.id,
+			entityType: entity.entity_type,
+			entityOrganizationId: entity.organization_id ?? null,
+			actor: deleteActor,
+			automationId: deleteAttribution.automationId,
+		});
 		throw new ToolUserError(deleteDecision.reason, 403);
 	}
 	// Preflight: report what the delete would remove/detach without mutating.

@@ -329,6 +329,8 @@ export interface EntityData {
 
 export interface CreatedEntity {
   id: number;
+  /** Internal ownership projection used to avoid cross-org audit anchors. */
+  organization_id?: string;
   entity_type: string;
   name: string;
   slug: string;
@@ -1489,7 +1491,7 @@ export async function getEntity(
   //   2. public-catalog entity (anyone reads, except `$member`)
   const result = await sql<CreatedEntity>`
     SELECT
-      e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
+      e.id, e.organization_id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       e.current_view_template_version_id,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
       (

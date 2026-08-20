@@ -1,9 +1,7 @@
 import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-  activateWorkspaceEventTask,
-  enqueueWorkspaceEventActivations,
-} from '../../../automations/workspace-event';
+import { activateWorkspaceEventTask } from '../../../automations/workspace-event';
+import { enqueueWorkspaceEventActivations } from '../../../automations/workspace-event-enqueue';
 import {
   MAX_WORKSPACE_EVENT_FANOUT,
   type WorkspaceEventActivationTaskPayload,

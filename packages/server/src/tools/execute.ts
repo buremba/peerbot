@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { runWithActingAutomation } from '../utils/acting-automation-context';
 import type { Context } from 'hono';
 import { isToolError, retryWithBackoff, ToolError } from '@lobu/core';
 import {
@@ -305,8 +306,20 @@ export async function executeTool(
   // single tool call so a failure can be traced across logs/audit/response.
   const callId = randomUUID();
 
+  // Attribute every audit row this handler writes to the Automation driving the
+  // call. Resolution mirrors the one gated writes already use
+  // (`manage_entity.ts`): the server-set reaction identity first, then the
+  // caller-declared `automation_source` for an agent or device running a
+  // window. Setting it once here rather than at each audit writer is what keeps
+  // provenance from drifting as writers are added.
   const runHandler = () =>
-    trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));
+    runWithActingAutomation(
+      toolContext.actingAutomationId ?? declaredAutomationSourceId(args),
+      () =>
+        trackMCPToolCall(toolName, args, () =>
+          tool.handler(args, env, toolContext)
+        )
+    );
 
   try {
     // Auto-retry (lobu#2051 Item 2): only transient thrown ToolErrors, and only
@@ -370,6 +383,24 @@ export async function executeTool(
  * anyway — its `retryable` flag is advisory for the agent.
  */
 const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
+
+/**
+ * The `automation_source.automation_id` an agent declared on this call.
+ *
+ * Self-declared and therefore advisory — an agent that omits it is attributed
+ * to nothing, exactly as today. The reaction identity checked first is
+ * server-set and cannot be forged, so the non-forgeable source always wins.
+ */
+function declaredAutomationSourceId(
+  args: Record<string, unknown>
+): number | null {
+  const source = args.automation_source;
+  if (!source || typeof source !== 'object') return null;
+  const id = (source as { automation_id?: unknown }).automation_id;
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0
+    ? id
+    : null;
+}
 
 /** True when a thrown value is a retryable typed error. */
 function isRetryableToolError(err: Error): boolean {

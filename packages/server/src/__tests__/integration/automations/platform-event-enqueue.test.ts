@@ -1,0 +1,225 @@
+/**
+ * Stage C: a platform-written audit row actually reaches its subscriber.
+ *
+ * #2938 taught the activation path to handle a root, and #2944 made the type
+ * subscribable — but nothing enqueued, so a subscription could exist and never
+ * fire. These tests cover the write path: an audit row with a subscribed
+ * `<subject>.<op>` type queues an activation, and one produced by an Automation
+ * names that Automation as its own causal path so it cannot wake itself.
+ */
+
+import { beforeEach, describe, expect, it } from 'vitest';
+import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
+import { createTestAgent } from '../../setup/test-fixtures';
+import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+import { recordLifecycleEvent } from '../../../utils/insert-event';
+import { runWithActingAutomation } from '../../../utils/acting-automation-context';
+import { WORKSPACE_EVENT_ACTIVATION_TASK } from '../../../scheduled/task-definitions';
+
+interface QueuedActivation {
+  organizationId: string;
+  eventId: number;
+  rootEventIds: number[];
+  causalAutomationIds: number[];
+  depth: number;
+}
+
+async function subscriber(name: string, eventTypes: string[]) {
+  const workspace = await TestWorkspace.create({ name });
+  const ownerUserId = workspace.users.owner.id;
+  const agent = await createTestAgent({
+    organizationId: workspace.org.id,
+    ownerUserId,
+    agentId: 'platform-enqueue-agent',
+  });
+  const api = await TestApiClient.for({
+    organizationId: workspace.org.id,
+    userId: ownerUserId,
+    memberRole: 'owner',
+  });
+  const created = (await api.automations.create({
+    slug: 'platform-consumer',
+    prompt: 'Handle the platform event.',
+    triggers: [
+      {
+        kind: 'event',
+        source: 'workspace',
+        event_types: eventTypes,
+        execution: 'window',
+        active_run: 'queue',
+      },
+    ],
+    agent_id: agent.agentId,
+  })) as { automation_id: string };
+  return {
+    organizationId: workspace.org.id,
+    automationId: Number(created.automation_id),
+  };
+}
+
+/** Activation tasks queued for an org, newest last. */
+async function queuedActivations(
+  organizationId: string
+): Promise<QueuedActivation[]> {
+  const sql = getTestDb();
+  const rows = await sql<{ action_input: { payload: QueuedActivation } }>`
+    SELECT action_input
+    FROM public.runs
+    WHERE run_type = 'task'
+      AND action_key = ${WORKSPACE_EVENT_ACTIVATION_TASK}
+      AND organization_id = ${organizationId}
+    ORDER BY id ASC
+  `;
+  return rows.map((row) => row.action_input.payload);
+}
+
+/**
+ * `recordLifecycleEvent` is fire-and-forget, so the write and its enqueue both
+ * settle after the call returns. Poll rather than sleep a fixed interval.
+ */
+async function waitForActivations(
+  organizationId: string,
+  count: number
+): Promise<QueuedActivation[]> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const queued = await queuedActivations(organizationId);
+    if (queued.length >= count) return queued;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return queuedActivations(organizationId);
+}
+
+describe('platform event activation enqueue', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('queues a root activation for a subscribed platform event', async () => {
+    const { organizationId } = await subscriber('Enqueue Org', [
+      'connection.deleted',
+    ]);
+
+    recordLifecycleEvent({
+      organizationId,
+      entityType: 'connection',
+      op: 'deleted',
+      entityId: 42,
+      summary: 'Connection deleted',
+    });
+
+    const queued = await waitForActivations(organizationId, 1);
+    expect(queued).toHaveLength(1);
+    const activation = queued[0]!;
+    expect(activation.organizationId).toBe(organizationId);
+    expect(activation.eventId).toBeGreaterThan(0);
+    // A root: it is its own root, nothing ran before it, depth starts at 1.
+    expect(activation.rootEventIds).toEqual([activation.eventId]);
+    expect(activation.causalAutomationIds).toEqual([]);
+    expect(activation.depth).toBe(1);
+  });
+
+  it('queues nothing when no Automation subscribes to the type', async () => {
+    // Subscribes to a DIFFERENT platform type, so the org has a workspace
+    // subscription but not one for the row being written.
+    const { organizationId } = await subscriber('Unsubscribed Org', [
+      'connection.deleted',
+    ]);
+
+    recordLifecycleEvent({
+      organizationId,
+      entityType: 'device',
+      op: 'created',
+      entityId: 7,
+      summary: 'Device created',
+    });
+
+    // Give the fire-and-forget write time to settle before asserting absence.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await queuedActivations(organizationId)).toEqual([]);
+  });
+
+  it('names the producing Automation as its own causal path', async () => {
+    const { organizationId, automationId } = await subscriber(
+      'Self Trigger Org',
+      ['connection.deleted']
+    );
+
+    // The same audit write, but driven by the subscribing Automation — the
+    // shape that would otherwise loop forever, since every self-write mints a
+    // fresh root at depth 1 and the depth cap never bites.
+    await runWithActingAutomation(automationId, async () => {
+      recordLifecycleEvent({
+        organizationId,
+        entityType: 'connection',
+        op: 'deleted',
+        entityId: 99,
+        summary: 'Connection deleted by automation',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    const queued = await waitForActivations(organizationId, 1);
+    expect(queued).toHaveLength(1);
+    // Ancestry names the producer, so the matcher skips it and the Automation
+    // cannot be woken by the audit exhaust of its own write.
+    expect(queued[0]!.causalAutomationIds).toEqual([automationId]);
+  });
+
+  it('stamps the producing Automation on the audit row itself', async () => {
+    const { organizationId, automationId } = await subscriber('Stamp Org', [
+      'connection.deleted',
+    ]);
+
+    await runWithActingAutomation(automationId, async () => {
+      recordLifecycleEvent({
+        organizationId,
+        entityType: 'connection',
+        op: 'deleted',
+        entityId: 123,
+        summary: 'Connection deleted by automation',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    const sql = getTestDb();
+    const rows = await sql<{ automation_id: number | null }>`
+      SELECT automation_id
+      FROM public.events
+      WHERE organization_id = ${organizationId}
+        AND metadata->>'_lobu_event_type' = 'connection.deleted'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]!.automation_id)).toBe(automationId);
+  });
+
+  it('leaves an unattributed write as a genuine root', async () => {
+    const { organizationId } = await subscriber('Root Org', [
+      'connection.deleted',
+    ]);
+
+    // No acting scope: a person in the UI, a cron tick, a connector sync.
+    recordLifecycleEvent({
+      organizationId,
+      entityType: 'connection',
+      op: 'deleted',
+      entityId: 5,
+      summary: 'Connection deleted by a person',
+    });
+
+    const queued = await waitForActivations(organizationId, 1);
+    expect(queued[0]!.causalAutomationIds).toEqual([]);
+
+    const sql = getTestDb();
+    const rows = await sql<{ automation_id: number | null }>`
+      SELECT automation_id
+      FROM public.events
+      WHERE organization_id = ${organizationId}
+        AND metadata->>'_lobu_event_type' = 'connection.deleted'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(rows[0]!.automation_id).toBeNull();
+  });
+});

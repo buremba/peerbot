@@ -93,6 +93,178 @@ describe("manage_entity merge action", () => {
 		expect(row.deleted_at).not.toBeNull();
 	});
 
+	/**
+	 * A merged record has to stay deletable. `entity_merge_operations` holds the
+	 * undo ledger with ON DELETE RESTRICT on BOTH participants, and
+	 * `entities_merged_into_fkey` refuses to let the winner go while the loser's
+	 * redirect points at it — so before this was handled, merging two records
+	 * made the survivor permanently undeletable and the caller saw a raw Postgres
+	 * constraint message instead of an answer.
+	 */
+	it("force-deletes a merge winner, taking its redirects and ledger with it", async () => {
+		const org = await createTestOrganization({ name: "Delete Merged Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const toolCtx = ctx(org.id, user.id, "owner");
+
+		await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			toolCtx,
+		);
+
+		const sql = getTestDb();
+		const ledgerBefore = (await sql`
+      SELECT count(*)::int AS n FROM entity_merge_operations
+      WHERE winner_entity_id = ${winner.id}
+    `) as Array<{ n: number }>;
+		// Guard: without a ledger row the test would pass for the wrong reason.
+		expect(ledgerBefore[0].n).toBe(1);
+
+		const res = (await manageEntity(
+			{ action: "delete", entity_id: winner.id, force_delete_tree: true },
+			env,
+			toolCtx,
+		)) as { success: boolean; deleted_count: number };
+
+		expect(res.success).toBe(true);
+		// BOTH rows go: the loser is a redirect to the winner, not a record of its
+		// own, so leaving it behind would strand a tombstone pointing at nothing.
+		expect(res.deleted_count).toBe(2);
+
+		const rows = (await sql`
+      SELECT id FROM entities WHERE id IN (${winner.id}, ${loser.id})
+    `) as Array<{ id: number }>;
+		expect(rows).toHaveLength(0);
+
+		const ledgerAfter = (await sql`
+      SELECT count(*)::int AS n FROM entity_merge_operations
+      WHERE winner_entity_id = ${winner.id} OR loser_entity_id = ${loser.id}
+    `) as Array<{ n: number }>;
+		expect(ledgerAfter[0].n).toBe(0);
+	});
+
+	/** The redirect walk must not drag in a row that merged somewhere ELSE. */
+	it("leaves an unrelated merge pair untouched", async () => {
+		const org = await createTestOrganization({ name: "Unrelated Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		// Distinct names: entity slugs are unique per parent, so a second
+		// Winner/Loser pair from `twoEntities` would collide on insert.
+		const mk = async (label: string) => ({
+			winner: await createTestEntity({
+				name: `Winner ${label}`,
+				entity_type: "person",
+				organization_id: org.id,
+				created_by: user.id,
+			}),
+			loser: await createTestEntity({
+				name: `Loser ${label}`,
+				entity_type: "person",
+				organization_id: org.id,
+				created_by: user.id,
+			}),
+		});
+		const doomed = await mk("A");
+		const bystander = await mk("B");
+		const toolCtx = ctx(org.id, user.id, "owner");
+
+		for (const pair of [doomed, bystander]) {
+			await manageEntity(
+				{
+					action: "merge",
+					entity_id: pair.loser.id,
+					winner_entity_id: pair.winner.id,
+				},
+				env,
+				toolCtx,
+			);
+		}
+
+		await manageEntity(
+			{ action: "delete", entity_id: doomed.winner.id, force_delete_tree: true },
+			env,
+			toolCtx,
+		);
+
+		const sql = getTestDb();
+		const survivors = (await sql`
+      SELECT id FROM entities
+      WHERE id IN (${bystander.winner.id}, ${bystander.loser.id})
+      ORDER BY id
+    `) as Array<{ id: number }>;
+		expect(survivors).toHaveLength(2);
+
+		const ledger = (await sql`
+      SELECT count(*)::int AS n FROM entity_merge_operations
+      WHERE winner_entity_id = ${bystander.winner.id}
+    `) as Array<{ n: number }>;
+		expect(ledger[0].n).toBe(1);
+	});
+
+	/**
+	 * The shape that makes `UNION` (not `UNION ALL`) load-bearing in
+	 * `loadEntityTreeIds`: fold a parent into its own child and the two edges
+	 * close a cycle — B.parent_id = A via the parent edge, A.merged_into = B via
+	 * the redirect edge. `UNION ALL` would recurse forever and hang the delete.
+	 */
+	it("force-deletes a parent that was merged into its own child", async () => {
+		const org = await createTestOrganization({ name: "Cycle Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const toolCtx = ctx(org.id, user.id, "owner");
+
+		const parent = await createTestEntity({
+			name: "Parent",
+			entity_type: "person",
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const child = await createTestEntity({
+			name: "Child",
+			entity_type: "person",
+			organization_id: org.id,
+			created_by: user.id,
+			parent_id: parent.id,
+		});
+
+		await manageEntity(
+			{ action: "merge", entity_id: parent.id, winner_entity_id: child.id },
+			env,
+			toolCtx,
+		);
+
+		const sql = getTestDb();
+		const [edges] = (await sql`
+      SELECT
+        (SELECT parent_id FROM entities WHERE id = ${child.id}) AS child_parent,
+        (SELECT merged_into FROM entities WHERE id = ${parent.id}) AS parent_merged
+    `) as Array<{ child_parent: number | null; parent_merged: number | null }>;
+		// Guard: if the merge path ever refuses this, the cycle is unreachable and
+		// the UNION rationale above needs revisiting — fail here rather than let
+		// the test pass vacuously.
+		expect(Number(edges.child_parent)).toBe(parent.id);
+		expect(Number(edges.parent_merged)).toBe(child.id);
+
+		// Target the CHILD: it is the surviving record, and the merged-away parent
+		// is soft-deleted so the delete action would 404 on it. Walking out from
+		// the child is also the direction that closes the cycle — child → parent
+		// (redirect) → child (parent edge).
+		const res = (await manageEntity(
+			{ action: "delete", entity_id: child.id, force_delete_tree: true },
+			env,
+			toolCtx,
+		)) as { success: boolean; deleted_count: number };
+
+		expect(res.success).toBe(true);
+		expect(res.deleted_count).toBe(2);
+		const rows = (await sql`
+      SELECT id FROM entities WHERE id IN (${parent.id}, ${child.id})
+    `) as Array<{ id: number }>;
+		expect(rows).toHaveLength(0);
+	}, 30_000);
+
 	it("rejects a non-admin member (403)", async () => {
 		const org = await createTestOrganization({ name: "Gate Org" });
 		const user = await createTestUser();

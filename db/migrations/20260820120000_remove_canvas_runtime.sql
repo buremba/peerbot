@@ -88,31 +88,45 @@ SET action_output = COALESCE(result_event.payload_data, run.action_output),
 FROM result_event
 WHERE run.id = result_event.run_id;
 
--- The retired skip-if-unchanged path stored an empty Canvas cursor without a
--- run. Preserve that cursor as the same completed skipped run used today.
-CREATE TEMP TABLE skipped_canvas_run_map (
+-- Canvas rows imported from watcher_windows can predate the run ledger. Reuse
+-- a historical run already keyed to the Canvas root; otherwise synthesize the
+-- completed Automation run that the persisted result proves occurred.
+CREATE TEMP TABLE runless_canvas_run_map (
   legacy_id bigint PRIMARY KEY,
   run_id bigint NOT NULL,
   head_event_id bigint NOT NULL,
-  head_payload_data jsonb NOT NULL
+  head_payload_data jsonb,
+  synthesized boolean NOT NULL
 ) ON COMMIT DROP;
 
-INSERT INTO skipped_canvas_run_map (
-  legacy_id, run_id, head_event_id, head_payload_data
+INSERT INTO runless_canvas_run_map (
+  legacy_id, run_id, head_event_id, head_payload_data, synthesized
 )
 SELECT
   head.legacy_id,
-  nextval(pg_get_serial_sequence('public.runs', 'id')),
+  COALESCE(owner.run_id, nextval(pg_get_serial_sequence('public.runs', 'id'))),
   head.event_id,
-  head.payload_data
+  head.payload_data,
+  owner.run_id IS NULL
 FROM canvas_members head
 JOIN public.automations automation
   ON automation.id = head.automation_id
  AND automation.organization_id = head.organization_id
+LEFT JOIN LATERAL (
+  SELECT run.id AS run_id
+  FROM public.runs run
+  WHERE run.window_id = head.legacy_id
+    AND run.run_type = 'automation'
+    AND run.automation_id = head.automation_id
+    AND run.organization_id = head.organization_id
+  ORDER BY run.id DESC
+  LIMIT 1
+) owner ON true
 WHERE head.superseded_by IS NULL
-  AND head.payload_data = '{}'::jsonb
-  AND head.metadata->'content_analyzed' = '0'::jsonb
-  AND head.metadata->>'automation_id' = head.automation_id::text
+  AND (
+    head.metadata->>'automation_id' = head.automation_id::text
+    OR head.metadata->>'watcher_id' = head.automation_id::text
+  )
   AND head.metadata->>'window_start' IS NOT NULL
   AND head.metadata->>'window_end' IS NOT NULL
   AND head.metadata->>'granularity' IS NOT NULL
@@ -132,14 +146,14 @@ INSERT INTO public.runs (
   created_at, completed_at
 )
 SELECT
-  skipped.run_id,
+  runless.run_id,
   head.organization_id,
   'automation',
   head.automation_id,
   'auto',
   'completed',
   'scoreable',
-  '{}'::jsonb,
+  head.payload_data,
   jsonb_strip_nulls(jsonb_build_object(
     'automation_id', head.automation_id,
     'window_start', head.metadata->>'window_start',
@@ -148,15 +162,25 @@ SELECT
     'version_id', head.metadata->'version_id',
     'granularity', head.metadata->>'granularity'
   )),
-  '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
+  (CASE
+    WHEN head.metadata ? 'content_analyzed'
+      THEN jsonb_build_object('content_analyzed', head.metadata->'content_analyzed')
+    ELSE '{}'::jsonb
+  END) || (CASE
+    WHEN head.payload_data = '{}'::jsonb
+      AND head.metadata->'content_analyzed' = '0'::jsonb
+      THEN '{"skipped_unchanged":true}'::jsonb
+    ELSE '{}'::jsonb
+  END),
   concat(
     'automation:', head.automation_id, ':scheduled:',
     head.metadata->>'window_start', ':', head.metadata->>'window_end'
   ),
   head.created_at,
   head.created_at
-FROM skipped_canvas_run_map skipped
-JOIN canvas_members head ON head.event_id = skipped.head_event_id;
+FROM runless_canvas_run_map runless
+JOIN canvas_members head ON head.event_id = runless.head_event_id
+WHERE runless.synthesized;
 
 -- A current head may instead be a human correction with no run_id. Attribute
 -- that corrected payload to the latest producing run in the chain.
@@ -188,7 +212,7 @@ ORDER BY head.legacy_id, head.created_at DESC, head.event_id DESC;
 
 INSERT INTO canvas_run_map (legacy_id, run_id, head_event_id, head_payload_data)
 SELECT legacy_id, run_id, head_event_id, head_payload_data
-FROM skipped_canvas_run_map;
+FROM runless_canvas_run_map;
 
 DO $assert_canvas_heads$
 BEGIN
@@ -205,8 +229,22 @@ END
 $assert_canvas_heads$;
 
 UPDATE public.runs run
-SET action_output = COALESCE(mapping.head_payload_data, run.action_output)
+SET action_output = COALESCE(mapping.head_payload_data, run.action_output),
+    approved_input = COALESCE(run.approved_input, '{}'::jsonb)
+      || jsonb_strip_nulls(jsonb_build_object(
+        'window_start', head.metadata->>'window_start',
+        'window_end', head.metadata->>'window_end',
+        'granularity', head.metadata->>'granularity',
+        'version_id', head.metadata->'version_id'
+      )),
+    run_metadata = (COALESCE(run.run_metadata, '{}'::jsonb) - 'automation_run_id' - 'run_id')
+      || CASE
+        WHEN head.metadata ? 'content_analyzed'
+          THEN jsonb_build_object('content_analyzed', head.metadata->'content_analyzed')
+        ELSE '{}'::jsonb
+      END
 FROM canvas_run_map mapping
+JOIN canvas_members head ON head.event_id = mapping.head_event_id
 WHERE run.id = mapping.run_id;
 
 -- canvas-result-cutover:end

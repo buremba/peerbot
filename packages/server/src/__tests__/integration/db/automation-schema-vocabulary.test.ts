@@ -69,7 +69,7 @@ describe('Automation schema vocabulary', () => {
     expect(up).not.toMatch(/SET\s+\w+\s*=\s*replace\s*\(\s*replace\s*\([^;]*::text/is);
   });
 
-  it('preserves a legacy runless skip-if-unchanged cursor as a completed run', async () => {
+  it('preserves legacy runless Canvas results as completed runs', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization();
     const user = await createTestUser();
@@ -81,54 +81,96 @@ describe('Automation schema vocabulary', () => {
 
     try {
       await sql.begin(async (tx: typeof sql) => {
-        const [automation] = await tx<{ id: number }[]>`
-          WITH next_id AS (
-            SELECT nextval('automations_id_seq')::int AS id
-          )
-          INSERT INTO automations (
-            id, organization_id, created_by, agent_id, automation_group_id,
-            name, slug
-          )
-          SELECT
-            id, ${org.id}, ${user.id}, ${agent.agentId}, id,
-            'Runless Canvas cutover', 'runless-canvas-cutover'
-          FROM next_id
-          RETURNING id
-        `;
         const windowStart = '2026-08-18T00:00:00.000Z';
         const windowEnd = '2026-08-19T00:00:00.000Z';
-        const [legacy] = await tx<{ id: number }[]>`
-          INSERT INTO events (
-            organization_id, entity_ids, origin_id, payload_type, payload_data,
-            metadata, semantic_type, automation_id, occurred_at, created_at
+        const createLegacyCanvas = async (params: {
+          slug: string;
+          payload: Record<string, unknown>;
+          metadataIdKey: 'automation_id' | 'watcher_id';
+          contentAnalyzed: number;
+        }): Promise<{ automationId: number; legacyId: number }> => {
+          const [automation] = await tx<{ id: number }[]>`
+            WITH next_id AS (
+              SELECT nextval('automations_id_seq')::int AS id
+            )
+            INSERT INTO automations (
+              id, organization_id, created_by, agent_id, automation_group_id,
+              name, slug
+            )
+            SELECT id, ${org.id}, ${user.id}, ${agent.agentId}, id, ${params.slug}, ${params.slug}
+            FROM next_id
+            RETURNING id
+          `;
+          const [legacy] = await tx<{ id: number }[]>`
+            INSERT INTO events (
+              organization_id, entity_ids, origin_id, payload_type, payload_data,
+              metadata, semantic_type, automation_id, occurred_at, created_at
+            ) VALUES (
+              ${org.id}, '{}'::bigint[], ${params.slug}, 'json_template', ${tx.json(params.payload)},
+              ${tx.json({
+                [params.metadataIdKey]: automation.id,
+                granularity: 'daily',
+                window_start: windowStart,
+                window_end: windowEnd,
+                content_analyzed: params.contentAnalyzed,
+                version_id: null,
+              })},
+              'canvas_state', ${automation.id}, ${windowEnd}, ${windowEnd}
+            )
+            RETURNING id
+          `;
+          return { automationId: automation.id, legacyId: legacy.id };
+        };
+
+        const skipped = await createLegacyCanvas({
+          slug: 'runless-canvas-cutover',
+          payload: {},
+          metadataIdKey: 'automation_id',
+          contentAnalyzed: 0,
+        });
+        const legacyPayload = { tasks: [{ title: 'Preserved result' }] };
+        const legacyResult = await createLegacyCanvas({
+          slug: 'legacy-result-cutover',
+          payload: legacyPayload,
+          metadataIdKey: 'watcher_id',
+          contentAnalyzed: 3,
+        });
+        const linkedPayload = { summary: 'Preserved linked result' };
+        const linked = await createLegacyCanvas({
+          slug: 'linked-run-cutover',
+          payload: linkedPayload,
+          metadataIdKey: 'watcher_id',
+          contentAnalyzed: 5,
+        });
+
+        // The marked section runs before the full migration drops this legacy
+        // relation key; the test database has already applied that final drop.
+        await tx`ALTER TABLE runs ADD COLUMN IF NOT EXISTS window_id bigint`;
+        const [linkedRun] = await tx<{ id: number }[]>`
+          INSERT INTO runs (
+            organization_id, run_type, automation_id, approval_status, status,
+            action_output, approved_input, run_metadata, window_id, created_at,
+            completed_at
           ) VALUES (
-            ${org.id}, '{}'::bigint[], 'runless-canvas-cutover', 'json_template', '{}'::jsonb,
-            ${tx.json({
-              automation_id: automation.id,
-              granularity: 'daily',
-              window_start: windowStart,
-              window_end: windowEnd,
-              content_analyzed: 0,
-              version_id: null,
-            })},
-            'canvas_state', ${automation.id}, ${windowEnd}, ${windowEnd}
+            ${org.id}, 'automation', ${linked.automationId}, 'auto', 'completed',
+            '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, ${linked.legacyId},
+            ${windowEnd}, ${windowEnd}
           )
           RETURNING id
         `;
-
         await tx.unsafe(loadCanvasResultCutover());
 
         const [run] = await tx`
           SELECT id, status, outcome, action_output, approved_input, run_metadata
           FROM runs
-          WHERE automation_id = ${automation.id} AND run_type = 'automation'
+          WHERE automation_id = ${skipped.automationId} AND run_type = 'automation'
         `;
         expect(run).toMatchObject({
           status: 'completed',
           outcome: 'scoreable',
           action_output: {},
           approved_input: {
-            automation_id: automation.id,
+            automation_id: skipped.automationId,
             dispatch_source: 'scheduled',
             granularity: 'daily',
             window_start: windowStart,
@@ -139,10 +181,53 @@ describe('Automation schema vocabulary', () => {
         const [mapping] = await tx`
           SELECT run_id, head_event_id
           FROM canvas_run_map
-          WHERE legacy_id = ${legacy.id}
+          WHERE legacy_id = ${skipped.legacyId}
         `;
         expect(Number(mapping.run_id)).toBe(Number(run.id));
-        expect(Number(mapping.head_event_id)).toBe(Number(legacy.id));
+        expect(Number(mapping.head_event_id)).toBe(Number(skipped.legacyId));
+
+        const [resultRun] = await tx`
+          SELECT id, status, outcome, action_output, approved_input, run_metadata
+          FROM runs
+          WHERE automation_id = ${legacyResult.automationId} AND run_type = 'automation'
+        `;
+        expect(resultRun).toMatchObject({
+          status: 'completed',
+          outcome: 'scoreable',
+          action_output: legacyPayload,
+          approved_input: {
+            automation_id: legacyResult.automationId,
+            dispatch_source: 'scheduled',
+            granularity: 'daily',
+            window_start: windowStart,
+            window_end: windowEnd,
+          },
+          run_metadata: { content_analyzed: 3 },
+        });
+        const [resultMapping] = await tx`
+          SELECT run_id, head_event_id
+          FROM canvas_run_map
+          WHERE legacy_id = ${legacyResult.legacyId}
+        `;
+        expect(Number(resultMapping.run_id)).toBe(Number(resultRun.id));
+        expect(Number(resultMapping.head_event_id)).toBe(Number(legacyResult.legacyId));
+
+        const linkedRuns = await tx`
+          SELECT id, action_output, approved_input, run_metadata
+          FROM runs
+          WHERE automation_id = ${linked.automationId} AND run_type = 'automation'
+        `;
+        expect(linkedRuns).toHaveLength(1);
+        expect(Number(linkedRuns[0].id)).toBe(Number(linkedRun.id));
+        expect(linkedRuns[0]).toMatchObject({
+          action_output: linkedPayload,
+          approved_input: {
+            granularity: 'daily',
+            window_start: windowStart,
+            window_end: windowEnd,
+          },
+          run_metadata: { content_analyzed: 5 },
+        });
 
         throw new Rollback();
       });

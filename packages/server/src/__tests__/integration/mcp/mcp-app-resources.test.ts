@@ -634,7 +634,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text.length).toBeLessThan(10_000);
   });
 
-  it('omits the saved payload when the client does not advertise MCP Apps', async () => {
+  it('still echoes the saved payload to a client that did not advertise MCP Apps', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`, {
       advertiseMcpApps: false,
     });
@@ -661,24 +661,17 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
-    // The write still succeeds and stays exactly readable by id — only the
-    // inline render payload, which this client cannot render, is withheld.
+    // The payload follows the binding. claude.ai renders the card while
+    // declaring no Apps capability, so withholding the body here mounted a
+    // widget with nothing in it (measured on prod 2026-08-20).
     expect(body.result?.structuredContent).toEqual(
       expect.objectContaining({
         title: 'Plain note',
         exact_read: expect.objectContaining({ method: 'client.knowledge.read' }),
+        payload_type: 'text',
+        payload_text: 'body-visible-only-to-app-hosts',
       })
     );
-    for (const key of [
-      'payload_type',
-      'payload_text',
-      'payload_data',
-      'payload_template',
-      'attachments',
-      'source_url',
-    ]) {
-      expect(body.result?.structuredContent).not.toHaveProperty(key);
-    }
     expect(body.result?.content?.[0]?.text).not.toContain(
       'body-visible-only-to-app-hosts'
     );

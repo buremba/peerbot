@@ -120,6 +120,17 @@ export interface ToolContext {
   mcpSessionId?: string | null;
   /** True only for an MCP session that negotiated the standard Apps UI extension. */
   mcpAppsSupported?: boolean | null;
+  /**
+   * True when this call is a nested SDK method rather than the directly
+   * advertised tool call, so its result mounts no card of its own.
+   *
+   * Deliberately NOT `mcpAppsSupported`: a host can render a card without
+   * negotiating the Apps extension (claude.ai does), so negotiation cannot
+   * stand in for "this result is displayed". What decides whether to echo the
+   * saved payload is whether anything will render it, and a nested
+   * `client.knowledge.save` inside `run_sdk` never does.
+   */
+  headlessResult?: boolean | null;
   /** Host-only encrypted token supplied by the Lobu MCP App for one approval click. */
   mcpAppApprovalCapability?: string | null;
   /**
@@ -263,7 +274,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'save_memory',
     description:
-      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; MCP App calls also echo bounded payloads for inline display. Semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
+      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; the result also echoes the bounded saved payload for inline display. Semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     outputSchema: SaveContentResultSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },

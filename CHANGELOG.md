@@ -1,5 +1,21 @@
 # Changelog
 
+## [15.2.1](https://github.com/lobu-ai/lobu/compare/lobu-v15.2.0...lobu-v15.2.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **auth:** stamp automation worker token source ([#2998](https://github.com/lobu-ai/lobu/issues/2998)) ([553411d](https://github.com/lobu-ai/lobu/commit/553411dd707d71af4905e06bea0e37fbf7ae0aec))
+* **cli:** surface local sign-in diagnostics ([#3002](https://github.com/lobu-ai/lobu/issues/3002)) ([5182f87](https://github.com/lobu-ai/lobu/commit/5182f879b336288a2b7bc34ef87b92107dadad52))
+* **migrations:** preserve legacy Canvas results [migration-never-applied] ([#3001](https://github.com/lobu-ai/lobu/issues/3001)) ([e4e3f54](https://github.com/lobu-ai/lobu/commit/e4e3f541144050f66535668a427c80c4a8218c41))
+* **migrations:** preserve orphan Automation reaction [migration-never-applied] ([#3005](https://github.com/lobu-ai/lobu/issues/3005)) ([39f8be2](https://github.com/lobu-ai/lobu/commit/39f8be24149e4e59bfba715ae91d9042d08b4e1f))
+* **server:** audit entity policy denials ([#2999](https://github.com/lobu-ai/lobu/issues/2999)) ([7f5e59a](https://github.com/lobu-ai/lobu/commit/7f5e59a39c8225574e7fbbfee46920ba6f7f8bb5))
+
+
+### Performance Improvements
+
+* **db:** project stored event content length ([#3000](https://github.com/lobu-ai/lobu/issues/3000)) ([545429b](https://github.com/lobu-ai/lobu/commit/545429bd9473502993bc1f2b1fd1c17d89750fde))
+
 ## [15.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.1.0...lobu-v15.2.0) (2026-08-20)
 
 

@@ -11,6 +11,7 @@ import {
 } from "../utils/platform-notification-kinds";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { resolveAskAffordance } from "./ask-schema";
+import type { ActionOrigin } from "./action-card-state";
 import { createNotificationForUsers, getOrgSlug } from "./service";
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */
@@ -473,6 +474,7 @@ export async function notifyActionApprovalNeeded(params: {
 	 */
 	requesterUserId?: string | null;
 	mcpActivity?: McpActivityAttribution | null;
+	actionOrigin?: ActionOrigin | null;
 	details?: ActionApprovalDetails;
 	/**
 	 * Set ONLY for a connector operation (`run_type = 'action'`). Its presence
@@ -541,6 +543,7 @@ export async function notifyActionApprovalNeeded(params: {
 			deliveryScope: "targeted",
 			ownerUserId: resolveApprovalDmTarget(params),
 			mcpActivity: params.mcpActivity,
+			actionOrigin: params.actionOrigin,
 		};
 	});
 }

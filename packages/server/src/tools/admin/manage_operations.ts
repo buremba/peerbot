@@ -31,6 +31,7 @@ import {
 	RejectAction,
 	RejectBatchAction,
 } from "./manage_operations/schemas";
+import { queueApprovalNotificationCardRefresh } from "../../notifications/service";
 
 const manageOperationsTool = defineActionTool("manage_operations", {
 	list_available: action(ListAvailableAction, handleListAvailable),
@@ -44,7 +45,36 @@ const manageOperationsTool = defineActionTool("manage_operations", {
 	reject_batch: action(RejectBatchAction, handleRejectBatch),
 });
 
-export const manageOperations = manageOperationsTool.run;
+const runManageOperations = manageOperationsTool.run;
+
+/**
+ * Approval-card settlement belongs after the shared state transition, not in
+ * any one UI handler. This keeps Slack, web, MCP Apps, single decisions, and
+ * batches convergent: whichever surface wins the durable run claim updates all
+ * persisted chat copies from the same final state.
+ */
+export const manageOperations: typeof runManageOperations = async (
+	args,
+	env,
+	ctx,
+) => {
+	const result = await runManageOperations(args, env, ctx);
+	if (
+		args.action === "approve" ||
+		args.action === "reject" ||
+		args.action === "approve_batch" ||
+		args.action === "reject_batch"
+	) {
+		const record = result as Record<string, unknown>;
+		const resultIds = Array.isArray(record.run_ids)
+			? record.run_ids.map(Number)
+			: Number.isFinite(Number(record.run_id))
+				? [Number(record.run_id)]
+				: [];
+		queueApprovalNotificationCardRefresh(ctx.organizationId, resultIds);
+	}
+	return result;
+};
 export {
 	ManageOperationsResultSchema,
 	ManageOperationsSchema,

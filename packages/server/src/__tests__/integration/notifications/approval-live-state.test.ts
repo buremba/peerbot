@@ -1,6 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { listNotifications } from "../../../notifications/service";
+import { Actions, Button, Card, CardText, LinkButton } from "chat";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Env } from "../../../index";
+import { __setChatInstanceManagerForTests } from "../../../lobu/gateway";
+import {
+	listNotifications,
+	refreshApprovalNotificationCards,
+} from "../../../notifications/service";
+import { manageOperations } from "../../../tools/admin/manage_operations";
 import { listOrgActivity } from "../../../tools/admin/manage_operations/activity-feed";
+import type { ToolContext } from "../../../tools/registry";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
@@ -69,6 +77,10 @@ describe("approval notification live state", () => {
 
 	afterAll(async () => {
 		await cleanupTestDatabase();
+	});
+
+	afterEach(() => {
+		__setChatInstanceManagerForTests(null);
 	});
 
 	it("resolves the proposal run and exposes inline policy with current state", async () => {
@@ -180,5 +192,119 @@ describe("approval notification live state", () => {
 				interaction_status: "expired",
 			}),
 		);
+	});
+
+	it("settles every persisted chat copy with reviewer, time, and origin", async () => {
+		const sql = getTestDb();
+		const org = await createTestOrganization({ slug: "acme" });
+		const user = await createTestUser({ name: "Ada Reviewer" });
+		await addUserToOrganization(user.id, org.id, "owner");
+		const [run] = await sql`
+			INSERT INTO runs (
+				organization_id, run_type, action_key, approval_status, status, created_at
+			) VALUES (${org.id}, 'action', 'search_jira', 'pending', 'pending', now())
+			RETURNING id
+		`;
+		const runId = Number(run.id);
+		const proposal = await createTestEvent({
+			organization_id: org.id,
+			title: "Search Jira proposal",
+			content: "Pending approval",
+			semantic_type: "operation",
+		});
+		await sql`
+			UPDATE events
+			SET run_id = ${runId},
+			    interaction_type = 'approval',
+			    interaction_status = 'pending'
+			WHERE id = ${proposal.id}
+		`;
+		const initialCard = Card({
+			title: "Search Jira issues",
+			subtitle: "Conversation: Slack — #release-prep",
+			children: [
+				CardText("JQL: project = LOBU"),
+				Actions([
+					Button({
+						id: `run-approval:${runId}:approve`,
+						label: "Approve",
+						style: "primary",
+					}),
+					Button({
+						id: `run-approval:${runId}:reject`,
+						label: "Reject",
+						style: "danger",
+					}),
+					LinkButton({
+						url: "https://app.lobu.ai/acme/memory?run_ids=1",
+						label: "Review in Lobu",
+					}),
+				]),
+			],
+		});
+		await createTestEvent({
+			organization_id: org.id,
+			title: "Search Jira issues",
+			content: "Review this operation",
+			semantic_type: "notification",
+			metadata: {
+				notification_type: "action_approval_needed",
+				resource_type: "event",
+				resource_id: String(proposal.id),
+				resource_url: `/acme/memory?run_ids=${runId}`,
+				card: initialCard,
+				delivery: [
+					{
+						connectionId: "conn-slack",
+						channelKey: "slack:C123",
+						messageId: "1700000000.000500",
+						threadId: "C123",
+					},
+				],
+			},
+		});
+		const editMessageContent = vi.fn(async () => undefined);
+		__setChatInstanceManagerForTests({ editMessageContent });
+		const result = await manageOperations(
+			{ action: "reject", run_id: runId },
+			{} as Env,
+			{
+				organizationId: org.id,
+				userId: user.id,
+				memberRole: "owner",
+				isAuthenticated: true,
+				tokenType: "session",
+				scopes: ["mcp:read", "mcp:write"],
+				scopedToOrg: true,
+				allowCrossOrg: false,
+			} as ToolContext,
+		);
+		expect(result).toEqual(expect.objectContaining({ rejected: true, run_id: runId }));
+		await vi.waitFor(() =>
+			expect(editMessageContent).toHaveBeenCalledTimes(1),
+		);
+
+		const settledJson = JSON.stringify(editMessageContent.mock.calls[0]);
+		expect(settledJson).toContain("Conversation: Slack — #release-prep");
+		expect(settledJson).toContain("*Rejected* by Ada Reviewer");
+		expect(settledJson).toContain("UTC");
+		expect(settledJson).toContain('"label":"View in Lobu"');
+		expect(settledJson).not.toContain('"type":"button"');
+
+		await sql`UPDATE runs SET approval_status = 'expired' WHERE id = ${runId}`;
+		await sql`
+			UPDATE events
+			SET metadata = metadata || ${sql.json({ reason: "Approval window elapsed." })}::jsonb
+			WHERE organization_id = ${org.id}
+			  AND run_id = ${runId}
+			  AND interaction_type = 'approval'
+			  AND superseded_by IS NULL
+		`;
+		editMessageContent.mockClear();
+		await refreshApprovalNotificationCards(org.id, [runId]);
+		const expiredCard = JSON.stringify(editMessageContent.mock.calls[0]);
+		expect(expiredCard).toContain("*Expired*");
+		expect(expiredCard).toContain("Approval window elapsed.");
+		expect(expiredCard).not.toContain('"label":"Approve"');
 	});
 });

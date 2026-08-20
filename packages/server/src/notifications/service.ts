@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { CardElement } from "chat";
+import {
+	type AdapterPostableMessage,
+	type CardElement,
+} from "chat";
 import { loadConfiguredAutomationDeliveryTarget } from "../automations/delivery-target";
-import { getDb, pgTextArray } from "../db/client";
+import { getDb, pgBigintArray, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
@@ -12,6 +15,14 @@ import { toAbsolutePermalink } from "../utils/url-builder";
 import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { buildKindCard } from "./template-card";
+import {
+	addActionOrigin,
+	actionResolutionText,
+	type ActionOrigin,
+	type ActionResolution,
+	isCard,
+	settleActionCard,
+} from "./action-card-state";
 
 interface CreateNotificationParams {
 	organizationId: string;
@@ -100,6 +111,8 @@ interface CreateNotificationParams {
 	entityIds?: number[];
 	/** Exact MCP conversation or transport session that caused this notification. */
 	mcpActivity?: McpActivityAttribution | null;
+	/** Verified source shown on interactive cards and persisted for later edits. */
+	actionOrigin?: ActionOrigin | null;
 	/**
 	 * The Automation run that emitted this notification, when one did.
 	 *
@@ -415,6 +428,7 @@ interface NotificationDeliveryRecord {
 async function recordDelivery(
 	eventId: number,
 	deliveries: NotificationDeliveryRecord[],
+	card?: CardElement,
 ): Promise<void> {
 	// A record exists to be addressed later, and `editMessage(threadId, messageId)`
 	// cannot address an empty id — an adapter that returned no message id has
@@ -424,10 +438,14 @@ async function recordDelivery(
 	if (addressable.length === 0) return;
 	try {
 		const sql = getDb();
+		const deliveryMetadata = {
+			delivery: addressable,
+			...(card ? { card } : {}),
+		};
 		await sql`
       UPDATE events
       SET metadata = coalesce(metadata, '{}'::jsonb)
-        || jsonb_build_object('delivery', ${sql.json(addressable)}::jsonb)
+        || ${sql.json(deliveryMetadata)}::jsonb
       WHERE id = ${eventId}
     `;
 	} catch (err) {
@@ -459,6 +477,156 @@ async function recordDeliveryError(
 			"[Notifications] Failed to record delivery error",
 		);
 	}
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		return value as Record<string, unknown>;
+	}
+	return {};
+}
+
+function deliveryRecords(
+	metadata: Record<string, unknown>,
+): Array<
+	Pick<NotificationDeliveryRecord, "connectionId" | "messageId" | "threadId">
+> {
+	return (Array.isArray(metadata.delivery) ? metadata.delivery : []).flatMap(
+		(entry) => {
+			const row = jsonRecord(entry);
+			const connectionId = row.connectionId;
+			const messageId = row.messageId;
+			const threadId = row.threadId;
+			return typeof connectionId === "string" &&
+				typeof messageId === "string" &&
+				messageId !== "" &&
+				typeof threadId === "string"
+				? [{ connectionId, messageId, threadId }]
+				: [];
+		},
+	);
+}
+
+type StoredApprovalNotification = {
+	run_id: number;
+	title: string;
+	metadata: unknown;
+	approval_status: string;
+	resolved_at: string | Date | null;
+	decision_metadata: unknown;
+};
+
+/**
+ * Edit every persisted chat copy of a resolved approval. This runs after the
+ * shared durable manage_operations transition, so a decision made in Slack,
+ * the web app, or MCP settles the same original card on every platform.
+ */
+export async function refreshApprovalNotificationCards(
+	organizationId: string,
+	runIds: number[],
+): Promise<void> {
+	const ids = [
+		...new Set(runIds.filter((id) => Number.isSafeInteger(id) && id > 0)),
+	];
+	if (ids.length === 0) return;
+	const manager = getChatInstanceManager();
+	if (!manager) return;
+	const rows = await getDb()<StoredApprovalNotification>`
+		SELECT
+			r.id AS run_id,
+			n.title,
+			n.metadata,
+			r.approval_status,
+			COALESCE(
+				decision.metadata->>'reviewed_at',
+				decision.occurred_at::text,
+				r.completed_at::text
+			) AS resolved_at,
+			decision.metadata AS decision_metadata
+		FROM runs r
+		JOIN events proposal
+		  ON proposal.organization_id = r.organization_id
+		 AND proposal.run_id = r.id
+		 AND proposal.interaction_type = 'approval'
+		JOIN events n
+		  ON n.organization_id = r.organization_id
+		 AND COALESCE(n.metadata->>'notification_type', 'generic') = 'action_approval_needed'
+		 AND n.metadata->>'resource_type' = 'event'
+		 AND n.metadata->>'resource_id' = proposal.id::text
+		LEFT JOIN current_event_records decision
+		  ON decision.organization_id = r.organization_id
+		 AND decision.run_id = r.id
+		 AND decision.interaction_type = 'approval'
+		WHERE r.organization_id = ${organizationId}
+		  AND r.id = ANY(${pgBigintArray(ids)}::bigint[])
+		  AND r.approval_status IN ('approved', 'rejected', 'expired')
+	`;
+
+	const edits: Promise<void>[] = [];
+	for (const row of rows) {
+		const metadata = jsonRecord(row.metadata);
+		if (!isCard(metadata.card)) continue;
+		const decisionMetadata = jsonRecord(row.decision_metadata);
+		const expiredDetail =
+			typeof decisionMetadata.expiry_reason === "string"
+				? decisionMetadata.expiry_reason
+				: typeof decisionMetadata.reason === "string"
+					? decisionMetadata.reason
+					: null;
+		const resolution: ActionResolution = {
+			status:
+				row.approval_status === "approved"
+					? "approved"
+					: row.approval_status === "expired"
+						? "expired"
+						: "rejected",
+			actorName:
+				typeof decisionMetadata.reviewed_by_name === "string"
+					? decisionMetadata.reviewed_by_name
+					: null,
+			resolvedAt: row.resolved_at,
+			detail: row.approval_status === "expired" ? expiredDetail : null,
+		};
+		const settled = settleActionCard(metadata.card, resolution);
+		const content: AdapterPostableMessage = {
+			card: settled,
+			fallbackText: `${row.title}\n${actionResolutionText(resolution)}`,
+		};
+		for (const delivery of deliveryRecords(metadata)) {
+			edits.push(
+				manager
+					.editMessageContent(delivery.connectionId, {
+						threadId: delivery.threadId,
+						messageId: delivery.messageId,
+						content,
+					})
+					.catch((err: unknown) => {
+						logger.warn(
+							{
+								err,
+								runId: row.run_id,
+								connectionId: delivery.connectionId,
+							},
+							"[Notifications] Failed to settle approval card",
+						);
+					}),
+			);
+		}
+	}
+	await Promise.all(edits);
+}
+
+/** Best-effort post-commit refresh used by every approval terminalizer. */
+export function queueApprovalNotificationCardRefresh(
+	organizationId: string,
+	runIds: number[],
+): void {
+	void refreshApprovalNotificationCards(organizationId, runIds).catch((err) =>
+		logger.warn(
+			{ err, organizationId, runIds },
+			"[Notifications] Failed to settle approval cards",
+		),
+	);
 }
 
 /**
@@ -517,7 +685,8 @@ async function deliverToBotConnections(
 	//      authoring its content twice (`payloadData` for web, a hand-built card
 	//      for chat) and drifting between them;
 	//   3. the markdown body.
-	const card = params.card ?? (await resolveNotificationKindCard(params));
+	const baseCard = params.card ?? (await resolveNotificationKindCard(params));
+	const card = baseCard ? addActionOrigin(baseCard, params.actionOrigin) : null;
 	const content = card ? { card } : { markdown: text };
 	const deliveryPlan = await resolveNotificationDeliveryPlan({
 		organizationId: params.organizationId,
@@ -557,14 +726,18 @@ async function deliverToBotConnections(
 					dm.slackUserId,
 					content,
 				);
-				await recordDelivery(eventId, [
-					{
-						connectionId: dm.connectionId,
-						channelKey: "dm",
-						messageId: sent.messageId,
-						threadId: sent.threadId,
-					},
-				]);
+				await recordDelivery(
+					eventId,
+					[
+						{
+							connectionId: dm.connectionId,
+							channelKey: "dm",
+							messageId: sent.messageId,
+							threadId: sent.threadId,
+						},
+					],
+					card ?? undefined,
+				);
 				return;
 			}
 			logger.warn(
@@ -622,7 +795,7 @@ async function deliverToBotConnections(
 				"[Notifications] Failed to post to bot connection channel",
 			);
 		});
-		await recordDelivery(eventId, delivered);
+		await recordDelivery(eventId, delivered, card ?? undefined);
 		if (deliveryPlan.strictAutomationTarget && delivered.length === 0) {
 			await recordDeliveryError(eventId, "automation_target_post_failed");
 		}

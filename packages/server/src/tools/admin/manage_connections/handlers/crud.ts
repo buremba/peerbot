@@ -31,6 +31,7 @@ import {
 	upsertByoChatConnection,
 } from "../../../../gateway/connections/chat-connection-service";
 import { isAtlassianMcpConfig } from "../../../../operations/atlassian-mcp-feed";
+import { queueApprovalNotificationCardRefresh } from "../../../../notifications/service";
 import {
   EMPTY_SUMMARY,
   getOperationsSummariesByConnection,
@@ -2172,7 +2173,7 @@ export async function handleDelete(
     'Connection deleted before approval; approval expired.';
   const expirePendingApprovalsBeforeDelete = async (
     db: DbClient
-  ): Promise<void> => {
+	): Promise<number[]> => {
     // The whole batch shares one transaction. If any append-only card cannot
     // advance, every run stays pending and the caller must leave the connection
     // visible so a reviewer can still act on those cards.
@@ -2189,6 +2190,7 @@ export async function handleDelete(
       ORDER BY id
       FOR UPDATE
     `;
+		const expiredRunIds: number[] = [];
     for (const pendingApproval of pendingApprovals) {
       const expired = await db<{ action_key: string | null }>`
           UPDATE runs
@@ -2224,8 +2226,9 @@ export async function handleDelete(
           `Cannot expire approval run ${pendingApproval.id}: its approval card is missing`
         );
       }
+			expiredRunIds.push(pendingApproval.id);
     }
-
+		return expiredRunIds;
   };
 
   // Phase 1: fallible EXTERNAL teardown runs FIRST, while the connection is
@@ -2277,7 +2280,7 @@ export async function handleDelete(
     `;
     if (tombstoned.length === 0) return null; // concurrently deleted
 
-    await expirePendingApprovalsBeforeDelete(tx);
+		const expiredApprovalRunIds = await expirePendingApprovalsBeforeDelete(tx);
 
     // Pause the connection's existing feeds in the same atomic lifecycle
     // transition. Keep each schedule as historical configuration, but clear its
@@ -2303,14 +2306,18 @@ export async function handleDelete(
       connectionId: args.connection_id,
     });
 
-    return tombstoned;
+		return { tombstoned, expiredApprovalRunIds };
   });
   if (deleted === null) {
     return { error: "Connection not found or already deleted" };
   }
 
   // Record change event in knowledge for audit trail
-  const conn = deleted[0];
+	queueApprovalNotificationCardRefresh(
+		organizationId,
+		deleted.expiredApprovalRunIds,
+	);
+	const conn = deleted.tombstoned[0];
   const affectedFeeds = await sql`
     SELECT DISTINCT unnest(entity_ids) AS entity_id
     FROM feeds

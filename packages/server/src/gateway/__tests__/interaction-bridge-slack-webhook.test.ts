@@ -1,5 +1,5 @@
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { Chat } from "chat";
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { Actions, Button, Card, CardText, Chat, LinkButton } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import {
   addUserToOrganization,
@@ -9,6 +9,7 @@ import {
   linkSlackIdentityInGraph,
 } from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
+import { __setChatInstanceManagerForTests } from "../../lobu/gateway.js";
 import { proposeEntityFieldChange } from "../../tools/admin/entity-field-approval.js";
 import type { ToolContext } from "../../tools/registry.js";
 import { initWorkspaceProvider } from "../../workspace/index.js";
@@ -42,7 +43,9 @@ function createHarness(options: {
   // Stub Slack Web API calls so `thread.post` resolves synchronously without
   // hitting slack.com. We only care about the dispatch seam, not Slack I/O.
   const postMessage = mock(async () => ({ ts: "1700000000.000999" }) as any);
+  const editMessage = mock(async () => ({ ts: "1700000000.000100" }) as any);
   (adapter as any).postMessage = postMessage;
+  (adapter as any).editMessage = editMessage;
 
   const state = new InMemoryStateAdapter();
   const chat = new Chat({
@@ -74,6 +77,7 @@ function createHarness(options: {
     grantStore,
     executeToolDirect,
     postMessage,
+    editMessage,
   };
 }
 
@@ -104,6 +108,10 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
   beforeEach(async () => {
     await resetTestDatabase();
   });
+
+	afterEach(() => {
+		__setChatInstanceManagerForTests(null);
+	});
 
   test("signed tool-approval button triggers grant, executes tool, deletes pending", async () => {
     const pending: PendingToolInvocation = {
@@ -182,6 +190,7 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
         deploymentName: "lobu-builder",
       },
     ]);
+    expect(h.editMessage).toHaveBeenCalledTimes(1);
     expect(h.postMessage).toHaveBeenCalled();
   });
 
@@ -342,6 +351,65 @@ describe("Slack block_actions → run-approval entity_field_change (Tier B)", ()
     };
   }
 
+	async function seedDeliveredApprovalCard(
+		organizationId: string,
+		runId: number,
+	): Promise<void> {
+		const sql = getDb();
+		const [proposal] = await sql<{ id: number }>`
+			SELECT id FROM events
+			WHERE organization_id = ${organizationId}
+			  AND run_id = ${runId}
+			  AND interaction_type = 'approval'
+			ORDER BY id
+			LIMIT 1
+		`;
+		const card = Card({
+			title: "Update entity field",
+			subtitle: "Conversation: Slack — #approvals",
+			children: [
+				CardText("Severity: critical → high"),
+				Actions([
+					Button({
+						id: `run-approval:${runId}:approve`,
+						label: "Approve",
+						style: "primary",
+					}),
+					Button({
+						id: `run-approval:${runId}:reject`,
+						label: "Reject",
+						style: "danger",
+					}),
+					LinkButton({ url: "https://app.lobu.ai/review", label: "Review in Lobu" }),
+				]),
+			],
+		});
+		await sql`
+			INSERT INTO events (
+				organization_id, origin_id, title, payload_type, payload_text,
+				occurred_at, semantic_type, metadata
+			) VALUES (
+				${organizationId}, ${`notification_${runId}`}, 'Update entity field',
+				'text', 'Review this change', now(), 'notification',
+				${sql.json({
+					notification_type: "action_approval_needed",
+					resource_type: "event",
+					resource_id: String(proposal.id),
+					resource_url: "/review",
+					card,
+					delivery: [
+						{
+							connectionId: "conn-run-approval",
+							channelKey: "slack:C_APPROVALS",
+							messageId: "1700000000.000500",
+							threadId: "C_APPROVALS",
+						},
+					],
+				})}
+			)
+		`;
+	}
+
   function createRunApprovalHarness(opts: {
     organizationId: string;
     teamId: string;
@@ -414,16 +482,14 @@ describe("Slack block_actions → run-approval entity_field_change (Tier B)", ()
       SELECT metadata FROM entities WHERE id = ${fx.entityId}
     `;
     expect(entity.metadata.severity).toBe("high");
-    // The webhook returns 200 before the async onAction handler finishes:
-    // the run is marked completed and the field change applied inside
-    // manageOperations, and only then does the handler post the confirmation
-    // via thread.post -> postMessage. Poll for the post so we don't race the
-    // DB-state waitFor above (matches the unverified-user test below).
-    await waitFor(() => expect(h.postMessage).toHaveBeenCalled());
+		expect(h.postMessage).not.toHaveBeenCalled();
   });
 
   test("signed Reject button leaves the entity unchanged", async () => {
     const fx = await seedPendingFieldChange();
+		await seedDeliveredApprovalCard(fx.orgId, fx.runId);
+		const editMessageContent = mock(async () => undefined);
+		__setChatInstanceManagerForTests({ editMessageContent });
     const h = createRunApprovalHarness({
       organizationId: fx.orgId,
       teamId: fx.teamId,
@@ -455,6 +521,14 @@ describe("Slack block_actions → run-approval entity_field_change (Tier B)", ()
       SELECT metadata FROM entities WHERE id = ${fx.entityId}
     `;
     expect(entity.metadata.severity).toBe("critical");
+		await waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(1));
+		const settledJson = JSON.stringify(
+			editMessageContent.mock.calls[0]?.[1]?.content,
+		);
+		expect(settledJson).toContain("*Rejected*");
+		expect(settledJson).toContain("Admin Reviewer");
+		expect(settledJson).toContain("Conversation: Slack — #approvals");
+		expect(settledJson).not.toContain('\"type\":\"button\"');
   });
 
   test("unverified Slack user cannot approve — entity stays critical", async () => {

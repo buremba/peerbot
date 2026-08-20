@@ -88,6 +88,10 @@ async function seedPending(requestId: string): Promise<void> {
   await storePendingTool(requestId, PENDING, 24 * 60 * 60);
 }
 
+function editedCardJson(h: Harness): string {
+	return JSON.stringify(h.editCard.mock.calls[0]?.[0]);
+}
+
 describe("registerActionHandlers — tool approval", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
@@ -155,9 +159,11 @@ describe("registerActionHandlers — tool approval", () => {
       thread: h.thread,
     });
     expect(h.editCard).toHaveBeenCalledTimes(1);
-    const edited = h.editCard.mock.calls[0]?.[0] as string;
+		const edited = editedCardJson(h);
     expect(edited).toContain("github → create_issue");
-    expect(edited).toContain("Approved (1h)");
+		expect(edited).toContain("*Approved*");
+		expect(edited).toContain("Tool access allowed for 1h.");
+		expect(edited).not.toContain('"type":"button"');
   });
 
   test("approve with no pending but tracked card (late first click) edits card and posts an expired notice — no grant, no execute", async () => {
@@ -171,7 +177,7 @@ describe("registerActionHandlers — tool approval", () => {
     expect(h.executeToolDirect).not.toHaveBeenCalled();
     // Card should be edited to show the expired notice and the user told to retry.
     expect(h.editCard).toHaveBeenCalledTimes(1);
-    expect(h.editCard.mock.calls[0]?.[0] as string).toMatch(/expired/i);
+		expect(editedCardJson(h)).toMatch(/expired/i);
     expect(h.post).toHaveBeenCalledTimes(1);
     expect(h.post.mock.calls[0]?.[0] as string).toMatch(/expired/i);
   });
@@ -234,7 +240,7 @@ describe("registerActionHandlers — tool approval", () => {
     });
     expect(h.grantStore.grant).not.toHaveBeenCalled();
     expect(h.editCard).toHaveBeenCalledTimes(1);
-    expect(h.editCard.mock.calls[0]?.[0] as string).toMatch(/expired/i);
+		expect(editedCardJson(h)).toMatch(/expired/i);
     expect(h.post).toHaveBeenCalledTimes(1);
     expect(h.post.mock.calls[0]?.[0] as string).toMatch(/expired/i);
   });
@@ -248,7 +254,8 @@ describe("registerActionHandlers — tool approval", () => {
       thread: h.thread,
     });
     expect(h.editCard).toHaveBeenCalledTimes(1);
-    expect(h.editCard.mock.calls[0]?.[0] as string).toContain("Denied");
+		expect(editedCardJson(h)).toContain("*Denied*");
+		expect(editedCardJson(h)).not.toContain('"type":"button"');
   });
 });
 

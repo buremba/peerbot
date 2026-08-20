@@ -1134,11 +1134,29 @@ export class ChatInstanceManager {
     connectionId: string,
 		opts: { threadId: string; messageId: string; text: string },
   ): Promise<void> {
+		return this.editMessageContent(connectionId, {
+			threadId: opts.threadId,
+			messageId: opts.messageId,
+			content: { markdown: opts.text },
+		});
+	}
+
+	/** Replace a bot message with any platform-neutral Chat SDK payload. */
+	async editMessageContent(
+		connectionId: string,
+		opts: {
+			threadId: string;
+			messageId: string;
+			content: AdapterPostableMessage;
+		},
+	): Promise<void> {
     await this.ensureConnectionRunning(connectionId);
     const instance = this.requireRunningInstance(connectionId);
-    await instance.chat?.adapter.editMessage(opts.threadId, opts.messageId, {
-      markdown: opts.text,
-    } as AdapterPostableMessage);
+		await instance.chat?.adapter.editMessage(
+			opts.threadId,
+			opts.messageId,
+			opts.content,
+		);
   }
 
   /** Delete a message the bot previously sent. */

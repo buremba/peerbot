@@ -234,4 +234,32 @@ describe("manage_operations get_run — internal runs", () => {
 		expect(card?.automation_id).toBe(automationId);
 		expect(retiredVocabularyKeys(card)).toEqual([]);
 	});
+	/**
+	 * A device-executed Automation reports how its local CLI exited
+	 * (`exit_reason`/`exit_code`/`exit_signal`) plus the tail of what the CLI
+	 * printed (`output_tail`). The worker writes all four, but no read surface
+	 * selected them and `runs` is not in the query_sql allowlist — so the only
+	 * forensic record of a timed-out device Automation was reachable only by
+	 * querying the database directly. Prod #71 stalled 39 times undiagnosed.
+	 */
+	it("surfaces the device-CLI exit diagnostics through get_run", async () => {
+		const db = getTestDb();
+		const [row] = (await db`
+      INSERT INTO runs (organization_id, run_type, action_key, status,
+        error_message, exit_reason, exit_code, exit_signal, output_tail,
+        created_at, run_at)
+      VALUES (${orgId}, 'automation', null, 'failed',
+        'opencode exited via SIGTERM after 600s timeout', 'timeout', 15, 'SIGTERM',
+        'MCP server handshake failed: connection refused',
+        now(), now())
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+		const id = Number(row.id);
+
+		const got = (await getRun(id)).run as Record<string, unknown>;
+		expect(got.exit_reason).toBe("timeout");
+		expect(Number(got.exit_code)).toBe(15);
+		expect(got.exit_signal).toBe("SIGTERM");
+		expect(got.output_tail).toContain("MCP server handshake failed");
+	});
 });

@@ -17,7 +17,10 @@ import {
   enableClassifiersOnEntity,
 } from '../../../automations/classifier-extraction';
 import { assertDeviceWorkerAccess } from '../automation-device-access';
-import { assertValidExecutionConfig } from '../automation-execution-config';
+import {
+  assertServerLaneModelResolves,
+  assertValidExecutionConfig,
+} from '../automation-execution-config';
 import { assertEntityIdsInOrg, getNextNumericId, requireExists } from '../helpers/db-helpers';
 import type { ToolContext } from '../../registry';
 import type { ManageAutomationsArgs } from '../manage_automations';
@@ -118,6 +121,12 @@ export async function handleCreate(
     throw new ToolUserError('slug is required for create action');
   }
   assertValidExecutionConfig(args.execution_config, ctx);
+  await assertServerLaneModelResolves({
+    executionConfig: args.execution_config,
+    organizationId: ctx.organizationId,
+    isDevicePinned: args.device_worker_id != null,
+    applyId: ctx.applyId,
+  });
 
   // entity_id is optional: omit it for an org-scoped/global automation.
   const entityId = args.entity_id;
@@ -524,6 +533,24 @@ export async function handleUpdate(
     current_skills: Array<{ name: string; content: string }> | null;
     current_outputs: Record<string, unknown> | null;
   };
+  // Judge the model against the lane the Automation will be on AFTER this
+  // patch, not the one it is on now: clearing a device pin in the same call
+  // moves the ref onto the server lane, where it has to resolve.
+  //
+  // Only an incoming `execution_config` is judged. Clearing the pin WITHOUT
+  // re-sending one leaves an already-stored CLI-namespace ref on the now-server
+  // lane, and it fails at dispatch rather than here. That is deliberate:
+  // re-validating the stored model would make unrelated updates start failing
+  // on legacy rows nobody is touching.
+  await assertServerLaneModelResolves({
+    executionConfig: args.execution_config,
+    organizationId: currentRow.organization_id,
+    isDevicePinned:
+      args.device_worker_id !== undefined
+        ? args.device_worker_id != null
+        : currentRow.device_worker_id != null,
+    applyId: ctx.applyId,
+  });
   const triggerWrite = resolveAutomationTriggerWrite({
     triggers: args.triggers,
     currentTriggers: currentRow.triggers ?? [],

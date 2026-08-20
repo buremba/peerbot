@@ -46,6 +46,30 @@ export type ModelValidationError =
     };
 
 /**
+ * Every provider slug a `<slug>/<model>` ref may name at the ORG level:
+ * registry provider modules (system keys — `openai`, `claude`, `deepseek`, …
+ * from `config/providers.json`) UNION the org's own `inference_providers` rows.
+ *
+ * Exported because this union IS the definition of "a provider this org can
+ * route to", and more than one write path has to answer that question — the
+ * agent `models` allow-list here, and `execution_config.model` on a
+ * server-dispatched Automation. Resolving against `inference_providers` alone
+ * silently rejects every system-key provider, which is a valid config for an
+ * org that never registered a row of its own.
+ */
+export async function listOrgModelProviderSlugs(
+  organizationId: string,
+): Promise<Set<string>> {
+  const slugs = new Set<string>(
+    getModelProviderModules().map((m) => m.providerId),
+  );
+  for (const row of await listInferenceProviders(organizationId)) {
+    slugs.add(row.slug);
+  }
+  return slugs;
+}
+
+/**
  * Validate an agent `models` allow-list against the org's providers. Pure of any
  * HTTP context: every entry must be an explicit `<slug>/<model>` ref (no bare
  * ids, no `auto`) whose slug resolves at the ORG level (a registry provider
@@ -82,13 +106,7 @@ export async function validateModelRefsAgainstOrg(
     }
   }
 
-  // Org-level slug resolution: registry modules ∪ the org's provider rows.
-  const orgSlugs = new Set<string>(
-    getModelProviderModules().map((m) => m.providerId),
-  );
-  for (const row of await listInferenceProviders(organizationId)) {
-    orgSlugs.add(row.slug);
-  }
+  const orgSlugs = await listOrgModelProviderSlugs(organizationId);
   for (const ref of entries) {
     if (isUnresolvedModelRef(ref)) continue;
     const providerId = ref.slice(0, ref.indexOf("/"));

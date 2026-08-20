@@ -213,7 +213,13 @@ export async function handleGetRun(
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,
-           r.initiator_kind, r.initiator_ref, r.created_by_user_id
+           r.initiator_kind, r.initiator_ref, r.created_by_user_id,
+           -- How a device-executed Automation's local CLI ended, and the tail of
+           -- what it printed. The worker has always written these four; nothing
+           -- read them back, so a timed-out device Automation could only be
+           -- diagnosed by querying the database directly. Single-row fetch only:
+           -- output_tail is up to 2000 chars, too heavy for a list page.
+           r.exit_reason, r.exit_code, r.exit_signal, r.output_tail
     FROM runs r
     WHERE r.id = ${args.run_id}
       AND r.organization_id = ${ctx.organizationId}

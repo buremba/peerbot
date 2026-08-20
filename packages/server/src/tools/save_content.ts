@@ -10,6 +10,7 @@
 import { Buffer } from 'node:buffer';
 import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk/identity-normalize';
 import { type Static, Type } from '@sinclair/typebox';
+import { resolveAutomationAttribution } from '../automations/automation-source';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
@@ -680,12 +681,19 @@ async function saveContentImpl(
     inserted ? 'Content saved via save_memory' : 'Content save replay returned existing event'
   );
 
-  // Track automation reaction if attribution source is provided
-  if (inserted && args.automation_source) {
+  // Track automation reaction if attribution source is provided.
+  // The declared source is caller input: resolve it through the shared rule so a
+  // reaction session's own identity wins and an id belonging to another
+  // organization credits nobody.
+  const reactionAttribution =
+    inserted && args.automation_source
+      ? await resolveAutomationAttribution(ctx, args.automation_source)
+      : null;
+  if (reactionAttribution?.automationId != null && reactionAttribution.windowId != null) {
     await trackAutomationReaction({
       organizationId: ctx.organizationId,
-      automationId: args.automation_source.automation_id,
-      windowId: args.automation_source.window_id,
+      automationId: reactionAttribution.automationId,
+      windowId: reactionAttribution.windowId,
       reactionType: 'content_saved',
       toolName: 'save_memory',
       toolArgs: { entity_ids: finalEntityIds, semantic_type: semanticType, title: args.title },

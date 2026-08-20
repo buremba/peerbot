@@ -21,6 +21,7 @@ import {
   addUserToOrganization,
   createTestConnectorDefinition,
 	createTestConnection,
+  createTestEvent,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
@@ -103,6 +104,68 @@ describe('migration invariants', () => {
           AND column_name IN ('embedding', 'embedding_model')
       `;
       expect(rows).toHaveLength(0);
+    });
+
+    it('current_event_records projects the stored events.content_length column (#2983)', async () => {
+      const sql = getTestDb();
+      const [row] = await sql<{ definition: string }[]>`
+        SELECT pg_get_viewdef('public.current_event_records'::regclass, true) AS definition
+      `;
+      expect(row?.definition).toMatch(/\n\s+content_length,\n/);
+      expect(row?.definition).not.toMatch(/length\s*\(\s*(?:e\.)?payload_text\s*\)/i);
+    });
+
+    it('current_event_records content_length preserves PostgreSQL character and NULL semantics', async () => {
+      const sql = getTestDb();
+      // 5 codepoints as PostgreSQL length() counts them: A, 😀 U+1F600 (one
+      // codepoint, two UTF-16 units in JS), e, U+0301 combining accent (é), 終.
+      // Explicit escapes so Unicode normalization can't silently recompose the
+      // accent and change the expected count.
+      const content = 'A\u{1F600}e\u0301\u7D42';
+      const org = await createTestOrganization({ name: 'Content Length Invariant Org' });
+      const event = await createTestEvent({ content, organization_id: org.id });
+      const [row] = await sql<{
+        stored_length: number;
+        projected_length: number;
+        measured_length: number;
+      }[]>`
+        SELECT
+          e.content_length AS stored_length,
+          current.content_length AS projected_length,
+          length(e.payload_text) AS measured_length
+        FROM public.events e
+        JOIN public.current_event_records current ON current.id = e.id
+        WHERE e.id = ${event.id}
+      `;
+      expect(row).toEqual({
+        stored_length: 5,
+        projected_length: 5,
+        measured_length: 5,
+      });
+
+      const [nullEvent] = await sql<{ id: string }[]>`
+        INSERT INTO public.events (organization_id, origin_id, payload_text)
+        VALUES (${org.id}, ${`content-length-null-${org.id}`}, NULL)
+        RETURNING id
+      `;
+      const [nullRow] = await sql<{
+        payload_text: string | null;
+        stored_length: number;
+        projected_length: number;
+      }[]>`
+        SELECT
+          e.payload_text,
+          e.content_length AS stored_length,
+          current.content_length AS projected_length
+        FROM public.events e
+        JOIN public.current_event_records current ON current.id = e.id
+        WHERE e.id = ${nullEvent.id}
+      `;
+      expect(nullRow).toEqual({
+        payload_text: null,
+        stored_length: 0,
+        projected_length: 0,
+      });
     });
 
     it('stale orphan tables entity_read_grant + mcp_proxy_sessions are dropped (2026-06-16 audit)', async () => {

@@ -1,0 +1,96 @@
+-- `events.content_length` is already a stored generated column with the exact
+-- PostgreSQL character-count value exposed by this view. Project that stored
+-- value instead of recomputing length(payload_text) for every view read. The
+-- output name, type, column order, and row set stay unchanged.
+
+-- migrate:up
+
+CREATE OR REPLACE VIEW public.current_event_records AS
+ SELECT e.id,
+    e.organization_id,
+    e.entity_ids,
+    e.origin_id,
+    e.title,
+    e.payload_type,
+    e.payload_text,
+    e.payload_data,
+    e.payload_template,
+    e.attachments,
+    e.metadata,
+    e.score,
+    e.author_name,
+    e.source_url,
+    e.occurred_at,
+    e.created_at,
+    e.origin_parent_id,
+    e.content_length,
+    e.search_tsv,
+    e.origin_type,
+    e.connector_key,
+    e.connection_id,
+    e.feed_key,
+    e.feed_id,
+    e.run_id,
+    e.semantic_type,
+    e.client_id,
+    e.created_by,
+    e.interaction_type,
+    e.interaction_status,
+    e.interaction_input_schema,
+    e.interaction_input,
+    e.interaction_output,
+    e.interaction_error,
+    e.supersedes_event_id,
+    e.linked_org_ids,
+    e.identity_ns,
+    e.identity_key,
+    e.automation_id,
+    e.automation_version_id
+   FROM public.events e
+  WHERE e.superseded_by IS NULL;
+
+-- migrate:down
+
+CREATE OR REPLACE VIEW public.current_event_records AS
+ SELECT e.id,
+    e.organization_id,
+    e.entity_ids,
+    e.origin_id,
+    e.title,
+    e.payload_type,
+    e.payload_text,
+    e.payload_data,
+    e.payload_template,
+    e.attachments,
+    e.metadata,
+    e.score,
+    e.author_name,
+    e.source_url,
+    e.occurred_at,
+    e.created_at,
+    e.origin_parent_id,
+    COALESCE(length(e.payload_text), 0) AS content_length,
+    e.search_tsv,
+    e.origin_type,
+    e.connector_key,
+    e.connection_id,
+    e.feed_key,
+    e.feed_id,
+    e.run_id,
+    e.semantic_type,
+    e.client_id,
+    e.created_by,
+    e.interaction_type,
+    e.interaction_status,
+    e.interaction_input_schema,
+    e.interaction_input,
+    e.interaction_output,
+    e.interaction_error,
+    e.supersedes_event_id,
+    e.linked_org_ids,
+    e.identity_ns,
+    e.identity_key,
+    e.automation_id,
+    e.automation_version_id
+   FROM public.events e
+  WHERE e.superseded_by IS NULL;

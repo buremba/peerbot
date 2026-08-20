@@ -57,10 +57,15 @@ export interface ActingAutomationSession {
 export async function verifiedAutomationSource(
   declared: { automationId: number; windowId: number | null } | null,
   organizationId: string,
-  db: DbClient = getDb()
+  // Resolved AFTER the guard, never as a default parameter: a default is
+  // evaluated at call time, so `getDb()` would run on every call — including
+  // the overwhelmingly common one with nothing declared, and including unit
+  // suites that boot no database at all.
+  db?: DbClient
 ): Promise<{ automationId: number; windowId: number | null } | null> {
   if (!declared) return null;
-  const rows = await db<{ id: number }>`
+  const client = db ?? getDb();
+  const rows = await client<{ id: number }>`
     SELECT id
     FROM automations
     WHERE id = ${declared.automationId}
@@ -85,7 +90,7 @@ export async function verifiedAutomationSource(
 export async function resolveAutomationAttribution(
   ctx: ActingAutomationSession,
   declared: DeclaredAutomationSource | null | undefined,
-  db: DbClient = getDb()
+  db?: DbClient
 ): Promise<AutomationAttribution> {
   if (ctx.actingAutomationId != null) {
     return {

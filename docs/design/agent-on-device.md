@@ -51,8 +51,8 @@ set both.
 
 - **Device payload carries no identity.** The device job payload
   (`packages/server/src/worker-api/poll.ts`, `automation:` object) contains
-  only `{ id, name, slug, agent_kind, notification_channel,
-  notification_priority, execution_config, prompt, extraction_schema }`.
+  only `{ id, name, slug, agent_kind, execution_config, prompt,
+  extraction_schema }`.
   No `agent_id`, no resolved model, no tools.
 - **`agent_kind` selects a local CLI** on the device
   (`claude-code`, `codex`, `opencode`, `pi`, `agy`); the managed agent

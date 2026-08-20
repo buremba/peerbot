@@ -44,7 +44,7 @@ import {
   buildSemanticTypeFilterSql,
   buildStandardParams,
   buildStandardWhereSql,
-  WINDOW_JOIN_SQL,
+  RUN_JOIN_SQL,
 } from './params';
 
 /**
@@ -52,7 +52,7 @@ import {
  *
  * The two branches differ only in how they assemble `whereExpr` (the full
  * WHERE body, excluding the date cursor clause) and whether they need the
- * `automation_window_events` join (`joinSql`). Everything past the count — the
+ * `automation_run_events` join (`joinSql`). Everything past the count — the
  * empty-result short-circuit, the `candidate_set/result_set` vs `result_set`
  * CTE pair, param indexing, dedup, and the response shape — is identical, so
  * it lives here. The generated SQL and parameter binding are unchanged.
@@ -339,10 +339,10 @@ export async function listContentInternal(
       baseParams.push(untilDate.toISOString());
       baseConditions.push(`f.occurred_at <= $${baseParams.length}`);
     }
-    if (options.window_id != null) {
-      baseParams.push(options.window_id);
+    if (options.run_id != null) {
+      baseParams.push(options.run_id);
       baseConditions.push(
-        `EXISTS (SELECT 1 FROM automation_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
+        `EXISTS (SELECT 1 FROM automation_run_events iwf WHERE iwf.event_id = f.id AND iwf.run_id = $${baseParams.length})`
       );
     }
     if (options.engagement_min != null) {
@@ -531,7 +531,7 @@ export async function listContentInternal(
 
   return executeListQuery({
     sql,
-    joinSql: WINDOW_JOIN_SQL,
+    joinSql: RUN_JOIN_SQL,
     entityId: entityId ?? null,
     whereExpr: `${standardWhereSql}
           AND ${connectionCondition}

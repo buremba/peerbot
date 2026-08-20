@@ -73,14 +73,12 @@ export async function handleList(
       -- arrays, so text[] arrives as the literal "{a,b}"; wrap in to_jsonb so
       -- clients get a real JSON array.
       to_jsonb(i.tags) AS tags,
-      i.notification_channel,
-      i.notification_priority,
       i.delivery_target,
       i.min_cooldown_seconds,
       i.agent_kind,
       i.automation_group_id::text AS automation_group_id,
       i.source_automation_id::text AS source_automation_id,
-      wr.id as automation_run_id,
+      wr.id as run_id,
       wr.status as automation_run_status,
       wr.outcome as automation_run_outcome,
       wr.error_message as automation_run_error,
@@ -101,8 +99,8 @@ export async function handleList(
       parent.slug as parent_slug,
       pet.slug as parent_entity_type,
       i.current_version_id,
-      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.automation_id = i.id) as windows_count,
-      (SELECT COUNT(DISTINCT iw.client_id) FROM canvas_windows iw WHERE iw.automation_id = i.id AND iw.client_id IS NOT NULL) as processing_client_count
+      (SELECT COUNT(*) FROM runs r WHERE r.automation_id = i.id AND r.run_type = 'automation' AND r.status = 'completed') as windows_count,
+      (SELECT COUNT(DISTINCT r.run_metadata->>'client_id') FROM runs r WHERE r.automation_id = i.id AND r.run_type = 'automation' AND r.status = 'completed' AND r.run_metadata->>'client_id' IS NOT NULL) as processing_client_count
   `;
 
 	if (args.include_details) {

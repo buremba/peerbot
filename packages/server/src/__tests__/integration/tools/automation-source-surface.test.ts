@@ -20,10 +20,10 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createCanvasWindow, createTestAgent } from '../../setup/test-fixtures';
+import { createAutomationResultRun, createTestAgent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
-async function orgWithAutomationAndWindow(name: string, slug: string) {
+async function orgWithAutomationAndRun(name: string, slug: string) {
   const workspace = await TestWorkspace.create({ name });
   const ownerUserId = workspace.users.owner.id;
   const agent = await createTestAgent({
@@ -42,7 +42,7 @@ async function orgWithAutomationAndWindow(name: string, slug: string) {
     agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(created.automation_id);
-  const windowId = await createCanvasWindow({
+  const runId = await createAutomationResultRun({
     automationId,
     organizationId: workspace.org.id,
     windowStart: '2026-01-01T00:00:00.000Z',
@@ -53,23 +53,23 @@ async function orgWithAutomationAndWindow(name: string, slug: string) {
     api,
     organizationId: workspace.org.id,
     automationId,
-    windowId,
+    runId,
   };
 }
 
 async function reactionRows(organizationId: string) {
   const rows = await getTestDb()<{
     automation_id: number | string;
-    window_id: number | string;
+    source_run_id: number | string;
   }>`
-    SELECT automation_id, window_id
+    SELECT automation_id, source_run_id
     FROM automation_reactions
     WHERE organization_id = ${organizationId}
     ORDER BY id
   `;
   return rows.map((row) => ({
     automation_id: Number(row.automation_id),
-    window_id: Number(row.window_id),
+    run_id: Number(row.source_run_id),
   }));
 }
 
@@ -79,8 +79,8 @@ describe('write surfaces refuse an unowned automation_source', () => {
   });
 
   it('keeps only owned credit when save_memory also declares another org’s Automation', async () => {
-    const victim = await orgWithAutomationAndWindow('Surface Victim', 's-victim');
-    const attacker = await orgWithAutomationAndWindow('Surface Attacker', 's-attacker');
+    const victim = await orgWithAutomationAndRun('Surface Victim', 's-victim');
+    const attacker = await orgWithAutomationAndRun('Surface Attacker', 's-attacker');
 
     await attacker.api.knowledge.save({
       semantic_type: 'note',
@@ -89,7 +89,7 @@ describe('write surfaces refuse an unowned automation_source', () => {
       content: 'Attributed to this organization’s Automation.',
       automation_source: {
         automation_id: attacker.automationId,
-        window_id: attacker.windowId,
+        run_id: attacker.runId,
       },
     });
 
@@ -100,19 +100,19 @@ describe('write surfaces refuse an unowned automation_source', () => {
       content: 'Attributed to an Automation this org does not own.',
       automation_source: {
         automation_id: victim.automationId,
-        window_id: victim.windowId,
+        run_id: victim.runId,
       },
     });
 
     await expect(reactionRows(attacker.organizationId)).resolves.toEqual([
-      { automation_id: attacker.automationId, window_id: attacker.windowId },
+      { automation_id: attacker.automationId, run_id: attacker.runId },
     ]);
     await expect(reactionRows(victim.organizationId)).resolves.toEqual([]);
   });
 
   it('keeps only owned credit when manage_entity also declares another org’s Automation', async () => {
-    const victim = await orgWithAutomationAndWindow('Entity Victim', 'e-victim');
-    const attacker = await orgWithAutomationAndWindow('Entity Attacker', 'e-attacker');
+    const victim = await orgWithAutomationAndRun('Entity Victim', 'e-victim');
+    const attacker = await orgWithAutomationAndRun('Entity Attacker', 'e-attacker');
     await attacker.api.entity_schema.createType({ slug: 'company', name: 'Company' });
     await attacker.api.entity_schema.createRelType({ slug: 'related', name: 'Related' });
     const from = (await attacker.api.entities.create({
@@ -135,7 +135,7 @@ describe('write surfaces refuse an unowned automation_source', () => {
       relationship_type_slug: 'related',
       automation_source: {
         automation_id: attacker.automationId,
-        window_id: attacker.windowId,
+        run_id: attacker.runId,
       },
     });
 
@@ -146,12 +146,12 @@ describe('write surfaces refuse an unowned automation_source', () => {
       relationship_type_slug: 'related',
       automation_source: {
         automation_id: victim.automationId,
-        window_id: victim.windowId,
+        run_id: victim.runId,
       },
     });
 
     await expect(reactionRows(attacker.organizationId)).resolves.toEqual([
-      { automation_id: attacker.automationId, window_id: attacker.windowId },
+      { automation_id: attacker.automationId, run_id: attacker.runId },
     ]);
     await expect(reactionRows(victim.organizationId)).resolves.toEqual([]);
   });

@@ -161,7 +161,7 @@ describe("sandbox runtime", () => {
 
     const result = await runScript({
       source:
-        "export default async (ctx, client) => client.notifications.send({ title: 'Choose a plan', input_schema: { type: 'object', properties: { plan: { enum: ['legacy', 'new'] } }, required: ['plan'] }, automation_source: { automation_id: 7, window_id: 9 } });",
+        "export default async (ctx, client) => client.notifications.send({ title: 'Choose a plan', input_schema: { type: 'object', properties: { plan: { enum: ['legacy', 'new'] } }, required: ['plan'] }, automation_source: { automation_id: 7, run_id: 9 } });",
       sdk: stubSdk,
     });
 
@@ -180,7 +180,7 @@ describe("sandbox runtime", () => {
         properties: { plan: { enum: ["legacy", "new"] } },
         required: ["plan"],
       },
-      automation_source: { automation_id: 7, window_id: 9 },
+      automation_source: { automation_id: 7, run_id: 9 },
     });
   });
 

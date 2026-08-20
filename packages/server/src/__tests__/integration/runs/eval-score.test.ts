@@ -325,7 +325,7 @@ describe("scoreEvalRun", () => {
 	test("score events are structurally excluded from embedding, search and feeds", async () => {
 		// Not a style preference: NULL payload_text is what keeps these rows out
 		// of embed-backfill discovery, and a NULL feed_id is what keeps them out
-		// of every feed-scoped read. Canvas established the rule; breaking it here
+		// of every feed-scoped read. Breaking that rule here
 		// would silently push eval bookkeeping into users' search results.
 		const runId = await insertRun({
 			runType: AUTOMATION_EVAL_RUN_TYPE,

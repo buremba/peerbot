@@ -733,9 +733,9 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
 
   test("sends outputs null when the declaration was removed", async () => {
     const desired = {
-      slug: "canvas-only",
+      slug: "run-output-only",
       agent: "triage",
-      prompt: "Keep the result on Canvas.",
+      prompt: "Keep the result on the run.",
       triggers: [{ kind: "schedule" as const, cron: "0 9 * * *" }],
     };
     const state = stateWith({

@@ -253,7 +253,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     `;
     const facetId = Number(facet[0].id);
     await sql`
-      INSERT INTO event_classifications (event_id, classifier_id, automation_id, window_id,
+      INSERT INTO event_classifications (event_id, classifier_id, automation_id, run_id,
                                          "values", confidences, source, is_manual)
       VALUES (${orgWideWorkspaceAuditEventId}, ${facetId}, NULL, NULL, ${'{sensitive}'}::text[],
               ${sql.json({ sensitive: 1 })}, 'user', true)

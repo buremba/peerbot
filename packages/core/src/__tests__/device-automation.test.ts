@@ -115,7 +115,7 @@ describe("completion contract (ported TurnPromptTests assertions)", () => {
     for (const p of [payload("window"), payload()]) {
       const contract = deviceCompletionContract(p, 7);
       expect(contract).toContain("completeWindow");
-      expect(contract).toContain("automation_run_id: 7");
+      expect(contract).toContain("run_id: 7");
       expect(contract).not.toContain("Do NOT call completeWindow");
     }
   });
@@ -144,7 +144,7 @@ describe("golden strings (byte-compatible with the Mac app)", () => {
       "Prefer the local `lobu` CLI (same login as the Owletto menubar — credentials in ~/.config/lobu; no extra auth setup). The script is compiled as a module, so it must `export default` an async function — a top-level `return` or `await` is a compile error, not a runtime one:\n" +
       "  lobu memory exec 'export default async (ctx, client) => { const r = await client.knowledge.read({ automation_id: 42 }); return r; };'\n" +
       "  # use window_token + content from that result, then:\n" +
-      "  lobu memory exec 'export default async (ctx, client) => { await client.automations.completeWindow({ automation_run_id: 7, window_token, extracted_data, replace_existing: true }); return { ok: true }; };'\n" +
+      "  lobu memory exec 'export default async (ctx, client) => { await client.automations.completeWindow({ run_id: 7, window_token, extracted_data }); return { ok: true }; };'\n" +
       "\n" +
       'MCP is also fine if already wired: query_sdk → knowledge.read, run_sdk → completeWindow. For `extracted_data`, use an object summarizing the result, e.g. {"summary": "<markdown summary of what you found or did>"}. Printing a summary alone is NOT enough — if you skip completeWindow the run fails (or resumes once).';
     expect(got).toBe(expected);
@@ -172,7 +172,7 @@ describe("golden strings (byte-compatible with the Mac app)", () => {
     const expected =
       "Completion contract (required): this is a conversational turn, not a window Automation.\n" +
       "\n" +
-      "Do the work and reply. Do NOT call completeWindow, and do not create a canvas — this run has no window. The run is recorded when this process exits cleanly.\n";
+      "Do the work and reply. Do NOT call completeWindow — this run has no analysis period. The run is recorded when this process exits cleanly.\n";
     expect(got).toBe(expected);
   });
 
@@ -181,7 +181,7 @@ describe("golden strings (byte-compatible with the Mac app)", () => {
     const expected =
       "Completion contract (required): this is a conversational turn, not a window Automation.\n" +
       "\n" +
-      "Do the work and reply. Do NOT call completeWindow, and do not create a canvas — this run has no window. The run is recorded when this process exits cleanly.\n" +
+      "Do the work and reply. Do NOT call completeWindow — this run has no analysis period. The run is recorded when this process exits cleanly.\n" +
       "\n" +
       "First read the exact durable input with:\n" +
       "  lobu memory exec 'export default async (ctx, client) => client.knowledge.read({ content_ids: [40] });'\n" +
@@ -196,6 +196,6 @@ describe("golden strings (byte-compatible with the Mac app)", () => {
         "do the thing\n\n---\nAutomation: Inbox triage\nEvent payload (context; empty for scheduled runs): {"
       )
     ).toBe(true);
-    expect(built).toContain("automation_run_id: 7");
+    expect(built).toContain("run_id: 7");
   });
 });

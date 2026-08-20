@@ -93,45 +93,45 @@ export function resolveAutomationVisibilityUserId(
 
 /**
  * Stamp `metadata.pending_proposal_count` onto every `change_set` content item,
- * counting the pending proposal runs still open for its window. The change_set
+ * counting the pending child runs still open for its source run. The change_set
  * event is permanent, so its batch Approve/Reject buttons can't derive their
  * visibility from the event alone — a resolved window would keep showing live
- * buttons that error on click. One batched query over all present windows keeps
- * this off the per-item hot path; items with no window are left untouched.
+ * buttons that error on click. One batched query keeps this off the per-item
+ * hot path; items with no run are left untouched.
  */
 async function stampPendingProposalCounts(
   sql: ReturnType<typeof getDb>,
   organizationId: string,
   items: ContentItem[]
 ): Promise<void> {
-  const windowIds = new Set<number>();
+  const runIds = new Set<number>();
   for (const item of items) {
     if (item.semantic_type !== 'change_set') continue;
-    const wid = (item.metadata as Record<string, unknown> | undefined)?.window_id;
-    if (typeof wid === 'number') windowIds.add(wid);
+    const runId = item.run_id;
+    if (typeof runId === 'number') runIds.add(runId);
   }
-  if (windowIds.size === 0) return;
+  if (runIds.size === 0) return;
 
-  const rows = await sql<{ window_id: number; pending: number }>`
-    SELECT window_id, COUNT(*)::int AS pending
+  const rows = await sql<{ parent_run_id: number; pending: number }>`
+    SELECT parent_run_id, COUNT(*)::int AS pending
     FROM runs
     WHERE organization_id = ${organizationId}
       AND run_type = 'internal'
       AND approval_status = 'pending'
-      AND window_id = ANY(${pgBigintArray([...windowIds])}::bigint[])
-    GROUP BY window_id
+      AND parent_run_id = ANY(${pgBigintArray([...runIds])}::bigint[])
+    GROUP BY parent_run_id
   `;
-  const pendingByWindow = new Map<number, number>();
-  for (const r of rows) pendingByWindow.set(Number(r.window_id), Number(r.pending));
+  const pendingByRun = new Map<number, number>();
+  for (const r of rows) pendingByRun.set(Number(r.parent_run_id), Number(r.pending));
 
   for (const item of items) {
     if (item.semantic_type !== 'change_set') continue;
     const metadata = (item.metadata ?? {}) as Record<string, unknown>;
-    const wid = metadata.window_id;
-    if (typeof wid !== 'number') continue;
+    const runId = item.run_id;
+    if (typeof runId !== 'number') continue;
     item.metadata = {
       ...metadata,
-      pending_proposal_count: pendingByWindow.get(wid) ?? 0,
+      pending_proposal_count: pendingByRun.get(runId) ?? 0,
     };
   }
 }
@@ -542,7 +542,7 @@ async function getContentImpl(
         ...(untilDate && { until: untilDate }),
         ...(args.engagement_min !== undefined && { engagement_min: args.engagement_min }),
         ...(args.engagement_max !== undefined && { engagement_max: args.engagement_max }),
-        ...(args.window_id !== undefined && { window_id: args.window_id }),
+        ...(args.run_id !== undefined && { run_id: args.run_id }),
         ...(args.analyzed_by_automation_id !== undefined && {
           analyzed_by_automation_id: args.analyzed_by_automation_id,
         }),
@@ -587,7 +587,7 @@ async function getContentImpl(
         ...(args.client_ids?.length && { client_id: args.client_ids }),
         ...(mcpSessionIds !== undefined && { mcp_session_ids: mcpSessionIds }),
         visibility_scope: visibilityScope,
-        window_id: args.window_id,
+        run_id: args.run_id,
         analyzed_by_automation_id: args.analyzed_by_automation_id,
         exclude_automation_id: args.exclude_automation_id,
         produced_by_automation_id: args.produced_by_automation_id,

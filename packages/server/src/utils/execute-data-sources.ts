@@ -57,13 +57,7 @@ export interface DataSourceContext {
   /** When set, events CTE is filtered to this time window (incremental mode) */
   windowStart?: string;
   windowEnd?: string;
-  /**
-   * When set, the events CTE drops rows this Automation produced, except human
-   * canvas corrections (`semantic_type='canvas_state'` with
-   * `metadata.correction`). Set it for an Automation's own source execution and
-   * nowhere else — a generic reader (`query_sql`, entity templates) must still
-   * see Automation-produced events.
-   */
+  /** Drop rows this Automation produced during its own source execution. */
   excludeProducedByAutomationId?: number | null;
 }
 
@@ -682,14 +676,11 @@ export function buildScopedQuery(
       // and only this predicate stops an hourly Automation compounding on itself.
       //
       // Self-scoped: one Automation refining another's output is ordinary
-      // composition, so this drops rows from THIS Automation only. A supersede
-      // copies the producer stamp, including onto human canvas corrections —
-      // those stay visible via canvas_state + metadata.correction, not by
-      // clearing lineage. Tombstones keep the stamp and stay hidden.
+      // composition, so this drops rows from THIS Automation only.
       if (context.excludeProducedByAutomationId != null) {
         idx++;
         params.push(context.excludeProducedByAutomationId);
-        eventsCte += ` AND (ev.automation_id IS NULL OR ev.automation_id <> $${idx} OR (ev.semantic_type = 'canvas_state' AND ev.metadata->>'correction' = 'true'))`;
+        eventsCte += ` AND (ev.automation_id IS NULL OR ev.automation_id <> $${idx})`;
       }
 
       eventsCte += eventConnVisibility('ev');
@@ -727,13 +718,6 @@ export function buildScopedQuery(
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.automations i ` +
           `WHERE i.organization_id = ${orgP})`
-      );
-    } else if (table === 'canvas_windows') {
-      // Automation windows as canvas chains (view over events; migration
-      // 20260703000000) — org-scoped directly, the view carries organization_id.
-      // security-allowed: see block comment above the for-loop
-      ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'cw')} FROM public.canvas_windows cw WHERE cw.organization_id = ${orgP})`
       );
     } else if (table === 'event_classifications') {
       // Visible exactly when the underlying event is: same eventOrgScope

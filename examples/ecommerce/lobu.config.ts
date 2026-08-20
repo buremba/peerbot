@@ -117,7 +117,6 @@ const customerActivityTracker = defineAutomation({
   slug: "customer-activity-tracker",
   name: "Customer activity tracker",
   triggers: [every("0 */6 * * *")],
-  notification: { priority: "normal" },
   tags: ["ecommerce", "customer-ops"],
   minCooldownSeconds: 300,
   skills: ["customer-activity-tracker"],

@@ -137,7 +137,6 @@ const lunchOpen = defineAutomation({
   slug: "lobu-team-lunch-open",
   name: "Open the lunch run",
   triggers: [every("0 11 * * 1-5")],
-  notification: { priority: "high", channel: "both" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
   skills: ["lunch-open"],
@@ -150,7 +149,6 @@ const lunchFinalize = defineAutomation({
   slug: "lobu-team-lunch-finalize",
   name: "Collect orders and hand off",
   triggers: [every("35 11 * * 1-5")],
-  notification: { priority: "high" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
   reaction: reactionFromFile<typeof lunchDeliverooReaction>(
@@ -345,7 +343,6 @@ const productActivityDigest = defineAutomation({
     product_activity: "@connection:lobu-product-activity-db",
     kubernetes_logs: "@connection:lobu-production-logs",
   },
-  notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 60,
   tags: ["product-ops", "production", "slack"],
   prompt:

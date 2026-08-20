@@ -64,11 +64,10 @@ export interface AutomationCompleteWindowInput {
 	/** Multiple page JWTs obtained from read_knowledge for the same Automation window. */
 	window_tokens?: string[];
 	extracted_data: Record<string, unknown>;
-	replace_existing?: boolean;
 	client_id?: string;
 	model?: string;
-	/** Optional Automation run id for completion/provenance (from the dispatch prompt). */
-	automation_run_id?: number;
+	/** Automation run id from the dispatch prompt or Automation list. */
+	run_id: number;
 	run_metadata?: Record<string, unknown>;
 	template_version_id?: number;
 }
@@ -84,7 +83,7 @@ export interface AutomationVersionDetailsInput {
 
 export interface AutomationSubmitFeedbackInput {
 	automation_id: AutomationId;
-	window_id: number;
+	run_id: number;
 	corrections: Array<{
 		field_path: string;
 		mutation?: "set" | "remove" | "add";
@@ -95,7 +94,7 @@ export interface AutomationSubmitFeedbackInput {
 
 export interface AutomationGetFeedbackInput {
 	automation_id: AutomationId;
-	window_id?: number;
+	run_id?: number;
 	limit?: number;
 }
 

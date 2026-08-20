@@ -315,10 +315,10 @@ describe("sdkSearch", () => {
 	});
 
 	it("substring-matches across paths and summaries", async () => {
-		// "Canvas" appears in automations.create's summary (output contract).
+		// "run-result" appears in automations.create's summary, not its path.
 		// automations.create is admin-tier (matches manage_automations.create being
 		// owner-admin), so only an admin-tier caller discovers it.
-		const result = await sdkSearch({ query: "Canvas" }, stubEnv, adminCtx);
+		const result = await sdkSearch({ query: "run-result" }, stubEnv, adminCtx);
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 

@@ -163,8 +163,6 @@ function fullOrgRoutes(): Record<
           ],
           sources: [{ name: "content", query: "SELECT * FROM events" }],
           tags: ["sales", "health"],
-          notification_channel: "both",
-          notification_priority: "high",
           min_cooldown_seconds: 1800,
         },
       ],
@@ -427,14 +425,12 @@ describe("lobu init --from-org", () => {
       active_run: "coalesce",
       skip_if_unchanged: true,
     });
-    // No outputs means this round-trips as a Canvas/reaction-only Automation.
+    // No outputs means this round-trips as a run-output-only Automation.
     expect(w?.outputs).toBeUndefined();
     expect(w?.sources).toEqual([
       { name: "content", query: "SELECT * FROM events" },
     ]);
     expect(w?.tags).toEqual(["sales", "health"]);
-    expect(w?.notificationChannel).toBe("both");
-    expect(w?.notificationPriority).toBe("high");
     expect(w?.minCooldownSeconds).toBe(1800);
     expect(w?.reactionScript?.sourceCode).toContain("client.knowledge.save");
 

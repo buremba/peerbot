@@ -744,7 +744,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         r.action_input,
         r.approved_input,
         r.automation_id,
-        r.window_id,
         r.organization_id,
         org.slug AS organization_slug,
         r.created_at AS run_created_at,
@@ -767,8 +766,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.agent_id AS automation_agent_id,
         w.slug AS automation_slug,
         w.agent_kind AS automation_agent_kind,
-        w.notification_channel AS automation_notification_channel,
-        w.notification_priority AS automation_notification_priority,
         w.execution_config AS automation_execution_config,
         wv.prompt AS automation_prompt,
         wv.skills AS automation_skills,
@@ -854,15 +851,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_created_at: string | Date | null;
     // Automation run fields (populated via LEFT JOINs)
     automation_id: number | null;
-    window_id: number | null;
     organization_id: string;
     organization_slug: string | null;
     automation_name: string | null;
     automation_agent_id: string | null;
     automation_slug: string | null;
     automation_agent_kind: string | null;
-    automation_notification_channel: string | null;
-    automation_notification_priority: string | null;
     automation_execution_config: Record<string, unknown> | null;
     automation_prompt: string | null;
     automation_skills: unknown;
@@ -1014,8 +1008,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           name: row.automation_name ?? null,
           slug: row.automation_slug ?? null,
           agent_kind: agentKindFromPayload ?? row.automation_agent_kind ?? null,
-          notification_channel: row.automation_notification_channel ?? 'canvas',
-          notification_priority: row.automation_notification_priority ?? 'normal',
           // Strip server-only keys (e.g. finalize_nudges) so the device-worker's
           // strict payload decode never sees a field it doesn't know.
           execution_config: stripServerOnlyExecutionConfig(row.automation_execution_config),

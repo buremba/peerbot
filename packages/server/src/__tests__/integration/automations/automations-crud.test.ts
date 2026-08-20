@@ -8,6 +8,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { AUTOMATION_CATALOG_TEMPLATES } from '../../../catalog/automation-templates';
 import { executeReaction } from '../../../automations/reaction-executor';
+import { createAutomationRun } from '../../../runs/queue-service';
 import {
   addUserToOrganization,
   createTestAgent,
@@ -203,7 +204,14 @@ describe('automation CRUD', () => {
     `;
     expect(installed?.reaction_script_compiled).toBeTruthy();
 
-    const windowId = 987654;
+    const sourceRun = await createAutomationRun({
+      organizationId: ownerOrgId,
+      automationId,
+      agentId,
+      windowStart: new Date('2026-01-01').toISOString(),
+      windowEnd: new Date('2026-01-02').toISOString(),
+      dispatchSource: 'manual',
+    }, sql);
     const res = await executeReaction({
       compiledScript: installed?.reaction_script_compiled as string,
       context: {
@@ -213,7 +221,7 @@ describe('automation CRUD', () => {
         },
         entities: [],
         window: {
-          id: windowId,
+          run_id: sourceRun.runId,
           automation_id: automationId,
           window_start: new Date('2026-01-01').toISOString(),
           window_end: new Date('2026-01-02').toISOString(),
@@ -239,12 +247,12 @@ describe('automation CRUD', () => {
     const pending = await sql<
       {
         automation_id: number | null;
-        window_id: number | null;
+        parent_run_id: number | null;
         approval_status: string;
         status: string;
       }[]
     >`
-      SELECT automation_id, window_id, approval_status, status
+      SELECT automation_id, parent_run_id, approval_status, status
       FROM runs
       WHERE organization_id = ${ownerOrgId}
         AND run_type = 'internal'
@@ -253,7 +261,7 @@ describe('automation CRUD', () => {
     `;
     expect(pending).toHaveLength(1);
     expect(Number(pending[0].automation_id)).toBe(automationId);
-    expect(Number(pending[0].window_id)).toBe(windowId);
+    expect(Number(pending[0].parent_run_id)).toBe(sourceRun.runId);
     expect(pending[0].approval_status).toBe('pending');
     expect(pending[0].status).toBe('pending');
 

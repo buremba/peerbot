@@ -191,7 +191,7 @@ export async function searchContentBySingleQuery(
           AND ($3::text IS NULL OR f.connector_key = $3::text)
           AND ($4::timestamptz IS NULL OR f.occurred_at >= $4::timestamptz)
           AND ($5::timestamptz IS NULL OR f.occurred_at <= $5::timestamptz)
-          AND ($6::int IS NULL OR iwf.window_id = $6::int)
+          AND ($6::int IS NULL OR iwf.run_id = $6::int)
           AND ($7::numeric IS NULL OR f.score >= $7::numeric)
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
           AND ($9::text[] IS NULL OR ${buildSemanticTypeFilterSql('f', '$9')})
@@ -354,10 +354,10 @@ export async function searchContentBySingleQuery(
     // (useDateFeed is false here, so there is no cursor block before it).
     const tsqueryParamIdx = offsetParamIdx + 1;
     const candidateFilterJoins = `LEFT JOIN connections c ON c.id = f.connection_id
-          LEFT JOIN automation_window_events iwf
+          LEFT JOIN automation_run_events iwf
             ON iwf.event_id = f.id
             AND ($6::int IS NOT NULL)
-            AND iwf.window_id = $6::int`;
+            AND iwf.run_id = $6::int`;
     const branches: string[] = [];
     // ivfflat ANN — the only shape that index serves. Multi-vector: the ANN now
     // ranks CHUNK rows, so over-fetch chunks then collapse to distinct events by
@@ -414,10 +414,10 @@ export async function searchContentBySingleQuery(
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN automation_window_events iwf
+        LEFT JOIN automation_run_events iwf
           ON iwf.event_id = f.id
           AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int
+          AND iwf.run_id = $6::int
         WHERE ${useCandidatePath ? standardFiltersSQL : searchWhereSQL}
       )`;
 
@@ -427,10 +427,10 @@ export async function searchContentBySingleQuery(
         SELECT f.id, f.score, f.occurred_at, f.created_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN automation_window_events iwf
+        LEFT JOIN automation_run_events iwf
           ON iwf.event_id = f.id
           AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int
+          AND iwf.run_id = $6::int
         WHERE ${searchWhereSQL}
       ),
       full_count AS (
@@ -491,7 +491,7 @@ export async function searchContentBySingleQuery(
     options.platform ?? null,
     sinceDate?.toISOString() ?? null,
     untilDate?.toISOString() ?? null,
-    options.window_id ?? null,
+    options.run_id ?? null,
     options.engagement_min ?? null,
     options.engagement_max ?? null,
     // Same Postgres `text[]` literal wrap as buildStandardParams — slot $9 in

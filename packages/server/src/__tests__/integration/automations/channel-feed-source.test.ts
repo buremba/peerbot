@@ -139,7 +139,7 @@ describe("streaming feed as an automation @feed source", () => {
     // Regression for the complete_window FK: a channel source's rows carry
     // channel_messages.id, which is NOT an events.id. If the source were kind
     // 'event' its ids would be signed into the window_token content_ids and
-    // complete_window would insert them into automation_window_events.event_id (FK
+    // complete_window would insert them into automation_run_events.event_id (FK
     // to events) → break. kind 'channel' keeps them out of eventSourceNames.
     const conn = await makeChatConnection();
     await ensureStreamingChannelFeed({

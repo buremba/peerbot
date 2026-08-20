@@ -481,12 +481,10 @@ export const QUERYABLE_SCHEMA = {
         'connection_id',
         'source_automation_id',
         'automation_group_id',
-        // Runtime columns for device pinning, notification routing, and run
+        // Runtime columns for device pinning, delivery routing, and run
         // rate-limiting; query_sql exposes them so those settings are auditable.
         'device_worker_id',
         'agent_kind',
-        'notification_channel',
-        'notification_priority',
         'delivery_target',
         'min_cooldown_seconds',
         'last_fired_at',
@@ -515,7 +513,7 @@ export const QUERYABLE_SCHEMA = {
         'event_id',
         'classifier_id',
         'automation_id',
-        'window_id',
+        'run_id',
         'values',
         'confidences',
         'source',
@@ -554,29 +552,6 @@ export const QUERYABLE_SCHEMA = {
         'required_source_types',
         'recommended_source_types',
         'version_sources'
-      ),
-    },
-    // canvas_windows (VIEW; replaces the retired standalone window table): one row
-    // per automation window = canvas_state chain ROOT; id is the root event id and
-    // matches event_classifications/automation_window_events/runs.window_id.
-    {
-      name: 'canvas_windows',
-      columns: cols(
-        'id',
-        'organization_id',
-        'automation_id',
-        'granularity',
-        'window_start',
-        'window_end',
-        'version_id',
-        'created_at',
-        'extracted_data',
-        'content_analyzed',
-        'client_id',
-        'run_id',
-        'model_used',
-        'run_metadata',
-        'execution_time_ms'
       ),
     },
     // oauth_clients (excludes: client_secret, client_secret_expires_at)

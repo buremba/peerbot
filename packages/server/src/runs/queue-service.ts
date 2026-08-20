@@ -1075,8 +1075,8 @@ export async function createConnectorOperationRun(params: {
   createdByUserId?: string | null;
   /** Trusted Automation provenance from the executing ToolContext. */
   automationId?: number | null;
-  /** Trusted firing canvas/window id paired with automationId. */
-  windowId?: number | null;
+  /** Trusted causal parent run. */
+  parentRunId?: number | null;
   /**
    * Optional transaction handle. When passed, the run INSERT (and its
    * connector-version read) execute on the caller's transaction instead of the
@@ -1153,7 +1153,7 @@ export async function createConnectorOperationRun(params: {
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
-      automation_id, window_id,
+      automation_id, parent_run_id,
       policy_principal_kind, policy_principal_id, created_by_user_id,
       action_idempotency_key, expires_at,
       activation_kind, activation_target_urls,
@@ -1163,7 +1163,7 @@ export async function createConnectorOperationRun(params: {
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
       ${approvalStatus}, ${status},
-      ${params.automationId ?? null}, ${params.windowId ?? null},
+      ${params.automationId ?? null}, ${params.parentRunId ?? null},
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
       ${params.createdByUserId ?? null},
       ${params.idempotencyKey ?? null},
@@ -1194,7 +1194,7 @@ export async function createConnectorOperationRun(params: {
       policy_principal_id: string | null;
       created_by_user_id: string | null;
       automation_id: number | null;
-      window_id: number | null;
+      parent_run_id: number | null;
       activation_kind: string | null;
       activation_target_urls: string | string[] | null;
       status: string;
@@ -1204,7 +1204,7 @@ export async function createConnectorOperationRun(params: {
     }>`
       SELECT id, connection_id, connector_key, action_key, action_input,
              policy_principal_kind, policy_principal_id, created_by_user_id,
-             automation_id, window_id, activation_kind, activation_target_urls,
+             automation_id, parent_run_id, activation_kind, activation_target_urls,
              status, approval_status, action_output, error_message
       FROM runs
       WHERE organization_id = ${params.organizationId}
@@ -1229,12 +1229,13 @@ export async function createConnectorOperationRun(params: {
       stableJson(parsePgTextArray(prior.activation_target_urls)) ===
         stableJson(params.activation?.urls ?? []);
     const priorAutomationId = prior.automation_id == null ? null : Number(prior.automation_id);
-    const priorWindowId = prior.window_id == null ? null : Number(prior.window_id);
+    const priorParentRunId =
+      prior.parent_run_id == null ? null : Number(prior.parent_run_id);
     const requestedAutomationId = params.automationId ?? null;
-    const requestedWindowId = params.windowId ?? null;
+    const requestedParentRunId = params.parentRunId ?? null;
     const compatibleProvenance =
       (priorAutomationId == null || priorAutomationId === requestedAutomationId) &&
-      (priorWindowId == null || priorWindowId === requestedWindowId);
+      (priorParentRunId == null || priorParentRunId === requestedParentRunId);
     if (!sameRequest || !sameActivation || !compatibleProvenance) {
       throw new ToolUserError(
         `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
@@ -1243,15 +1244,15 @@ export async function createConnectorOperationRun(params: {
     }
     // Runs created before Automation action provenance was stamped can be safely
     // hydrated on an exact idempotent replay. Never overwrite a non-null stamp:
-    // a key already bound to another window remains a conflict above.
+    // a key already bound to another parent remains a conflict above.
     if (
       (priorAutomationId == null && requestedAutomationId != null) ||
-      (priorWindowId == null && requestedWindowId != null)
+      (priorParentRunId == null && requestedParentRunId != null)
     ) {
       await sql`
         UPDATE runs
         SET automation_id = COALESCE(automation_id, ${requestedAutomationId}),
-            window_id = COALESCE(window_id, ${requestedWindowId})
+            parent_run_id = COALESCE(parent_run_id, ${requestedParentRunId})
         WHERE id = ${Number(prior.id)}
           AND organization_id = ${params.organizationId}
       `;

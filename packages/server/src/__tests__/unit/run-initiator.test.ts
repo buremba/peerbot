@@ -31,14 +31,12 @@ describe("resolveRunInitiator", () => {
 				userId: null,
 				agentId: "personal-agent",
 				actingAutomationId: 42,
-				actingWindowId: 7,
 				actingRunId: 99,
 			}),
 		).toEqual({
 			initiatorKind: "automation",
 			initiatorRef: {
 				automation_id: 42,
-				window_id: 7,
 				run_id: 99,
 			},
 			createdByUserId: null,
@@ -65,7 +63,7 @@ describe("resolveRunInitiator", () => {
 describe("runPermalinkResource", () => {
 	const automation = {
 		initiatorKind: "automation",
-		initiatorRef: { automation_id: 42, window_id: 7, run_id: 99 },
+		initiatorRef: { automation_id: 42, run_id: 99 },
 	};
 
 	it("sends an Automation's run to that Automation's drill-down", () => {

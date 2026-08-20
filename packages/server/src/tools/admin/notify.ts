@@ -19,7 +19,6 @@ import {
   getOrgSlug,
 } from '../../notifications/service';
 import { buildActionApprovalCard } from '../../notifications/triggers';
-import { AUTOMATION_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { ToolUserError } from '../../utils/errors';
 import { validateSaveContentSemanticType } from '../../utils/event-kind-validation';
 import logger from '../../utils/logger';
@@ -103,7 +102,7 @@ const SendAction = Type.Object({
     Type.Object(
       {
         automation_id: Type.Number({ description: 'Automation that triggered this notification' }),
-        window_id: Type.Number({ description: 'Window that triggered this notification' }),
+        run_id: Type.Number({ description: 'Automation run that triggered this notification' }),
       },
       { description: 'Attribution source when notification is triggered by an Automation reaction' }
     )
@@ -203,44 +202,11 @@ async function handleSend(
     body = body ? `${body}\n\n${dataStr}` : dataStr;
   }
 
-  // Anchor automation-sourced notifications to the automation's canvas entity so they
-  // thread under the canvas. automation_source is caller input, so validate the
-  // (automation_id, window_id) pair against the caller's org before anchoring —
-  // otherwise any org member could thread a notification under an unrelated
-  // automation's canvas. Resolve the lazy canvas entity via its entity_identities
-  // claim; a mismatched pair or an automation with no canvas yet anchors nothing.
-  let canvasEntityIds: number[] | undefined;
-  if (args.automation_source) {
-    const rows = await getDb()<{ entity_id: number | string }>`
-      SELECT ei.entity_id
-      FROM entity_identities ei
-      JOIN automations w
-        ON w.id = ${args.automation_source.automation_id}
-       AND w.organization_id = ${ctx.organizationId}
-      WHERE ei.organization_id = ${ctx.organizationId}
-        AND ei.namespace = ${AUTOMATION_CANVAS_NAMESPACE}
-        AND ei.identifier = ${String(args.automation_source.automation_id)}
-        AND ei.deleted_at IS NULL
-        AND (
-          ${args.automation_source.window_id ?? null}::bigint IS NULL
-          OR EXISTS (
-            -- window_id is the canvas ROOT event id; validate the pair.
-            SELECT 1 FROM canvas_windows ww
-            WHERE ww.id = ${args.automation_source.window_id ?? null}
-              AND ww.automation_id = w.id
-          )
-        )
-      LIMIT 1
-    `;
-    if (rows.length > 0) canvasEntityIds = [Number(rows[0].entity_id)];
-  }
-
   // Provenance for the notification row itself. Read from the SERVER-set acting
   // context (the reaction executor stamps it), never from `args.automation_source`
   // — that is caller input, and `automation_id` decides what an Automation's own
   // window excludes, so a chosen id would let one Automation blind another.
-  // `automation_source` stays what it always was: an attribution hint for canvas
-  // anchoring and reaction tracking.
+  // `automation_source` is caller input and never supplies trusted provenance.
   //
   // The version comes from the RUN, not from `automations.current_version_id`.
   // current_version_id is the version that is current *now*, at send time — a
@@ -295,16 +261,15 @@ async function handleSend(
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
   // Feedback is learned from server-stamped execution provenance only.
-  // `automation_source` remains a validated canvas-attribution hint above, but
-  // caller input must never choose another Automation's learning history.
+  // Caller input must never choose another Automation's learning history.
   const reactionAutomationId = ctx.actingAutomationId ?? null;
-  const reactionWindowId = ctx.actingWindowId ?? null;
+  const reactionRunId = ctx.actingRunId ?? null;
   const trackNotificationReaction = async (runId?: number): Promise<void> => {
-    if (reactionAutomationId === null || reactionWindowId === null) return;
+    if (reactionAutomationId === null || reactionRunId === null) return;
     await trackAutomationReaction({
       organizationId: ctx.organizationId,
       automationId: reactionAutomationId,
-      windowId: reactionWindowId,
+      sourceRunId: reactionRunId,
       reactionType: 'notification_sent',
       toolName: 'notify',
       toolArgs: { title: args.title, recipients: args.recipients },
@@ -391,7 +356,6 @@ async function handleSend(
             inputSchema: args.input_schema as Record<string, unknown>,
           }) ?? null)
         : null),
-    entityIds: canvasEntityIds,
     mcpActivity: currentMcpActivityAttribution(ctx),
     automationId: actingAutomationId,
     automationVersionId: actingVersionId,
@@ -427,7 +391,7 @@ async function handleSend(
     // key, so retain their historical best-effort tracking semantics.
     await trackNotificationReaction().catch((err) => {
       logger.warn(
-        { err, automationId: reactionAutomationId, windowId: reactionWindowId },
+        { err, automationId: reactionAutomationId, runId: reactionRunId },
         'trackAutomationReaction failed'
       );
     });

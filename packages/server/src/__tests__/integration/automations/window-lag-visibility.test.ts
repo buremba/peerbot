@@ -30,10 +30,11 @@ import type { Env } from "../../../index";
 import { formatToolResult } from "../../../formatting/markdown-formatter";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
 import { handleAutomationMode } from "../../../tools/get_content/automation-mode";
+import { createAutomationRun } from "../../../runs/queue-service";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
-	createCanvasWindow,
+	createAutomationResultRun,
 	createTestAgent,
 	createTestEvent,
 	seedOwnerContext,
@@ -127,7 +128,7 @@ describe("Automation window lag is visible and actionable", () => {
 	/** Freeze the cursor `daysBack` days in the past, as an outage would. */
 	const seedStaleCursor = async (daysBack: number) => {
 		const windowStart = dayStart(daysBack);
-		await createCanvasWindow({
+		await createAutomationResultRun({
 			automationId: automationId,
 			organizationId: orgId,
 			granularity: "daily",
@@ -175,11 +176,19 @@ describe("Automation window lag is visible and actionable", () => {
 		await seedStaleCursor(50);
 
 		const dispatched = await read();
+		const createdRun = await createAutomationRun({
+			organizationId: orgId,
+			automationId,
+			windowStart: dispatched.window_start,
+			windowEnd: dispatched.window_end,
+			dispatchSource: "manual",
+		});
 		const completion = await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
 				window_token: dispatched.window_token,
+				run_id: createdRun.runId,
 				extracted_data: { summary: "Analysed the dispatched window." },
 			},
 			ENV,
@@ -188,9 +197,10 @@ describe("Automation window lag is visible and actionable", () => {
 		expect(completion.action).toBe("complete_window");
 
 		const afterCursor = await sql`
-			SELECT window_start FROM canvas_windows
+			SELECT approved_input->>'window_start' AS window_start FROM runs
 			WHERE automation_id = ${automationId}
-			ORDER BY window_start DESC LIMIT 1
+			  AND run_type = 'automation' AND status = 'completed'
+			ORDER BY (approved_input->>'window_start')::timestamptz DESC LIMIT 1
 		`;
 		expect(new Date(afterCursor[0].window_start as string).toISOString()).toBe(
 			dayStart(1).toISOString(),
@@ -268,11 +278,19 @@ describe("Automation window lag is visible and actionable", () => {
 	it("keeps the cursor when an older period is backfilled afterwards", async () => {
 		await seedStaleCursor(50);
 		const dispatched = await read();
+		const currentRun = await createAutomationRun({
+			organizationId: orgId,
+			automationId,
+			windowStart: dispatched.window_start,
+			windowEnd: dispatched.window_end,
+			dispatchSource: "manual",
+		});
 		await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
 				window_token: dispatched.window_token,
+				run_id: currentRun.runId,
 				extracted_data: { summary: "current" },
 			},
 			ENV,
@@ -281,11 +299,19 @@ describe("Automation window lag is visible and actionable", () => {
 
 		const old = dayStart(20).toISOString().slice(0, 10);
 		const backfill = await read({ since: old, until: old });
+		const backfillRun = await createAutomationRun({
+			organizationId: orgId,
+			automationId,
+			windowStart: backfill.window_start,
+			windowEnd: backfill.window_end,
+			dispatchSource: "manual",
+		});
 		await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
 				window_token: backfill.window_token,
+				run_id: backfillRun.runId,
 				extracted_data: { summary: "backfilled" },
 			},
 			ENV,
@@ -308,9 +334,10 @@ describe("Automation window lag is visible and actionable", () => {
 		await read();
 
 		const cursor = await sql`
-			SELECT window_start FROM canvas_windows
+			SELECT approved_input->>'window_start' AS window_start FROM runs
 			WHERE automation_id = ${automationId}
-			ORDER BY window_start DESC LIMIT 1
+			  AND run_type = 'automation' AND status = 'completed'
+			ORDER BY (approved_input->>'window_start')::timestamptz DESC LIMIT 1
 		`;
 		expect(new Date(cursor[0].window_start as string).toISOString()).toBe(
 			staleStart.toISOString(),

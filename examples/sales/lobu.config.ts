@@ -135,7 +135,6 @@ const accountHealthMonitor = defineAutomation({
   slug: "account-health-monitor",
   name: "Account health monitor",
   triggers: [every("0 */12 * * *")],
-  notification: { priority: "high", channel: "both" },
   tags: ["sales", "health", "renewals"],
   minCooldownSeconds: 1800,
   outputs: { health_changes: { event: "observation" } },

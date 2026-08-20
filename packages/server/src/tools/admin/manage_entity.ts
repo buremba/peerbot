@@ -251,11 +251,10 @@ async function manageEntityImpl(
 	const reactionAttribution = args.automation_source
 		? await resolveAutomationAttribution(ctx, args.automation_source)
 		: null;
-	// A reaction record is keyed by BOTH ids, so a source that resolves without a
-	// window has nothing to record against.
+	// A reaction record is keyed by the producing run.
 	if (
 		reactionAttribution?.automationId != null &&
-		reactionAttribution.windowId != null &&
+		reactionAttribution.runId != null &&
 		"action" in result
 	) {
 		const reactionType =
@@ -274,7 +273,7 @@ async function manageEntityImpl(
 			await trackAutomationReaction({
 				organizationId: ctx.organizationId,
 				automationId: reactionAttribution.automationId,
-				windowId: reactionAttribution.windowId,
+				sourceRunId: reactionAttribution.runId,
 				reactionType,
 				toolName: "manage_entity",
 				toolArgs: {
@@ -374,7 +373,7 @@ async function handleCreate(
 		sql: getDb(),
 		attribution,
 		automationId: createAttribution.automationId,
-		windowId: createAttribution.windowId,
+		parentRunId: createAttribution.runId,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
@@ -434,7 +433,7 @@ async function handleCreate(
 			// still needs its own card.
 			escalatedFields: err.verdict.fields,
 			automationId: createAttribution.automationId,
-			windowId: createAttribution.windowId,
+			parentRunId: createAttribution.runId,
 		}).queue(ctx, env);
 		return {
 			action: "create",
@@ -587,9 +586,7 @@ async function handleUpdate(
 		updateData.affirm_fields = args.affirm_fields;
 
 	const updateActor = await actingPrincipalFor(args, ctx);
-	// Update records only the window (the batch key); the Automation itself comes
-	// from the acting principal. It still resolves through the shared rule so a
-	// declared window cannot outlive the Automation that failed verification.
+	// Update approvals inherit the producing run as their causal parent.
 	const updateAttribution = await resolveAutomationAttribution(
 		ctx,
 		args.automation_source
@@ -598,7 +595,7 @@ async function handleUpdate(
 		policyPrincipalKind: updateActor.kind,
 		attribution: attributionFor(updateActor),
 		principalId: updateActor.id,
-		windowId: updateAttribution.windowId,
+		parentRunId: updateAttribution.runId,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
 	});
@@ -904,8 +901,6 @@ async function handleMerge(
 				winner_entity_id: winnerId,
 				evidence: resolution.evidence,
 				automation_id: mergeAttribution.automationId,
-				window_id: mergeAttribution.windowId,
-				source_run_id: ctx.actingRunId ?? null,
 				policy_hash: resolution.policyHash,
 				resolution_fingerprint: resolution.fingerprint,
 				resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
@@ -918,6 +913,7 @@ async function handleMerge(
 				proposer_rationale: args.merge_rationale?.trim() || null,
 			},
 			resolution.resolutionKeys,
+			mergeAttribution.runId,
 		);
 		return {
 			action: "merge",
@@ -957,9 +953,8 @@ async function handleMerge(
 						}
 					: {
 							decision: "auto_merge",
-							sourceRunId: ctx.actingRunId ?? null,
+							sourceRunId: mergeAttribution.runId,
 							automationId: mergeAttribution.automationId,
-							windowId: mergeAttribution.windowId,
 							policyHash: resolution?.policyHash ?? null,
 							evidence: resolution?.evidence ?? [],
 						},
@@ -1495,7 +1490,7 @@ async function handleDelete(
 		sql: getDb(),
 		attribution,
 		automationId: deleteAttribution.automationId,
-		windowId: deleteAttribution.windowId,
+		parentRunId: deleteAttribution.runId,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,
@@ -1576,10 +1571,9 @@ async function handleDelete(
 			current,
 			automation_id:
 				ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
-			window_id: ctx.actingWindowId ?? args?.automation_source?.window_id ?? null,
 			attribution,
 			reason: err.verdict.reason,
-		});
+		}, deleteAttribution.runId);
 		return {
 			action: "delete",
 			success: false,

@@ -13,7 +13,6 @@ type InitiatorSource = Partial<
 		| "clientId"
 		| "sourceContext"
 		| "actingAutomationId"
-		| "actingWindowId"
 		| "actingRunId"
 	>
 >;
@@ -30,7 +29,6 @@ export function resolveRunInitiator(ctx: InitiatorSource): RunInitiatorColumns {
 			initiatorKind: "automation",
 			initiatorRef: {
 				automation_id: ctx.actingAutomationId,
-				window_id: ctx.actingWindowId ?? null,
 				run_id: ctx.actingRunId ?? null,
 			},
 			createdByUserId: null,

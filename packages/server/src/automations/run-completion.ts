@@ -107,29 +107,6 @@ export async function bumpDeviceFinalizeNudge(
 	return rows.length > 0;
 }
 
-export async function findWindowIdForRun(
-	sql: DbClient,
-	runId: number
-): Promise<number | null> {
-	// Canvas-on-events: a run produced a window iff a canvas chain member carries
-	// this run_id (stamped atomically inside complete_window's tx). A fresh
-	// completion stamps the ROOT; a replace_existing completion stamps the
-	// superseding HEAD — so match ANY member and resolve the window identity via
-	// metadata.root_event_id (a root omits it → its own id). Scoped to
-	// canvas_state so it never matches tab_event/tab_snapshot BROWSER rows that
-	// also carry run_id.
-	const rows = await sql`
-    SELECT COALESCE((metadata->>'root_event_id')::bigint, id) AS id
-    FROM events
-    WHERE run_id = ${runId}
-      AND semantic_type = 'canvas_state'
-    ORDER BY id DESC
-    LIMIT 1
-  `;
-
-	return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
-}
-
 /**
  * Mark an Automation run completed, recording who executed it when the caller
  * knows.
@@ -154,14 +131,12 @@ export async function findWindowIdForRun(
 export async function markAutomationRunCompleted(
 	sql: DbClient,
 	runId: number,
-	windowId: number | null,
 	fallbackModel?: string
 ): Promise<void> {
 	await sql`
     UPDATE runs
     SET status = 'completed',
         outcome = ${classifyRunOutcome({ status: "completed" })},
-        window_id = ${windowId},
         completed_at = current_timestamp,
         error_message = NULL,
         model_used = COALESCE(
@@ -292,54 +267,42 @@ export async function resolveAutomationRunsByMessageIds(
 		}
 
 		if (typedRow.approved_input?.trigger_execution === "turn") {
-			await markAutomationRunCompleted(sql, runId, null, "lobu-agent");
+			await markAutomationRunCompleted(sql, runId, "lobu-agent");
 			resolved++;
 			continue;
 		}
 
-		const windowId = await findWindowIdForRun(sql, runId);
-		if (windowId === null) {
-			// An eval replay can NEVER produce a window — capture mode is what
-			// stops it writing one. "No window" is its success shape, not a
-			// finalize miss, so nudging it would buy a second full replay and
-			// then fail the run with a message about a call the agent did make.
-			if (typedRow.run_type === AUTOMATION_EVAL_RUN_TYPE) {
-				await markAutomationRunCompleted(sql, runId, null, "lobu-agent");
-				resolved++;
-				continue;
-			}
-			// The agent replied but never called complete_window — a soft, usually
-			// non-deterministic miss. Re-dispatch for one more turn (bounded by
-			// finalize_nudge_count) before giving up. The budget is per-automation
-			// (execution_config.finalize_nudges) with a global fallback.
-			const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
-			const nudgeCount = Number(
-				typedRow.approved_input?.finalize_nudge_count ?? 0
-			);
-			if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
-				await requeueAutomationRunForFinalizeNudge(sql, runId, nudgeCount + 1);
-				logger.info(
-					{ run_id: runId, attempt: nudgeCount + 1, max: budget },
-					"[automations] Agent finished without complete_window — re-dispatching for finalize nudge"
-				);
-				resolved++;
-				continue;
-			}
-
-			if (
-				await markAutomationRunFailed(
-					sql,
-					runId,
-					await describeFinalizeMiss(sql, runId, budget)
-				)
-			) {
-				resolved++;
-			}
+		// Capture-mode evals persist their preview instead of a live result.
+		if (typedRow.run_type === AUTOMATION_EVAL_RUN_TYPE) {
+			await markAutomationRunCompleted(sql, runId, "lobu-agent");
+			resolved++;
 			continue;
 		}
 
-		await markAutomationRunCompleted(sql, runId, windowId, "lobu-agent");
-		resolved++;
+		// Any live run still active when its reply finishes did not call
+		// complete_window: that call completes the run atomically with its result.
+		const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
+		const nudgeCount = Number(
+			typedRow.approved_input?.finalize_nudge_count ?? 0
+		);
+		if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
+			await requeueAutomationRunForFinalizeNudge(sql, runId, nudgeCount + 1);
+			logger.info(
+				{ run_id: runId, attempt: nudgeCount + 1, max: budget },
+				"[automations] Agent finished without complete_window — re-dispatching for finalize nudge"
+			);
+			resolved++;
+			continue;
+		}
+		if (
+			await markAutomationRunFailed(
+				sql,
+				runId,
+				await describeFinalizeMiss(sql, runId, budget)
+			)
+		) {
+			resolved++;
+		}
 	}
 
 	return { resolved };

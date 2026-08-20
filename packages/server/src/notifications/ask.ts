@@ -72,14 +72,14 @@ export async function queueAgentAsk(params: {
 		const inserted = await tx`
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input,
-				automation_id, window_id,
+				automation_id, parent_run_id,
 				created_by_user_id, initiator_kind, initiator_ref,
 				approval_status, status, created_at
 			) VALUES (
 				${params.ctx.organizationId}, 'internal', ${AGENT_ASK_ACTION_KEY},
 				${tx.json(proposal as unknown as Record<string, unknown>)},
 				${params.ctx.actingAutomationId ?? null},
-				${params.ctx.actingWindowId ?? null},
+				${params.ctx.actingRunId ?? null},
 				${initiator.createdByUserId},
 				${initiator.initiatorKind},
 				${tx.json(initiator.initiatorRef)},
@@ -106,7 +106,6 @@ export async function queueAgentAsk(params: {
 					action_key: AGENT_ASK_ACTION_KEY,
 					question: params.question,
 					status: "pending_approval",
-					run_id: runId,
 					initiator: {
 						kind: initiator.initiatorKind,
 						...initiator.initiatorRef,

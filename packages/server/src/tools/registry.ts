@@ -102,15 +102,7 @@ export interface ToolContext {
    * non-reaction sessions.
    */
   actingAutomationId?: number | null;
-  /**
-   * The automation-run WINDOW driving this reaction (its root event id), set by the
-   * reaction executor alongside {@link actingAutomationId}. Threaded into a deferred
-   * approval's `runs.window_id` so proposals from the same window batch into one
-   * approval card and identical proposals from DIFFERENT windows stay distinct —
-   * even when the script omits an explicit `automation_source`. Null off-reaction.
-   */
-  actingWindowId?: number | null;
-  /** Durable automation run driving this reaction. Used only for provenance. */
+  /** Durable automation run driving this reaction and its child work. */
   actingRunId?: number | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
@@ -139,7 +131,7 @@ export interface ToolContext {
    * `run_sdk` then routes every non-read SDK method through the sandbox's
    * existing capture path, recording the attempted call and its arguments
    * instead of dispatching it, and `complete_window` records the extraction on
-   * the run's `dry_run_preview` rather than writing the canvas — that lane does
+   * the run's `dry_run_preview` rather than committing the result — that lane does
    * NOT go through the sandbox, so it honours this flag itself.
    * Null/absent means live.
    */

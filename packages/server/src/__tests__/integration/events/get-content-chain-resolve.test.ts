@@ -288,7 +288,7 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
 
     await sql`
       INSERT INTO event_classifications (
-        event_id, classifier_id, automation_id, window_id, "values", confidences,
+        event_id, classifier_id, automation_id, run_id, "values", confidences,
         source, is_manual, reasoning
       ) VALUES (
         ${eventId}, ${classifierId}, NULL, NULL, ${'{positive}'}::text[],

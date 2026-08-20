@@ -3,14 +3,9 @@
  *   submit_feedback, get_feedback, list_promoted
  */
 
-import { getDb, parsePgNumberArray } from '../../../db/client';
+import { getDb } from '../../../db/client';
 import { parseJsonObject } from '@lobu/core';
-import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
 import { ToolUserError } from '../../../utils/errors';
-import { insertEvent } from '../../../utils/insert-event';
-import { isUniqueViolation } from '../../../utils/pg-errors';
-import { automationOutputOccurredAt } from '../../../utils/window-utils';
-import logger from '../../../utils/logger';
 import type { ToolContext } from '../../registry';
 import type { ManageAutomationsArgs, ManageAutomationsResult } from '../manage_automations';
 
@@ -21,146 +16,75 @@ type CorrectionInput = {
   note?: string;
 };
 
-/**
- * Segments that would let a caller-supplied field_path walk or assign onto the
- * prototype chain instead of the payload's own data (prototype pollution).
- * field_path is user input — a path like `__proto__.polluted` must be a no-op.
- */
-function isForbiddenPathSegment(segment: string | number): boolean {
-  return (
-    segment === '__proto__' ||
-    segment === 'constructor' ||
-    segment === 'prototype'
-  );
-}
+const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/**
- * Parse a correction field_path into path segments, supporting dot notation and
- * array-index brackets: `problems[0].severity` → ['problems', 0, 'severity'].
- * Returns null when any segment targets the prototype chain — callers treat it
- * as an inapplicable path (the advisory event still records the intent).
- */
-function parseFieldPath(path: string): (string | number)[] | null {
-  const segments: (string | number)[] = [];
+function parseFieldPath(path: string): Array<string | number> | null {
+  const segments: Array<string | number> = [];
   for (const part of path.split('.')) {
-    const match = part.match(/^([^[\]]*)((\[\d+\])*)$/);
-    if (!match) {
-      segments.push(part);
-      continue;
-    }
-    const [, key, indices] = match;
-    if (key) segments.push(key);
-    if (indices) {
-      for (const idx of indices.matchAll(/\[(\d+)\]/g)) {
-        segments.push(Number(idx[1]));
-      }
+    const match = part.match(/^([^\[\]]*)((?:\[\d+\])*)$/);
+    if (!match) return null;
+    if (match[1]) segments.push(match[1]);
+    for (const index of match[2].matchAll(/\[(\d+)\]/g)) {
+      segments.push(Number(index[1]));
     }
   }
-  if (segments.some(isForbiddenPathSegment)) {
-    return null;
-  }
-  return segments;
+  return segments.length > 0 && !segments.some((segment) => FORBIDDEN_PATH_SEGMENTS.has(String(segment)))
+    ? segments
+    : null;
 }
 
-/**
- * Apply a single set/remove/add correction and return a new payload. Mirrors
- * the advisory correction semantics:
- *   - set:    write `value` at the path (creating intermediate objects/arrays).
- *   - remove: delete the array element / object key at the path.
- *   - add:    push `value` onto the array at the path (creating it if absent).
- * Best-effort: a path that can't be traversed is a no-op (the advisory event
- * still records the intent).
- */
-function applyCorrectionToData(
+function applyCorrection(
   data: Record<string, unknown>,
-  fieldPath: string,
-  mutation: 'set' | 'remove' | 'add',
-  value: unknown
-): Record<string, unknown> {
-  const segments = parseFieldPath(fieldPath);
-  if (segments == null || segments.length === 0) return data;
-  const updated = applyCorrectionAt(data, segments, mutation, value);
-  return updated != null && typeof updated === 'object' && !Array.isArray(updated)
-    ? (updated as Record<string, unknown>)
-    : data;
-}
+  correction: CorrectionInput
+): void {
+  const path = parseFieldPath(correction.field_path);
+  if (!path) return;
 
-/**
- * Immutable path update. Object writes use computed object-literal properties,
- * whose `__proto__` semantics are ordinary own data properties rather than the
- * legacy prototype setter. The parser still rejects all prototype-chain names,
- * so forbidden paths remain inert and never reach this function.
- */
-function applyCorrectionAt(
-  current: unknown,
-  segments: readonly (string | number)[],
-  mutation: 'set' | 'remove' | 'add',
-  value: unknown
-): unknown {
-  const segment = segments[0];
-  if (segment == null || isForbiddenPathSegment(segment)) return current;
-  const leaf = segments.length === 1;
+  let current: unknown = data;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const segment = path[index];
+    const next = path[index + 1];
+    if (Array.isArray(current)) {
+      if (typeof segment !== 'number' || segment < 0) return;
+      if (current[segment] == null) current[segment] = typeof next === 'number' ? [] : {};
+      current = current[segment];
+    } else if (current && typeof current === 'object') {
+      const object = current as Record<string, unknown>;
+      const key = String(segment);
+      if (object[key] == null) object[key] = typeof next === 'number' ? [] : {};
+      current = object[key];
+    } else {
+      return;
+    }
+  }
 
+  const leaf = path[path.length - 1];
+  const mutation = correction.mutation ?? 'set';
   if (Array.isArray(current)) {
-    if (typeof segment !== 'number' || !Number.isSafeInteger(segment) || segment < 0) {
-      return current;
-    }
-    const copy = [...current];
-    if (leaf) {
-      if (mutation === 'remove') {
-        copy.splice(segment, 1);
-      } else if (mutation === 'add') {
-        const target = copy[segment];
-        copy[segment] = Array.isArray(target)
-          ? [...target, value]
-          : target == null
-            ? [value]
-            : [target, value];
-      } else {
-        copy[segment] = value;
-      }
-      return copy;
-    }
-    const existing = copy[segment];
-    if (existing == null && mutation === 'remove') return current;
-    const seed =
-      existing == null ? (typeof segments[1] === 'number' ? [] : {}) : existing;
-    copy[segment] = applyCorrectionAt(seed, segments.slice(1), mutation, value);
-    return copy;
+    if (typeof leaf !== 'number' || leaf < 0) return;
+    if (mutation === 'remove') current.splice(leaf, 1);
+    else if (mutation === 'add') {
+      const prior = current[leaf];
+      current[leaf] = Array.isArray(prior)
+        ? [...prior, correction.value]
+        : prior == null
+          ? [correction.value]
+          : [prior, correction.value];
+    } else current[leaf] = correction.value;
+    return;
   }
-
-  if (current == null || typeof current !== 'object') return current;
+  if (!current || typeof current !== 'object') return;
   const object = current as Record<string, unknown>;
-  const key = String(segment);
-  if (leaf) {
-    if (mutation === 'remove') {
-      if (!Object.hasOwn(object, key)) return current;
-      const { [key]: removed, ...rest } = object;
-      void removed;
-      return rest;
-    }
-    if (mutation === 'add') {
-      const target = Object.hasOwn(object, key) ? object[key] : undefined;
-      return {
-        ...object,
-        [key]: Array.isArray(target)
-          ? [...target, value]
-          : target == null
-            ? [value]
-            : [target, value],
-      };
-    }
-    return { ...object, [key]: value };
-  }
-
-  const existing = Object.hasOwn(object, key) ? object[key] : undefined;
-  if (existing == null && mutation === 'remove') return current;
-  const seed =
-    existing == null ? (typeof segments[1] === 'number' ? [] : {}) : existing;
-  return {
-    ...object,
-    [key]: applyCorrectionAt(seed, segments.slice(1), mutation, value),
-  };
+  const key = String(leaf);
+  if (mutation === 'remove') delete object[key];
+  else if (mutation === 'add') {
+    const prior = object[key];
+    object[key] = Array.isArray(prior)
+      ? [...prior, correction.value]
+      : prior == null
+        ? [correction.value]
+        : [prior, correction.value];
+  } else object[key] = correction.value;
 }
 
 // ============================================
@@ -172,7 +96,7 @@ export async function handleSubmitFeedback(
   ctx: ToolContext
 ): Promise<ManageAutomationsResult> {
   if (!args.automation_id) throw new ToolUserError('automation_id is required', 400);
-  if (!args.window_id) throw new ToolUserError('window_id is required', 400);
+  if (!args.run_id) throw new ToolUserError('run_id is required', 400);
   if (!ctx.userId) {
     throw new ToolUserError('Authentication required to submit feedback', 403);
   }
@@ -206,43 +130,34 @@ export async function handleSubmitFeedback(
   const sql = getDb();
   const automationId = Number(args.automation_id);
 
-  // Scope to the caller's current org so a member of org A can't write
-  // feedback against an automation in org B by passing its automation_id. window_id is
-  // the canvas ROOT event id — canvas_windows resolves the period metadata.
-  const windowCheck = await sql`
-    SELECT ww.id, ww.granularity, ww.window_start, ww.window_end,
-           w.organization_id, w.created_by, w.entity_ids
-    FROM canvas_windows ww
-    JOIN automations w ON w.id = ww.automation_id
-    WHERE ww.id = ${args.window_id}
-      AND ww.automation_id = ${automationId}
-      AND w.organization_id = ${ctx.organizationId}
-  `;
-  if (windowCheck.length === 0) {
-    throw new ToolUserError(
-      `Window ${args.window_id} not found for Automation ${automationId}`,
-      404
-    );
-  }
-  const organizationId = windowCheck[0].organization_id as string;
-  const windowGranularity = windowCheck[0].granularity as string;
-  const windowStart = new Date(windowCheck[0].window_start as string).toISOString();
-  const windowEnd = new Date(windowCheck[0].window_end as string).toISOString();
+  const organizationId = ctx.organizationId;
 
   // Correction-events (P1): every submit emits a correction event directly to the events spine
   // (semantic_type='correction'). The correction EVENT's id is the feedback id
   // (origin_id stays NULL); historical rows carry origin_id 'wwff_<seq>' from the
   // retired sequence and readers still parse those.
   // One transaction so a partial failure never leaks half-applied corrections.
-  // Advisory correction events and canvas materialization commit in ONE
-  // transaction so a surfaced 409 rolls back BOTH: the caller sees a clean
-  // conflict, retries, and the advisory events are recorded exactly once
-  // (committing them before a 409 would double-record on retry). Materialization
-  // itself runs in a SAVEPOINT: any non-conflict failure rolls back only the
-  // canvas write and the advisory events still commit (materialization is
-  // additive; the advisory 'correction' events keep feeding
-  // getRecentFeedbackSummary into future runs regardless).
   const feedbackIds = await sql.begin(async (tx) => {
+    const [run] = await tx`
+      SELECT action_output
+      FROM runs
+      WHERE id = ${args.run_id}
+        AND automation_id = ${automationId}
+        AND organization_id = ${organizationId}
+        AND run_type = 'automation'
+        AND status = 'completed'
+        AND action_output IS NOT NULL
+      FOR UPDATE
+    `;
+    if (!run) {
+      throw new ToolUserError(
+        `Result run ${args.run_id} not found for Automation ${automationId}`,
+        404
+      );
+    }
+    const correctedOutput = structuredClone(parseJsonObject(run.action_output));
+    for (const correction of corrections) applyCorrection(correctedOutput, correction);
+
     const ids: number[] = [];
     for (const c of corrections) {
       const mutation = c.mutation ?? 'set';
@@ -250,13 +165,12 @@ export async function handleSubmitFeedback(
         mutation === 'remove' || c.value === undefined ? null : tx.json(c.value);
       const [row] = await tx`
         INSERT INTO events (
-          organization_id, semantic_type, entity_ids, metadata,
+          organization_id, semantic_type, entity_ids, run_id, metadata,
           created_by, occurred_at, created_at
         )
         SELECT
-          ${organizationId}, 'correction', '{}'::bigint[],
+          ${organizationId}, 'correction', '{}'::bigint[], ${args.run_id}::bigint,
           jsonb_build_object(
-            'window_id', ${args.window_id}::bigint,
             'automation_id', ${automationId}::bigint,
             'field_path', ${c.field_path}::text,
             'mutation', ${mutation}::text,
@@ -270,90 +184,11 @@ export async function handleSubmitFeedback(
       ids.push(Number(row.id));
     }
 
-    // Materialize the corrections onto the canvas so the user sees their edit
-    // immediately: apply the set/remove/add mutations to the current chain
-    // HEAD's payload_data and insert ONE superseding canvas_state event
-    // authored by the user. If no chain exists yet (pre-backfill window), skip
-    // gracefully. The concurrent-edit loser hits idx_events_superseded_by →
-    // 409 (same handling as save_content.ts).
-    try {
-      await tx.savepoint(async (sp) => {
-        const spSql = sp as unknown as typeof tx;
-        const head = await findCanvasHead(spSql, {
-          automationId,
-          granularity: windowGranularity,
-          windowStart,
-        });
-        if (!head) {
-          logger.info(
-            { automationId, windowId: args.window_id },
-            '[submit_feedback] no canvas_state chain yet — skipping materialization'
-          );
-          return;
-        }
-
-        let nextPayload = structuredClone(head.payloadData);
-        for (const c of corrections) {
-          nextPayload = applyCorrectionToData(
-            nextPayload,
-            c.field_path,
-            c.mutation ?? 'set',
-            c.value
-          );
-        }
-
-        const parentEntityId = parsePgNumberArray(windowCheck[0].entity_ids)[0] ?? null;
-        const canvasEntityId = await ensureCanvasEntity({
-          tx: spSql,
-          automationId,
-          organizationId,
-          parentEntityId,
-          createdBy: (windowCheck[0].created_by as string | null) ?? ctx.userId ?? null,
-        });
-
-        try {
-          await insertEvent(
-            {
-              entityIds: canvasEntityId != null ? [canvasEntityId] : [],
-              organizationId,
-              originId: `canvas_${crypto.randomUUID()}`,
-              payloadType: 'json_template',
-              payloadData: nextPayload,
-              semanticType: 'canvas_state',
-              metadata: {
-                automation_id: automationId,
-                granularity: windowGranularity,
-                window_start: windowStart,
-                window_end: windowEnd,
-                root_event_id: head.rootEventId,
-                correction: true,
-              },
-              occurredAt: automationOutputOccurredAt(windowEnd),
-              createdBy: ctx.userId,
-              supersedesEventId: head.id,
-            },
-            { sql: spSql }
-          );
-        } catch (err) {
-          if (isUniqueViolation(err, 'idx_events_superseded_by')) {
-            throw new ToolUserError(
-              `Canvas for Automation ${automationId} was concurrently updated. Reload the latest state and retry.`,
-              409
-            );
-          }
-          throw err;
-        }
-      });
-    } catch (err) {
-      // 409 (concurrent edit) aborts the whole transaction — advisory events
-      // included — so the caller's retry re-records exactly once. Anything else
-      // rolled back to the savepoint only: keep the advisory events.
-      if (err instanceof ToolUserError) throw err;
-      logger.warn(
-        { err, automationId, windowId: args.window_id },
-        '[submit_feedback] canvas materialization failed (advisory events kept)'
-      );
-    }
+    await tx`
+      UPDATE runs
+      SET action_output = ${tx.json(correctedOutput)}
+      WHERE id = ${args.run_id}
+    `;
 
     return ids;
   });
@@ -361,7 +196,7 @@ export async function handleSubmitFeedback(
   return {
     action: 'submit_feedback',
     automation_id: args.automation_id,
-    window_id: args.window_id,
+    run_id: args.run_id,
     feedback_ids: feedbackIds,
   };
 }
@@ -386,34 +221,34 @@ export async function handleGetFeedback(
   // or recovered from origin_id 'wwff_<id>' for historical (pre-3b) rows.
   // created_by is the author user id, or NULL once that user is deleted (events.created_by FK
   // SET NULL) — the dangling-id automation the retired table had is intentionally not reproduced.
-  // A correction's metadata.window_id is the canvas ROOT event id; the
-  // canvas_windows view resolves the period (LEFT JOIN — tombstoned roots null).
-  const feedback = args.window_id
+  const feedback = args.run_id
     ? await sql`
         SELECT COALESCE((substring(e.origin_id from 6))::bigint, e.id) AS id,
-               (e.metadata->>'window_id')::bigint AS window_id,
+               e.run_id,
                e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
-               e.created_by, e.created_at, w.window_start, w.window_end
+               e.created_by, e.created_at,
+               (w.approved_input->>'window_start')::timestamptz AS window_start,
+               (w.approved_input->>'window_end')::timestamptz AS window_end
         FROM events e
-        LEFT JOIN canvas_windows w
-          ON w.id = (e.metadata->>'window_id')::bigint
+        LEFT JOIN runs w ON w.id = e.run_id
         WHERE e.semantic_type = 'correction'
           AND (e.metadata->>'automation_id')::bigint = ${automationId}
-          AND (e.metadata->>'window_id')::bigint = ${args.window_id}
+          AND e.run_id = ${args.run_id}
           AND e.organization_id = ${ctx.organizationId}
         ORDER BY e.created_at DESC
         LIMIT ${limit}
       `
     : await sql`
         SELECT COALESCE((substring(e.origin_id from 6))::bigint, e.id) AS id,
-               (e.metadata->>'window_id')::bigint AS window_id,
+               e.run_id,
                e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
-               e.created_by, e.created_at, w.window_start, w.window_end
+               e.created_by, e.created_at,
+               (w.approved_input->>'window_start')::timestamptz AS window_start,
+               (w.approved_input->>'window_end')::timestamptz AS window_end
         FROM events e
-        LEFT JOIN canvas_windows w
-          ON w.id = (e.metadata->>'window_id')::bigint
+        LEFT JOIN runs w ON w.id = e.run_id
         WHERE e.semantic_type = 'correction'
           AND (e.metadata->>'automation_id')::bigint = ${automationId}
           AND e.organization_id = ${ctx.organizationId}
@@ -426,7 +261,7 @@ export async function handleGetFeedback(
     automation_id: args.automation_id,
     feedback: feedback.map((row) => ({
       id: Number(row.id),
-      window_id: Number(row.window_id),
+      run_id: Number(row.run_id),
       field_path: row.field_path as string,
       mutation: row.mutation as 'set' | 'remove' | 'add',
       corrected_value: row.corrected_value as unknown,
@@ -483,7 +318,7 @@ export async function handleListPromoted(
     entities: rows.map((row) => {
       const metadata = parseJsonObject(row.metadata);
       const fieldControls = parseJsonObject(row.field_controls);
-      const windowIdRaw = metadata.window_id;
+      const runIdRaw = metadata.run_id;
       const stableKeyRaw = metadata.stable_key;
       return {
         id: Number(row.id),
@@ -491,8 +326,7 @@ export async function handleListPromoted(
         entity_type: row.entity_type as string,
         metadata,
         field_controls: fieldControls,
-        window_id:
-          windowIdRaw == null || windowIdRaw === '' ? null : Number(windowIdRaw),
+        run_id: runIdRaw == null || runIdRaw === '' ? null : Number(runIdRaw),
         stable_key: stableKeyRaw == null ? null : String(stableKeyRaw),
       };
     }),

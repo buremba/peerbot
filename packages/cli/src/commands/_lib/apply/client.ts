@@ -154,8 +154,6 @@ export interface RemoteAutomation {
   goal_id?: number | null;
   agent_kind?: string | null;
   execution_config?: Record<string, unknown> | null;
-  notification_channel?: string | null;
-  notification_priority?: string | null;
   min_cooldown_seconds?: number | null;
   tags?: string[] | null;
   sources?: AutomationSource[] | null;
@@ -1092,8 +1090,6 @@ export class ApplyClient {
     sources?: AutomationSource[];
     reactions_guidance?: string;
     device_worker_id?: string;
-    notification_channel?: "canvas" | "notification" | "both";
-    notification_priority?: "low" | "normal" | "high";
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string;
@@ -1124,12 +1120,6 @@ export class ApplyClient {
           : {}),
         ...(payload.device_worker_id !== undefined
           ? { device_worker_id: payload.device_worker_id }
-          : {}),
-        ...(payload.notification_channel !== undefined
-          ? { notification_channel: payload.notification_channel }
-          : {}),
-        ...(payload.notification_priority !== undefined
-          ? { notification_priority: payload.notification_priority }
           : {}),
         ...(payload.min_cooldown_seconds !== undefined
           ? { min_cooldown_seconds: payload.min_cooldown_seconds }
@@ -1166,8 +1156,6 @@ export class ApplyClient {
     triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
-    notification_channel?: "canvas" | "notification" | "both";
-    notification_priority?: "low" | "normal" | "high";
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string | null;
@@ -1180,12 +1168,6 @@ export class ApplyClient {
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
         ? { device_worker_id: payload.device_worker_id }
-        : {}),
-      ...(payload.notification_channel !== undefined
-        ? { notification_channel: payload.notification_channel }
-        : {}),
-      ...(payload.notification_priority !== undefined
-        ? { notification_priority: payload.notification_priority }
         : {}),
       ...(payload.min_cooldown_seconds !== undefined
         ? { min_cooldown_seconds: payload.min_cooldown_seconds }

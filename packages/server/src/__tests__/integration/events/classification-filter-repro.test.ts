@@ -101,7 +101,7 @@ describe('#2214 classification_filters', () => {
     ];
     for (const eventId of [...expectedEventIds, foreignEvent.id]) {
       await sql`
-        INSERT INTO event_classifications (event_id, classifier_id, automation_id, window_id,
+        INSERT INTO event_classifications (event_id, classifier_id, automation_id, run_id,
                                            "values", confidences, source, is_manual)
         VALUES (${eventId}, ${facetId}, NULL, NULL, ${'{alpha}'}::text[],
                 ${sql.json({ alpha: 1 })}, 'user', true)

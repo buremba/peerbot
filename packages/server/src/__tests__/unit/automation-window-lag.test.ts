@@ -3,7 +3,7 @@
  *
  * The SCHEDULE cursor (`automations.next_run_at`) is recomputed from `now`, so a
  * missed occurrence is never replayed. The WINDOW cursor
- * (`max(canvas_windows.window_start)`) advances one period per COMPLETED window.
+ * (the latest completed run period) advances one period per completed run.
  * Wall-clock moves one period per period, so under pure chaining an Automation that
  * falls behind stays behind: the gap freezes at whatever width the outage left
  * it, and closing it would take one successful run per missed period.
@@ -83,8 +83,8 @@ describe("nextAutomationWindowStart — the floor", () => {
 		expect(iso(next)).toBe("2026-08-05T00:00:00.000Z");
 	});
 
-	// A sub-daily cron gets the SAME day every run so `replace_existing` can
-	// refresh it. The floor must not push this backwards to yesterday.
+	// A sub-daily cron gets the same day every run. The floor must not push this
+	// backwards to yesterday.
 	test("a sub-period cron keeps resolving to the current period", () => {
 		const next = nextAutomationWindowStart(
 			new Date("2026-08-06T00:00:00.000Z"),

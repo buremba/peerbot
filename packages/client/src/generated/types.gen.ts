@@ -284,9 +284,9 @@ export type SaveMemoryData = {
      */
     occurred_at?: string;
     /**
-     * Structured metadata — validated against the entity type schema or semantic_type schema
+     * Structured metadata, validated against the metadata schema for the selected event kind when non-empty. Omit when no structured metadata is needed; an absent value is treated as {}.
      */
-    metadata: {
+    metadata?: {
       [key: string]: unknown;
     };
     /**
@@ -302,9 +302,9 @@ export type SaveMemoryData = {
        */
       automation_id: number;
       /**
-       * Window that triggered this save
+       * Automation run that triggered this save
        */
-      window_id: number;
+      run_id: number;
     };
   };
   path: {
@@ -983,9 +983,9 @@ export type ManageEntityData = {
        */
       automation_id: number;
       /**
-       * Window that triggered this mutation
+       * Automation run that triggered this mutation
        */
-      window_id: number;
+      run_id: number;
     };
   };
   path: {
@@ -3630,7 +3630,7 @@ export type ManageOperationsData = {
         };
         automation_source?: {
           automation_id: number;
-          window_id: number;
+          run_id: number;
         };
       }
     | {
@@ -3736,10 +3736,10 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Approve many pending approvals at once. Either scope by window_id (an Automation run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.
+         * Approve many pending approvals at once. Either scope by run_id (an Automation run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.
          */
         action: "approve_batch";
-        window_id?: number;
+        run_id?: number;
         /**
          * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / automation_id is required.
          */
@@ -3772,10 +3772,10 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Reject many pending approvals at once. Either scope by window_id (an Automation run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.
+         * Reject many pending approvals at once. Either scope by run_id (an Automation run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.
          */
         action: "reject_batch";
-        window_id?: number;
+        run_id?: number;
         /**
          * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / automation_id is required.
          */
@@ -3954,7 +3954,7 @@ export type ManageOperationsResponses = {
       }
     | {
         action: "approve_batch";
-        window_id?: number;
+        run_id?: number;
         approved_count: number;
         failed_count: number;
         run_ids: Array<number>;
@@ -3962,7 +3962,7 @@ export type ManageOperationsResponses = {
       }
     | {
         action: "reject_batch";
-        window_id?: number;
+        run_id?: number;
         rejected_count: number;
         run_ids: Array<number>;
         message: string;
@@ -4034,9 +4034,9 @@ export type NotifyData = {
        */
       automation_id: number;
       /**
-       * Window that triggered this notification
+       * Automation run that triggered this notification
        */
-      window_id: number;
+      run_id: number;
     };
   };
   path: {
@@ -4450,14 +4450,6 @@ export type ManageAutomationsData = {
      */
     agent_kind?: "claude-code" | "codex" | "opencode" | "pi" | "agy" | null;
     /**
-     * [create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".
-     */
-    notification_channel?: "canvas" | "notification" | "both";
-    /**
-     * [create/update] Priority class used by the dispatcher interrupt budget. Default "normal".
-     */
-    notification_priority?: "low" | "normal" | "high";
-    /**
      * [create/update] Strict bound chat channel for this Automation's notifications. Null clears it; omitted keeps the current destination on update.
      */
     delivery_target?: null | {
@@ -4541,10 +4533,6 @@ export type ManageAutomationsData = {
       [key: string]: unknown;
     };
     /**
-     * [complete_window] Replace existing window for same period (default: false).
-     */
-    replace_existing?: boolean;
-    /**
      * [complete_window] JWT from read_knowledge(automation_id, since, until). Pass this or window_tokens.
      */
     window_token?: string;
@@ -4565,10 +4553,6 @@ export type ManageAutomationsData = {
      */
     run_metadata?: unknown;
     /**
-     * [complete_window] Optional Automation run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.
-     */
-    automation_run_id?: number;
-    /**
      * [complete_window] Pin to a specific persisted Automation version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Automation's current version.
      */
     template_version_id?: number;
@@ -4577,9 +4561,9 @@ export type ManageAutomationsData = {
      */
     reaction_script?: string;
     /**
-     * [submit_feedback] Required. [get_feedback] Optional filter. Window ID to attach feedback to.
+     * [complete_window/submit_feedback] Required Automation run ID. [get_feedback] Optional filter.
      */
-    window_id?: number;
+    run_id?: number;
     /**
      * [submit_feedback] One entry per corrected field. Each row is stored independently so future corrections can supersede earlier ones per field.
      */
@@ -4672,7 +4656,7 @@ export type ManageAutomationsResponses = {
     | {
         action: "complete_window";
         automation_id: string;
-        window_id: number;
+        run_id: number;
         window_start: string;
         window_end: string;
         content_linked: number;
@@ -4721,7 +4705,7 @@ export type ManageAutomationsResponses = {
     | {
         action: "submit_feedback";
         automation_id: string;
-        window_id: number;
+        run_id: number;
         feedback_ids: Array<number>;
       }
     | {
@@ -4729,7 +4713,7 @@ export type ManageAutomationsResponses = {
         automation_id: string;
         feedback: Array<{
           id: number;
-          window_id: number;
+          run_id: number;
           field_path: string;
           mutation: "set" | "remove" | "add";
           corrected_value: unknown;
@@ -4753,7 +4737,7 @@ export type ManageAutomationsResponses = {
           field_controls: {
             [key: string]: unknown;
           };
-          window_id: number | null;
+          run_id: number | null;
           stable_key: string | null;
         }>;
       }
@@ -4871,7 +4855,7 @@ export type GetAutomationResponses = {
    */
   200: {
     windows: Array<{
-      window_id: number;
+      run_id: number;
       automation_id: string;
       automation_name: string;
       granularity: string;
@@ -5157,15 +5141,15 @@ export type ReadKnowledgeData = {
      */
     platforms?: Array<string>;
     /**
-     * Automation window ID to filter by (shows only content analyzed in this window)
+     * Automation run ID to filter by (shows only content analyzed in this run)
      */
-    window_id?: number;
+    run_id?: number;
     /**
-     * Limit results to events this Automation has analyzed (any window). Distinct from automation_id, which enters Automation read mode.
+     * Limit results to events this Automation has analyzed in any run. Distinct from automation_id, which enters Automation read mode.
      */
     analyzed_by_automation_id?: number;
     /**
-     * Limit results to events this Automation WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_automation_id, which returns what it READ; the two are not interchangeable.
+     * Limit results to events this Automation WROTE — its outputs, entity change sets, and notifications. The counterpart to analyzed_by_automation_id, which returns what it READ; the two are not interchangeable.
      */
     produced_by_automation_id?: number;
     /**
@@ -5247,7 +5231,7 @@ export type ReadKnowledgeData = {
      */
     content_ids?: Array<number>;
     /**
-     * Exclude content already analyzed in any window for this Automation. Returns only unprocessed content for client-driven Automation generation.
+     * Exclude content already analyzed by any run of this Automation. Returns only unprocessed content for client-driven Automation generation.
      */
     exclude_automation_id?: number;
     /**

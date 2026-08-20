@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { reconcileAutomationRuns } from "../../../automations/automation";
 import {
 	resolveAutomationRunsByMessageIds,
 } from "../../../automations/run-completion";
 import { getTestDb } from "../../setup/test-db";
 import {
-	createCanvasWindow,
 	createTestAgent,
 	createTestEntity,
 } from "../../setup/test-fixtures";
@@ -17,7 +15,6 @@ async function createDispatchedRun(opts: {
 	messageId: string | null;
 	/** Seed `model_used` as `complete_window` would have left it. */
 	modelUsed: string | null;
-	triggerExecution?: "turn" | "window";
 }) {
 	const sql = getTestDb();
 	const workspace = await TestWorkspace.create({
@@ -59,16 +56,13 @@ async function createDispatchedRun(opts: {
             'running', ${opts.messageId}, ${opts.modelUsed},
             ${sql.json({
 							dispatch_source: "scheduled",
-							trigger_execution: opts.triggerExecution ?? "turn",
+							trigger_execution: "turn",
 						})})
     RETURNING id
   `;
 
 	return {
-		sql,
 		runId: Number(run.id),
-		organizationId: workspace.org.id,
-		automationId: Number(automation.automation_id),
 	};
 }
 
@@ -140,59 +134,6 @@ describe("a completed Automation run records who executed it", () => {
 		});
 
 		expect(await modelUsedOf(runId)).toBe("gemini-2.5-pro");
-	});
-
-	it("uses the durable dispatch marker when reconciling an existing window", async () => {
-		const { sql, runId, organizationId, automationId } =
-			await createDispatchedRun({
-				slug: "provenance-reconciled",
-				messageId: "msg-provenance-reconciled",
-				modelUsed: "external-client",
-				triggerExecution: "window",
-			});
-
-		await createCanvasWindow({
-			automationId: automationId,
-			organizationId,
-			granularity: "daily",
-			windowStart: new Date("2026-07-29T00:00:00.000Z"),
-			windowEnd: new Date("2026-07-30T00:00:00.000Z"),
-			extractedData: { summary: "Reconciled result" },
-			contentAnalyzed: 1,
-			runId,
-			modelUsed: "external-client",
-		});
-
-		expect((await reconcileAutomationRuns(sql)).reconciled).toBe(1);
-		expect(await modelUsedOf(runId)).toBe("lobu-agent");
-	});
-
-	it("leaves an external client's run alone when reconciling", async () => {
-		// reconcileAutomationRuns sweeps active runs WITHOUT filtering on
-		// dispatched_message_id, so it also reaches runs an outside MCP client
-		// created. Stamping those would invert the bug this file pins.
-		const { sql, runId, organizationId, automationId } =
-			await createDispatchedRun({
-				slug: "provenance-external",
-				messageId: null,
-				modelUsed: "external-client",
-				triggerExecution: "window",
-			});
-
-		await createCanvasWindow({
-			automationId: automationId,
-			organizationId,
-			granularity: "daily",
-			windowStart: new Date("2026-07-29T00:00:00.000Z"),
-			windowEnd: new Date("2026-07-30T00:00:00.000Z"),
-			extractedData: { summary: "External result" },
-			contentAnalyzed: 1,
-			runId,
-			modelUsed: "external-client",
-		});
-
-		expect((await reconcileAutomationRuns(sql)).reconciled).toBe(1);
-		expect(await modelUsedOf(runId)).toBe("external-client");
 	});
 
 	it("does not invent an executor for a run that failed", async () => {

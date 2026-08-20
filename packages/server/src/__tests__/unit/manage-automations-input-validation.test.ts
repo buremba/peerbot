@@ -34,7 +34,7 @@ describe('Automation tool input validation', () => {
         {
           action: 'submit_feedback',
           automation_id: '71',
-          window_id: 1,
+          run_id: 1,
           corrections: [null],
         } as never,
         ctx

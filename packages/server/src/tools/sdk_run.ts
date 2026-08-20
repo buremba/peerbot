@@ -318,7 +318,7 @@ export function resolveSandboxDryRun(args: {
  * window — which the finalize-nudge reads as "the agent never called run_sdk",
  * costing a second full replay before failing the run with a misleading error.
  * `handleCompleteWindow` reads the same `executionMode` and records the
- * extraction on `runs.dry_run_preview` instead of writing the canvas.
+ * extraction on `runs.dry_run_preview` instead of committing the result.
  *
  * Empty for an agent-requested `dry_run` — there, skipping IS the answer.
  */

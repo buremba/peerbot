@@ -590,7 +590,6 @@ describe("mapProjectToDesiredState", () => {
         accounts: "SELECT 1",
         ctx: { query: "SELECT 2", context: true },
       },
-      notification: { channel: "both", priority: "high" },
       minCooldownSeconds: 1800,
       triggers: [
         {
@@ -615,8 +614,6 @@ describe("mapProjectToDesiredState", () => {
       { name: "accounts", query: "SELECT 1" },
       { name: "ctx", query: "SELECT 2", context: true },
     ]);
-    expect(dw?.notificationChannel).toBe("both");
-    expect(dw?.notificationPriority).toBe("high");
     expect(dw?.minCooldownSeconds).toBe(1800);
     expect(dw?.triggers?.[1]).toEqual({
       kind: "schedule",

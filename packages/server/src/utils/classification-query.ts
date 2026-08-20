@@ -619,7 +619,7 @@ export async function upsertClassifications(
     const batch = allClassifications.slice(i, i + BATCH_SIZE);
 
     // Each row BINDS 8 params (event_id, classifier_id, values, confidences, met_threshold,
-    // threshold, best_match_attribute, embedding_confidence); automation_id/window_id are NULL and
+    // threshold, best_match_attribute, embedding_confidence); automation_id/run_id are NULL and
     // source/is_manual are literals. The stride MUST be 8 — the old `j * 10` overran by 2 per row,
     // so any batch with >1 classification mis-mapped params (row 2 read $11.. while its params sat
     // at $9..) and Postgres rejected it. Single-classification batches were unaffected (j=0).
@@ -646,7 +646,7 @@ export async function upsertClassifications(
 
     await sql.unsafe(
       `INSERT INTO event_classifications (
-         event_id, classifier_id, automation_id, window_id,
+         event_id, classifier_id, automation_id, run_id,
          "values", confidences, source, is_manual,
          met_threshold, threshold, best_match_attribute, embedding_confidence
        )

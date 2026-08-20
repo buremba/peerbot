@@ -264,7 +264,7 @@ export function deviceWindowContract(opts: {
     "Prefer the local `lobu` CLI (same login as the Owletto menubar — credentials in ~/.config/lobu; no extra auth setup). The script is compiled as a module, so it must `export default` an async function — a top-level `return` or `await` is a compile error, not a runtime one:\n" +
     `  lobu memory exec 'export default async (ctx, client) => { const r = await client.knowledge.read({ automation_id: ${automationIdLiteral(automationId)}${contentIdsArgument} }); return r; };'\n` +
     "  # use window_token + content from that result, then:\n" +
-    `  lobu memory exec 'export default async (ctx, client) => { await client.automations.completeWindow({ automation_run_id: ${runId}, window_token, extracted_data, replace_existing: true }); return { ok: true }; };'\n` +
+    `  lobu memory exec 'export default async (ctx, client) => { await client.automations.completeWindow({ run_id: ${runId}, window_token, extracted_data }); return { ok: true }; };'\n` +
     "\n" +
     `MCP is also fine if already wired: query_sdk → knowledge.read, run_sdk → completeWindow.${schemaLine} Printing a summary alone is NOT enough — if you skip completeWindow the run fails (or resumes once).${workspaceInputNote}`
   );
@@ -278,7 +278,7 @@ export function deviceTurnContract(workspaceEventIds: number[] = []): string {
   return (
     "Completion contract (required): this is a conversational turn, not a window Automation.\n" +
     "\n" +
-    "Do the work and reply. Do NOT call completeWindow, and do not create a canvas — this run has no window. The run is recorded when this process exits cleanly.\n" +
+    "Do the work and reply. Do NOT call completeWindow — this run has no analysis period. The run is recorded when this process exits cleanly.\n" +
     exactRead
   );
 }

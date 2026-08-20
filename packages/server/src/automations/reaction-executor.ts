@@ -64,10 +64,7 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     // an explicit `automation_source`. `source: 'automation-run'` marks the turn
     // autonomous even for surfaces that read only sourceContext.
     actingAutomationId: context.window.automation_id,
-    // The window too, so a deferred approval batches per window and dedups across
-    // windows even when the script omits `automation_source` (see ToolContext).
-    actingWindowId: context.window.id,
-    actingRunId: context.window.run_id ?? null,
+    actingRunId: context.window.run_id,
     sourceContext: { source: 'automation-run' as const },
   };
 
@@ -85,7 +82,7 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     logger.info(
       {
         automation_id: context.window.automation_id,
-        window_id: context.window.id,
+        run_id: context.window.run_id,
         sdk_calls: result.sdkCalls,
         duration_ms: result.durationMs,
       },
@@ -101,7 +98,7 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
   logger.error(
     {
       automation_id: context.window.automation_id,
-      window_id: context.window.id,
+      run_id: context.window.run_id,
       error: errorMessage,
     },
     'Reaction script execution failed'

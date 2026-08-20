@@ -42,7 +42,6 @@ function context(): ReactionContext {
     extracted_data: { signals: [{}], drafts: [{}] },
     entities: [],
     window: {
-      id: 44,
       run_id: 88,
       automation_id: 71,
       window_start: "2026-08-01T15:00:00.000Z",
@@ -166,7 +165,7 @@ describe("social interest radar reaction", () => {
           urls: ["https://www.linkedin.com/feed/update/urn:li:activity:123"],
           expires_in_seconds: 86_400,
         },
-        automation_source: { automation_id: 71, window_id: 44 },
+        automation_source: { automation_id: 71, run_id: 88 },
       },
     ]);
     expect(f.notifications).toHaveLength(1);

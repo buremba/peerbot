@@ -7,12 +7,12 @@
  * Automation's causal chain, which is what bounds a cascade — and, because the
  * column carries a foreign key while audit writes are fire-and-forget, a
  * nonexistent id fails the INSERT and DROPS the audit row with no caller-
- * visible error. The window is the third: paired with someone else's
- * `window_id`, an otherwise-legitimate proposal lands in that Automation's
+ * visible error. The run is the third: paired with someone else's `run_id`,
+ * an otherwise-legitimate proposal lands in that Automation's
  * approval card.
  *
- * `notify.ts` already validates the pair against the caller's org before
- * anchoring a canvas; this is the same rule on the attribution path.
+ * `notify.ts` already validates the pair against the caller's org; this is the
+ * same rule on the attribution path.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -20,7 +20,7 @@ import {
   verifiedAutomationSource,
 } from '../../../automations/automation-source';
 import { cleanupTestDatabase } from '../../setup/test-db';
-import { createCanvasWindow, createTestAgent } from '../../setup/test-fixtures';
+import { createAutomationResultRun, createTestAgent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
 async function orgWithAutomation(name: string, slug: string) {
@@ -42,7 +42,7 @@ async function orgWithAutomation(name: string, slug: string) {
     agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(created.automation_id);
-  const windowId = await createCanvasWindow({
+  const runId = await createAutomationResultRun({
     automationId,
     organizationId: workspace.org.id,
     windowStart: '2026-01-01T00:00:00.000Z',
@@ -54,7 +54,7 @@ async function orgWithAutomation(name: string, slug: string) {
     agentId: agent.agentId,
     organizationId: workspace.org.id,
     automationId,
-    windowId,
+    runId,
   };
 }
 
@@ -67,10 +67,10 @@ describe('declared automation_source verification', () => {
     const org = await orgWithAutomation('Owner Org', 'owned');
     await expect(
       verifiedAutomationSource(
-        { automationId: org.automationId, windowId: org.windowId },
+        { automationId: org.automationId, runId: org.runId },
         org.organizationId
       )
-    ).resolves.toEqual({ automationId: org.automationId, windowId: org.windowId });
+    ).resolves.toEqual({ automationId: org.automationId, runId: org.runId });
   });
 
   it('rejects an Automation belonging to another organization', async () => {
@@ -78,7 +78,7 @@ describe('declared automation_source verification', () => {
     const attacker = await orgWithAutomation('Attacker Org', 'attacker');
     await expect(
       verifiedAutomationSource(
-        { automationId: victim.automationId, windowId: victim.windowId },
+        { automationId: victim.automationId, runId: victim.runId },
         attacker.organizationId
       )
     ).resolves.toBeNull();
@@ -88,7 +88,7 @@ describe('declared automation_source verification', () => {
     const org = await orgWithAutomation('Ghost Org', 'ghost');
     await expect(
       verifiedAutomationSource(
-        { automationId: 2147483000, windowId: org.windowId },
+        { automationId: 2147483000, runId: org.runId },
         org.organizationId
       )
     ).resolves.toBeNull();
@@ -101,14 +101,14 @@ describe('declared automation_source verification', () => {
     ).resolves.toBeNull();
   });
 
-  it('rejects a window belonging to another Automation in the same organization', async () => {
+  it('rejects a run belonging to another Automation in the same organization', async () => {
     const org = await orgWithAutomation('Pair Org', 'pair');
     const created = (await org.api.automations.create({
       slug: 'pair-other',
       prompt: 'Anything.',
       agent_id: org.agentId,
     })) as { automation_id: string };
-    const otherWindowId = await createCanvasWindow({
+    const otherRunId = await createAutomationResultRun({
       automationId: Number(created.automation_id),
       organizationId: org.organizationId,
       windowStart: '2026-01-08T00:00:00.000Z',
@@ -117,7 +117,7 @@ describe('declared automation_source verification', () => {
 
     await expect(
       verifiedAutomationSource(
-        { automationId: org.automationId, windowId: otherWindowId },
+        { automationId: org.automationId, runId: otherRunId },
         org.organizationId
       )
     ).resolves.toBeNull();
@@ -129,7 +129,7 @@ describe('resolveAutomationAttribution precedence', () => {
     await cleanupTestDatabase();
   });
 
-  it('lets the trusted session identity win, including its window', async () => {
+  it('lets the trusted session identity win, including its run', async () => {
     const org = await orgWithAutomation('Session Org', 'session');
     const other = await orgWithAutomation('Other Org', 'other');
     await expect(
@@ -137,14 +137,14 @@ describe('resolveAutomationAttribution precedence', () => {
         {
           organizationId: org.organizationId,
           actingAutomationId: org.automationId,
-          actingWindowId: org.windowId,
+          actingRunId: org.runId,
         },
-        { automation_id: other.automationId, window_id: other.windowId }
+        { automation_id: other.automationId, run_id: other.runId }
       )
-    ).resolves.toEqual({ automationId: org.automationId, windowId: org.windowId });
+    ).resolves.toEqual({ automationId: org.automationId, runId: org.runId });
   });
 
-  it('gives a windowless session no window rather than the declared one', async () => {
+  it('gives a runless session no run rather than the declared one', async () => {
     const org = await orgWithAutomation('Windowless Session', 'w-session');
     const other = await orgWithAutomation('Window Donor', 'w-donor');
     await expect(
@@ -152,11 +152,11 @@ describe('resolveAutomationAttribution precedence', () => {
         {
           organizationId: org.organizationId,
           actingAutomationId: org.automationId,
-          actingWindowId: null,
+          actingRunId: null,
         },
-        { automation_id: other.automationId, window_id: other.windowId }
+        { automation_id: other.automationId, run_id: other.runId }
       )
-    ).resolves.toEqual({ automationId: org.automationId, windowId: null });
+    ).resolves.toEqual({ automationId: org.automationId, runId: null });
   });
 
   it('honors a declared source the organization owns when off-session', async () => {
@@ -164,9 +164,9 @@ describe('resolveAutomationAttribution precedence', () => {
     await expect(
       resolveAutomationAttribution(
         { organizationId: org.organizationId },
-        { automation_id: org.automationId, window_id: org.windowId }
+        { automation_id: org.automationId, run_id: org.runId }
       )
-    ).resolves.toEqual({ automationId: org.automationId, windowId: org.windowId });
+    ).resolves.toEqual({ automationId: org.automationId, runId: org.runId });
   });
 
   it('yields no attribution for a foreign declared source', async () => {
@@ -175,25 +175,25 @@ describe('resolveAutomationAttribution precedence', () => {
     await expect(
       resolveAutomationAttribution(
         { organizationId: attacker.organizationId },
-        { automation_id: victim.automationId, window_id: victim.windowId }
+        { automation_id: victim.automationId, run_id: victim.runId }
       )
-    ).resolves.toEqual({ automationId: null, windowId: null });
+    ).resolves.toEqual({ automationId: null, runId: null });
   });
 
-  it('drops the window too when the Automation fails verification', async () => {
+  it('drops the run too when the Automation fails verification', async () => {
     const org = await orgWithAutomation('Half Org', 'half');
     await expect(
       resolveAutomationAttribution(
         { organizationId: org.organizationId },
-        { automation_id: 2147483000, window_id: org.windowId }
+        { automation_id: 2147483000, run_id: org.runId }
       )
-    ).resolves.toEqual({ automationId: null, windowId: null });
+    ).resolves.toEqual({ automationId: null, runId: null });
   });
 
   it('returns nothing when the caller declared nothing and holds no session', async () => {
     const org = await orgWithAutomation('Bare Org', 'bare');
     await expect(
       resolveAutomationAttribution({ organizationId: org.organizationId }, undefined)
-    ).resolves.toEqual({ automationId: null, windowId: null });
+    ).resolves.toEqual({ automationId: null, runId: null });
   });
 });

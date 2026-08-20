@@ -206,8 +206,8 @@ interface EntityUpdateOptions {
 	policyPrincipalKind?: MutationPrincipalKind;
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
-	/** Automation-run window, so a deferred approval groups into its per-window batch. */
-	windowId?: number | null;
+	/** Causal parent for a deferred approval run. */
+	parentRunId?: number | null;
 	/**
 	 * The resolved acting-principal id (`automation:<id>` / agent id / null), from the
 	 * shared {@link resolveActingPrincipal} seam. Used directly for per-principal
@@ -1171,7 +1171,7 @@ export async function updateEntity(
 					principalKind,
 					sql: tx,
 					attribution: opts?.attribution ?? "agent",
-					windowId: opts?.windowId ?? null,
+					parentRunId: opts?.parentRunId ?? null,
 					principalId:
 						opts?.principalId ??
 						mutationPrincipalId({ agentId: ctx.agentId }),
@@ -1435,7 +1435,7 @@ export async function updateEntity(
 				escalatedFields: deferEscalatedFields,
 				attribution: opts?.attribution ?? "agent",
 				automationId: automationIdFromPrincipalId(opts?.principalId ?? null),
-				windowId: opts?.windowId ?? null,
+				parentRunId: opts?.parentRunId ?? null,
 			}),
 		};
 	}
@@ -1457,7 +1457,7 @@ export async function updateEntity(
 				// The approval card groups by the acting automation; recover its numeric
 				// id from the resolved principalId (`automation:<id>`), null otherwise.
 				automationId: automationIdFromPrincipalId(opts?.principalId ?? null),
-				windowId: opts?.windowId ?? null,
+				parentRunId: opts?.parentRunId ?? null,
 			}),
 		};
 	}
@@ -1774,10 +1774,10 @@ export async function deleteEntity(
       // written, a grant involving one of the deleted entities.
       await invalidateOrgAcl(tx, ctx.organizationId);
 
-      // Canvas-on-events: window_id link rows carry canvas root event ids, so
-      // key the cleanup on the denormalized automation_id.
+      // Key cleanup on the denormalized automation_id so all result links for
+      // the deleted Automation are removed together.
       await tx`
-        DELETE FROM automation_window_events
+        DELETE FROM automation_run_events
         WHERE automation_id IN (
           SELECT id
           FROM automations
@@ -1983,8 +1983,8 @@ export async function deleteEntity(
   // physical helper `hardDeleteEntityRows` itself stays unguarded and is
   // deliberately exempt: its other callers are rollback paths that destroy a row
   // the platform created moments earlier in the same request
-  // (`entity-link-upsert`, `promote-keyed-entities`, `canvas-events`,
-  // `eval-cases`). Judging those would let a tenant rule wedge a half-built
+  // (`entity-link-upsert`, `promote-keyed-entities`, `eval-cases`). Judging
+  // those would let a tenant rule wedge a half-built
   // record in place, which is the failure the rollback exists to prevent.
   //
   // A deny throws rather than returning: approval cannot launder an illegal

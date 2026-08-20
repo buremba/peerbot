@@ -144,10 +144,6 @@ export interface DesiredAutomation {
   deviceWorkerId?: string;
   /** Model alias/id passed to the device's local CLI (`--model`) on device runs. */
   model?: string;
-  /** Where firings surface — defaults to canvas server-side. */
-  notificationChannel?: "canvas" | "notification" | "both";
-  /** Priority class used by the dispatcher interrupt budget. */
-  notificationPriority?: "low" | "normal" | "high";
   /** Minimum seconds between two firings of this automation (0 = no cooldown). */
   minCooldownSeconds?: number;
   /** Free-form tags for filtering. */

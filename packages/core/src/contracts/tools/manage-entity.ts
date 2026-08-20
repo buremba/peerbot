@@ -299,8 +299,8 @@ export const ManageEntitySchema = Type.Object({
         automation_id: Type.Number({
           description: "Automation that triggered this mutation",
         }),
-        window_id: Type.Number({
-          description: "Window that triggered this mutation",
+        run_id: Type.Number({
+          description: "Automation run that triggered this mutation",
         }),
       },
       {

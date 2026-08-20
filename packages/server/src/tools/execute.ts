@@ -47,8 +47,6 @@ export interface AuthContext {
   agentId: string | null;
   /** Trusted internal reaction provenance. Never populated from request input. */
   actingAutomationId?: number | null;
-  /** Trusted internal reaction window. Never populated from request input. */
-  actingWindowId?: number | null;
   /** Trusted internal reaction run. Never populated from request input. */
   actingRunId?: number | null;
   requestedAgentId: string | null;
@@ -332,11 +330,9 @@ export async function executeTool(
       {
         automationId:
           toolContext.actingAutomationId ?? declaredSource?.automationId,
-        // The run is what carries causal ancestry. Reaction sessions have it
-        // directly; agent and device lanes carry `actingRunId = null`, so the
-        // declared window is the second route to the same run.
-        runId: toolContext.actingRunId ?? null,
-        windowId: toolContext.actingWindowId ?? declaredSource?.windowId ?? null,
+        // The run is the causal identity for both trusted reaction sessions and
+        // verified declarations from agent/device lanes.
+        runId: toolContext.actingRunId ?? declaredSource?.runId ?? null,
       },
       () =>
         trackMCPToolCall(toolName, args, () =>
@@ -414,12 +410,11 @@ const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
  * to nothing, exactly as today. The reaction identity checked first is
  * server-set and cannot be forged, so the non-forgeable source always wins.
  *
- * The window travels with the automation id because it is the agent lane's
- * only route to the driving run, and the run is what carries causal ancestry.
+ * The run travels with the Automation id because it carries causal ancestry.
  */
 function declaredAutomationSource(
   args: Record<string, unknown>
-): { automationId: number; windowId: number } | null {
+): { automationId: number; runId: number } | null {
   const source = args.automation_source;
   if (!source || typeof source !== 'object') return null;
   const positiveInteger = (value: unknown): number | null =>
@@ -430,11 +425,11 @@ function declaredAutomationSource(
     (source as { automation_id?: unknown }).automation_id
   );
   if (automationId == null) return null;
-  const windowId = positiveInteger((source as { window_id?: unknown }).window_id);
-  if (windowId == null) return null;
+  const runId = positiveInteger((source as { run_id?: unknown }).run_id);
+  if (runId == null) return null;
   return {
     automationId,
-    windowId,
+    runId,
   };
 }
 
@@ -458,7 +453,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     memberRole: authCtx.memberRole,
     agentId: authCtx.agentId,
     actingAutomationId: authCtx.actingAutomationId ?? null,
-    actingWindowId: authCtx.actingWindowId ?? null,
     actingRunId: authCtx.actingRunId ?? null,
     sourceContext: authCtx.sourceContext ?? null,
     isAuthenticated: authCtx.isAuthenticated,

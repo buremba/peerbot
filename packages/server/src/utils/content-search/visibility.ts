@@ -11,7 +11,7 @@ import { useLinkedOrgScope } from '../linked-org-ids';
 import { validateNumericId } from '../sql-validation';
 
 /**
- * Exclude content already in any window for a given automation. The id is bound as
+ * Exclude content already analyzed by any run of an automation. The id is bound as
  * a query parameter; `validateNumericId` is the belt to that suspenders.
  *
  * Returns empty strings/arrays when no filter is applied.
@@ -24,7 +24,7 @@ export function buildExcludeAutomationClause(
   const validated = validateNumericId(excludeAutomationId, 'exclude_automation_id');
   return {
     sql: ` AND NOT EXISTS (
-    SELECT 1 FROM automation_window_events exc_iwe
+    SELECT 1 FROM automation_run_events exc_iwe
     WHERE exc_iwe.event_id = f.id AND exc_iwe.automation_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
@@ -32,8 +32,8 @@ export function buildExcludeAutomationClause(
 }
 
 /**
- * Restrict to events an Automation ANALYZED — the rows that were linked into one
- * of its windows (`automation_window_events`). The opposite direction to
+ * Restrict to events an Automation ANALYZED — rows linked to one of its runs in
+ * `automation_run_events`. The opposite direction to
  * {@link buildProducedByAutomationClause}.
  *
  * Shared by the two builders that had each dropped it: the chronological list
@@ -52,7 +52,7 @@ export function buildAnalyzedByAutomationClause(
   const validated = validateNumericId(analyzedByAutomationId, 'analyzed_by_automation_id');
   return {
     sql: ` AND EXISTS (
-    SELECT 1 FROM automation_window_events ana_iwe
+    SELECT 1 FROM automation_run_events ana_iwe
     WHERE ana_iwe.event_id = f.id AND ana_iwe.automation_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
@@ -66,7 +66,7 @@ export function buildAnalyzedByAutomationClause(
  * is worse than one added to none, since the same scope would then return
  * different rows depending on whether a search term was typed.
  *
- * A column equality, NOT an EXISTS over `automation_window_events` — that table
+ * A column equality, NOT an EXISTS over `automation_run_events` — that table
  * records what an Automation READ. Backed by idx_events_automation_produced.
  */
 export function buildProducedByAutomationClause(

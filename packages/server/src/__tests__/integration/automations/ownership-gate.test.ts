@@ -18,7 +18,7 @@ import type { Env } from '../../../index';
 import type { AuthContext } from '../../../tools/execute';
 import { executeTool } from '../../../tools/execute';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createCanvasWindow, createTestAgent, createTestEntity } from '../../setup/test-fixtures';
+import { createAutomationResultRun, createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const TEST_ENV: Env = {
@@ -59,7 +59,7 @@ async function manageEntityUpdate(
   metadata: Record<string, unknown>,
   opts?: {
     affirm_fields?: string[];
-    automation_source?: { automation_id: number; window_id: number };
+    automation_source?: { automation_id: number; run_id: number };
   }
 ) {
   return executeTool(
@@ -86,8 +86,8 @@ async function manageEntityUpdate(
   }>;
 }
 
-/** Seed an automation + canvas window (real FKs for automation_source / reactions). */
-async function seedAutomationAndWindow(workspace: TestWorkspace, suffix: string) {
+/** Seed an automation result run (real FKs for automation_source / reactions). */
+async function seedAutomationAndRun(workspace: TestWorkspace, suffix: string) {
   const entity = await createTestEntity({
     name: `Gate Reaction Entity ${suffix}`,
     organization_id: workspace.org.id,
@@ -104,7 +104,7 @@ async function seedAutomationAndWindow(workspace: TestWorkspace, suffix: string)
     prompt: 'Analyze inputs.',
     agent_id: agent.agentId,
   })) as { automation_id: string };
-  const windowId = await createCanvasWindow({
+  const runId = await createAutomationResultRun({
     automationId: Number(automation.automation_id),
     organizationId: workspace.org.id,
     granularity: 'weekly',
@@ -117,7 +117,7 @@ async function seedAutomationAndWindow(workspace: TestWorkspace, suffix: string)
   return {
     entity,
     automationId: Number(automation.automation_id),
-    windowId,
+    runId,
     agentId: agent.agentId,
   };
 }
@@ -244,9 +244,9 @@ describe('ownership gate on agent entity writes', () => {
     const {
       entity: reactionEntity,
       automationId,
-      windowId,
+      runId,
       agentId,
-    } = await seedAutomationAndWindow(workspace, 'reaction');
+    } = await seedAutomationAndRun(workspace, 'reaction');
 
     // Human owns the field first.
     await manageEntityUpdate(humanCtx(org, user), reactionEntity.id, {
@@ -260,7 +260,7 @@ describe('ownership gate on agent entity writes', () => {
       agentCtx(org, user, agentId),
       reactionEntity.id,
       { severity: 'critical' },
-      { automation_source: { automation_id: automationId, window_id: windowId } }
+      { automation_source: { automation_id: automationId, run_id: runId } }
     );
 
     const [row] = await getTestDb()`SELECT metadata FROM entities WHERE id = ${reactionEntity.id}`;
@@ -288,8 +288,8 @@ describe('ownership gate on agent entity writes', () => {
     const {
       entity: target,
       automationId,
-      windowId,
-    } = await seedAutomationAndWindow(workspace, 'foreign');
+      runId,
+    } = await seedAutomationAndRun(workspace, 'foreign');
 
     await manageEntityUpdate(humanCtx(org, user), target.id, {
       severity: 'high',
@@ -302,7 +302,7 @@ describe('ownership gate on agent entity writes', () => {
       agentCtx(org, user, 'restricted-agent'),
       target.id,
       { severity: 'critical' },
-      { automation_source: { automation_id: automationId, window_id: windowId } }
+      { automation_source: { automation_id: automationId, run_id: runId } }
     );
 
     expect(result.approval_attribution).toBe('agent');

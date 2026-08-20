@@ -112,7 +112,7 @@ function getPublicOrigin(requestUrl: string): string {
 }
 
 /**
- * `$`-prefixed entity types ($member, $canvas) are per-tenant system internals.
+ * `$`-prefixed entity types are per-tenant system internals.
  * They must never surface on a public page — not as a route, not as a bootstrap
  * entry, and not as a rendered child link.
  */
@@ -143,14 +143,14 @@ async function resolvePublicPath(
       (type) => !isSystemEntityTypeSlug(type?.slug)
     );
   }
-  // Child links on an entity page — a $canvas hangs off its Automation's entity.
+  // Child links on an entity page may include internal system entities.
   if (Array.isArray(resolved.children)) {
     resolved.children = resolved.children.filter(
       (child) => !isSystemEntityTypeSlug(child?.entity_type)
     );
   }
   // Recent knowledge is org-wide and carries entity_name + payload text. An
-  // event attached to a system entity (e.g. a canvas_state on a $canvas) would
+  // event attached to a system entity would
   // otherwise publish that entity's name and internal content. `entity_ids` is
   // empty for connector/identity-linked events, so resolve the link with the
   // same predicate the read path uses rather than trusting that column.
@@ -164,7 +164,7 @@ async function resolvePublicPath(
       // driver flattening a bigint[] bind parameter. Resolve the link the same
       // way the read path does (entity_ids OR an identity-namespace stamp).
       // Deleted system entities are deliberately NOT excluded: `events` is
-      // append-only, so soft-deleting a $canvas leaves its events behind — an
+      // append-only, so soft-deleting a system entity leaves its events behind — an
       // `e.deleted_at IS NULL` filter here would un-hide their titles/payloads.
       const systemRows = await getDb().unsafe<{ id: number }>(
         `SELECT DISTINCT ev.id
@@ -436,7 +436,7 @@ async function getPublicEntityType(
       WHERE et.organization_id = $1
         AND et.slug = $2
         AND et.deleted_at IS NULL
-        -- $-prefixed types ($member, $canvas) are per-tenant system internals.
+        -- $-prefixed types are per-tenant system internals.
         -- Returning null here 404s both the type listing page and every entity
         -- page beneath it, matching what the sitemap advertises.
         AND et.slug NOT LIKE '$%'
@@ -1063,7 +1063,7 @@ export async function buildPublicPageModel(
       }
       // Every even segment is an entity-type slug. A system type anywhere in
       // the path 404s the whole route — the two-segment type lookup alone
-      // doesn't cover deep paths like /org/brand/acme/$canvas/automation-canvas.
+      // doesn't cover deep paths that contain a system entity type.
       if (isSystemEntityTypeSlug(entitySegments[i])) {
         return applyBootstrapStrip(
           buildNotFoundModel(organization, requestUrl, normalizedPath),

@@ -610,11 +610,6 @@ export function reactionFromFile<
   return { kind: "reactionSource", path };
 }
 
-export interface AutomationNotification {
-  channel?: "canvas" | "notification" | "both";
-  priority?: "low" | "normal" | "high";
-}
-
 export interface AutomationEntityOutput {
   /** Stored entity type (a config handle or slug). */
   entity: EntityType | string;
@@ -699,7 +694,7 @@ export interface Automation {
    * Entity output schemas live on their entity types; event outputs use Lobu's
    * standard event draft. Event triggers on an Automation with outputs must use
    * execution `"window"`; conversational `"turn"` triggers belong in a
-   * separate Automation. Omit for a Canvas-only or reaction-only Automation.
+   * separate Automation. Omit for a run-result-only or reaction-only Automation.
    */
   outputs?: Record<string, AutomationOutput> | null;
   /**
@@ -709,7 +704,6 @@ export interface Automation {
    * event set).
    */
   sources?: Record<string, string | { query: string; context?: boolean }>;
-  notification?: AutomationNotification;
   minCooldownSeconds?: number;
   tags?: string[];
   /** LLM guidance for the Automation's downstream reaction agent. */

@@ -87,23 +87,18 @@ export async function enqueueWorkspaceEventActivations(
  * and run cooldown. Inheriting the driving run's signals makes each hop a real
  * step in the same chain, which is what the depth and breadth caps measure.
  *
- * Returns null when there is no run to inherit from — an agent that declared no
- * window, or a run that was never activated by a workspace event (a scheduled
+ * Returns null when there is no run to inherit from, or a run that was never
+ * activated by a workspace event (a scheduled
  * or connector-triggered run carries signals, but none of them workspace ones).
  * The caller then falls back to a root, which is correct: nothing upstream to
  * accrue.
  *
- * Looked up by run id when the lane exposes one, else by the declared window,
- * which resolves to the same run through `runs.window_id`. Both lookups are
- * scoped to the producing Automation as well as the org: the window id can be
- * caller-declared (`automation_source`), and inheriting a run of a DIFFERENT
- * Automation would plant that Automation into this row's causal path —
- * suppressing it downstream, i.e. silencing it. `notify.ts` validates the same
- * pair before anchoring a canvas.
+ * The lookup is scoped to the producing Automation and organization so a
+ * caller-declared run cannot import another Automation's causal path.
  */
 export async function loadRunEventCausality(
   organizationId: string,
-  ref: { runId: number | null; windowId: number | null },
+  runId: number,
   producerAutomationId: number,
   db: DbClient = getDb()
 ): Promise<{
@@ -111,26 +106,14 @@ export async function loadRunEventCausality(
   causalAutomationIds: number[];
   depth: number;
 } | null> {
-  if (ref.runId == null && ref.windowId == null) return null;
-  const rows =
-    ref.runId != null
-      ? await db<{ approved_input: unknown }>`
-          SELECT approved_input
-          FROM public.runs
-          WHERE id = ${ref.runId}
-            AND organization_id = ${organizationId}
-            AND automation_id = ${producerAutomationId}
-          LIMIT 1
-        `
-      : await db<{ approved_input: unknown }>`
-          SELECT approved_input
-          FROM public.runs
-          WHERE window_id = ${ref.windowId}
-            AND organization_id = ${organizationId}
-            AND automation_id = ${producerAutomationId}
-          ORDER BY id DESC
-          LIMIT 1
-        `;
+  const rows = await db<{ approved_input: unknown }>`
+    SELECT approved_input
+    FROM public.runs
+    WHERE id = ${runId}
+      AND organization_id = ${organizationId}
+      AND automation_id = ${producerAutomationId}
+    LIMIT 1
+  `;
   const approvedInput = rows[0]?.approved_input;
   if (!approvedInput || typeof approvedInput !== 'object') return null;
   // Only workspace signals carry ancestry. A connector- or schedule-woken run

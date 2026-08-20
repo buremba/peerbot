@@ -46,7 +46,7 @@ async function validateCustomSqlSource(
 // 'channel' is a chat-transcript source (streaming feed → channel_messages). It
 // is prompt CONTEXT, not events: its rows must never be signed as event
 // content_ids (channel_messages.id is not an events.id — complete_window links
-// content_ids into automation_window_events.event_id, an FK to events).
+// content_ids into automation_run_events.event_id, an FK to events).
 export type AutomationSourceKind = 'event' | 'entity' | 'metric' | 'channel';
 
 export type AutomationSourceRef =
@@ -466,7 +466,7 @@ export async function normalizeAutomationSources(
     const ref = parseAutomationSourceRef(source.query);
     if (!ref) {
       // A `context: true` SQL source is entity context, not event content: its
-      // rows reach the agent but are never linked into automation_window_events
+      // rows reach the agent but are never linked into automation_run_events
       // (so its `id` may be an entity id, sidestepping the events FK). A plain
       // SQL source stays event content and its `id` must be an `events.id`.
       normalized.push({ ...source, kind: source.context ? 'entity' : 'event' });

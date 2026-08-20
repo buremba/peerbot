@@ -720,7 +720,7 @@ import { getErrorMessage } from '@lobu/core';
 
 /**
  * Batch count unanalyzed content for multiple automations in a single query.
- * Returns a map of automation_id -> count of content not yet in any window for that automation.
+ * Returns a map of automation_id -> count of content not yet analyzed by any run.
  */
 export async function batchCountUnanalyzedContent(
   automationIds: number[]
@@ -752,14 +752,13 @@ export async function batchCountUnanalyzedContent(
         AND array_length(i.entity_ids, 1) > 0
     ),
     analyzed_counts AS (
-      -- Canvas-on-events: window_id link rows carry a denormalized automation_id, so
-      -- count analyzed events directly off automation_window_events without a join
-      -- through the retired standalone window table.
+      -- Link rows carry a denormalized automation_id, so count analyzed events
+      -- directly without joining through runs.
       SELECT
         ie.automation_id,
         COUNT(DISTINCT iwc.event_id) as analyzed_count
       FROM (SELECT DISTINCT automation_id FROM automation_entities) ie
-      LEFT JOIN automation_window_events iwc ON iwc.automation_id = ie.automation_id
+      LEFT JOIN automation_run_events iwc ON iwc.automation_id = ie.automation_id
       GROUP BY ie.automation_id
     ),
     total_counts AS (

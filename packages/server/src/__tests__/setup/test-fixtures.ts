@@ -885,19 +885,11 @@ export async function createTestDeviceCode(
 }
 
 // ============================================
-// Canvas-on-events window fixture
+// Automation result fixture
 // ============================================
 
-/**
- * Insert a canvas_state ROOT event (an automation "window" in canvas-on-events) and
- * return its event id — the value the read/write paths treat as `window_id`.
- * Mirrors the complete_window write path: the physical automation_id column
- * carries ownership, while metadata carries canonical UTC ISO window_start /
- * window_end (matching Date.toISOString()) so the row collides on
- * idx_canvas_chain_root and period reads resolve it. Optionally links the
- * event's provenance run and stamps model/run_metadata on that run.
- */
-export async function createCanvasWindow(options: {
+/** Create or complete the run that owns an Automation result. */
+export async function createAutomationResultRun(options: {
   automationId: number;
   organizationId: string;
   granularity?: string;
@@ -918,51 +910,49 @@ export async function createCanvasWindow(options: {
   const granularity = options.granularity ?? 'weekly';
   const windowStartIso = new Date(options.windowStart as string).toISOString();
   const windowEndIso = new Date(options.windowEnd as string).toISOString();
-  const entityIdsLiteral = pgBigintArray(options.entityIds ?? []);
+  const approvedInput = {
+    granularity,
+    window_start: windowStartIso,
+    window_end: windowEndIso,
+    version_id: options.versionId ?? null,
+  };
+  const runMetadata = {
+    ...(options.runMetadata ?? {}),
+    content_analyzed: options.contentAnalyzed ?? 0,
+    ...(options.clientId ? { client_id: options.clientId } : {}),
+  };
+  if (options.runId != null) {
+    const [row] = await sql`
+      UPDATE runs
+      SET status = 'completed',
+          outcome = 'scoreable',
+          action_output = ${sql.json(options.extractedData ?? {})},
+          approved_input = COALESCE(approved_input, '{}'::jsonb) || ${sql.json(approvedInput)}::jsonb,
+          model_used = COALESCE(${options.modelUsed ?? null}, model_used),
+          run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(runMetadata)}::jsonb,
+          completed_at = ${options.createdAt != null ? new Date(options.createdAt as string) : new Date(windowEndIso)}
+      WHERE id = ${options.runId}
+      RETURNING id
+    `;
+    if (!row) throw new Error(`Automation run ${options.runId} not found`);
+    return Number(row.id);
+  }
 
   const [row] = await sql`
-    INSERT INTO events (
-      entity_ids, organization_id, origin_id, payload_type, payload_data,
-      semantic_type, automation_id, metadata, occurred_at, created_by, created_at, run_id, client_id
+    INSERT INTO runs (
+      organization_id, run_type, automation_id, status, outcome,
+      action_output, approved_input, model_used, run_metadata,
+      created_by_user_id, created_at, completed_at
     ) VALUES (
-      ${entityIdsLiteral}::bigint[],
-      ${options.organizationId},
-      ${`canvas_test_${generateSecureToken(8)}`},
-      'json_template',
-      ${sql.json(options.extractedData ?? {})},
-      'canvas_state',
-      ${options.automationId},
-      ${sql.json({
-        automation_id: options.automationId,
-        granularity,
-        window_start: windowStartIso,
-        window_end: windowEndIso,
-        content_analyzed: options.contentAnalyzed ?? 0,
-        version_id: options.versionId ?? null,
-      })},
-      ${windowEndIso},
-      ${options.createdBy ?? null},
+      ${options.organizationId}, 'automation', ${options.automationId}, 'completed', 'scoreable',
+      ${sql.json(options.extractedData ?? {})}, ${sql.json(approvedInput)},
+      ${options.modelUsed ?? null}, ${sql.json(runMetadata)}, ${options.createdBy ?? null},
       ${options.createdAt != null ? new Date(options.createdAt as string) : new Date(windowEndIso)},
-      ${options.runId ?? null},
-      ${options.clientId ?? null}
+      ${options.createdAt != null ? new Date(options.createdAt as string) : new Date(windowEndIso)}
     )
     RETURNING id
   `;
-  const windowId = Number((row as { id: unknown }).id);
-
-  // Provenance now lives on the run row. Stamp window_id + model/run_metadata so
-  // canvas reads (which LEFT JOIN runs on head.run_id) surface them.
-  if (options.runId != null) {
-    await sql`
-      UPDATE runs
-      SET window_id = ${windowId},
-          model_used = COALESCE(${options.modelUsed ?? null}, model_used),
-          run_metadata = COALESCE(${options.runMetadata != null ? sql.json(options.runMetadata) : null}::jsonb, run_metadata)
-      WHERE id = ${options.runId}
-    `;
-  }
-
-  return windowId;
+  return Number(row.id);
 }
 
 /**

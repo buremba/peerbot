@@ -324,9 +324,9 @@ const digest = defineAutomation({
 ```
 
 Declared outputs are persisted whether or not a `reaction` is present, and the
-complete result remains on Canvas. A `reaction` lets the Automation act (post a
+complete result remains on its run. A `reaction` lets the Automation act (post a
 message, call connectors, or request a governed merge) and can consume those
-persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Automation.
+persisted drafts. Omit `outputs` for a run-result-only or reaction-only Automation.
 Only newly persisted declared event outputs activate triggers with
 `source: "workspace"`. Ordinary knowledge saves and connector-ingested events
 do not activate workspace-source triggers; connector events activate only

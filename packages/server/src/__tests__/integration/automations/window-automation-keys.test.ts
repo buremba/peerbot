@@ -5,7 +5,7 @@ import { manageAutomations } from "../../../tools/admin/manage_automations";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
-	createCanvasWindow,
+	createAutomationResultRun,
 	createTestAgent,
 	createTestEntity,
 	seedOwnerContext,
@@ -55,7 +55,7 @@ describe("Automation window vocabulary", () => {
 		const automationId = Number(created.automation_id);
 		expect(Number.isFinite(automationId)).toBe(true);
 
-		await createCanvasWindow({
+		await createAutomationResultRun({
 			automationId: automationId,
 			organizationId: org.id,
 			granularity: "day",

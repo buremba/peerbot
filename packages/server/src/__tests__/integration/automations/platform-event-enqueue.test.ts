@@ -343,15 +343,14 @@ describe('audit rows inherit the producing run causal chain', () => {
     );
     const upstreamAutomationId = await secondAutomation(api, agentId, 'upstream');
     const rootEventId = 5353;
-    const windowId = 909;
     const sql = getTestDb();
-    await sql`
+    const [sourceRun] = await sql<{ id: number }[]>`
       INSERT INTO public.runs (
         organization_id, run_type, action_key, status, automation_id,
-        window_id, approved_input
+        approved_input
       ) VALUES (
         ${organizationId}, 'automation', 'run_automation', 'running',
-        ${automationId}, ${windowId},
+        ${automationId},
         ${sql.json({
           trigger_signals: [
             {
@@ -367,13 +366,12 @@ describe('audit rows inherit the producing run causal chain', () => {
             },
           ],
         })}
-      )
+      ) RETURNING id
     `;
 
-    // The agent and device lanes carry `actingRunId = null`; only the declared
-    // `automation_source.window_id` reaches the run.
+    // The declared Automation source carries the producing run.
     await runWithActingAutomation(
-      { automationId, runId: null, windowId },
+      { automationId, runId: sourceRun.id },
       async () => {
         recordLifecycleEvent({
           organizationId,
@@ -528,19 +526,16 @@ describe('audit rows inherit the producing run causal chain', () => {
       ['connection.deleted']
     );
     const upstreamAutomationId = await secondAutomation(api, agentId, 'upstream');
-    const windowId = 4711;
     const sql = getTestDb();
-    // The run behind the declared window belongs to the OTHER Automation.
-    // `automation_source.window_id` is caller input, so inheriting through it
-    // would plant that Automation into this row's causal path — suppressing it
-    // downstream. The run lookup is scoped to the producer and finds nothing.
-    await sql`
+    // The declared run belongs to the other Automation. Caller input must not
+    // be allowed to plant that Automation into this row's causal path.
+    const [sourceRun] = await sql<{ id: number }[]>`
       INSERT INTO public.runs (
         organization_id, run_type, action_key, status, automation_id,
-        window_id, approved_input
+        approved_input
       ) VALUES (
         ${organizationId}, 'automation', 'run_automation', 'running',
-        ${upstreamAutomationId}, ${windowId},
+        ${upstreamAutomationId},
         ${sql.json({
           trigger_signals: [
             {
@@ -556,11 +551,11 @@ describe('audit rows inherit the producing run causal chain', () => {
             },
           ],
         })}
-      )
+      ) RETURNING id
     `;
 
     await runWithActingAutomation(
-      { automationId, runId: null, windowId },
+      { automationId, runId: sourceRun.id },
       async () => {
         recordLifecycleEvent({
           organizationId,

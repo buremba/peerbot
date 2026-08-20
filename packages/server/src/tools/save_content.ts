@@ -201,7 +201,7 @@ export const SaveContentSchema = Type.Object({
     Type.Object(
       {
         automation_id: Type.Number({ description: 'Automation that triggered this save' }),
-        window_id: Type.Number({ description: 'Window that triggered this save' }),
+        run_id: Type.Number({ description: 'Automation run that triggered this save' }),
       },
       { description: 'Attribution source when save is triggered by an Automation reaction' }
     )
@@ -691,11 +691,11 @@ async function saveContentImpl(
     inserted && args.automation_source
       ? await resolveAutomationAttribution(ctx, args.automation_source)
       : null;
-  if (reactionAttribution?.automationId != null && reactionAttribution.windowId != null) {
+  if (reactionAttribution?.automationId != null && reactionAttribution.runId != null) {
     await trackAutomationReaction({
       organizationId: ctx.organizationId,
       automationId: reactionAttribution.automationId,
-      windowId: reactionAttribution.windowId,
+      sourceRunId: reactionAttribution.runId,
       reactionType: 'content_saved',
       toolName: 'save_memory',
       toolArgs: { entity_ids: finalEntityIds, semantic_type: semanticType, title: args.title },

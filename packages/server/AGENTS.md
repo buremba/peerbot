@@ -13,7 +13,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 ## Boundaries and vocabulary
 - Connections are rows, not processes. Agents bind to connections/channels; replicas hydrate connection instances on demand from DB rows and must not assume boot warm-start.
 - Connectors collect external data into feeds/events; chat platforms deliver conversations/messages. Do not blur connector sync with chat transport.
-- Automations are the UI umbrella: Listen, Watch, Schedule. An automation owns windows; a window's living state is a canvas (`semantic_type='canvas_state'`). Artifacts are stored files, not automation state.
+- Automations are the UI umbrella: Listen, Watch, Schedule. Each execution is a `runs` row; its temporal bounds live in `approved_input`, its result in `action_output`, and child work points back through `parent_run_id`. Artifacts are stored files, not automation state.
 - Platform isolation: InteractionService events carry `platform`; each renderer filters on its own platform and never another's.
 
 ## Connections, feeds, and routing

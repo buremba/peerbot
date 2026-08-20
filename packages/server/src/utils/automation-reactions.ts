@@ -93,11 +93,9 @@ export async function getPastReactionsSummary(
   limit = 20
 ): Promise<string | undefined> {
   const sql = getDb();
-  // automation_reactions.window_id is the canvas ROOT event id; the canvas_windows
-  // view resolves the period (LEFT JOIN — tombstoned roots null).
   const reactions = await sql`
     SELECT wr.reaction_type, wr.tool_name, wr.tool_args, wr.created_at,
-           ww.window_start, ww.window_end,
+           (source.approved_input->>'window_start')::timestamptz AS window_start,
            decision.action_key AS decision_action_key,
            decision.status AS decision_status,
            decision.approval_status AS decision_approval_status,
@@ -108,14 +106,15 @@ export async function getPastReactionsSummary(
     JOIN automations owning_automation
       ON owning_automation.id = wr.automation_id
      AND owning_automation.organization_id = wr.organization_id
-    LEFT JOIN canvas_windows ww
-      ON ww.id = wr.window_id
-     AND ww.automation_id = wr.automation_id
+    JOIN runs source
+      ON source.id = wr.source_run_id
+     AND source.automation_id = wr.automation_id
+     AND source.organization_id = wr.organization_id
     LEFT JOIN runs linked_run
       ON linked_run.id = wr.run_id
      AND linked_run.organization_id = wr.organization_id
      AND linked_run.automation_id = wr.automation_id
-     AND linked_run.window_id = wr.window_id
+     AND linked_run.parent_run_id = wr.source_run_id
     LEFT JOIN runs decision
       ON decision.id = linked_run.id
      AND decision.run_type = 'internal'
@@ -128,8 +127,6 @@ export async function getPastReactionsSummary(
   if (reactions.length === 0) return undefined;
   const lines: string[] = ['## Past Reactions'];
   for (const r of reactions) {
-    // window_start comes from the canvas root event; guard a tombstoned root
-    // (LEFT JOIN → null).
     const date = r.window_start
       ? new Date(r.window_start as string).toISOString().split('T')[0]
       : '?';
@@ -168,7 +165,7 @@ export async function getPastReactionsSummary(
       }
     }
     lines.push(
-      `- Window ${date}: ${r.reaction_type} via ${r.tool_name} ${detail}${decision}`
+      `- Run ${date}: ${r.reaction_type} via ${r.tool_name} ${detail}${decision}`
     );
   }
   return lines.join('\n');
@@ -187,7 +184,7 @@ export async function getPastReactionsSummary(
 export async function trackAutomationReaction(params: {
   organizationId: string;
   automationId: number;
-  windowId: number;
+  sourceRunId: number;
   reactionType: string;
   toolName: string;
   toolArgs: Record<string, unknown>;
@@ -200,7 +197,7 @@ export async function trackAutomationReaction(params: {
     const lockKey = [
       params.organizationId,
       params.automationId,
-      params.windowId,
+      params.sourceRunId,
       params.reactionType,
       params.toolName,
       params.runId,
@@ -218,7 +215,7 @@ export async function trackAutomationReaction(params: {
         WHERE id = ${params.runId}
           AND organization_id = ${params.organizationId}
           AND automation_id = ${params.automationId}
-          AND window_id = ${params.windowId}
+          AND parent_run_id = ${params.sourceRunId}
         FOR KEY SHARE
       `;
       if (matchingRuns.length === 0) {
@@ -226,11 +223,11 @@ export async function trackAutomationReaction(params: {
       }
       await tx`
         INSERT INTO automation_reactions (
-          organization_id, automation_id, window_id,
+          organization_id, automation_id, source_run_id,
           reaction_type, tool_name, tool_args, tool_result, entity_id, run_id
         )
         SELECT
-          ${params.organizationId}, ${params.automationId}, ${params.windowId},
+          ${params.organizationId}, ${params.automationId}, ${params.sourceRunId},
           ${params.reactionType}, ${params.toolName},
           ${tx.json(params.toolArgs)},
           ${params.toolResult ? tx.json(params.toolResult) : null},
@@ -241,7 +238,7 @@ export async function trackAutomationReaction(params: {
           FROM automation_reactions
           WHERE organization_id = ${params.organizationId}
             AND automation_id = ${params.automationId}
-            AND window_id = ${params.windowId}
+            AND source_run_id = ${params.sourceRunId}
             AND reaction_type = ${params.reactionType}
             AND tool_name = ${params.toolName}
             AND run_id = ${params.runId}
@@ -252,10 +249,10 @@ export async function trackAutomationReaction(params: {
   }
   await sql`
     INSERT INTO automation_reactions (
-      organization_id, automation_id, window_id,
+      organization_id, automation_id, source_run_id,
       reaction_type, tool_name, tool_args, tool_result, entity_id, run_id
     ) VALUES (
-      ${params.organizationId}, ${params.automationId}, ${params.windowId},
+      ${params.organizationId}, ${params.automationId}, ${params.sourceRunId},
       ${params.reactionType}, ${params.toolName},
       ${sql.json(params.toolArgs)},
       ${params.toolResult ? sql.json(params.toolResult) : null},

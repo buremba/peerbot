@@ -153,10 +153,6 @@ export const AutomationPollMetaSchema = Type.Object({
   name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   agent_kind: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-  notification_channel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-  notification_priority: Type.Optional(
-    Type.Union([Type.String(), Type.Null()])
-  ),
   execution_config: Type.Optional(AutomationExecutionConfigSchema),
   prompt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   extraction_schema: Type.Optional(
@@ -435,7 +431,7 @@ export const CompleteAutomationResponseSchema = Type.Object({
   max_attempts: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   nudge: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-  window_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  run_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   idempotent: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
 });
 

@@ -74,16 +74,16 @@ describe("/permissions catalog type resolution", () => {
 
 	it("excludes every $-prefixed built-in, not just $member", async () => {
 		// The filter is by convention, not an enumerated list — a new built-in
-		// (here `$canvas`, which every Automation canvas binds to) must stay out of
+		// (here `$internal`) must stay out of
 		// the ACL picker without anyone remembering to add another `<>` clause.
 		await getTestDb()`
       INSERT INTO entity_types (organization_id, slug, name)
-      VALUES (${orgId}, '$canvas', 'Canvas'),
+      VALUES (${orgId}, '$internal', 'Internal'),
              (${orgId}, '$resource', 'Resource'),
              (${orgId}, 'invoice', 'Invoice')
     `;
 		const slugs = (await listTypes(orgId)).map((t) => t.slug);
-		expect(slugs).not.toContain("$canvas");
+		expect(slugs).not.toContain("$internal");
 		expect(slugs).not.toContain("$resource");
 		// Ordinary types are unaffected.
 		expect(slugs).toContain("invoice");

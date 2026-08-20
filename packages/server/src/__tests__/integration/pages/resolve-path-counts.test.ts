@@ -147,13 +147,13 @@ describe('resolve_path workspace counts', () => {
     await sql`
       INSERT INTO automations
         (organization_id, created_by, automation_group_id, name, status,
-         notification_channel, notification_priority, min_cooldown_seconds,
+         min_cooldown_seconds,
          created_at, updated_at)
       VALUES
         (${fixture.orgId}, ${fixture.userId}, 0, 'Live', 'active',
-         'notification', 'normal', 0, NOW(), NOW()),
+         0, NOW(), NOW()),
         (${fixture.orgId}, ${fixture.userId}, 0, 'Archived', 'archived',
-         'notification', 'normal', 0, NOW(), NOW())
+         0, NOW(), NOW())
     `;
     expect((await resolveCounts(fixture)).automations).toBe(1);
   });

@@ -73,21 +73,21 @@ export const GetContentSchema = Type.Object({
       description: 'Platform types to filter by (reddit, trustpilot, etc.)',
     })
   ),
-  window_id: Type.Optional(
+  run_id: Type.Optional(
     Type.Number({
-      description: 'Automation window ID to filter by (shows only content analyzed in this window)',
+      description: 'Automation run ID to filter by (shows only content analyzed in this run)',
     })
   ),
   analyzed_by_automation_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this Automation has analyzed (any window). Distinct from automation_id, which enters Automation read mode.',
+        'Limit results to events this Automation has analyzed in any run. Distinct from automation_id, which enters Automation read mode.',
     })
   ),
   produced_by_automation_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this Automation WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_automation_id, which returns what it READ; the two are not interchangeable.',
+        'Limit results to events this Automation WROTE — its outputs, entity change sets, and notifications. The counterpart to analyzed_by_automation_id, which returns what it READ; the two are not interchangeable.',
     })
   ),
   since: Type.Optional(
@@ -218,7 +218,7 @@ export const GetContentSchema = Type.Object({
   exclude_automation_id: Type.Optional(
     Type.Number({
       description:
-        'Exclude content already analyzed in any window for this Automation. Returns only unprocessed content for client-driven Automation generation.',
+        'Exclude content already analyzed by any run of this Automation. Returns only unprocessed content for client-driven Automation generation.',
     })
   ),
   semantic_type: Type.Optional(

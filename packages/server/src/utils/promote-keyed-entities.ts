@@ -12,9 +12,9 @@
  * COALESCE(scope_connection_id, 0))
  * WHERE deleted_at IS NULL` is the lock.
  *
- * Origin provenance (the window that first produced the entity, its stable key,
+ * Origin provenance (the run that first produced the entity, its stable key,
  * and the automation) is stamped onto the entity's own `metadata` at creation —
- * `metadata.window_id` / `stable_key` / `automation_id`. There is NO separate
+ * `metadata.run_id` / `stable_key` / `automation_id`. There is NO separate
  * observation event: an entity is promoted once (it's an identity, not a time
  * series), so its origin lives on the row itself.
  *
@@ -25,10 +25,8 @@
  *   - `entities.id` / `entity_identities.id` are `nextval()` sequence columns,
  *     so concurrent inserts never collide on the PK (no advisory-lock allocator
  *     needed here — that's only for the MAX(id)+1 tables).
- *   - The window (canvas chain root) is guarded by `idx_canvas_chain_root`, so at
- *     most one completion creates a given window; idempotent replays reuse it and
- *     re-enter this function, where the per-key identity claim makes repeats
- *     no-ops.
+ *   - Completion serializes each Automation period; the per-key identity claim
+ *     makes replays no-ops.
  *   - `fetch_types: false`: never bind a raw JS array — all identifiers here are
  *     scalar params.
  */
@@ -76,8 +74,8 @@ export interface PromoteKeyedEntitiesParams {
   output: EntityOutput;
   automationId: number;
   organizationId: string;
-  /** The finalized window identity (canvas ROOT event id) this completion produced/reused. */
-  windowId: number;
+  /** The Automation run that produced this result. */
+  runId: number;
   /**
    * The exact content IDs the window_token granted for this completion.
    * A promoted row may cite its origin via `source_event_id`; that value comes
@@ -603,7 +601,7 @@ export async function promoteAutomationEntityOutput(
     output,
     automationId,
     organizationId,
-    windowId,
+    runId,
     parentEntityId,
     validContentIds,
   } = params;
@@ -718,7 +716,7 @@ export async function promoteAutomationEntityOutput(
           {
             automationId,
             organizationId,
-            windowId,
+            runId,
             stableKey,
             claimedSourceEventId: claimed,
           },
@@ -734,10 +732,10 @@ export async function promoteAutomationEntityOutput(
       automation_output: outputName,
       stable_key: stableKey,
       source: 'automation_promotion',
-      // Origin provenance lives on the entity itself — the window that first
+      // Origin provenance lives on the entity itself — the run that first
       // produced it. (No separate append-only observation event in phase 1;
       // the entity is upserted once, so this is its origin, not a time series.)
-      window_id: windowId,
+      run_id: runId,
     };
 
     try {
@@ -784,7 +782,7 @@ export async function promoteAutomationEntityOutput(
           {
             automationId,
             organizationId,
-            windowId,
+            runId,
             stableKey,
             entityId,
             op: blockedCreate ? 'create' : 'update',
@@ -827,7 +825,7 @@ export async function promoteAutomationEntityOutput(
                 ? { escalatedFields: escalated.fields, reason: escalated.reason }
                 : {}),
               automationId,
-              windowId,
+              parentRunId: runId,
             })
           );
         }
@@ -856,7 +854,7 @@ export async function promoteAutomationEntityOutput(
             // throws, and `applyFailure` resets the run to pending — forever.
             ...(escalated ? { escalatedFields: escalated.fields, reason: escalated.reason } : {}),
             automationId,
-            windowId,
+            parentRunId: runId,
           })
         );
       }
@@ -866,7 +864,7 @@ export async function promoteAutomationEntityOutput(
       // the caller can fix or retry it. Known slug collisions are recovered in
       // upsertKeyedEntity and policy outcomes are modeled explicitly above.
       logger.error(
-        { err, automationId, windowId, stableKey, organizationId },
+        { err, automationId, runId, stableKey, organizationId },
         '[promote-keyed-entities] keyed output failed; rolling back window completion'
       );
       throw err;
@@ -876,7 +874,7 @@ export async function promoteAutomationEntityOutput(
   logger.info(
     {
       automationId,
-      windowId,
+      runId,
       entityTypeSlug,
       promoted: result.promoted,
       created: result.created,

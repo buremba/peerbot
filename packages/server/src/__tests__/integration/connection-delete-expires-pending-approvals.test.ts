@@ -57,7 +57,7 @@ async function seedPendingApprovalRun(opts: {
 		runId,
 		interactionType: "approval",
 		interactionStatus: "pending",
-		metadata: { action_key: opts.actionKey, run_id: runId },
+		metadata: { action_key: opts.actionKey },
 	});
 	return runId;
 }

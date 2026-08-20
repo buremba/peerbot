@@ -100,12 +100,6 @@ export interface EntityFieldChangeProposal {
 	/** field_path -> current human-owned value (for the diff card). */
 	current?: Record<string, unknown>;
 	automation_id?: number | null;
-	/**
-	 * The automation-run window that produced this proposal, if any. Stamped onto the
-	 * `runs.window_id` COLUMN so a run that produced N proposals groups them
-	 * into ONE batch approval card. Stripped from action_input before the insert.
-	 */
-	window_id?: number | null;
 	/** Who proposed the change — drives the card label/author. Defaults to 'automation'. */
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
@@ -140,8 +134,6 @@ export interface EntityDeleteProposal {
 		metadata?: Record<string, unknown> | null;
 	};
 	automation_id?: number | null;
-	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
-	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 }
@@ -151,8 +143,6 @@ export interface EntityCreateProposal {
 	entity_data: EntityData;
 	proposal: Record<string, unknown>;
 	automation_id?: number | null;
-	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
-	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 	/**
@@ -179,11 +169,6 @@ export interface EntityMergeProposal {
 		identity_ids?: number[];
 	}>;
 	automation_id?: number | null;
-	window_id?: number | null;
-	/** Window copied into action_input because runs.window_id is transport grouping. */
-	source_window_id?: number | null;
-	/** Automation run that discovered this candidate (the approval run is separate). */
-	source_run_id?: number | null;
 	policy_hash?: string | null;
 	resolution_fingerprint?: string | null;
 	/**
@@ -304,7 +289,7 @@ export function mergeReviewEventMetadata(proposal: EntityMergeProposal) {
 
 function entityChangeIdempotencyKey(
 	organizationId: string,
-	windowId: number | null,
+	parentRunId: number | null,
 	proposal: EntityChangeProposal,
 ): string {
 	const operation = operationOf(proposal);
@@ -335,7 +320,7 @@ function entityChangeIdempotencyKey(
 		}
 	}
 	const digest = createHash("sha256")
-		.update(stableJson({ organizationId, windowId, operation, change }))
+		.update(stableJson({ organizationId, parentRunId, operation, change }))
 		.digest("hex");
 	return `entity-change:${digest}`;
 }
@@ -515,6 +500,7 @@ async function resolveProposalFieldOwner(
 export async function proposeEntityFieldChange(
 	ctx: ToolContext,
 	proposal: EntityFieldChangeProposal,
+	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const ownerUserId = await resolveProposalFieldOwner(
 		ctx.organizationId,
@@ -525,21 +511,23 @@ export async function proposeEntityFieldChange(
 		...proposal,
 		...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
 		operation: "update",
-	});
+	}, parentRunId);
 }
 
 export async function proposeEntityDelete(
 	ctx: ToolContext,
 	proposal: Omit<EntityDeleteProposal, "operation">,
+	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "delete" });
+	return proposeEntityChange(ctx, { ...proposal, operation: "delete" }, parentRunId);
 }
 
 export async function proposeEntityCreate(
 	ctx: ToolContext,
 	proposal: Omit<EntityCreateProposal, "operation">,
+	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "create" });
+	return proposeEntityChange(ctx, { ...proposal, operation: "create" }, parentRunId);
 }
 
 /**
@@ -598,6 +586,7 @@ export async function proposeEntityMerge(
 		entity_ids: number[];
 	},
 	resolutionKeys: readonly ResolutionKeySet[],
+	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const current = await buildMergeReviewSnapshot(ctx, {
 		entityIds: proposal.entity_ids,
@@ -609,7 +598,7 @@ export async function proposeEntityMerge(
 		entity_id: current.loser.id as number,
 		operation: "merge",
 		current,
-	});
+	}, parentRunId);
 }
 
 /**
@@ -662,16 +651,10 @@ export async function refreshMergeProposalFingerprint(
 export async function proposeEntityChange(
 	ctx: ToolContext,
 	proposal: EntityChangeProposal,
+	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const sql = getDb();
 	const operation = operationOf(proposal);
-	// window_id groups a run's proposals into one batch card. It rides the column,
-	// not action_input, and is part of the canonical idempotency key below.
-	const { window_id: windowId, ...proposalWithoutWindow } = proposal;
-	const actionInputProposal =
-		operation === "merge"
-			? { ...proposalWithoutWindow, source_window_id: windowId ?? null }
-			: proposalWithoutWindow;
 	const updateProposal =
 		operation === "update" ? asUpdateProposal(proposal) : null;
 	const deleteProposal =
@@ -689,7 +672,7 @@ export async function proposeEntityChange(
 			: ENTITY_CHANGE_ACTION_KEY;
 	const idempotencyKey = entityChangeIdempotencyKey(
 		ctx.organizationId,
-		windowId ?? null,
+		parentRunId,
 		proposal,
 	);
 	const initiatorColumns = resolveRunInitiator(ctx);
@@ -730,9 +713,9 @@ export async function proposeEntityChange(
           r.idempotency_key IS NULL
           AND r.approval_status = 'pending'
           AND r.status = 'pending'
-          -- Same proposal from a different window is a distinct ask. This
-          -- semantic fallback repairs pending rows created before canonical keys.
-          AND r.window_id IS NOT DISTINCT FROM ${windowId ?? null}
+		  -- Same proposal from a different parent run is a distinct ask. This
+		  -- semantic fallback repairs pending rows created before canonical keys.
+		  AND r.parent_run_id IS NOT DISTINCT FROM ${parentRunId}
           AND COALESCE(r.action_input->>'operation', 'update') = ${operation}
           AND COALESCE(r.action_input->>'entity_id', '') = ${"entity_id" in proposal ? String(proposal.entity_id) : ""}
           AND (
@@ -884,10 +867,10 @@ export async function proposeEntityChange(
 					automation_id: proposal.automation_id ?? null,
 					automation_name: automationName,
 					automation_agent_id: automationAgentId,
-					// The run window this proposal belongs to, if any. Stamped so the UI can
+					// The producing run this proposal belongs to, if any. Stamped so the UI can
 					// tell this proposal is part of a BATCH (the change-set card owns the
 					// Approve/Reject decision) and suppress this card's own duplicate buttons.
-					window_id: windowId ?? null,
+					source_run_id: parentRunId,
 					entity_name: entityName ?? null,
 					entity_type: entityType ?? null,
 					entity_slug: createProposal ? null : (entity?.slug ?? null),
@@ -905,7 +888,6 @@ export async function proposeEntityChange(
 						: (proposal.reason ?? null),
 					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
-					run_id: runId,
 					...currentMcpActivityEventMetadata(ctx),
 				},
 				authorName: attribution,
@@ -951,13 +933,13 @@ export async function proposeEntityChange(
 
 		const inserted = await tx<{ id: number }>`
 			INSERT INTO runs (
-				organization_id, run_type, action_key, action_input, window_id,
+				organization_id, run_type, action_key, action_input, parent_run_id,
 				automation_id, created_by_user_id, initiator_kind, initiator_ref,
 				approval_status, status, idempotency_key, created_at
 			) VALUES (
 				${ctx.organizationId}, 'internal', ${actionKey},
-				${tx.json(actionInputProposal as unknown as Record<string, unknown>)},
-				${windowId ?? null}, ${proposal.automation_id ?? null},
+				${tx.json(proposal as unknown as Record<string, unknown>)},
+				${parentRunId}, ${proposal.automation_id ?? null},
 				${initiatorColumns.createdByUserId},
 				${initiatorColumns.initiatorKind},
 				${tx.json(initiatorColumns.initiatorRef)},
@@ -1325,6 +1307,7 @@ export async function applyEntityChangeProposal(
 	env: Env,
 	db: DbClient,
 	mergeResolution?: MergeApprovalResolution,
+	sourceRunId: number | null = null,
 ): Promise<unknown> {
 	const operation = operationOf(proposal);
 	if (operation === "update") {
@@ -1370,10 +1353,8 @@ export async function applyEntityChangeProposal(
 			mergedBy: ctx.userId ?? "system",
 			resolution: {
 				decision: "human" as const,
-				sourceRunId: mergeProposal.source_run_id ?? null,
+				sourceRunId,
 				automationId: mergeProposal.automation_id ?? null,
-				windowId:
-					mergeProposal.source_window_id ?? mergeProposal.window_id ?? null,
 				policyHash: resolved.policyHash,
 				evidence: resolved.evidence,
 			},

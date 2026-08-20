@@ -33,10 +33,6 @@ describe('QUERYABLE_TABLE_NAMES', () => {
     }
   });
 
-  it('should expose canvas_windows as the window projection', () => {
-    expect(QUERYABLE_TABLE_NAMES.has('canvas_windows')).toBe(true);
-  });
-
   it('should not include non-allowlisted tables', () => {
     expect(QUERYABLE_TABLE_NAMES.has('session')).toBe(false);
     expect(QUERYABLE_TABLE_NAMES.has('member')).toBe(false);

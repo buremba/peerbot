@@ -808,8 +808,11 @@ async function tryApproveEntityChangeRun(
 ): Promise<ManageOperationsResult | null> {
 	const sql = getDb();
 	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
-	const [pending] = await sql<{ action_input: EntityChangeProposal | null }>`
-		SELECT action_input
+	const [pending] = await sql<{
+		action_input: EntityChangeProposal | null;
+		parent_run_id: number | null;
+	}>`
+		SELECT action_input, parent_run_id
 		FROM runs
 		WHERE id = ${args.run_id}
 		  AND organization_id = ${ctx.organizationId}
@@ -853,6 +856,7 @@ async function tryApproveEntityChangeRun(
 			env,
 			db,
 			mergeResolution,
+			pending.parent_run_id == null ? null : Number(pending.parent_run_id),
 		);
 		const staleFields =
 			operation === "update" &&
@@ -1612,15 +1616,15 @@ export async function handleReject(
 	};
 }
 
-/** Pending proposal runs a single automation run produced, grouped by its window. */
-async function pendingRunIdsForWindow(
-	windowId: number,
+/** Pending proposal runs produced by one Automation run. */
+async function pendingChildRunIds(
+	parentRunId: number,
 	organizationId: string,
 ): Promise<number[]> {
 	const sql = getDb();
 	const rows = await sql<{ id: number }>`
     SELECT id FROM runs
-    WHERE window_id = ${windowId}
+    WHERE parent_run_id = ${parentRunId}
       AND organization_id = ${organizationId}
       AND approval_status = 'pending'
       AND run_type = 'internal'
@@ -1686,40 +1690,40 @@ async function pendingActionRunIdsForScope(
 
 /**
  * Resolve the pending set a batch action targets, from whichever scope the
- * caller supplied. Exactly one of `window_id` / `scope` is required — accepting
+ * caller supplied. Exactly one of `run_id` / `scope` is required — accepting
  * neither would mean an unscoped sweep, and accepting both would leave it
  * ambiguous which one bounded the blast radius.
  */
 async function resolveBatchRunIds(
 	args: {
-		window_id?: number;
+		run_id?: number;
 		scope?: Static<typeof ApproveBatchAction>["scope"];
 	},
 	organizationId: string,
 ): Promise<number[] | { error: string }> {
-	if (args.window_id !== undefined && args.scope !== undefined) {
+	if (args.run_id !== undefined && args.scope !== undefined) {
 		return {
 			error:
-				"Provide either window_id or scope, not both — the batch must have exactly one bounded target.",
+				"Provide either run_id or scope, not both — the batch must have exactly one bounded target.",
 		};
 	}
-	if (args.window_id !== undefined) {
-		return pendingRunIdsForWindow(args.window_id, organizationId);
+	if (args.run_id !== undefined) {
+		return pendingChildRunIds(args.run_id, organizationId);
 	}
 	if (args.scope !== undefined) {
 		return pendingActionRunIdsForScope(args.scope, organizationId);
 	}
 	return {
 		error:
-			"A batch decision requires a target: pass window_id (an Automation run's proposals) or scope (queued connector operations).",
+			"A batch decision requires a target: pass run_id (an Automation run's proposals) or scope (queued connector operations).",
 	};
 }
 
 /** Fail-closed message when the pending set moved under the reviewer. Named per
- *  scope so a window batch still says "proposals" (what the reviewer saw) while
+ *  scope so a run batch still says "proposals" (what the reviewer saw) while
  *  a scoped connector batch says "approvals". */
-function batchSetChangedError(isWindowScope: boolean, verb: string): string {
-	const noun = isWindowScope ? "Pending proposals" : "Pending approvals";
+function batchSetChangedError(isRunScope: boolean, verb: string): string {
+	const noun = isRunScope ? "Pending proposals" : "Pending approvals";
 	return `${noun} changed after this batch was loaded. Refresh before ${verb} the batch.`;
 }
 
@@ -1737,7 +1741,7 @@ function batchRunSetChanged(
 
 /**
  * Check the entire batch before deciding its first row. A member may own one
- * entity-change proposal in a window but not its siblings; checking only inside
+ * entity-change proposal in a run but not its siblings; checking only inside
  * each single-run handler would mutate the owned prefix before a later authority
  * failure aborted the request.
  */
@@ -1758,7 +1762,7 @@ async function requireBatchApprovalAuthority(
  * first mutation, then enforced again by each single-run path, so whoever may
  * approve every row individually is exactly who may bulk-approve them.
  *
- * The target is either a window (an Automation run's proposals) or an explicit
+ * The target is either an Automation run or an explicit
  * scope over queued connector operations. There is no unscoped variant: batch
  * approve fires real side effects en masse, so the blast radius must always be
  * named by the caller.
@@ -1775,19 +1779,19 @@ export async function handleApproveBatch(
 	const runIds = resolved;
 	if (batchRunSetChanged(runIds, args.run_ids)) {
 		return {
-			error: batchSetChangedError(args.window_id !== undefined, "approving"),
+			error: batchSetChangedError(args.run_id !== undefined, "approving"),
 		};
 	}
 	await requireBatchApprovalAuthority("approve", runIds, ctx);
 	if (runIds.length === 0) {
 		return {
 			action: "approve_batch",
-			...(args.window_id !== undefined ? { window_id: args.window_id } : {}),
+			...(args.run_id !== undefined ? { run_id: args.run_id } : {}),
 			approved_count: 0,
 			failed_count: 0,
 			run_ids: [],
 			message:
-				args.window_id !== undefined
+				args.run_id !== undefined
 					? "No pending proposals for this run."
 					: "No pending approvals matched this scope.",
 		};
@@ -1805,33 +1809,36 @@ export async function handleApproveBatch(
 	}
 	return {
 		action: "approve_batch",
-		...(args.window_id !== undefined ? { window_id: args.window_id } : {}),
+		...(args.run_id !== undefined ? { run_id: args.run_id } : {}),
 		approved_count: approved,
 		failed_count: failed,
 		run_ids: runIds,
-		message: `Approved ${approved} of ${runIds.length} ${args.window_id !== undefined ? "proposals" : "approvals"}${failed > 0 ? ` (${failed} failed)` : ""}.`,
+		message: `Approved ${approved} of ${runIds.length} ${args.run_id !== undefined ? "proposals" : "approvals"}${failed > 0 ? ` (${failed} failed)` : ""}.`,
 	};
 }
 
 /**
- * The automation + touched entities behind a window's proposal runs. Resolved from
- * the change_set event the automation run recorded for this window (it carries both
+ * The automation + touched entities behind a run's proposals. Resolved from
+ * the run and its change_set event (which carries
  * automation_id and the entity_ids the run touched), so the rejection feedback can
  * be keyed to the automation and associated with those entities.
  */
-async function resolveWindowRevisionContext(
-	windowId: number,
+async function resolveRunRevisionContext(
+	runId: number,
 	organizationId: string,
 ): Promise<{ automationId: number | null; entityIds: number[] }> {
 	const sql = getDb();
 	const rows = await sql<{ automation_id: string | null; entity_ids: unknown }>`
-    SELECT (metadata->>'automation_id')::bigint AS automation_id, entity_ids
-    FROM events
-    WHERE organization_id = ${organizationId}
-      AND semantic_type = 'change_set'
-      AND (metadata->>'window_id')::bigint = ${windowId}
-    ORDER BY id DESC
-    LIMIT 1
+    SELECT r.automation_id, change.entity_ids
+    FROM runs r
+    LEFT JOIN LATERAL (
+      SELECT entity_ids FROM events
+      WHERE run_id = r.id AND semantic_type = 'change_set'
+      ORDER BY id DESC LIMIT 1
+    ) change ON true
+    WHERE r.id = ${runId}
+      AND r.organization_id = ${organizationId}
+      AND r.run_type = 'automation'
   `;
 	if (rows.length === 0) return { automationId: null, entityIds: [] };
 	return {
@@ -1863,7 +1870,7 @@ export async function handleRejectBatch(
 	const runIds = resolved;
 	if (batchRunSetChanged(runIds, args.run_ids)) {
 		return {
-			error: batchSetChangedError(args.window_id !== undefined, "rejecting"),
+			error: batchSetChangedError(args.run_id !== undefined, "rejecting"),
 		};
 	}
 	await requireBatchApprovalAuthority("reject", runIds, ctx);
@@ -1876,14 +1883,14 @@ export async function handleRejectBatch(
 		);
 		if (!("error" in result)) rejected += 1;
 	}
-	// The `correction` feedback event is a WINDOW concept — it is keyed to the
+	// The `correction` feedback event is keyed to the
 	// automation that produced the proposals so its next turn reads the rejection
 	// and revises. A scope-targeted batch over queued connector operations has no
 	// such producing run, so it records no correction; each rejected row still
 	// supersedes its own card through the single-run reject path.
-	if (rejected > 0 && args.window_id !== undefined) {
-		const { automationId, entityIds } = await resolveWindowRevisionContext(
-			args.window_id,
+	if (rejected > 0 && args.run_id !== undefined) {
+		const { automationId, entityIds } = await resolveRunRevisionContext(
+			args.run_id,
 			ctx.organizationId,
 		);
 		// A `correction` event — the durable, run-linked revision channel. Keyed to
@@ -1895,14 +1902,14 @@ export async function handleRejectBatch(
 		await insertEvent({
 			entityIds,
 			organizationId: ctx.organizationId,
-			originId: `window_${args.window_id}_batch_reject`,
+			originId: `run_${args.run_id}_batch_reject`,
 			title: `Batch rejected — ${rejected} proposals`,
 			content: `The user rejected this run's proposals: ${reason}`,
 			semanticType: "correction",
+			runId: args.run_id,
 			createdBy: ctx.userId ?? null,
 			metadata: {
 				kind: "automation_batch_reject",
-				window_id: args.window_id,
 				automation_id: automationId,
 				field_path: "$batch_reject",
 				mutation: "set",
@@ -1914,15 +1921,15 @@ export async function handleRejectBatch(
 	}
 	return {
 		action: "reject_batch",
-		...(args.window_id !== undefined ? { window_id: args.window_id } : {}),
+		...(args.run_id !== undefined ? { run_id: args.run_id } : {}),
 		rejected_count: rejected,
 		run_ids: runIds,
 		message:
 			rejected === 0
-				? args.window_id !== undefined
+				? args.run_id !== undefined
 					? "No pending proposals for this run."
 					: "No pending approvals matched this scope."
-				: args.window_id !== undefined
+				: args.run_id !== undefined
 				? `Rejected ${rejected} proposals. The Automation's next run will see this feedback and revise.`
 					: `Rejected ${rejected} queued operations.`,
 	};

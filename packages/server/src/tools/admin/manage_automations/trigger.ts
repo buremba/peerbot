@@ -90,7 +90,7 @@ export async function handleSetReactionScript(
   await requireExists(sql, "automations", args.automation_id, "Automation");
 
   // Reaction script is a group-shared field — every assignment in the
-  // group runs the same reactions on its windows. Resolve the group once
+  // group runs the same reactions after completion. Resolve the group once
   // and cascade across all assignments so we don't silently fork.
   const groupRows = await sql`
     SELECT automation_group_id FROM automations WHERE id = ${args.automation_id} LIMIT 1

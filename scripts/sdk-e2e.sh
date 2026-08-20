@@ -252,7 +252,7 @@ export default async (ctx: ReactionContext, client: ReactionClient): Promise<voi
     semantic_type: "summary",
     metadata: {
       automation_slug: ctx.automation.slug,
-      window_id: ctx.window.id,
+      run_id: ctx.window.run_id,
       content_analyzed: ctx.window.content_analyzed,
     },
   });

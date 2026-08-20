@@ -109,7 +109,7 @@ export async function assertEntityIdsInOrg(
  * Tables whose `id` column is allocated via SELECT MAX(id) + 1. Whitelisted so
  * the table name can be safely interpolated into sql.unsafe().
  */
-const NUMERIC_ID_TABLES = ['automations', 'automation_window_events', 'automation_versions'] as const;
+const NUMERIC_ID_TABLES = ['automations', 'automation_run_events', 'automation_versions'] as const;
 
 type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
 

@@ -856,7 +856,7 @@ async function updateSingleClassification(
       WHERE event_id = ${contentId} AND classifier_id = ${classifier.classifier_id} AND source = ${source} AND automation_id IS NULL
     `;
     await tx`
-      INSERT INTO event_classifications (event_id, classifier_id, automation_id, window_id, "values", confidences, source, is_manual, reasoning)
+      INSERT INTO event_classifications (event_id, classifier_id, automation_id, run_id, "values", confidences, source, is_manual, reasoning)
       VALUES (${contentId}, ${classifier.classifier_id}, NULL, NULL, ${valuesLiteral}::text[], ${sql.json(confidences)}, ${source}, true, ${reasoning || null})
     `;
   });

@@ -505,7 +505,7 @@ export default async (_ctx, client) => {
 			"Send a notification to org users. With a flat object `input_schema`, it becomes a human question on the existing approval/rejection rail: in-app surfaces render answer controls, chat delivery links to Lobu when input is needed, and the returned `run_id` can be read with `operations.getRun` until its output contains `{ answer: ... }`. Supported answer schemas contain primitive fields, scalar enum choices, string or scalar-enum arrays, and optional nullable wrappers; nested objects, references, combinators other than those nullable wrappers, constants, and string/number/array constraints are rejected. An unsupported `input_schema` fails the call with HTTP 422. Without `input_schema`, it sends an FYI. With `semantic_type`, the notification renders as a content event through the event-kind pipeline: `data` feeds the kind's `jsonTemplate` in the Memory/Events view, the inbox keeps the markdown `body`, and the kind is validated against `$member.event_kinds` (422 on an unregistered kind or invalid non-empty data). Both fan out to active bot connections. Pass `automation_source` from a reaction for feedback attribution.",
 		access: "write",
 		signature:
-			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; semantic_type?: string; input_schema?: object; automation_source?: { automation_id: number; window_id: number } }): Promise<{ notified_count: number; event_id: number | null; url: string | null; run_id?: number }>",
+			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; semantic_type?: string; input_schema?: object; automation_source?: { automation_id: number; run_id: number } }): Promise<{ notified_count: number; event_id: number | null; url: string | null; run_id?: number }>",
 		example:
 			"await client.notifications.send({ title: 'Choose a launch window', input_schema: { type: 'object', properties: { window: { enum: ['Monday', 'Friday'] } }, required: ['window'] } });",
 		usageExample: `// Ask a human and return the durable handle the caller can poll.
@@ -551,7 +551,7 @@ export default async (_ctx, client) => {
 	},
 	"automations.create": {
 		summary:
-			"Create an Automation. Requires slug and agent_id; window/manual Automations also need prompt, skills, or a reaction script. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
+			"Create an Automation. Requires slug and agent_id; window/manual Automations also need prompt, skills, or a reaction script. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a run-result/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
@@ -573,7 +573,7 @@ export default async (_ctx, client) => {
 	},
 	"automations.update": {
 		summary:
-			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, notification_channel, notification_priority, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (an Automation is retired via delete → archived).",
+			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (an Automation is retired via delete → archived).",
 		access: "admin",
 	},
 	"automations.createVersion": {
@@ -822,7 +822,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.execute": {
 		summary:
-			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, automation_source?: { automation_id: number, window_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, automation_source?: { automation_id: number, run_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
 		access: "external",
 		cost: "expensive",
 		example:

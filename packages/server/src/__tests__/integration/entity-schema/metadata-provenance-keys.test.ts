@@ -1,12 +1,12 @@
 /**
  * Automation-promotion provenance keys must survive metadata round-trips.
  *
- * `promote-keyed-entities.ts` stamps `automation_id` / `stable_key` / `window_id`
+ * `promote-keyed-entities.ts` stamps `automation_id` / `stable_key` / `run_id`
  * / `automation_output` (plus `source`) onto promoted entity metadata via raw SQL — outside
  * schema validation. Under an `additionalProperties: false` entity-type schema
  * that meant a promoted entity's metadata could never be written back through
  * `entities.update`: reading the metadata, editing one domain field, and
- * saving rejected with "unknown property 'window_id'". Validation now exempts
+ * saving rejected with an unknown platform property. Validation now exempts
  * exactly those platform keys; everything else stays schema-enforced.
  */
 
@@ -67,7 +67,7 @@ describe('entity metadata validation > automation provenance keys', () => {
         source: 'automation_promotion',
         automation_id: 5,
         stable_key: 'ship-the-fix',
-        window_id: 4288453,
+        run_id: 4288453,
         automation_output: 'tasks',
       },
     });
@@ -76,7 +76,7 @@ describe('entity metadata validation > automation provenance keys', () => {
       entity?: { metadata?: Record<string, unknown> };
     };
     expect(got.entity?.metadata?.status).toBe('done');
-    expect(got.entity?.metadata?.window_id).toBe(4288453);
+    expect(got.entity?.metadata?.run_id).toBe(4288453);
     expect(got.entity?.metadata?.automation_output).toBe('tasks');
   });
 

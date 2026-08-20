@@ -508,7 +508,7 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 				}
 			})(),
 			classification_source: c.req.query("classification_source") || undefined,
-			window_id: safeParseInt(c.req.query("window_id"), { min: 1 }),
+			run_id: safeParseInt(c.req.query("run_id"), { min: 1 }),
 			content_ids: contentIds
 				? contentIds
 						.split(",")

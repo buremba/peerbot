@@ -53,7 +53,7 @@ export type AutomationWindowReaction = Static<typeof AutomationWindowReactionSch
  * Automation window data as returned by get_automation
  */
 export const AutomationWindowSchema = Type.Object({
-  window_id: Type.Integer(),
+  run_id: Type.Integer(),
   automation_id: Type.String(),
   automation_name: Type.String(),
   granularity: Type.String(),

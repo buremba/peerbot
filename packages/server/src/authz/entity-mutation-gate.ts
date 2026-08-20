@@ -89,13 +89,8 @@ interface EntityMutationBase {
 	 * Defaults true (agent/user writes, and automations whose owner resolved).
 	 */
 	ownerResolved?: boolean;
-	/**
-	 * The automation-run window that produced this mutation, if any. Threaded so a
-	 * deferred approval lands on the `runs.window_id` COLUMN — that's what groups a
-	 * run's N proposals into ONE batch approval card, and (with the window in the
-	 * dedup key) keeps identical proposals from different windows distinct.
-	 */
-	windowId?: number | null;
+	/** Causal run whose mutation may create a child approval run. */
+	parentRunId?: number | null;
 }
 
 export interface CreateMutationRequest extends EntityMutationBase {
@@ -205,8 +200,7 @@ export function deferEntityFieldChange(args: {
 	/** Fields the rule escalated — what the approver is consenting to. */
 	escalatedFields?: string[];
 	automationId?: number | null;
-	/** Groups this proposal's run into a per-window batch approval card. */
-	windowId?: number | null;
+	parentRunId?: number | null;
 }): DeferredMutation {
 	return buildFieldChangeDeferral(args);
 }
@@ -221,8 +215,7 @@ export function deferEntityCreate(args: {
 	/** Fields the rule escalated — what the approver is consenting to. */
 	escalatedFields?: string[];
 	automationId?: number | null;
-	/** Groups this proposal's run into a per-window batch approval card. */
-	windowId?: number | null;
+	parentRunId?: number | null;
 }): DeferredMutation {
 	return buildCreateDeferral(args);
 }

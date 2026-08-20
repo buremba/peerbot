@@ -1,8 +1,8 @@
 /**
  * Scoped bulk approve/reject over queued connector-operation approvals.
  *
- * `approve_batch` / `reject_batch` already existed but were reachable ONLY via
- * `window_id` — i.e. only for the Automation-proposal lane (`run_type='internal'`).
+ * `approve_batch` / `reject_batch` already existed for one source run in the
+ * Automation-proposal lane (`run_type='internal'`).
  * The lane that actually accumulates undecided rows, queued connector operations
  * (`run_type='action'`), had no bulk action at all: an operator had to decide
  * them one at a time or leave them pending forever.
@@ -309,7 +309,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		expect(await approvalStatusOf(pending)).toBe("pending");
 	});
 
-	it("refuses an ambiguous batch carrying BOTH window_id and scope", async () => {
+	it("refuses an ambiguous batch carrying both run_id and scope", async () => {
 		const pending = await seedPendingAction({
 			connectorKey: "github",
 			actionKey: "create_issue",
@@ -318,7 +318,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		const result = (await manageOperations(
 			{
 				action: "reject_batch",
-				window_id: 1,
+				run_id: 1,
 				scope: { connector_key: "github" },
 			},
 			{} as Env,
@@ -458,12 +458,16 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		expect(await approvalStatusOf(pending)).toBe("pending");
 	});
 
-	it("preflights every run's authority before mutating a window batch", async () => {
+	it("preflights every run's authority before mutating a source-run batch", async () => {
 		const sql = getTestDb();
+		const [sourceRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs (organization_id, run_type, status)
+			VALUES (${orgId}, 'internal', 'completed') RETURNING id
+		`;
 		const rows = await sql`
       INSERT INTO runs (
         organization_id, run_type, status, approval_status,
-        action_key, action_input, window_id
+        action_key, action_input, parent_run_id
       ) VALUES
         (
           ${orgId}, 'internal', 'pending', 'pending',
@@ -473,7 +477,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 						fields: { priority: "high" },
 						owner_user_id: memberCtx.userId,
 					})},
-          91
+          ${sourceRun.id}
         ),
         (
           ${orgId}, 'internal', 'pending', 'pending',
@@ -483,7 +487,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 						fields: { priority: "high" },
 						owner_user_id: "another-user",
 					})},
-          91
+          ${sourceRun.id}
         )
       RETURNING id
     `;
@@ -493,7 +497,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 			manageOperations(
 				{
 					action: "reject_batch",
-					window_id: 91,
+					run_id: sourceRun.id,
 					run_ids: runIds,
 				},
 				{} as Env,

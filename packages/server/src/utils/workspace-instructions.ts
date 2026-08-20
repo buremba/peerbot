@@ -29,15 +29,6 @@ function isInternalAutomationSchemaField(field: string): boolean {
   return INTERNAL_AUTOMATION_SCHEMA_FIELDS.has(field.toLowerCase());
 }
 
-/** Translate engine vocabulary only on known internal fields. */
-function publicFieldDescription(field: string, value: unknown): string {
-  const description = singleLine(value);
-  if (field.toLowerCase() !== 'window_id') return description;
-  return description
-    .replace(/\bautomations\b/gi, 'Automations')
-    .replace(/\bautomation\b/gi, 'Automation');
-}
-
 /**
  * Render a metadata schema's fields as a compact `name (description)` list.
  * Accepts both a real JSON Schema (descends into `.properties` — the old
@@ -58,10 +49,7 @@ function renderSchemaFields(schema: unknown): string {
   return Object.entries(props)
     .filter(([field]) => !isInternalAutomationSchemaField(field))
     .map(([field, def]) => {
-      const desc = publicFieldDescription(
-        field,
-        (def as Record<string, unknown> | null)?.description
-      );
+      const desc = singleLine((def as Record<string, unknown> | null)?.description);
       return desc ? `${field} (${desc})` : field;
     })
     .join(', ');

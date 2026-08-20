@@ -569,21 +569,6 @@ function emitAutomation(
     );
     fields.push(`sources: ${emitValue(sourceObj, 1)}`);
   }
-  // notification — omit canvas/normal defaults.
-  const channel =
-    w.notification_channel && w.notification_channel !== "canvas"
-      ? w.notification_channel
-      : undefined;
-  const priority =
-    w.notification_priority && w.notification_priority !== "normal"
-      ? w.notification_priority
-      : undefined;
-  if (channel || priority) {
-    const notif: string[] = [];
-    if (channel) notif.push(`channel: ${str(channel)}`);
-    if (priority) notif.push(`priority: ${str(priority)}`);
-    fields.push(`notification: ${objectLiteral(notif, 1)}`);
-  }
   if (
     w.min_cooldown_seconds !== undefined &&
     w.min_cooldown_seconds !== null &&

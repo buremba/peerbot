@@ -479,13 +479,13 @@ export async function handleExecute(
 	// A caller-provided automation_source is only an attribution hint. Durable
 	// feedback must follow the server-stamped Automation execution context.
 	const reactionAutomationId = ctx.actingAutomationId ?? null;
-	const reactionWindowId = ctx.actingWindowId ?? null;
+	const reactionSourceRunId = ctx.actingRunId ?? null;
 	const trackOperationReaction = async (runId: number): Promise<void> => {
-		if (reactionAutomationId === null || reactionWindowId === null) return;
+		if (reactionAutomationId === null || reactionSourceRunId === null) return;
 		await trackAutomationReaction({
 			organizationId: ctx.organizationId,
 			automationId: reactionAutomationId,
-			windowId: reactionWindowId,
+			sourceRunId: reactionSourceRunId,
 			reactionType: "action_executed",
 			toolName: "manage_operations",
 			toolArgs: {
@@ -678,7 +678,7 @@ export async function handleExecute(
 				policyPrincipalId: actor.id,
 				createdByUserId: ctx.userId,
 				automationId: ctx.actingAutomationId,
-				windowId: ctx.actingWindowId,
+				parentRunId: ctx.actingRunId,
 				idempotencyKey: args.idempotency_key,
 				db: tx,
 			});
@@ -794,7 +794,7 @@ export async function handleExecute(
 		policyPrincipalId: actor.id,
 		createdByUserId: activation ? visibilityUserId : ctx.userId,
 		automationId: ctx.actingAutomationId,
-		windowId: ctx.actingWindowId,
+		parentRunId: ctx.actingRunId,
 		idempotencyKey: args.idempotency_key,
 		activation,
 	});

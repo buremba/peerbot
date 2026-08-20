@@ -938,7 +938,7 @@ function getCitationFieldsToStrip(citationConfig: CitationConfig): string[] {
 async function processExtractedClassifications(
 	sql: DbClient,
 	automationId: number,
-	windowId: number,
+	runId: number,
 	extractedData: any,
 	classifiers: ClassifierRow[],
 	validContentIds: Set<number>,
@@ -1006,14 +1006,14 @@ async function processExtractedClassifications(
 
 					await sql`
             INSERT INTO event_classifications (
-              event_id, classifier_id, automation_id, window_id,
+              event_id, classifier_id, automation_id, run_id,
               values, excerpts, confidences, source, is_manual
             )
             VALUES (
               ${citation.content_id},
               ${classifier.id},
               ${automationId},
-              ${windowId},
+              ${runId},
               ARRAY[${value}]::text[],
               ${sql.json(excerptsJson)},
               '{}',
@@ -1024,7 +1024,7 @@ async function processExtractedClassifications(
             DO UPDATE SET
               values = ARRAY(SELECT DISTINCT unnest(event_classifications.values || EXCLUDED.values)),
               excerpts = event_classifications.excerpts || EXCLUDED.excerpts,
-              window_id = EXCLUDED.window_id
+              run_id = EXCLUDED.run_id
           `;
 					totalClassifications++;
 
@@ -1056,14 +1056,14 @@ async function processExtractedClassifications(
 							if (parentClassifier) {
 								await sql`
                   INSERT INTO event_classifications (
-                    event_id, classifier_id, automation_id, window_id,
+                    event_id, classifier_id, automation_id, run_id,
                     values, excerpts, confidences, source, is_manual
                   )
                   VALUES (
                     ${citation.content_id},
                     ${parentClassifier.id},
                     ${automationId},
-                    ${windowId},
+                    ${runId},
                     ARRAY[${parentValue}]::text[],
                     '{}',
                     '{}',
@@ -1073,7 +1073,7 @@ async function processExtractedClassifications(
                   ON CONFLICT (event_id, classifier_id, source, COALESCE(automation_id, 0))
                   DO UPDATE SET
                     values = ARRAY(SELECT DISTINCT unnest(event_classifications.values || EXCLUDED.values)),
-                    window_id = EXCLUDED.window_id
+                    run_id = EXCLUDED.run_id
                 `;
 								totalClassifications++;
 								logger.info(
@@ -1117,14 +1117,14 @@ async function processExtractedClassifications(
 
 	if (totalClassifications > 0) {
 		logger.info(
-			{ automationId, windowId, totalClassifications, invalidCitations },
+			{ automationId, runId, totalClassifications, invalidCitations },
 			"[ClassifierExtraction] Created LLM-based classifications",
 		);
 	}
 
 	if (invalidCitations > 0) {
 		logger.warn(
-			{ automationId, windowId, invalidCitations },
+			{ automationId, runId, invalidCitations },
 			"[ClassifierExtraction] Some citations referenced invalid content IDs",
 		);
 	}
@@ -1137,7 +1137,7 @@ async function processExtractedClassifications(
  *
  * @param sql - Database client
  * @param automationId - Automation ID
- * @param windowId - Window ID
+ * @param runId - Automation result run ID
  * @param extractedData - Original extracted data (with internal fields like cited_content_ids)
  * @param classifiers - Array of classifiers with extraction_config
  * @param validContentIds - Set of content IDs that are valid for this window (for citation validation)
@@ -1145,7 +1145,7 @@ async function processExtractedClassifications(
 export async function processAutomationClassifications(
 	sql: DbClient,
 	automationId: number,
-	windowId: number,
+	runId: number,
 	extractedData: any,
 	classifiers: ClassifierRow[],
 	validContentIds: Set<number>,
@@ -1161,7 +1161,7 @@ export async function processAutomationClassifications(
 		await processExtractedClassifications(
 			sql,
 			automationId,
-			windowId,
+			runId,
 			extractedData,
 			classifiers,
 			validContentIds,
@@ -1169,8 +1169,8 @@ export async function processAutomationClassifications(
 	} catch (error) {
 		// Log and re-throw - embeddings are required
 		logger.error(
-			{ error, automation_id: automationId, window_id: windowId },
-			"[ClassifierExtraction] Error processing classifications for window",
+			{ error, automation_id: automationId, run_id: runId },
+			"[ClassifierExtraction] Error processing classifications for run",
 		);
 		throw error;
 	}

@@ -94,7 +94,7 @@ interface CreateNotificationParams {
 	card?: CardElement | null;
 	/**
 	 * Optional entity ids to anchor the notification event to (e.g. an automation's
-	 * canvas entity, so the notification threads under the canvas). Stamped onto
+	 * source run, so the notification remains causally threaded). Stamped onto
 	 * the notification event's `entity_ids`.
 	 */
 	entityIds?: number[];

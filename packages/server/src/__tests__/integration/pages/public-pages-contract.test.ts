@@ -23,10 +23,9 @@ import {
   createTestUser,
 } from '../../setup/test-fixtures';
 import { get } from '../../setup/test-helpers';
-import {
-  CANVAS_ENTITY_TYPE_SLUG,
-  MEMBER_ENTITY_TYPE_SLUG,
-} from '../../../tools/constants';
+import { MEMBER_ENTITY_TYPE_SLUG } from '../../../tools/constants';
+
+const LEGACY_CANVAS_ENTITY_TYPE_SLUG = '$canvas';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_AVAILABLE = existsSync(
@@ -108,7 +107,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       INSERT INTO entity_types (organization_id, slug, name, description, icon, created_at, updated_at)
       VALUES
         (${publicOrg.id}, ${MEMBER_ENTITY_TYPE_SLUG}, 'Member', 'Organization member', '👤', NOW(), NOW()),
-        (${publicOrg.id}, ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Automation canvas', 'layout', NOW(), NOW())
+        (${publicOrg.id}, ${LEGACY_CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Automation canvas', 'layout', NOW(), NOW())
     `;
     await createTestEntity({
       name: 'Roster Person',
@@ -118,7 +117,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     });
     const canvas = await createTestEntity({
       name: 'Automation Canvas',
-      entity_type: CANVAS_ENTITY_TYPE_SLUG,
+      entity_type: LEGACY_CANVAS_ENTITY_TYPE_SLUG,
       organization_id: publicOrg.id,
       parent_id: brand.id,
       created_by: user.id,
@@ -163,7 +162,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     // events behind. They must stay suppressed, not become public.
     const deletedCanvas = await createTestEntity({
       name: 'Deleted Automation Canvas',
-      entity_type: CANVAS_ENTITY_TYPE_SLUG,
+      entity_type: LEGACY_CANVAS_ENTITY_TYPE_SLUG,
       organization_id: publicOrg.id,
       parent_id: brand.id,
       created_by: user.id,
@@ -249,7 +248,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(sitemap.status).toBe(200);
     expect(sitemapXml).not.toContain(`/${MEMBER_ENTITY_TYPE_SLUG}`);
     expect(sitemapXml).not.toContain('roster-person');
-    expect(sitemapXml).not.toContain(`/${CANVAS_ENTITY_TYPE_SLUG}`);
+    expect(sitemapXml).not.toContain(`/${LEGACY_CANVAS_ENTITY_TYPE_SLUG}`);
     expect(sitemapXml).not.toContain('automation-canvas');
     // Guard the whole class, not just today's built-ins.
     expect(sitemapXml).not.toMatch(/<loc>[^<]*\/\$/);
@@ -259,7 +258,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     // The two-segment type lookup does not cover deep paths — a $canvas child
     // hanging off a public parent must 404 on its own full route.
     const response = await get(
-      `/public-contract-org/brand/acme-brand/${CANVAS_ENTITY_TYPE_SLUG}/automation-canvas`,
+      `/public-contract-org/brand/acme-brand/${LEGACY_CANVAS_ENTITY_TYPE_SLUG}/automation-canvas`,
       { headers: { Accept: 'text/html' }, env: { PUBLIC_GATEWAY_URL: publicGatewayUrl } }
     );
     const body = await response.text();
@@ -276,8 +275,8 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     const workspaceBody = await (
       await get('/public-contract-org', { headers: { Accept: 'text/html' }, env })
     ).text();
-    expect(workspaceBody).not.toContain(`/public-contract-org/${CANVAS_ENTITY_TYPE_SLUG}`);
-    expect(workspaceBody).not.toContain(`"${CANVAS_ENTITY_TYPE_SLUG}"`);
+    expect(workspaceBody).not.toContain(`/public-contract-org/${LEGACY_CANVAS_ENTITY_TYPE_SLUG}`);
+    expect(workspaceBody).not.toContain(`"${LEGACY_CANVAS_ENTITY_TYPE_SLUG}"`);
     expect(workspaceBody).not.toContain(`"${MEMBER_ENTITY_TYPE_SLUG}"`);
     // Ordinary types still render — the filter must not be over-broad.
     expect(workspaceBody).toContain('"brand"');
@@ -301,7 +300,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       await get('/public-contract-org/brand/acme-brand', { headers: { Accept: 'text/html' }, env })
     ).text();
     expect(entityBody).not.toContain('Automation Canvas');
-    expect(entityBody).not.toContain(`"${CANVAS_ENTITY_TYPE_SLUG}"`);
+    expect(entityBody).not.toContain(`"${LEGACY_CANVAS_ENTITY_TYPE_SLUG}"`);
     // The ordinary child is still listed.
     expect(entityBody).toContain('Acme Product');
   });

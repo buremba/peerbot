@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../index";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
+import { createAutomationRun } from "../../runs/queue-service";
 import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -35,7 +36,7 @@ describe("operations.execute backend lifecycle", () => {
 	let secondMcpConnectionId: number;
 	let httpConnectionId: number;
 	let automationId: number;
-	let windowId: number;
+	let sourceRunId: number;
 	let failedTransportCallCount = 0;
 	let failDiscoveryConnectionId: number | null = null;
 
@@ -83,18 +84,15 @@ describe("operations.execute backend lifecycle", () => {
 			RETURNING id
 		`;
 		automationId = Number(automation.id);
-		const [window] = await sql`
-			INSERT INTO events (
-				organization_id, semantic_type, payload_type, payload_data,
-				automation_id, metadata, occurred_at, created_at, created_by
-			) VALUES (
-				${orgId}, 'canvas_state', 'json_template', '{}'::jsonb,
-				${automationId},
-				${sql.json({ automation_id: automationId })}, NOW(), NOW(), ${userId}
-			)
-			RETURNING id
-		`;
-		windowId = Number(window.id);
+		const sourceRun = await createAutomationRun({
+			organizationId: orgId,
+			automationId,
+			agentId: automationAgent.agentId,
+			windowStart: "2026-08-10T00:00:00.000Z",
+			windowEnd: "2026-08-10T01:00:00.000Z",
+			dispatchSource: "manual",
+		}, sql);
+		sourceRunId = sourceRun.runId;
 		await sql`
 			UPDATE connector_definitions
 			SET actions_schema = ${sql.json({
@@ -408,7 +406,7 @@ describe("operations.execute backend lifecycle", () => {
 				idempotency_key: "operation-backend-test:automation-provenance",
 				},
 				{} as Env,
-				{ ...ctx, actingAutomationId: automationId, actingWindowId: windowId },
+				{ ...ctx, actingAutomationId: automationId, actingRunId: sourceRunId },
 			);
 		const result = (await execute()) as { run_id: number; status: string };
 		const replay = (await execute()) as { run_id: number; status: string };
@@ -417,14 +415,14 @@ describe("operations.execute backend lifecycle", () => {
 		expect(replay.run_id).toBe(result.run_id);
 		const sql = getTestDb();
 		const [run] = await sql`
-			SELECT automation_id, window_id FROM runs WHERE id = ${result.run_id}
+			SELECT automation_id, parent_run_id FROM runs WHERE id = ${result.run_id}
 		`;
 		expect(Number(run.automation_id)).toBe(automationId);
-		expect(Number(run.window_id)).toBe(windowId);
+		expect(Number(run.parent_run_id)).toBe(sourceRunId);
 		const reactions = await sql`
 			SELECT run_id FROM automation_reactions
 			WHERE automation_id = ${automationId}
-			  AND window_id = ${windowId}
+			  AND source_run_id = ${sourceRunId}
 			  AND run_id = ${result.run_id}
 		`;
 		expect(reactions).toHaveLength(1);
@@ -446,20 +444,20 @@ describe("operations.execute backend lifecycle", () => {
 				userId: null,
 				memberRole: null,
 				actingAutomationId: automationId,
-				actingWindowId: windowId,
+				actingRunId: sourceRunId,
 				sourceContext: { source: "automation-run" },
 			},
 		)) as { run_id: number; status: string };
 
 		expect(result.status).toBe("completed");
 		const [run] = await getTestDb()`
-			SELECT created_by_user_id, automation_id, window_id
+			SELECT created_by_user_id, automation_id, parent_run_id
 			FROM runs
 			WHERE id = ${result.run_id}
 		`;
 		expect(run.created_by_user_id).toBeNull();
 		expect(Number(run.automation_id)).toBe(automationId);
-		expect(Number(run.window_id)).toBe(windowId);
+		expect(Number(run.parent_run_id)).toBe(sourceRunId);
 	});
 
 	it("lets a headless Automation discover its author's private operation target", async () => {
@@ -482,7 +480,7 @@ describe("operations.execute backend lifecycle", () => {
 				userId: null,
 				memberRole: null,
 				actingAutomationId: automationId,
-				actingWindowId: windowId,
+				actingRunId: sourceRunId,
 				sourceContext: { source: "automation-run" },
 			},
 		)) as {
@@ -540,7 +538,7 @@ describe("operations.execute backend lifecycle", () => {
 				userId: null,
 				memberRole: null,
 				actingAutomationId: automationId,
-				actingWindowId: windowId,
+				actingRunId: sourceRunId,
 				sourceContext: { source: "automation-run" },
 			},
 		);
@@ -576,7 +574,7 @@ describe("operations.execute backend lifecycle", () => {
 				userId: null,
 				memberRole: null,
 				actingAutomationId: automationId,
-				actingWindowId: windowId,
+				actingRunId: sourceRunId,
 				sourceContext: { source: "automation-run" },
 			},
 		);
@@ -604,7 +602,7 @@ describe("operations.execute backend lifecycle", () => {
 				userId: null,
 				memberRole: null,
 				actingAutomationId: automationId,
-				actingWindowId: windowId,
+				actingRunId: sourceRunId,
 				sourceContext: { source: "automation-run" },
 			},
 		);
@@ -629,7 +627,7 @@ describe("operations.execute backend lifecycle", () => {
 				userId: null,
 				memberRole: null,
 				actingAutomationId: 2_147_483_647,
-				actingWindowId: windowId,
+				actingRunId: sourceRunId,
 				sourceContext: { source: "automation-run" },
 			},
 		);
@@ -666,7 +664,7 @@ describe("operations.execute backend lifecycle", () => {
 					idempotency_key: "operation-backend-test:repair-feedback",
 				},
 				{} as Env,
-				{ ...ctx, actingAutomationId: automationId, actingWindowId: windowId },
+				{ ...ctx, actingAutomationId: automationId, actingRunId: sourceRunId },
 			);
 
 		try {
@@ -698,7 +696,7 @@ describe("operations.execute backend lifecycle", () => {
 			const reactions = await sql`
 				SELECT run_id FROM automation_reactions
 				WHERE automation_id = ${automationId}
-				  AND window_id = ${windowId}
+				  AND source_run_id = ${sourceRunId}
 				  AND run_id = ${Number(persisted.id)}
 			`;
 			expect(reactions).toHaveLength(1);

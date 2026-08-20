@@ -932,7 +932,30 @@ export async function applyManageAutomationsProposal(
         }
       }
     }
-    return runManageAutomations(args, env, applyCtx);
+    // The approval path already established the human's authority. Dispatch
+    // directly so this server-side continuation does not re-enter routeAction's
+    // fresh-call mcp:admin gate; resolve_approval intentionally requires only
+    // mcp:write.
+    switch (args.action) {
+      case 'create':
+        return handleCreate(args, env, applyCtx);
+      case 'update':
+        return handleUpdate(args, env, applyCtx);
+      case 'create_version':
+        return handleCreateVersion(args, env, applyCtx);
+      case 'create_from_version':
+        return handleCreateFromVersion(args, env, applyCtx);
+      case 'set_reaction_script':
+        return handleSetReactionScript(args, env, applyCtx);
+      case 'delete':
+        return handleDelete(args, applyCtx);
+      default:
+        // Only write actions queue (automationWriteAction gates the queue path);
+        // a held proposal with any other action is corrupt — fail the apply.
+        throw new ToolUserError(
+          `Queued manage_automations proposal holds a non-write action: ${args.action}`
+        );
+    }
   });
 }
 

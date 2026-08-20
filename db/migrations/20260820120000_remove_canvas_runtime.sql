@@ -341,6 +341,42 @@ SET window_id = source.run_id
 FROM source_for_reaction source
 WHERE reaction.id = source.id;
 
+-- reaction-orphan-cutover:start
+-- One production notification reaction from the retired best-effort path has
+-- automation_id copied into window_id and no run_id. Preserve that bookkeeping
+-- row only when its source is unambiguous: exactly one completed run for the
+-- same organization and Automation in the preceding five minutes. Any other
+-- orphan remains untouched so the assertion below still fails closed.
+WITH orphaned_notification_reaction AS MATERIALIZED (
+  SELECT reaction.id, reaction.organization_id, reaction.automation_id,
+         reaction.created_at
+  FROM public.automation_reactions reaction
+  WHERE reaction.window_id = reaction.automation_id
+    AND reaction.reaction_type = 'notification_sent'
+    AND reaction.tool_name = 'notify'
+    AND reaction.run_id IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM public.runs existing WHERE existing.id = reaction.window_id
+    )
+), unique_source_run AS (
+  SELECT reaction.id, MIN(candidate.id) AS run_id
+  FROM orphaned_notification_reaction reaction
+  JOIN public.runs candidate
+    ON candidate.organization_id = reaction.organization_id
+   AND candidate.automation_id = reaction.automation_id
+   AND candidate.run_type = 'automation'
+   AND candidate.status = 'completed'
+   AND candidate.completed_at BETWEEN reaction.created_at - interval '5 minutes'
+                                  AND reaction.created_at
+  GROUP BY reaction.id
+  HAVING COUNT(*) = 1
+)
+UPDATE public.automation_reactions reaction
+SET window_id = source.run_id
+FROM unique_source_run source
+WHERE reaction.id = source.id;
+-- reaction-orphan-cutover:end
+
 WITH source_for_merge AS (
   SELECT operation.id, COALESCE((
     SELECT member.run_id

@@ -9,6 +9,8 @@ const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
 const CANVAS_REMOVAL_MIGRATION = '20260820120000_remove_canvas_runtime.sql';
 const CANVAS_RESULT_CUTOVER_START = '-- canvas-result-cutover:start';
 const CANVAS_RESULT_CUTOVER_END = '-- canvas-result-cutover:end';
+const REACTION_ORPHAN_CUTOVER_START = '-- reaction-orphan-cutover:start';
+const REACTION_ORPHAN_CUTOVER_END = '-- reaction-orphan-cutover:end';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
 const ENTITY_REWRITE_START = '-- entity-metadata-cutover:start';
@@ -48,6 +50,14 @@ function loadCanvasResultCutover(): string {
   const end = up.indexOf(CANVAS_RESULT_CUTOVER_END);
   if (start < 0 || end < start) throw new Error('Could not locate Canvas result cutover');
   return up.slice(start + CANVAS_RESULT_CUTOVER_START.length, end);
+}
+
+function loadReactionOrphanCutover(): string {
+  const up = loadMigrationUpSection(resolveMigrationsDir(), CANVAS_REMOVAL_MIGRATION);
+  const start = up.indexOf(REACTION_ORPHAN_CUTOVER_START);
+  const end = up.indexOf(REACTION_ORPHAN_CUTOVER_END);
+  if (start < 0 || end < start) throw new Error('Could not locate reaction orphan cutover');
+  return up.slice(start + REACTION_ORPHAN_CUTOVER_START.length, end);
 }
 
 describe('Automation schema vocabulary', () => {
@@ -228,6 +238,88 @@ describe('Automation schema vocabulary', () => {
           },
           run_metadata: { content_analyzed: 5 },
         });
+
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+  });
+
+  it('repairs only an unambiguous legacy notification reaction source', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    const user = await createTestUser();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+      agentId: 'reaction-orphan-cutover-agent',
+    });
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        const automationId = -710_001;
+        await tx`
+          INSERT INTO automations (
+            id, organization_id, created_by, agent_id, automation_group_id,
+            name, slug
+          ) VALUES (
+            ${automationId}, ${org.id}, ${user.id}, ${agent.agentId}, ${automationId},
+            'Reaction orphan cutover', 'reaction-orphan-cutover'
+          )
+        `;
+        const [uniqueRun] = await tx<{ id: number }[]>`
+          INSERT INTO runs (
+            organization_id, run_type, automation_id, status, approval_status,
+            created_at, completed_at
+          ) VALUES (
+            ${org.id}, 'automation', ${automationId}, 'completed', 'auto',
+            '2026-08-02T01:26:04.000Z', '2026-08-02T01:26:04.000Z'
+          )
+          RETURNING id
+        `;
+        await tx`
+          INSERT INTO runs (
+            organization_id, run_type, automation_id, status, approval_status,
+            created_at, completed_at
+          ) VALUES
+            (${org.id}, 'automation', ${automationId}, 'completed', 'auto',
+             '2026-08-02T02:25:00.000Z', '2026-08-02T02:25:00.000Z'),
+            (${org.id}, 'automation', ${automationId}, 'completed', 'auto',
+             '2026-08-02T02:25:00.000Z', '2026-08-02T02:25:00.000Z')
+        `;
+
+        // The marked section runs before the full migration renames this column
+        // and re-points its foreign key; the test database has already applied
+        // both, so restore the legacy shape and run the shipped SQL verbatim.
+        await tx`
+          ALTER TABLE automation_reactions
+          DROP CONSTRAINT automation_reactions_source_run_id_fkey
+        `;
+        await tx`ALTER TABLE automation_reactions RENAME COLUMN source_run_id TO window_id`;
+        const reactions = await tx<{ id: number }[]>`
+          INSERT INTO automation_reactions (
+            organization_id, automation_id, window_id, reaction_type,
+            tool_name, tool_args, created_at
+          ) VALUES
+            (${org.id}, ${automationId}, ${automationId}, 'notification_sent', 'notify',
+             '{}'::jsonb, '2026-08-02T01:26:15.000Z'),
+            (${org.id}, ${automationId}, ${automationId}, 'notification_sent', 'notify',
+             '{}'::jsonb, '2026-08-02T02:26:00.000Z')
+          RETURNING id
+        `;
+
+        await tx.unsafe(loadReactionOrphanCutover());
+        const repaired = await tx<{ window_id: number }[]>`
+          SELECT window_id
+          FROM automation_reactions
+          WHERE id IN ${tx(reactions.map((reaction) => reaction.id))}
+          ORDER BY id
+        `;
+        expect(repaired.map((reaction) => Number(reaction.window_id))).toEqual([
+          Number(uniqueRun.id),
+          automationId,
+        ]);
 
         throw new Rollback();
       });

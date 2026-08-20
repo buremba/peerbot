@@ -158,20 +158,11 @@ const PASSTHROUGH = new Set([
  * domain, from a card the reader trusts.
  */
 function safeAbsoluteUrl(rawUrl: string): string | undefined {
-	const trimmed = rawUrl.trim();
-	if (!trimmed) return undefined;
-	// `//evil.example/x` carries no scheme, so the scheme test below waves it
-	// through and the origin join turns it into `https://origin//evil.example/x`
-	// — a dead path on our own domain, which is the exact thing this refuses to
-	// vouch for. It is not a host we would reach either way, but the reader sees
-	// a link that looks like ours.
-	if (trimmed.startsWith("//")) return undefined;
-	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
-		return undefined;
-	}
 	// An in-app permalink is stored relative so the inbox resolves it against
 	// whatever origin the reader is on; chat has no origin to resolve against.
-	const url = toAbsolutePermalink(trimmed);
+	// `toAbsolutePermalink` owns the refusals (protocol-relative, foreign
+	// scheme) so every caller gets them, not just this one.
+	const url = toAbsolutePermalink(rawUrl);
 	return url && /^https?:\/\//i.test(url) ? url : undefined;
 }
 

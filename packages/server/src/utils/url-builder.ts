@@ -43,10 +43,21 @@ export function toAbsolutePermalink(
   baseUrl?: string
 ): string | undefined {
   if (!url) return undefined;
-  if (/^https?:\/\//i.test(url)) return url;
+  const trimmed = url.trim();
+  if (!trimmed) return undefined;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Refused BEFORE the origin join, because the join is what makes them
+  // dangerous. `//evil.example/x` and `javascript:alert(1)` both carry no
+  // `http` prefix, so without this they come back out as
+  // `https://app.lobu.ai//evil.example/x` — a link wearing our domain and
+  // going nowhere — from a card the reader trusts. Every caller needs this,
+  // not just the ones that remembered: `notify`'s `resource_url` is an
+  // agent-supplied tool argument.
+  if (trimmed.startsWith('//')) return undefined;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return undefined;
   const origin = getPublicWebUrl(undefined, baseUrl);
   if (!origin) return undefined;
-  return `${origin}${url.startsWith('/') ? '' : '/'}${url}`;
+  return `${origin}${trimmed.startsWith('/') ? '' : '/'}${trimmed}`;
 }
 
 export function getPublicWebUrl(requestUrl?: string, baseUrl?: string): string | undefined {

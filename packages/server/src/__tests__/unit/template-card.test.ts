@@ -662,6 +662,33 @@ describe("structural edge cases", () => {
 		expect(kids(card).some((c) => c.type === "table")).toBe(false);
 	});
 
+	it("drops a table left with only its header row", () => {
+		// A declared `thead` over an `each` that resolved to nothing. The header
+		// is lifted out, no data row survives, and the table goes with it.
+		//
+		// The alternative — keep the row as DATA once it is the only one — is the
+		// bug this file exists to fix: Slack draws a table's first row as its
+		// header, so that renders "Field | Current" as a data row beneath an
+		// empty band. Column names with nothing under them say nothing; the
+		// prose around them still does.
+		const th = (t: string) => ({ type: "th", children: [{ type: "text", content: t }] });
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "text", content: "Nothing changed." },
+					{ type: "table", children: [
+						{ type: "thead", children: [{ type: "tr", children: [th("Field"), th("Current")] }] },
+						{ type: "tbody", children: [{ type: "each", items: "rows", as: "r", render: { type: "tr", children: [{ type: "td", children: [{ type: "data", path: "r" }] }] } }] },
+					] },
+				],
+			},
+			data: { rows: [] },
+		});
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+		expect(texts(card)).toEqual(["Nothing changed."]);
+	});
+
 	it("pads ragged rows so Slack accepts the table", () => {
 		const card = buildKindCard({
 			jsonTemplate: {

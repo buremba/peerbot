@@ -40,6 +40,30 @@ describe("toAbsolutePermalink", () => {
 		expect(toAbsolutePermalink(undefined, "https://app.lobu.ai")).toBeUndefined();
 	});
 
+	it("refuses a url whose scheme we did not choose", () => {
+		// The origin join is what makes these dangerous: with no `http` prefix
+		// they would come back out as `https://app.lobu.ai/javascript:alert(1)`
+		// — a link wearing our domain, on a card the reader trusts. `notify`
+		// takes `resource_url` as an agent-supplied tool argument, so this is
+		// reachable without any template involved.
+		expect(
+			toAbsolutePermalink("javascript:alert(1)", "https://app.lobu.ai"),
+		).toBeUndefined();
+		expect(
+			toAbsolutePermalink("//evil.example/x", "https://app.lobu.ai"),
+		).toBeUndefined();
+		expect(toAbsolutePermalink("   ", "https://app.lobu.ai")).toBeUndefined();
+	});
+
+	it("still takes an absolute https url and a plain relative path", () => {
+		expect(toAbsolutePermalink("https://evil.example/x", "https://app.lobu.ai")).toBe(
+			"https://evil.example/x",
+		);
+		expect(toAbsolutePermalink("/acme/x", "https://app.lobu.ai")).toBe(
+			"https://app.lobu.ai/acme/x",
+		);
+	});
+
 	it("returns undefined when no public origin is configured", () => {
 		// A backend-only deployment falls back to the hosted UI, so pinning a
 		// local frontend is what makes "no origin at all" reachable. The caller

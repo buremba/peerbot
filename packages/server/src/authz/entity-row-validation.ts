@@ -58,17 +58,18 @@ export interface EntityRowValidationVerdict {
  * closed the DEFAULT for every caller. Only a caller with approval machinery to
  * route an escalation into opts in by catching this and reading {@link verdict}
  * — `updateEntity`, automation promotion (`promote-keyed-entities`), and
- * `manage_entity` deletion. Link auto-create and eval scaffolding have nowhere
- * to queue a card, so for them a rule that asked for review must stop the write
- * — which is exactly what an uncaught throw does.
+ * `manage_entity` deletion and merge. Link auto-create and eval scaffolding have
+ * nowhere to queue a card, so for them a rule that asked for review must stop the
+ * write — which is exactly what an uncaught throw does.
  *
  * Soft-delete (`deleteEntity`) and merge (`applyMergeInTransaction`) are the
  * in-between cases. The policy gate can queue either card, and `manage_entity`
- * also turns a delete rule's `$deleted` escalation into a delete card. Applying
- * those cards grants `$deleted` or `$merged_into` — the one field each card can
- * be said to have approved. Callers without approval machinery still fail
- * closed. A `deny` stops the write either way, and force delete reaches this seam
- * under the same `$deleted` name, so freezing a row freezes both delete paths.
+ * also turns a delete rule's `$deleted` escalation into a delete card and a
+ * merge rule's `$merged_into` escalation into a merge card. Applying those cards
+ * grants `$deleted` or `$merged_into` — the one field each card can be said to
+ * have approved. Callers without approval machinery still fail closed. A `deny`
+ * stops the write either way, and force delete reaches this seam under the same
+ * `$deleted` name, so freezing a row freezes both delete paths.
  */
 export class EntityRowValidationError extends Error {
 	readonly verdict: EntityRowValidationVerdict;

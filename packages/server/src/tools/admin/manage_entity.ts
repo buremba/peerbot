@@ -877,12 +877,30 @@ async function handleMerge(
 		};
 	}
 
-	if (actor.kind !== "user" && resolution?.decision === "review") {
+	/**
+	 * Send this merge to a human instead of applying it. Two deciders reach here
+	 * with the same card, the same suppression rule and the same shape, differing
+	 * only in who asked and why:
+	 *
+	 *  - the resolution POLICY, before any write is attempted — "is this the same
+	 *    record?" — which answers `review` when the identity evidence is not
+	 *    conclusive;
+	 *  - the type's write RULE, from inside the merge kernel — "may this record be
+	 *    merged away?" — which answers `escalate` however certain the identity is.
+	 *
+	 * They are different questions, so the second can override a policy that was
+	 * sure: certainty about identity is not consent to the write. `reason` is
+	 * whichever decider spoke, so the card says why it is waiting.
+	 */
+	const queueMergeForReview = async (
+		policy: NonNullable<typeof resolution>,
+		reason: string,
+	): Promise<ManageEntityResult> => {
 		const attribution = attributionFor(actor);
 		if (
 			await wasResolutionRejected(sql, {
 				organizationId: ctx.organizationId,
-				fingerprint: resolution.fingerprint,
+				fingerprint: policy.fingerprint,
 			})
 		) {
 			return {
@@ -892,8 +910,8 @@ async function handleMerge(
 					"This unchanged candidate was already rejected. It will be reconsidered when its evidence or policy changes.",
 				resolution: {
 					decision: "review",
-					reason: resolution.reason,
-					evidence: resolution.evidence,
+					reason,
+					evidence: policy.evidence,
 				},
 			};
 		}
@@ -902,22 +920,22 @@ async function handleMerge(
 			{
 				entity_ids: loserIds,
 				winner_entity_id: winnerId,
-				evidence: resolution.evidence,
+				evidence: policy.evidence,
 				automation_id: mergeAttribution.automationId,
 				window_id: mergeAttribution.windowId,
 				source_run_id: ctx.actingRunId ?? null,
-				policy_hash: resolution.policyHash,
-				resolution_fingerprint: resolution.fingerprint,
+				policy_hash: policy.policyHash,
+				resolution_fingerprint: policy.fingerprint,
 				resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
 				attribution,
-				reason: resolution.reason,
+				reason,
 				// The proposer's own words, kept strictly separate from `reason` (the
-				// machine-computed policy verdict). Displayed as a claim attributed to
+				// machine-computed verdict). Displayed as a claim attributed to
 				// whoever proposed the merge — it is never evidence and never affects
 				// the auto-merge decision, which is recomputed server-side above.
 				proposer_rationale: args.merge_rationale?.trim() || null,
 			},
-			resolution.resolutionKeys,
+			policy.resolutionKeys,
 		);
 		return {
 			action: "merge",
@@ -934,10 +952,14 @@ async function handleMerge(
 			next_steps: ["The merge is waiting for human approval."],
 			resolution: {
 				decision: "review",
-				reason: resolution.reason,
-				evidence: resolution.evidence,
+				reason,
+				evidence: policy.evidence,
 			},
 		};
+	};
+
+	if (actor.kind !== "user" && resolution?.decision === "review") {
+		return await queueMergeForReview(resolution, resolution.reason);
 	}
 
 	let result: Awaited<ReturnType<typeof applyMergeGroup>>;
@@ -965,6 +987,30 @@ async function handleMerge(
 						},
 		});
 	} catch (err) {
+		// The write rule judges the merge under lock inside the kernel, so its
+		// verdict arrives only once the policy has already decided to apply. Route
+		// the one escalation this card can replay — the merge card's grant is the
+		// hardcoded literal `[$merged_into]`, so an escalate naming anything else
+		// would mint a card that throws the moment a reviewer approves it. Those,
+		// and every deny, still fail closed.
+		//
+		// Scoped to a non-user actor because that is the only path with a
+		// resolution to card against: the card carries the policy hash, evidence
+		// and fingerprint the suppression check re-reads, and a human-initiated
+		// merge computes none of them. A human's merge is UNCHANGED by this — it
+		// keeps the explicit 409 it already returned. Whether an escalate should
+		// card a human's own merge too is a separate question, and answering it
+		// needs a decision about what such a card is keyed on, not this catch.
+		if (
+			actor.kind !== "user" &&
+			resolution &&
+			err instanceof EntityRowValidationError &&
+			err.verdict.outcome === "escalate" &&
+			err.verdict.fields.length === 1 &&
+			err.verdict.fields[0] === RESERVED_COLUMN_NAMES.mergedInto
+		) {
+			return await queueMergeForReview(resolution, err.verdict.reason);
+		}
 		throw new ToolUserError(
 			`Merge failed: ${err instanceof Error ? err.message : String(err)}`,
 			409,

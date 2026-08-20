@@ -35,6 +35,24 @@ function rows(card: Card | null): string[][] {
 	const table = kids(card).find((c) => c.type === "table");
 	return (table?.rows as string[][]) ?? [];
 }
+/**
+ * Label/value pairs of the card's `fields` blocks. A two-column table has no
+ * column names to show and Slack would draw its header row as an empty band, so
+ * the builder emits native fields for that shape instead of a headless table.
+ */
+function pairs(card: Card | null): string[][] {
+	return kids(card)
+		.filter((c) => c.type === "fields")
+		.flatMap((c) =>
+			(c.children as Array<{ label: string; value: string }>).map((f) => [
+				f.label,
+				f.value,
+			]),
+		);
+}
+/** Column headers of the first table, which Slack renders as its first row. */
+const headers = (card: Card | null) =>
+	(kids(card).find((c) => c.type === "table")?.headers as string[]) ?? [];
 const texts = (card: Card | null) =>
 	kids(card)
 		.filter((c) => c.type === "text")
@@ -50,7 +68,7 @@ const schema = (properties: Record<string, unknown>) => ({
 });
 
 describe("default template (no authored json_template)", () => {
-	it("renders one row per schema field, label then value", () => {
+	it("renders one field per schema property, label then value", () => {
 		const card = buildKindCard({
 			metadataSchema: APPROVAL_KIND.metadataSchema,
 			data: {
@@ -59,11 +77,14 @@ describe("default template (no authored json_template)", () => {
 				input: { title: "Fix it" },
 			},
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["Operation", "create_issue"],
 			["Connection", "GitHub"],
 			["Input", "Title: Fix it"],
 		]);
+		// Not a table: two columns have no names, and Slack would draw the header
+		// row as an empty band above them.
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
 	});
 
 	it("honours x-table-column order, x-table-label, title and x-hidden", () => {
@@ -76,7 +97,7 @@ describe("default template (no authored json_template)", () => {
 			}),
 			data: { first: "a", later: "b", secret: "nope", renamed: "c" },
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["First", "a"],
 			["Later", "b"],
 			["Renamed", "c"],
@@ -88,7 +109,7 @@ describe("default template (no authored json_template)", () => {
 			metadataSchema: APPROVAL_KIND.metadataSchema,
 			data: { operation: "x", connection: null, input: undefined },
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["Operation", "x"],
 			["Connection", "—"],
 			["Input", "—"],
@@ -131,7 +152,7 @@ describe("authored json_template", () => {
 			data: { operation: "deploy" },
 		});
 		expect(texts(card)).toEqual(["Deploy approval"]);
-		expect(rows(card)).toEqual([["Service", "deploy"]]);
+		expect(pairs(card)).toEqual([["Service", "deploy"]]);
 	});
 
 	it("takes the if branch matching the data, like the web renderer", () => {
@@ -180,7 +201,7 @@ describe("authored json_template", () => {
 			},
 			data: { lines: [{ name: "Widgets", qty: 12 }, { name: "Gadgets", qty: 3 }] },
 		});
-		expect(rows(card)).toEqual([
+		expect(pairs(card)).toEqual([
 			["Widgets", "12"],
 			["Gadgets", "3"],
 		]);
@@ -222,13 +243,17 @@ describe("authored json_template", () => {
 describe("Slack escaping is per destination", () => {
 	const hostile = "<!channel> & <https://evil.example|Review in Lobu>";
 
-	it("leaves table cells unescaped — the adapter emits them as raw_text", () => {
+	it("escapes a value that rides in fields — those are mrkdwn, not raw_text", () => {
 		const card = buildKindCard({
 			metadataSchema: schema({ v: { type: "string", title: "V" } }),
 			data: { v: hostile },
 		});
-		// Escaping here would show the reader a literal `&lt;`.
-		expect(rows(card)).toEqual([["V", hostile]]);
+		// A label/value pair renders as fields, and the adapter emits those through
+		// `mrkdwn()`. Unescaped, this value would ping the channel. Table CELLS are
+		// the opposite case and stay raw — pinned by the diffs table below.
+		expect(pairs(card)).toEqual([
+			["V", "&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;"],
+		]);
 	});
 
 	it("escapes free text, which the adapter emits as mrkdwn", () => {
@@ -239,6 +264,75 @@ describe("Slack escaping is per destination", () => {
 		expect(texts(card)[0]).toBe(
 			"&lt;!channel&gt; &amp; &lt;https://evil.example|Review in Lobu&gt;",
 		);
+	});
+});
+
+describe("table headers", () => {
+	it("lifts a declared thead out of the body into the header row", () => {
+		// Slack ALWAYS draws a table's first row as its header. Left in the body a
+		// declared header row was drawn twice: once as an empty band, once as data.
+		const th = (t: string) => ({ type: "th", children: [{ type: "text", content: t }] });
+		const td = (t: string) => ({ type: "td", children: [{ type: "text", content: t }] });
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{
+						type: "table",
+						children: [
+							{ type: "thead", children: [{ type: "tr", children: [th("Field"), th("Current"), th("Proposed")] }] },
+							{ type: "tbody", children: [{ type: "tr", children: [td("Email"), td("a@x"), td("b@x")] }] },
+						],
+					},
+				],
+			},
+			data: {},
+		});
+		expect(headers(card)).toEqual(["Field", "Current", "Proposed"]);
+		expect(rows(card)).toEqual([["Email", "a@x", "b@x"]]);
+	});
+
+	it("treats a row of th + td as data, not a header", () => {
+		// The default template's `th` is a per-row LABEL, not a column name. Only a
+		// row of nothing but `th` is a header — HTML's own rule.
+		const card = buildKindCard({
+			metadataSchema: schema({
+				a: { type: "string", title: "A" },
+				b: { type: "string", title: "B" },
+				c: { type: "string", title: "C" },
+			}),
+			data: { a: "1", b: "2", c: "3" },
+		});
+		expect(pairs(card)).toEqual([
+			["A", "1"],
+			["B", "2"],
+			["C", "3"],
+		]);
+	});
+
+	it("renders the data-driven form the web renderer supports", () => {
+		// `{type:"table", data, columns}` has no `tr` children, so it used to fall
+		// through to "no rows" — dropping the only content and, with it, the whole
+		// card. `columns` names the headers, so this shape never has to guess.
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{ type: "table", props: { caption: "Risks" }, data: "{{risks}}", columns: ["risk_name", "severity"] },
+				],
+			},
+			data: {
+				risks: [
+					{ risk_name: "Leak", severity: "high" },
+					{ risk_name: "Cost", severity: "low" },
+				],
+			},
+		});
+		expect(headers(card)).toEqual(["Risk Name", "Severity"]);
+		expect(rows(card)).toEqual([
+			["Leak", "high"],
+			["Cost", "low"],
+		]);
 	});
 });
 
@@ -286,12 +380,12 @@ describe("platform limits", () => {
 			metadataSchema: schema({ v: { type: "string", title: "V" } }),
 			data: { v: "x".repeat(6000) },
 		});
-		const cell = rows(card)[0][1];
+		const cell = pairs(card)[0][1];
 		expect(cell.length).toBeLessThanOrEqual(400);
 		expect(cell.endsWith("…")).toBe(true);
 	});
 
-	it("keeps every row rectangular so Slack accepts the table", () => {
+	it("uses fields, not a headless table, for a label/value schema", () => {
 		const card = buildKindCard({
 			metadataSchema: schema({
 				a: { type: "string", title: "A" },
@@ -299,13 +393,13 @@ describe("platform limits", () => {
 			}),
 			data: { a: "1", b: "2" },
 		});
-		const table = kids(card).find((c) => c.type === "table") as {
-			headers: string[];
-			rows: string[][];
-		};
-		const width = table.headers.length;
-		expect(width).toBe(2);
-		for (const row of table.rows) expect(row).toHaveLength(width);
+		// Two columns become fields, so there is no header row to leave blank.
+		// Rectangularity for real tables is pinned by the ragged-row test above.
+		expect(kids(card).some((c) => c.type === "table")).toBe(false);
+		expect(pairs(card)).toEqual([
+			["A", "1"],
+			["B", "2"],
+		]);
 	});
 });
 
@@ -477,7 +571,7 @@ describe("structural edge cases", () => {
 			},
 			data: { groups: [{ name: "G1", rows: ["x", "y"] }, { name: "G2", rows: ["z"] }] },
 		});
-		expect(rows(card)).toEqual([["G1", "x"], ["G1", "y"], ["G2", "z"]]);
+		expect(pairs(card)).toEqual([["G1", "x"], ["G1", "y"], ["G2", "z"]]);
 	});
 });
 
@@ -512,7 +606,7 @@ describe("entity change approvals render through their kind", () => {
 		]);
 	});
 
-	it("shows a create as one row per proposed field", () => {
+	it("shows a create as one field per proposed value", () => {
 		const card = build({
 			entityTypeLabel: "Company",
 			entityName: "Acme Robotics",
@@ -525,7 +619,14 @@ describe("entity change approvals render through their kind", () => {
 				{ label: "Domain", value: "acme.example" },
 			],
 		});
-		expect(rows(card)).toEqual([
+		// The proposal is a label/value pair, so it lands in fields — under its own
+		// caption, so "Entity: Acme Robotics" (context) cannot be mistaken for
+		// "Name: Acme Robotics" (the value being approved).
+		expect(texts(card)).toContain("*Proposed change*");
+		expect(pairs(card)).toEqual([
+			["Action", "Create this entity"],
+			["Type", "Company"],
+			["Entity", "Acme Robotics"],
 			["Name", "Acme Robotics"],
 			["Domain", "acme.example"],
 		]);

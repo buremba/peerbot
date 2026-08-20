@@ -136,43 +136,78 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 						},
 					],
 				},
+				// Two shapes, so two tables. An update is three columns whose middle
+				// and right only mean anything once they are NAMED — "Eng" next to
+				// "Staff Eng" is undecidable without `Current`/`Proposed` above it.
+				// A create/delete/merge is a label/value pair, which needs no header
+				// and renders as native fields in chat.
 				{
-					type: "table",
-					props: { caption: "Proposed change" },
-					children: [
-						{
-							type: "tbody",
-							children: [
-								// An update: one row per changed field, current then proposed.
-								{
-									type: "each",
-									items: "diffs",
-									as: "d",
-									render: {
+					type: "if",
+					condition: "diffs",
+					then: {
+						type: "table",
+						props: { caption: "Proposed change" },
+						children: [
+							{
+								type: "thead",
+								children: [
+									{
 										type: "tr",
 										children: [
-											{ type: "th", children: [{ type: "data", path: "d.label" }] },
-											{ type: "td", children: [{ type: "data", path: "d.current", fallback: "—" }] },
-											{ type: "td", children: [{ type: "data", path: "d.proposed", fallback: "—" }] },
+											{ type: "th", children: [{ type: "text", content: "Field" }] },
+											{ type: "th", children: [{ type: "text", content: "Current" }] },
+											{ type: "th", children: [{ type: "text", content: "Proposed" }] },
 										],
 									},
-								},
-								// A create / delete / merge: one row per proposed field.
-								{
-									type: "each",
-									items: "proposal",
-									as: "p",
-									render: {
-										type: "tr",
-										children: [
-											{ type: "th", children: [{ type: "data", path: "p.label" }] },
-											{ type: "td", children: [{ type: "data", path: "p.value", fallback: "—" }] },
-										],
+								],
+							},
+							{
+								type: "tbody",
+								children: [
+									{
+										type: "each",
+										items: "diffs",
+										as: "d",
+										render: {
+											type: "tr",
+											children: [
+												{ type: "th", children: [{ type: "data", path: "d.label" }] },
+												{ type: "td", children: [{ type: "data", path: "d.current", fallback: "—" }] },
+												{ type: "td", children: [{ type: "data", path: "d.proposed", fallback: "—" }] },
+											],
+										},
 									},
-								},
-							],
-						},
-					],
+								],
+							},
+						],
+					},
+				},
+				{
+					type: "if",
+					condition: "proposal",
+					then: {
+						type: "table",
+						props: { caption: "Proposed change" },
+						children: [
+							{
+								type: "tbody",
+								children: [
+									{
+										type: "each",
+										items: "proposal",
+										as: "p",
+										render: {
+											type: "tr",
+											children: [
+												{ type: "th", children: [{ type: "data", path: "p.label" }] },
+												{ type: "td", children: [{ type: "data", path: "p.value", fallback: "—" }] },
+											],
+										},
+									},
+								],
+							},
+						],
+					},
 				},
 			],
 		},

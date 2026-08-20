@@ -65,7 +65,7 @@ export function isHttpUrl(value: string): boolean {
 }
 
 /** `pull_request_opened` → `Pull Request Opened`. */
-function titleCaseWords(value: string): string {
+export function titleCaseWords(value: string): string {
   return value
     .replace(/[-_]/g, " ")
     .replace(/\s+/g, " ")

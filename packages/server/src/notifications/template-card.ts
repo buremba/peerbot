@@ -17,8 +17,10 @@
  * card links out to the full record instead of quietly showing a subset.
  */
 import {
+	formatValue,
 	type TemplateNode,
 	type TemplateVisitor,
+	titleCaseWords,
 	walkTemplate,
 } from "@lobu/core/json-template";
 import {
@@ -75,8 +77,8 @@ function clamp(value: string, max: number): string {
  */
 type Frag =
 	| { kind: "text"; text: string }
-	| { kind: "cell"; text: string }
-	| { kind: "row"; cells: string[] }
+	| { kind: "cell"; text: string; th: boolean }
+	| { kind: "row"; cells: string[]; header: boolean }
 	| { kind: "field"; label: string; value: string }
 	| { kind: "action"; element: ActionElement }
 	| { kind: "block"; child: CardChild };
@@ -222,35 +224,103 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 		if (type === "th" || type === "td") {
 			// Clamped again at table level once the shape is known; this is only a
 			// sanity bound on a single pathological cell.
-			return [{ kind: "cell", text: clamp(textOf(children), MAX_CELL_CHARS) }];
+			return [
+				{
+					kind: "cell",
+					text: clamp(textOf(children), MAX_CELL_CHARS),
+					th: type === "th",
+				},
+			];
 		}
 		if (type === "tr") {
-			const cells = children
-				.filter((c): c is Extract<Frag, { kind: "cell" }> => c.kind === "cell")
-				.map((c) => c.text);
-			return cells.length > 0 ? [{ kind: "row", cells }] : [];
+			const cells = children.filter(
+				(c): c is Extract<Frag, { kind: "cell" }> => c.kind === "cell",
+			);
+			if (cells.length === 0) return [];
+			// HTML's own rule: a row of nothing but `th` IS the header row. That
+			// covers `thead > tr > th` and a loose header `tr` identically, and
+			// leaves the default template's per-row `th` label (th + td) a data row.
+			return [
+				{
+					kind: "row",
+					cells: cells.map((c) => c.text),
+					header: cells.every((c) => c.th),
+				},
+			];
 		}
 		if (type === "table") {
-			const rows = children
-				.filter((c): c is Extract<Frag, { kind: "row" }> => c.kind === "row")
-				.map((c) => c.cells)
-				.slice(0, MAX_ROWS);
+			// The data-driven form the web renderer supports: a `table` carrying a
+			// resolved array plus `columns`. It has no `tr` children at all, so
+			// without this it fell through to "no rows" and the table vanished from
+			// the card silently. `columns` also names the headers, which is the one
+			// shape that never has to guess them.
+			const declaredColumns = Array.isArray(props.columns)
+				? (props.columns as unknown[]).map((c) =>
+						typeof c === "string" ? c : str((c as { name?: unknown })?.name),
+					)
+				: null;
+			const dataRows = Array.isArray(props.data)
+				? (props.data as unknown[]).filter(
+						(r): r is Record<string, unknown> => typeof r === "object" && r !== null,
+					)
+				: null;
+			let headers: string[] = [];
+			let rows: string[][] = [];
+			if (declaredColumns && dataRows) {
+				headers = declaredColumns.map(titleCaseWords);
+				rows = dataRows.map((row) =>
+					declaredColumns.map((col) => formatValue(row[col])),
+				);
+			} else {
+				const walked = children.filter(
+					(c): c is Extract<Frag, { kind: "row" }> => c.kind === "row",
+				);
+				// Slack's native table ALWAYS renders its first row as the header, so
+				// a declared header row has to be lifted out of the body — left in
+				// place it would be drawn twice: once as an empty band, once as data.
+				const headerRow = walked.find((r) => r.header);
+				headers = headerRow ? headerRow.cells : [];
+				rows = walked.filter((r) => r !== headerRow).map((r) => r.cells);
+			}
+			rows = rows.slice(0, MAX_ROWS);
 			if (rows.length === 0) return [];
 			const width = Math.min(
-				rows.reduce((w, r) => Math.max(w, r.length), 0),
+				Math.max(
+					rows.reduce((w, r) => Math.max(w, r.length), 0),
+					headers.length,
+				),
 				MAX_COLS,
 			);
+			// A label/value table has no column names to show, and Slack would draw
+			// the header row as an empty band above it. `Fields` is the native shape
+			// for exactly this pair, so use it rather than a table missing its head.
+			if (headers.length === 0 && width === 2) {
+				const asFields = rows.map((r) => ({
+					kind: "field" as const,
+					label: clamp(r[0] ?? "", MAX_CELL_CHARS),
+					value: clamp(r[1] ?? "", MAX_CELL_CHARS),
+				}));
+				// A caption is the only thing separating these from whatever fields
+				// precede them. Without it the card runs "Entity: Grace" (context)
+				// straight into "Name: Grace" (the value being approved), and the
+				// assembler merges both into one indistinguishable block.
+				const caption = str(props.caption);
+				return caption
+					? [{ kind: "text" as const, text: `*${caption}*` }, ...asFields]
+					: asFields;
+			}
 			// Share the whole-table budget across the cells that actually exist, so
 			// a wide or long table keeps its native rendering instead of silently
 			// collapsing to ASCII.
 			const cellBudget = Math.max(
 				MIN_CELL_CHARS,
-				Math.min(MAX_CELL_CHARS, Math.floor(MAX_TABLE_CHARS / (rows.length * width || 1))),
+				Math.min(
+					MAX_CELL_CHARS,
+					Math.floor(MAX_TABLE_CHARS / ((rows.length + 1) * width || 1)),
+				),
 			);
-			// Slack's native table always renders its first row as the header, and
-			// the default entity template has no `thead` — its `th` is a per-row
-			// label in column 0. Blank headers keep the shape rectangular without
-			// inventing column names the template never declared.
+			const pad = (r: string[]) =>
+				Array.from({ length: width }, (_, i) => clamp(r[i] ?? "", cellBudget));
 			return [
 				{
 					kind: "block",
@@ -259,10 +329,10 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 						// to the literal "Table"; name the thing being shown instead.
 						caption: str(props.caption, "Details"),
 						pageSize: TABLE_PAGE_SIZE,
-						headers: Array.from({ length: width }, () => ""),
-						rows: rows.map((r) =>
-							Array.from({ length: width }, (_, i) => clamp(r[i] ?? "", cellBudget)),
-						),
+						// Blank only when the template declared no header row and the
+						// shape is not a label/value pair — we will not invent names.
+						headers: pad(headers),
+						rows: rows.map(pad),
 					}),
 				},
 			];

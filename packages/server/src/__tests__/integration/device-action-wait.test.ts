@@ -1,8 +1,8 @@
 /**
  * waitForDeviceActionRun integration test.
  *
- * Exercises the four real paths the manage_operations device-bound
- * scheduling branch can take:
+ * Exercises the real paths the manage_operations device-bound scheduling
+ * branch can take:
  *
  *   1. happy: worker posts 'completed' with action_output → returns
  *      { status: 'completed', output }
@@ -10,23 +10,30 @@
  *      { status: 'failed', error_message }
  *   3. timeout-pre-claim: run never claimed before the queue budget →
  *      gateway marks the row 'timeout', returns timeout
- *   4. race: worker posts completion AFTER our timeout decision but
+ *   4. late-claim: the claim lands just before the queue deadline, so only the
+ *      post-claim budget can carry the wait to completion.
+ *   5. race: worker posts completion AFTER our timeout decision but
  *      BEFORE we re-read. The atomic UPDATE in completeActionRun
  *      (status='running' AND claimed_by=worker_id guard) must reject
  *      the worker write so the gateway's verdict stands.
+ *   6. abort: an already-aborted signal short-circuits the poll loop.
  *
- * The tests use real timers; the poll loops stay fast because the budgets are
- * shrunk, not because the clock is stubbed.
- *
- * The abort path calls the production helper directly. The longer phase and
- * race tests use a budget-parameterized mirror so they complete in
- * milliseconds while exercising the same SQL transitions.
+ * Every path runs the production implementation. Cases 1-5 shrink its budgets
+ * so the poll loops finish in milliseconds; case 6 uses the real ones because
+ * the abort fires before the first sleep. Cases 1, 2 and 4 also supply the
+ * `sleep` boundary, so the worker's writes land in a poll gap by construction
+ * instead of by racing a wall-clock timer against the budget. Case 4 injects
+ * the clock as well, since what it asserts is which deadline the waiter
+ * consulted — not how long the host and Postgres happened to take.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../../config/intervals';
 import { createConnectorOperationRun } from '../../runs/queue-service';
-import { waitForDeviceActionRun } from '../../tools/admin/device-action-wait';
+import {
+  waitForDeviceActionRun,
+  waitForDeviceActionRunWithOptions,
+} from '../../tools/admin/device-action-wait';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
 
@@ -79,104 +86,6 @@ async function insertPendingActionRun(
   return rows[0].id;
 }
 
-// Mirror of waitForDeviceActionRun, with shrunk budgets so tests run
-// in milliseconds instead of minutes. Control flow is identical to the
-// production helper.
-async function waitForDeviceActionRunForTest(
-  runId: number,
-  organizationId: string,
-  budgets: { queueMs: number; postClaimMs: number; pollMs: number }
-): Promise<{
-  status: 'completed' | 'failed' | 'timeout';
-  output?: Record<string, unknown>;
-  error_message?: string;
-}> {
-  const sql = getTestDb();
-  const queueDeadline = Date.now() + budgets.queueMs;
-  let claimedAtMs: number | null = null;
-
-  while (true) {
-    const rows = (await sql`
-      SELECT status, action_output, error_message, claimed_at
-      FROM runs
-      WHERE id = ${runId} AND organization_id = ${organizationId}
-      LIMIT 1
-    `) as Array<{
-      status: string;
-      action_output: Record<string, unknown> | null;
-      error_message: string | null;
-      claimed_at: Date | string | null;
-    }>;
-    const row = rows[0];
-    if (!row) {
-      return { status: 'failed', error_message: 'disappeared' };
-    }
-    if (row.status === 'completed') {
-      return {
-        status: 'completed',
-        output: (row.action_output ?? {}) as Record<string, unknown>,
-      };
-    }
-    if (row.status === 'failed' || row.status === 'timeout') {
-      return {
-        status: row.status as 'failed' | 'timeout',
-        error_message: row.error_message ?? `${row.status}`,
-      };
-    }
-    if (row.claimed_at && claimedAtMs == null) {
-      claimedAtMs =
-        row.claimed_at instanceof Date
-          ? row.claimed_at.getTime()
-          : new Date(row.claimed_at).getTime();
-    }
-    const now = Date.now();
-    if (claimedAtMs != null) {
-      if (now - claimedAtMs >= budgets.postClaimMs) break;
-    } else {
-      if (now >= queueDeadline) break;
-    }
-    await new Promise((r) => setTimeout(r, budgets.pollMs));
-  }
-
-  const updated = (await sql`
-    UPDATE runs
-    SET status = 'timeout',
-        completed_at = current_timestamp,
-        error_message = 'test-timeout'
-    WHERE id = ${runId}
-      AND organization_id = ${organizationId}
-      AND status IN ('pending', 'running')
-    RETURNING id
-  `) as Array<{ id: number }>;
-
-  if (updated.length === 0) {
-    const finalRows = (await sql`
-      SELECT status, action_output, error_message
-      FROM runs
-      WHERE id = ${runId} AND organization_id = ${organizationId}
-      LIMIT 1
-    `) as Array<{
-      status: string;
-      action_output: Record<string, unknown> | null;
-      error_message: string | null;
-    }>;
-    const final = finalRows[0];
-    if (final?.status === 'completed') {
-      return {
-        status: 'completed',
-        output: (final.action_output ?? {}) as Record<string, unknown>,
-      };
-    }
-    if (final?.status === 'failed') {
-      return {
-        status: 'failed',
-        error_message: final.error_message ?? 'final-failed',
-      };
-    }
-  }
-  return { status: 'timeout', error_message: 'budget-exceeded' };
-}
-
 // Worker-side completion guarded by the atomic clause we use in
 // production: status='running' AND claimed_by=worker — so a stale
 // claimant or a terminal-state row results in a no-op.
@@ -201,12 +110,19 @@ async function workerCompleteAction(
   return rows.length > 0;
 }
 
-async function claim(runId: number, workerId: string): Promise<void> {
+async function claim(
+  runId: number,
+  workerId: string,
+  claimedAtMs?: number
+): Promise<void> {
   const sql = getTestDb();
   await sql`
     UPDATE runs
     SET status = 'running',
-        claimed_at = current_timestamp,
+        claimed_at = COALESCE(
+          ${claimedAtMs == null ? null : new Date(claimedAtMs)}::timestamptz,
+          current_timestamp
+        ),
         claimed_by = ${workerId}
     WHERE id = ${runId}
       AND status = 'pending'
@@ -214,18 +130,27 @@ async function claim(runId: number, workerId: string): Promise<void> {
 }
 
 const FAST_BUDGETS = { queueMs: 400, postClaimMs: 600, pollMs: 30 };
-
-// The late-claim test deliberately schedules its claim near the QUEUE deadline,
-// so unlike the tests above its margin has to absorb the claim's round trip to
-// Postgres, not just timer drift. Under FAST_BUDGETS that margin was 80ms,
-// which a contended CI database blows through: the claim commits after the poll
-// that already observed `now >= queueDeadline`, so the wait returns 'timeout'
-// and the test reds with `expected 'timeout' to be 'completed'`. These budgets
-// keep the claim late in relative terms while widening that margin to 400ms.
-// To re-verify, prefix `claim()` with `await sql`SELECT pg_sleep(0.2)``: that is
-// 3/3 red on the old 80ms margin and 3/3 green on this one (still green at 0.35).
-const LATE_CLAIM_BUDGETS = { queueMs: 1200, postClaimMs: 1800, pollMs: 30 };
 const WORKER_ID = 'worker-test';
+
+/**
+ * A `sleep` boundary that lets the "worker" act exactly once, on the first
+ * poll gap. The waiter re-reads the row before consulting any deadline, so the
+ * poll after this sees the terminal status no matter how slow the writes were.
+ * A second call means the waiter did not observe that write — fail loudly
+ * rather than spin until the budget expires and report a timeout instead.
+ */
+function workerTurn(act: () => Promise<void>): () => Promise<void> {
+  let turns = 0;
+  return async () => {
+    turns += 1;
+    if (turns > 1) {
+      throw new Error(
+        `waiter did not observe the worker write (sleep ${turns})`
+      );
+    }
+    await act();
+  };
+}
 
 describe('waitForDeviceActionRun', () => {
   beforeEach(async () => {
@@ -240,19 +165,21 @@ describe('waitForDeviceActionRun', () => {
       url: 'https://example.com',
     });
 
-    // Race the wait helper against a "worker" that claims + completes
-    // shortly after the wait starts.
-    setTimeout(async () => {
-      await claim(runId, WORKER_ID);
-      await workerCompleteAction(runId, WORKER_ID, 'success', {
-        tab_id: 555,
-        current_url: 'https://example.com/',
-      });
-    }, 80);
-
-    const out = await waitForDeviceActionRunForTest(runId, org.id, FAST_BUDGETS);
+    // The "worker" claims + completes in the gap between two polls. Driving it
+    // from the injected sleep instead of a wall-clock setTimeout means the next
+    // poll always observes the terminal row, however long the writes take.
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      ...FAST_BUDGETS,
+      sleep: workerTurn(async () => {
+        await claim(runId, WORKER_ID);
+        await workerCompleteAction(runId, WORKER_ID, 'success', {
+          tab_id: 555,
+          current_url: 'https://example.com/',
+        });
+      }),
+    });
     expect(out.status).toBe('completed');
-    expect(out.output?.tab_id).toBe(555);
+    expect(out.output).toMatchObject({ tab_id: 555 });
   });
 
   it('surfaces worker-failed verdict', async () => {
@@ -261,12 +188,13 @@ describe('waitForDeviceActionRun', () => {
     const connId = await insertChromeConnection(org.id);
     const runId = await insertPendingActionRun(org.id, connId, {});
 
-    setTimeout(async () => {
-      await claim(runId, WORKER_ID);
-      await workerCompleteAction(runId, WORKER_ID, 'failed');
-    }, 80);
-
-    const out = await waitForDeviceActionRunForTest(runId, org.id, FAST_BUDGETS);
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      ...FAST_BUDGETS,
+      sleep: workerTurn(async () => {
+        await claim(runId, WORKER_ID);
+        await workerCompleteAction(runId, WORKER_ID, 'failed');
+      }),
+    });
     expect(out.status).toBe('failed');
     expect(out.error_message).toBe('worker-failed');
   });
@@ -277,7 +205,7 @@ describe('waitForDeviceActionRun', () => {
     const connId = await insertChromeConnection(org.id);
     const runId = await insertPendingActionRun(org.id, connId, {});
 
-    const out = await waitForDeviceActionRunForTest(runId, org.id, FAST_BUDGETS);
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, FAST_BUDGETS);
     expect(out.status).toBe('timeout');
 
     const sql = getTestDb();
@@ -285,34 +213,51 @@ describe('waitForDeviceActionRun', () => {
       SELECT status, error_message FROM runs WHERE id = ${runId}
     `) as Array<{ status: string; error_message: string }>;
     expect(rows[0].status).toBe('timeout');
-    expect(rows[0].error_message).toBe('test-timeout');
+    expect(rows[0].error_message).toContain('no device claimed the run');
   });
 
-  it('honors POST_CLAIM_BUDGET_MS after claim — extended wait if claimed late', async () => {
+  it('honors the post-claim budget after claim — extended wait if claimed late', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id);
     const connId = await insertChromeConnection(org.id);
     const runId = await insertPendingActionRun(org.id, connId, {});
 
-    // Claim late in the queue budget, then complete AFTER the queue deadline
-    // has already passed. Only the post-claim budget can carry the wait that
-    // far, so a 'completed' verdict is what proves the phase switch happened.
-    setTimeout(
-      () => void claim(runId, WORKER_ID),
-      LATE_CLAIM_BUDGETS.queueMs - 400,
-    );
-    setTimeout(
-      () =>
-        void workerCompleteAction(runId, WORKER_ID, 'success', { ok: true }),
-      LATE_CLAIM_BUDGETS.queueMs + 300,
-    );
+    const queueMs = 1_000;
+    const postClaimMs = 2_000;
+    let syntheticNow = Date.now();
+    const queueDeadline = syntheticNow + queueMs;
+    let sleepCount = 0;
 
-    const out = await waitForDeviceActionRunForTest(
-      runId,
-      org.id,
-      LATE_CLAIM_BUDGETS,
-    );
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      queueMs,
+      postClaimMs,
+      pollMs: 1,
+      now: () => syntheticNow,
+      sleep: async () => {
+        sleepCount += 1;
+        if (sleepCount === 1) {
+          // Claim near, but still before, the original queue deadline.
+          syntheticNow += queueMs - 100;
+          await claim(runId, WORKER_ID, syntheticNow);
+          return;
+        }
+        if (sleepCount === 2) {
+          // The next poll sees a running row after the original deadline. The
+          // helper must use claimed_at + postClaimMs instead of timing out.
+          syntheticNow += 200;
+          return;
+        }
+        if (sleepCount === 3) {
+          syntheticNow += 100;
+          await workerCompleteAction(runId, WORKER_ID, 'success', { ok: true });
+          return;
+        }
+        throw new Error(`unexpected sleep ${sleepCount}`);
+      },
+    });
     expect(out.status).toBe('completed');
+    expect(sleepCount).toBe(3);
+    expect(syntheticNow).toBeGreaterThan(queueDeadline);
   });
 
   it('atomic guard: a worker that finalizes after gateway-timeout cannot overwrite the verdict', async () => {
@@ -326,7 +271,7 @@ describe('waitForDeviceActionRun', () => {
     // because status is no longer 'running'.
     await claim(runId, WORKER_ID);
 
-    const out = await waitForDeviceActionRunForTest(runId, org.id, {
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
       queueMs: 50,
       postClaimMs: 200,
       pollMs: 30,
@@ -347,10 +292,11 @@ describe('waitForDeviceActionRun', () => {
     expect(final[0].action_output).toBeNull();
   });
 
-  // Exercises the REAL exported helper (not the mirror) for the abortSignal
-  // path added so an automation reaction hitting its wall-clock budget cancels the
-  // poll loop instead of leaking it. An already-aborted signal short-circuits
-  // on the first iteration, so this stays fast despite the real 60s budget.
+  // Calls the default-budget entry point so the abortSignal wiring is covered
+  // exactly as production callers use it: an automation reaction hitting its
+  // wall-clock budget must cancel the poll loop instead of leaking it. An
+  // already-aborted signal short-circuits on the first iteration, so this stays
+  // fast despite the real 60s queue budget.
   it('aborts the wait + finalizes the run as timeout when the abort signal fires', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id);

@@ -32,6 +32,18 @@ import {
 	RejectBatchAction,
 } from "./manage_operations/schemas";
 import { queueApprovalNotificationCardRefresh } from "../../notifications/service";
+import type { ToolContext } from "../registry";
+
+function settleApprovalResult<T>(ctx: ToolContext, result: T): T {
+	const record = result as Record<string, unknown>;
+	const runIds = Array.isArray(record.run_ids)
+		? record.run_ids.map(Number)
+		: Number.isFinite(Number(record.run_id))
+			? [Number(record.run_id)]
+			: [];
+	queueApprovalNotificationCardRefresh(ctx.organizationId, runIds);
+	return result;
+}
 
 const manageOperationsTool = defineActionTool("manage_operations", {
 	list_available: action(ListAvailableAction, handleListAvailable),
@@ -39,13 +51,19 @@ const manageOperationsTool = defineActionTool("manage_operations", {
 	list_runs: action(ListRunsAction, handleListRuns),
 	get_run: action(GetRunAction, handleGetRun),
 	list_activity: action(ListActivityAction, handleListActivity),
-	approve: action(ApproveAction, handleApprove),
-	reject: action(RejectAction, handleReject),
-	approve_batch: action(ApproveBatchAction, handleApproveBatch),
-	reject_batch: action(RejectBatchAction, handleRejectBatch),
+	approve: action(ApproveAction, async (args, ctx, env) =>
+		settleApprovalResult(ctx, await handleApprove(args, ctx, env)),
+	),
+	reject: action(RejectAction, async (args, ctx) =>
+		settleApprovalResult(ctx, await handleReject(args, ctx)),
+	),
+	approve_batch: action(ApproveBatchAction, async (args, ctx, env) =>
+		settleApprovalResult(ctx, await handleApproveBatch(args, ctx, env)),
+	),
+	reject_batch: action(RejectBatchAction, async (args, ctx) =>
+		settleApprovalResult(ctx, await handleRejectBatch(args, ctx)),
+	),
 });
-
-const runManageOperations = manageOperationsTool.run;
 
 /**
  * Approval-card settlement belongs after the shared state transition, not in
@@ -53,28 +71,7 @@ const runManageOperations = manageOperationsTool.run;
  * batches convergent: whichever surface wins the durable run claim updates all
  * persisted chat copies from the same final state.
  */
-export const manageOperations: typeof runManageOperations = async (
-	args,
-	env,
-	ctx,
-) => {
-	const result = await runManageOperations(args, env, ctx);
-	if (
-		args.action === "approve" ||
-		args.action === "reject" ||
-		args.action === "approve_batch" ||
-		args.action === "reject_batch"
-	) {
-		const record = result as Record<string, unknown>;
-		const resultIds = Array.isArray(record.run_ids)
-			? record.run_ids.map(Number)
-			: Number.isFinite(Number(record.run_id))
-				? [Number(record.run_id)]
-				: [];
-		queueApprovalNotificationCardRefresh(ctx.organizationId, resultIds);
-	}
-	return result;
-};
+export const manageOperations = manageOperationsTool.run;
 export {
 	ManageOperationsResultSchema,
 	ManageOperationsSchema,

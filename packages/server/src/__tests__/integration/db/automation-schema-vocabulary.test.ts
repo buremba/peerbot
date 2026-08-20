@@ -6,6 +6,9 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
 const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
+const CANVAS_REMOVAL_MIGRATION = '20260820120000_remove_canvas_runtime.sql';
+const CANVAS_RESULT_CUTOVER_START = '-- canvas-result-cutover:start';
+const CANVAS_RESULT_CUTOVER_END = '-- canvas-result-cutover:end';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
 const ENTITY_REWRITE_START = '-- entity-metadata-cutover:start';
@@ -39,6 +42,14 @@ function loadTraitRewrite(): string {
   return loadMarkedSection(TRAIT_REWRITE_START, TRAIT_REWRITE_END, 'connector trait rewrite');
 }
 
+function loadCanvasResultCutover(): string {
+  const up = loadMigrationUpSection(resolveMigrationsDir(), CANVAS_REMOVAL_MIGRATION);
+  const start = up.indexOf(CANVAS_RESULT_CUTOVER_START);
+  const end = up.indexOf(CANVAS_RESULT_CUTOVER_END);
+  if (start < 0 || end < start) throw new Error('Could not locate Canvas result cutover');
+  return up.slice(start + CANVAS_RESULT_CUTOVER_START.length, end);
+}
+
 describe('Automation schema vocabulary', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
@@ -56,6 +67,88 @@ describe('Automation schema vocabulary', () => {
     const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
     expect(up).not.toMatch(/UPDATE\s+public\.(?:watchers|watcher_versions|view_template_versions)\b/i);
     expect(up).not.toMatch(/SET\s+\w+\s*=\s*replace\s*\(\s*replace\s*\([^;]*::text/is);
+  });
+
+  it('preserves a legacy runless skip-if-unchanged cursor as a completed run', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    const user = await createTestUser();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+      agentId: 'runless-canvas-cutover-agent',
+    });
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        const [automation] = await tx<{ id: number }[]>`
+          WITH next_id AS (
+            SELECT nextval('automations_id_seq')::int AS id
+          )
+          INSERT INTO automations (
+            id, organization_id, created_by, agent_id, automation_group_id,
+            name, slug
+          )
+          SELECT
+            id, ${org.id}, ${user.id}, ${agent.agentId}, id,
+            'Runless Canvas cutover', 'runless-canvas-cutover'
+          FROM next_id
+          RETURNING id
+        `;
+        const windowStart = '2026-08-18T00:00:00.000Z';
+        const windowEnd = '2026-08-19T00:00:00.000Z';
+        const [legacy] = await tx<{ id: number }[]>`
+          INSERT INTO events (
+            organization_id, entity_ids, origin_id, payload_type, payload_data,
+            metadata, semantic_type, automation_id, occurred_at, created_at
+          ) VALUES (
+            ${org.id}, '{}'::bigint[], 'runless-canvas-cutover', 'json_template', '{}'::jsonb,
+            ${tx.json({
+              automation_id: automation.id,
+              granularity: 'daily',
+              window_start: windowStart,
+              window_end: windowEnd,
+              content_analyzed: 0,
+              version_id: null,
+            })},
+            'canvas_state', ${automation.id}, ${windowEnd}, ${windowEnd}
+          )
+          RETURNING id
+        `;
+
+        await tx.unsafe(loadCanvasResultCutover());
+
+        const [run] = await tx`
+          SELECT id, status, outcome, action_output, approved_input, run_metadata
+          FROM runs
+          WHERE automation_id = ${automation.id} AND run_type = 'automation'
+        `;
+        expect(run).toMatchObject({
+          status: 'completed',
+          outcome: 'scoreable',
+          action_output: {},
+          approved_input: {
+            automation_id: automation.id,
+            dispatch_source: 'scheduled',
+            granularity: 'daily',
+            window_start: windowStart,
+            window_end: windowEnd,
+          },
+          run_metadata: { content_analyzed: 0, skipped_unchanged: true },
+        });
+        const [mapping] = await tx`
+          SELECT run_id, head_event_id
+          FROM canvas_run_map
+          WHERE legacy_id = ${legacy.id}
+        `;
+        expect(Number(mapping.run_id)).toBe(Number(run.id));
+        expect(Number(mapping.head_event_id)).toBe(Number(legacy.id));
+
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
   });
 
   it('fails the cutover when stored authored SQL still names a retired relation', async () => {

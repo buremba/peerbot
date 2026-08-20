@@ -577,7 +577,8 @@ async function getAutomationImpl(
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
         (SELECT MAX((approved_input->>'window_end')::timestamptz) FROM runs
-          WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed') as latest_window_end,
+          WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
+            AND action_output IS NOT NULL) as latest_window_end,
         -- Latest window START drives the next_window preview, so it chains off
         -- exactly what computePendingWindow chains off. Chaining the preview off
         -- the END instead makes the two disagree by a full period on a legacy

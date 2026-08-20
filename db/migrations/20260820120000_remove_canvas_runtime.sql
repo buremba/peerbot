@@ -1,5 +1,7 @@
 -- migrate:up
 
+-- canvas-result-cutover:start
+
 -- Resolve the retired Canvas chains once. Every later conversion uses the
 -- chain root plus the run that existed at the historical row's timestamp.
 CREATE TEMP TABLE canvas_members (
@@ -86,8 +88,78 @@ SET action_output = COALESCE(result_event.payload_data, run.action_output),
 FROM result_event
 WHERE run.id = result_event.run_id;
 
--- The current head may be a human correction with no run_id. Attribute that
--- corrected payload to the latest producing run in the chain.
+-- The retired skip-if-unchanged path stored an empty Canvas cursor without a
+-- run. Preserve that cursor as the same completed skipped run used today.
+CREATE TEMP TABLE skipped_canvas_run_map (
+  legacy_id bigint PRIMARY KEY,
+  run_id bigint NOT NULL,
+  head_event_id bigint NOT NULL,
+  head_payload_data jsonb NOT NULL
+) ON COMMIT DROP;
+
+INSERT INTO skipped_canvas_run_map (
+  legacy_id, run_id, head_event_id, head_payload_data
+)
+SELECT
+  head.legacy_id,
+  nextval(pg_get_serial_sequence('public.runs', 'id')),
+  head.event_id,
+  head.payload_data
+FROM canvas_members head
+JOIN public.automations automation
+  ON automation.id = head.automation_id
+ AND automation.organization_id = head.organization_id
+WHERE head.superseded_by IS NULL
+  AND head.payload_data = '{}'::jsonb
+  AND head.metadata->'content_analyzed' = '0'::jsonb
+  AND head.metadata->>'automation_id' = head.automation_id::text
+  AND head.metadata->>'window_start' IS NOT NULL
+  AND head.metadata->>'window_end' IS NOT NULL
+  AND head.metadata->>'granularity' IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM canvas_members member
+    JOIN public.runs run
+      ON run.id = member.run_id
+     AND run.run_type = 'automation'
+    WHERE member.legacy_id = head.legacy_id
+      AND member.run_id IS NOT NULL
+  );
+
+INSERT INTO public.runs (
+  id, organization_id, run_type, automation_id, approval_status, status,
+  outcome, action_output, approved_input, run_metadata, idempotency_key,
+  created_at, completed_at
+)
+SELECT
+  skipped.run_id,
+  head.organization_id,
+  'automation',
+  head.automation_id,
+  'auto',
+  'completed',
+  'scoreable',
+  '{}'::jsonb,
+  jsonb_strip_nulls(jsonb_build_object(
+    'automation_id', head.automation_id,
+    'window_start', head.metadata->>'window_start',
+    'window_end', head.metadata->>'window_end',
+    'dispatch_source', 'scheduled',
+    'version_id', head.metadata->'version_id',
+    'granularity', head.metadata->>'granularity'
+  )),
+  '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
+  concat(
+    'automation:', head.automation_id, ':scheduled:',
+    head.metadata->>'window_start', ':', head.metadata->>'window_end'
+  ),
+  head.created_at,
+  head.created_at
+FROM skipped_canvas_run_map skipped
+JOIN canvas_members head ON head.event_id = skipped.head_event_id;
+
+-- A current head may instead be a human correction with no run_id. Attribute
+-- that corrected payload to the latest producing run in the chain.
 CREATE TEMP TABLE canvas_run_map (
   legacy_id bigint PRIMARY KEY,
   run_id bigint NOT NULL,
@@ -114,6 +186,10 @@ JOIN LATERAL (
 WHERE head.superseded_by IS NULL
 ORDER BY head.legacy_id, head.created_at DESC, head.event_id DESC;
 
+INSERT INTO canvas_run_map (legacy_id, run_id, head_event_id, head_payload_data)
+SELECT legacy_id, run_id, head_event_id, head_payload_data
+FROM skipped_canvas_run_map;
+
 DO $assert_canvas_heads$
 BEGIN
   IF EXISTS (
@@ -132,6 +208,8 @@ UPDATE public.runs run
 SET action_output = COALESCE(mapping.head_payload_data, run.action_output)
 FROM canvas_run_map mapping
 WHERE run.id = mapping.run_id;
+
+-- canvas-result-cutover:end
 
 -- Child work used the Canvas root as its parent key. Prefer the producer that
 -- existed when the child was created; trusted initiator_ref.run_id wins when

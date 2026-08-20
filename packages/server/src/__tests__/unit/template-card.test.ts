@@ -267,6 +267,33 @@ describe("Slack escaping is per destination", () => {
 	});
 });
 
+describe("the subtitle's duplicate review link", () => {
+	it("drops the body line that links to the page the button already opens", () => {
+		// The body is written for the TEXT fallback, where there is no button.
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "run", connection: "Mac Shell", input: {} },
+			subtitle:
+				"A queued action on **Mac Shell** is waiting.\n\nReview: [Review in Lobu](https://app.lobu.ai/acme/memory?run_ids=42)",
+			url: "https://app.lobu.ai/acme/memory?run_ids=42",
+		});
+		expect(card?.subtitle).toBe("A queued action on Mac Shell is waiting.");
+		expect(buttons(card).map((b) => b.url)).toContain(
+			"https://app.lobu.ai/acme/memory?run_ids=42",
+		);
+	});
+
+	it("keeps a link that points somewhere the card does NOT already offer", () => {
+		const card = buildKindCard({
+			metadataSchema: APPROVAL_KIND.metadataSchema,
+			data: { operation: "run", connection: "Mac Shell", input: {} },
+			subtitle: "See [the runbook](https://wiki.example/runbook) first.",
+			url: "https://app.lobu.ai/acme/memory?run_ids=42",
+		});
+		expect(card?.subtitle).toBe("See the runbook first.");
+	});
+});
+
 describe("table headers", () => {
 	it("lifts a declared thead out of the body into the header row", () => {
 		// Slack ALWAYS draws a table's first row as its header. Left in the body a

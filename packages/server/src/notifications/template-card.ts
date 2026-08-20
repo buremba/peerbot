@@ -430,6 +430,36 @@ function fragsToChildren(frags: Frag[]): {
 	return { children, actions };
 }
 
+/**
+ * The card's subtitle, from the notification's Markdown body.
+ *
+ * Two things have to happen. The adapter renders the subtitle through
+ * `mrkdwn()`, which is NOT Markdown, so `**bold**`, the backslashes
+ * `escapeMarkdownText` left behind, and `[Review in Lobu](url)` would all show
+ * literally — flatten with the SDK's own converter, then escape, because the
+ * body is not ours (an approval body carries the connection name) and a raw
+ * `<!channel>` in it pings the room from a trusted card.
+ *
+ * And the body is written for the TEXT fallback, where there is no button, so
+ * it ends with a link to the very page this card already offers as one. Drop
+ * the line carrying that link — matched on the URL, not on its wording — or the
+ * card reads "Review: Review in Lobu" directly above a Review in Lobu button.
+ */
+function subtitleFor(
+	subtitle: string | null | undefined,
+	url: string | null | undefined,
+): string | undefined {
+	if (!subtitle) return undefined;
+	const body = url
+		? subtitle
+				.split("\n")
+				.filter((line) => !line.includes(`](${url})`))
+				.join("\n")
+		: subtitle;
+	const flattened = markdownToPlainText(body).trim();
+	return flattened ? escapeSlackText(flattened) : undefined;
+}
+
 export function buildKindCard(params: {
 	metadataSchema?: Record<string, unknown> | null;
 	jsonTemplate?: Record<string, unknown> | null;
@@ -507,15 +537,7 @@ export function buildKindCard(params: {
 
 	return Card({
 		title: params.title,
-		// The subtitle is the notification's Markdown body, and the adapter renders
-		// it through `mrkdwn()` — which is NOT Markdown, so `**bold**`, the
-		// backslashes `escapeMarkdownText` left behind, and `[Review in Lobu](url)`
-		// would all show literally. Flatten with the SDK's own converter, then
-		// escape: the body is not ours (an approval body carries the connection
-		// name), and raw, a `<!channel>` in it pings the room from a trusted card.
-		subtitle: params.subtitle
-			? escapeSlackText(markdownToPlainText(params.subtitle))
-			: undefined,
+		subtitle: subtitleFor(params.subtitle, params.url),
 		children,
 	});
 }

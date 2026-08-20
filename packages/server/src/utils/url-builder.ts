@@ -27,6 +27,28 @@ function withBaseUrl(baseUrl: string | undefined, path: string): string {
   return `${baseUrl}${path}`;
 }
 
+/**
+ * Absolutise a permalink for a destination that cannot resolve a relative one.
+ *
+ * In-app links are built relative on purpose so the inbox resolves them against
+ * whatever origin the user is on. Chat has no origin: Slack rejects a relative
+ * `url` on a button with `invalid_blocks` and drops the WHOLE message, so a
+ * relative link there costs the notification its delivery.
+ *
+ * Returns undefined when no public origin is configured — a card with no button
+ * still delivers, which a rejected message does not.
+ */
+export function toAbsolutePermalink(
+  url: string | null | undefined,
+  baseUrl?: string
+): string | undefined {
+  if (!url) return undefined;
+  if (/^https?:\/\//i.test(url)) return url;
+  const origin = getPublicWebUrl(undefined, baseUrl);
+  if (!origin) return undefined;
+  return `${origin}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
 export function getPublicWebUrl(requestUrl?: string, baseUrl?: string): string | undefined {
   const base = baseUrl || getConfiguredPublicOrigin();
   if (base) return normalizeBaseUrl(base);

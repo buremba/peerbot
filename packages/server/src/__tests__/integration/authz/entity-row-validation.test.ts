@@ -144,6 +144,18 @@ async function readDeletedAt(id: number): Promise<Date | null> {
 	return rows[0].deleted_at;
 }
 
+/**
+ * A force delete removes the ROW, so `deleted_at` cannot report on it — the
+ * absence of the row is the observation.
+ */
+async function rowExists(id: number): Promise<boolean> {
+	const sql = getTestDb();
+	const rows = await sql<{ id: number }[]>`
+    SELECT id FROM entities WHERE id = ${id}
+  `;
+	return rows.length > 0;
+}
+
 async function seedOrg(name: string) {
 	const org = await createTestOrganization({ name });
 	const user = await createTestUser();
@@ -548,6 +560,189 @@ describe("entity row validation at the physical writer", () => {
 			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
 
 			expect(await readDeletedAt(invoice.id)).toBeNull();
+		}, 60_000);
+	});
+
+	/**
+	 * `force_delete_tree` is the OTHER way a caller reaches destruction, and it
+	 * does not go past the soft-delete seam at all: it walks the tree and hands
+	 * the ids to `hardDeleteEntityRows`. Left ungoverned, "a posted invoice cannot
+	 * be deleted" would have meant "cannot be deleted without passing
+	 * force_delete_tree=true" — a control with a published bypass.
+	 *
+	 * It answers to `$deleted`, the same name the soft path uses, because a hard
+	 * delete is not a lesser destruction than a tombstone. (Contrast merge, which
+	 * earned its own `$merged_into`: merging a duplicate into its canonical record
+	 * is a correction, so freezing deletion must not freeze dedupe.)
+	 */
+	describe("force delete", () => {
+		it("denies force-deleting a frozen row, and the row survives", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			await expect(
+				deleteEntity(invoice.id, true, TEST_ENV, ctxFor(org.id, { userId: user.id })),
+			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
+
+			// The row itself, not its tombstone column: a hard delete would have
+			// removed it outright.
+			expect(await rowExists(invoice.id)).toBe(true);
+		}, 60_000);
+
+		/**
+		 * The tree case, and the reason judging only the root would be a hole: the
+		 * caller names the PARENT, and the frozen row is a descendant it never
+		 * mentioned. Deleting a folder must not be a way to destroy the posted
+		 * invoice inside it.
+		 */
+		it("denies the whole tree when a DESCENDANT is frozen", async () => {
+			const { org, user } = await seedOrg("Frozen child");
+			await seedType(org.id, "folder", null);
+			await seedType(org.id, "invoice", invoiceCompiled);
+			const ctx = ctxFor(org.id, { userId: user.id });
+
+			const folder = await createEntity({
+				entity_type: "folder",
+				name: "2026 filings",
+				organization_id: org.id,
+				created_by: user.id,
+				metadata: {},
+			} as Parameters<typeof createEntity>[0]);
+			const invoice = await createEntity({
+				entity_type: "invoice",
+				name: "INV-CHILD",
+				organization_id: org.id,
+				parent_id: folder.id,
+				created_by: user.id,
+				metadata: { status: "draft", einvoice_uuid: null, amount: 100 },
+			} as Parameters<typeof createEntity>[0]);
+			await updateEntity(invoice.id, { metadata: { status: "issued" } }, TEST_ENV, ctx);
+			await updateEntity(
+				invoice.id,
+				{ metadata: { status: "posted", einvoice_uuid: "uuid-child" } },
+				TEST_ENV,
+				ctx,
+			);
+
+			await expect(deleteEntity(folder.id, true, TEST_ENV, ctx)).rejects.toThrow(
+				/posted is frozen: \$deleted is not writable/,
+			);
+
+			// Atomic: the folder the rule said nothing about is still there too.
+			expect(await rowExists(folder.id)).toBe(true);
+			expect(await rowExists(invoice.id)).toBe(true);
+		}, 60_000);
+
+		/** The complement — the seam must not stop force delete generally. */
+		it("force-deletes a tree the rule does not freeze", async () => {
+			const { org, user } = await seedOrg("Free tree");
+			await seedType(org.id, "folder", null);
+			await seedType(org.id, "invoice", invoiceCompiled);
+			const ctx = ctxFor(org.id, { userId: user.id });
+
+			const folder = await createEntity({
+				entity_type: "folder",
+				name: "drafts",
+				organization_id: org.id,
+				created_by: user.id,
+				metadata: {},
+			} as Parameters<typeof createEntity>[0]);
+			const invoice = await createEntity({
+				entity_type: "invoice",
+				name: "INV-DRAFT",
+				organization_id: org.id,
+				parent_id: folder.id,
+				created_by: user.id,
+				metadata: { status: "draft", einvoice_uuid: null, amount: 100 },
+			} as Parameters<typeof createEntity>[0]);
+
+			const result = await deleteEntity(folder.id, true, TEST_ENV, ctx);
+
+			expect(result.deleted).toBe(2);
+			expect(await rowExists(folder.id)).toBe(false);
+			expect(await rowExists(invoice.id)).toBe(false);
+		}, 60_000);
+
+		/**
+		 * The approval replay passes `force_delete_tree` straight through with the
+		 * `$deleted` grant, so a force delete a human approved has to apply — else
+		 * the card is minted, approved, and then throws on the replay.
+		 */
+		it("honours an approved force delete the rule escalated", async () => {
+			const { org, user, doc } = await seedEscalatingDoc();
+
+			await expect(
+				deleteEntity(doc.id, true, TEST_ENV, ctxFor(org.id, { userId: user.id })),
+			).rejects.toThrow(/second pair of eyes \(approval required for \$deleted\)/);
+
+			await deleteEntity(doc.id, true, TEST_ENV, ctxFor(org.id, { userId: user.id }), {
+				approvedFields: ["$deleted"],
+			});
+
+			expect(await rowExists(doc.id)).toBe(false);
+		}, 60_000);
+
+		/** A grant waives an ESCALATE. It may never launder a DENY. */
+		it("does not let a force-delete grant launder a deny", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			await expect(
+				deleteEntity(invoice.id, true, TEST_ENV, ctxFor(org.id, { userId: user.id }), {
+					approvedFields: ["$deleted"],
+				}),
+			).rejects.toThrow(/posted is frozen: \$deleted is not writable/);
+
+			expect(await rowExists(invoice.id)).toBe(true);
+		}, 60_000);
+
+		/**
+		 * The force dry run is the report a caller reads before committing to an
+		 * irreversible delete. Reporting "would remove 1 entities" for a tree a rule
+		 * refuses is optimistic in the one direction that matters.
+		 */
+		it("reports the rule verdict in a force dry run", async () => {
+			const { org, user, invoice } = await seedInvoice("posted");
+
+			const preview = await deleteEntity(
+				invoice.id,
+				true,
+				TEST_ENV,
+				ctxFor(org.id, { userId: user.id }),
+				{ dryRun: true },
+			);
+
+			expect(preview.message).toMatch(/would NOT run/);
+			expect(preview.message).toMatch(/posted is frozen: \$deleted is not writable/);
+			expect(preview.refused).toBe(true);
+			expect(preview.deleted).toBe(0);
+			// The dependency report still rides along: a caller told "no" still wants
+			// to know what it was going to touch.
+			expect(preview.tree?.entities).toBe(1);
+			expect(await rowExists(invoice.id)).toBe(true);
+		}, 60_000);
+
+		it("still reports the removal in a force dry run the rule permits", async () => {
+			const { org, user, invoice } = await seedInvoice("draft");
+
+			const preview = await deleteEntity(
+				invoice.id,
+				true,
+				TEST_ENV,
+				ctxFor(org.id, { userId: user.id }),
+				{ dryRun: true },
+			);
+
+			expect(preview.message).toMatch(/would remove 1 entities/);
+			expect(preview.refused).toBeUndefined();
+			expect(await rowExists(invoice.id)).toBe(true);
+		}, 60_000);
+
+		/** A type with no rule at all must not pay for the seam existing. */
+		it("force-deletes a row whose type declares no rule", async () => {
+			const { org, user, invoice } = await seedInvoice("posted", null);
+
+			await deleteEntity(invoice.id, true, TEST_ENV, ctxFor(org.id, { userId: user.id }));
+
+			expect(await rowExists(invoice.id)).toBe(false);
 		}, 60_000);
 	});
 });

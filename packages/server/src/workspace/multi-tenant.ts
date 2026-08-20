@@ -1,4 +1,4 @@
-import { verifyWorkerToken } from '@lobu/core';
+import { looksLikeWorkerToken, verifyWorkerToken } from '@lobu/core';
 import { getAuthConfig as getAuthConfigFromEnv } from '../auth/config';
 import { createAuth } from '../auth/index';
 import { OAuthProvider } from '../auth/oauth/provider';
@@ -284,7 +284,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         ? authHeader.slice(7)
         : null;
     const directAuthTokenData =
-      directAuthBearer && /^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/i.test(directAuthBearer)
+      directAuthBearer && looksLikeWorkerToken(directAuthBearer)
         ? verifyWorkerToken(directAuthBearer)
         : null;
     if (directAuthBearer && (directAuthHeader || directAuthTokenData)) {

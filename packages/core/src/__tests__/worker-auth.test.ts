@@ -8,6 +8,7 @@ import {
 import {
   generateWorkerToken,
   generateWorkerTokenPair,
+  looksLikeWorkerToken,
   verifyEgressProxyToken,
   verifyWorkerToken,
   type WorkerTokenData,
@@ -102,6 +103,25 @@ describe("worker auth token", () => {
     // hex chars only
     for (const p of parts) {
       expect(p).toMatch(/^[0-9a-f]+$/);
+    }
+  });
+
+  test("recognizes only worker-token ciphertext envelopes", () => {
+    const token = generateWorkerToken("user-1", "conv-1", "deploy-A", {
+      channelId: "C1",
+    });
+    expect(looksLikeWorkerToken(token)).toBe(true);
+    expect(looksLikeWorkerToken("0a:0B:ff")).toBe(true);
+
+    for (const value of [
+      "",
+      "aa:bb",
+      "aa:bb:cc:dd",
+      "aa::cc",
+      "aa:gg:cc",
+      "owl_pat_not-a-worker-token",
+    ]) {
+      expect(looksLikeWorkerToken(value)).toBe(false);
     }
   });
 

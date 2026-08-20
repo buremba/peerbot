@@ -35,7 +35,7 @@
  * correct answer to "give me the Lobu interaction shell", and it makes a bump
  * mean what the comment above claims it means: a cache eviction, not an outage.
  */
-export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v42.html';
+export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v43.html';
 
 /**
  * Any interaction-shell id, current or superseded. The `.html` suffix is

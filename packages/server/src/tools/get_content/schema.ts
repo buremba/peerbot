@@ -6,6 +6,26 @@ import { type Static, Type } from '@sinclair/typebox';
 import { markAcceptedInternalFields } from '../validate-args';
 
 // ============================================
+// Payload cap note (shared by several field descriptions)
+// ============================================
+
+/**
+ * Event payloads are byte-capped at the read boundary so one oversized event
+ * cannot flood a model turn. A clamped row keeps the head of `payload_text`
+ * plus a `… [truncated]` suffix and sets `payload_truncated: true` and
+ * `content_length` (the full original character length). Read the remainder
+ * with the SQL reader (read-only, org-scoped): `SELECT substr(payload_text,
+ * <offset>, <len>) ...` using the character offsets implied by `content_length`.
+ */
+const PAYLOAD_CAP_NOTE =
+  'Event payloads are byte-capped at the read boundary: a clamped row keeps ' +
+  'only the head of `payload_text`/`text_content` plus a `… [truncated]` suffix ' +
+  'and sets `payload_truncated: true` with `content_length` = full original ' +
+  'character length. Read the remainder with the SQL reader (read-only, ' +
+  'org-scoped): `SELECT substr(payload_text, <offset>, <len>) FROM events ' +
+  'WHERE id = <event_id>` using the character offsets implied by `content_length`.';
+
+// ============================================
 // Typebox Schema
 // ============================================
 
@@ -13,7 +33,8 @@ export const GetContentSchema = Type.Object({
   query: Type.Optional(
     Type.String({
       description:
-        'Search query text (min 3 characters). If provided, performs semantic/full-text search. If omitted, lists content ordered by date.',
+        'Search query text (min 3 characters). If provided, performs semantic/full-text search. If omitted, lists content ordered by date. ' +
+        PAYLOAD_CAP_NOTE,
       minLength: 3,
     })
   ),
@@ -25,7 +46,8 @@ export const GetContentSchema = Type.Object({
   automation_id: Type.Optional(
     Type.Number({
       description:
-        "Persisted Automation ID (`automation_id`) to fetch content for. When provided, uses the Automation's sources and computes its pending window. Returns window_token for complete_window action.",
+        "Persisted Automation ID (`automation_id`) to fetch content for. When provided, uses the Automation's sources and computes its pending window. Returns window_token for complete_window action. " +
+        PAYLOAD_CAP_NOTE,
     })
   ),
   template_version_id: Type.Optional(
@@ -212,7 +234,8 @@ export const GetContentSchema = Type.Object({
   content_ids: Type.Optional(
     Type.Array(Type.Number(), {
       description:
-        'Filter to specific content IDs. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.',
+        'Filter to specific content IDs. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads. Reads earn a larger per-row payload budget than list/search reads. ' +
+        PAYLOAD_CAP_NOTE,
     })
   ),
   exclude_automation_id: Type.Optional(

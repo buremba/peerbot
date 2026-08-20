@@ -14,7 +14,11 @@ import { buildResourcePermalink } from '../../utils/url-builder';
 import { isAdminOrOwnerRole } from '../access-control';
 import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
-import { parseRecordArray, toNumberOrUndefined } from './types';
+import {
+  parseRecordArray,
+  toNumberOrUndefined,
+} from './types';
+import { clampRowPayloads, type ClampBudget } from './byte-clamp';
 
 /**
  * Gated payload keys: the request itself and its size. `request_status` is
@@ -154,6 +158,13 @@ export async function buildContentItems(opts: {
   baseUrl: string | undefined;
   excerptsMap: Map<number, string>;
   includePrivateAttribution: boolean;
+  /**
+   * Per-row byte budget applied at this serialization chokepoint. Omitted for
+   * the non-agent web paths that render content cards, which want full bodies;
+   * provided for agent-facing reads so one oversized `payload_text` cannot
+   * flood the model turn.
+   */
+  clamp?: ClampBudget;
 }): Promise<ContentItem[]> {
   const {
     sql,
@@ -163,6 +174,7 @@ export async function buildContentItems(opts: {
     baseUrl,
     excerptsMap,
     includePrivateAttribution,
+    clamp,
   } = opts;
 
   // Score and text-search paths intentionally return slimmer rows than exact
@@ -272,7 +284,7 @@ export async function buildContentItems(opts: {
     const classifications = parseJsonObject(f.classifications);
     const attribution = attributionMap.get(Number(f.id));
 
-    return {
+    const item: ContentItem = {
       id: f.id,
       entity_ids: parsePgNumberArray(f.entity_ids),
       platform: f.platform,
@@ -357,6 +369,10 @@ export async function buildContentItems(opts: {
       root_context: f.root_context as ContentItem['root_context'],
       permalink: buildResourcePermalink(ownerSlug, { kind: 'event', eventId: f.id }, baseUrl) ?? null,
     };
+    // Agent-facing reads clamp oversized payloads at this exit (see above).
+    if (clamp) clampRowPayloads(item as unknown as Record<string, unknown>, clamp);
+
+    return item;
   });
 
   // Event rendering resolution tail: a metadata-only event ('empty') with no

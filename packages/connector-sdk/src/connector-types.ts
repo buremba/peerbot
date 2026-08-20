@@ -1187,6 +1187,21 @@ export interface ContentItem {
   title: string | null;
   text_content: string;
   payload_text?: string | null;
+  /**
+   * Present (true) when this row's payload was clamped to a byte cap at the
+   * read boundary so one oversized event cannot flood the model turn.
+   * `payload_text`/`text_content` then hold the head plus a `… [truncated]`
+   * suffix, `content_length` holds the full original character length, and an
+   * oversized `payload_data` is replaced by `{ _truncated: true, bytes: N }`.
+   */
+  payload_truncated?: boolean;
+  /**
+   * Full character length of the source payload before clamping, present only
+   * when `payload_truncated` is true. Character (not byte) length, matching
+   * the semantics of `events.content_length`, so a caller can decide whether
+   * to page the remainder via `substr(payload_text, offset, len)`.
+   */
+  content_length?: number;
   payload_data?: Record<string, unknown>;
   payload_template?: Record<string, unknown> | null;
   attachments?: Array<Record<string, unknown>>;

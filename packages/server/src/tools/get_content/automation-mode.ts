@@ -38,6 +38,7 @@ import type { GetContentArgs } from './schema';
 import type { ClassifierConfig, GetContentResult } from './types';
 import { parseJson, parseRecordArray } from './types';
 import { stableJson } from '../../utils/insert-event';
+import { BULK_BUDGET, clampRows, exactSinglePayloadBudget, type ClampBudget } from './byte-clamp';
 
 // ============================================
 // Content Query (inlined from automation-content-query)
@@ -70,6 +71,14 @@ interface ContentQueryParams {
     beforeOccurredAt?: string;
     beforeId?: number;
   };
+  /**
+   * Per-source byte budget; when provided, returned rows are clamped to these
+   * caps at the serialization chokepoint (after row trimming, before the
+   * response is assembled) so one oversized event cannot flood the model turn.
+   * Omitted by fingerprinting, which must hash FULL rows so `skip_if_unchanged`
+   * still sees a payload growing past a cap.
+   */
+  payloadClamp?: (sourceName: string) => ClampBudget;
 }
 
 function isMetricSource(
@@ -293,6 +302,15 @@ async function queryContentData(
     }
   }
 
+  // Byte clamp the rows that survived trimming, per source. `allContent` and
+  // `sourcesContent` are both built from these clamped rows, so the response
+  // is bounded whether the agent reads `content` or `sources`.
+  if (params.payloadClamp) {
+    for (const [sourceName, rows] of Object.entries(results)) {
+      clampRows(rows, params.payloadClamp(sourceName));
+    }
+  }
+
   const seen = new Set<number>();
   const allContent: unknown[] = [];
 
@@ -318,6 +336,11 @@ async function queryContentData(
           author_name: rec.author_name ?? rec.author,
           title: rec.title,
           text_content: rec.payload_text ?? rec.text_content,
+          // Byte-cap markers (see byte-clamp) survive the raw-row → content-item
+          // mapping so a caller reading `content` sees the same truncation
+          // signal as a caller reading `sources`.
+          payload_truncated: rec.payload_truncated,
+          content_length: rec.content_length,
           rating: (rec.metadata as Record<string, unknown>)?.rating || null,
           source_url: rec.source_url ?? rec.url,
           score: Number(rec.score) || 0,
@@ -614,6 +637,13 @@ export async function handleAutomationMode(
       beforeOccurredAt: args.before_occurred_at,
       beforeId: args.before_id,
     },
+    // The exact trigger-input source earns the deliberate-lookup head (scaled
+    // down as the id count grows); every authored source gets the small bulk
+    // head so one huge event in a window cannot flood the run.
+    payloadClamp: (sourceName) =>
+      sourceName === triggerInputSourceName && triggerContentIds.length > 0
+        ? exactSinglePayloadBudget(triggerContentIds.length)
+        : BULK_BUDGET,
   });
   const {
     sourcesContent,

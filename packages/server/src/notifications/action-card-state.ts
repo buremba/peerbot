@@ -3,6 +3,7 @@ import {
 	type CardChild,
 	type CardElement,
 	CardText,
+	type LinkButtonElement,
 } from "chat";
 import { escapeSlackText } from "../utils/slack-text";
 
@@ -98,7 +99,7 @@ export function settleActionCard(
 	resolution: ActionResolution,
 ): CardElement {
 	const children: CardChild[] = [];
-	const trailingLinks: Array<Record<string, unknown>> = [];
+	const trailingLinks: LinkButtonElement[] = [];
 	for (const child of card.children) {
 		if (!isRecord(child) || child.type !== "actions") {
 			children.push(child);
@@ -107,17 +108,22 @@ export function settleActionCard(
 		const actionChildren = Array.isArray(child.children) ? child.children : [];
 		const links = actionChildren.flatMap((action) => {
 			if (!isRecord(action) || action.type !== "link-button") return [];
+			if (typeof action.label !== "string" || typeof action.url !== "string") {
+				return [];
+			}
 			return [
 				{
-					...action,
+					type: "link-button" as const,
+					...(typeof action.id === "string" ? { id: action.id } : {}),
 					label:
 						action.label === "Review in Lobu" ? "View in Lobu" : action.label,
+					url: action.url,
 				},
 			];
 		});
 		trailingLinks.push(...links);
 	}
 	children.push(CardText(actionResolutionText(resolution)));
-	if (trailingLinks.length > 0) children.push(Actions(trailingLinks as never));
+	if (trailingLinks.length > 0) children.push(Actions(trailingLinks));
 	return { ...card, children };
 }

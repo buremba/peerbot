@@ -1066,12 +1066,20 @@ export function registerActionHandlers(
 				ctx,
 			).catch((error) => ({ error: String(error) }));
 			const resultRecord = result as Record<string, unknown>;
-			if (typeof resultRecord.error === "string") {
-				try {
-					await thread.post(resultRecord.error);
-				} catch {
-					// best effort
-				}
+			// Keep the terse thread receipt for cards delivered before card payloads
+			// were persisted. New cards also settle in place via manage_operations.
+			const message =
+				typeof resultRecord.message === "string"
+					? resultRecord.message
+					: typeof resultRecord.error === "string"
+						? resultRecord.error
+						: decision === "approve"
+							? "Approved."
+							: "Rejected.";
+			try {
+				await thread.post(message);
+			} catch {
+				// best effort
 			}
 			return;
 		}

@@ -553,10 +553,15 @@ export async function refreshApprovalNotificationCards(
 		 AND COALESCE(n.metadata->>'notification_type', 'generic') = 'action_approval_needed'
 		 AND n.metadata->>'resource_type' = 'event'
 		 AND n.metadata->>'resource_id' = proposal.id::text
-		LEFT JOIN current_event_records decision
-		  ON decision.organization_id = r.organization_id
-		 AND decision.run_id = r.id
-		 AND decision.interaction_type = 'approval'
+		LEFT JOIN LATERAL (
+			SELECT d.occurred_at, d.metadata
+			FROM current_event_records d
+			WHERE d.organization_id = r.organization_id
+			  AND d.run_id = r.id
+			  AND d.interaction_type = 'approval'
+			ORDER BY d.occurred_at DESC, d.id DESC
+			LIMIT 1
+		) decision ON true
 		WHERE r.organization_id = ${organizationId}
 		  AND r.id = ANY(${pgBigintArray(ids)}::bigint[])
 		  AND r.approval_status IN ('approved', 'rejected', 'expired')

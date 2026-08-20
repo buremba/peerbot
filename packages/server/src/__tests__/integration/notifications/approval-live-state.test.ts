@@ -291,6 +291,28 @@ describe("approval notification live state", () => {
 		expect(settledJson).toContain('"label":"View in Lobu"');
 		expect(settledJson).not.toContain('"type":"button"');
 
+		const duplicateDecision = await createTestEvent({
+			organization_id: org.id,
+			title: "Later approval receipt",
+			content: "A duplicate current receipt",
+			semantic_type: "operation",
+			metadata: { reviewed_by_name: "Later Reviewer" },
+		});
+		await sql`
+			UPDATE events
+			SET run_id = ${runId},
+			    interaction_type = 'approval',
+			    interaction_status = 'rejected',
+			    occurred_at = now() + interval '1 minute'
+			WHERE id = ${duplicateDecision.id}
+		`;
+		editMessageContent.mockClear();
+		await refreshApprovalNotificationCards(org.id, [runId]);
+		expect(editMessageContent).toHaveBeenCalledTimes(1);
+		expect(JSON.stringify(editMessageContent.mock.calls[0])).toContain(
+			"Later Reviewer",
+		);
+
 		await sql`UPDATE runs SET approval_status = 'expired' WHERE id = ${runId}`;
 		await sql`
 			UPDATE events

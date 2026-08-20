@@ -181,9 +181,8 @@ export const AutomationPollContextSchema = Type.Object({
   // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
   // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
   // PAT is bound to the user's personal org and can't authenticate to a
-  // team-org Automation). `mcp_url` is the gateway MCP proxy endpoint
-  // (`{PUBLIC_GATEWAY_URL}/mcp/lobu-memory`), which validates the worker
-  // token and promotes it into a direct-auth MCP session for the token's org.
+  // team-org Automation). `mcp_url` is the org-scoped direct MCP endpoint
+  // (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own session.
   // The daemon hands both to the spawned CLI as its MCP wiring and as
   // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
   // agent for this run. Absent when the run has no usable assigned agent, or

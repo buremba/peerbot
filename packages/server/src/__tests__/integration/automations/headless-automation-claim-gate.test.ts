@@ -23,6 +23,7 @@ import { randomBytes } from 'node:crypto';
 import { verifyWorkerToken } from '@lobu/core';
 import type { DbClient } from '../../../db/client';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
+import { resolvePublicOrigin } from '../../../utils/public-origin';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
@@ -199,9 +200,9 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(agentSession?.conversation_id).toBe(
       `claim-gate-agent_automation_${ctx.automationId}_run_${job.run_id}`
     );
-    // Canonical headless lobu-memory MCP URL: PUBLIC_GATEWAY_URL (mounted under
-    // /lobu) followed by /mcp/lobu-memory.
-    expect(agentSession?.mcp_url).toContain('/lobu/mcp/lobu-memory');
+    expect(agentSession?.mcp_url).toBe(
+      `${resolvePublicOrigin('http://localhost/api/workers/poll')}/mcp/${encodeURIComponent(ctx.workspace.org.slug)}`
+    );
     expect(typeof agentSession?.expires_at).toBe('number');
     expect(agentSession!.expires_at).toBeGreaterThan(Date.now());
     const claims = verifyWorkerToken(agentSession!.token);

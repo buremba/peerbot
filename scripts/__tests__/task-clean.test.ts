@@ -29,7 +29,10 @@ function command(cwd: string, args: string[], env?: Record<string, string>) {
 }
 
 function output(result: ReturnType<typeof Bun.spawnSync>) {
-  return new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+  return (
+    new TextDecoder().decode(result.stdout) +
+    new TextDecoder().decode(result.stderr)
+  );
 }
 
 describe("task-clean worktree removal", () => {
@@ -41,15 +44,35 @@ describe("task-clean worktree removal", () => {
     const bin = join(root, "bin");
     mkdirSync(join(repo, "scripts", "lib"), { recursive: true });
     mkdirSync(bin);
-    copyFileSync(resolve(import.meta.dir, "..", "task-clean.sh"), join(repo, "scripts", "task-clean.sh"));
-    copyFileSync(resolve(import.meta.dir, "..", "lib", "db-name.sh"), join(repo, "scripts", "lib", "db-name.sh"));
+    copyFileSync(
+      resolve(import.meta.dir, "..", "task-clean.sh"),
+      join(repo, "scripts", "task-clean.sh")
+    );
+    copyFileSync(
+      resolve(import.meta.dir, "..", "lib", "db-name.sh"),
+      join(repo, "scripts", "lib", "db-name.sh")
+    );
 
     expect(command(root, ["git", "init", "-q", repo]).exitCode).toBe(0);
-    expect(command(repo, ["git", "config", "user.email", "test@example.com"]).exitCode).toBe(0);
-    expect(command(repo, ["git", "config", "user.name", "Test"]).exitCode).toBe(0);
+    expect(
+      command(repo, ["git", "config", "user.email", "test@example.com"])
+        .exitCode
+    ).toBe(0);
+    expect(command(repo, ["git", "config", "user.name", "Test"]).exitCode).toBe(
+      0
+    );
     expect(command(repo, ["git", "add", "scripts"]).exitCode).toBe(0);
     expect(command(repo, ["git", "commit", "-qm", "fixture"]).exitCode).toBe(0);
-    expect(command(repo, ["git", "worktree", "add", "-b", "feat/task-clean", worktree]).exitCode).toBe(0);
+    expect(
+      command(repo, [
+        "git",
+        "worktree",
+        "add",
+        "-b",
+        "feat/task-clean",
+        worktree,
+      ]).exitCode
+    ).toBe(0);
 
     // Older Git releases reject this operation before removing the registration.
     const gitShim = join(bin, "git");
@@ -65,14 +88,26 @@ exec /usr/bin/git "$@"
     );
     chmodSync(gitShim, 0o755);
 
-    const result = command(repo, ["bash", "scripts/task-clean.sh", "task-clean", "--force"], {
-      PATH: `${bin}:/usr/bin:/bin`,
-    });
+    const result = command(
+      repo,
+      ["bash", "scripts/task-clean.sh", "task-clean", "--force"],
+      {
+        PATH: `${bin}:/usr/bin:/bin`,
+      }
+    );
     expect(result.exitCode, output(result)).toBe(0);
     expect(existsSync(worktree)).toBe(false);
-    expect(command(repo, ["git", "show-ref", "--verify", "--quiet", "refs/heads/feat/task-clean"]).exitCode).not.toBe(0);
-    expect(output(command(repo, ["git", "worktree", "list", "--porcelain"]))).not.toContain(
-      `worktree ${worktree}`
-    );
+    expect(
+      command(repo, [
+        "git",
+        "show-ref",
+        "--verify",
+        "--quiet",
+        "refs/heads/feat/task-clean",
+      ]).exitCode
+    ).not.toBe(0);
+    expect(
+      output(command(repo, ["git", "worktree", "list", "--porcelain"]))
+    ).not.toContain(`worktree ${worktree}`);
   });
 });

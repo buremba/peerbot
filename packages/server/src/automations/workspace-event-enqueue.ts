@@ -14,7 +14,12 @@ import type { DbClient } from '../db/client';
 import { getDb, pgTextArray } from '../db/client';
 import { WORKSPACE_EVENT_ACTIVATION_TASK } from '../scheduled/task-definitions';
 import { enqueueTasksInTransaction } from '../scheduled/task-scheduler';
-import type { WorkspaceEventActivationTaskPayload } from './workspace-event-contract';
+import {
+  automationTriggerSignals,
+  deriveWorkspaceEventCausality,
+  isWorkspaceEventTriggerSignal,
+  type WorkspaceEventActivationTaskPayload,
+} from './workspace-event-contract';
 
 /**
  * Which of `eventTypes` at least one active Automation subscribes to.
@@ -71,4 +76,73 @@ export async function enqueueWorkspaceEventActivations(
       },
     }))
   );
+}
+
+/**
+ * The causal ancestry an audit row should inherit from the run that produced it.
+ *
+ * Without this an audit-mediated chain never accrues depth: every audit row
+ * would start a fresh root at depth 1, so `MAX_WORKSPACE_EVENT_DEPTH` could
+ * never bite and a mutual A -> B -> A cascade would be bounded only by fan-out
+ * and run cooldown. Inheriting the driving run's signals makes each hop a real
+ * step in the same chain, which is what the depth and breadth caps measure.
+ *
+ * Returns null when there is no run to inherit from — an agent that declared no
+ * window, or a run that was never activated by a workspace event (a scheduled
+ * or connector-triggered run carries signals, but none of them workspace ones).
+ * The caller then falls back to a root, which is correct: nothing upstream to
+ * accrue.
+ *
+ * Looked up by run id when the lane exposes one, else by the declared window,
+ * which resolves to the same run through `runs.window_id`. Both lookups are
+ * scoped to the producing Automation as well as the org: the window id can be
+ * caller-declared (`automation_source`), and inheriting a run of a DIFFERENT
+ * Automation would plant that Automation into this row's causal path —
+ * suppressing it downstream, i.e. silencing it. `notify.ts` validates the same
+ * pair before anchoring a canvas.
+ */
+export async function loadRunEventCausality(
+  organizationId: string,
+  ref: { runId: number | null; windowId: number | null },
+  producerAutomationId: number,
+  db: DbClient = getDb()
+): Promise<{
+  rootEventIds: number[];
+  causalAutomationIds: number[];
+  depth: number;
+} | null> {
+  if (ref.runId == null && ref.windowId == null) return null;
+  const rows =
+    ref.runId != null
+      ? await db<{ approved_input: unknown }>`
+          SELECT approved_input
+          FROM public.runs
+          WHERE id = ${ref.runId}
+            AND organization_id = ${organizationId}
+            AND automation_id = ${producerAutomationId}
+          LIMIT 1
+        `
+      : await db<{ approved_input: unknown }>`
+          SELECT approved_input
+          FROM public.runs
+          WHERE window_id = ${ref.windowId}
+            AND organization_id = ${organizationId}
+            AND automation_id = ${producerAutomationId}
+          ORDER BY id DESC
+          LIMIT 1
+        `;
+  const approvedInput = rows[0]?.approved_input;
+  if (!approvedInput || typeof approvedInput !== 'object') return null;
+  // Only workspace signals carry ancestry. A connector- or schedule-woken run
+  // has signals too, and passing those through would derive an EMPTY root set
+  // — which `activateWorkspaceEventTask` rejects, dropping a legitimate
+  // activation. Such a run starts a chain, exactly like no run at all.
+  const signals = automationTriggerSignals(
+    approvedInput as { trigger_signal?: unknown; trigger_signals?: unknown }
+  ).filter(isWorkspaceEventTriggerSignal);
+  if (signals.length === 0) return null;
+  // Throws past the breadth / root caps. That is the cascade limit doing its
+  // job, so let it propagate: the caller treats a failed derivation as "do not
+  // queue", which terminates the chain rather than restarting it as a root.
+  return deriveWorkspaceEventCausality(signals, producerAutomationId);
 }

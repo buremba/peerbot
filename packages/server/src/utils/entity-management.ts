@@ -802,16 +802,40 @@ async function preventEntityCycles(
   }
 }
 
+/**
+ * Every row a force delete must remove with `entityId`: its `parent_id`
+ * descendants AND the merge tombstones that redirect into any of them.
+ *
+ * Following `merged_into` is not an extra: a row merged away has no identity of
+ * its own left — it is a redirect to its winner — and `entities_merged_into_fkey`
+ * refuses to let the winner go while the redirect points at it. Walking only the
+ * parent tree therefore made a merged-into record permanently undeletable, and
+ * the caller saw a raw Postgres constraint message rather than an answer.
+ *
+ * Both edges are followed in one CTE so a chain (C merged into B, B a child of
+ * A) is collected in a single pass. `merged_into` is already flattened at merge
+ * time, but the recursion costs nothing and does not depend on that.
+ *
+ * `UNION`, not `UNION ALL`: the two edges can reach a row twice — a child that
+ * was also merged into a sibling — and a merge can fold a parent into its own
+ * descendant, closing a cycle that only the deduplicating form terminates on.
+ *
+ * This covers every FK into `entities` that would otherwise block the delete.
+ * Of the 9, four are ON DELETE CASCADE and one SET NULL; the four RESTRICT/NO
+ * ACTION ones are `entities_parent_id_fkey` (children — the parent tree),
+ * `entities_merged_into_fkey` (redirects — this function), and
+ * `entity_merge_operations`' two (the ledger, deleted explicitly below).
+ */
 async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<number[]> {
   const rows = await sql<{ id: number }>`
     WITH RECURSIVE entity_tree AS (
       SELECT id
       FROM entities
       WHERE id = ${entityId}
-      UNION ALL
+      UNION
       SELECT e.id
       FROM entities e
-      JOIN entity_tree et ON e.parent_id = et.id
+      JOIN entity_tree et ON e.parent_id = et.id OR e.merged_into = et.id
     )
     SELECT id
     FROM entity_tree
@@ -1826,6 +1850,19 @@ export async function deleteEntity(
         DELETE FROM feeds
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
           AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
+      `;
+
+      // The merge ledger is undo state for rows that are about to stop existing,
+      // so it goes with them. Its FKs are ON DELETE RESTRICT, which is the right
+      // default — nothing should delete an entity out from under a live ledger —
+      // but this path is the one place that legitimately may, because it removes
+      // the winner and every redirect into it together (see `loadEntityTreeIds`).
+      // Without this the RESTRICT surfaced as a raw constraint error and the
+      // record could never be deleted at all.
+      await tx`
+        DELETE FROM entity_merge_operations
+        WHERE winner_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
+           OR loser_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
       `;
       await tx`
         UPDATE feeds

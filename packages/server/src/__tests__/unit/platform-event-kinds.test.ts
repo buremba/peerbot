@@ -13,7 +13,10 @@
 
 import { STRUCTURAL_NODE_TYPES } from "@lobu/core/json-template";
 import { describe, expect, it } from "bun:test";
-import { PLATFORM_EVENT_KINDS } from "../../utils/platform-event-kinds";
+import {
+	ENTITY_CHANGE_APPROVAL_KIND,
+	PLATFORM_EVENT_KINDS,
+} from "../../utils/platform-event-kinds";
 import { validateJsonTemplate } from "../../utils/validate-json-template";
 
 type Node = Record<string, unknown>;
@@ -116,5 +119,64 @@ describe("the validator and the renderers agree on the DSL", () => {
 		expect(() =>
 			validateJsonTemplate({ type: "entity-board", props: { boardId: "q3" } }),
 		).not.toThrow();
+	});
+});
+
+/**
+ * The web renderer lays a `context` strip out with a flex `gap`, which applies
+ * between DIRECT children only. A separator is NOT a direct child — it is
+ * grouped with the value it introduces inside a `span`, so that `gap` never
+ * reaches between them and the page reads "· requested byCRM sync". Chat
+ * normalises whitespace and so never shows the defect, which is exactly why
+ * nothing but this pins it.
+ *
+ * A standalone label (`Operation`) IS a direct child and needs no trailing
+ * space, so the rule is scoped to the literals that carry a separator.
+ */
+describe("context separators keep their trailing space", () => {
+	const SEPARATOR = "·";
+
+	function contextLiterals(node: unknown, inContext: boolean, out: string[]): void {
+		if (!node || typeof node !== "object") return;
+		if (Array.isArray(node)) {
+			for (const child of node) contextLiterals(child, inContext, out);
+			return;
+		}
+		const n = node as Record<string, unknown>;
+		const here = inContext || n.type === "context";
+		if (here && n.type === "text" && typeof n.content === "string") {
+			out.push(n.content);
+		}
+		for (const [key, value] of Object.entries(n)) {
+			if (key === "type" || key === "content") continue;
+			contextLiterals(value, here, out);
+		}
+	}
+
+	for (const [slug, kind] of Object.entries(PLATFORM_EVENT_KINDS)) {
+		if (!kind.jsonTemplate) continue;
+		it(`${slug}: every separator literal ends with a space`, () => {
+			const literals: string[] = [];
+			contextLiterals(kind.jsonTemplate, false, literals);
+			const separators = literals.filter((text) => text.includes(SEPARATOR));
+			// A kind whose strip has no separator has nothing to pin; one that has
+			// them must have found them here.
+			expect(separators.every((text) => text.endsWith(" "))).toBe(true);
+		});
+	}
+
+	it("finds the separators it claims to be checking", () => {
+		// Without this the suite above passes vacuously the moment the walk stops
+		// reaching into `if`/`span`, which is exactly where separators live.
+		const literals: string[] = [];
+		contextLiterals(
+			PLATFORM_EVENT_KINDS[ENTITY_CHANGE_APPROVAL_KIND].jsonTemplate,
+			false,
+			literals,
+		);
+		expect(literals.filter((text) => text.includes(SEPARATOR))).toEqual([
+			"· ",
+			"· requested by ",
+		]);
 	});
 });

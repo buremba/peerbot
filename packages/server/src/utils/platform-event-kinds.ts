@@ -57,7 +57,7 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 							then: {
 								type: "span",
 								children: [
-									{ type: "text", content: "· via" },
+									{ type: "text", content: "· via " },
 									{ type: "data", path: "connection" },
 								],
 							},
@@ -140,6 +140,12 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 				 * carries its own leading separator inside the same `if`, so an
 				 * absent one takes its `·` with it.
 				 *
+				 * The trailing space in each separator is load-bearing. Chat joins
+				 * strip segments with one and normalises the run; the web renderer
+				 * lays the strip out with a flex `gap`, which applies BETWEEN direct
+				 * children and not inside the `span` grouping a separator with its
+				 * value — so without it the page reads "· requested byCRM sync".
+				 *
 				 * The name links to the entity when we have a URL for it, which is
 				 * the one thing a reader deciding from chat could not otherwise
 				 * reach: the record as it stands TODAY, next to the change proposed
@@ -162,7 +168,7 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 							then: {
 								type: "span",
 								children: [
-									{ type: "text", content: "·" },
+									{ type: "text", content: "· " },
 									{
 										type: "if",
 										condition: "entityUrl",
@@ -182,7 +188,7 @@ export const PLATFORM_EVENT_KINDS: Readonly<
 							then: {
 								type: "span",
 								children: [
-									{ type: "text", content: "· requested by" },
+									{ type: "text", content: "· requested by " },
 									{ type: "data", path: "requestedBy" },
 								],
 							},

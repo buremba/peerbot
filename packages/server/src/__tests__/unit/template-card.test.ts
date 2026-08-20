@@ -918,6 +918,47 @@ describe("the context strip", () => {
 		expect(strip(card)).toBe("Ada");
 	});
 
+	it("refuses a protocol-relative url — the origin join would fake our domain", () => {
+		// `//evil.example/x` carries no scheme, so a scheme test alone waves it
+		// through and the origin join renders `https://app.lobu.ai//evil.example/x`
+		// — a link that looks like ours and goes nowhere.
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+		const card = ctx(
+			[
+				{
+					type: "link",
+					props: { href: "{{url}}" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ url: "//evil.example/x" },
+		);
+		expect(strip(card)).toBe("Ada");
+	});
+
+	it("drops whole segments at the budget rather than cutting one", () => {
+		// The parts are finished mrkdwn. A cut lands mid-`<url|label>` and Slack
+		// renders the wreckage literally, so the tail goes instead.
+		const long = "x".repeat(600);
+		const card = ctx(
+			[
+				{ type: "data", path: "a" },
+				{ type: "data", path: "b" },
+				{
+					type: "link",
+					props: { href: "https://app.lobu.ai/acme/person/ada" },
+					children: [{ type: "text", content: "Ada" }],
+				},
+			],
+			{ a: long, b: long },
+		);
+		const text = strip(card) ?? "";
+		expect(text).toBe(long);
+		// The dropped link is absent OUTRIGHT — no half-rendered `<...|` left over.
+		expect(text).not.toContain("<");
+	});
+
 	it("refuses to vouch for a non-http scheme", () => {
 		// With an origin configured, an unabsolutisable url is the ONLY thing
 		// standing between `javascript:` and a rendered link — without the scheme

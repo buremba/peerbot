@@ -160,6 +160,12 @@ const PASSTHROUGH = new Set([
 function safeAbsoluteUrl(rawUrl: string): string | undefined {
 	const trimmed = rawUrl.trim();
 	if (!trimmed) return undefined;
+	// `//evil.example/x` carries no scheme, so the scheme test below waves it
+	// through and the origin join turns it into `https://origin//evil.example/x`
+	// — a dead path on our own domain, which is the exact thing this refuses to
+	// vouch for. It is not a host we would reach either way, but the reader sees
+	// a link that looks like ours.
+	if (trimmed.startsWith("//")) return undefined;
 	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
 		return undefined;
 	}
@@ -181,6 +187,26 @@ const contextLink = (rawUrl: string, label: string): string => {
 	// survive inside the URL half.
 	return /[<>|]/.test(url) ? text : `<${url}|${text}>`;
 };
+
+/**
+ * Join strip segments within the budget by DROPPING whole segments, never by
+ * cutting one.
+ *
+ * The parts are finished mrkdwn: a cut lands mid-`<url|label>` or mid-`&amp;`
+ * and Slack renders the wreckage literally. A strip is chrome, so losing its
+ * tail costs nothing the record below does not already say.
+ */
+function joinWithinBudget(parts: string[], separator: string): string {
+	const kept: string[] = [];
+	let used = 0;
+	for (const part of parts) {
+		const cost = kept.length === 0 ? part.length : part.length + separator.length;
+		if (used + cost > MAX_CONTEXT_CHARS) break;
+		kept.push(part);
+		used += cost;
+	}
+	return kept.join(separator);
+}
 
 /**
  * One frag as inline strip content. A control has no inline form — a button
@@ -429,14 +455,14 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 			// absent value takes its separator with it. That rule cannot cover the
 			// FIRST value being absent — the next segment's `·` then has nothing
 			// before it — so the strip drops a leading separator itself.
-			const text = children
-				.map(contextInline)
-				.filter((part) => part.length > 0)
-				.join(" ")
+			const text = joinWithinBudget(
+				children.map(contextInline).filter((part) => part.length > 0),
+				" ",
+			)
 				.replace(/\s+/g, " ")
 				.trim()
 				.replace(/^·\s*/, "");
-			return text ? [{ kind: "context", text: clamp(text, MAX_CONTEXT_CHARS) }] : [];
+			return text ? [{ kind: "context", text }] : [];
 		}
 		if (type === "divider" || type === "hr") {
 			return [{ kind: "block", child: Divider() }];
@@ -673,7 +699,7 @@ export function buildKindCard(params: {
 		title: params.title,
 		// Several `context` nodes read as one strip; the separator is ours here
 		// because no template authored the space between two of its own blocks.
-		subtitle: context.length > 0 ? clamp(context.join(" · "), MAX_CONTEXT_CHARS) : undefined,
+		subtitle: context.length > 0 ? joinWithinBudget(context, " · ") || undefined : undefined,
 		children,
 	});
 }

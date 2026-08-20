@@ -362,7 +362,7 @@ describe("ui-review command", () => {
     // The exemption is judged over the whole pointer range, so the range is what
     // the human-readable note must name.
     expect(finalState.comments[parentEndpoint]?.[0]?.body).toContain(
-      `\`${"1".repeat(40)}...${"2".repeat(40)}\` changes only \`deploy/\` (2 files, through Owletto #712).`
+      `\`${"1".repeat(40)}...${"2".repeat(40)}\` changes only unhosted trees (2 files, through Owletto #712).`
     );
     expect(finalState.opened).toBe(
       "https://github.com/lobu-ai/owletto/pull/712"
@@ -427,7 +427,7 @@ describe("ui-review command", () => {
       UI_REVIEW_AGENT: "1",
       UI_REVIEW_AGENT_SCRIPT: agentScript,
       MOCK_OWLETTO_FILES: JSON.stringify([
-        { filename: "apps/chrome/tools.js" },
+        { filename: "src/lib/api-client.ts" },
       ]),
     });
 
@@ -465,7 +465,7 @@ describe("ui-review command", () => {
       UI_REVIEW_AGENT: "1",
       UI_REVIEW_AGENT_SCRIPT: agentScript,
       MOCK_OWLETTO_FILES: JSON.stringify([
-        { filename: "apps/chrome/sidepanel.html" },
+        { filename: "src/components/shell/responsive-app-shell.tsx" },
       ]),
     });
 
@@ -486,7 +486,7 @@ describe("ui-review command", () => {
       UI_REVIEW_AGENT: "1",
       UI_REVIEW_AGENT_SCRIPT: join(fixture.repo, "does-not-exist.sh"),
       MOCK_OWLETTO_FILES: JSON.stringify([
-        { filename: "apps/chrome/sidepanel.html" },
+        { filename: "src/components/shell/responsive-app-shell.tsx" },
       ]),
     });
 
@@ -513,7 +513,7 @@ describe("ui-review command", () => {
       UI_REVIEW_AGENT: "1",
       UI_REVIEW_AGENT_SCRIPT: agentScript,
       MOCK_OWLETTO_FILES: JSON.stringify([
-        { filename: "apps/chrome/tools.js" },
+        { filename: "src/lib/api-client.ts" },
       ]),
     });
     expectExit(first, 0);
@@ -521,7 +521,7 @@ describe("ui-review command", () => {
     const second = runUiReview(fixture, {
       ARTIFACT: "https://claude.ai/code/artifact/override",
       MOCK_OWLETTO_FILES: JSON.stringify([
-        { filename: "apps/chrome/tools.js" },
+        { filename: "src/lib/api-client.ts" },
       ]),
     });
     expectExit(second, 0);

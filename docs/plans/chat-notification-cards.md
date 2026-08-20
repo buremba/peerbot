@@ -37,7 +37,7 @@ silently showing a subset. The same rule covers template-declared controls: a
 button whose action nothing in the interaction bridge routes is dropped with a
 note rather than drawn dead.
 
-## Platform event kinds
+## Platform notification kinds
 
 `utils/platform-notification-kinds.ts` declares the kinds the platform emits, consulted
 as the **last** resort in `resolveEventKindDefinition` so an org that declares

@@ -1,5 +1,5 @@
 /**
- * Conformance for the platform event kind registry.
+ * Conformance for the platform notification kind registry.
  *
  * Every kind here is a contract between a trigger that writes `payloadData` and
  * a template that reads it, and nothing at runtime tells you when the two drift
@@ -63,7 +63,7 @@ function boundRoots(node: unknown, scoped: Set<string>, out: Set<string>): void 
 
 const entries = Object.entries(PLATFORM_NOTIFICATION_KINDS);
 
-describe("platform event kinds", () => {
+describe("platform notification kinds", () => {
 	it("declares at least the families the triggers emit", () => {
 		expect(entries.length).toBeGreaterThanOrEqual(5);
 	});

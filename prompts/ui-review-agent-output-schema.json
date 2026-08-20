@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "description": "Verdict on whether an Owletto diff range has any user-visible UI surface, for the ui-review gate's agent-judged not-applicable path.",
+  "additionalProperties": false,
+  "required": ["has_ui_surface", "reasoning", "verification_summary"],
+  "properties": {
+    "has_ui_surface": {
+      "type": "boolean",
+      "description": "True if the range touches ANYTHING a human could see rendered: templates, HTML/CSS, images/icons, extension popup/sidepanel/UI components, SwiftUI/AppKit views, user-visible copy shown in a rendered surface (not just an internal log or error message), layout, or asset files. When genuinely unsure or the range is large/mixed, answer true — this gate fails closed."
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Concrete justification citing the actual changed files and why they do or do not have UI surface. Must name specific files, not a general claim."
+    },
+    "verification_summary": {
+      "type": "string",
+      "description": "How the change was otherwise verified (tests run, pass/fail counts, manual reproduction) — cite specifics from the diff/PR content, not a restatement of the reasoning."
+    }
+  }
+}

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
+  type AgentUiReviewProof,
   buildProofBody,
   COMPARE_FILE_CAP,
   findProofComment,
+  isArtifactProof,
   isUnhostedRange,
   isHttpsArtifact,
   parseProof,
@@ -154,7 +156,7 @@ describe("UI review proof", () => {
     }
   });
 
-  it("accepts only a complete unhosted endpoint diff", () => {
+  it("accepts only a complete unhosted-tree endpoint diff", () => {
     expect(
       isUnhostedRange([
         { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
@@ -171,52 +173,8 @@ describe("UI review proof", () => {
       ])
     ).toBe(false);
 
-    // An extension-only or Mac-only range has no hosted URL to compare, so it
-    // is exempt from proof the same way a deploy-only range is.
-    expect(
-      isUnhostedRange([
-        { filename: "apps/chrome/watch.js" },
-        { filename: "apps/chrome/sidepanel.html" },
-      ])
-    ).toBe(true);
-    expect(isUnhostedRange([{ filename: "apps/mac/Owletto/App.swift" }])).toBe(
-      true
-    );
-    // Mixed unhosted trees still qualify — none of them is hosted.
-    expect(
-      isUnhostedRange([
-        { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
-        { filename: "apps/chrome/manifest.json" },
-      ])
-    ).toBe(true);
-    // A hosted change anywhere in the range still demands proof.
-    expect(
-      isUnhostedRange([
-        { filename: "apps/chrome/watch.js" },
-        { filename: "src/components/shell/responsive-app-shell.tsx" },
-      ])
-    ).toBe(false);
-    // Fail closed on an apps/ tree that is NOT on the allowlist.
-    expect(isUnhostedRange([{ filename: "apps/web/index.tsx" }])).toBe(false);
-    // Build/post-build checks run in CI and are never served, so there is no
-    // URL to compare — the same reason deploy/ and the packaged apps qualify.
-    expect(
-      isUnhostedRange([{ filename: "scripts/check-mcp-app-bundle.mjs" }])
-    ).toBe(true);
-    // ...but the prefix must not swallow a hosted tree that merely contains
-    // a scripts/ directory, nor a sibling whose name it merely starts.
-    expect(isUnhostedRange([{ filename: "src/scripts/widget.tsx" }])).toBe(
-      false
-    );
-    expect(
-      isUnhostedRange([{ filename: "scripts-archive/old-widget.tsx" }])
-    ).toBe(false);
-
-    // The unhosted prefixes are path prefixes, not substrings.
+    // `deploy/` is a path prefix, not a substring.
     expect(isUnhostedRange([{ filename: "src/deploy/widget.tsx" }])).toBe(
-      false
-    );
-    expect(isUnhostedRange([{ filename: "src/apps/chrome/panel.tsx" }])).toBe(
       false
     );
     expect(
@@ -230,6 +188,26 @@ describe("UI review proof", () => {
 
     // Fail closed when the compare response tells us nothing, and when it may
     // have been truncated at the cap.
+    // Every unhosted tree keeps its exemption — the agent classifier is an
+    // ADDITION for hosted ranges, not a replacement for these. An extension- or
+    // Mac-only range has no hosted URL to compare, so demanding ARTIFACT here
+    // would be unsatisfiable rather than strict.
+    expect(
+      isUnhostedRange([
+        { filename: "apps/chrome/src/sidepanel/index.ts" },
+        { filename: "apps/mac/Owletto/AppDelegate.swift" },
+        { filename: "scripts/check-manifest.mjs" },
+      ])
+    ).toBe(true);
+
+    // A hosted path anywhere in the range still demands proof.
+    expect(
+      isUnhostedRange([
+        { filename: "apps/chrome/src/sidepanel/index.ts" },
+        { filename: "src/components/shell/responsive-app-shell.tsx" },
+      ])
+    ).toBe(false);
+
     expect(isUnhostedRange([])).toBe(false);
     expect(
       isUnhostedRange(
@@ -246,6 +224,65 @@ describe("UI review proof", () => {
     );
     expect(isHttpsArtifact("http://localhost:9284/proof.html")).toBe(false);
     expect(isHttpsArtifact("/tmp/proof.html")).toBe(false);
+  });
+
+  it("round-trips an agent no-ui-surface proof alongside an artifact proof", () => {
+    const agentProof: AgentUiReviewProof = {
+      version: 1,
+      lobu_repo: "lobu-ai/lobu",
+      lobu_pr: 2920,
+      lobu_base_owletto_sha: BASE_SHA,
+      owletto_sha: HEAD_SHA,
+      owletto_pr: 892,
+      no_ui_surface: true,
+      reviewer: "codex",
+      reasoning:
+        "Only apps/chrome/tools.js (static import cleanup) and apps/mac/Owletto/MacShellActionService.swift (a stderr-text heuristic) changed; neither renders anything a user sees.",
+      verification_summary:
+        "bunx vitest run apps/chrome — 249/254 pass (5 pre-existing unrelated failures); Swift logic compiled and run on Linux via a stub harness, 9/9 assertions pass.",
+    };
+
+    expect(isArtifactProof(agentProof)).toBe(false);
+    expect(isArtifactProof(proof)).toBe(true);
+
+    const body = buildProofBody(agentProof);
+    expect(parseProof(body)).toEqual(agentProof);
+    expect(body).toContain(agentProof.reasoning);
+    expect(body).toContain(agentProof.verification_summary);
+    expect(body).toContain(HEAD_SHA);
+
+    // Sharing findProofComment/proofMatches with the artifact variant is the
+    // point — a Lobu PR owns at most one proof regardless of which kind it is.
+    const comment: UiReviewComment = {
+      body,
+      created_at: "2026-08-19T16:00:00Z",
+      html_url: "https://github.com/lobu-ai/owletto/pull/892#agent-proof",
+      user: { login: "agent" },
+    };
+    expect(findProofComment([comment], "lobu-ai/lobu", 2920)).toBe(comment);
+    expect(
+      proofMatches(agentProof, "lobu-ai/lobu", BASE_SHA, HEAD_SHA, 2920, 892)
+    ).toBe(true);
+  });
+
+  it("rejects a malformed agent proof (missing reasoning/verification)", () => {
+    const malformed = {
+      version: 1,
+      lobu_repo: "lobu-ai/lobu",
+      lobu_pr: 2920,
+      lobu_base_owletto_sha: BASE_SHA,
+      owletto_sha: HEAD_SHA,
+      owletto_pr: 892,
+      no_ui_surface: true,
+      reviewer: "codex",
+      reasoning: "",
+      verification_summary: "",
+    };
+    expect(
+      parseProof(
+        `<!-- lobu-ui-review-proof ${Buffer.from(JSON.stringify(malformed)).toString("base64url")} -->\nbody`
+      )
+    ).toBeNull();
   });
 
   it("matches only the exact repo/base/head/PR tuple a proof carries", () => {

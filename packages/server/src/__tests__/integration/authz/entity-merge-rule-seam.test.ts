@@ -27,7 +27,11 @@ import {
 } from "../../../tools/admin/entity-field-approval";
 import { manageEntity } from "../../../tools/admin/manage_entity";
 import { createEntity } from "../../../utils/entity-management";
-import { applyMerge, applyMergeGroup } from "../../../utils/entity-merge";
+import {
+	applyMerge,
+	applyMergeGroup,
+	applyUnmerge,
+} from "../../../utils/entity-merge";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
 import {
@@ -67,6 +71,19 @@ export default (row) => {
 };
 `;
 
+/**
+ * Freezes either direction of the loser topology transition. Installed only
+ * after the merge, so the test can prove recovery is not stranded by a later
+ * rule that would reject clearing `$merged_into` if unmerge reached the seam.
+ */
+const FREEZE_MERGE_TOPOLOGY_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.changed("$merged_into")) {
+    row.deny("merge topology is frozen");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 
 function ctxFor(organizationId: string, userId: string): ToolContext {
@@ -87,6 +104,7 @@ function ctxFor(organizationId: string, userId: string): ToolContext {
 let denyMergeCompiled: string;
 let denyDeleteOnlyCompiled: string;
 let escalateMergeCompiled: string;
+let freezeMergeTopologyCompiled: string;
 
 async function seedType(
 	organizationId: string,
@@ -146,11 +164,16 @@ async function seedInvoices(rule: string | null, count = 2) {
 describe("write rules at the merge kernel", () => {
 	beforeAll(async () => {
 		await initWorkspaceProvider();
-		[denyMergeCompiled, denyDeleteOnlyCompiled, escalateMergeCompiled] =
-			await Promise.all([
+		[
+			denyMergeCompiled,
+			denyDeleteOnlyCompiled,
+			escalateMergeCompiled,
+			freezeMergeTopologyCompiled,
+		] = await Promise.all([
 				compileEntityRule(DENY_MERGE_RULE),
 				compileEntityRule(DENY_DELETE_ONLY_RULE),
 				compileEntityRule(ESCALATE_MERGE_RULE),
+				compileEntityRule(FREEZE_MERGE_TOPOLOGY_RULE),
 			]);
 	}, 60_000);
 
@@ -193,6 +216,49 @@ describe("write rules at the merge kernel", () => {
 		const after = await readRow(loser.id);
 		expect(after.deleted_at).not.toBeNull();
 		expect(after.merged_into).toBe(winner.id);
+	}, 60_000);
+
+	it("keeps unmerge available after a later rule freezes $merged_into", async () => {
+		const sql = getTestDb();
+		const { org, user, invoices } = await seedInvoices(null, 3);
+		const [loser, winner, third] = invoices;
+
+		await applyMerge({
+			orgId: org.id,
+			loserId: loser.id,
+			winnerId: winner.id,
+			mergedBy: user.id,
+		});
+		expect((await readRow(loser.id)).merged_into).toBe(winner.id);
+
+		// A rule introduced after the merge must not strand its tombstoned loser.
+		// Unmerge is the recovery path, so it deliberately bypasses row rules.
+		await sql`
+			UPDATE entity_types
+			SET rules_compiled = ${freezeMergeTopologyCompiled}
+			WHERE organization_id = ${org.id} AND slug = 'invoice'
+		`;
+
+		// Liveness guard: the freeze must actually bind at the seam, or the
+		// unmerge below succeeds vacuously rather than by exemption.
+		await expect(
+			applyMerge({
+				orgId: org.id,
+				loserId: third.id,
+				winnerId: winner.id,
+				mergedBy: user.id,
+			}),
+		).rejects.toThrow(/frozen/);
+
+		await applyUnmerge({
+			orgId: org.id,
+			loserId: loser.id,
+			unmergedBy: user.id,
+		});
+
+		const recovered = await readRow(loser.id);
+		expect(recovered.deleted_at).toBeNull();
+		expect(recovered.merged_into).toBeNull();
 	}, 60_000);
 
 	it("fails a whole group and names the offending loser", async () => {

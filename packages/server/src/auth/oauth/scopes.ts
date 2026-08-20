@@ -18,15 +18,6 @@ export const AVAILABLE_SCOPES = [
   // instance's LOBU_CLOUD_PAT must be minted explicitly with this scope
   // (`lobu token create --scope connections:token`).
   'connections:token',
-  // Marker stamped ONLY by /api/me/devices/mint-child-token on the PATs it
-  // mints. It grants nothing; its presence tells the mint endpoint the caller
-  // is itself a minted child, which may re-mint its own worker_id but not mint
-  // credentials for any other device (the chain stops at depth 1). Listed here
-  // because parseScopes drops unknown scopes — an unlisted marker would be
-  // silently stripped at verify time and the depth-1 gate would never fire.
-  // Not advertised in discovery and not in AVAILABLE_PAT_SCOPES, so no client
-  // can ask for it; carrying it only ever narrows what a token may do.
-  'device_worker:child',
 ] as const;
 
 /**
@@ -41,14 +32,8 @@ export const AVAILABLE_SCOPES = [
  * - `device_worker:run` — personal device workers only (device-code grant).
  * - `connections:token` — first-party `lobu login` device-code grant or an
  *   explicitly minted PAT; never third-party auth-code tokens.
- * - `device_worker:child` — stamped only on PATs minted by
- *   /api/me/devices/mint-child-token; nothing else may request or mint it.
  */
-export const NON_PUBLIC_OAUTH_SCOPES = [
-  'device_worker:run',
-  'connections:token',
-  'device_worker:child',
-] as const;
+export const NON_PUBLIC_OAUTH_SCOPES = ['device_worker:run', 'connections:token'] as const;
 
 /**
  * Scopes advertised via OAuth discovery (RFC 8414 / RFC 9728).

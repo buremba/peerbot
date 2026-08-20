@@ -165,18 +165,16 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * Scope of every child PAT this endpoint mints: `device_worker:run` drives the
- * poll/run lanes; `device_worker:child` marks the token as a minted child so
- * the depth-1 gate in `mintDeviceChildToken` refuses to let it mint any device
- * credential but its own.
- */
-const CHILD_PAT_SCOPE = 'device_worker:run device_worker:child';
-/**
  * Child PATs expire, so an orphaned or leaked one stops working on its own
  * instead of living until someone revokes it by hand. A device refreshes by
  * re-minting through this endpoint with its stored worker_id (the reuse branch
  * keeps the device identity and revokes the old token) — which for a headless
  * daemon means a re-register, since nothing rotates the PAT in place today.
+ *
+ * Forward-only: legacy children (minted before this shipped) keep their null
+ * expiry until they rotate. A retroactive backfill would hard-kill working
+ * devices at day 90 with no rotation client shipped — an owner decision, not
+ * one this change takes.
  */
 const CHILD_PAT_EXPIRES_IN_DAYS = 90;
 /** Refusal body for both arms of the depth-1 gate (see `mintDeviceChildToken`). */
@@ -195,9 +193,9 @@ const CHILD_SELF_MINT_ONLY = {
  * personal org, generate a new worker_id, and return both for the sibling
  * to use as if it had completed device-authorization on its own.
  *
- * The child token carries `CHILD_PAT_SCOPE`: the `device_worker:run` scope the
- * regular Mac OAuth flow ends up with, plus the `device_worker:child` marker
- * that stops the chain at depth 1. Capability authorization at
+ * The child token carries the same `device_worker:run` scope the regular Mac
+ * OAuth flow ends up with. Its stored worker_id binding stops the mint chain at
+ * depth 1, while capability authorization at
  * /api/workers/poll still constrains what the child can advertise per its
  * declared `platform` (see @lobu/core/capabilities).
  */
@@ -264,14 +262,20 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
   // below, so a stale/garbage value just falls through to a fresh mint.
   const requestedWorkerId = (body.worker_id ?? '').trim();
 
-  // The chain stops at depth 1: a PAT this endpoint minted (marked
-  // `device_worker:child`) may ROTATE itself — re-mint its own bound
-  // worker_id, which revokes the old PAT in the same transaction — but may
-  // not mint credentials for any other device. Only a first-party device
-  // grant (Mac bridge OAuth, `lobu login` device-code) pairs new siblings,
-  // so revoking a device's PAT cannot leave grandchildren behind.
-  const callerIsMintedChild = callerScopes.includes('device_worker:child');
+  // The chain stops at depth 1: a PAT this endpoint minted may ROTATE itself —
+  // re-mint its own bound worker_id, which revokes the old PAT in the same
+  // transaction — but may not mint credentials for any other device. Only a
+  // first-party device grant (Mac bridge OAuth, `lobu login` device-code)
+  // pairs new siblings, preventing any new grandchild credential from
+  // surviving revocation of its parent device's PAT.
+  //
+  // This endpoint is the only writer of worker-bound PATs (local-init and the
+  // org-token route mint unbound; first-party device grants are OAuth tokens,
+  // which carry no workerId), so a bearer bound to a worker_id is an
+  // endpoint-minted child. Binding also recognizes every already-issued child;
+  // no new scope or token-shape compatibility path is needed.
   const callerBoundWorkerId = c.var.mcpAuthInfo?.workerId ?? null;
+  const callerIsMintedChild = callerBoundWorkerId !== null;
   if (callerIsMintedChild && (!requestedWorkerId || requestedWorkerId !== callerBoundWorkerId)) {
     return c.json(CHILD_SELF_MINT_ONLY, 403);
   }
@@ -372,7 +376,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
           organizationId,
           `device:${platform}:${workerId.slice(0, 8)}`,
           {
-            scope: CHILD_PAT_SCOPE,
+            scope: 'device_worker:run',
             description: label ?? undefined,
             workerId,
             expiresInDays: CHILD_PAT_EXPIRES_IN_DAYS,
@@ -394,7 +398,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
         organizationId,
         `device:${platform}:${workerId.slice(0, 8)}`,
         {
-          scope: CHILD_PAT_SCOPE,
+          scope: 'device_worker:run',
           description: label ?? undefined,
           workerId,
           expiresInDays: CHILD_PAT_EXPIRES_IN_DAYS,

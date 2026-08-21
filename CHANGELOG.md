@@ -1,5 +1,14 @@
 # Changelog
 
+## [15.3.1](https://github.com/lobu-ai/lobu/compare/lobu-v15.3.0...lobu-v15.3.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **automation:** return parent Claude results safely ([#3016](https://github.com/lobu-ai/lobu/issues/3016)) ([65023ac](https://github.com/lobu-ai/lobu/commit/65023ac1c9bbb778cb406a847856c9daf661e051))
+* **daemon:** stop CLI after terminal heartbeat conflict ([#2997](https://github.com/lobu-ai/lobu/issues/2997)) ([5418b3b](https://github.com/lobu-ai/lobu/commit/5418b3b01c9ae7cb72c137b9aa666225f2f683a4))
+* **server:** make worker dispatch claim-aware ([#3012](https://github.com/lobu-ai/lobu/issues/3012)) ([22c97f4](https://github.com/lobu-ai/lobu/commit/22c97f4163aa77e555059fc986e51c41e7df6cab))
+
 ## [15.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.2.1...lobu-v15.3.0) (2026-08-21)
 
 

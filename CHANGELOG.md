@@ -1,5 +1,17 @@
 # Changelog
 
+## [15.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.3.1...lobu-v15.4.0) (2026-08-21)
+
+
+### Features
+
+* support interactive Codex and OpenCode automations ([#3023](https://github.com/lobu-ai/lobu/issues/3023)) ([94837a8](https://github.com/lobu-ai/lobu/commit/94837a80c9161e69604c2e90ffb9150584203c11))
+
+
+### Bug Fixes
+
+* **ci:** give the prod rollout gate headroom over observed deploy latency ([#3019](https://github.com/lobu-ai/lobu/issues/3019)) ([c40efce](https://github.com/lobu-ai/lobu/commit/c40efce1935e051cd817c858a7e007ea5b9f740e))
+
 ## [15.3.1](https://github.com/lobu-ai/lobu/compare/lobu-v15.3.0...lobu-v15.3.1) (2026-08-21)
 
 

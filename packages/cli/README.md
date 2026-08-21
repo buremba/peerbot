@@ -70,6 +70,12 @@ inside a supported Claude Code, Codex, or OpenCode session, that session
 receives its own identity so interactive delivery does not replace the
 machine's durable device mapping; pass `--no-interactive-session` to opt out.
 
+Older CLI releases registered a terminal daemon as `macos` when run on a Mac.
+The terminal and Docker methods now register as `headless` so they cannot
+impersonate the native Mac app. The first upgraded run creates a new Worker
+device; reselect that Worker for any connection or Automation pinned to the old
+CLI-created Mac device.
+
 ## License
 
 Apache-2.0

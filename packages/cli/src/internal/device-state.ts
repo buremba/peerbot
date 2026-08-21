@@ -84,7 +84,7 @@ export async function updateDeviceState(
   const current = await loadDeviceState(context, platform);
   if (!current || current.workerId !== state.workerId) {
     throw new Error(
-      `Refusing to replace device state for context "${context}" on ${platform}: the saved worker id changed.`
+      `Refusing to replace device state at ${statePath(context, platform)}: the saved worker id changed or became unreadable. Delete that file to redo setup.`
     );
   }
 

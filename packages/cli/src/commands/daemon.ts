@@ -49,6 +49,14 @@ interface MintedDeviceCredential {
   expiresAt?: number;
 }
 
+interface MintDeviceCredentialOptions {
+  gatewayOrigin: string;
+  bearer: string;
+  platform: string;
+  workerId: string;
+  label: string;
+}
+
 class DeviceMintError extends Error {
   constructor(
     message: string,
@@ -121,6 +129,11 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
         `Login-based daemon setup supports the headless platform, not "${platform}". Omit --platform, or provide an explicit WORKER_API_TOKEN for this advanced platform override.`
       );
     }
+    if (explicitWorkerId && !explicitWorkerId.startsWith(`${platform}:`)) {
+      throw new Error(
+        `Login-based daemon worker id "${explicitWorkerId}" does not match platform "${platform}". Use an id beginning with "${platform}:", or omit --worker-id.`
+      );
+    }
     if (!contextName) {
       contextName = await ensureInstallationContext(target.gatewayOrigin);
     }
@@ -180,36 +193,21 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
         );
       }
 
-      let minted: MintedDeviceCredential;
-      try {
-        const bearer =
-          mintBearer ?? (await requireInstallationLogin(contextName));
-        minted = await mintDeviceCredential({
+      const bearer =
+        mintBearer ?? (await requireInstallationLogin(contextName));
+      const minted = await mintDeviceCredentialWithReauth({
+        contextName,
+        initialBearerIsChild:
+          mintBearer !== undefined &&
+          mintBearer === cachedState?.workerApiToken,
+        options: {
           gatewayOrigin: target.gatewayOrigin,
           bearer,
           platform,
           workerId,
           label: options.label?.trim() || shortHost,
-        });
-      } catch (error) {
-        // A cached child can rotate only itself and may have expired or been
-        // revoked. Fall back to this installation's login, never another
-        // context's token.
-        if (
-          !mintBearer?.startsWith("owl_pat_") ||
-          !(error instanceof DeviceMintError) ||
-          (error.status !== 401 && error.status !== 403)
-        ) {
-          throw error;
-        }
-        minted = await mintDeviceCredential({
-          gatewayOrigin: target.gatewayOrigin,
-          bearer: await requireInstallationLogin(contextName),
-          platform,
-          workerId,
-          label: options.label?.trim() || shortHost,
-        });
-      }
+        },
+      });
 
       if (minted.workerId !== workerId) {
         throw new Error(
@@ -318,15 +316,64 @@ async function ensureInstallationContext(
 async function requireInstallationLogin(contextName: string): Promise<string> {
   const existing = await getContextToken(contextName);
   if (existing) return existing;
+  return refreshInstallationLogin(contextName);
+}
+
+async function refreshInstallationLogin(contextName: string): Promise<string> {
   if (!canPrompt()) throw new Error(LOGIN_SETUP_MESSAGE(contextName));
 
-  // `getContextToken` already returned null, so any stored credential is
-  // expired and unrefreshable. Without --force `lobu login` short-circuits on
-  // it with "Already logged in" and authorizes nothing.
+  // The stored credential is absent, expired, revoked, or predates the daemon's
+  // device_worker:run scope. Without --force `lobu login` can short-circuit on
+  // that same credential with "Already logged in" and authorize nothing.
   await loginCommand({ context: contextName, force: true });
   const authenticated = await getContextToken(contextName);
   if (!authenticated) throw new Error(LOGIN_SETUP_MESSAGE(contextName));
   return authenticated;
+}
+
+async function mintDeviceCredentialWithReauth({
+  contextName,
+  initialBearerIsChild,
+  options,
+}: {
+  contextName: string;
+  initialBearerIsChild: boolean;
+  options: MintDeviceCredentialOptions;
+}): Promise<MintedDeviceCredential> {
+  try {
+    return await mintDeviceCredential(options);
+  } catch (error) {
+    if (!isDeviceMintAuthError(error)) throw error;
+
+    // A cached child may have expired or been revoked. Retry with this exact
+    // installation's stored login first; never borrow a different context.
+    if (initialBearerIsChild) {
+      const installationBearer = await requireInstallationLogin(contextName);
+      try {
+        return await mintDeviceCredential({
+          ...options,
+          bearer: installationBearer,
+        });
+      } catch (loginError) {
+        if (!isDeviceMintAuthError(loginError)) throw loginError;
+      }
+    }
+
+    // A stored login can be valid for ordinary MCP work but lack the newer
+    // device_worker:run scope. Interactive starts repair it through the same
+    // device-code flow; non-interactive starts receive the exact login command.
+    return mintDeviceCredential({
+      ...options,
+      bearer: await refreshInstallationLogin(contextName),
+    });
+  }
+}
+
+function isDeviceMintAuthError(error: unknown): error is DeviceMintError {
+  return (
+    error instanceof DeviceMintError &&
+    (error.status === 401 || error.status === 403)
+  );
 }
 
 function hasUsableCachedWorkerToken(state: DeviceState): boolean {
@@ -337,13 +384,9 @@ function hasUsableCachedWorkerToken(state: DeviceState): boolean {
   );
 }
 
-async function mintDeviceCredential(options: {
-  gatewayOrigin: string;
-  bearer: string;
-  platform: string;
-  workerId: string;
-  label: string;
-}): Promise<MintedDeviceCredential> {
+async function mintDeviceCredential(
+  options: MintDeviceCredentialOptions
+): Promise<MintedDeviceCredential> {
   const url = `${options.gatewayOrigin}/api/me/devices/mint-child-token`;
   const res = await fetchWithRetry(url, {
     method: "POST",

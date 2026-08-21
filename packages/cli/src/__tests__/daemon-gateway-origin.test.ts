@@ -439,6 +439,53 @@ describe("lobu daemon", () => {
     );
   });
 
+  test("a stale installation login reruns device-code auth before retrying the mint", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    const save = spyOn(deviceState, "saveDeviceState").mockResolvedValue();
+    const getToken = spyOn(credentials, "getContextToken")
+      .mockResolvedValueOnce("oauth-stale-scope")
+      .mockResolvedValueOnce("oauth-refreshed-scope");
+    const login = spyOn(loginModule, "loginCommand").mockResolvedValue();
+    const fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ error: "insufficient_scope" }, 403))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          worker_id: "headless:test-host",
+          access_token: "owl_pat_refreshed-child",
+          expires_at: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+        })
+      );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ workerId: "headless:test-host" });
+
+    expect(login).toHaveBeenCalledWith({ context: "local", force: true });
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        (fetchSpy.mock.calls[1]?.[1] as RequestInit).headers as Record<
+          string,
+          string
+        >
+      ).Authorization
+    ).toBe("Bearer oauth-refreshed-scope");
+    expect(save).toHaveBeenCalled();
+    expect(start.mock.calls[0]?.[0]?.workerApiToken).toBe(
+      "owl_pat_refreshed-child"
+    );
+  });
+
   test("a non-interactive start without a stored login refuses instead of polling unauthenticated", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "local",
@@ -486,6 +533,30 @@ describe("lobu daemon", () => {
     // this start is doomed — it must not leave a context behind on the way out.
     expect(add).not.toHaveBeenCalled();
     expect(getToken).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  test("a mismatched login-based worker id refuses before minting", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    const load = spyOn(deviceState, "loadDeviceState");
+    const getToken = spyOn(credentials, "getContextToken");
+    const fetchSpy = spyOn(globalThis, "fetch");
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await expect(
+      daemonCommand({ workerId: "chrome-extension:wrong-platform" })
+    ).rejects.toThrow(/does not match platform "headless"/);
+
+    expect(load).not.toHaveBeenCalled();
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
   });
 

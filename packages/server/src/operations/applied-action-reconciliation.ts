@@ -281,16 +281,8 @@ export async function reconcileAppliedActionRun(params: {
 	) {
 		return { status: "completed", output: after.action_output ?? {} };
 	}
-	if (
-		after?.status === "completed" &&
-		!referencesEveryArtifact(
-			after.action_output,
-			materialized.publishedArtifactIds,
-		)
-	) {
-		await cleanupCandidate();
-	}
 	if (after?.status === "completed") {
+		await cleanupCandidate();
 		return { status: "completed", output: after.action_output ?? {} };
 	}
 	return after?.status === "running"

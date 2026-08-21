@@ -89,6 +89,24 @@ describe("tool registry split", () => {
 		expect(isRestDispatchTool("manage_connections")).toBe(true);
 	});
 
+	it("advertises progressive admin scope only to role-eligible MCP sessions", () => {
+		const eligibleRun = getMcpTools({
+			maxAccessLevel: "write",
+			adminScopeEligible: true,
+		}).find((tool) => tool.name === "run_sdk");
+		const memberRun = getMcpTools({
+			maxAccessLevel: "write",
+			adminScopeEligible: false,
+		}).find((tool) => tool.name === "run_sdk");
+
+		expect(eligibleRun?.securitySchemes).toEqual([
+			{ type: "oauth2", scopes: ["mcp:write", "mcp:admin"] },
+		]);
+		expect(memberRun?.securitySchemes).toEqual([
+			{ type: "oauth2", scopes: ["mcp:write"] },
+		]);
+	});
+
 	it("maps internal flat tools to ClientSDK methods for run_sdk/query_sdk parity", () => {
 		const { namespaceMethods, topLevelMethods } = (() => {
 			const sdk = buildClientSDK(testCtx, testEnv);

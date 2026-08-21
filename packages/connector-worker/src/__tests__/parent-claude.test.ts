@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +24,54 @@ import {
 const execFileAsync = promisify(execFile);
 const cleanupDirs: string[] = [];
 const cleanupServers: net.Server[] = [];
+const RESULT_CAP_BYTES = 4 * 1024 * 1024;
+
+function runHelper(
+  helperPath: string,
+  args: string[],
+  input: string | Buffer,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(helperPath, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0 && signal == null) resolve();
+      else reject(new Error(stderr.trim() || `helper exited with ${signal ?? code}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
+function readHelperConfig(helperPath: string): {
+  socketPath: string;
+  runId: number;
+  nonce: string;
+} {
+  const source = readFileSync(helperPath, 'utf8');
+  const configJson = source.match(/^const config = (.+);$/m)?.[1];
+  if (!configJson) throw new Error('helper config not found');
+  return JSON.parse(configJson);
+}
+
+function rawHelperRequest(socketPath: string, request: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let response = '';
+    socket.setEncoding('utf8');
+    socket.once('connect', () => socket.write(request));
+    socket.on('data', (chunk) => {
+      response += chunk;
+    });
+    socket.once('error', reject);
+    socket.once('end', () => resolve(response));
+  });
+}
 
 async function listen(server: net.Server, socketPath: string): Promise<void> {
   cleanupServers.push(server);
@@ -208,8 +264,10 @@ describe('handoffToParentClaude', () => {
     const deliveredPrompt = messageFrame.message.content as string;
     const helperDir = path.dirname(delivery.helperPath);
     const helperSocket = path.join(helperDir, 'helper.sock');
-    expect(deliveredPrompt).toContain(`${delivery.helperPath} exec`);
-    expect(deliveredPrompt).toContain(`${delivery.helperPath} complete`);
+    expect(deliveredPrompt).toContain(`'${delivery.helperPath}' exec`);
+    expect(deliveredPrompt).toContain(`'${delivery.helperPath}' complete`);
+    expect(deliveredPrompt).toContain('final user-visible result on stdin');
+    expect(deliveredPrompt).toContain('Do not reuse a helper from an earlier Automation message.');
     expect(deliveredPrompt).toContain('For a window Automation');
     expect(deliveredPrompt).toContain('For an event turn');
     expect(deliveredPrompt).toContain('do not use bare `lobu memory exec` or ambient Lobu MCP');
@@ -228,7 +286,7 @@ describe('handoffToParentClaude', () => {
 
     const moduleSource = 'export default async () => ({ ok: true })';
     await execFileAsync(delivery.helperPath, ['exec', moduleSource], {
-      env: { ...process.env, WORKER_API_TOKEN: 'daemon-worker-secret' },
+      env: { ...process.env, PATH: '', WORKER_API_TOKEN: 'daemon-worker-secret' },
     });
     expect(await access).toEqual({
       token: bearer,
@@ -237,9 +295,160 @@ describe('handoffToParentClaude', () => {
       args: ['memory', 'exec', moduleSource],
     });
 
-    await execFileAsync(delivery.helperPath, ['complete']);
-    expect(await delivery.completion).toMatchObject({ kind: 'completed' });
+    await runHelper(
+      delivery.helperPath,
+      ['complete'],
+      `final result for ChatGPT; bearer=${bearer}`,
+      { ...process.env, PATH: '' }
+    );
+    expect(await delivery.completion).toMatchObject({
+      kind: 'completed',
+      output: 'final result for ChatGPT; bearer=[REDACTED]',
+    });
     expect(existsSync(helperDir)).toBe(false);
+  });
+
+  test('caps completion stdin, preserves truncation evidence, and works without PATH', async () => {
+    const fixture = await parentFixture();
+    const delivery = await handoffToParentClaude({
+      session: fixture.session,
+      runId: 78,
+      prompt: 'Do work',
+      token: 'run-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      disconnectCheckIntervalMs: 10_000,
+    });
+
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+    const helper = await Bun.file(delivery.helperPath).text();
+    expect(helper.startsWith(`#!${process.execPath}\n`)).toBe(true);
+
+    await runHelper(delivery.helperPath, ['complete'], Buffer.alloc(RESULT_CAP_BYTES + 1, 97), {
+      ...process.env,
+      PATH: '',
+    });
+    const completion = await delivery.completion;
+    expect(completion.kind).toBe('completed');
+    if (completion.kind !== 'completed') throw new Error(completion.error);
+    expect(Buffer.byteLength(completion.output)).toBeLessThanOrEqual(RESULT_CAP_BYTES);
+    expect(completion.output.endsWith('\n[result truncated]')).toBe(true);
+  });
+
+  test('rejects unsafe or unavailable Node executables before parent delivery', async () => {
+    const fixture = await parentFixture();
+    const unavailable = path.join(fixture.dir, 'missing-node');
+    const notExecutable = path.join(fixture.dir, 'not-executable-node');
+    writeFileSync(notExecutable, '#!/bin/sh\n', { mode: 0o600 });
+
+    for (const command of ['node', unavailable, notExecutable, '/bin/node\ninjected']) {
+      const delivery = await handoffToParentClaude({
+        session: fixture.session,
+        runId: 79,
+        prompt: 'Do work',
+        token: 'run-secret',
+        memoryUrl: 'https://gateway.test/mcp/test',
+        timeoutMs: 10_000,
+        cliLaunch: { command, args: [] },
+      });
+      expect(delivery.kind).toBe('not-delivered');
+      if (delivery.kind === 'not-delivered') {
+        expect(delivery.reason).toContain('Node executable');
+      }
+    }
+  });
+
+  test('rejects malformed and oversized completion frames without settling the attempt', async () => {
+    const fixture = await parentFixture();
+    const delivery = await handoffToParentClaude({
+      session: fixture.session,
+      runId: 80,
+      prompt: 'Do work',
+      token: 'run-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      disconnectCheckIntervalMs: 10_000,
+    });
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+    const config = readHelperConfig(delivery.helperPath);
+
+    expect(await rawHelperRequest(config.socketPath, 'not-json\n')).toBe('{"ok":false}\n');
+    expect(
+      await rawHelperRequest(
+        config.socketPath,
+        `${JSON.stringify({
+          version: 1,
+          run_id: config.runId,
+          nonce: config.nonce,
+          op: 'complete',
+          output_base64: Buffer.alloc(RESULT_CAP_BYTES + 1).toString('base64'),
+          truncated: false,
+        })}\n`
+      )
+    ).toBe('{"ok":false}\n');
+
+    await runHelper(delivery.helperPath, ['complete'], 'valid answer');
+    expect(await delivery.completion).toMatchObject({
+      kind: 'completed',
+      output: 'valid answer',
+    });
+  });
+
+  test("a prior attempt's credentials cannot complete a later attempt", async () => {
+    const fixture = await parentFixture();
+    const first = await handoffToParentClaude({
+      session: fixture.session,
+      runId: 81,
+      prompt: 'First attempt',
+      token: 'run-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      disconnectCheckIntervalMs: 10_000,
+    });
+    expect(first.kind).toBe('handed-off');
+    if (first.kind !== 'handed-off') throw new Error(first.reason);
+
+    // Capture the first attempt's nonce before its helper directory is removed.
+    const staleNonce = readHelperConfig(first.helperPath).nonce;
+    await runHelper(first.helperPath, ['complete'], 'first answer');
+    expect(await first.completion).toMatchObject({ kind: 'completed', output: 'first answer' });
+
+    const second = await handoffToParentClaude({
+      session: fixture.session,
+      runId: 81,
+      prompt: 'Second attempt',
+      token: 'run-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      disconnectCheckIntervalMs: 10_000,
+    });
+    expect(second.kind).toBe('handed-off');
+    if (second.kind !== 'handed-off') throw new Error(second.reason);
+    const current = readHelperConfig(second.helperPath);
+    expect(staleNonce).not.toBe(current.nonce);
+
+    // The same run id on the live socket, replaying the retired attempt's nonce.
+    const replay = (op: Record<string, unknown>) =>
+      rawHelperRequest(
+        current.socketPath,
+        `${JSON.stringify({ version: 1, run_id: current.runId, nonce: staleNonce, ...op })}\n`
+      );
+    expect(await replay({ op: 'credentials' })).toBe('{"ok":false}\n');
+    expect(
+      await replay({
+        op: 'complete',
+        output_base64: Buffer.from('stale answer').toString('base64'),
+        truncated: false,
+      })
+    ).toBe('{"ok":false}\n');
+
+    await runHelper(second.helperPath, ['complete'], 'current answer');
+    expect(await second.completion).toMatchObject({
+      kind: 'completed',
+      output: 'current answer',
+    });
   });
 
   test('daemon shutdown completes a delivered handoff and removes its helper', async () => {
@@ -247,7 +456,7 @@ describe('handoffToParentClaude', () => {
     const shutdown = new AbortController();
     const delivery = await handoffToParentClaude({
       session: fixture.session,
-      runId: 78,
+      runId: 82,
       prompt: 'Do work',
       token: 'secret',
       memoryUrl: 'https://gateway.test/mcp/test',
@@ -268,7 +477,7 @@ describe('handoffToParentClaude', () => {
     const fixture = await parentFixture();
     const delivery = await handoffToParentClaude({
       session: fixture.session,
-      runId: 79,
+      runId: 83,
       prompt: 'Do work',
       token: 'secret',
       memoryUrl: 'https://gateway.test/mcp/test',
@@ -290,7 +499,7 @@ describe('handoffToParentClaude', () => {
 
     const delivery = await handoffToParentClaude({
       session: fixture.session,
-      runId: 80,
+      runId: 84,
       prompt: 'Do work',
       token: 'secret',
       memoryUrl: 'https://gateway.test/mcp/test',

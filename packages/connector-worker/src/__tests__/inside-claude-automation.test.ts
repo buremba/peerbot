@@ -61,7 +61,8 @@ describe('inside-Claude routing', () => {
     spyOn(parentClaude, 'detectParentClaudeSession').mockReturnValue({ ok: true, session });
     let finishParent!: () => void;
     const parentCompletion = new Promise<parentClaude.ParentClaudeCompletion>((resolve) => {
-      finishParent = () => resolve({ kind: 'completed', durationMs: 12 });
+      finishParent = () =>
+        resolve({ kind: 'completed', durationMs: 12, output: 'parent answer' });
     });
     const handoff = spyOn(parentClaude, 'handoffToParentClaude')
       .mockResolvedValueOnce({
@@ -102,11 +103,58 @@ describe('inside-Claude routing', () => {
     await execution;
 
     expect(handoff).toHaveBeenCalledTimes(2);
+    expect(handoff.mock.calls[0]?.[0].prompt).toContain('completeWindow');
+    expect(handoff.mock.calls[0]?.[0].prompt).not.toContain('Do NOT call completeWindow');
     expect(heartbeats).toBeGreaterThan(0);
     expect(reports).toHaveLength(2);
     expect(reports[0]?.exit_reason).toBe('ok');
+    expect(reports[0]?.output).toBe('parent answer');
     expect(reports[1]?.exit_reason).toBe('crash');
     expect(reports[1]?.error).toBe('parent Claude delivery failed: inbox closed');
+  });
+
+  test('passes the turn contract to the parent and reports its final result', async () => {
+    const session: parentClaude.ParentClaudeSession = {
+      pid: process.pid,
+      sessionId: 'parent-session',
+      socketPath: '/private/unused-parent.sock',
+      messagingToken: 'messaging-token',
+      registryPath: '/private/unused-session.json',
+    };
+    spyOn(parentClaude, 'detectParentClaudeSession').mockReturnValue({ ok: true, session });
+    const handoff = spyOn(parentClaude, 'handoffToParentClaude').mockResolvedValue({
+      kind: 'handed-off',
+      helperPath: '/private/helper',
+      completion: Promise.resolve({
+        kind: 'completed',
+        durationMs: 12,
+        output: 'turn parent result',
+      }),
+    });
+
+    const reports: Array<Record<string, unknown>> = [];
+    const client = {
+      id: 'worker-test',
+      mcpWiring: undefined,
+      async heartbeat() {},
+      async completeAutomation(_runId: number, request: Record<string, unknown>) {
+        reports.push(request);
+        return { ok: true, status: 'completed' };
+      },
+    };
+    const turnPayload = payload();
+    turnPayload.event.payload = { trigger_execution: 'turn' };
+
+    await executeAutomationRun(
+      client as never,
+      { run_id: 93, run_type: 'automation', payload: turnPayload } satisfies PollResponse,
+      { insideClaude: true, binaryOverrides: { 'claude-code': '/never/spawned' } }
+    );
+
+    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(handoff.mock.calls[0]?.[0].prompt).toContain('Do NOT call completeWindow');
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.output).toBe('turn parent result');
   });
 
   test('reports no exit code or OS signal, because no child process ran', async () => {

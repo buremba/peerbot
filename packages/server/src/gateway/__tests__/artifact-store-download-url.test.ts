@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   ArtifactStorageError,
   ArtifactStore,
+  MAX_ARTIFACT_BYTES,
   runArtifactBinding,
 } from "../files/artifact-store.js";
 import { type ArtifactTestEnv, createArtifactTestEnv } from "./setup.js";
@@ -172,11 +173,13 @@ describe("ArtifactStore durable filesystem backend", () => {
   test("rejects artifacts larger than the bounded read contract", async () => {
     await expect(
       env.artifactStore.publish({
-        buffer: Buffer.alloc(50 * 1024 * 1024 + 1),
+        buffer: Buffer.alloc(MAX_ARTIFACT_BYTES + 1),
         filename: "too-large.bin",
         publicGatewayUrl: "https://lobu.example.com",
       }),
-    ).rejects.toThrow("Artifact exceeds the 52428800-byte storage limit");
+    ).rejects.toThrow(
+      `Artifact exceeds the ${MAX_ARTIFACT_BYTES}-byte storage limit`,
+    );
     expect(await fs.readdir(env.artifactsDir)).toEqual([]);
   });
 
@@ -262,6 +265,35 @@ describe("ArtifactStore durable filesystem backend", () => {
     expect(await env.artifactStore.read(published.artifactId)).toBeNull();
   });
 
+  test("propagates retained-storage I/O failures instead of reporting missing", async () => {
+    const published = await env.artifactStore.publish({
+      buffer: Buffer.from("still-present"),
+      filename: "present.txt",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+    const realOpen = fs.open;
+    const openSpy = spyOn(fs, "open").mockImplementation(
+      async (target, ...args) => {
+        if (String(target).endsWith("/content")) {
+          const error = new Error("injected mount failure") as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        }
+        return realOpen(target, ...args);
+      },
+    );
+
+    try {
+      const read = env.artifactStore.read(published.artifactId);
+      await expect(read).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(read).rejects.toMatchObject({
+        code: "ARTIFACT_STORAGE_UNAVAILABLE",
+      });
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   test("does not delete a pre-existing directory when publication collides", async () => {
     const realMkdir = fs.mkdir;
     let collidedDir: string | undefined;
@@ -296,6 +328,43 @@ describe("ArtifactStore durable filesystem backend", () => {
     expect(await fs.readFile(join(collidedDir!, "committed-marker"), "utf8")).toBe(
       "keep",
     );
+  });
+
+  test("keeps partial-publication failures on the typed storage contract", async () => {
+    const realOpen = fs.open;
+    const realRm = fs.rm;
+    const openSpy = spyOn(fs, "open").mockImplementation(
+      async (target, ...args) => {
+        if (String(target).endsWith("/content")) {
+          throw new Error("injected publication failure");
+        }
+        return realOpen(target, ...args);
+      },
+    );
+    const rmSpy = spyOn(fs, "rm").mockImplementation(
+      async (target, options) => {
+        if (String(target).includes(`${join(env.artifactsDir, ".trash")}/`)) {
+          throw new Error("injected quarantine cleanup failure");
+        }
+        return realRm(target, options);
+      },
+    );
+
+    try {
+      const publication = env.artifactStore.publish({
+        buffer: Buffer.from("partial"),
+        filename: "partial.bin",
+        publicGatewayUrl: "https://lobu.example.com",
+      });
+      await expect(publication).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(publication).rejects.toMatchObject({
+        code: "ARTIFACT_STORAGE_UNAVAILABLE",
+      });
+      await expect(publication).rejects.not.toThrow(env.artifactsDir);
+    } finally {
+      openSpy.mockRestore();
+      rmSpy.mockRestore();
+    }
   });
 
   test("quarantines a failed delete and drains the leftover before another publish", async () => {

@@ -3,7 +3,7 @@ import { constants as fsConstants, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { decrypt, encrypt, getErrorMessage } from "@lobu/core";
+import { decrypt, encrypt } from "@lobu/core";
 import baseLogger from "../../utils/logger";
 
 const logger = baseLogger.child({ module: "artifact-store" });
@@ -53,10 +53,21 @@ export class ArtifactStorageError extends Error {
 function storageFailure(operation: string, cause: unknown): ArtifactStorageError {
   if (cause instanceof ArtifactStorageError) return cause;
   logger.error(
-    { operation, error: getErrorMessage(cause) },
+    {
+      operation,
+      code:
+        cause && typeof cause === "object" && "code" in cause
+          ? String(cause.code)
+          : undefined,
+    },
     "Artifact storage operation failed",
   );
   return new ArtifactStorageError(operation, cause);
+}
+
+function isMissingOrUnsafe(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP";
 }
 
 function sanitizeFilename(filename: string): string {
@@ -146,10 +157,24 @@ async function readBoundedRegularFile(
       offset += bytesRead;
     }
     return buffer;
-  } catch {
-    return null;
+  } catch (error) {
+    if (isMissingOrUnsafe(error)) return null;
+    throw storageFailure("read", error);
   } finally {
     await handle?.close().catch(() => {});
+  }
+}
+
+async function writeDurableFile(
+  filePath: string,
+  contents: string | Buffer,
+): Promise<void> {
+  const handle = await fs.open(filePath, "wx", 0o600);
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
@@ -190,14 +215,20 @@ export class ArtifactStore {
     artifactId: string,
   ): Promise<{ metadata: StoredArtifactMetadata; dirStat: Stats } | null> {
     if (!ARTIFACT_ID_PATTERN.test(artifactId)) return null;
+    let dirStat: Stats;
     try {
-      const dirStat = await fs.lstat(this.artifactDir(artifactId));
-      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
-      const raw = await readBoundedRegularFile(
-        this.metadataPath(artifactId),
-        ARTIFACT_METADATA_MAX_BYTES,
-      );
-      if (!raw) return null;
+      dirStat = await fs.lstat(this.artifactDir(artifactId));
+    } catch (error) {
+      if (isMissingOrUnsafe(error)) return null;
+      throw storageFailure("read", error);
+    }
+    if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
+    const raw = await readBoundedRegularFile(
+      this.metadataPath(artifactId),
+      ARTIFACT_METADATA_MAX_BYTES,
+    );
+    if (!raw) return null;
+    try {
       const parsed = JSON.parse(raw.toString("utf8")) as unknown;
       if (!isStoredArtifactMetadata(parsed, artifactId)) return null;
       return { metadata: parsed, dirStat };
@@ -218,8 +249,9 @@ export class ArtifactStore {
         final.dev === initial.dev &&
         final.ino === initial.ino
       );
-    } catch {
-      return false;
+    } catch (error) {
+      if (isMissingOrUnsafe(error)) return false;
+      throw storageFailure("read", error);
     }
   }
 
@@ -313,14 +345,10 @@ export class ArtifactStore {
       // not ours, so never adopt it.
       await fs.mkdir(dir, { recursive: false, mode: 0o700 });
       ownsDir = true;
-      await fs.writeFile(this.artifactFilePath(artifactId), params.buffer, {
-        flag: "wx",
-        mode: 0o600,
-      });
-      await fs.writeFile(
+      await writeDurableFile(this.artifactFilePath(artifactId), params.buffer);
+      await writeDurableFile(
         this.metadataPath(artifactId),
         JSON.stringify(metadata, null, 2),
-        { flag: "wx", mode: 0o600 },
       );
     } catch (error) {
       if (ownsDir) {
@@ -329,12 +357,12 @@ export class ArtifactStore {
         } catch (cleanupError) {
           // Message stays path-free like every other surface here: the causes
           // carry the detail, and the filesystem layout is not for callers.
-          throw new AggregateError(
-            [
-              storageFailure("publication", error),
-              storageFailure("quarantine", cleanupError),
-            ],
-            "Artifact publication failed and its partial directory could not be quarantined",
+          throw storageFailure(
+            "publication",
+            new AggregateError(
+              [error, cleanupError],
+              "Partial artifact directory could not be quarantined",
+            ),
           );
         }
       }
@@ -362,38 +390,34 @@ export class ArtifactStore {
     artifactId: string,
     options?: { binding?: string; maxBytes?: number },
   ): Promise<{ metadata: StoredArtifactMetadata; bytes: Buffer } | null> {
-    try {
-      const record = await this.readMetadataRecord(artifactId);
-      if (!record) return null;
-      const { metadata, dirStat } = record;
-      if (options?.binding && metadata.binding !== options.binding) {
-        return null;
-      }
-      const maxBytes = options?.maxBytes ?? MAX_ARTIFACT_BYTES;
-      if (
-        !Number.isSafeInteger(maxBytes) ||
-        maxBytes < 0 ||
-        metadata.size > maxBytes
-      ) {
-        return null;
-      }
-      const bytes = await readBoundedRegularFile(
-        this.artifactFilePath(artifactId),
-        maxBytes,
-      );
-      if (
-        !bytes ||
-        bytes.length !== metadata.size ||
-        sha256(bytes) !== metadata.sha256
-      ) {
-        logger.warn(`Artifact ${artifactId} failed size/checksum verification`);
-        return null;
-      }
-      if (!(await this.directoryIsUnchanged(artifactId, dirStat))) return null;
-      return { metadata, bytes };
-    } catch {
+    const record = await this.readMetadataRecord(artifactId);
+    if (!record) return null;
+    const { metadata, dirStat } = record;
+    if (options?.binding && metadata.binding !== options.binding) {
       return null;
     }
+    const maxBytes = options?.maxBytes ?? MAX_ARTIFACT_BYTES;
+    if (
+      !Number.isSafeInteger(maxBytes) ||
+      maxBytes < 0 ||
+      metadata.size > maxBytes
+    ) {
+      return null;
+    }
+    const bytes = await readBoundedRegularFile(
+      this.artifactFilePath(artifactId),
+      maxBytes,
+    );
+    if (
+      !bytes ||
+      bytes.length !== metadata.size ||
+      sha256(bytes) !== metadata.sha256
+    ) {
+      logger.warn(`Artifact ${artifactId} failed size/checksum verification`);
+      return null;
+    }
+    if (!(await this.directoryIsUnchanged(artifactId, dirStat))) return null;
+    return { metadata, bytes };
   }
 
   /** Read validated metadata without loading the artifact payload. */

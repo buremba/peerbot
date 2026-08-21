@@ -1,6 +1,5 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
-  ArtifactStore,
   eventArtifactBinding,
   runArtifactBinding,
 } from './gateway/files/artifact-store';
@@ -225,9 +224,8 @@ export async function readMcpAttachmentResource(
   }
 
   const coreServices = getLobuCoreServices();
-  const artifactStore = coreServices
-    ? coreServices.getArtifactStore()
-    : new ArtifactStore();
+  if (!coreServices) throw new Error('MCP resource service unavailable');
+  const artifactStore = coreServices.getArtifactStore();
   const metadata = await artifactStore.inspect(attachment.artifact_id, {
     binding: loaded.binding,
   });

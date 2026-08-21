@@ -6,6 +6,7 @@ import {
 	getErrorMessage,
 } from "@lobu/core";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import {
   type ArtifactStore,
   MAX_ARTIFACT_BYTES,
@@ -18,6 +19,16 @@ import { captureSideEffect } from "./capture-mode.js";
 import type { WorkerContext } from "./types.js";
 
 const logger = createLogger("file-routes");
+// The wire body carries multipart boundaries, part headers, and the other
+// form fields on top of the file itself, so allow 1 MiB of framing over the
+// decoded artifact limit; the exact decoded size is re-checked after parsing.
+const MAX_ARTIFACT_UPLOAD_REQUEST_BYTES = MAX_ARTIFACT_BYTES + 1024 * 1024;
+
+const limitArtifactUploadBody = bodyLimit({
+  maxSize: MAX_ARTIFACT_UPLOAD_REQUEST_BYTES,
+  onError: (c) =>
+    errorResponse(c, "File exceeds the artifact storage limit", 413),
+});
 
 /**
  * Resolve the file handler for a given platform from the registry.
@@ -80,7 +91,7 @@ export function createFileRoutes(
    * Upload file endpoint for workers
    * POST /upload
    */
-  router.post("/upload", authenticateWorker, async (c) => {
+  router.post("/upload", limitArtifactUploadBody, authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
       // SECURITY: the channel/conversation a worker may upload to is fixed by
@@ -193,6 +204,9 @@ export function createFileRoutes(
         artifactId: result.artifactId,
       });
     } catch (error) {
+      if (error instanceof Error && error.name === "BodyLimitError") {
+        return errorResponse(c, "File exceeds the artifact storage limit", 413);
+      }
       logger.error("Failed to upload file", {
         error: getErrorMessage(error),
         stack: error instanceof Error ? error.stack : undefined,
@@ -205,7 +219,7 @@ export function createFileRoutes(
    * Batch upload endpoint for multiple files
    * POST /upload-batch
    */
-  router.post("/upload-batch", authenticateWorker, async (c) => {
+  router.post("/upload-batch", limitArtifactUploadBody, authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
       // SECURITY: token-bound channel/conversation (see /upload above) — never
@@ -232,31 +246,36 @@ export function createFileRoutes(
       if (!fileEntries || fileEntries.length === 0) {
         return errorResponse(c, "No files provided", 400);
       }
+      const files = fileEntries.filter(
+        (entry): entry is File => entry instanceof File
+      );
+      if (files.length !== fileEntries.length) {
+        return errorResponse(c, "Every upload entry must be a file", 400);
+      }
+      // The batch buffers every entry concurrently below, so the aggregate —
+      // not just each file — has to stay inside the artifact storage limit.
       if (
-        fileEntries.some(
-          (entry) => entry instanceof File && entry.size > MAX_ARTIFACT_BYTES
-        )
+        files.reduce((total, file) => total + file.size, 0) >
+        MAX_ARTIFACT_BYTES
       ) {
-        return errorResponse(c, "File exceeds the artifact storage limit", 413);
+        return errorResponse(
+          c,
+          "Batch exceeds the artifact storage limit",
+          413
+        );
       }
 
       const captured = await captureSideEffect(c, "files.upload_batch", {
-        count: fileEntries.length,
-        filenames: fileEntries
-          .filter((entry): entry is File => entry instanceof File)
-          .map((entry) => entry.name),
+        count: files.length,
+        filenames: files.map((entry) => entry.name),
       });
       if (captured) return captured;
 
       logger.info(
-        `Worker uploading ${fileEntries.length} files for conversation ${worker.conversationId}`
+        `Worker uploading ${files.length} files for conversation ${worker.conversationId}`
       );
 
-      const uploadPromises = fileEntries.map(async (entry, index) => {
-        if (!(entry instanceof File)) {
-          throw new Error(`Entry ${index} is not a file`);
-        }
-
+      const uploadPromises = files.map(async (entry) => {
         const filename = entry.name;
         const fileBuffer = Buffer.from(await entry.arrayBuffer());
 
@@ -317,6 +336,9 @@ export function createFileRoutes(
 
       return c.json({ results });
     } catch (error) {
+      if (error instanceof Error && error.name === "BodyLimitError") {
+        return errorResponse(c, "File exceeds the artifact storage limit", 413);
+      }
       logger.error("Failed to batch upload files", {
         error: getErrorMessage(error),
         stack: error instanceof Error ? error.stack : undefined,

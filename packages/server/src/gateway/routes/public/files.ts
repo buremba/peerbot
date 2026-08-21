@@ -2,7 +2,10 @@
 
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import type { ArtifactStore } from "../../files/artifact-store.js";
+import {
+  ArtifactStorageError,
+  type ArtifactStore,
+} from "../../files/artifact-store.js";
 
 const logger = createLogger("public-files");
 
@@ -31,7 +34,18 @@ export function createPublicFileRoutes(artifactStore: ArtifactStore): Hono {
       );
     }
 
-    const artifact = await artifactStore.read(artifactId);
+    let artifact: Awaited<ReturnType<ArtifactStore["read"]>>;
+    try {
+      artifact = await artifactStore.read(artifactId);
+    } catch (error) {
+      logger.error("Artifact storage unavailable during download", {
+        code: error instanceof ArtifactStorageError ? error.code : "UNKNOWN",
+      });
+      return c.json(
+        { success: false, error: "File storage temporarily unavailable" },
+        503
+      );
+    }
     if (!artifact) {
       return c.json({ success: false, error: "File not found" }, 404);
     }

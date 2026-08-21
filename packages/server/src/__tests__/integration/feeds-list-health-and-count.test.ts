@@ -228,7 +228,7 @@ describe("list_feeds health filter and true total", () => {
 		}
 	});
 
-	it("distinguishes an overdue scheduled feed from an old no-schedule feed", async () => {
+	it("keeps health filters aligned for overdue, active-run, and manual feeds", async () => {
 		const conn = await createTestConnection({
 			organization_id: orgId,
 			connector_key: "hackernews",
@@ -247,15 +247,42 @@ describe("list_feeds health filter and true total", () => {
 					current_timestamp - interval '3 hours', 0, ARRAY[]::bigint[], NOW(), NOW()
 				),
 				(
+					${orgId}, ${conn.id}, 'scheduled-active', 'active', 'collected',
+					'0 * * * *', current_timestamp - interval '2 hours', 'success',
+					current_timestamp - interval '3 hours', 0, ARRAY[]::bigint[], NOW(), NOW()
+				),
+				(
 					${orgId}, ${conn.id}, 'no-schedule-old', 'active', 'collected',
 					NULL, NULL, 'success', current_timestamp - interval '30 days', 0,
 					ARRAY[]::bigint[], NOW(), NOW()
 				)
 		`;
+		await sql`
+			INSERT INTO runs (
+				organization_id, run_type, feed_id, status, approval_status, created_at
+			)
+			SELECT ${orgId}, 'sync', id, 'running', 'auto', current_timestamp
+			FROM feeds
+			WHERE organization_id = ${orgId}
+			  AND connection_id = ${conn.id}
+			  AND feed_key = 'scheduled-active'
+		`;
 
 		const listed = await runList({ connection_id: conn.id, limit: 10 });
 		const byKey = new Map(listed.feeds.map((feed) => [feed.feed_key, feed]));
 		expect(byKey.get("scheduled-overdue")?.attention).toBe("overdue");
+		expect(byKey.get("scheduled-active")?.attention).toBe("healthy");
 		expect(byKey.get("no-schedule-old")?.attention).toBe("healthy");
+
+		const healthy = await runList({ connection_id: conn.id, health: "healthy" });
+		expect(healthy.feeds.map((feed) => feed.feed_key).sort()).toEqual([
+			"no-schedule-old",
+			"scheduled-active",
+		]);
+
+		const failing = await runList({ connection_id: conn.id, health: "failing" });
+		expect(failing.feeds.map((feed) => feed.feed_key)).toEqual([
+			"scheduled-overdue",
+		]);
 	});
 });

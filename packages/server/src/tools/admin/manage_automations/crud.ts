@@ -677,6 +677,16 @@ export async function handleUpdate(
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
       agent_kind = CASE WHEN ${has('agent_kind')} THEN ${patch.agent_kind ?? null} ELSE agent_kind END,
       delivery_target = CASE WHEN ${has('delivery_target')} THEN ${toJsonParam(sql, patch.delivery_target)} ELSE delivery_target END,
+      -- A 0-cooldown reply Automation stamps this cursor for observability.
+      -- Enabling debounce must start with a fresh window, exactly as it did
+      -- before zero-cooldown stamping; positive -> positive keeps its window.
+      last_event_activation_at = CASE
+        WHEN ${has('min_cooldown_seconds')}
+          AND min_cooldown_seconds = 0
+          AND ${patch.min_cooldown_seconds ?? 0} > 0
+        THEN NULL
+        ELSE last_event_activation_at
+      END,
       min_cooldown_seconds = CASE WHEN ${has('min_cooldown_seconds')} THEN ${patch.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
     WHERE id = ${args.automation_id} AND organization_id = ${ctx.organizationId}
     RETURNING *

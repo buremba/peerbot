@@ -2,7 +2,8 @@
  * Auth-related action handlers: reauthenticate, test.
  */
 
-import { isRetryable, type ToolErrorCode } from '@lobu/core';
+import { getErrorMessage, isRetryable, type ToolErrorCode } from '@lobu/core';
+import { probeSlackConnectionIdentity } from '../../../../gateway/connections/chat-connection-service';
 import { getDb } from '../../../../db/client';
 import {
   DEVICE_ONLINE_WINDOW_SECONDS,
@@ -172,6 +173,10 @@ export async function handleTest(
 
   const rows = await sql`
     SELECT c.connector_key,
+           c.slug,
+           c.credential_mode,
+           c.external_tenant_id,
+           c.config,
            c.auth_profile_id,
            c.app_auth_profile_id,
            c.status,
@@ -201,6 +206,47 @@ export async function handleTest(
   const conn = rows[0] as any;
   const withDeviceHealth = (result: ConnectionTestResult): ConnectionTestResult =>
     applySelectedDeviceHealth(conn, result);
+
+  if (conn.connector_key === 'slack' && conn.credential_mode) {
+    try {
+      const identity = await probeSlackConnectionIdentity(
+        organizationId,
+        Number(args.connection_id)
+      );
+      const mismatch = slackIdentityMismatch(conn, identity);
+      if (mismatch) {
+        return withDeviceHealth({
+          action: 'test',
+          status: 'error',
+          message: `Slack auth.test identity mismatch: ${mismatch}`,
+          ...testErrorFields('AUTH_INVALID'),
+        });
+      }
+      return withDeviceHealth({
+        action: 'test',
+        status: 'ok',
+        message: [
+          `Slack auth.test succeeded: workspace ${identity.teamId}`,
+          identity.enterpriseId
+            ? `enterprise ${identity.enterpriseId}`
+            : 'no enterprise',
+          `enterprise_install=${identity.isEnterpriseInstall}`,
+        ].join(', '),
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+      const authFailure = /invalid_auth|token_(?:expired|revoked)|account_inactive/i.test(
+        message
+      );
+      return withDeviceHealth({
+        action: 'test',
+        status: 'error',
+        message: `Slack auth.test failed: ${message}`,
+        ...testErrorFields(authFailure ? 'AUTH_INVALID' : 'NETWORK'),
+      });
+    }
+  }
+
   const authProfile = await getAuthProfileById(
     organizationId,
     Number(conn.auth_profile_id) || null
@@ -437,4 +483,67 @@ function testErrorFields(code: ToolErrorCode): { error_code: ToolErrorCode; retr
 function connectorSupportsNoAuth(authSchema: unknown): boolean {
   const methods = (authSchema as { methods?: Array<{ type?: string }> } | null)?.methods;
   return Array.isArray(methods) && methods.some((m) => m?.type === 'none');
+}
+
+/** Slack workspace ids are `T…`; an enterprise id is `E…`. Never interchangeable. */
+const SLACK_WORKSPACE_ID = /^T[A-Z0-9]+$/i;
+
+function slackIdentityMismatch(
+  conn: {
+    external_tenant_id?: unknown;
+    config?: unknown;
+  },
+  upstream: {
+    teamId: string;
+    enterpriseId: string | null;
+    isEnterpriseInstall: boolean;
+  }
+): string | null {
+  const config =
+    conn.config && typeof conn.config === 'object'
+      ? (conn.config as Record<string, unknown>)
+      : {};
+  const metadata =
+    config.chatMetadata && typeof config.chatMetadata === 'object'
+      ? (config.chatMetadata as Record<string, unknown>)
+      : {};
+  const storedTenantId =
+    typeof conn.external_tenant_id === 'string' ? conn.external_tenant_id : null;
+  // An ORG-WIDE Grid install is keyed on its `E…` enterprise id, so both
+  // `external_tenant_id` and `chatMetadata.teamId` hold an `E…` there. Only a
+  // `T…` value names a concrete workspace worth comparing against `auth.test`.
+  const storedTeamId = [metadata.teamId, storedTenantId].find(
+    (value): value is string =>
+      typeof value === 'string' && SLACK_WORKSPACE_ID.test(value)
+  );
+  const storedEnterpriseId =
+    typeof metadata.enterpriseId === 'string'
+      ? metadata.enterpriseId
+      : storedTenantId?.startsWith('E')
+        ? storedTenantId
+        : null;
+  const storedEnterpriseInstall = metadata.isEnterpriseInstall === true;
+
+  if (!SLACK_WORKSPACE_ID.test(upstream.teamId)) {
+    return `upstream workspace id '${upstream.teamId}' is not a Slack T id`;
+  }
+  if (upstream.isEnterpriseInstall) {
+    if (!storedEnterpriseInstall) {
+      return 'upstream credential is org-wide but stored connection is workspace-scoped';
+    }
+    if (!upstream.enterpriseId || upstream.enterpriseId !== storedEnterpriseId) {
+      return `upstream enterprise '${upstream.enterpriseId ?? 'none'}' does not match stored enterprise '${storedEnterpriseId ?? 'none'}'`;
+    }
+    return null;
+  }
+  if (storedEnterpriseInstall) {
+    return 'stored connection is org-wide but upstream credential is workspace-scoped';
+  }
+  if (!storedTeamId || upstream.teamId !== storedTeamId) {
+    return `upstream workspace '${upstream.teamId}' does not match stored workspace '${storedTeamId ?? 'none'}'`;
+  }
+  if (storedEnterpriseId && upstream.enterpriseId !== storedEnterpriseId) {
+    return `upstream enterprise '${upstream.enterpriseId ?? 'none'}' does not match stored enterprise '${storedEnterpriseId}'`;
+  }
+  return null;
 }

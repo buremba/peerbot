@@ -488,9 +488,11 @@ export const QUERYABLE_SCHEMA = {
         'delivery_target',
         'min_cooldown_seconds',
         'last_fired_at',
-        // Dispatch-time cursor for the min_cooldown_seconds debounce. Distinct
-        // from last_fired_at, which is stamped when a run reaches a terminal
-        // state.
+        // Dispatch-time activation cursor. A positive min_cooldown_seconds
+        // consumes it as the debounce window; a zero-cooldown chat reply stamps
+        // it purely for observability, since that path writes no run row.
+        // Distinct from last_fired_at, which is stamped when a run reaches a
+        // terminal state.
         'last_event_activation_at',
         // Materialized ordering stamp: the completion time of this Automation's
         // most recent `completed` run, written by a trigger on `runs`. Plain

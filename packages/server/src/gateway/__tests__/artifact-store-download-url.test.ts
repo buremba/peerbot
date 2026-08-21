@@ -1,5 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { runArtifactBinding } from "../files/artifact-store.js";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
+import { join } from "node:path";
+import {
+  ArtifactStorageError,
+  ArtifactStore,
+  runArtifactBinding,
+} from "../files/artifact-store.js";
 import { type ArtifactTestEnv, createArtifactTestEnv } from "./setup.js";
 
 describe("ArtifactStore.buildDownloadUrl", () => {
@@ -43,6 +50,15 @@ describe("ArtifactStore.buildDownloadUrl", () => {
     expect(new URL(url).pathname).toBe("/lobu/api/v1/files/artifact-789");
   });
 
+  test("rejects oversized download tokens before decryption", () => {
+    expect(
+      env.artifactStore.validateDownloadToken(
+        "x".repeat(4097),
+        "00000000-0000-4000-8000-000000000001",
+      ),
+    ).toEqual({ valid: false, error: "malformed" });
+  });
+
   test("round-trips: a published artifact is served from its own URL path", async () => {
     const { artifactId, downloadUrl } = await env.artifactStore.publish({
       buffer: Buffer.from("hello world"),
@@ -73,10 +89,272 @@ describe("ArtifactStore.buildDownloadUrl", () => {
 
     expect(await env.artifactStore.read(artifactId, { binding })).toBeTruthy();
     expect(
-      await env.artifactStore.read(artifactId, { binding: runArtifactBinding(43) })
+      await env.artifactStore.read(artifactId, {
+        binding: runArtifactBinding(43),
+      }),
+    ).toBeNull();
+
+    const freshUrl = await env.artifactStore.mintBoundDownloadUrl({
+      artifactId,
+      binding,
+      publicGatewayUrl: "https://lobu.example.com/lobu",
+    });
+    expect(freshUrl).not.toBeNull();
+    expect(new URL(freshUrl as string).pathname).toBe(
+      `/lobu/api/v1/files/${artifactId}`,
+    );
+    expect(
+      await env.artifactStore.mintBoundDownloadUrl({
+        artifactId,
+        binding: runArtifactBinding(43),
+        publicGatewayUrl: "https://lobu.example.com/lobu",
+      }),
     ).toBeNull();
 
     await env.artifactStore.delete(artifactId);
     expect(await env.artifactStore.read(artifactId)).toBeNull();
+  });
+});
+
+describe("ArtifactStore durable filesystem backend", () => {
+  let env: ArtifactTestEnv;
+
+  beforeEach(() => {
+    env = createArtifactTestEnv();
+  });
+
+  afterEach(() => env.cleanup());
+
+  test("fails closed when production has no durable artifacts directory", () => {
+    const previousEnvironment = process.env.ENVIRONMENT;
+    const previousArtifactsDir = process.env.LOBU_ARTIFACTS_DIR;
+    try {
+      process.env.ENVIRONMENT = "production";
+      delete process.env.LOBU_ARTIFACTS_DIR;
+      expect(() => new ArtifactStore()).toThrow(
+        "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable mounted filesystem",
+      );
+    } finally {
+      if (previousEnvironment === undefined) delete process.env.ENVIRONMENT;
+      else process.env.ENVIRONMENT = previousEnvironment;
+      if (previousArtifactsDir === undefined)
+        delete process.env.LOBU_ARTIFACTS_DIR;
+      else process.env.LOBU_ARTIFACTS_DIR = previousArtifactsDir;
+    }
+  });
+
+  test("shares verified private artifacts across store instances", async () => {
+    const writer = new ArtifactStore(env.artifactsDir);
+    const reader = new ArtifactStore(env.artifactsDir);
+    const binding = runArtifactBinding(314);
+    const bytes = Buffer.from("shared-image-bytes");
+
+    const published = await writer.publish({
+      buffer: bytes,
+      filename: "mémory photo.webp",
+      contentType: "image/webp",
+      publicGatewayUrl: "https://lobu.example.com",
+      binding,
+    });
+
+    expect(
+      await reader.read(published.artifactId, {
+        binding,
+        maxBytes: bytes.length - 1,
+      }),
+    ).toBeNull();
+    expect(
+      await reader.read(published.artifactId, {
+        binding: runArtifactBinding(315),
+      }),
+    ).toBeNull();
+
+    // No `maxBytes` means "serve what was published" — the public download
+    // route relies on it, and no publish path caps upload size.
+    const unbounded = await reader.read(published.artifactId, { binding });
+    expect(unbounded?.bytes).toEqual(bytes);
+
+    const stored = await reader.read(published.artifactId, {
+      binding,
+      maxBytes: bytes.length,
+    });
+    expect(stored?.metadata).toEqual(
+      expect.objectContaining({
+        filename: "mémory photo.webp",
+        contentType: "image/webp",
+        size: bytes.length,
+        binding,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+    expect(stored?.bytes).toEqual(bytes);
+
+    await writer.delete(published.artifactId);
+    expect(await reader.read(published.artifactId)).toBeNull();
+  });
+
+  test("rejects metadata without the required checksum", async () => {
+    const published = await env.artifactStore.publish({
+      buffer: Buffer.from("verified-bytes"),
+      filename: "verified.txt",
+      publicGatewayUrl: "https://lobu.example.com",
+      binding: runArtifactBinding(314),
+    });
+    const metadataPath = join(
+      env.artifactsDir,
+      published.artifactId,
+      "metadata.json",
+    );
+    const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8"));
+    delete metadata.sha256;
+    await fs.writeFile(metadataPath, JSON.stringify(metadata));
+
+    expect(await env.artifactStore.read(published.artifactId)).toBeNull();
+    expect(
+      await env.artifactStore.mintBoundDownloadUrl({
+        artifactId: published.artifactId,
+        binding: runArtifactBinding(314),
+        publicGatewayUrl: "https://lobu.example.com",
+      }),
+    ).toBeNull();
+  });
+
+  test("keeps reserved metadata filenames separate from payload bytes", async () => {
+    const bytes = Buffer.from("not artifact metadata");
+    const published = await env.artifactStore.publish({
+      buffer: bytes,
+      filename: "metadata.json",
+      contentType: "application/json",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+
+    const stored = await env.artifactStore.read(published.artifactId);
+    expect(stored?.metadata.filename).toBe("metadata.json");
+    expect(stored?.bytes).toEqual(bytes);
+  });
+
+  test("rejects artifact ids that can escape the configured directory", async () => {
+    expect(await env.artifactStore.read("../outside")).toBeNull();
+    await expect(
+      env.artifactStore.delete("../outside"),
+    ).resolves.toBeUndefined();
+  });
+
+  test("rejects oversized metadata before parsing it", async () => {
+    const published = await env.artifactStore.publish({
+      buffer: Buffer.from("small"),
+      filename: "small.txt",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+    await fs.writeFile(
+      join(env.artifactsDir, published.artifactId, "metadata.json"),
+      JSON.stringify({
+        artifactId: published.artifactId,
+        filename: "x".repeat(128 * 1024),
+        contentType: "text/plain",
+        size: 5,
+        createdAt: Date.now(),
+        sha256: createHash("sha256").update("small").digest("hex"),
+      }),
+    );
+
+    expect(await env.artifactStore.read(published.artifactId)).toBeNull();
+  });
+
+  test("does not follow a replacement symlink even when bytes match", async () => {
+    const bytes = Buffer.from("same-secret-bytes");
+    const published = await env.artifactStore.publish({
+      buffer: bytes,
+      filename: "safe.txt",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+    const outside = join(env.artifactsDir, "outside-secret");
+    await fs.writeFile(outside, bytes);
+    const payload = join(env.artifactsDir, published.artifactId, "content");
+    await fs.unlink(payload);
+    await fs.symlink(outside, payload);
+
+    expect(await env.artifactStore.read(published.artifactId)).toBeNull();
+  });
+
+  test("quarantines a failed delete and drains the leftover before another publish", async () => {
+    const published = await env.artifactStore.publish({
+      buffer: Buffer.from("abandoned"),
+      filename: "abandoned.bin",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+    const realRm = fs.rm;
+    let failQuarantinedRemoval = true;
+    const rmSpy = spyOn(fs, "rm").mockImplementation(
+      async (target, options) => {
+        if (
+          failQuarantinedRemoval &&
+          String(target).includes(`${join(env.artifactsDir, ".trash")}/`)
+        ) {
+          failQuarantinedRemoval = false;
+          throw new Error("injected retained-PVC removal failure");
+        }
+        return realRm(target, options);
+      },
+    );
+
+    try {
+      const deletion = env.artifactStore.delete(published.artifactId);
+      await expect(deletion).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(deletion).rejects.toMatchObject({
+        code: "ARTIFACT_STORAGE_UNAVAILABLE",
+      });
+      await expect(deletion).rejects.not.toThrow(env.artifactsDir);
+    } finally {
+      rmSpy.mockRestore();
+    }
+    expect(await env.artifactStore.read(published.artifactId)).toBeNull();
+    const trashDir = join(env.artifactsDir, ".trash");
+    const [quarantined] = await fs.readdir(trashDir);
+    expect(quarantined).toContain(published.artifactId);
+
+    // A retained PVC has nothing else to reclaim the leftover. Publication
+    // cannot continue while known uncommitted bytes remain abandoned.
+    const next = await env.artifactStore.publish({
+      buffer: Buffer.from("next"),
+      filename: "next.bin",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+    expect(await fs.readdir(trashDir)).toEqual([]);
+
+    await env.artifactStore.delete(next.artifactId);
+    expect(await fs.readdir(trashDir)).toEqual([]);
+  });
+
+  test("fails closed when a quarantined orphan still cannot be removed", async () => {
+    const published = await env.artifactStore.publish({
+      buffer: Buffer.from("abandoned"),
+      filename: "abandoned.bin",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+    const realRm = fs.rm;
+    const rmSpy = spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (String(target).includes(`${join(env.artifactsDir, ".trash")}/`)) {
+        throw new Error("retained PVC remains unavailable");
+      }
+      return realRm(target, options);
+    });
+
+    try {
+      const deletion = env.artifactStore.delete(published.artifactId);
+      await expect(deletion).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(deletion).rejects.not.toThrow(env.artifactsDir);
+      const publication = env.artifactStore.publish({
+        buffer: Buffer.from("must-not-publish"),
+        filename: "blocked.bin",
+        publicGatewayUrl: "https://lobu.example.com",
+      });
+      await expect(publication).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(publication).rejects.not.toThrow(env.artifactsDir);
+    } finally {
+      rmSpy.mockRestore();
+    }
+
+    expect(await fs.readdir(join(env.artifactsDir, ".trash"))).toHaveLength(1);
   });
 });

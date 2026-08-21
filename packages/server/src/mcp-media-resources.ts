@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   ArtifactStore,
@@ -6,6 +5,7 @@ import {
   runArtifactBinding,
 } from './gateway/files/artifact-store';
 import type { Env } from './index';
+import { getLobuCoreServices } from './lobu/gateway';
 import { type AuthContext, executeTool } from './tools/execute';
 
 const MAX_MCP_RESOURCE_BYTES = 20 * 1024 * 1024;
@@ -222,24 +222,32 @@ export async function readMcpAttachmentResource(
     throw new Error(`Unknown resource: ${uri}`);
   }
 
-  const artifactStore = new ArtifactStore();
-  const stored = await artifactStore.read(attachment.artifact_id, {
+  const artifactStore =
+    getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore();
+  // Metadata first: `read` would report an oversized artifact as simply
+  // absent, and the caller needs to be told the payload exists but cannot be
+  // inlined.
+  const metadata = await artifactStore.inspect(attachment.artifact_id, {
     binding: loaded.binding,
   });
-  if (!stored) throw new Error(`Unknown resource: ${uri}`);
-  if (stored.metadata.size > MAX_MCP_RESOURCE_BYTES) {
+  if (!metadata) throw new Error(`Unknown resource: ${uri}`);
+  if (metadata.size > MAX_MCP_RESOURCE_BYTES) {
     throw new Error(
-      `MCP resource is too large to inline (${stored.metadata.size} bytes; limit ${MAX_MCP_RESOURCE_BYTES})`
+      `MCP resource is too large to inline (${metadata.size} bytes; limit ${MAX_MCP_RESOURCE_BYTES})`
     );
   }
 
-  const data = await readFile(stored.filePath);
+  const stored = await artifactStore.read(attachment.artifact_id, {
+    binding: loaded.binding,
+    maxBytes: MAX_MCP_RESOURCE_BYTES,
+  });
+  if (!stored) throw new Error(`Unknown resource: ${uri}`);
   return {
     contents: [
       {
         uri,
         mimeType: stored.metadata.contentType,
-        blob: data.toString('base64'),
+        blob: stored.bytes.toString('base64'),
       },
     ],
   };

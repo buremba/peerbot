@@ -7,6 +7,10 @@
 import type { ContentItem } from '@lobu/connector-sdk';
 import { parseJsonObject } from '@lobu/core';
 import { type DbClient, parsePgNumberArray, pgBigintArray, pgTextArray } from '../../db/client';
+import {
+  type ArtifactStore,
+  eventArtifactBinding,
+} from '../../gateway/files/artifact-store';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
 import logger from '../../utils/logger';
@@ -15,6 +19,47 @@ import { isAdminOrOwnerRole } from '../access-control';
 import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
+
+/** Replace persisted expiring URLs with a fresh, binding-verified URL. */
+export async function refreshEventArtifactDownloadUrls(opts: {
+  items: ContentItem[];
+  organizationId: string;
+  publicGatewayUrl: string;
+  artifactStore: Pick<ArtifactStore, 'mintBoundDownloadUrl'>;
+}): Promise<void> {
+  // Keep metadata verification sequential. Exact reads can return a large
+  // bounded page, and one Promise per attachment would amplify request memory
+  // even though each metadata file is itself size-capped.
+  for (const item of opts.items) {
+    if (!Array.isArray(item.attachments) || !item.origin_id) continue;
+    const binding = eventArtifactBinding({
+      organizationId: opts.organizationId,
+      connectionId: item.connection_id,
+      feedId: item.feed_id,
+      originId: item.origin_id,
+    });
+    const refreshed: typeof item.attachments = [];
+    for (const attachment of item.attachments) {
+      const artifactId = attachment.artifact_id;
+      if (typeof artifactId !== 'string') {
+        refreshed.push(attachment);
+        continue;
+      }
+      const { download_url: _expiredUrl, ...withoutExpiredUrl } = attachment;
+      const freshUrl = await opts.artifactStore.mintBoundDownloadUrl({
+        artifactId,
+        binding,
+        publicGatewayUrl: opts.publicGatewayUrl,
+      });
+      refreshed.push(
+        freshUrl
+          ? { ...withoutExpiredUrl, download_url: freshUrl }
+          : withoutExpiredUrl
+      );
+    }
+    item.attachments = refreshed;
+  }
+}
 
 /**
  * Gated payload keys: the request itself and its size. `request_status` is

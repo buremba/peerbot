@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,7 +72,7 @@ describe('materializeActionOutputAttachments', () => {
       binding: runArtifactBinding(42),
     });
     expect(stored).toBeTruthy();
-    expect(await readFile(stored!.filePath)).toEqual(bytes);
+    expect(stored!.bytes).toEqual(bytes);
   });
 
   it('deletes partial publishes when a later attachment publish fails', async () => {

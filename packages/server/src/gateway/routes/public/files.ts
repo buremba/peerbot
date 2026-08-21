@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 
-import { readFile } from "node:fs/promises";
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { ArtifactStore } from "../../files/artifact-store.js";
@@ -60,7 +59,7 @@ export function createPublicFileRoutes(artifactStore: ArtifactStore): Hono {
     );
     c.header("Cache-Control", "private, max-age=60");
 
-    return new Response(await readFile(artifact.filePath), {
+    return new Response(artifact.bytes, {
       headers: c.res.headers,
     });
   });

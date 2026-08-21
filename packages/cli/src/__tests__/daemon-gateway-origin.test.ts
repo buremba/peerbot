@@ -12,7 +12,6 @@ import * as daemonModule from "@lobu/connector-worker/daemon";
 import { daemonCommand } from "../commands/daemon";
 import { apiUrlToGatewayOrigin } from "../internal/context";
 import * as context from "../internal/context";
-import * as credentials from "../internal/credentials";
 import * as deviceState from "../internal/device-state";
 import * as deviceWizardModule from "../commands/_lib/device-wizard";
 
@@ -45,16 +44,46 @@ describe("apiUrlToGatewayOrigin", () => {
   });
 });
 
+/**
+ * Every env key `detectInteractiveSession` triggers on. The suite itself often
+ * runs inside one of these agents, so leaving any of them set would silently
+ * route `daemonCommand` down the per-session lane and make the host-device
+ * assertions below pass or fail depending on where the tests are run.
+ */
+const SESSION_ENV_KEYS = [
+  "WORKER_API_TOKEN",
+  "CI",
+  "CLAUDE_PID",
+  "CLAUDE_CODE_SESSION_ID",
+  "CODEX_THREAD_ID",
+  "CODEX_SESSION_ID",
+  "OPENCODE_PID",
+  "OPENCODE_SESSION_ID",
+] as const;
+
 describe("lobu daemon", () => {
+  const originalEnv = new Map<string, string | undefined>();
+  let originalStdinIsTTY: boolean | undefined;
+  let originalStdoutIsTTY: boolean | undefined;
+
   beforeEach(() => {
-    // Deterministic auth precondition so the setup guard never fires and each
-    // test drives `startDaemonCommand` regardless of the host's real config.
-    spyOn(credentials, "getToken").mockResolvedValue("session-token");
     spyOn(context, "getCurrentContextName").mockResolvedValue("local");
-    delete process.env.WORKER_API_TOKEN;
+    for (const key of SESSION_ENV_KEYS) {
+      originalEnv.set(key, process.env[key]);
+      delete process.env[key];
+    }
+    originalStdinIsTTY = process.stdin.isTTY;
+    originalStdoutIsTTY = process.stdout.isTTY;
+    process.env.WORKER_API_TOKEN = "owl_pat_durable-device-token";
+    (process.stdin as { isTTY?: boolean }).isTTY = false;
+    (process.stdout as { isTTY?: boolean }).isTTY = false;
   });
 
   afterEach(() => {
+    for (const [key, value] of originalEnv) restoreEnv(key, value);
+    originalEnv.clear();
+    (process.stdin as { isTTY?: boolean }).isTTY = originalStdinIsTTY;
+    (process.stdout as { isTTY?: boolean }).isTTY = originalStdoutIsTTY;
     mock.restore();
   });
 
@@ -83,7 +112,14 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("http://127.0.0.1:9564");
   });
 
-  test("--inside-claude is forwarded for centralized interactive detection", async () => {
+  test("--inside-claude bypasses cache and wizard so the daemon derives a per-session id", async () => {
+    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "macos:cached-host",
+    });
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:wizard-host",
+      source: "created",
+    });
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
@@ -95,13 +131,16 @@ describe("lobu daemon", () => {
 
     expect(start.mock.calls[0]?.[0]).toMatchObject({
       apiUrl: "http://127.0.0.1:9564",
-      platform: undefined,
+      platform: "headless",
       defaultPlatform: process.platform === "darwin" ? "macos" : "headless",
+      workerId: undefined,
       insideClaude: true,
     });
+    expect(load).not.toHaveBeenCalled();
+    expect(wizard).not.toHaveBeenCalled();
   });
 
-  test("an explicit --worker-id is passed through and never overridden", async () => {
+  test("an explicit --worker-id wins while --inside-claude still forces its lane", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod",
       url: "https://app.lobu.ai/api/v1",
@@ -111,9 +150,37 @@ describe("lobu daemon", () => {
       undefined as never
     );
 
-    await daemonCommand({ workerId: "macos:mybox" });
+    await daemonCommand({
+      workerId: "headless:attached-explicit",
+      insideClaude: true,
+    });
 
-    expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:mybox");
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      workerId: "headless:attached-explicit",
+      insideClaude: true,
+    });
+  });
+
+  test("auto-detected Codex bypasses the host cache and remains in the centralized session lane", async () => {
+    process.env.CODEX_THREAD_ID = "thread-exact";
+    process.env.CODEX_SESSION_ID = "thread-exact";
+    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "macos:cached-host",
+    });
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:wizard-host",
+      source: "created",
+    });
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+
+    expect(start.mock.calls[0]?.[0]?.workerId).toBeUndefined();
+    expect(start.mock.calls[0]?.[0]?.platform).toBe("headless");
+    expect(load).not.toHaveBeenCalled();
+    expect(wizard).not.toHaveBeenCalled();
   });
 
   test("non-interactive first run falls back to the computed default id", async () => {
@@ -171,38 +238,66 @@ describe("lobu daemon", () => {
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
-    const originalIsTTY = process.stdin.isTTY;
     (process.stdin as { isTTY?: boolean }).isTTY = true;
-    try {
-      await daemonCommand({});
-    } finally {
-      (process.stdin as { isTTY?: boolean }).isTTY = originalIsTTY;
-    }
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    await daemonCommand({});
 
     // The cached id wins and the wizard never runs once a device is configured.
     expect(wizard).not.toHaveBeenCalled();
     expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:confirmed-box");
   });
 
-  test("fresh install with no session and no durable token gets setup guidance", async () => {
-    // No stored credential and a placeholder default context → the daemon has
-    // nothing to authorize against and should say so up front, not hit the
-    // fail-closed PAT guard with no context.
+  test("a stored OAuth login never substitutes for a durable worker PAT", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "local",
       url: "http://127.0.0.1:8787",
       source: "config",
     });
-    credentials.getToken.mockResolvedValueOnce(null as never);
     delete process.env.WORKER_API_TOKEN;
-
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
     await expect(daemonCommand({})).rejects.toThrow(
-      "Could not determine a gateway to poll"
+      /durable.*WORKER_API_TOKEN.*device_worker:run/s
     );
     expect(start).not.toHaveBeenCalled();
+  });
+
+  test("a fresh TTY runs the wizard once and forwards its chosen identity", async () => {
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:chosen-by-wizard",
+      source: "created",
+    });
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+
+    expect(wizard).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:chosen-by-wizard");
+  });
+
+  test("CI never prompts even when attached to a pseudo-TTY", async () => {
+    process.env.CI = "true";
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:should-not-run",
+      source: "created",
+    });
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+
+    expect(wizard).not.toHaveBeenCalled();
+    expect(start.mock.calls[0]?.[0]?.workerId).toContain(":");
   });
 
   test("--no-interactive-session is forwarded as an explicit opt-out", async () => {
@@ -218,3 +313,8 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.interactiveSession).toBe(false);
   });
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

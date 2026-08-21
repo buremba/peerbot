@@ -1,25 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import * as credentials from "../../internal/credentials";
 import * as deviceState from "../../internal/device-state";
-import * as apiClient from "../../internal/api-client";
-import * as context from "../../internal/context";
 import { deviceWizard, type DeviceWizardPrompts } from "../_lib/device-wizard";
 
-/**
- * The wizard is interactive (TTY-only), so its branch logic is unit-tested here
- * by injecting fake prompts plus stubbed remote calls. This pins the decisions
- * that matter for identity consistency: existing-device reuse vs a freshly
- * confirmed id, and the org the summary targets.
- */
-
-function mockContext(): void {
-  spyOn(context, "resolveContext").mockResolvedValue({
-    name: "local",
-    url: "http://127.0.0.1:8795",
-    source: "config",
-  });
-  spyOn(credentials, "getToken").mockResolvedValue("local-token");
-}
+const API_URL = "http://127.0.0.1:8795";
+const WORKER_TOKEN = "owl_pat_durable-device-token";
 
 function fakePrompts(
   overrides: Partial<DeviceWizardPrompts> = {}
@@ -32,22 +16,58 @@ function fakePrompts(
   };
 }
 
-function stubFetch(body: { devices?: unknown[] } | { error: string }): void {
-  const hasError = Object.hasOwn(body as object, "error");
-  const raw = JSON.stringify(body);
-  spyOn(globalThis, "fetch").mockResolvedValue({
-    ok: !hasError,
-    status: hasError ? 401 : 200,
-    statusText: hasError ? "Unauthorized" : "OK",
-    json: async () => body,
-    text: async () => raw,
-  } as never);
+function wizardOptions(
+  overrides: Partial<Parameters<typeof deviceWizard>[0]> = {}
+): Parameters<typeof deviceWizard>[0] {
+  return {
+    context: "local",
+    apiUrl: API_URL,
+    suggestedWorkerId: "macos:Mac",
+    workerApiToken: WORKER_TOKEN,
+    prompts: fakePrompts(),
+    ...overrides,
+  };
 }
 
-function stubSave(): void {
-  spyOn(deviceState, "saveDeviceState").mockResolvedValue({
-    workerId: "macos:Mac",
+function response(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Unauthorized",
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as never;
+}
+
+function stubFetch(options: {
+  devices?: unknown[];
+  devicesStatus?: number;
+  tokenOrg?: string;
+}): ReturnType<typeof spyOn> {
+  return spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/oauth/userinfo")) {
+      return response({
+        organization_slug: options.tokenOrg ?? "personal",
+        personal_org_slug: "personal",
+        organizations: [
+          { slug: "personal", name: "Personal", personal: true },
+          { slug: "org-a", name: "Org A", personal: false },
+          { slug: "org-b", name: "Org B", personal: false },
+        ],
+      });
+    }
+    return response(
+      options.devicesStatus === 200 || options.devicesStatus === undefined
+        ? { devices: options.devices ?? [] }
+        : { error: "Unauthorized" },
+      options.devicesStatus ?? 200
+    );
   });
+}
+
+function stubSave(workerId = "macos:Mac"): ReturnType<typeof spyOn> {
+  return spyOn(deviceState, "saveDeviceState").mockResolvedValue({ workerId });
 }
 
 afterEach(() => {
@@ -55,138 +75,148 @@ afterEach(() => {
 });
 
 describe("deviceWizard", () => {
-  test("confirms the suggested id and persists it when there are no remote devices", async () => {
-    mockContext();
-    spyOn(apiClient, "listOrganizations").mockResolvedValue([
-      { slug: "personal", personal: true },
-    ]);
-    stubFetch({ error: "Unauthorized" });
-    stubSave();
+  test("confirms and persists a fresh identity when the server has no devices", async () => {
+    stubFetch({ devices: [] });
+    const save = stubSave();
 
-    const result = await deviceWizard({
-      suggestedWorkerId: "macos:Mac",
-      prompts: fakePrompts(),
-    });
+    const result = await deviceWizard(wizardOptions());
 
-    expect(result.source).toBe("created");
-    expect(result.workerId).toBe("macos:Mac");
+    expect(result).toEqual({ source: "created", workerId: "macos:Mac" });
+    expect(save.mock.calls[0]?.[1]).toEqual({ workerId: "macos:Mac" });
   });
 
-  test("uses a custom id when the user declines the suggested one", async () => {
-    mockContext();
-    spyOn(apiClient, "listOrganizations").mockResolvedValue([
-      { slug: "personal", personal: true },
-    ]);
-    stubFetch({ error: "Unauthorized" });
-    const saveSpy = spyOn(deviceState, "saveDeviceState").mockResolvedValue({
-      workerId: "macos:custom",
-    });
+  test("uses a custom id when the user declines the suggestion", async () => {
+    stubFetch({ devices: [] });
+    const save = stubSave("macos:custom");
 
-    const result = await deviceWizard({
-      suggestedWorkerId: "macos:Mac",
-      prompts: fakePrompts({
-        confirm: async () => false,
-        input: async () => "macos:custom",
-      }),
-    });
+    const result = await deviceWizard(
+      wizardOptions({
+        prompts: fakePrompts({
+          confirm: async () => false,
+          input: async () => "macos:custom",
+        }),
+      })
+    );
 
     expect(result.workerId).toBe("macos:custom");
-    expect(saveSpy.mock.calls[0]?.[1]?.workerId).toBe("macos:custom");
+    expect(save.mock.calls[0]?.[1]).toEqual({ workerId: "macos:custom" });
   });
 
-  test("reuses an existing registered device id when the user picks one", async () => {
-    mockContext();
-    spyOn(apiClient, "listOrganizations").mockResolvedValue([
-      { slug: "personal", personal: true },
-    ]);
+  test("maps a selected server device id back to its exact worker identity", async () => {
     stubFetch({
       devices: [
         {
           id: "dev-1",
-          worker_id: "macos:existing-box",
+          worker_id: "__new__",
           platform: "macos",
-          label: "My Mac",
+          label: "Literal sentinel worker",
           organization_slug: "personal",
-          organization_name: "Personal",
         },
       ],
     });
-    const saveSpy = spyOn(deviceState, "saveDeviceState").mockResolvedValue({
-      workerId: "macos:existing-box",
-    });
+    stubSave("__new__");
+    const selections = ["personal", "dev-1"];
 
-    const result = await deviceWizard({
-      suggestedWorkerId: "macos:Mac",
-      prompts: fakePrompts({
-        select: async () => "macos:existing-box" as unknown as string,
-      }),
-    });
+    const result = await deviceWizard(
+      wizardOptions({
+        prompts: fakePrompts({ select: async () => selections.shift() ?? "" }),
+      })
+    );
 
-    expect(result.source).toBe("reused");
-    expect(result.workerId).toBe("macos:existing-box");
-    expect(saveSpy.mock.calls[0]?.[1]?.workerId).toBe("macos:existing-box");
+    expect(result).toEqual({ source: "reused", workerId: "__new__" });
   });
 
-  test("falls back to the fresh-id branch when the user picks start-new", async () => {
-    mockContext();
-    spyOn(apiClient, "listOrganizations").mockResolvedValue([
-      { slug: "personal", personal: true },
-    ]);
+  test("cross-org reuse reports the server org and never claims the selected workspace is the pin", async () => {
     stubFetch({
+      tokenOrg: "org-a",
       devices: [
         {
-          id: "dev-1",
-          worker_id: "macos:other",
+          id: "dev-b",
+          worker_id: "macos:org-b-device",
           platform: "macos",
-          label: "Old",
-          organization_slug: null,
-          organization_name: null,
+          label: "Org B Mac",
+          organization_slug: "org-b",
+          organization_name: "Org B",
         },
       ],
     });
-    stubSave();
-
-    const result = await deviceWizard({
-      suggestedWorkerId: "macos:Mac",
-      prompts: fakePrompts({
-        select: async () => "__new__" as unknown as string,
-      }),
+    stubSave("macos:org-b-device");
+    const selections = ["org-a", "dev-b"];
+    const logs: string[] = [];
+    spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.map(String).join(" "));
     });
 
-    expect(result.source).toBe("created");
-    expect(result.workerId).toBe("macos:Mac");
+    const result = await deviceWizard(
+      wizardOptions({
+        prompts: fakePrompts({ select: async () => selections.shift() ?? "" }),
+      })
+    );
+
+    const output = logs.join("\n");
+    expect(result).toEqual({
+      source: "reused",
+      workerId: "macos:org-b-device",
+    });
+    expect(output).toContain('server reports workspace "org-b"');
+    expect(output).toContain('selected workspace "org-a" was guidance only');
+    expect(output).not.toContain('Device workspace: "org-a"');
+    expect(output).not.toContain("org-scoped to org-a");
   });
 
-  test("only ever sends the stored token to the resolved context origin", async () => {
-    mockContext();
-    spyOn(apiClient, "listOrganizations").mockResolvedValue([
-      { slug: "personal", personal: true },
-    ]);
-    // The wizard takes no caller-supplied apiUrl at all — the token-bearing
-    // GET /api/me/devices is always built from the resolved context's origin,
-    // so a `lobu daemon --api-url attacker.invalid` can never capture the bearer
-    // (mirrors resolveApiTarget's refusal to send context creds elsewhere).
-    stubFetch({
-      devices: [{ id: "d", worker_id: "macos:x", platform: "macos" }],
+  test("a new device says only that the worker PAT determines attachment", async () => {
+    stubFetch({ devices: [], tokenOrg: "org-a" });
+    stubSave();
+    const logs: string[] = [];
+    spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.map(String).join(" "));
     });
+
+    await deviceWizard(wizardOptions());
+
+    const output = logs.join("\n");
+    expect(output).toContain(
+      "WORKER_API_TOKEN determines its workspace attachment on first poll"
+    );
+    expect(output).not.toContain("Device workspace:");
+    expect(output).not.toContain("org-scoped to");
+  });
+
+  test("device-list failures stop setup instead of silently creating a duplicate", async () => {
+    stubFetch({ devicesStatus: 401 });
+    const save = stubSave();
+
+    await expect(deviceWizard(wizardOptions())).rejects.toThrow(
+      /Could not list devices.*Unauthorized/s
+    );
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  test("uses only the durable worker PAT against the daemon origin", async () => {
+    const fetchSpy = stubFetch({ devices: [] });
     stubSave();
 
-    await deviceWizard({
-      suggestedWorkerId: "macos:Mac",
-      prompts: fakePrompts({ select: async () => "personal" }),
-    });
+    await deviceWizard(
+      wizardOptions({ apiUrl: "https://gateway.example.test/api/v1" })
+    );
 
-    const calls = (globalThis.fetch as unknown as ReturnType<typeof spyOn>).mock
-      .calls as Array<[string | Request, RequestInit?]>;
-    const urls = calls.map((c) => String(c[0]));
-    expect(urls.length).toBeGreaterThan(0);
-    for (const url of urls) {
-      expect(url.startsWith("http://127.0.0.1:8795/")).toBe(true);
+    expect(fetchSpy).toHaveBeenCalled();
+    for (const [input, init] of fetchSpy.mock.calls) {
+      expect(String(input).startsWith("https://gateway.example.test/")).toBe(
+        true
+      );
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        `Bearer ${WORKER_TOKEN}`
+      );
     }
-    for (const [, init] of calls) {
-      const auth = (init?.headers as Record<string, string> | undefined)
-        ?.Authorization;
-      expect(auth).toBe("Bearer local-token");
-    }
+  });
+
+  test("returns the first-writer cache identity from an overlapping first boot", async () => {
+    stubFetch({ devices: [] });
+    stubSave("macos:other-process-won");
+
+    const result = await deviceWizard(wizardOptions());
+
+    expect(result.workerId).toBe("macos:other-process-won");
   });
 });

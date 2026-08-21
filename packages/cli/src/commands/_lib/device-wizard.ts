@@ -1,43 +1,37 @@
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import {
-  getToken,
-  listOrganizations,
-  resolveContext,
-} from "../../internal/index.js";
 import { apiUrlToGatewayOrigin } from "../../internal/context.js";
 import {
-  fetchWithRetry,
-  parseJsonResponse,
-  extractApiError,
-} from "../../internal/http.js";
-import {
   saveDeviceState,
+  WORKER_ID_PATTERN,
   workerTokenPrefix,
 } from "../../internal/device-state.js";
+import {
+  extractApiError,
+  fetchWithRetry,
+  parseJsonResponse,
+} from "../../internal/http.js";
+
+const NEW_DEVICE_CHOICE = "__lobu_new_device__";
+/** Stands in for the personal org when `/oauth/userinfo` did not name it. */
+const PERSONAL_FALLBACK_CHOICE = "__lobu_personal__";
 
 /**
  * First-run interactive onboarding for `lobu daemon`.
  *
- * Everything here is a guided convenience over the existing server contract:
- *   - the device id is the `worker_id` the daemon passes on every poll; the
- *     server upserts on `(user_id, worker_id)`, so reusing a confirmed id keeps
- *     the device row stable instead of churning into a second device;
- *   - the org a device is pinned to is driven by the `WORKER_API_TOKEN` it auths
- *     with (org-scoped PAT → that org; personal/session → the personal org). The
- *     wizard does not mutate the org itself — it just surfaces the choice so the
- *     user mints the right token.
- *
- * Runs only when the CLI is interactive (a TTY) AND no explicit `--worker-id`
- * was given. Headless / scripted runs skip the wizard entirely.
+ * The server remains authoritative for both identity and workspace attachment:
+ * an existing device reports its stored workspace, while a new device attaches
+ * according to the durable worker PAT on its first poll. The local cache only
+ * keeps subsequent boots on the same `worker_id`.
  */
-
 export interface DeviceWizardOptions {
   context?: string;
+  /** Actual daemon gateway URL; the worker PAT is sent only here. */
+  apiUrl: string;
   /** Pre-computed default `<platform>:<hostname>` id. */
   suggestedWorkerId: string;
-  /** The token the daemon will boot with (WORKER_API_TOKEN), if any. */
-  workerApiToken?: string;
+  /** Durable worker PAT used by the daemon. */
+  workerApiToken: string;
   /** Overridable prompts (defaults to real inquirer); injectable for tests. */
   prompts?: DeviceWizardPrompts;
 }
@@ -52,10 +46,16 @@ interface RemoteDevice {
   organization_name: string | null;
 }
 
+interface OrganizationInfo {
+  slug: string;
+  name?: string;
+  personal?: boolean;
+}
+
 export interface DeviceWizardResult {
   workerId: string;
-  /** How the id was chosen: an existing server row or a fresh confirmation. */
-  source: "reused" | "created";
+  /** How the id was chosen, including a concurrent first boot winning first. */
+  source: "reused" | "created" | "cached";
 }
 
 async function fetchRemoteDevices(
@@ -67,52 +67,89 @@ async function fetchRemoteDevices(
   const res = await fetchWithRetry(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  const parsed = (await parseJsonResponse(res, url, (msg: string) => {
-    throw new Error(msg);
-  })) as { devices?: RemoteDevice[] } | undefined;
+  const parsed = (await parseJsonResponse(res, url, (message: string) => {
+    throw new Error(message);
+  })) as { devices?: unknown } | undefined;
   if (!res.ok) {
     const { message } = extractApiError(parsed, res.status, res.statusText);
     throw new Error(`Could not list devices: ${message}`);
   }
-  return parsed?.devices ?? [];
+  if (!Array.isArray(parsed?.devices)) {
+    throw new Error(
+      "Could not list devices: gateway returned an invalid response"
+    );
+  }
+  return parsed.devices.filter(isRemoteDevice);
 }
 
-/**
- * The four prompts the wizard drives. Defaults to the real inquirer prompts;
- * injectable so unit tests can drive every branch without a TTY.
- */
+async function fetchOrganizations(
+  apiUrl: string,
+  token: string
+): Promise<OrganizationInfo[]> {
+  const origin = apiUrlToGatewayOrigin(apiUrl);
+  const res = await fetchWithRetry(`${origin}/oauth/userinfo`, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) return [];
+  const body = (await res.json().catch(() => null)) as {
+    personal_org_slug?: unknown;
+    organizations?: unknown;
+  } | null;
+  if (!body || !Array.isArray(body.organizations)) return [];
+  const personal =
+    typeof body.personal_org_slug === "string" ? body.personal_org_slug : null;
+  const organizations: OrganizationInfo[] = [];
+  for (const entry of body.organizations) {
+    if (!entry || typeof entry !== "object") continue;
+    const value = entry as Record<string, unknown>;
+    if (typeof value.slug !== "string" || !value.slug) continue;
+    organizations.push({
+      slug: value.slug,
+      ...(typeof value.name === "string" ? { name: value.name } : {}),
+      ...(value.personal === true || value.slug === personal
+        ? { personal: true }
+        : {}),
+    });
+  }
+  return organizations;
+}
+
+function isRemoteDevice(value: unknown): value is RemoteDevice {
+  if (!value || typeof value !== "object") return false;
+  const device = value as Record<string, unknown>;
+  return (
+    typeof device.id === "string" &&
+    device.id.length > 0 &&
+    typeof device.worker_id === "string" &&
+    device.worker_id.length > 0
+  );
+}
+
+/** The prompt primitives the wizard drives; injectable for deterministic tests. */
 export interface DeviceWizardPrompts {
   select: (config: Parameters<typeof select>[0]) => Promise<string>;
   confirm: (config: Parameters<typeof confirm>[0]) => Promise<boolean>;
   input: (config: Parameters<typeof input>[0]) => Promise<string>;
 }
 
-/** Run the wizard. Resolves orgs (for token guidance) and the caller's existing
- * devices, asks personal-vs-org + confirms the device id, and persists the
- * choice so later non-interactive boots reuse it.
- */
 export async function deviceWizard(
   options: DeviceWizardOptions
 ): Promise<DeviceWizardResult> {
   const prompts = options.prompts ?? { select, confirm, input };
-  const target = await resolveContext(options.context);
-  // The stored context token is ONLY ever sent to the resolved context's own
-  // origin — never to a caller-supplied --api-url, which an attacker could point
-  // at themselves to harvest the bearer (see resolveApiTarget's same guard).
-  const token = await getToken(target.name);
-
-  let orgs: Array<{ slug: string; name?: string; personal?: boolean }> = [];
-  let devices: RemoteDevice[] = [];
+  // The daemon URL and PAT are explicit inputs; a stale/missing context file
+  // must not block setup or redirect either credential. The context name is
+  // only a local cache namespace.
+  const contextName = options.context?.trim() || "gateway";
+  const [orgs, devices] = await Promise.all([
+    // Organization discovery is optional guidance. Device discovery is not:
+    // hiding its failure could create a duplicate identity.
+    fetchOrganizations(options.apiUrl, options.workerApiToken).catch(() => []),
+    fetchRemoteDevices(options.apiUrl, options.workerApiToken),
+  ]);
   const tokenPrefix = workerTokenPrefix(options.workerApiToken);
-
-  if (token) {
-    orgs = await listOrganizations({ context: target.name }).catch(
-      () => [] as Array<{ slug: string; name?: string; personal?: boolean }>
-    );
-    devices = await fetchRemoteDevices(target.url, token).catch(
-      () => [] as RemoteDevice[]
-    );
-  }
 
   const personal = orgs.find((org) => org.personal === true)?.slug;
   const orgOptions = orgs
@@ -136,46 +173,56 @@ export async function deviceWizard(
     )
   );
 
-  const orgTarget = await prompts.select({
-    message:
-      "Which workspace will this device run for? (the pin is set by the token you export)",
-    choices: [
-      { value: personal ?? "__personal__", name: personalLabel },
-      ...orgOptions.map((org) => ({ ...org, name: org.name ?? org.value })),
-    ],
-  });
-  const orgSlug =
-    orgTarget === "__personal__" ? (personal ?? undefined) : orgTarget;
+  // A `device_worker:run`-only PAT cannot read `/oauth/userinfo`, so org
+  // discovery legitimately comes back empty or single-valued. Prompting for a
+  // choice that has exactly one option asks the user to confirm a foregone
+  // conclusion, so only ask when there is something to pick between.
+  const personalChoice = {
+    value: personal ?? PERSONAL_FALLBACK_CHOICE,
+    name: personalLabel,
+  };
+  const orgTarget =
+    orgOptions.length > 0
+      ? await prompts.select({
+          message:
+            "Which workspace do you intend this device to run for? (guidance only; the worker PAT decides)",
+          choices: [personalChoice, ...orgOptions],
+        })
+      : personalChoice.value;
+  const selectedOrg =
+    orgTarget === PERSONAL_FALLBACK_CHOICE
+      ? (personal ?? "personal")
+      : orgTarget;
 
-  // Pick an identity: reuse an existing registered device when available (so a
-  // re-run doesn't duplicate a row), else confirm the computed default id.
-  const existing = devices.filter(
-    (device) => device.worker_id && device.worker_id.length > 0
-  );
   let workerId = options.suggestedWorkerId;
-  let source: "reused" | "created" = "reused";
+  let source: DeviceWizardResult["source"] = "created";
+  let selectedDevice: RemoteDevice | undefined;
 
-  if (existing.length > 0) {
+  if (devices.length > 0) {
     const choice = await prompts.select({
       message: "Pick a device identity (or start a new one)",
       choices: [
         {
-          value: "__new__",
+          value: NEW_DEVICE_CHOICE,
           name: chalk.dim("Start a new device with a fresh id"),
         },
-        ...existing.map((device) => ({
-          value: device.worker_id,
+        ...devices.map((device) => ({
+          value: device.id,
           name: `${device.label ?? device.worker_id}${device.organization_slug ? chalk.dim(` — ${device.organization_slug}`) : ""}`,
         })),
       ],
     });
-    if (choice !== "__new__") {
-      workerId = choice;
-    } else {
-      source = "created";
+    if (choice !== NEW_DEVICE_CHOICE) {
+      selectedDevice = devices.find((device) => device.id === choice);
+      if (!selectedDevice) {
+        throw new Error("Selected device is no longer available");
+      }
+      workerId = selectedDevice.worker_id;
+      source = "reused";
     }
-  } else {
-    source = "created";
+  }
+
+  if (source === "created") {
     const confirmed = await prompts.confirm({
       message: `Register this machine as device "${chalk.bold(options.suggestedWorkerId)}"?`,
       default: true,
@@ -185,7 +232,7 @@ export async function deviceWizard(
         message:
           "Enter a device id (letters, digits, dot, underscore, colon, hyphen):",
         validate: (value) =>
-          /^[A-Za-z0-9._:-]{1,128}$/.test(value.trim())
+          WORKER_ID_PATTERN.test(value.trim())
             ? true
             : "Use 1-128 characters of letters, digits, dot, underscore, colon or hyphen",
       });
@@ -193,40 +240,52 @@ export async function deviceWizard(
     }
   }
 
-  const contextName = target.name;
-  await saveDeviceState(contextName, {
-    workerId,
-  });
+  const saved = await saveDeviceState(contextName, { workerId });
+  if (saved.workerId !== workerId) {
+    workerId = saved.workerId;
+    source = "cached";
+    selectedDevice = undefined;
+  }
 
-  console.log(
-    chalk.green(`\n  Device "${workerId}" registered (local setup).`)
-  );
-  console.log(
-    chalk.dim(
-      `  ${source === "reused" ? "Reusing an existing device row; the daemon will upsert on the same id." : "New device; it registers on the first poll."}`
-    )
-  );
-  console.log(
-    chalk.dim(
-      `  Device workspace: ${orgSlug ? `"${orgSlug}"` : "personal"}. This is set by the WORKER_API_TOKEN it auths with on poll — the selection above is guidance for which token to use.`
-    )
-  );
-  if (tokenPrefix) {
+  console.log(chalk.green(`\n  Device identity "${workerId}" saved locally.`));
+  if (source === "reused") {
+    const actualOrg = selectedDevice?.organization_slug;
     console.log(
       chalk.dim(
-        `  Token: ${tokenPrefix}… (${orgSlug ? `org-scoped to ${orgSlug}` : "personal/session"})`
+        `  Reusing the existing device row; the server reports workspace ${actualOrg ? `"${actualOrg}"` : "unattached"}.`
+      )
+    );
+    console.log(
+      chalk.dim(
+        `  The selected workspace "${selectedOrg}" was guidance only and did not move the existing device.`
+      )
+    );
+  } else if (source === "cached") {
+    console.log(
+      chalk.dim(
+        "  Another concurrent first boot saved this identity first; both daemons will use the same cached id."
       )
     );
   } else {
     console.log(
-      chalk.yellow(
-        "  No WORKER_API_TOKEN set — export a durable owl_pat_ token before the daemon can poll."
+      chalk.dim(
+        "  New device; WORKER_API_TOKEN determines its workspace attachment on first poll."
+      )
+    );
+    console.log(
+      chalk.dim(
+        `  The selected workspace "${selectedOrg}" is token-selection guidance only.`
       )
     );
   }
   console.log(
     chalk.dim(
-      `  Saved to ~/.lobu/devices/${contextName}.json (local only; the server owns the pin).`
+      `  Token: ${tokenPrefix ?? "unknown"}… (the server verifies its scope and attachment on poll).`
+    )
+  );
+  console.log(
+    chalk.dim(
+      `  Saved under ~/.lobu/devices/ for context "${contextName}" (local only; the server owns the attachment).`
     )
   );
   console.log(

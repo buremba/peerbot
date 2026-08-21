@@ -67,8 +67,14 @@ jobs:
             charts/lobu/templates charts/lobu/values.yaml; then
             exit 0
           fi
-          if git diff --quiet "$BASE_SHA" HEAD -- charts/lobu/Chart.yaml; then
-            echo "ChartVersion reconciliation requires charts/lobu/Chart.yaml to change with runtime chart templates or values." >&2
+          base_version="$(git show "${BASE_SHA}:charts/lobu/Chart.yaml" | awk '$1 == "version:" { print $2; exit }')"
+          head_version="$(awk '$1 == "version:" { print $2; exit }' charts/lobu/Chart.yaml)"
+          if [ -z "$base_version" ] || [ -z "$head_version" ]; then
+            echo "Could not read the chart version from charts/lobu/Chart.yaml." >&2
+            exit 1
+          fi
+          if [ "$base_version" = "$head_version" ]; then
+            echo "ChartVersion reconciliation requires charts/lobu/Chart.yaml#version to change with runtime chart templates or values." >&2
             exit 1
           fi
 

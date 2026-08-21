@@ -996,7 +996,7 @@ jobs:
         # src/lobu/__tests__ specifically rather than the whole src/lobu tree.
         working-directory: packages/server
         run: |
-          bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__ --coverage --timeout 30000
+          bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__ src/utils/__tests__/deployment-pause.test.ts --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-postgres-other.lcov.info
 
       - name: Upload server Bun/Postgres coverage

@@ -147,7 +147,7 @@ gate_server_integration_bun() {
     for f in $files; do echo ">> bun test $f"; bun test "$f" || rc=1; done
   done
   [ "$rc" -eq 0 ] || return 1
-  bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__ packages/server/src/tools/admin/__tests__ packages/server/src/auth/oauth/__tests__ --timeout 30000 || return 1
+  bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__ packages/server/src/tools/admin/__tests__ packages/server/src/auth/oauth/__tests__ packages/server/src/utils/__tests__/deployment-pause.test.ts --timeout 30000 || return 1
   bun test packages/connector-worker/integration-tests || return 1
   GATE_RAN_BUN=1
 }

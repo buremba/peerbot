@@ -485,6 +485,15 @@ describe('deployment snapshots + promotions pause (lobu rollback)', () => {
   test('pause lifecycle: unpaused → PUT → paused (org-scoped) → DELETE → unpaused', async () => {
     const app = await importDeploymentRoutes();
 
+    const target = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({ manifest: { version: 1, state: {} } })
+      ),
+    });
+    expect(target.status).toBe(201);
+
     const initial = (await (await app.request('/pause')).json()) as {
       paused: boolean;
     };
@@ -514,6 +523,29 @@ describe('deployment snapshots + promotions pause (lobu rollback)', () => {
     expect(cleared.status).toBe(200);
     const after = (await (await app.request('/pause')).json()) as { paused: boolean };
     expect(after.paused).toBe(false);
+  });
+
+  test('pause setter rejects malformed ids and a non-restorable target', async () => {
+    const app = await importDeploymentRoutes();
+    const malformed = await app.request('/pause', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apply_id: 'bad', rollback_of: APPLY_ID }),
+    });
+    expect(malformed.status).toBe(400);
+
+    const missing = await app.request('/pause', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apply_id: 'apl_99999999-8888-7777-6666-555555555555',
+        rollback_of: APPLY_ID,
+      }),
+    });
+    expect(missing.status).toBe(400);
+
+    const state = (await (await app.request('/pause')).json()) as { paused: boolean };
+    expect(state.paused).toBe(false);
   });
 });
 

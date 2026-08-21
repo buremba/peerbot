@@ -376,6 +376,16 @@ interface ApplyClientConfig {
   token: string;
   /** Sent as `x-lobu-apply-id` on every request so the server can group this run's config-audit events into one deployment. */
   applyId?: string;
+  /**
+   * The deployment this run is restoring, sent as `x-lobu-rollback-of`. Set by
+   * `lobu rollback` only. The server refuses mutating apply-run requests while
+   * promotions are paused; rollbacks are exempt, because rolling back FURTHER is
+   * the main thing an operator does while paused. A rollback sets the pause
+   * BEFORE its first mutation, so without this it would be blocked by its own
+   * pause. The server verifies the named deployment is a restorable snapshot in
+   * the org rather than trusting the header.
+   */
+  rollbackOf?: string;
 }
 
 /**
@@ -391,12 +401,10 @@ export class ApplyClient {
 
   constructor(cfg: ApplyClientConfig, fetchImpl: typeof fetch = fetch) {
     this.orgSlug = cfg.orgSlug;
-    this.http = new ApiClient(
-      cfg.apiBaseUrl,
-      cfg.token,
-      fetchImpl,
-      cfg.applyId ? { "x-lobu-apply-id": cfg.applyId } : {}
-    );
+    this.http = new ApiClient(cfg.apiBaseUrl, cfg.token, fetchImpl, {
+      ...(cfg.applyId ? { "x-lobu-apply-id": cfg.applyId } : {}),
+      ...(cfg.rollbackOf ? { "x-lobu-rollback-of": cfg.rollbackOf } : {}),
+    });
   }
 
   /**
@@ -1759,6 +1767,8 @@ export async function resolveApplyClient(opts: {
   url?: string;
   org?: string;
   applyId?: string;
+  /** Set by `lobu rollback` — exempts the run from the promotions pause. */
+  rollbackOf?: string;
   fetchImpl?: typeof fetch;
 }): Promise<ResolvedClient> {
   const { token, apiBaseUrl, orgSlug } = await resolveApiClient({
@@ -1767,7 +1777,13 @@ export async function resolveApplyClient(opts: {
     fetchImpl: opts.fetchImpl,
   });
   const client = new ApplyClient(
-    { apiBaseUrl, orgSlug, token, applyId: opts.applyId },
+    {
+      apiBaseUrl,
+      orgSlug,
+      token,
+      applyId: opts.applyId,
+      rollbackOf: opts.rollbackOf,
+    },
     opts.fetchImpl
   );
   return { client, apiBaseUrl, orgSlug };

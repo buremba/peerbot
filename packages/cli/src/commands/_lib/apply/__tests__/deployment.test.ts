@@ -211,4 +211,32 @@ describe("ApplyClient x-lobu-apply-id threading", () => {
     await client.getAgentSettings("a1").catch(() => undefined);
     expect(sawHeader).toBeNull();
   });
+
+  test("a rollback threads both workflow identifiers through every request", async () => {
+    let seen: Headers | null = null;
+    const fetchImpl = (async (_input: any, init?: RequestInit) => {
+      seen = new Headers(init?.headers as HeadersInit);
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const applyId = mintApplyId();
+    const rollbackOf = mintApplyId();
+    const client = new ApplyClient(
+      {
+        apiBaseUrl: "http://api.test",
+        orgSlug: "acme",
+        token: "t",
+        applyId,
+        rollbackOf,
+      },
+      fetchImpl
+    );
+    await client.patchAgentSettings("a1", {});
+
+    expect(seen?.get("x-lobu-apply-id")).toBe(applyId);
+    expect(seen?.get("x-lobu-rollback-of")).toBe(rollbackOf);
+  });
 });

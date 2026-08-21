@@ -82,6 +82,14 @@ const HEAL_MIGRATIONS = [
         ON events (id)
     `,
 	},
+	{
+		files: ["20260820130000_events_org_origin_index.sql"],
+		index: "idx_events_org_origin",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS idx_events_org_origin
+        ON events (id)
+    `,
+	},
 ] as const;
 
 function resolveMigrationsDir(): string {

@@ -147,6 +147,11 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     url: opts.url,
     org: opts.org,
     applyId: newApplyId,
+    // Declares this run a rollback for the whole of its lifetime, so the
+    // server's promotions-pause gate lets its writes through. Rolling back
+    // further is exactly what an operator does while paused, and the pause a
+    // previous rollback set would otherwise block this one.
+    rollbackOf: opts.applyId,
     fetchImpl: opts.fetchImpl,
   });
   printText(chalk.dim(`Org: ${orgSlug}`));
@@ -268,6 +273,15 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     return;
   }
 
+  // Close the re-promotion window BEFORE the first rollback mutation. The
+  // client carries x-lobu-rollback-of, so this rollback remains allowed while
+  // ordinary applies stop at the server gate. If pausing fails, do not perform
+  // a rollback that CI could immediately overwrite.
+  await client.setDeploymentPause({
+    applyId: newApplyId,
+    rollbackOf: opts.applyId,
+  });
+
   // ── Execute: pins first (catalog correctness for everything after) ────────
   let rollbackErr: unknown;
   try {
@@ -369,28 +383,18 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     );
   }
 
-  if (!rollbackErr) {
-    try {
-      await client.setDeploymentPause({
-        applyId: newApplyId,
-        rollbackOf: opts.applyId,
-      });
-      printText(
-        [
-          "",
-          chalk.yellow("Deployments are now PAUSED for this org."),
-          "Reconcile your config repo (e.g. `git revert` the bad change), then run:",
-          "  lobu apply --resume",
-        ].join("\n")
-      );
-    } catch (err) {
-      printText(
-        chalk.yellow(
-          `Warning: could not pause deployments (${err instanceof Error ? err.message : String(err)}) — a CI apply may re-promote the rolled-back config.`
-        )
-      );
-    }
-  }
+  printText(
+    [
+      "",
+      chalk.yellow(
+        rollbackErr
+          ? "Deployments remain PAUSED after the incomplete rollback."
+          : "Deployments are now PAUSED for this org."
+      ),
+      "Reconcile your config repo (e.g. `git revert` the bad change), then run:",
+      "  lobu apply --resume",
+    ].join("\n")
+  );
 
   if (rollbackErr) throw rollbackErr;
 }

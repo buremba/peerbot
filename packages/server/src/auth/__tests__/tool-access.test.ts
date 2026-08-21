@@ -611,6 +611,18 @@ describe('checkToolAccess', () => {
     // actions — these go through SDK wrappers / action-router, gated by policy.
     expect(requiresOwnerAdmin('manage_entity_schema', { action: 'create' }, false)).toBe(true);
   });
+
+  it('returns the exact access tier that was authorized', () => {
+    const owner = {
+      ...baseAuth,
+      memberRole: 'owner',
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    };
+
+    expect(checkToolAccess('manage_entity_schema', { action: 'list' }, owner)).toBe('read');
+    expect(checkToolAccess('save_memory', {}, owner)).toBe('write');
+    expect(checkToolAccess('manage_entity_schema', { action: 'create' }, owner)).toBe('admin');
+  });
 });
 
 describe('first-party tool-name coverage', () => {

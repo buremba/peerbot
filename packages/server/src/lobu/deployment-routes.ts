@@ -24,6 +24,7 @@ import {
 	type ConfigResourceKind,
 	isConfigResourceKind,
 } from "../utils/config-redaction";
+import { isRestorableDeployment } from "../utils/deployment-pause";
 import { insertEvent } from "../utils/insert-event";
 import { requireSessionOrAdminPat } from "./agent-routes";
 import { orgContext } from "./stores/org-context";
@@ -406,6 +407,21 @@ routes.put("/pause", async (c) => {
 	const rollbackOf = parseApplyId(
 		typeof body.rollback_of === "string" ? body.rollback_of : null,
 	);
+	if (!applyId || !rollbackOf) {
+		return c.json(
+			{ error: "apply_id and rollback_of must each match apl_<id>" },
+			400,
+		);
+	}
+	if (!(await isRestorableDeployment(organizationId, rollbackOf))) {
+		return c.json(
+			{
+				error:
+					"rollback_of must name a restorable deployment in this organization",
+			},
+			400,
+		);
+	}
 	const applyCtx = getApplyContext(c);
 
 	const sql = getDb();

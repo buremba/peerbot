@@ -1,10 +1,12 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pr-fast pr-full owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean ctx land dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pr-fast pr-full owletto-mac owletto-mac-e2e
 
 # Default target
 help:
 	@echo "Available commands:"
+	@echo "  make ctx [BASE=<ref>] [NOFETCH=1]          - One-call worktree context: branch, tree, changed-vs-base file list, commits, submodule, PR + required-check gaps"
+	@echo "  make land [N=<pr>] [CHECK_ONLY=1]          - Wait for CI, verify the FULL branch-protection required list, then squash-merge (refuses while a required check has not reported)"
 	@echo "  make setup                                 - Setup development environment (run once)"
 	@echo "  make dev [NAME=<x>] [FROM=<db>] [OPEN=1]   - Local dev (brew Postgres@18); prints App URL; OPEN=1 opens it in the system browser after boot"
 	@echo "  make dev-embedded                          - Dev against the zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime); == LOBU_EMBEDDED=1 make dev"
@@ -289,6 +291,18 @@ review-fix:
 # to avoid shell interpolation of URLs.
 ui-review:
 	@bun scripts/ui-review.ts
+
+# One call instead of the git status / diff / log / gh pr view / gh pr checks
+# family. Every tool call re-reads the agent's whole context, so collapsing the
+# family into one call is worth more than speeding up any command in it.
+ctx:
+	@bash scripts/ctx.sh
+
+# Wait for CI then squash-merge, in one blocking call. Refuses while any
+# branch-protection required check is not merge-satisfying — `gh pr checks`
+# omits checks that never started, so --admin would otherwise sail past them.
+land:
+	@bash scripts/land.sh
 
 # Fast, deterministic CI gates that need NO database — the exact checks that
 # `make review` (LLM-verdict only) does NOT run. Run this before opening/updating

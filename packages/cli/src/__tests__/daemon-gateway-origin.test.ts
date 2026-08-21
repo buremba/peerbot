@@ -9,8 +9,10 @@ import {
 } from "bun:test";
 import * as daemonModule from "@lobu/connector-worker/daemon";
 import { daemonCommand } from "../commands/daemon";
+import * as loginModule from "../commands/login";
 import { apiUrlToGatewayOrigin } from "../internal/context";
 import * as context from "../internal/context";
+import * as credentials from "../internal/credentials";
 import * as deviceState from "../internal/device-state";
 import * as deviceWizardModule from "../commands/_lib/device-wizard";
 
@@ -64,6 +66,9 @@ describe("lobu daemon", () => {
   const originalEnv = new Map<string, string | undefined>();
   let originalStdinIsTTY: boolean | undefined;
   let originalStdoutIsTTY: boolean | undefined;
+  let findContextByOriginSpy: ReturnType<
+    typeof spyOn<typeof context, "findContextByOrigin">
+  >;
 
   beforeEach(() => {
     for (const key of SESSION_ENV_KEYS) {
@@ -75,6 +80,10 @@ describe("lobu daemon", () => {
     process.env.WORKER_API_TOKEN = "owl_pat_durable-device-token";
     (process.stdin as { isTTY?: boolean }).isTTY = false;
     (process.stdout as { isTTY?: boolean }).isTTY = false;
+    findContextByOriginSpy = spyOn(
+      context,
+      "findContextByOrigin"
+    ).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -170,10 +179,10 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]).toMatchObject({
       apiUrl: "http://127.0.0.1:9564",
       platform: "headless",
-      defaultPlatform: process.platform === "darwin" ? "macos" : "headless",
-      workerId: undefined,
+      defaultPlatform: "headless",
       insideClaude: true,
     });
+    expect(start.mock.calls[0]?.[0]?.workerId).toMatch(/^headless:claude:/);
     expect(load).not.toHaveBeenCalled();
     expect(wizard).not.toHaveBeenCalled();
   });
@@ -215,10 +224,53 @@ describe("lobu daemon", () => {
 
     await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
 
-    expect(start.mock.calls[0]?.[0]?.workerId).toBeUndefined();
+    expect(start.mock.calls[0]?.[0]?.workerId).toMatch(/^headless:codex:/);
     expect(start.mock.calls[0]?.[0]?.platform).toBe("headless");
     expect(load).not.toHaveBeenCalled();
     expect(wizard).not.toHaveBeenCalled();
+  });
+
+  test("an authenticated Codex session keeps its minted child PAT in memory only", async () => {
+    delete process.env.WORKER_API_TOKEN;
+    process.env.CODEX_THREAD_ID = "thread-exact";
+    process.env.CODEX_SESSION_ID = "thread-exact";
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    findContextByOriginSpy.mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+    });
+    spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-installation-login"
+    );
+    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    const save = spyOn(deviceState, "saveDeviceState").mockResolvedValue();
+    const update = spyOn(deviceState, "updateDeviceState").mockResolvedValue();
+    spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const workerId = JSON.parse(String(init?.body)).worker_id as string;
+      return jsonResponse({
+        worker_id: workerId,
+        access_token: "owl_pat_session-child",
+        expires_at: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+      });
+    });
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ apiUrl: "http://127.0.0.1:8787" });
+
+    expect(load).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      workerApiToken: "owl_pat_session-child",
+      platform: "headless",
+    });
+    expect(start.mock.calls[0]?.[0]?.workerId).toMatch(/^headless:codex:/);
   });
 
   test("interactive boot with a cached device id does not re-prompt via the wizard", async () => {
@@ -228,7 +280,7 @@ describe("lobu daemon", () => {
       source: "config",
     });
     spyOn(deviceState, "loadDeviceState").mockResolvedValue({
-      workerId: "macos:confirmed-box",
+      workerId: "headless:confirmed-box",
     });
     const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
       workerId: "macos:should-not-run",
@@ -243,23 +295,254 @@ describe("lobu daemon", () => {
 
     // The cached id wins and the wizard never runs once a device is configured.
     expect(wizard).not.toHaveBeenCalled();
-    expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:confirmed-box");
+    expect(start.mock.calls[0]?.[0]?.workerId).toBe("headless:confirmed-box");
   });
 
-  test("a stored OAuth login never substitutes for a durable worker PAT", async () => {
+  test("a stored installation login mints a worker-bound child PAT before daemon start", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "local",
       url: "http://127.0.0.1:8787",
       source: "config",
     });
     delete process.env.WORKER_API_TOKEN;
+    spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-installation-login"
+    );
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    const save = spyOn(deviceState, "saveDeviceState").mockResolvedValue();
+    const expiresAt = new Date(Date.now() + 90 * 86_400_000).toISOString();
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        worker_id: "headless:test-host",
+        access_token: "owl_pat_minted-child",
+        expires_at: expiresAt,
+      })
+    );
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
-    await expect(daemonCommand({})).rejects.toThrow(
-      /durable.*WORKER_API_TOKEN.*lobu token create --raw/s
+
+    await daemonCommand({ workerId: "headless:test-host" });
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8787/api/me/devices/mint-child-token"
     );
+    const request = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect((request.headers as Record<string, string>).Authorization).toBe(
+      "Bearer oauth-installation-login"
+    );
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      platform: "headless",
+      worker_id: "headless:test-host",
+    });
+    expect(save).toHaveBeenCalledWith(
+      "local",
+      "headless-worker-headless:test-host",
+      expect.objectContaining({
+        workerId: "headless:test-host",
+        workerApiToken: "owl_pat_minted-child",
+      })
+    );
+    expect(start.mock.calls[0]?.[0]?.workerApiToken).toBe(
+      "owl_pat_minted-child"
+    );
+  });
+
+  test("a valid cached child PAT starts without OAuth or another mint", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_cached-child",
+      expiresAt: Date.now() + 30 * 86_400_000,
+    });
+    const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-should-not-be-read"
+    );
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({})
+    );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_cached-child",
+    });
+  });
+
+  test("a rejected child-PAT rotation retries with this installation's OAuth login", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_revoked-child",
+      expiresAt: Date.now() + 30 * 60_000,
+    });
+    const update = spyOn(deviceState, "updateDeviceState").mockResolvedValue();
+    const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-installation-login"
+    );
+    const fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ error: "revoked" }, 401))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          worker_id: "headless:cached",
+          access_token: "owl_pat_rotated-child",
+          expires_at: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+        })
+      );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<
+          string,
+          string
+        >
+      ).Authorization
+    ).toBe("Bearer owl_pat_revoked-child");
+    expect(
+      (
+        (fetchSpy.mock.calls[1]?.[1] as RequestInit).headers as Record<
+          string,
+          string
+        >
+      ).Authorization
+    ).toBe("Bearer oauth-installation-login");
+    expect(getToken).toHaveBeenCalledWith("local");
+    expect(update).toHaveBeenCalledWith(
+      "local",
+      "headless",
+      expect.objectContaining({ workerApiToken: "owl_pat_rotated-child" })
+    );
+    expect(start.mock.calls[0]?.[0]?.workerApiToken).toBe(
+      "owl_pat_rotated-child"
+    );
+  });
+
+  test("a non-interactive start without a stored login refuses instead of polling unauthenticated", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    spyOn(credentials, "getContextToken").mockResolvedValue(null);
+    const login = spyOn(loginModule, "loginCommand").mockResolvedValue();
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({})
+    );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await expect(daemonCommand({})).rejects.toThrow(
+      /not logged in.*lobu login --force --context local/s
+    );
+    // Without a TTY the device-code flow cannot be completed, so the command
+    // names the login to run rather than hanging on a prompt.
+    expect(login).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  test("a non-headless platform override refuses before saving an installation context", async () => {
+    delete process.env.WORKER_API_TOKEN;
+    findContextByOriginSpy.mockResolvedValue(undefined);
+    const add = spyOn(context, "addContext").mockResolvedValue({
+      currentContext: "lobu",
+      contexts: {},
+    } as Awaited<ReturnType<typeof context.addContext>>);
+    const getToken = spyOn(credentials, "getContextToken");
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await expect(
+      daemonCommand({ apiUrl: "https://buremba.lobu.ai", platform: "macos" })
+    ).rejects.toThrow(/supports the headless platform, not "macos"/);
+
+    // The mint endpoint only issues headless/chrome-extension credentials, so
+    // this start is doomed — it must not leave a context behind on the way out.
+    expect(add).not.toHaveBeenCalled();
+    expect(getToken).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  test("an explicit installation URL creates and logs into its own context instead of borrowing the active one", async () => {
+    delete process.env.WORKER_API_TOKEN;
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    findContextByOriginSpy.mockResolvedValue(undefined);
+    spyOn(context, "loadContextConfig").mockResolvedValue({
+      currentContext: "lobu",
+      contexts: {
+        lobu: { url: "https://app.lobu.ai/api/v1" },
+      },
+    } as Awaited<ReturnType<typeof context.loadContextConfig>>);
+    const add = spyOn(context, "addContext").mockResolvedValue({
+      currentContext: "lobu",
+      contexts: {},
+    } as Awaited<ReturnType<typeof context.addContext>>);
+    const getToken = spyOn(credentials, "getContextToken")
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("oauth-buremba");
+    const login = spyOn(loginModule, "loginCommand").mockResolvedValue();
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    spyOn(deviceState, "saveDeviceState").mockResolvedValue();
+    spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "headless:buremba-box",
+      source: "created",
+    });
+    spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        worker_id: "headless:buremba-box",
+        access_token: "owl_pat_buremba-child",
+        expires_at: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+      })
+    );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ apiUrl: "https://buremba.lobu.ai" });
+
+    expect(add).toHaveBeenCalledWith(
+      "buremba.lobu.ai",
+      "https://buremba.lobu.ai"
+    );
+    expect(login).toHaveBeenCalledWith({
+      context: "buremba.lobu.ai",
+      force: true,
+    });
+    expect(
+      getToken.mock.calls.every(([name]) => name === "buremba.lobu.ai")
+    ).toBe(true);
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      apiUrl: "https://buremba.lobu.ai",
+      workerId: "headless:buremba-box",
+      workerApiToken: "owl_pat_buremba-child",
+    });
   });
 
   test("a fresh TTY runs the wizard once and forwards its chosen identity", async () => {
@@ -272,7 +555,7 @@ describe("lobu daemon", () => {
     });
     spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
     const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
-      workerId: "macos:chosen-by-wizard",
+      workerId: "headless:chosen-by-wizard",
       source: "created",
     });
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
@@ -285,9 +568,11 @@ describe("lobu daemon", () => {
     expect(wizard.mock.calls[0]?.[0]).toMatchObject({
       context: "local",
       gatewayOrigin: "http://127.0.0.1:9564",
-      platform: process.platform === "darwin" ? "macos" : "headless",
+      platform: "headless",
     });
-    expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:chosen-by-wizard");
+    expect(start.mock.calls[0]?.[0]?.workerId).toBe(
+      "headless:chosen-by-wizard"
+    );
   });
 
   test("CI never prompts even when attached to a pseudo-TTY", async () => {
@@ -331,4 +616,14 @@ describe("lobu daemon", () => {
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Error",
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as Response;
 }

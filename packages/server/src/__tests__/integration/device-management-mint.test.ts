@@ -93,6 +93,168 @@ describe('headless device mint (mint-child-token)', () => {
     expect(rows[0].organization_id).toBe(personalOrg.id);
   });
 
+  it('uses a first-party login caller requested worker_id for a new headless device', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Requested ID' });
+    const user = await createTestUser({ email: 'headless-requested-id@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+
+    const res = await mintApp(user.id).request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          platform: 'headless',
+          worker_id: 'headless:herdr-session',
+          label: 'Herdr session',
+        }),
+      },
+      TEST_ENV
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      worker_id: string;
+      access_token: string;
+      session_token: string | null;
+    };
+    expect(body.worker_id).toBe('headless:herdr-session');
+    expect(body.access_token.startsWith('owl_pat_')).toBe(true);
+    expect(body.session_token).toBeNull();
+
+    const rows = (await sql`
+      SELECT worker_id, platform, organization_id FROM device_workers
+      WHERE user_id = ${user.id}
+    `) as unknown as Array<{
+      worker_id: string;
+      platform: string;
+      organization_id: string;
+    }>;
+    expect(rows).toEqual([
+      {
+        worker_id: 'headless:herdr-session',
+        platform: 'headless',
+        organization_id: personalOrg.id,
+      },
+    ]);
+  });
+
+  it('rejects an invalid requested worker_id before minting a child token', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Invalid ID' });
+    const user = await createTestUser({ email: 'headless-invalid-id@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+
+    const res = await mintApp(user.id).request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          platform: 'headless',
+          worker_id: 'headless id with spaces',
+        }),
+      },
+      TEST_ENV
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'invalid_worker_id' });
+    const pats = (await sql`
+      SELECT id FROM personal_access_tokens WHERE user_id = ${user.id}
+    `) as unknown as Array<{ id: number }>;
+    expect(pats).toHaveLength(0);
+  });
+
+  it('serializes concurrent first mint for the same requested worker_id', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Concurrent ID' });
+    const user = await createTestUser({ email: 'headless-concurrent-id@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+    const app = mintApp(user.id);
+    const request = () =>
+      app.request(
+        '/api/me/devices/mint-child-token',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            platform: 'headless',
+            worker_id: 'headless:concurrent-herdr',
+          }),
+        },
+        TEST_ENV
+      );
+
+    // In-process requests against one pool serialize: each caller observes the
+    // previous device row and takes the ordinary re-mint path, so this asserts
+    // the CONVERGENCE contract (one device row, one live PAT) rather than the
+    // multi-replica race the handler's advisory lock exists for — that one
+    // needs two writers past the optimistic lookup at once, which a single
+    // process cannot stage.
+    const responses = await Promise.all(Array.from({ length: 4 }, request));
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+    const bodies = await Promise.all(
+      responses.map(
+        (response) => response.json() as Promise<{ worker_id: string; access_token: string }>
+      )
+    );
+    expect(bodies.map((body) => body.worker_id)).toEqual(
+      Array.from({ length: 4 }, () => 'headless:concurrent-herdr')
+    );
+
+    const devices = (await sql`
+      SELECT worker_id FROM device_workers
+      WHERE user_id = ${user.id} AND worker_id = 'headless:concurrent-herdr'
+    `) as unknown as Array<{ worker_id: string }>;
+    expect(devices).toHaveLength(1);
+    const pats = (await sql`
+      SELECT revoked_at FROM personal_access_tokens
+      WHERE user_id = ${user.id} AND worker_id = 'headless:concurrent-herdr'
+    `) as unknown as Array<{ revoked_at: Date | null }>;
+    expect(pats).toHaveLength(4);
+    expect(pats.filter((pat) => pat.revoked_at === null)).toHaveLength(1);
+  });
+
+  it('revokes an orphaned child PAT when a deleted identity is re-registered', async () => {
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'Personal Orphan' });
+    const user = await createTestUser({ email: 'headless-orphan-pat@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+    const app = mintApp(user.id);
+    const body = JSON.stringify({ platform: 'headless', worker_id: 'headless:forgotten-box' });
+    const mint = () =>
+      app.request(
+        '/api/me/devices/mint-child-token',
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body },
+        TEST_ENV
+      );
+
+    expect((await mint()).status).toBe(200);
+
+    // `deleteDeviceWorker` ("forget this device" on the Devices page) drops the
+    // row WITHOUT revoking the PAT bound to that worker_id. Re-registering the
+    // same id must not then leave two live credentials polling as one device.
+    await sql`
+      DELETE FROM device_workers
+      WHERE user_id = ${user.id} AND worker_id = 'headless:forgotten-box'
+    `;
+
+    expect((await mint()).status).toBe(200);
+
+    const pats = (await sql`
+      SELECT revoked_at FROM personal_access_tokens
+      WHERE user_id = ${user.id} AND worker_id = 'headless:forgotten-box'
+    `) as unknown as Array<{ revoked_at: Date | null }>;
+    expect(pats).toHaveLength(2);
+    expect(pats.filter((pat) => pat.revoked_at === null)).toHaveLength(1);
+  });
+
   it('reuses a headless worker_id on re-mint and revokes the previous child PAT', async () => {
     const sql = getTestDb();
     const personalOrg = await createTestOrganization({ name: 'Personal Reuse' });
@@ -214,7 +376,11 @@ describe('headless device mint (mint-child-token)', () => {
       TEST_ENV
     );
     expect(chrome.status).toBe(200);
-    const chromeBody = (await chrome.json()) as { worker_id: string };
+    const chromeBody = (await chrome.json()) as {
+      worker_id: string;
+      session_token: string | null;
+    };
+    expect(typeof chromeBody.session_token).toBe('string');
 
     const headless = await app.request(
       '/api/me/devices/mint-child-token',
@@ -226,8 +392,12 @@ describe('headless device mint (mint-child-token)', () => {
       TEST_ENV
     );
     expect(headless.status).toBe(200);
-    const headlessBody = (await headless.json()) as { worker_id: string };
+    const headlessBody = (await headless.json()) as {
+      worker_id: string;
+      session_token: string | null;
+    };
     expect(headlessBody.worker_id).not.toBe(chromeBody.worker_id);
+    expect(headlessBody.session_token).toBeNull();
 
     const rows = (await sql`
       SELECT worker_id, platform FROM device_workers WHERE user_id = ${user.id} ORDER BY platform ASC

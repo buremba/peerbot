@@ -1,4 +1,12 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +14,10 @@ export const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export interface DeviceState {
   workerId: string;
+  /** Worker-bound child PAT minted by the installation login. */
+  workerApiToken?: string;
+  /** Epoch ms hard expiry for workerApiToken. */
+  expiresAt?: number;
 }
 
 // Resolve lazily so home-directory overrides use the matching config root.
@@ -32,9 +44,61 @@ export async function loadDeviceState(
     ) {
       return null;
     }
-    return { workerId: parsed.workerId };
+    const workerApiToken =
+      typeof parsed.workerApiToken === "string" &&
+      parsed.workerApiToken.startsWith("owl_pat_")
+        ? parsed.workerApiToken
+        : undefined;
+    const expiresAt =
+      typeof parsed.expiresAt === "number" &&
+      Number.isFinite(parsed.expiresAt) &&
+      parsed.expiresAt > 0
+        ? parsed.expiresAt
+        : undefined;
+    return {
+      workerId: parsed.workerId,
+      ...(workerApiToken ? { workerApiToken } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    };
   } catch {
     return null;
+  }
+}
+
+/** Replace credentials for an already-saved identity without changing its id. */
+export async function updateDeviceState(
+  context: string,
+  platform: string,
+  state: DeviceState
+): Promise<void> {
+  if (!WORKER_ID_PATTERN.test(state.workerId)) {
+    throw new Error(`invalid device worker id '${state.workerId}'`);
+  }
+  if (
+    state.workerApiToken !== undefined &&
+    !state.workerApiToken.startsWith("owl_pat_")
+  ) {
+    throw new Error("invalid device worker token");
+  }
+
+  const current = await loadDeviceState(context, platform);
+  if (!current || current.workerId !== state.workerId) {
+    throw new Error(
+      `Refusing to replace device state for context "${context}" on ${platform}: the saved worker id changed.`
+    );
+  }
+
+  const file = statePath(context, platform);
+  const tmp = `${file}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    await rename(tmp, file);
+  } catch (error) {
+    await rm(tmp).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -46,6 +110,12 @@ export async function saveDeviceState(
 ): Promise<void> {
   if (!WORKER_ID_PATTERN.test(state.workerId)) {
     throw new Error(`invalid device worker id '${state.workerId}'`);
+  }
+  if (
+    state.workerApiToken !== undefined &&
+    !state.workerApiToken.startsWith("owl_pat_")
+  ) {
+    throw new Error("invalid device worker token");
   }
 
   const dir = devicesDir();

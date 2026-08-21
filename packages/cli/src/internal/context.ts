@@ -484,6 +484,49 @@ export async function findContextByUrl(
   return undefined;
 }
 
+/**
+ * Find the named context whose API URL belongs to the same gateway origin.
+ *
+ * Device endpoints live at the origin while older hosted contexts commonly
+ * retain an `/api/v1` suffix. Matching those two spellings is safe because an
+ * OAuth bearer never crosses the URL origin boundary. The current context wins
+ * ties; otherwise user-named contexts win over the always-present built-in
+ * context, because that is normally where the installation login is stored.
+ */
+export async function findContextByOrigin(
+  apiUrl: string
+): Promise<ResolvedContext | undefined> {
+  const config = await loadContextConfig();
+  let searchOrigin: string;
+  try {
+    searchOrigin = new URL(apiUrl).origin;
+  } catch {
+    return undefined;
+  }
+
+  // The built-in "lobu" context is always materialized at the hosted origin, so
+  // it would shadow a context the user named themselves for that same
+  // installation — and it is not normally where their credentials live. Try
+  // the current context first, then user-named contexts, and leave the built-in
+  // fallback last. This also covers `currentContext=local` with a logged-in
+  // `prod` context targeting the hosted origin.
+  const entries = Object.entries(config.contexts);
+  const priority = (name: string): number => {
+    if (name === config.currentContext) return 0;
+    if (name === DEFAULT_CONTEXT_NAME) return 2;
+    return 1;
+  };
+  entries.sort(([a], [b]) => priority(a) - priority(b));
+
+  for (const [name, context] of entries) {
+    if (new URL(context.url).origin === searchOrigin) {
+      return contextToResolvedContext(name, context);
+    }
+  }
+
+  return undefined;
+}
+
 export async function findContextByMemoryUrl(
   memoryUrl: string
 ): Promise<ResolvedContext | undefined> {

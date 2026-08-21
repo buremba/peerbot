@@ -30,6 +30,8 @@ import { getWorkspaceRole } from '../utils/organization-access';
 import { parseJsonBody } from '../gateway/routes/shared/helpers';
 import { buildAutomationUrl, getPublicWebUrl } from '../utils/url-builder';
 
+const DEVICE_WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
 /** One of the caller's registered devices, as both readers return it. */
 export interface DeviceWorkerSummary {
   id: string;
@@ -168,13 +170,15 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
  * Child PATs expire, so an orphaned or leaked one stops working on its own
  * instead of living until someone revokes it by hand. A device refreshes by
  * re-minting through this endpoint with its stored worker_id (the reuse branch
- * keeps the device identity and revokes the old token) — which for a headless
- * daemon means a re-register, since nothing rotates the PAT in place today.
+ * keeps the device identity and revokes the old token). `lobu daemon` does this
+ * for itself: on start it re-mints from its cached child PAT once that token is
+ * within a day of expiring. A bearer is still snapshotted for the process
+ * lifetime, so a daemon left running past day 90 rotates only on its next start.
  *
  * Forward-only: legacy children (minted before this shipped) keep their null
  * expiry until they rotate. A retroactive backfill would hard-kill working
- * devices at day 90 with no rotation client shipped — an owner decision, not
- * one this change takes.
+ * devices at day 90 — the Mac bridge's chrome children still have no rotation
+ * client — an owner decision, not one this change takes.
  */
 const CHILD_PAT_EXPIRES_IN_DAYS = 90;
 /** Refusal body for both arms of the depth-1 gate (see `mintDeviceChildToken`). */
@@ -185,13 +189,15 @@ const CHILD_SELF_MINT_ONLY = {
 } as const;
 
 /**
- * POST /api/me/devices/mint-child-token  { platform, label? }
+ * POST /api/me/devices/mint-child-token  { platform, label?, worker_id? }
  *
- * Hand-off path for the Mac bridge to pair a sibling device (today: the
- * Owletto Chrome extension) without a second OAuth dance. The Mac app's
- * bearer authenticates the caller; we mint a fresh PAT in the same user's
- * personal org, generate a new worker_id, and return both for the sibling
- * to use as if it had completed device-authorization on its own.
+ * Hand-off path for a first-party device grant to authorize a worker without a
+ * second OAuth dance: the Mac bridge pairing a sibling device (today: the
+ * Owletto Chrome extension), or `lobu daemon` authorizing this host from its
+ * stored login. The caller's bearer authenticates the user; we mint a PAT in
+ * that user's personal org bound to a worker_id — the one the caller asked for,
+ * else a fresh uuid — and return both for the device to use as if it had
+ * completed device-authorization on its own.
  *
  * The child token carries the same `device_worker:run` scope the regular Mac
  * OAuth flow ends up with. Its stored worker_id binding stops the mint chain at
@@ -233,13 +239,12 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     platform?: string;
     label?: string;
     /**
-     * Optional: the caller's previously-stored worker_id — the Mac bridge
-     * forwarding the extension's id, or a headless daemon re-registering after
-     * a restart. Reused only when that id already belongs to this user on the
-     * SAME platform being requested, in which case we keep the device identity
-     * (re-mint the bound PAT, keep the same row) instead of minting a fresh
-     * one, so a re-register doesn't churn the device id and accumulate orphaned
-     * `device_workers` rows. See the reuse branch below.
+     * Optional: the worker_id the first-party caller wants this device to use.
+     * A Mac bridge normally forwards the extension's stored id, while the CLI
+     * daemon sends the identity its first-run wizard selected. When the id
+     * already belongs to this user on the SAME platform, re-mint the bound PAT
+     * and keep the row; when it is new for this user, create that exact identity.
+     * A bound child token is still limited to rotating its own existing id.
      */
     worker_id?: string;
   }>(c, 'Invalid or missing JSON body');
@@ -259,8 +264,19 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
   const label = body.label?.toString().trim() || null;
   // The caller's previously-stored worker_id, if it forwarded one. Trimmed;
   // validated against ownership + the requested platform in the reuse branch
-  // below, so a stale/garbage value just falls through to a fresh mint.
+  // below. Validate its public worker-id shape before it reaches either the
+  // device row or PAT binding.
   const requestedWorkerId = (body.worker_id ?? '').trim();
+  if (requestedWorkerId && !DEVICE_WORKER_ID_PATTERN.test(requestedWorkerId)) {
+    return c.json(
+      {
+        error: 'invalid_worker_id',
+        error_description:
+          'worker_id must be 1-128 characters of letters, digits, dot, underscore, colon, or hyphen',
+      },
+      400
+    );
+  }
 
   // The chain stops at depth 1: a PAT this endpoint minted may ROTATE itself —
   // re-mint its own bound worker_id, which revokes the old PAT in the same
@@ -299,33 +315,32 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       );
     }
 
-    // Identity reuse: when the caller forwards its existing worker_id AND it
-    // already belongs to this user as a device of the SAME platform being
-    // requested, keep that identity stable — re-mint the PAT bound to the same
-    // worker_id (revoking the previous child PAT first) and reuse the existing
-    // device_workers row. This is what stops each re-register (Mac-bridge
-    // re-pair, headless daemon restart) from minting a fresh uuid and orphaning
-    // the previous row plus its still-live PAT (the source of the duplicate
-    // "chrome" entries on the Devices page). Matching on the requested platform
-    // rather than a fixed one keeps cross-platform reuse refused: a
-    // chrome-extension worker_id cannot be re-minted as headless or vice versa.
-    // Falls through to a fresh mint for the first-ever register, a
-    // stale/garbage id, or an id owned by another user/platform — i.e. any case
-    // where reuse would be unsafe or a no-op.
+    // Identity reuse/creation: an unbound first-party device grant may create
+    // the exact requested id (the CLI wizard/session identity) or re-mint it
+    // when the same user already owns it on this platform. If the same user has
+    // that id on another platform, preserve the established cross-platform
+    // isolation by falling back to a fresh UUID. Child PAT callers cannot reach
+    // either fresh path because the depth-1 check below requires `reused`.
     let workerId: string;
+    let reused = false;
     if (requestedWorkerId) {
       const existing = (await sql`
-        SELECT worker_id FROM device_workers
+        SELECT worker_id, platform FROM device_workers
         WHERE user_id = ${userId}
           AND worker_id = ${requestedWorkerId}
-          AND platform = ${platform}
         LIMIT 1
-      `) as unknown as Array<{ worker_id: string }>;
-      workerId = existing[0]?.worker_id ?? crypto.randomUUID();
+      `) as unknown as Array<{ worker_id: string; platform: string | null }>;
+      if (existing[0]?.platform === platform) {
+        workerId = existing[0].worker_id;
+        reused = true;
+      } else if (existing.length === 0) {
+        workerId = requestedWorkerId;
+      } else {
+        workerId = crypto.randomUUID();
+      }
     } else {
       workerId = crypto.randomUUID();
     }
-    const reused = workerId === requestedWorkerId;
     // Matching the caller's own worker_id is not enough: the reuse lookup also
     // requires the SAME platform, so a child re-declaring its worker_id under a
     // different platform falls through to a fresh uuid — i.e. a brand-new
@@ -335,18 +350,18 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       return c.json(CHILD_SELF_MINT_ONLY, 403);
     }
 
-    const patService = new PersonalAccessTokenService(sql);
     // Upsert the device_workers row (exists on reuse, created on first mint).
     // On the reuse path this MUST run inside the same transaction as the PAT
     // mint/revoke (see below) so last_seen_at refresh + new-PAT-visibility
     // commit atomically — otherwise a concurrent reaper could see the reused
     // row still stale (30+ days unseen) and the freshly-minted PAT as already
     // committed, then delete the row and revoke that brand-new PAT. The helper
-    // takes the db handle (sql for fresh-mint, tx for reuse) so both paths run
-    // the identical statement. Platform is bound once and never changed here
-    // (poll's ON CONFLICT preserves it via COALESCE + a SELECT-then-reject
-    // check, and the gateway's capability authorization uses the stored
-    // platform rather than whatever the bearer self-reports).
+    // takes the db handle so both paths run the identical statement: a
+    // random-id fresh mint passes `sql`, while an exact requested identity
+    // passes `tx` whether it is new or reused. Platform is bound once and never
+    // changed here (poll's ON CONFLICT preserves it via COALESCE + a
+    // SELECT-then-reject check, and the gateway's capability authorization uses
+    // the stored platform rather than whatever the bearer self-reports).
     // The label is recorded on insert only: a re-mint carries whatever the
     // client self-reports (a headless daemon sends its hostname), which must
     // not clobber a name the user set on the Devices page — same reason poll's
@@ -359,10 +374,33 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
         SET last_seen_at = NOW()
     `;
 
-    let created: { id: number; token: string; expires_at: Date | null };
-    if (reused) {
+    let created: { id: number; token: string; expires_at: Date | null } | null;
+    // Any exact requested identity — fresh or reused — takes the same advisory
+    // lock and re-checks under it. Without this, two replicas can both observe
+    // a new CLI wizard id as absent, mint two live PATs, and only then race the
+    // device-row upsert. The second caller must instead observe the first row
+    // and take the normal re-mint path that revokes the first PAT.
+    if (requestedWorkerId && workerId === requestedWorkerId) {
       created = await sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:mint-child'), hashtext(${workerId}))`;
+        const current = (await tx`
+          SELECT platform FROM device_workers
+          WHERE user_id = ${userId} AND worker_id = ${workerId}
+          LIMIT 1
+        `) as unknown as Array<{ platform: string | null }>;
+        reused = current[0]?.platform === platform;
+        // Re-check the depth-1 boundary after acquiring the identity lock. A
+        // device row can be deleted between the optimistic lookup above and
+        // this transaction; a child whose own row disappeared must not recreate
+        // it as though it were an unbound first-party login.
+        if (callerIsMintedChild && !reused) return null;
+        // The optimistic lookup's third case can also land here: another
+        // registration may have claimed this id for a DIFFERENT platform while
+        // we waited on the lock. The upsert below only refreshes last_seen_at,
+        // so reusing the id would bind this platform's PAT to a row whose
+        // stored platform is the other one — the exact confusion the
+        // cross-platform fallback exists to prevent. Take a fresh uuid instead.
+        if (current.length > 0 && !reused) workerId = crypto.randomUUID();
         // Refresh last_seen_at in the SAME transaction so the reaper can never
         // observe a committed, valid PAT bound to a still-stale reused row. Do
         // this BEFORE the PAT mint/revoke so this tx acquires the device_workers
@@ -382,6 +420,12 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
             expiresInDays: CHILD_PAT_EXPIRES_IN_DAYS,
           }
         );
+        // Revoke on EVERY exact-identity path, not just the reuse one: a device
+        // deleted from the Devices page drops its `device_workers` row without
+        // revoking the PAT bound to that worker_id, so re-registering the same
+        // id would otherwise leave two live credentials polling as one device.
+        // When the cross-platform fallback above swapped in a fresh uuid this
+        // matches nothing, which is exactly right.
         await tx`
           UPDATE personal_access_tokens
           SET revoked_at = NOW(), updated_at = NOW()
@@ -393,7 +437,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
         return minted;
       });
     } else {
-      created = await patService.create(
+      created = await new PersonalAccessTokenService(sql).create(
         userId,
         organizationId,
         `device:${platform}:${workerId.slice(0, 8)}`,
@@ -408,26 +452,32 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       // transaction (the INSERT sets last_seen_at = NOW() via the column default).
       await upsertDeviceWorker(sql);
     }
+    if (!created) {
+      return c.json(CHILD_SELF_MINT_ONLY, 403);
+    }
 
-    // Also mint a Better Auth session token for the same user. The sibling
-    // device's iframe needs a session cookie (not a PAT) to land signed-in;
-    // the extension installs this via /api/exchange-token. Without it the
-    // user has to type their password a second time after auto-pair.
+    // Also mint a Better Auth session token for a Chrome sibling. Its iframe
+    // needs a session cookie (not a PAT) to land signed-in; the extension
+    // installs this via /api/exchange-token. A headless daemon has no iframe,
+    // so minting a browser session for every daemon start would create an
+    // unused credential.
     let sessionToken: string | null = null;
-    try {
-      const auth = await createAuth(c.env, c.req.raw);
-      const ctx = await auth.$context;
-      const session = await ctx.internalAdapter.createSession(userId);
-      sessionToken = session?.token ?? null;
-    } catch (err) {
-      // Session mint is best-effort — child PAT is the primary credential.
-      // Falling back to no session_token means the iframe shows sign-in,
-      // matching pre-existing semantics for siblings that haven't adopted
-      // the handoff.
-      logger.warn(
-        { err: errorMessage(err), userId },
-        '[mintDeviceChildToken] session mint failed; returning child PAT only'
-      );
+    if (platform === 'chrome-extension') {
+      try {
+        const auth = await createAuth(c.env, c.req.raw);
+        const ctx = await auth.$context;
+        const session = await ctx.internalAdapter.createSession(userId);
+        sessionToken = session?.token ?? null;
+      } catch (err) {
+        // Session mint is best-effort — child PAT is the primary credential.
+        // Falling back to no session_token means the iframe shows sign-in,
+        // matching pre-existing semantics for siblings that haven't adopted
+        // the handoff.
+        logger.warn(
+          { err: errorMessage(err), userId },
+          '[mintDeviceChildToken] session mint failed; returning child PAT only'
+        );
+      }
     }
 
     const gatewayUrl = new URL(c.req.url).origin;

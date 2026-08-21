@@ -141,7 +141,7 @@ export async function deviceWizard(
   } else {
     console.log(
       chalk.dim(
-        "  WORKER_API_TOKEN determines its workspace attachment on first poll."
+        "  Its workspace attachment is decided when this device is first authorized."
       )
     );
   }

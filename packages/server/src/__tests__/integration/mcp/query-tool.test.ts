@@ -56,16 +56,15 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(byName.has('execute')).toBe(false);
 
     const expectedSafetyHints = {
-      // These operations do not change workspace content or external systems,
-      // but OAuth and PAT invocations append private audit/activity records.
-      // OpenAI's read-only and idempotent hints therefore both remain false.
-      search_memory: [false, false, false],
-      search_sdk: [false, false, false],
-      query_sdk: [false, false, false],
-      query_sql: [false, false, false],
+      // Invocation audits are server bookkeeping, not mutations performed by
+      // these retrieval tools against workspace or external state.
+      search_memory: [true, false, false],
+      search_sdk: [true, false, false],
+      query_sdk: [true, false, false],
+      query_sql: [true, false, false],
       save_memory: [false, false, false],
       run_sdk: [false, true, true],
-      get_approval: [false, false, false],
+      get_approval: [true, false, false],
     } as const;
 
     for (const [toolName, [readOnlyHint, openWorldHint, destructiveHint]] of Object.entries(

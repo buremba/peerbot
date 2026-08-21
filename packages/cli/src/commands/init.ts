@@ -792,9 +792,7 @@ export async function initCommand(
       )
     );
     if (lobuUrl) {
-      console.log(
-        chalk.cyan(`  ${n++}. Wire memory clients: lobu memory init`)
-      );
+      console.log(chalk.cyan(`  ${n++}. Connect an agent: lobu connect`));
     }
     if (enableHostedSlack) {
       console.log(

@@ -43,8 +43,8 @@ import type { CloudCommandOptions } from "./commands/_lib/cloud-options.js";
 import type { AgentCommandOptions } from "./commands/agent.js";
 import type { InitOptions } from "./commands/init.js";
 import {
-  opencodePluginCommand,
   type OpenCodePluginAction,
+  opencodePluginCommand,
 } from "./commands/opencode-plugin.js";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
 
@@ -113,6 +113,7 @@ export async function runCli(
     `
 Local dev:
   init [name]              Scaffold a new agent project
+  connect [agent]          Connect Claude, Codex, OpenCode, or another agent
   run | dev | start        Boot the embedded Lobu stack
   chat <prompt>            Send a prompt to an agent and stream the response
   validate                 Validate lobu.config.ts
@@ -139,9 +140,26 @@ Memory:
   memory exec <script>     Run a ClientSDK script
   memory health            Validate login + MCP connectivity
   memory seed [path]       Provision a memory workspace
-  memory init              Wire agents to a memory MCP endpoint
 `
   );
+
+  // ─── connect ───────────────────────────────────────────────────────
+  program
+    .command("connect [agent]")
+    .description(
+      "Install Lobu MCP and skills for Claude Code, Codex, OpenCode, or another agent"
+    )
+    .option("--url <url>", "MCP server URL (defaults to Lobu Cloud)")
+    .option("--dry-run", "Show the setup without changing agent configuration")
+    .action(
+      async (
+        agent: string | undefined,
+        options: { url?: string; dryRun?: boolean }
+      ) => {
+        const { connectCommand } = await import("./commands/connect.js");
+        await connectCommand(agent, options);
+      }
+    );
 
   // ─── init ───────────────────────────────────────────────────────────
   program
@@ -1378,19 +1396,6 @@ Memory:
       ) => {
         const { memorySeedCommand } = await import("./commands/memory/seed.js");
         await memorySeedCommand(pathArg, options);
-      }
-    );
-
-  memory
-    .command("init")
-    .description("Wire an existing project's agents to a memory MCP endpoint")
-    .option("--url <url>", "MCP server URL (skips the picker)")
-    .option("--agent <id>", "Configure a specific agent only")
-    .option("--skip-auth", "Skip the authentication step")
-    .action(
-      async (options: { url?: string; agent?: string; skipAuth?: boolean }) => {
-        const { memoryInitCommand } = await import("./commands/memory/init.js");
-        await memoryInitCommand(options);
       }
     );
 

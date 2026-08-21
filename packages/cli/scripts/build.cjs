@@ -24,6 +24,13 @@ copyDirIfExists("src/templates", "dist/templates");
 // Copy the single bundled Lobu starter skill (includes memory guidance).
 copyDirIfExists("../../skills/lobu", "dist/bundled-skills/lobu");
 
+// Copy the concise cross-client skill used by `lobu connect`. The same source
+// ships inside the Claude/Codex plugin so all supported hosts get one contract.
+copyDirIfExists(
+  "../../claude-plugin/skills/lobu",
+  "dist/bundled-skills/lobu-connect"
+);
+
 // Copy mcp-servers.json
 const jsonSrc = "src/mcp-servers.json";
 const jsonDest = "dist/mcp-servers.json";

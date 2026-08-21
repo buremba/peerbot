@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import type { ConnectTargetId } from "./install-targets.js";
 
 export interface DetectedAgent {
-  id: string;
+  id: ConnectTargetId;
   name: string;
   detected: boolean;
   path: string | null;
@@ -10,7 +11,7 @@ export interface DetectedAgent {
 }
 
 interface AgentProbe {
-  id: string;
+  id: ConnectTargetId;
   name: string;
   kind: "cli" | "app" | "manual";
   detect: () => string | null;
@@ -18,9 +19,12 @@ interface AgentProbe {
 
 function whichBinary(name: string): string | null {
   try {
-    const cmd = process.platform === "win32" ? "where" : "which";
+    const command = process.platform === "win32" ? "where" : "which";
     return (
-      execFileSync(cmd, [name], { encoding: "utf-8", timeout: 5000 })
+      execFileSync(command, [name], {
+        encoding: "utf-8",
+        timeout: 5000,
+      })
         .trim()
         .split("\n")[0] ?? null
     );
@@ -33,10 +37,9 @@ function findApp(
   appPaths: Record<string, string[]>,
   binaryName?: string
 ): string | null {
-  const platform = process.platform as string;
-  const candidates = appPaths[platform] || [];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
+  const candidates = appPaths[process.platform] ?? [];
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
   }
   return binaryName ? whichBinary(binaryName) : null;
 }
@@ -55,10 +58,16 @@ const AGENT_PROBES: AgentProbe[] = [
     detect: () => whichBinary("codex"),
   },
   {
-    id: "gemini-cli",
-    name: "Gemini CLI",
+    id: "opencode",
+    name: "OpenCode",
     kind: "cli",
-    detect: () => whichBinary("gemini"),
+    detect: () => whichBinary("opencode"),
+  },
+  {
+    id: "antigravity",
+    name: "Antigravity CLI",
+    kind: "cli",
+    detect: () => whichBinary("agy"),
   },
   {
     id: "cursor",

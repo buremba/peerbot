@@ -81,7 +81,8 @@ After the local proof, ask the user whether to keep running locally or deploy to
 - Keep agent identity and instructions in `IDENTITY.md`, `SOUL.md`, and `USER.md`.
 - Keep reusable capability bundles in `skills/<name>/SKILL.md` or `agents/<agent>/skills/<name>/SKILL.md`.
 - Use `lobu login` for CLI authentication. Do not use a separate memory login command.
-- Use `lobu memory ...` for memory operations, MCP client wiring, seeding, direct tool calls, and browser-auth capture.
+- Use `lobu connect` for MCP client and skill setup.
+- Use `lobu memory ...` for memory operations, seeding, direct tool calls, and browser-auth capture.
 
 Reference the canonical docs before guessing how a feature works:
 [Lobu concepts](https://github.com/lobu-ai/lobu/blob/main/docs/CONCEPTS.md)
@@ -183,19 +184,19 @@ Common setup commands:
 
 ```bash
 # Claude Code
-claude mcp add --transport http lobu <mcp-url>
+lobu connect claude-code --url <mcp-url>
 
 # Codex
-codex mcp add lobu --url <mcp-url>
+lobu connect codex --url <mcp-url>
 
-# Gemini CLI
-gemini mcp add --transport http lobu <mcp-url>
+# Antigravity
+lobu connect antigravity --url <mcp-url>
 
-# Interactive client wiring wizard
-lobu memory init --url <mcp-url>
+# OpenCode
+lobu connect opencode --url <mcp-url>
 ```
 
-For ChatGPT, Claude Desktop, Cursor, and other browser-managed clients, paste the MCP URL into the client's MCP/connector settings and complete OAuth in the browser.
+Run `lobu connect --url <mcp-url>` without a client id to choose interactively. For ChatGPT, Claude Desktop, Cursor, and other browser-managed clients, the same command applies the safe local configuration it can and prints the exact remaining client handoff. Complete OAuth in the client, not through a separate Lobu CLI login.
 
 ## Browser-Authenticated Connectors
 

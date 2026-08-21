@@ -2,6 +2,10 @@ import type { ContentItem } from '@lobu/connector-sdk';
 import { describe, expect, test } from 'vitest';
 import { refreshEventArtifactDownloadUrls } from '../render';
 
+/** A URL shaped like one this gateway actually minted. */
+const OURS = (artifactId: string) =>
+  `https://gateway.example.test/lobu/api/v1/files/${artifactId}?token=stale`;
+
 /** Records what it was asked to sign; never touches a filesystem. */
 function recordingStore() {
   const calls: Array<{ artifactId: string; binding?: string }> = [];
@@ -29,8 +33,8 @@ describe('refreshEventArtifactDownloadUrls', () => {
         connection_id: 42,
         feed_id: null,
         attachments: [
-          { artifact_id: 'a1', download_url: 'https://expired.example.test' },
-          { artifact_id: 'a2', download_url: 'https://expired.example.test' },
+          { artifact_id: 'a1', download_url: OURS('a1') },
+          { artifact_id: 'a2', download_url: OURS('a2') },
         ],
       },
     ] as unknown as ContentItem[];
@@ -60,7 +64,7 @@ describe('refreshEventArtifactDownloadUrls', () => {
         origin_id: 'origin-1',
         connection_id: null,
         feed_id: 7,
-        attachments: [{ artifact_id: 'a1', download_url: 'https://expired.example.test' }],
+        attachments: [{ artifact_id: 'a1', download_url: OURS('a1') }],
       },
     ] as unknown as ContentItem[];
 
@@ -90,7 +94,9 @@ describe('refreshEventArtifactDownloadUrls', () => {
           // Names an artifact but carries no URL to refresh.
           { artifact_id: 'a1' },
           // Non-string artifact id.
-          { artifact_id: 42, download_url: 'https://expired.example.test' },
+          { artifact_id: 42, download_url: OURS('42') },
+          // Ours by id, but the URL is somebody else's host/path shape.
+          { artifact_id: 'a9', download_url: 'https://files.slack.example/a9' },
         ],
       },
       // No origin_id means no binding can be derived; skip the whole item
@@ -98,7 +104,7 @@ describe('refreshEventArtifactDownloadUrls', () => {
       {
         id: 2,
         origin_id: '',
-        attachments: [{ artifact_id: 'orphan', download_url: 'https://expired.example.test' }],
+        attachments: [{ artifact_id: 'orphan', download_url: OURS('orphan') }],
       },
     ] as unknown as ContentItem[];
 
@@ -113,10 +119,11 @@ describe('refreshEventArtifactDownloadUrls', () => {
     expect(items[0].attachments).toEqual([
       { url: 'https://files.slack.example/x.png' },
       { artifact_id: 'a1' },
-      { artifact_id: 42, download_url: 'https://expired.example.test' },
+      { artifact_id: 42, download_url: OURS('42') },
+      { artifact_id: 'a9', download_url: 'https://files.slack.example/a9' },
     ]);
     expect(items[1].attachments).toEqual([
-      { artifact_id: 'orphan', download_url: 'https://expired.example.test' },
+      { artifact_id: 'orphan', download_url: OURS('orphan') },
     ]);
   });
 });

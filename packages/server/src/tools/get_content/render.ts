@@ -21,6 +21,21 @@ import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
 
 /**
+ * True when `url` is this deployment's own download link for `artifactId`.
+ * Path-suffix match, so it holds across the gateway's base-path mounts
+ * (`/lobu/api/v1/files/...`) without depending on the configured origin.
+ */
+function isOwnArtifactUrl(url: string, artifactId: string): boolean {
+  try {
+    return new URL(url).pathname.endsWith(
+      `/api/v1/files/${encodeURIComponent(artifactId)}`
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Persisted attachment `download_url`s carry an expiring token, so a row read
  * back after the TTL hands out a dead link. Re-mint each one against the
  * event's own binding.
@@ -49,9 +64,15 @@ export function refreshEventArtifactDownloadUrls(opts: {
     });
     item.attachments = item.attachments.map((attachment) => {
       const artifactId = attachment.artifact_id;
-      // Only rows that name a stored artifact are ours to re-sign. A
-      // connector-supplied external URL has no `artifact_id` and is left alone.
-      if (typeof artifactId !== 'string' || !attachment.download_url) {
+      // Only re-sign a URL this gateway minted for this exact artifact.
+      // `attachments` is free-form on the save_content path, so an agent can
+      // put anything here; a connector-supplied external link must survive
+      // untouched rather than be replaced by a Lobu URL.
+      if (
+        typeof artifactId !== 'string' ||
+        typeof attachment.download_url !== 'string' ||
+        !isOwnArtifactUrl(attachment.download_url, artifactId)
+      ) {
         return attachment;
       }
       return {

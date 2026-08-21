@@ -27,32 +27,38 @@ export async function refreshEventArtifactDownloadUrls(opts: {
   publicGatewayUrl: string;
   artifactStore: Pick<ArtifactStore, 'mintBoundDownloadUrl'>;
 }): Promise<void> {
-  await Promise.all(
-    opts.items.map(async (item) => {
-      if (!Array.isArray(item.attachments) || !item.origin_id) return;
-      const binding = eventArtifactBinding({
-        organizationId: opts.organizationId,
-        connectionId: item.connection_id,
-        feedId: item.feed_id,
-        originId: item.origin_id,
+  // Keep metadata verification sequential. Exact reads can return a large
+  // bounded page, and one Promise per attachment would amplify request memory
+  // even though each metadata file is itself size-capped.
+  for (const item of opts.items) {
+    if (!Array.isArray(item.attachments) || !item.origin_id) continue;
+    const binding = eventArtifactBinding({
+      organizationId: opts.organizationId,
+      connectionId: item.connection_id,
+      feedId: item.feed_id,
+      originId: item.origin_id,
+    });
+    const refreshed: typeof item.attachments = [];
+    for (const attachment of item.attachments) {
+      const artifactId = attachment.artifact_id;
+      if (typeof artifactId !== 'string') {
+        refreshed.push(attachment);
+        continue;
+      }
+      const { download_url: _expiredUrl, ...withoutExpiredUrl } = attachment;
+      const freshUrl = await opts.artifactStore.mintBoundDownloadUrl({
+        artifactId,
+        binding,
+        publicGatewayUrl: opts.publicGatewayUrl,
       });
-      item.attachments = await Promise.all(
-        item.attachments.map(async (attachment) => {
-          const artifactId = attachment.artifact_id;
-          if (typeof artifactId !== 'string') return attachment;
-          const { download_url: _expiredUrl, ...withoutExpiredUrl } = attachment;
-          const freshUrl = await opts.artifactStore.mintBoundDownloadUrl({
-            artifactId,
-            binding,
-            publicGatewayUrl: opts.publicGatewayUrl,
-          });
-          return freshUrl
-            ? { ...withoutExpiredUrl, download_url: freshUrl }
-            : withoutExpiredUrl;
-        })
+      refreshed.push(
+        freshUrl
+          ? { ...withoutExpiredUrl, download_url: freshUrl }
+          : withoutExpiredUrl
       );
-    })
-  );
+    }
+    item.attachments = refreshed;
+  }
 }
 
 /**

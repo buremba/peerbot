@@ -19,6 +19,7 @@ import {
 } from './connector-compiler';
 import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
+import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
 
 type SqlClient = ReturnType<typeof getDb>;
 
@@ -319,6 +320,17 @@ export async function upsertConnectorDefinitionRecords(params: {
 }): Promise<{ updated: boolean }> {
   const { sql } = params;
   const { metadata } = params;
+
+  // This is the shared definition writer for bundled, custom, rollback, and
+  // device-manifest connectors, so the relationship gate sits here rather than
+  // on the compile path some of them skip. The preflight validates the local
+  // declaration graph and resolves it against the org's own relationship
+  // vocabulary before any definition or version row can become active.
+  await preflightConnectorRelationshipTypes({
+    sql,
+    organizationId: params.organizationId,
+    metadata,
+  });
 
   const authSchemaJson = metadata.authSchema ? sql.json(metadata.authSchema) : null;
   const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;

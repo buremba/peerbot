@@ -9,6 +9,7 @@ import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
 import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
 import { isReservedConnectorKey } from './reserved';
+import { validateConnectorRelationshipDeclarations } from './connector-relationship-declarations';
 
 export interface ConnectorMetadata {
   key: string;
@@ -202,4 +203,5 @@ export function validateConnectorMetadata(metadata: ConnectorMetadata): void {
       `Connector key '${metadata.key}' is reserved by a /connectors/ route. Pick another key.`
     );
   }
+  validateConnectorRelationshipDeclarations(metadata);
 }

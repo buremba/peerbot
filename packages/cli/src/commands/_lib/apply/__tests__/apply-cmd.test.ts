@@ -387,6 +387,89 @@ describe("executePlan — managed MCP connector install", () => {
   });
 });
 
+describe("executePlan — connector relationship schema ordering", () => {
+  test("creates desired relationship types before installing a connector that references them", async () => {
+    const calls: string[] = [];
+    const relationship = {
+      slug: "invoice_customer",
+      name: "Invoice customer",
+    };
+    const connection: DesiredConnection = {
+      slug: "erp",
+      connector: "erp",
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [connection],
+    });
+    state.memorySchema.relationshipTypes = [relationship];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "relationship-type",
+          verb: "create",
+          id: relationship.slug,
+          desired: relationship,
+        },
+      ],
+      counts: { create: 1, update: 0, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      automations: [],
+      connectorDefinitions: [
+        {
+          key: "erp",
+          installed: false,
+          installable: true,
+          source_uri: "file:///catalog/erp.ts",
+          auth_schema: { methods: [{ type: "none" }] },
+        },
+      ],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const client = {
+      upsertRelationshipType: mock(async () => {
+        calls.push("relationship-type");
+        return {};
+      }),
+      installConnector: mock(async () => {
+        calls.push("connector");
+        return {
+          connectorKey: "erp",
+          name: "ERP",
+          version: "1.0.0",
+          codeHash: "hash",
+          updated: false,
+        };
+      }),
+      listConnectors: mock(async () => [
+        {
+          key: "erp",
+          installed: true,
+          installable: true,
+          source_uri: "file:///catalog/erp.ts",
+          auth_schema: { methods: [{ type: "none" }] },
+        },
+      ]),
+    } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    expect(calls).toEqual(["relationship-type", "connector"]);
+  });
+});
+
 describe("executePlan — entity-type schema fidelity", () => {
   test("carries the live type's out-of-band metadata_schema keys into the upsert", async () => {
     const desired = {

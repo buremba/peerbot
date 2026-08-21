@@ -12,9 +12,9 @@
  *   - Requesting a superseded id returns its WHOLE lineage (pending → executing
  *     → completed), not a 404 and not just the head — the caller sees what
  *     happened.
- *   - Run/operation chains resolve via the shared `run_id` (the run arm).
- *   - run_id-less chains (e.g. an edited note) resolve by walking
- *     `superseded_by` / `supersedes_event_id` (the walk arm).
+ *   - Every chain resolves by walking explicit `superseded_by` /
+ *     `supersedes_event_id` edges. A shared `run_id` is not lineage: connector
+ *     feed runs can contain many unrelated items.
  *   - Requesting two ids from the same chain does not double-return it.
  *
  * Vitest CI gap note (mirrors neighbors): runs locally / in the CI integration
@@ -97,7 +97,7 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     } as ToolContext;
   });
 
-  it('run arm: a superseded permalink id returns the whole run chain (pending→executing→completed)', async () => {
+  it('a superseded permalink id returns its whole explicit chain (pending→executing→completed)', async () => {
     const sql = getTestDb();
     const [run] = await sql<{ id: number }[]>`
       INSERT INTO runs (run_type, status, organization_id)
@@ -151,7 +151,42 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     expect(byId.get(completed)?.is_superseded).toBe(false);
   });
 
-  it('walk arm: a run_id-less superseded id resolves via superseded_by/supersedes_event_id', async () => {
+  it('does not expand one content permalink to unrelated events from the same feed run', async () => {
+    const sql = getTestDb();
+    const [run] = await sql<{ id: number }[]>`
+      INSERT INTO runs (run_type, status, organization_id)
+      VALUES ('sync', 'completed', ${org.id}) RETURNING id`;
+    const runId = Number(run.id);
+    const t0 = new Date('2026-07-01T01:00:00Z');
+
+    const requested = await insertChainRow({
+      organizationId: org.id,
+      title: 'tweet requested by permalink',
+      content: 'requested tweet',
+      runId,
+      occurredAt: t0,
+    });
+    const unrelated = await insertChainRow({
+      organizationId: org.id,
+      title: 'different tweet in the same sync batch',
+      content: 'unrelated tweet',
+      runId,
+      occurredAt: new Date(t0.getTime() + 1000),
+    });
+
+    const result = await getContent(
+      { content_ids: [requested], limit: 100 } as never,
+      {} as never,
+      ctx
+    );
+
+    expect(result.content.map((item) => item.id)).toEqual([requested]);
+    expect(result.content.map((item) => item.id)).not.toContain(unrelated);
+    expect(result.total).toBe(1);
+    expect(result.chain_total).toBe(1);
+  });
+
+  it('a run_id-less superseded id resolves via superseded_by/supersedes_event_id', async () => {
     const t0 = new Date('2026-07-02T00:00:00Z');
     const v1 = await insertChainRow({
       organizationId: org.id,
@@ -184,7 +219,7 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     expect(walkById.get(v2)?.is_superseded).toBe(false);
   });
 
-  it('walk arm: entering from the HEAD id still returns the full history (backward walk)', async () => {
+  it('entering from the HEAD id still returns the full history (backward walk)', async () => {
     const t0 = new Date('2026-07-04T00:00:00Z');
     const v1 = await insertChainRow({
       organizationId: org.id,

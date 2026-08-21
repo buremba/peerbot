@@ -92,8 +92,10 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TABLE public.notification_targets
-  VALIDATE CONSTRAINT notification_targets_browser_run_id_fkey;
+-- Rerunnable: validating an already-valid constraint is a no-op. This migration
+-- must stay transaction:false because the index above is built CONCURRENTLY.
+-- squawk-ignore prefer-robust-stmts
+ALTER TABLE public.notification_targets VALIDATE CONSTRAINT notification_targets_browser_run_id_fkey;
 
 -- migrate:down transaction:false
 

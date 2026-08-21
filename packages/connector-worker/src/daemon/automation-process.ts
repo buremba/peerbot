@@ -340,7 +340,7 @@ export async function waitForOwnedPosixTreeToQuiesce(
       // The anchor is still live and stopped, so this cannot target a reused id.
       if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
     }
-    await wait(Math.min(25, Math.max(1, deadline - Date.now())));
+    await wait(Math.min(100, Math.max(1, deadline - Date.now())));
   }
   return false;
 }

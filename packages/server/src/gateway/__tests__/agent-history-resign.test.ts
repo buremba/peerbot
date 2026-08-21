@@ -14,8 +14,9 @@ describe("resignFileRefs", () => {
 	afterEach(() => env.cleanup());
 
 	test("rewrites a tokenless artifact ref into a fresh signed absolute URL", () => {
+		const artifactId = "00000000-0000-4000-8000-000000000123";
 		const out = resignFileRefs(
-			"See [report.pdf](/api/v1/files/abc123)",
+			`See [report.pdf](/api/v1/files/${artifactId})`,
 			env.artifactStore,
 			BASE,
 		) as string;
@@ -24,11 +25,11 @@ describe("resignFileRefs", () => {
 		const match = out.match(/\((https?:\/\/[^)]+)\)/);
 		expect(match).toBeTruthy();
 		const url = new URL(match?.[1] as string);
-		expect(url.pathname).toBe("/lobu/api/v1/files/abc123");
+		expect(url.pathname).toBe(`/lobu/api/v1/files/${artifactId}`);
 		const token = url.searchParams.get("token");
 		expect(token).toBeTruthy();
 		expect(
-			env.artifactStore.validateDownloadToken(token as string, "abc123").valid,
+			env.artifactStore.validateDownloadToken(token as string, artifactId).valid,
 		).toBe(true);
 	});
 

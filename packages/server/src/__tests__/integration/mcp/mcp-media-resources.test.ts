@@ -48,6 +48,7 @@ describe('MCP media resources', () => {
   let token: string;
   let artifactStore: ArtifactStore;
   let artifactsDir: string;
+  let restoreCoreServices: (() => void) | undefined;
   const previousArtifactsDir = process.env.LOBU_ARTIFACTS_DIR;
   const previousEncryptionKey = process.env.ENCRYPTION_KEY;
 
@@ -58,6 +59,10 @@ describe('MCP media resources', () => {
       '12345678901234567890123456789012'
     ).toString('base64');
     artifactStore = new ArtifactStore();
+    const coreServices = vi
+      .spyOn(lobuGateway, 'getLobuCoreServices')
+      .mockReturnValue({ getArtifactStore: () => artifactStore });
+    restoreCoreServices = () => coreServices.mockRestore();
 
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
@@ -77,6 +82,7 @@ describe('MCP media resources', () => {
   });
 
   afterAll(() => {
+    restoreCoreServices?.();
     if (previousArtifactsDir === undefined) delete process.env.LOBU_ARTIFACTS_DIR;
     else process.env.LOBU_ARTIFACTS_DIR = previousArtifactsDir;
     if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
@@ -165,14 +171,7 @@ describe('MCP media resources', () => {
         },
       ],
     });
-    const coreServices = vi
-      .spyOn(lobuGateway, 'getLobuCoreServices')
-      .mockReturnValue({ getArtifactStore: () => artifactStore });
-    try {
-      await streamContent(ctx);
-    } finally {
-      coreServices.mockRestore();
-    }
+    await streamContent(ctx);
     expect(result()).toMatchObject({ status: 200, body: { total_items: 1 } });
 
     const [event] = await sql`
@@ -278,14 +277,7 @@ describe('MCP media resources', () => {
         },
       ],
     });
-    const failedInsertServices = vi
-      .spyOn(lobuGateway, 'getLobuCoreServices')
-      .mockReturnValue({ getArtifactStore: () => artifactStore });
-    try {
-      await streamContent(failedInsert.ctx);
-    } finally {
-      failedInsertServices.mockRestore();
-    }
+    await streamContent(failedInsert.ctx);
     expect(failedInsert.result().status).toBe(500);
     expect((await readdir(artifactsDir)).sort()).toEqual(artifactsBeforeFailedInsert);
   });
@@ -344,6 +336,7 @@ describe('MCP media resources', () => {
   });
 
   it('fails safely for invalid, missing, and oversized resources', async () => {
+    // One byte past the 20 MB inline cap this endpoint has always served.
     const oversizedBytes = Buffer.alloc(20 * 1024 * 1024 + 1, 1);
     const artifact = await artifactStore.publish({
       buffer: oversizedBytes,
@@ -407,7 +400,12 @@ describe('MCP media resources', () => {
     });
     const oversizedBody = await oversizedResponse.json();
     expect(oversizedBody.result).toBeUndefined();
-    expect(oversizedBody.error?.message).toContain('limit 20971520');
+    // Distinguishable from an absent resource: the payload exists, it just
+    // cannot be inlined. A bounded read alone would report it as "Unknown".
+    expect(oversizedBody.error?.message).toContain('too large to inline');
+    expect(oversizedBody.error?.message).toContain(
+      String(oversizedBytes.length)
+    );
   });
 
   it('cleans action artifacts when finalization rolls back or commits zero rows', async () => {
@@ -431,12 +429,7 @@ describe('MCP media resources', () => {
       `.then((rows) => rows[0]),
     ]);
     const artifactsBefore = (await readdir(artifactsDir)).sort();
-    const coreServices = vi
-      .spyOn(lobuGateway, 'getLobuCoreServices')
-      .mockReturnValue({ getArtifactStore: () => artifactStore });
-
-    try {
-      const rollback = mockWorkerCtx({
+    const rollback = mockWorkerCtx({
         run_id: Number(rollbackRun!.id),
         worker_id: 'worker-media-cleanup',
         status: 'success',
@@ -450,13 +443,13 @@ describe('MCP media resources', () => {
           ],
         },
       });
-      await completeActionRun(rollback.ctx);
-      expect(rollback.result().status).toBe(500);
-      expect((rollback.result().body as { error?: string }).error).toContain(
-        'approval card is missing'
-      );
+    await completeActionRun(rollback.ctx);
+    expect(rollback.result().status).toBe(500);
+    expect((rollback.result().body as { error?: string }).error).toContain(
+      'approval card is missing'
+    );
 
-      const zeroRows = mockWorkerCtx({
+    const zeroRows = mockWorkerCtx({
         run_id: Number(finalizedRun!.id),
         worker_id: 'worker-media-cleanup',
         status: 'success',
@@ -470,14 +463,11 @@ describe('MCP media resources', () => {
           ],
         },
       });
-      await completeActionRun(zeroRows.ctx);
-      expect(zeroRows.result()).toMatchObject({
-        status: 200,
-        body: { success: false, reason: 'already_finalized' },
-      });
-    } finally {
-      coreServices.mockRestore();
-    }
+    await completeActionRun(zeroRows.ctx);
+    expect(zeroRows.result()).toMatchObject({
+      status: 200,
+      body: { success: false, reason: 'already_finalized' },
+    });
 
     expect((await readdir(artifactsDir)).sort()).toEqual(artifactsBefore);
     const [runAfterRollback] = await sql`

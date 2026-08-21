@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
+import {
+  ArtifactStorageError,
+  MAX_ARTIFACT_BYTES,
+  runArtifactBinding,
+} from "../files/artifact-store.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { IFileHandler } from "../platform/file-handler.js";
 import { createFileRoutes } from "../routes/internal/files.js";
@@ -175,5 +180,179 @@ describe("file routes", () => {
     expect(seen?.threadTs).toBe("conv-1");
     expect(seen?.channelId).not.toBe("victim-channel");
     expect(seen?.threadTs).not.toBe("victim-conv");
+  });
+
+  test.each([
+    { path: "/internal/files/upload", field: "file" },
+    { path: "/internal/files/upload-batch", field: "files" },
+  ])("rejects an oversized $path request before parsing multipart data", async ({
+    path,
+    field,
+  }) => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const form = new FormData();
+    form.set(field, new File(["small"], "oversized.bin"));
+
+    const response = await app.request(path, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Length": String(MAX_ARTIFACT_BYTES + 1024 * 1024 + 1),
+      },
+      body: form,
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "File exceeds the artifact storage limit",
+    });
+  });
+
+  test("stops an unbounded multipart stream even without Content-Length", async () => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const chunk = new Uint8Array(1024 * 1024);
+    let emitted = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (emitted === 0) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              '--artifact-boundary\r\nContent-Disposition: form-data; name="file"; filename="large.bin"\r\n\r\n',
+            ),
+          );
+        } else if (emitted <= 200) {
+          controller.enqueue(chunk);
+        } else {
+          controller.enqueue(
+            new TextEncoder().encode("\r\n--artifact-boundary--\r\n"),
+          );
+          controller.close();
+        }
+        emitted += 1;
+      },
+    });
+    const request = new Request("http://localhost/internal/files/upload", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "multipart/form-data; boundary=artifact-boundary",
+      },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+    const response = await app.fetch(request);
+
+    expect(response.status).toBe(413);
+    expect(emitted).toBeLessThan(60);
+  });
+
+  test("rejects a decoded single file over the storage limit", async () => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const form = new FormData();
+    form.set(
+      "file",
+      new File([new Uint8Array(MAX_ARTIFACT_BYTES + 1)], "oversized.bin"),
+    );
+
+    const response = await app.request("/internal/files/upload", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    expect(response.status).toBe(413);
+  });
+
+  test("rejects a batch whose aggregate decoded size exceeds the limit", async () => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const form = new FormData();
+    const halfLimit = Math.floor(MAX_ARTIFACT_BYTES / 2);
+    form.append("files", new File([new Uint8Array(halfLimit + 1)], "a.bin"));
+    form.append("files", new File([new Uint8Array(halfLimit + 1)], "b.bin"));
+
+    const response = await app.request("/internal/files/upload-batch", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "Batch exceeds the artifact storage limit",
+    });
+  });
+
+  test("refuses a bound download URL pointed at another resource's artifact", async () => {
+    // Event attachment URLs are re-minted on every read without touching the
+    // store, so the binding travels inside the token and this route is where
+    // it is checked. Without that check the grafted id downloads fine.
+    const app = buildApp();
+    const { artifactId } = await env.artifactStore.publish({
+      buffer: Buffer.from("someone else's bytes"),
+      filename: "victim.txt",
+      contentType: "text/plain",
+      publicGatewayUrl: TEST_GATEWAY_URL,
+      binding: runArtifactBinding(1),
+    });
+
+    const grafted = env.artifactStore.buildDownloadUrl(
+      TEST_GATEWAY_URL,
+      artifactId,
+      undefined,
+      runArtifactBinding(2)
+    );
+    const denied = await app.request(new URL(grafted).pathname + new URL(grafted).search);
+    expect(denied.status).toBe(404);
+
+    const legitimate = env.artifactStore.buildDownloadUrl(
+      TEST_GATEWAY_URL,
+      artifactId,
+      undefined,
+      runArtifactBinding(1)
+    );
+    const allowed = await app.request(
+      new URL(legitimate).pathname + new URL(legitimate).search
+    );
+    expect(allowed.status).toBe(200);
+    expect(await allowed.text()).toBe("someone else's bytes");
+  });
+
+  test("returns a generic 503 when artifact storage is unavailable", async () => {
+    const app = new Hono();
+    app.route(
+      "",
+      createPublicFileRoutes({
+        validateDownloadToken: () => ({ valid: true }),
+        read: async () => {
+          throw new ArtifactStorageError("read", new Error("private path"));
+        },
+      } as unknown as ArtifactTestEnv["artifactStore"]),
+    );
+
+    const response = await app.request(
+      "/api/v1/files/00000000-0000-4000-8000-000000000000?token=valid",
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "File storage temporarily unavailable",
+    });
   });
 });

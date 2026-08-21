@@ -7,6 +7,10 @@
 import type { ContentItem } from '@lobu/connector-sdk';
 import { parseJsonObject } from '@lobu/core';
 import { type DbClient, parsePgNumberArray, pgBigintArray, pgTextArray } from '../../db/client';
+import {
+  type ArtifactStore,
+  eventArtifactBinding,
+} from '../../gateway/files/artifact-store';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
 import logger from '../../utils/logger';
@@ -15,6 +19,74 @@ import { isAdminOrOwnerRole } from '../access-control';
 import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
+
+/**
+ * True when `url` is this deployment's own download link for `artifactId`.
+ * Path-suffix match, so it holds across the gateway's base-path mounts
+ * (`/lobu/api/v1/files/...`) without depending on the configured origin.
+ */
+function isOwnArtifactUrl(url: string, artifactId: string): boolean {
+  try {
+    return new URL(url).pathname.endsWith(
+      `/api/v1/files/${encodeURIComponent(artifactId)}`
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persisted attachment `download_url`s carry an expiring token, so a row read
+ * back after the TTL hands out a dead link. Re-mint each one against the
+ * event's own binding.
+ *
+ * Deliberately no filesystem access: `buildDownloadUrl` only encrypts
+ * `{artifactId, exp, binding}` with the app key, and the download route
+ * verifies the binding against stored metadata when the bytes are actually
+ * requested. Verifying here instead would put an lstat + metadata read + JSON
+ * parse on every attachment of every listing page — per-row I/O on a
+ * user-facing read path, for an answer the download route has to recompute
+ * anyway.
+ */
+export function refreshEventArtifactDownloadUrls(opts: {
+  items: ContentItem[];
+  organizationId: string;
+  publicGatewayUrl: string;
+  artifactStore: Pick<ArtifactStore, 'buildDownloadUrl'>;
+}): void {
+  for (const item of opts.items) {
+    if (!Array.isArray(item.attachments) || !item.origin_id) continue;
+    const binding = eventArtifactBinding({
+      organizationId: opts.organizationId,
+      connectionId: item.connection_id,
+      feedId: item.feed_id,
+      originId: item.origin_id,
+    });
+    item.attachments = item.attachments.map((attachment) => {
+      const artifactId = attachment.artifact_id;
+      // Only re-sign a URL this gateway minted for this exact artifact.
+      // `attachments` is free-form on the save_content path, so an agent can
+      // put anything here; a connector-supplied external link must survive
+      // untouched rather than be replaced by a Lobu URL.
+      if (
+        typeof artifactId !== 'string' ||
+        typeof attachment.download_url !== 'string' ||
+        !isOwnArtifactUrl(attachment.download_url, artifactId)
+      ) {
+        return attachment;
+      }
+      return {
+        ...attachment,
+        download_url: opts.artifactStore.buildDownloadUrl(
+          opts.publicGatewayUrl,
+          artifactId,
+          undefined,
+          binding
+        ),
+      };
+    });
+  }
+}
 
 /**
  * Gated payload keys: the request itself and its size. `request_status` is

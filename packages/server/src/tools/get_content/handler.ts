@@ -15,8 +15,10 @@ import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { isInProcessSystemCall } from '../../tools/access-control';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
 import { AUTOMATION_RUN_SOURCE } from '../../gateway/automation-run-session';
+import { ArtifactStore } from '../../gateway/files/artifact-store';
 import { parseAutomationRunConversationId } from '../../gateway/permissions/automation-run-intent';
 import type { Env } from '../../index';
+import { getLobuCoreServices } from '../../lobu/gateway';
 import { ToolUserError } from '../../utils/errors';
 import {
   getNormalizedScoreContent,
@@ -26,6 +28,7 @@ import { searchContentByText } from '../../utils/content-search';
 import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import logger from '../../utils/logger';
 import { requireReadAccess } from '../../utils/organization-access';
+import { resolvePublicGatewayUrl } from '../../utils/public-origin';
 import { rewriteQueries } from '../../utils/query-rewriter';
 import {
   buildContentUrl,
@@ -43,6 +46,7 @@ import {
   buildContentItems,
   fetchClassificationExcerpts,
   hydrateToolInvocationRequests,
+  refreshEventArtifactDownloadUrls,
 } from './render';
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
@@ -719,6 +723,13 @@ async function getContentImpl(
       baseUrl,
       excerptsMap,
       includePrivateAttribution: ctx.memberRole != null,
+    });
+    refreshEventArtifactDownloadUrls({
+      items: contentItems,
+      organizationId: ctx.organizationId,
+      publicGatewayUrl: resolvePublicGatewayUrl(),
+      artifactStore:
+        getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore(),
     });
     // Verbatim requests are served ONLY on an explicit `content_ids` read. A
     // list or search page is an ambient read — inlining every retained request

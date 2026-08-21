@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 
-import { readFile } from "node:fs/promises";
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import type { ArtifactStore } from "../../files/artifact-store.js";
+import {
+  ArtifactStorageError,
+  type ArtifactStore,
+} from "../../files/artifact-store.js";
 
 const logger = createLogger("public-files");
 
@@ -32,7 +34,24 @@ export function createPublicFileRoutes(artifactStore: ArtifactStore): Hono {
       );
     }
 
-    const artifact = await artifactStore.read(artifactId);
+    let artifact: Awaited<ReturnType<ArtifactStore["read"]>>;
+    try {
+      // When the token names a binding, the artifact must still belong to that
+      // exact Lobu resource. This is the single enforcement point for bound
+      // links, so a re-signed event attachment cannot be pointed at another
+      // workspace's artifact by grafting its id into a readable row.
+      artifact = await artifactStore.read(artifactId, {
+        ...(validation.binding ? { binding: validation.binding } : {}),
+      });
+    } catch (error) {
+      logger.error("Artifact storage unavailable during download", {
+        code: error instanceof ArtifactStorageError ? error.code : "UNKNOWN",
+      });
+      return c.json(
+        { success: false, error: "File storage temporarily unavailable" },
+        503
+      );
+    }
     if (!artifact) {
       return c.json({ success: false, error: "File not found" }, 404);
     }
@@ -60,7 +79,7 @@ export function createPublicFileRoutes(artifactStore: ArtifactStore): Hono {
     );
     c.header("Cache-Control", "private, max-age=60");
 
-    return new Response(await readFile(artifact.filePath), {
+    return new Response(artifact.bytes, {
       headers: c.res.headers,
     });
   });

@@ -224,8 +224,10 @@ export async function readMcpAttachmentResource(
     throw new Error(`Unknown resource: ${uri}`);
   }
 
-  const artifactStore =
-    getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore();
+  const coreServices = getLobuCoreServices();
+  const artifactStore = coreServices
+    ? coreServices.getArtifactStore()
+    : new ArtifactStore();
   const metadata = await artifactStore.inspect(attachment.artifact_id, {
     binding: loaded.binding,
   });

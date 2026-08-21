@@ -241,6 +241,8 @@ export class ArtifactStore {
         await fs.rm(path.join(trashDir, stale), {
           recursive: true,
           force: true,
+          maxRetries: 3,
+          retryDelay: 10,
         });
       }
     } catch (error) {

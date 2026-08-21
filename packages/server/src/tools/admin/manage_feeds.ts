@@ -54,7 +54,10 @@ import { compileConnectionRowVisibility } from '../../authz/connection-visibilit
 import { recordChangeEvent } from '../../utils/insert-event';
 import { recordToolConfigChange } from './helpers/config-audit';
 import logger from '../../utils/logger';
-import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
+import {
+  OAUTH_SCOPE_PAUSE_LAST_ERROR,
+  syncOAuthConnectionsForAuthProfile,
+} from '../../utils/oauth-connection-state';
 import { createSyncRun, describeSyncRunSkip } from '../../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
 import { deriveFeedHealthSemantics } from '../../connectors/feed-health-semantics';
@@ -596,8 +599,8 @@ async function handleCreateFeed(
     };
   }
   // A `pending_auth` connection is OK — the feed is created `paused` (the
-  // `feeds.status` CHECK only allows active|paused|error). The OAuth/connect
-  // callback un-pauses the connection's feeds when it activates the connection.
+  // `feeds.status` CHECK only allows active|paused|error). OAuth reconciliation
+  // marks that system-owned pause so a later eligible grant can resume it.
   if (conn.status !== 'active' && conn.status !== 'pending_auth') {
     return { error: `Connection is ${conn.status}, must be active or pending_auth to create feeds` };
   }
@@ -706,25 +709,29 @@ async function handleCreateFeed(
     feedsSchema,
   });
 
+  const authProfile = Number(conn.auth_profile_id)
+    ? await getAuthProfileById(organizationId, Number(conn.auth_profile_id))
+    : null;
+  const systemScopePaused =
+    feedInitialStatus === 'paused' && authProfile?.profile_kind === 'oauth_account';
+
   const inserted = await sql`
     INSERT INTO feeds (
       organization_id, connection_id, feed_key, display_name, status,
-      entity_ids, config, schedule, timezone, next_run_at, kind, virtual
+      entity_ids, config, schedule, timezone, next_run_at, kind, virtual, last_error
     ) VALUES (
       ${organizationId}, ${args.connection_id}, ${args.feed_key}, ${displayName}, ${feedInitialStatus},
       ${entityIdsValue}::bigint[],
       ${args.config || Object.keys(effectiveFeedConfig).length > 0 ? sql.json(effectiveFeedConfig) : null},
       ${schedule}, ${timezone}, ${nextRunAtVal},
-      ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual}
+      ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual},
+      ${systemScopePaused ? OAUTH_SCOPE_PAUSE_LAST_ERROR : null}
     )
     RETURNING *
   `;
 
-  if (Number(conn.auth_profile_id)) {
-    const authProfile = await getAuthProfileById(organizationId, Number(conn.auth_profile_id));
-    if (authProfile?.profile_kind === 'oauth_account') {
-      await syncOAuthConnectionsForAuthProfile(organizationId, authProfile.id);
-    }
+  if (authProfile?.profile_kind === 'oauth_account') {
+    await syncOAuthConnectionsForAuthProfile(organizationId, authProfile.id);
   }
 
   logger.info(
@@ -801,6 +808,7 @@ async function handleUpdateFeed(
   // keys disappear remotely; default (merge) is preserved for the web UI.
   const replaceFeedConfig = args.replace_config === true && args.config !== undefined;
   const hasConfigArg = args.config !== undefined;
+  const hasStatusArg = args.status !== undefined;
 
   // Row-locked read→validate→write: the stored config is read, the EFFECTIVE
   // config (merge or replace) computed and validated against the connector's
@@ -857,7 +865,6 @@ async function handleUpdateFeed(
       );
       if (configError) return { error: configError } as const;
     }
-
     // Resume starts a fresh failure episode so the next hard-pause emits a new
     // feed.auto_paused delivery_id (keyed on first_failure_at) instead of
     // silently reusing the prior pause episode's Automation run.
@@ -891,6 +898,10 @@ async function handleUpdateFeed(
           schedule = CASE WHEN ${hasScheduleArg} THEN ${nextSchedule ?? null} ELSE schedule END,
           timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
           next_run_at = CASE WHEN ${recomputeNextRun} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+          last_error = CASE
+            WHEN ${hasStatusArg} AND last_error = ${OAUTH_SCOPE_PAUSE_LAST_ERROR} THEN NULL
+            ELSE last_error
+          END,
           consecutive_failures = CASE WHEN ${resuming} THEN 0 ELSE consecutive_failures END,
           first_failure_at = CASE WHEN ${resuming} THEN NULL ELSE first_failure_at END,
           updated_at = NOW()

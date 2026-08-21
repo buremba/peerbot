@@ -44,10 +44,8 @@ import { type DbClient, getDb } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
 import { classifyRunOutcome } from '../runs/run-outcome';
-import {
-  supersedeActionEvent,
-  terminalizeApprovalRunCompleted,
-} from '../tools/admin/approval-events';
+import { reconcileAppliedActionRun } from '../operations/applied-action-reconciliation';
+import { supersedeActionEvent } from '../tools/admin/approval-events';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { reconcileAutomationRuns, sweepStaleAutomationRuns } from '../automations/automation';
@@ -263,17 +261,21 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       // staleness predicate, so a worker heartbeat/completion that wins after
       // the candidate read makes this a no-op rather than being overwritten.
       const approvedActionCandidates = (await reserved`
-        SELECT id, organization_id, action_key, action_output
+        SELECT id, organization_id, action_key, action_output, approval_status
         FROM public.runs
         WHERE ${reserved.unsafe(staleWhereSql)}
           AND run_type = 'action'
-          AND approval_status = 'approved'
+          AND (
+            approval_status = 'approved'
+            OR (approval_status = 'auto' AND action_output IS NOT NULL)
+          )
         ORDER BY id
       `) as unknown as Array<{
         id: number | string;
         organization_id: string;
         action_key: string | null;
         action_output: Record<string, unknown> | null;
+        approval_status: string;
       }>;
       let approvalActionsReaped = 0;
       for (const candidate of approvedActionCandidates) {
@@ -290,18 +292,21 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           // the next tick to retry.
           if (candidate.action_output != null) {
             const actionKey = candidate.action_key ?? 'Action';
-            const eventId = await terminalizeApprovalRunCompleted(
+            const reconciled = await reconcileAppliedActionRun({
               runId,
-              candidate.organization_id,
-              candidate.action_output,
-              {
-                title: `${actionKey} — completed`,
-                content: `Operation completed: ${actionKey}`,
-              },
-              null,
-              sql
-            );
-            if (eventId !== null) approvalActionsReaped += 1;
+              organizationId: candidate.organization_id,
+              ...(candidate.approval_status === 'approved'
+                ? {
+                    card: {
+                      title: `${actionKey} — completed`,
+                      content: `Operation completed: ${actionKey}`,
+                      reviewer: null,
+                    },
+                  }
+                : {}),
+              db: sql,
+            });
+            if (reconciled.status === 'completed') approvalActionsReaped += 1;
             continue;
           }
 
@@ -353,7 +358,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         } catch (error) {
           logger.error(
             { run_id: runId, error: String(error) },
-            '[reaper] Failed to atomically time out approved action run'
+            '[reaper] Failed to reconcile or time out stale action run'
           );
         }
       }
@@ -389,7 +394,13 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           SELECT id, status AS stale_status
           FROM public.runs
           WHERE ${reserved.unsafe(staleWhereSql)}
-            AND NOT (run_type = 'action' AND approval_status = 'approved')
+            AND NOT (
+              run_type = 'action'
+              AND (
+                approval_status = 'approved'
+                OR (approval_status = 'auto' AND action_output IS NOT NULL)
+              )
+            )
           FOR UPDATE SKIP LOCKED
         ),
         timed_out AS (

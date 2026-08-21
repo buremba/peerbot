@@ -1,10 +1,10 @@
 import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { ArtifactStore } from "../../gateway/files/artifact-store";
 import type { Env } from "../../index";
-import * as lobuGateway from "../../lobu/gateway";
+import { createAutomationRun } from "../../runs/queue-service";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
-import { createAutomationRun } from "../../runs/queue-service";
 import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -39,6 +39,7 @@ describe("operations.execute backend lifecycle", () => {
 	let automationId: number;
 	let sourceRunId: number;
 	let failedTransportCallCount = 0;
+	let createItemCallCount = 0;
 	let failDiscoveryConnectionId: number | null = null;
 
 	beforeAll(async () => {
@@ -85,14 +86,17 @@ describe("operations.execute backend lifecycle", () => {
 			RETURNING id
 		`;
 		automationId = Number(automation.id);
-		const sourceRun = await createAutomationRun({
-			organizationId: orgId,
-			automationId,
-			agentId: automationAgent.agentId,
-			windowStart: "2026-08-10T00:00:00.000Z",
-			windowEnd: "2026-08-10T01:00:00.000Z",
-			dispatchSource: "manual",
-		}, sql);
+		const sourceRun = await createAutomationRun(
+			{
+				organizationId: orgId,
+				automationId,
+				agentId: automationAgent.agentId,
+				windowStart: "2026-08-10T00:00:00.000Z",
+				windowEnd: "2026-08-10T01:00:00.000Z",
+				dispatchSource: "manual",
+			},
+			sql,
+		);
 		sourceRunId = sourceRun.runId;
 		await sql`
 			UPDATE connector_definitions
@@ -108,10 +112,6 @@ describe("operations.execute backend lifecycle", () => {
 				},
 				image_result: {
 					name: "Image result",
-					kind: "read",
-				},
-				image_result_pair: {
-					name: "Image result pair",
 					kind: "read",
 				},
 				needs_approval: {
@@ -137,19 +137,16 @@ describe("operations.execute backend lifecycle", () => {
 				class ConnectorRuntime {
 					async sync() { return { items: [] }; }
 					async execute(ctx) {
-						if (ctx.actionKey === 'image_result' || ctx.actionKey === 'image_result_pair') {
-							const attachment = {
-								kind: 'image',
-								filename: 'inline.png',
-								mime_type: 'image/png',
-								data: 'aW1hZ2UtYnl0ZXM=',
-							};
+						if (ctx.actionKey === 'image_result') {
 							return {
 								success: true,
 								output: {
-									attachments: ctx.actionKey === 'image_result_pair'
-										? [attachment, { ...attachment, filename: 'inline-2.png' }]
-										: [attachment],
+									attachments: [{
+										kind: 'image',
+										filename: 'inline.png',
+										mime_type: 'image/png',
+										data: 'aW1hZ2UtYnl0ZXM=',
+									}],
 								},
 							};
 						}
@@ -272,7 +269,14 @@ describe("operations.execute backend lifecycle", () => {
 					});
 				}
 				if (url === "https://api.example.test/items") {
+					createItemCallCount++;
 					const body = JSON.parse(String(init?.body)) as { value?: string };
+					if (body.value === "oversized-response") {
+						return new Response("x".repeat(5 * 1024 * 1024 + 1), {
+							status: 200,
+							headers: { "content-type": "text/plain" },
+						});
+					}
 					if (
 						body.value === "wait-for-abort" ||
 						body.value === "wait-for-timeout"
@@ -315,7 +319,9 @@ describe("operations.execute backend lifecycle", () => {
 						);
 					}
 					if (request.method === "tools/list") {
-						const authorization = new Headers(init?.headers).get("authorization");
+						const authorization = new Headers(init?.headers).get(
+							"authorization",
+						);
 						if (
 							failDiscoveryConnectionId != null &&
 							authorization ===
@@ -426,106 +432,59 @@ describe("operations.execute backend lifecycle", () => {
 		expect(persisted.action_output).toEqual(result.output);
 	});
 
-	it("does not relabel a successful action when attachment storage fails", async () => {
-		const coreServices = vi
-			.spyOn(lobuGateway, "getLobuCoreServices")
-			.mockReturnValue({
-				getArtifactStore: () => ({
-					publish: async () => {
-						throw new Error("artifact volume unavailable");
-					},
-					delete: async () => {},
-				}),
-			});
+	it("keeps the raw apply marker when attachment publication fails and reconciles on retry", async () => {
+		const key = "operation-backend-test:attachment-reconcile";
+		const publish = vi
+			.spyOn(ArtifactStore.prototype, "publish")
+			.mockRejectedValueOnce(
+				new Error("injected artifact publication failure"),
+			);
 		try {
-			const result = (await manageOperations(
-				{
-					action: "execute",
-					connection_id: localConnectionId,
-					operation_key: "image_result",
-				},
-				{} as Env,
-				ctx,
-			)) as {
-				run_id: number;
-				status: string;
-				output: Record<string, unknown>;
-			};
-
-			expect(result).toMatchObject({
-				status: "completed",
-				output: {
-					attachments: [],
-					lobu_attachment_error:
-						"Action completed, but Lobu could not persist one or more returned attachments.",
-				},
-			});
-			const [persisted] = await getTestDb()`
-				SELECT status, action_output FROM runs WHERE id = ${result.run_id}
-			`;
-			expect(persisted.status).toBe("completed");
-			expect(persisted.action_output).toEqual(result.output);
-		} finally {
-			coreServices.mockRestore();
-		}
-	});
-
-	it("persists artifact IDs when partial attachment rollback remains unavailable", async () => {
-		let publishCalls = 0;
-		const coreServices = vi
-			.spyOn(lobuGateway, "getLobuCoreServices")
-			.mockReturnValue({
-				getArtifactStore: () => ({
-					publish: async () => {
-						publishCalls += 1;
-						if (publishCalls === 2) throw new Error("second publish failed");
-						return {
-							artifactId: "uncommitted-artifact-1",
-							filename: "inline.png",
-							contentType: "image/png",
-							downloadUrl: "https://gateway.test/files/uncommitted-artifact-1",
-							size: 11,
-						};
+			await expect(
+				manageOperations(
+					{
+						action: "execute",
+						connection_id: localConnectionId,
+						operation_key: "image_result",
+						idempotency_key: key,
 					},
-					delete: async () => {
-						throw new Error("artifact volume unavailable");
-					},
-				}),
-			});
-		try {
-			const result = (await manageOperations(
-				{
-					action: "execute",
-					connection_id: localConnectionId,
-					operation_key: "image_result_pair",
-				},
-				{} as Env,
-				ctx,
-			)) as {
-				run_id: number;
-				status: string;
-				output: Record<string, unknown>;
-			};
-
-			expect(result).toMatchObject({
-				status: "completed",
-				output: {
-					attachments: [],
-					lobu_attachment_error:
-						"Action completed, but Lobu could not persist one or more returned attachments.",
-					lobu_attachment_cleanup_pending_artifact_ids: [
-						"uncommitted-artifact-1",
-					],
-				},
-			});
-			const [persisted] = await getTestDb()`
-				SELECT status, action_output FROM runs WHERE id = ${result.run_id}
-			`;
-			expect(persisted.status).toBe("completed");
-			expect(persisted.action_output).toEqual(result.output);
+					{} as Env,
+					ctx,
+				),
+			).rejects.toThrow("injected artifact publication failure");
 		} finally {
-			coreServices.mockRestore();
+			publish.mockRestore();
 		}
+
+		const [pending] = await getTestDb()`
+			SELECT id, status, action_output
+			FROM runs
+			WHERE organization_id = ${orgId}
+			  AND action_idempotency_key = ${key}
+		`;
+		expect(pending.status).toBe("running");
+		expect(pending.action_output.attachments[0]).toHaveProperty("data");
+
+		const retry = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "image_result",
+				idempotency_key: key,
+			},
+			{} as Env,
+			ctx,
+		)) as {
+			run_id: number;
+			status: string;
+			output: { attachments: Array<Record<string, unknown>> };
+		};
+		expect(retry).toMatchObject({
+			run_id: Number(pending.id),
+			status: "completed",
+		});
+		expect(retry.output.attachments[0]).not.toHaveProperty("data");
+		expect(retry.output.attachments[0]).toHaveProperty("artifact_id");
 	});
 
 	it("replays a completed action instead of executing an idempotency key twice", async () => {
@@ -556,15 +515,68 @@ describe("operations.execute backend lifecycle", () => {
 		expect(runs).toHaveLength(1);
 	});
 
+	it("reconciles a successful HTTP apply after terminal persistence fails without rerunning it", async () => {
+		const sql = getTestDb();
+		const key = "operation-backend-test:terminalization-reconcile";
+		await sql.unsafe(`
+			CREATE FUNCTION fail_http_terminalization() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.status = 'completed' AND OLD.status = 'running'
+					AND NEW.action_key = 'create_item' THEN
+					RAISE EXCEPTION 'forced terminalization failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+			CREATE TRIGGER fail_http_terminalization_trigger
+				BEFORE UPDATE ON runs
+				FOR EACH ROW EXECUTE FUNCTION fail_http_terminalization();
+		`);
+		const callsBefore = createItemCallCount;
+		const execute = () =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: httpConnectionId,
+					operation_key: "create_item",
+					input: { body: { value: "terminalize-on-retry" } },
+					idempotency_key: key,
+				},
+				{} as Env,
+				ctx,
+			);
+
+		try {
+			await expect(execute()).rejects.toThrow("forced terminalization failure");
+			const [pending] = await sql`
+				SELECT id, status, action_output FROM runs
+				WHERE organization_id = ${orgId} AND action_idempotency_key = ${key}
+			`;
+			expect(pending.status).toBe("running");
+			expect(pending.action_output).toMatchObject({
+				body: { created: true, body: { value: "terminalize-on-retry" } },
+			});
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS fail_http_terminalization_trigger ON runs;
+				DROP FUNCTION IF EXISTS fail_http_terminalization();
+			`);
+		}
+
+		const replay = await execute();
+		expect(replay).toMatchObject({ status: "completed" });
+		expect(createItemCallCount - callsBefore).toBe(1);
+	});
+
 	it("binds an action and its feedback record to the trusted Automation window", async () => {
 		const execute = () =>
 			manageOperations(
 				{
-				action: "execute",
-				connection_id: localConnectionId,
-				operation_key: "echo",
-				input: { value: "automation-provenance" },
-				idempotency_key: "operation-backend-test:automation-provenance",
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "echo",
+					input: { value: "automation-provenance" },
+					idempotency_key: "operation-backend-test:automation-provenance",
 				},
 				{} as Env,
 				{ ...ctx, actingAutomationId: automationId, actingRunId: sourceRunId },
@@ -654,12 +666,12 @@ describe("operations.execute backend lifecycle", () => {
 		const echo = result.operations.find(
 			(operation) => operation.operation_key === "echo",
 		);
-		expect(echo?.execution_targets.map((target) => target.connection_id)).toContain(
-			localConnectionId,
-		);
-		expect(echo?.execution_targets.map((target) => target.connection_id)).not.toContain(
-			otherPrivate.id,
-		);
+		expect(
+			echo?.execution_targets.map((target) => target.connection_id),
+		).toContain(localConnectionId);
+		expect(
+			echo?.execution_targets.map((target) => target.connection_id),
+		).not.toContain(otherPrivate.id);
 	});
 
 	it("carries the Automation author through private browser target authorization", async () => {
@@ -1097,6 +1109,33 @@ describe("operations.execute backend lifecycle", () => {
 				body: { created: true, body: { value: "http-ok" } },
 			},
 		});
+	});
+
+	it("bounds an oversized successful HTTP response without replaying the apply", async () => {
+		const callsBefore = createItemCallCount;
+		const execute = () =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: httpConnectionId,
+					operation_key: "create_item",
+					input: { body: { value: "oversized-response" } },
+					idempotency_key: "operation-backend-test:oversized-response",
+				},
+				{} as Env,
+				ctx,
+			);
+
+		expect(await execute()).toMatchObject({
+			action: "execute",
+			status: "completed",
+			output: { body: null, body_truncated: true },
+		});
+		expect(await execute()).toMatchObject({
+			status: "completed",
+			output: { body: null, body_truncated: true },
+		});
+		expect(createItemCallCount - callsBefore).toBe(1);
 	});
 
 	it("finalizes the run when HTTP credentials are missing", async () => {

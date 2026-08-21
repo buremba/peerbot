@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
-import type { PlatformRegistry } from "../platform.js";
 import type { IFileHandler } from "../platform/file-handler.js";
+import type { PlatformRegistry } from "../platform.js";
 import { createFileRoutes } from "../routes/internal/files.js";
 import { createPublicFileRoutes } from "../routes/public/files.js";
 import {
@@ -28,7 +28,7 @@ describe("file routes", () => {
     } as unknown as PlatformRegistry;
     app.route(
       "/internal/files",
-      createFileRoutes(platformRegistry, env.artifactStore, TEST_GATEWAY_URL)
+      createFileRoutes(platformRegistry, env.artifactStore, TEST_GATEWAY_URL),
     );
     app.route("", createPublicFileRoutes(env.artifactStore));
     return app;
@@ -74,7 +74,7 @@ describe("file routes", () => {
   ];
 
   test.each(
-    FALLBACK_CASES
+    FALLBACK_CASES,
   )("falls back to a signed artifact URL when $name", async ({
     handler,
     expectAttempts,
@@ -115,14 +115,14 @@ describe("file routes", () => {
     // The signed permalink the worker would receive is fetchable end-to-end.
     const downloadUrl = new URL(uploadBody.permalink);
     const downloadResponse = await app.request(
-      `${downloadUrl.pathname}${downloadUrl.search}`
+      `${downloadUrl.pathname}${downloadUrl.search}`,
     );
     expect(downloadResponse.status).toBe(200);
     expect(downloadResponse.headers.get("content-type")).toContain(
-      "text/plain"
+      "text/plain",
     );
     expect(downloadResponse.headers.get("content-disposition")).toContain(
-      `filename="${filename}"`
+      `filename="${filename}"`,
     );
     expect(await downloadResponse.text()).toBe(contents);
   });
@@ -175,5 +175,98 @@ describe("file routes", () => {
     expect(seen?.threadTs).toBe("conv-1");
     expect(seen?.channelId).not.toBe("victim-channel");
     expect(seen?.threadTs).not.toBe("victim-conv");
+  });
+
+  test("rejects a declared oversized upload before parsing its multipart body", async () => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+
+    const response = await app.request("/internal/files/upload", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "multipart/form-data; boundary=unused",
+        "Content-Length": String(52 * 1024 * 1024),
+      },
+      body: "--unused--\r\n",
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: "File exceeds maximum size of 50MB",
+    });
+  });
+
+  test("bounds a chunked multipart upload when Content-Length is absent", async () => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const boundary = "bounded-upload-test";
+    const prefix = new TextEncoder().encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="large.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+    );
+    const chunk = new Uint8Array(1024 * 1024);
+    let chunkIndex = -1;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunkIndex === -1) {
+          chunkIndex = 0;
+          controller.enqueue(prefix);
+          return;
+        }
+        if (chunkIndex < 52) {
+          chunkIndex += 1;
+          controller.enqueue(chunk);
+          return;
+        }
+        controller.close();
+      },
+    });
+    const request = new Request(
+      "http://localhost/internal/files/upload",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      } as RequestInit,
+    );
+
+    const response = await app.request(request);
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: "File exceeds maximum size of 50MB",
+    });
+  });
+
+  test("rejects a batch with more than ten files before reading file bytes", async () => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const form = new FormData();
+    for (let index = 0; index < 11; index++) {
+      form.append("files", new File(["x"], `${index}.txt`));
+    }
+
+    const response = await app.request("/internal/files/upload-batch", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: "Too many files (maximum 10)",
+    });
   });
 });

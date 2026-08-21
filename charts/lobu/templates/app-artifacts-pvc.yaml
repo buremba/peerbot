@@ -1,4 +1,5 @@
 {{- if .Values.app.artifacts.enabled }}
+{{- include "lobu.validateArtifactTopology" . }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

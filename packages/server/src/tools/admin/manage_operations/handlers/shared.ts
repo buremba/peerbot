@@ -3,9 +3,12 @@ type InlineExecutionResult =
 			status: "completed";
 			output: Record<string, unknown>;
 			metadata?: Record<string, unknown>;
-			publishedArtifactIds?: string[];
 	  }
-	| { status: "failed"; error_message: string; output?: Record<string, unknown> };
+	| {
+			status: "failed";
+			error_message: string;
+			output?: Record<string, unknown>;
+	  };
 
 type ConnectionRow = {
 	id: number;

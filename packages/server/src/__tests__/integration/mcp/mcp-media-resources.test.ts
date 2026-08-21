@@ -14,6 +14,8 @@ import {
 import type { Env } from '../../../index';
 import * as lobuGateway from '../../../lobu/gateway';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import type { ToolContext } from '../../../tools/registry';
+import { saveContent } from '../../../tools/save_content';
 import { insertEvent } from '../../../utils/insert-event';
 import { completeActionRun, streamContent } from '../../../worker-api';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -31,7 +33,10 @@ function mockWorkerCtx(body: unknown): {
   ctx: Context<{ Bindings: Env }>;
   result: () => { body: unknown; status: number };
 } {
-  let captured: { body: unknown; status: number } = { body: undefined, status: 200 };
+  let captured: { body: unknown; status: number } = {
+    body: undefined,
+    status: 200,
+  };
   const ctx = {
     req: { json: async () => body },
     var: {},
@@ -43,8 +48,18 @@ function mockWorkerCtx(body: unknown): {
   return { ctx, result: () => captured };
 }
 
+/**
+ * Artifact directories are UUIDs; the store also keeps a `.trash` staging
+ * directory alongside them for its rename-then-remove delete. Only the
+ * artifacts are the subject of these assertions.
+ */
+async function readArtifactIds(dir: string): Promise<string[]> {
+  return (await readdir(dir)).filter((entry) => !entry.startsWith('.')).sort();
+}
+
 describe('MCP media resources', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
+  let owner: Awaited<ReturnType<typeof createTestUser>>;
   let token: string;
   let artifactStore: ArtifactStore;
   let artifactsDir: string;
@@ -55,7 +70,7 @@ describe('MCP media resources', () => {
     artifactsDir = mkdtempSync(join(tmpdir(), 'lobu-mcp-media-'));
     process.env.LOBU_ARTIFACTS_DIR = artifactsDir;
     process.env.ENCRYPTION_KEY = Buffer.from(
-      '12345678901234567890123456789012'
+      '12345678901234567890123456789012',
     ).toString('base64');
     artifactStore = new ArtifactStore();
 
@@ -65,7 +80,9 @@ describe('MCP media resources', () => {
       name: 'MCP Media Org',
       slug: 'mcp-media-org',
     });
-    const owner = await createTestUser({ email: 'mcp-media-owner@test.example.com' });
+    owner = await createTestUser({
+      email: 'mcp-media-owner@test.example.com',
+    });
     await addUserToOrganization(owner.id, org.id, 'owner');
     const client = await createTestOAuthClient();
     token = (
@@ -77,7 +94,8 @@ describe('MCP media resources', () => {
   });
 
   afterAll(() => {
-    if (previousArtifactsDir === undefined) delete process.env.LOBU_ARTIFACTS_DIR;
+    if (previousArtifactsDir === undefined)
+      delete process.env.LOBU_ARTIFACTS_DIR;
     else process.env.LOBU_ARTIFACTS_DIR = previousArtifactsDir;
     if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
     else process.env.ENCRYPTION_KEY = previousEncryptionKey;
@@ -147,7 +165,7 @@ describe('MCP media resources', () => {
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
     const resource = body.result?.content?.find(
-      (item: { type?: string }) => item.type === 'resource_link'
+      (item: { type?: string }) => item.type === 'resource_link',
     );
     expect(resource).toEqual(
       expect.objectContaining({
@@ -156,7 +174,7 @@ describe('MCP media resources', () => {
         name: 'direct-photo.png',
         mimeType: 'image/png',
         size: imageBytes.length,
-      })
+      }),
     );
     expect(body.result?.structuredContent?.attachments?.[0]).toEqual(
       expect.objectContaining({
@@ -165,12 +183,14 @@ describe('MCP media resources', () => {
         mime_type: 'image/png',
         artifact_id: expect.any(String),
         size_bytes: imageBytes.length,
-      })
+      }),
     );
-    expect(body.result?.structuredContent?.attachments?.[0]).not.toHaveProperty('data');
+    expect(body.result?.structuredContent?.attachments?.[0]).not.toHaveProperty(
+      'data',
+    );
 
     const firstAttachment = body.result.structuredContent.attachments[0];
-    const objectCount = (await readdir(artifactsDir)).length;
+    const objectCount = (await readArtifactIds(artifactsDir)).length;
     const replayResponse = await post(path, {
       body: {
         jsonrpc: '2.0',
@@ -199,8 +219,10 @@ describe('MCP media resources', () => {
     });
     const replayBody = await replayResponse.json();
     expect(replayBody.result?.structuredContent?.created).toBe(false);
-    expect(replayBody.result?.structuredContent?.attachments?.[0]).toEqual(firstAttachment);
-    expect((await readdir(artifactsDir)).length).toBe(objectCount);
+    expect(replayBody.result?.structuredContent?.attachments?.[0]).toEqual(
+      firstAttachment,
+    );
+    expect((await readArtifactIds(artifactsDir)).length).toBe(objectCount);
 
     const readResponse = await post(path, {
       body: {
@@ -220,8 +242,83 @@ describe('MCP media resources', () => {
     });
   });
 
+  it('preserves both a failed save_memory insert and its cleanup failure', async () => {
+    const sql = getDb();
+    const baselineArtifacts = await readArtifactIds(artifactsDir);
+    await sql.unsafe(`
+      CREATE FUNCTION fail_media_save_insert() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'forced media event insert failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_media_save_insert_trigger
+        BEFORE INSERT ON events
+        FOR EACH ROW
+        WHEN (NEW.metadata->>'_lobu_idempotency_key' = 'mcp-media-cleanup-failure')
+        EXECUTE FUNCTION fail_media_save_insert();
+    `);
+    const deleteSpy = vi
+      .spyOn(ArtifactStore.prototype, 'delete')
+      .mockRejectedValueOnce(new Error('forced retained-PVC cleanup failure'));
+
+    let thrown: unknown;
+    try {
+      await saveContent(
+        {
+          semantic_type: 'note',
+          payload_type: 'media',
+          title: 'Must not persist',
+          idempotency_key: 'mcp-media-cleanup-failure',
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'uncommitted.png',
+              mime_type: 'image/png',
+              data: Buffer.from('uncommitted-image').toString('base64'),
+            },
+          ],
+        } as never,
+        {} as never,
+        {
+          organizationId: org.id,
+          userId: owner.id,
+          memberRole: 'owner',
+          isAuthenticated: true,
+          tokenType: 'oauth',
+          scopedToOrg: false,
+          allowCrossOrg: true,
+          scopes: ['mcp:write'],
+          sourceContext: null,
+        } as ToolContext,
+      );
+    } catch (error) {
+      thrown = error;
+    } finally {
+      deleteSpy.mockRestore();
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS fail_media_save_insert_trigger ON events;
+        DROP FUNCTION IF EXISTS fail_media_save_insert();
+      `);
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect(
+      (thrown as AggregateError).errors.map((error) => String(error)).join('\n'),
+    ).toContain('forced media event insert failure');
+    expect(
+      (thrown as AggregateError).errors.map((error) => String(error)).join('\n'),
+    ).toContain('forced retained-PVC cleanup failure');
+    for (const candidateId of await readArtifactIds(artifactsDir)) {
+      if (!baselineArtifacts.includes(candidateId)) {
+        await artifactStore.delete(candidateId);
+      }
+    }
+    expect(await readArtifactIds(artifactsDir)).toEqual(baselineArtifacts);
+  });
+
   it('materializes streamed media with connection-over-feed binding and reads its resource', async () => {
     const imageBytes = Buffer.from('durable-event-image');
+    const occurredAt = new Date().toISOString();
     const sql = getDb();
     const [connection] = await sql`
       INSERT INTO connections (
@@ -261,7 +358,7 @@ describe('MCP media resources', () => {
           title: 'Memory photo',
           payload_text: 'A streamed photo',
           payload_type: 'media',
-          occurred_at: new Date().toISOString(),
+          occurred_at: occurredAt,
           attachments: [
             {
               kind: 'image',
@@ -292,7 +389,9 @@ describe('MCP media resources', () => {
       LIMIT 1
     `;
     const eventId = Number(event!.id);
-    const attachment = (event!.attachments as Array<Record<string, unknown>>)[0]!;
+    const attachment = (
+      event!.attachments as Array<Record<string, unknown>>
+    )[0]!;
     const artifactId = String(attachment.artifact_id);
     expect(
       await artifactStore.read(artifactId, {
@@ -302,7 +401,7 @@ describe('MCP media resources', () => {
           feedId,
           originId: 'mcp-media-event',
         }),
-      })
+      }),
     ).toBeTruthy();
     expect(
       await artifactStore.read(artifactId, {
@@ -311,8 +410,104 @@ describe('MCP media resources', () => {
           feedId,
           originId: 'mcp-media-event',
         }),
-      })
+      }),
     ).toBeNull();
+
+    const artifactsBeforeUnchangedRetry = await readArtifactIds(artifactsDir);
+    const unchangedRetry = mockWorkerCtx({
+      run_id: runId,
+      worker_id: 'worker-mcp-media',
+      items: [
+        {
+          id: 'mcp-media-event',
+          title: 'Memory photo',
+          payload_text: 'A streamed photo',
+          payload_type: 'media',
+          occurred_at: occurredAt,
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'memory-photo.webp',
+              mime_type: 'image/webp',
+              data: imageBytes.toString('base64'),
+            },
+          ],
+        },
+      ],
+    });
+    const retryServices = vi
+      .spyOn(lobuGateway, 'getLobuCoreServices')
+      .mockReturnValue({ getArtifactStore: () => artifactStore });
+    try {
+      await streamContent(unchangedRetry.ctx);
+    } finally {
+      retryServices.mockRestore();
+    }
+    expect(unchangedRetry.result()).toMatchObject({
+      status: 200,
+      body: { total_items: 1 },
+    });
+    const [unchangedCount] = await sql`
+      SELECT count(*)::int AS count
+      FROM events
+      WHERE organization_id = ${org.id}
+        AND connection_id = ${connectionId}
+        AND origin_id = 'mcp-media-event'
+    `;
+    expect(Number(unchangedCount!.count)).toBe(1);
+    expect(await readArtifactIds(artifactsDir)).toEqual(
+      artifactsBeforeUnchangedRetry,
+    );
+
+    const failedCleanupRetry = mockWorkerCtx({
+      run_id: runId,
+      worker_id: 'worker-mcp-media',
+      items: [
+        {
+          id: 'mcp-media-event',
+          title: 'Memory photo',
+          payload_text: 'A streamed photo',
+          payload_type: 'media',
+          occurred_at: occurredAt,
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'memory-photo.webp',
+              mime_type: 'image/webp',
+              data: imageBytes.toString('base64'),
+            },
+          ],
+        },
+      ],
+    });
+    const deleteSpy = vi
+      .spyOn(artifactStore, 'delete')
+      .mockRejectedValueOnce(new Error('injected retained-PVC cleanup failure'));
+    const failedCleanupServices = vi
+      .spyOn(lobuGateway, 'getLobuCoreServices')
+      .mockReturnValue({ getArtifactStore: () => artifactStore });
+    try {
+      await streamContent(failedCleanupRetry.ctx);
+    } finally {
+      failedCleanupServices.mockRestore();
+      deleteSpy.mockRestore();
+    }
+    expect(failedCleanupRetry.result()).toMatchObject({
+      status: 500,
+      body: {
+        error: expect.stringContaining(
+          'injected retained-PVC cleanup failure',
+        ),
+      },
+    });
+    for (const candidateId of await readArtifactIds(artifactsDir)) {
+      if (!artifactsBeforeUnchangedRetry.includes(candidateId)) {
+        await artifactStore.delete(candidateId);
+      }
+    }
+    expect(await readArtifactIds(artifactsDir)).toEqual(
+      artifactsBeforeUnchangedRetry,
+    );
 
     const sessionId = await initSession();
     const path = `/mcp/${org.slug}`;
@@ -335,7 +530,7 @@ describe('MCP media resources', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.content?.find(
-      (item: { type?: string }) => item.type === 'resource_link'
+      (item: { type?: string }) => item.type === 'resource_link',
     );
     expect(resource).toEqual(
       expect.objectContaining({
@@ -344,7 +539,7 @@ describe('MCP media resources', () => {
         name: 'memory-photo.webp',
         mimeType: 'image/webp',
         size: imageBytes.length,
-      })
+      }),
     );
 
     const readResponse = await post(path, {
@@ -364,7 +559,7 @@ describe('MCP media resources', () => {
       blob: imageBytes.toString('base64'),
     });
 
-    const artifactsBeforeFailedInsert = (await readdir(artifactsDir)).sort();
+    const artifactsBeforeFailedInsert = await readArtifactIds(artifactsDir);
     const failedInsert = mockWorkerCtx({
       run_id: runId,
       worker_id: 'worker-mcp-media',
@@ -395,7 +590,9 @@ describe('MCP media resources', () => {
       failedInsertServices.mockRestore();
     }
     expect(failedInsert.result().status).toBe(500);
-    expect((await readdir(artifactsDir)).sort()).toEqual(artifactsBeforeFailedInsert);
+    expect(await readArtifactIds(artifactsDir)).toEqual(
+      artifactsBeforeFailedInsert,
+    );
   });
 
   it('does not let a resource URI bypass workspace authorization', async () => {
@@ -518,7 +715,7 @@ describe('MCP media resources', () => {
     expect(oversizedBody.error?.message).toContain('Unknown resource');
   });
 
-  it('cleans action artifacts when finalization rolls back or commits zero rows', async () => {
+  it('retains a checkpointed action artifact after terminalization rollback without publishing on a terminal retry', async () => {
     const sql = getDb();
     const [rollbackRun, finalizedRun] = await Promise.all([
       sql`
@@ -538,7 +735,7 @@ describe('MCP media resources', () => {
         RETURNING id
       `.then((rows) => rows[0]),
     ]);
-    const artifactsBefore = (await readdir(artifactsDir)).sort();
+    const artifactsBefore = await readArtifactIds(artifactsDir);
     const coreServices = vi
       .spyOn(lobuGateway, 'getLobuCoreServices')
       .mockReturnValue({ getArtifactStore: () => artifactStore });
@@ -561,7 +758,7 @@ describe('MCP media resources', () => {
       await completeActionRun(rollback.ctx);
       expect(rollback.result().status).toBe(500);
       expect((rollback.result().body as { error?: string }).error).toContain(
-        'approval card is missing'
+        'approval card is missing',
       );
 
       const zeroRows = mockWorkerCtx({
@@ -581,17 +778,31 @@ describe('MCP media resources', () => {
       await completeActionRun(zeroRows.ctx);
       expect(zeroRows.result()).toMatchObject({
         status: 200,
-        body: { success: false, reason: 'already_finalized' },
+        body: { success: true },
       });
     } finally {
       coreServices.mockRestore();
     }
 
-    expect((await readdir(artifactsDir)).sort()).toEqual(artifactsBefore);
     const [runAfterRollback] = await sql`
-      SELECT status FROM runs WHERE id = ${Number(rollbackRun!.id)}
+      SELECT status, action_output FROM runs WHERE id = ${Number(rollbackRun!.id)}
     `;
     expect(runAfterRollback!.status).toBe('running');
+    const checkpointedAttachment = (
+      runAfterRollback!.action_output as {
+        attachments: Array<Record<string, unknown>>;
+      }
+    ).attachments[0]!;
+    expect(checkpointedAttachment).toHaveProperty('artifact_id');
+    expect(checkpointedAttachment).not.toHaveProperty('data');
+    expect(
+      await artifactStore.read(String(checkpointedAttachment.artifact_id), {
+        binding: runArtifactBinding(Number(rollbackRun!.id)),
+      }),
+    ).toBeTruthy();
+    expect(await readArtifactIds(artifactsDir)).toEqual(
+      [...artifactsBefore, String(checkpointedAttachment.artifact_id)].sort(),
+    );
   });
 
   it('rejects an artifact grafted from another authorized resource', async () => {
@@ -676,11 +887,14 @@ describe('MCP media resources', () => {
       ttlMs: -1,
       binding: runArtifactBinding(runId),
     });
-    const expiredToken = new URL(artifact.downloadUrl).searchParams.get('token');
-    expect(expiredToken).toBeTruthy();
-    expect(artifactStore.validateDownloadToken(expiredToken!, artifact.artifactId).valid).toBe(
-      false
+    const expiredToken = new URL(artifact.downloadUrl).searchParams.get(
+      'token',
     );
+    expect(expiredToken).toBeTruthy();
+    expect(
+      artifactStore.validateDownloadToken(expiredToken!, artifact.artifactId)
+        .valid,
+    ).toBe(false);
     await sql`
       UPDATE runs
       SET action_output = ${sql.json({
@@ -720,7 +934,7 @@ describe('MCP media resources', () => {
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
     const resource = body.result?.content?.find(
-      (item: { type?: string }) => item.type === 'resource_link'
+      (item: { type?: string }) => item.type === 'resource_link',
     );
     expect(resource).toEqual(
       expect.objectContaining({
@@ -729,7 +943,7 @@ describe('MCP media resources', () => {
         name: 'candidate.jpg',
         mimeType: 'image/jpeg',
         size: imageBytes.length,
-      })
+      }),
     );
 
     const readResponse = await post(path, {

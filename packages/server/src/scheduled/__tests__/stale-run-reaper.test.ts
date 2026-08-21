@@ -163,10 +163,10 @@ async function seedApprovedActionCard(runId: number): Promise<void> {
       ${ORG_ID}, ${`run_${runId}_confirmed`}, 'stale_action — executing',
       'Operation confirmed: stale_action', ${runId}, 'operation',
       'approval', 'approved', ${sql.json({
-			status: "confirmed",
-			action_key: "stale_action",
-			run_id: runId,
-		})}
+				status: "confirmed",
+				action_key: "stale_action",
+				run_id: runId,
+			})}
     )
   `;
 }
@@ -616,13 +616,31 @@ describe("reapStaleRuns — connector lanes", () => {
 		const result = await reapStaleRuns();
 
 		expect(result.reaped).toBe(1);
-		// (RED today: the reaper marks it 'timeout' + the card 'failed'.)
 		expect(await statusOf(runId)).toBe("completed");
 		expect(await currentApprovalCardStatus(runId)).toBe("completed");
 		const [run] = (await getDb()`
 			SELECT action_output FROM runs WHERE id = ${runId}
 		`) as unknown as Array<{ action_output: Record<string, unknown> }>;
 		expect(run.action_output).toEqual({ body: { created: true } });
+	});
+
+	test("an automatic action with durable apply output is reconciled, not timed out", async () => {
+		const runId = await seedRun({
+			status: "running",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			runType: "action",
+			approvalStatus: "auto",
+		});
+		await getDb()`
+			UPDATE runs SET action_output = ${getDb().json({ body: { created: true } })}
+			WHERE id = ${runId}
+		`;
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(1);
+		expect(await statusOf(runId)).toBe("completed");
 	});
 
 	test("approved action output completion rolls back when the completed card write fails", async () => {

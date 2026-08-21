@@ -1,20 +1,28 @@
 import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtime";
 import { getErrorMessage } from "@lobu/core";
-import { ExecuteAction, type ManageOperationsResult } from "../schemas";
 import type { Static } from "@sinclair/typebox";
 import { readGrantedScopesFromAuthData } from "../../../../auth/oauth/scopes";
 import { resolveAutomationConnectionVisibilityUserId } from "../../../../authz/automation-connection-visibility";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
-import { resolveActingPrincipal, resolveWritePolicyDecision } from "../../../../authz/entity-policy";
+import {
+	resolveActingPrincipal,
+	resolveWritePolicyDecision,
+} from "../../../../authz/entity-policy";
 import { authzScopeFromToolContext } from "../../../../authz/scope";
 import { getDb } from "../../../../db/client";
 import type { Env } from "../../../../index";
-import { currentMcpActivityAttribution, currentMcpActivityEventMetadata } from "../../../../lobu/stores/mcp-client-conversations";
+import {
+	currentMcpActivityAttribution,
+	currentMcpActivityEventMetadata,
+} from "../../../../lobu/stores/mcp-client-conversations";
 import { callTool as callProxyTool } from "../../../../mcp-proxy/client";
 import { resolveActionOrigin } from "../../../../notifications/action-origin";
 import { notifyActionApprovalNeeded } from "../../../../notifications/triggers";
-import { resolveApprovalChatOrigin } from "../../approval-delivery";
 import { resolveActionMode } from "../../../../operations/action-modes";
+import {
+	persistAppliedActionOutput,
+	reconcileAppliedActionRun,
+} from "../../../../operations/applied-action-reconciliation";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { executeHttpOperation } from "../../../../operations/execute-http-operation";
 import { validateOperationInput } from "../../../../operations/input-validation";
@@ -26,144 +34,37 @@ import {
 } from "../../../../runs/page-activation";
 import { createConnectorOperationRun } from "../../../../runs/queue-service";
 import { getAuthProfileById } from "../../../../utils/auth-profiles";
+import { trackAutomationReaction } from "../../../../utils/automation-reactions";
 import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
 import { insertEvent } from "../../../../utils/insert-event";
-import {
-	AttachmentMaterializationError,
-	deleteMaterializedArtifacts,
-	MaterializedArtifactCleanupError,
-	materializeActionOutputAttachments,
-} from "../../../../utils/inline-attachments";
 import logger from "../../../../utils/logger";
 import { buildResourcePermalink } from "../../../../utils/url-builder";
-import { trackAutomationReaction } from "../../../../utils/automation-reactions";
 import { dispatchChromeActionToExtension } from "../../../../worker-api/dispatch-chrome-action";
 import { resolveRunInitiator } from "../../../initiator";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
+import { resolveApprovalChatOrigin } from "../../approval-delivery";
 import { waitForDeviceActionRun } from "../../device-action-wait";
+import type { ExecuteAction, ManageOperationsResult } from "../schemas";
 import {
-	qualifiedOperationKey,
 	type ConnectionRow,
 	type InlineExecutionResult,
+	qualifiedOperationKey,
 } from "./shared";
-// Update the run to failed status and return the error result in one call.
-// When `deferTerminalWrite` is set the runs write is skipped — the caller
-// (approve's phase 2) persists the terminal state AND the card event in one
-// transaction, so the executor must not commit the run terminal state first.
-async function failRunInline(
-	runId: number,
-	organizationId: string,
-	errorMsg: string,
-	deferTerminalWrite = false,
-): Promise<InlineExecutionResult> {
-	if (!deferTerminalWrite) {
-		const sql = getDb();
-		await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMsg} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-	}
+
+// Backend helpers only report execution. executeOperationInline owns every DB
+// transition so a successful apply can never be terminalized before its raw
+// output is durable.
+function failRunInline(errorMsg: string): InlineExecutionResult {
 	return { status: "failed", error_message: errorMsg };
 }
 
-// Update the run to completed status and return the output in one call.
-async function completeRunInline(
-	runId: number,
-	organizationId: string,
+function completeRunInline(
 	output: Record<string, unknown>,
-	deferTerminalWrite = false,
-): Promise<InlineExecutionResult> {
-	let materialized: Awaited<ReturnType<typeof materializeActionOutputAttachments>>;
-	try {
-		materialized = await materializeActionOutputAttachments(runId, output);
-	} catch (error) {
-		let cleanupPendingArtifactIds =
-			error instanceof AttachmentMaterializationError
-				? error.publishedArtifactIds
-				: [];
-		if (cleanupPendingArtifactIds.length > 0) {
-			try {
-				await deleteMaterializedArtifacts(cleanupPendingArtifactIds);
-				cleanupPendingArtifactIds = [];
-			} catch (cleanupError) {
-				cleanupPendingArtifactIds =
-					cleanupError instanceof MaterializedArtifactCleanupError
-						? cleanupError.artifactIds
-						: cleanupPendingArtifactIds;
-				logger.error(
-					{
-						run_id: runId,
-						artifact_ids: cleanupPendingArtifactIds,
-						error: getErrorMessage(cleanupError),
-					},
-					"Action attachment rollback remains incomplete",
-				);
-			}
-		}
-		// The connector action has already succeeded. A storage outage must not
-		// relabel that external side effect as failed (which invites a retry).
-		// Drop only the unpersisted inline binaries and preserve the durable
-		// non-media result with an explicit warning for the caller.
-		logger.error(
-			{ run_id: runId, error: getErrorMessage(error) },
-			"Action completed but returned attachments could not be persisted",
-		);
-		const attachments = Array.isArray(output.attachments)
-			? output.attachments.filter(
-					(attachment) =>
-						!attachment ||
-						typeof attachment !== "object" ||
-						!Object.hasOwn(attachment, "data"),
-				)
-			: undefined;
-		materialized = {
-			output: {
-				...output,
-				...(attachments ? { attachments } : {}),
-				lobu_attachment_error:
-					"Action completed, but Lobu could not persist one or more returned attachments.",
-				...(cleanupPendingArtifactIds.length > 0
-					? {
-							lobu_attachment_cleanup_pending_artifact_ids:
-								cleanupPendingArtifactIds,
-						}
-					: {}),
-			},
-			publishedArtifactIds: cleanupPendingArtifactIds,
-		};
-	}
-	if (deferTerminalWrite) {
-		return {
-			status: "completed",
-			output: materialized.output,
-			publishedArtifactIds: materialized.publishedArtifactIds,
-		};
-	}
-
-	const sql = getDb();
-	try {
-		const rows = await sql`
-			UPDATE runs
-			SET status = 'completed', completed_at = NOW(),
-				action_output = ${sql.json(materialized.output)}
-			WHERE id = ${runId} AND organization_id = ${organizationId}
-			RETURNING id
-		`;
-		if (rows.length === 0) {
-			throw new Error(`Run ${runId} disappeared before inline completion`);
-		}
-	} catch (error) {
-		try {
-			await deleteMaterializedArtifacts(materialized.publishedArtifactIds);
-		} catch (cleanupError) {
-			throw new AggregateError(
-				[error, cleanupError],
-				"Run completion failed and artifact cleanup also failed",
-			);
-		}
-		throw error;
-	}
-	return { status: "completed", output: materialized.output };
+): InlineExecutionResult {
+	return { status: "completed", output };
 }
 
 /**
@@ -195,7 +96,6 @@ async function executeLocalActionInline(
 	requesterUserId: string | null,
 	env: Env,
 	abortSignal?: AbortSignal,
-	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
 	const sql = getDb();
 
@@ -213,12 +113,7 @@ async function executeLocalActionInline(
 			connectorVersion ?? null,
 		);
 	} catch (err) {
-		return failRunInline(
-			runId,
-			organizationId,
-			getErrorMessage(err),
-			deferTerminalWrite,
-		);
+		return failRunInline(getErrorMessage(err));
 	}
 
 	const { credentials, connectionCredentials, sessionState } =
@@ -291,80 +186,53 @@ async function executeLocalActionInline(
 		if (result.mode !== "action") {
 			throw new Error(`Expected action result, got mode=${result.mode}`);
 		}
-		return completeRunInline(
-			runId,
-			organizationId,
-			result.output,
-			deferTerminalWrite,
-		);
+		return completeRunInline(result.output);
 	} catch (error) {
-		return failRunInline(
-			runId,
-			organizationId,
-			getErrorMessage(error),
-			deferTerminalWrite,
-		);
+		return failRunInline(getErrorMessage(error));
 	}
 }
 
 async function executeMcpToolInline(
-	runId: number,
 	organizationId: string,
 	connection: ConnectionRow,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
-	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
 	if (operation.backend_config.backend !== "mcp_tool") {
 		return {
 			status: "failed",
 			error_message: "Invalid MCP operation backend config",
 		};
-  }
+	}
 
 	let result: Awaited<ReturnType<typeof callProxyTool>>;
 	try {
 		result = await callProxyTool(
-    connection.connector_key,
-    {
-      upstream_url: operation.backend_config.upstreamUrl,
+			connection.connector_key,
+			{
+				upstream_url: operation.backend_config.upstreamUrl,
 				tool_prefix: "",
-    },
-    organizationId,
-    operation.backend_config.toolName,
+			},
+			organizationId,
+			operation.backend_config.toolName,
 			actionInput,
 			connection.id,
-  );
-	} catch (error) {
-		return failRunInline(
-			runId,
-			organizationId,
-			getErrorMessage(error),
-			deferTerminalWrite,
 		);
+	} catch (error) {
+		return failRunInline(getErrorMessage(error));
 	}
 
-  if (result.isError) {
-    const errorText =
-      (result.content as Array<{ type: string; text?: string }>).find(
+	if (result.isError) {
+		const errorText =
+			(result.content as Array<{ type: string; text?: string }>).find(
 				(item) => item?.type === "text",
 			)?.text ?? "Upstream MCP error";
-    return failRunInline(
-      runId,
-      organizationId,
-      errorText,
-      deferTerminalWrite,
-    );
-  }
+		return failRunInline(errorText);
+	}
 
-	return completeRunInline(
-		runId,
-		organizationId,
-		{
-			content: result.content,
-		} as Record<string, unknown>,
-		deferTerminalWrite,
-	);
+	return completeRunInline({
+		content: result.content,
+	} as Record<string, unknown>);
 }
 
 /**
@@ -372,10 +240,9 @@ async function executeMcpToolInline(
  */
 interface InlineExecutionOptions {
 	/**
-	 * Skip the executor's terminal `runs` write. Used by approve's phase 2:
-	 * the terminal run state and its card event must commit together, so the
-	 * executor cannot commit the run terminal state on the pool first (that
-	 * would leave a terminal run with no card when the card INSERT fails).
+	 * Leave failure terminalization to the approval path, which commits the run
+	 * state and its card together. Successful execution always persists the raw
+	 * apply marker first, regardless of this option.
 	 */
 	deferTerminalWrite?: boolean;
 }
@@ -392,8 +259,9 @@ export async function executeOperationInline(
 	options?: InlineExecutionOptions,
 ): Promise<InlineExecutionResult> {
 	const deferTerminalWrite = options?.deferTerminalWrite ?? false;
+	let result: InlineExecutionResult;
 	if (operation.backend === "local_action") {
-		return executeLocalActionInline(
+		result = await executeLocalActionInline(
 			runId,
 			organizationId,
 			connection,
@@ -402,28 +270,59 @@ export async function executeOperationInline(
 			requesterUserId,
 			env,
 			abortSignal,
-			deferTerminalWrite,
 		);
-	}
-	if (operation.backend === "mcp_tool") {
-		return executeMcpToolInline(
-			runId,
+	} else if (operation.backend === "mcp_tool") {
+		result = await executeMcpToolInline(
 			organizationId,
 			connection,
 			operation,
 			actionInput,
-			deferTerminalWrite,
+		);
+	} else {
+		result = await executeHttpOperation(
+			organizationId,
+			connection,
+			operation,
+			actionInput,
+			abortSignal,
 		);
 	}
-	return executeHttpOperation(
+	if (result.status !== "completed") {
+		if (!deferTerminalWrite) {
+			const sql = getDb();
+			await sql`
+				UPDATE runs
+				SET status = 'failed', completed_at = current_timestamp,
+					error_message = ${result.error_message},
+					action_output = ${result.output ? sql.json(result.output) : null}
+				WHERE id = ${runId}
+					AND organization_id = ${organizationId}
+					AND status = 'running'
+			`;
+		}
+		return result;
+	}
+
+	const applied = await persistAppliedActionOutput({
 		runId,
 		organizationId,
-		connection,
-		operation,
-		actionInput,
-		abortSignal,
-		deferTerminalWrite,
-	);
+		output: result.output,
+	});
+	if (!applied?.action_output) {
+		throw new Error(
+			`Run ${runId} applied externally but its durable output could not be confirmed; refusing to replay`,
+		);
+	}
+	if (deferTerminalWrite) {
+		return { ...result, output: applied.action_output };
+	}
+	const reconciled = await reconcileAppliedActionRun({ runId, organizationId });
+	if (reconciled.status !== "completed") {
+		throw new Error(
+			`Run ${runId} applied externally and is awaiting durable terminalization; refusing to replay`,
+		);
+	}
+	return { ...result, output: reconciled.output };
 }
 /** Return the durable outcome of a run claimed by an earlier request. */
 async function replayExistingOperationRun(
@@ -432,6 +331,33 @@ async function replayExistingOperationRun(
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
 	const sql = getDb();
+	if (
+		claim.status === "running" &&
+		claim.actionOutput &&
+		typeof claim.actionOutput === "object"
+	) {
+		const reconciled = await reconcileAppliedActionRun({
+			runId: claim.runId,
+			organizationId: ctx.organizationId,
+			...(claim.approvalStatus === "approved"
+				? {
+						card: {
+							title: `${operationName} — completed`,
+							content: `Operation completed: ${operationName}`,
+							reviewer: null,
+						},
+					}
+				: {}),
+		});
+		if (reconciled.status === "completed") {
+			return {
+				action: "execute",
+				run_id: claim.runId,
+				status: "completed",
+				output: reconciled.output,
+			};
+		}
+	}
 	if (claim.approvalStatus === "pending" && claim.status === "pending") {
 		const eventRows = await sql<{ id: number }>`
 			SELECT id

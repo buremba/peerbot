@@ -166,7 +166,7 @@ export const SaveContentSchema = Type.Object({
   attachments: Type.Optional(
     Type.Array(Type.Record(Type.String(), Type.Any()), {
       description:
-        "Files or images. To persist bytes, pass { kind, filename, mime_type, data }, where data is base64 and each decoded attachment is limited to 2 MiB. Lobu removes data and returns a durable artifact reference.",
+        'Files or images, up to 20 per call. To persist bytes, pass { kind, filename, mime_type, data }, where data is base64 and each decoded attachment is limited to 2 MiB. Lobu removes data and returns a durable artifact reference.',
     })
   ),
   source_url: Type.Optional(
@@ -647,8 +647,17 @@ async function saveContentImpl(
     } catch (error) {
       // The DB row is the durable authorization anchor. If it did not commit —
       // including an idempotency race we lost to another replica — the newly
-      // published artifacts have no valid owner and must be removed.
-      await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
+      // published artifacts have no valid owner and must be removed. A retained
+      // PVC cleanup failure is not recoverable from the event row, so preserve
+      // both failures and stop rather than reporting a successful race recovery.
+      try {
+        await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `Content persistence failed and artifact cleanup also failed: ${String(cleanupError)}`
+        );
+      }
       // Two replicas may race after the preflight read. The unique index is the
       // lock; the loser resolves and returns the winner's durable event.
       if (

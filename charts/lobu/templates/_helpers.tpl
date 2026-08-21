@@ -95,3 +95,15 @@ Create the embeddings service image name
 {{- $tag := .Values.image.tag | default .Chart.AppVersion }}
 {{- printf "%s/%s-embeddings:%s" .Values.image.registry .Values.image.repository $tag }}
 {{- end }}
+
+{{/* Fail before rendering an app topology that cannot share durable artifacts. */}}
+{{- define "lobu.validateArtifactTopology" -}}
+{{- if .Values.app.artifacts.enabled }}
+{{- if and (gt (int .Values.app.replicaCount) 1) (ne .Values.app.artifacts.accessMode "ReadWriteMany") }}
+{{- fail "app.replicaCount > 1 with app.artifacts.enabled=true requires app.artifacts.accessMode=ReadWriteMany so every replica can read the same durable bytes" }}
+{{- end }}
+{{- if and (hasKey .Values.app.env "LOBU_ARTIFACTS_DIR") (ne (get .Values.app.env "LOBU_ARTIFACTS_DIR") .Values.app.artifacts.mountPath) }}
+{{- fail "app.env.LOBU_ARTIFACTS_DIR must equal app.artifacts.mountPath when artifact storage is enabled" }}
+{{- end }}
+{{- end }}
+{{- end }}

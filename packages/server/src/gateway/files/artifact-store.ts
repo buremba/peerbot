@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,6 +10,11 @@ const DEFAULT_ARTIFACTS_DIR = path.join(os.tmpdir(), "lobu-artifacts");
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTIFACT_PAYLOAD_FILENAME = "content";
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const ARTIFACT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const ARTIFACT_METADATA_MAX_BYTES = 16 * 1024;
+const DEFAULT_ARTIFACT_READ_MAX_BYTES = 50 * 1024 * 1024;
+const ARTIFACT_TRASH_DIRNAME = ".trash";
+const DOWNLOAD_TOKEN_MAX_CHARS = 4096;
 
 interface StoredArtifactMetadata {
   artifactId: string;
@@ -65,12 +71,70 @@ function sha256(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+function isStoredArtifactMetadata(
+  value: unknown,
+  artifactId: string,
+): value is StoredArtifactMetadata {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const metadata = value as Record<string, unknown>;
+  return (
+    metadata.artifactId === artifactId &&
+    typeof metadata.filename === "string" &&
+    metadata.filename.length > 0 &&
+    metadata.filename.length <= 1024 &&
+    typeof metadata.contentType === "string" &&
+    metadata.contentType.length > 0 &&
+    metadata.contentType.length <= 512 &&
+    typeof metadata.size === "number" &&
+    Number.isSafeInteger(metadata.size) &&
+    metadata.size >= 0 &&
+    typeof metadata.createdAt === "number" &&
+    Number.isFinite(metadata.createdAt) &&
+    typeof metadata.sha256 === "string" &&
+    ARTIFACT_SHA256_PATTERN.test(metadata.sha256) &&
+    (metadata.binding === undefined ||
+      (typeof metadata.binding === "string" && metadata.binding.length <= 2048))
+  );
+}
+
+async function readBoundedRegularFile(
+  filePath: string,
+  maxBytes: number,
+): Promise<Buffer | null> {
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(
+      filePath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxBytes) return null;
+    const buffer = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.length - offset,
+        offset,
+      );
+      if (bytesRead === 0) return null;
+      offset += bytesRead;
+    }
+    return buffer;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 function resolveArtifactsDir(baseDir: string | undefined): string {
   const configured = baseDir?.trim() || process.env.LOBU_ARTIFACTS_DIR?.trim();
   if (configured) return configured;
   if (process.env.ENVIRONMENT === "production") {
     throw new Error(
-      "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable shared filesystem"
+      "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable shared filesystem",
     );
   }
   return DEFAULT_ARTIFACTS_DIR;
@@ -81,7 +145,7 @@ export class ArtifactStore {
 
   constructor(
     baseDir?: string,
-    private readonly defaultTtlMs = DEFAULT_TTL_MS
+    private readonly defaultTtlMs = DEFAULT_TTL_MS,
   ) {
     this.baseDir = resolveArtifactsDir(baseDir);
   }
@@ -96,6 +160,52 @@ export class ArtifactStore {
 
   private metadataPath(artifactId: string): string {
     return path.join(this.artifactDir(artifactId), "metadata.json");
+  }
+
+  /**
+   * Inside `baseDir` so the quarantine rename stays on one filesystem — the
+   * configured directory is the PVC mount root, and a sibling would land on
+   * the pod's ephemeral layer and fail with EXDEV. The name cannot collide
+   * with an artifact directory because those are always UUIDs.
+   */
+  private trashDir(): string {
+    return path.join(this.baseDir, ARTIFACT_TRASH_DIRNAME);
+  }
+
+  private async drainTrash(): Promise<void> {
+    const trashDir = this.trashDir();
+    await fs.mkdir(trashDir, { recursive: true, mode: 0o700 });
+    for (const stale of await fs.readdir(trashDir)) {
+      await fs.rm(path.join(trashDir, stale), {
+        recursive: true,
+        force: true,
+      });
+    }
+  }
+
+  /**
+   * Delete by rename-then-remove so a concurrent reader either sees the whole
+   * artifact or nothing — never a directory losing its files underneath it.
+   * The quarantined copy is removed immediately; one only lingers when that
+   * removal fails. Every later publish drains earlier leftovers first and
+   * fails closed if that is still impossible; the retained PVC has no other
+   * process that can safely infer which directories are uncommitted.
+   */
+  private async quarantineAndDelete(artifactId: string): Promise<void> {
+    const trashDir = this.trashDir();
+    await fs.mkdir(trashDir, { recursive: true, mode: 0o700 });
+    const source = this.artifactDir(artifactId);
+    const quarantined = path.join(trashDir, `${artifactId}-${randomUUID()}`);
+    try {
+      await fs.rename(source, quarantined);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        await this.drainTrash();
+        return;
+      }
+      throw error;
+    }
+    await this.drainTrash();
   }
 
   async publish(params: {
@@ -123,16 +233,33 @@ export class ArtifactStore {
 
     const dir = this.artifactDir(artifactId);
     try {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(this.artifactFilePath(artifactId), params.buffer);
-      await fs.writeFile(this.metadataPath(artifactId), JSON.stringify(metadata, null, 2));
+      await this.drainTrash();
+      // Exclusive: a collision on a freshly minted UUID means the directory is
+      // not ours, so never adopt it.
+      await fs.mkdir(dir, { recursive: false, mode: 0o700 });
+      await fs.writeFile(this.artifactFilePath(artifactId), params.buffer, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      await fs.writeFile(
+        this.metadataPath(artifactId),
+        JSON.stringify(metadata, null, 2),
+        { flag: "wx", mode: 0o600 },
+      );
     } catch (error) {
-      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      try {
+        await this.quarantineAndDelete(artifactId);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `Artifact publication failed and its partial directory could not be quarantined: ${getErrorMessage(cleanupError)}`,
+        );
+      }
       throw error;
     }
 
     logger.info(
-      `Published artifact ${artifactId} (${filename}, ${params.buffer.length} bytes)`
+      `Published artifact ${artifactId} (${filename}, ${params.buffer.length} bytes)`,
     );
 
     return {
@@ -143,31 +270,57 @@ export class ArtifactStore {
       downloadUrl: this.buildDownloadUrl(
         normalizeBaseUrl(params.publicGatewayUrl),
         artifactId,
-        params.ttlMs
+        params.ttlMs,
       ),
     };
   }
 
   async read(
     artifactId: string,
-    options?: { binding?: string; maxBytes?: number }
+    options?: { binding?: string; maxBytes?: number },
   ): Promise<{ metadata: StoredArtifactMetadata; bytes: Buffer } | null> {
     if (!ARTIFACT_ID_PATTERN.test(artifactId)) return null;
     try {
-      const raw = await fs.readFile(this.metadataPath(artifactId), "utf8");
-      const metadata = JSON.parse(raw) as StoredArtifactMetadata;
-      if (metadata.artifactId !== artifactId) return null;
+      const dirStat = await fs.lstat(this.artifactDir(artifactId));
+      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
+      const raw = await readBoundedRegularFile(
+        this.metadataPath(artifactId),
+        ARTIFACT_METADATA_MAX_BYTES,
+      );
+      if (!raw) return null;
+      const parsed = JSON.parse(raw.toString("utf8")) as unknown;
+      if (!isStoredArtifactMetadata(parsed, artifactId)) return null;
+      const metadata = parsed;
       if (options?.binding && metadata.binding !== options.binding) {
         return null;
       }
-      if (options?.maxBytes !== undefined && metadata.size > options.maxBytes) {
+      const maxBytes = options?.maxBytes ?? DEFAULT_ARTIFACT_READ_MAX_BYTES;
+      if (
+        !Number.isSafeInteger(maxBytes) ||
+        maxBytes < 0 ||
+        metadata.size > maxBytes
+      ) {
         return null;
       }
-      const bytes = await fs.readFile(
-        this.artifactFilePath(artifactId)
+      const bytes = await readBoundedRegularFile(
+        this.artifactFilePath(artifactId),
+        maxBytes,
       );
-      if (bytes.length !== metadata.size || sha256(bytes) !== metadata.sha256) {
+      if (
+        !bytes ||
+        bytes.length !== metadata.size ||
+        sha256(bytes) !== metadata.sha256
+      ) {
         logger.warn(`Artifact ${artifactId} failed size/checksum verification`);
+        return null;
+      }
+      const finalDirStat = await fs.lstat(this.artifactDir(artifactId));
+      if (
+        !finalDirStat.isDirectory() ||
+        finalDirStat.isSymbolicLink() ||
+        finalDirStat.dev !== dirStat.dev ||
+        finalDirStat.ino !== dirStat.ino
+      ) {
         return null;
       }
       return { metadata, bytes };
@@ -178,10 +331,7 @@ export class ArtifactStore {
 
   async delete(artifactId: string): Promise<void> {
     if (!ARTIFACT_ID_PATTERN.test(artifactId)) return;
-    await fs.rm(this.artifactDir(artifactId), {
-      recursive: true,
-      force: true,
-    });
+    await this.quarantineAndDelete(artifactId);
     logger.info(`Deleted artifact ${artifactId}`);
   }
 
@@ -190,17 +340,24 @@ export class ArtifactStore {
       JSON.stringify({
         artifactId,
         exp: Date.now() + ttlMs,
-      })
+      }),
     );
   }
 
   validateDownloadToken(
     token: string,
-    artifactId: string
+    artifactId: string,
   ): {
     valid: boolean;
     error?: string;
   } {
+    if (
+      token.length === 0 ||
+      token.length > DOWNLOAD_TOKEN_MAX_CHARS ||
+      !ARTIFACT_ID_PATTERN.test(artifactId)
+    ) {
+      return { valid: false, error: "malformed" };
+    }
     try {
       const payload = JSON.parse(decrypt(token)) as {
         artifactId?: string;
@@ -213,18 +370,15 @@ export class ArtifactStore {
         return { valid: false, error: "expired" };
       }
       return { valid: true };
-    } catch (error) {
-      return {
-        valid: false,
-        error: getErrorMessage(error),
-      };
+    } catch {
+      return { valid: false, error: "malformed" };
     }
   }
 
   buildDownloadUrl(
     publicGatewayUrl: string,
     artifactId: string,
-    ttlMs = this.defaultTtlMs
+    ttlMs = this.defaultTtlMs,
   ): string {
     const baseUrl = normalizeBaseUrl(publicGatewayUrl);
     // Concatenate onto the base rather than `new URL("/api/v1/...", baseUrl)`:
@@ -232,7 +386,7 @@ export class ArtifactStore {
     // drops a base path prefix (e.g. the embedded/local gateway is mounted
     // under `/lobu`, so the worker must fetch `/lobu/api/v1/files/...`).
     const url = new URL(
-      `${baseUrl}/api/v1/files/${encodeURIComponent(artifactId)}`
+      `${baseUrl}/api/v1/files/${encodeURIComponent(artifactId)}`,
     );
     url.searchParams.set("token", this.createDownloadToken(artifactId, ttlMs));
     return url.toString();

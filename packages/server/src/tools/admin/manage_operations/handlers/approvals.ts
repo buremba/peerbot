@@ -1,28 +1,34 @@
-import {
-	ApproveAction,
-	ApproveBatchAction,
-	type ManageOperationsResult,
-	RejectAction,
-	RejectBatchAction,
-} from "../schemas";
 import type { Static } from "@sinclair/typebox";
+import { lockOrgForAclInvalidation } from "../../../../authz/acl-generation";
 import {
 	agentExistsInOrg,
+	automationIdFromPrincipalId,
 	resolveAutomationOwner,
 	resolveWritePolicyDecision,
-	automationIdFromPrincipalId,
 } from "../../../../authz/entity-policy";
-import { lockOrgForAclInvalidation } from "../../../../authz/acl-generation";
-import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from "../../../../db/client";
-import { lockResolutionCandidate, wasResolutionRejected } from "../../../../entity-resolution/rejection";
+import {
+	type DbClient,
+	getDb,
+	parsePgNumberArray,
+	pgTextArray,
+} from "../../../../db/client";
 import { droppedEvidence } from "../../../../entity-resolution/evidence-strength";
+import {
+	lockResolutionCandidate,
+	wasResolutionRejected,
+} from "../../../../entity-resolution/rejection";
 import { ResolutionFingerprintError } from "../../../../entity-resolution/staleness";
 import type { Env } from "../../../../index";
+import {
+	AGENT_ASK_ACTION_KEY,
+	isAgentAskProposal,
+} from "../../../../notifications/ask";
+import { validateAskAnswerForProposal } from "../../../../notifications/ask-schema";
 import { resolveActionMode } from "../../../../operations/action-modes";
+import { reconcileAppliedActionRun } from "../../../../operations/applied-action-reconciliation";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { insertEvent } from "../../../../utils/insert-event";
-import { deleteMaterializedArtifacts } from "../../../../utils/inline-attachments";
 import { isAdminOrOwnerRole } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import {
@@ -41,8 +47,6 @@ import {
 	refreshMergeProposalFingerprint,
 	resolveMergeApproval,
 } from "../../entity-field-approval";
-import { AGENT_ASK_ACTION_KEY, isAgentAskProposal } from "../../../../notifications/ask";
-import { validateAskAnswerForProposal } from "../../../../notifications/ask-schema";
 import {
 	applyManageAgentsProposal,
 	MANAGE_AGENTS_ACTION_KEY,
@@ -53,8 +57,16 @@ import {
 	MANAGE_AUTOMATIONS_ACTION_KEY,
 	type ManageAutomationsProposal,
 } from "../../manage_automations";
+import type {
+	ApproveAction,
+	ApproveBatchAction,
+	ManageOperationsResult,
+	RejectAction,
+	RejectBatchAction,
+} from "../schemas";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
+
 /**
  * Durably persist a claimed run's apply/execution output in its OWN
  * transaction, BEFORE the terminalization attempt. If the terminal card write
@@ -132,9 +144,25 @@ async function tryReconcileTerminalization(
 		content = `Builder action completed: ${desc}`;
 		message = `${handler.nounLabel} ${desc} approved and applied.`;
 	} else {
-		title = `${row.action_key} — completed`;
-		content = `Operation completed: ${row.action_key}`;
-		message = "Operation approved and executed.";
+		const reconciled = await reconcileAppliedActionRun({
+			runId: args.run_id,
+			organizationId: ctx.organizationId,
+			card: {
+				title: `${row.action_key} — completed`,
+				content: `Operation completed: ${row.action_key}`,
+				reviewer,
+			},
+		});
+		if (reconciled.status !== "completed" || reconciled.eventId == null) {
+			return null;
+		}
+		return {
+			action: "approve",
+			approved: true,
+			run_id: args.run_id,
+			event_id: reconciled.eventId,
+			message: "Operation approved and executed.",
+		};
 	}
 	const eventId = await terminalizeApprovalRunCompleted(
 		args.run_id,
@@ -356,7 +384,7 @@ async function claimBuilderRun(
             AND action_key = ANY(${actionKeys})
           RETURNING action_input, created_by_user_id, action_key
         `
-			: await sql`
+      : await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
               error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
@@ -661,7 +689,7 @@ async function claimEntityChangeRun(
             AND action_key = ANY(${actionKeys}::text[])
           RETURNING action_input
         `
-      : await sql`
+			: await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
               error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
@@ -1495,45 +1523,22 @@ export async function handleApprove(
 	);
 
 	if (result.status === "completed") {
-		// Phase 2a (durable): persist the execution output BEFORE the
-		// terminalization attempt so a failed completed-card write cannot lose
-		// the only durable record of an already-successful external mutation.
-		let outputPersisted = false;
-		try {
-			outputPersisted = await persistDurableApplyOutput(
-				args.run_id,
-				ctx.organizationId,
-				result.output,
-			);
-		} catch (error) {
-			await deleteMaterializedArtifacts(result.publishedArtifactIds ?? []);
-			throw error;
-		}
-		if (!outputPersisted) {
-			await deleteMaterializedArtifacts(result.publishedArtifactIds ?? []);
-			return {
-				error:
-					"The approval was already decided while this request was in flight. Refresh before acting.",
-			};
-		}
-
-		// Phase 2b (atomic): terminal completed runs write + 'completed' card.
-		// The card guard runs INSIDE the tx so a missing card rolls the
-		// completed runs write back.
-		const terminalCardId = await terminalizeApprovalRunCompleted(
-			args.run_id,
-			ctx.organizationId,
-			result.output,
-			{
+		// executeOperationInline already persisted the bounded raw output before
+		// any attachment publication. Reconcile from that marker; a failure here
+		// leaves the run running and retryable without re-invoking the operation.
+		const reconciled = await reconcileAppliedActionRun({
+			runId: args.run_id,
+			organizationId: ctx.organizationId,
+			card: {
 				title: `${run.action_key} — completed`,
 				content: `Operation completed: ${run.action_key}`,
+				reviewer,
 			},
-			reviewer,
-		);
-		if (terminalCardId === null) {
+		});
+		if (reconciled.status !== "completed") {
 			return {
 				error:
-					"The approval was already decided while this request was in flight. Refresh before acting.",
+					"The operation succeeded and is awaiting durable terminalization. Retry approval to reconcile it without rerunning.",
 			};
 		}
 		return {

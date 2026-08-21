@@ -120,6 +120,11 @@ jobs:
       - name: Exercise migration failure recovery
         run: sh charts/lobu/tests/migrate-upgrade-recovery.sh
 
+      # Artifact storage is the only durable-media path: a topology that
+      # renders but cannot share bytes across replicas loses media silently.
+      - name: Artifact storage topology fails closed
+        run: bash charts/lobu/tests/artifacts-topology.sh
+
   publish:
     needs: lint
     if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}

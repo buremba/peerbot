@@ -20,12 +20,16 @@
  * `current_event_records` view exposes the transcribed text. Failures are
  * swallowed — the unsuperseded `[voice note]` placeholder remains usable.
  */
+import { createHash } from "node:crypto";
 import { getDb } from "../db/client";
+import {
+  ArtifactStore,
+  runArtifactBinding,
+} from "../gateway/files/artifact-store";
 import { getLobuCoreServices } from "../lobu/gateway";
-import { ArtifactStore, runArtifactBinding } from "../gateway/files/artifact-store";
-import { resolvePublicGatewayUrl } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
+import { resolvePublicGatewayUrl } from "./public-origin";
 
 /**
  * Hard cap on a single decoded attachment we'll publish. Server-side guard so
@@ -37,30 +41,63 @@ import logger from "./logger";
 const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const MAX_INLINE_ATTACHMENT_BASE64_CHARS =
   Math.ceil((MAX_INLINE_ATTACHMENT_BYTES * 4) / 3) + 4;
-// MIME wrapping adds only a small amount of whitespace. Keep a generous 2x
-// allowance while bounding the raw scan/allocation before normalization.
-const MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS =
-  MAX_INLINE_ATTACHMENT_BASE64_CHARS * 2;
+const MAX_INLINE_ATTACHMENT_RAW_CHARS =
+  MAX_INLINE_ATTACHMENT_BASE64_CHARS +
+  Math.ceil(MAX_INLINE_ATTACHMENT_BASE64_CHARS / 64) * 2 +
+  2;
+const MAX_INLINE_ATTACHMENTS_PER_ITEM = 20;
 
 function decodeInlineBase64(value: string): Buffer | null {
-  if (value.length > MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS) return null;
-  // MIME/PEM-style base64 arrives wrapped at a fixed column (an email
-  // attachment, `base64.encodebytes`); strip that framing before validating so
-  // legitimate payloads are not rejected as junk.
-  const encoded = value.replace(/\s+/g, "");
+  if (value.length > MAX_INLINE_ATTACHMENT_RAW_CHARS) return null;
+  // Validate the raw MIME-wrapped string in place. Buffer's base64 decoder
+  // ignores ASCII framing whitespace, so avoiding value.replace() here saves a
+  // second multi-megabyte string allocation on the request path.
+  let encodedLength = 0;
+  let padding = 0;
+  let sawPadding = false;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
+      continue;
+    }
+    const isAlphabet =
+      (code >= 0x41 && code <= 0x5a) ||
+      (code >= 0x61 && code <= 0x7a) ||
+      (code >= 0x30 && code <= 0x39) ||
+      code === 0x2b ||
+      code === 0x2f;
+    if (code === 0x3d) {
+      sawPadding = true;
+      padding += 1;
+      if (padding > 2) return null;
+    } else if (!isAlphabet || sawPadding) {
+      return null;
+    }
+    encodedLength += 1;
+  }
   if (
-    encoded.length === 0 ||
-    encoded.length > MAX_INLINE_ATTACHMENT_BASE64_CHARS ||
-    encoded.length % 4 === 1 ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)
+    encodedLength === 0 ||
+    encodedLength > MAX_INLINE_ATTACHMENT_BASE64_CHARS ||
+    encodedLength % 4 === 1 ||
+    encodedLength - padding === 0
   ) {
     return null;
   }
-  const unpadded = encoded.replace(/=+$/, "");
-  if (unpadded.length === 0) return null;
-  const buffer = Buffer.from(encoded, "base64");
-  const canonical = buffer.toString("base64").replace(/=+$/, "");
-  return canonical === unpadded ? buffer : null;
+  const buffer = Buffer.from(value, "base64");
+  const canonical = buffer.toString("base64");
+  const expectedLength =
+    padding > 0 ? canonical.length : canonical.replace(/=+$/, "").length;
+  if (expectedLength !== encodedLength || buffer.length === 0) return null;
+  let canonicalIndex = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
+      continue;
+    }
+    if (value[index] !== canonical[canonicalIndex]) return null;
+    canonicalIndex += 1;
+  }
+  return buffer;
 }
 
 interface InlineAttachment {
@@ -80,6 +117,7 @@ interface MaterializedAttachment {
   artifact_id: string;
   download_url: string;
   size_bytes: number;
+  sha256: string;
   duration_ms?: number | null;
 }
 
@@ -87,6 +125,50 @@ interface StreamItemLike {
   id: string;
   attachments?: unknown[];
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * Produce the bounded output that can safely serve as the durable
+ * apply-succeeded marker before filesystem publication. Invalid inline
+ * attachments are dropped exactly as they are during materialization; valid
+ * MIME-wrapped inputs are stored in canonical base64 form so whitespace cannot
+ * inflate runs.action_output.
+ */
+export function prepareActionOutputForDurableApply(
+  actionOutput: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Array.isArray(actionOutput.attachments)) return actionOutput;
+  if (actionOutput.attachments.length > MAX_INLINE_ATTACHMENTS_PER_ITEM) {
+    logger.warn(
+      {
+        attachment_count: actionOutput.attachments.length,
+        limit: MAX_INLINE_ATTACHMENTS_PER_ITEM,
+      },
+      "[inline-attachments] action output attachment count over the per-item limit — dropping the excess",
+    );
+  }
+  const attachments: unknown[] = [];
+  for (const raw of actionOutput.attachments.slice(
+    0,
+    MAX_INLINE_ATTACHMENTS_PER_ITEM,
+  )) {
+    if (!raw || typeof raw !== "object") {
+      attachments.push(raw);
+      continue;
+    }
+    const attachment = raw as InlineAttachment;
+    if (!Object.hasOwn(attachment, "data")) {
+      attachments.push(attachment);
+      continue;
+    }
+    const decoded =
+      typeof attachment.data === "string"
+        ? decodeInlineBase64(attachment.data)
+        : null;
+    if (!decoded || decoded.length > MAX_INLINE_ATTACHMENT_BYTES) continue;
+    attachments.push({ ...attachment, data: decoded.toString("base64") });
+  }
+  return { ...actionOutput, attachments };
 }
 
 /** Per-item record of audio attachments that the gateway should transcribe. */
@@ -105,18 +187,18 @@ export class AttachmentMaterializationError extends AggregateError {
   ) {
     super(
       errors,
-      "Attachment publication failed and partial artifact cleanup also failed"
+      `Attachment publication failed and partial artifact cleanup also failed: ${String(errors[1] ?? errors[0])}`
     );
     this.name = "AttachmentMaterializationError";
   }
 }
 
-/** A best-effort artifact rollback left these IDs behind. */
+/** An artifact rollback failed for these IDs. */
 export class MaterializedArtifactCleanupError extends AggregateError {
   constructor(errors: unknown[], readonly artifactIds: string[]) {
     super(
       errors,
-      `Failed to delete ${artifactIds.length} uncommitted artifact(s)`
+      `Failed to delete ${artifactIds.length} uncommitted artifact(s): ${String(errors[0])}`
     );
     this.name = "MaterializedArtifactCleanupError";
   }
@@ -138,7 +220,8 @@ function publicGatewayUrl(): string {
 export async function materializeInlineAttachments<T extends StreamItemLike>(
   items: T[],
   bindingForItem?: (item: T) => string | undefined,
-  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">
+  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">,
+  options?: { preserveMaterializedHashes?: boolean },
 ): Promise<{
   items: T[];
   pendingTranscriptions: AudioTranscriptionPending[];
@@ -146,7 +229,9 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
 }> {
   const coreServices = getLobuCoreServices();
   const artifactStore =
-    artifactStoreOverride ?? coreServices?.getArtifactStore?.() ?? new ArtifactStore();
+    artifactStoreOverride ??
+    coreServices?.getArtifactStore?.() ??
+    new ArtifactStore();
 
   const baseUrl = publicGatewayUrl();
   const pendingTranscriptions: AudioTranscriptionPending[] = [];
@@ -160,15 +245,34 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
       continue;
     }
 
+    if (attachments.length > MAX_INLINE_ATTACHMENTS_PER_ITEM) {
+      logger.warn(
+        {
+          item_id: item.id,
+          attachment_count: attachments.length,
+          limit: MAX_INLINE_ATTACHMENTS_PER_ITEM,
+        },
+        "[inline-attachments] attachment count over the per-item limit — dropping the excess",
+      );
+    }
+
     const rewritten: unknown[] = [];
-    for (const raw of attachments) {
+    for (const raw of attachments.slice(0, MAX_INLINE_ATTACHMENTS_PER_ITEM)) {
       if (!raw || typeof raw !== "object") {
         rewritten.push(raw);
         continue;
       }
       const att = raw as InlineAttachment;
       if (!Object.hasOwn(att, "data")) {
-        rewritten.push(att);
+        if (options?.preserveMaterializedHashes) {
+          rewritten.push(att);
+        } else {
+          // sha256 is server-authored integrity metadata for bytes published
+          // above. A connector-supplied reference is not allowed to forge it
+          // and influence event unchanged detection.
+          const { sha256: _untrustedSha256, ...reference } = att;
+          rewritten.push(reference);
+        }
         continue;
       }
       const filename = att.filename || "attachment";
@@ -179,7 +283,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
       if (!buffer) {
         logger.warn(
           { item_id: item.id },
-          "[inline-attachments] invalid or oversized base64 — dropping attachment"
+          "[inline-attachments] invalid or oversized base64 — dropping attachment",
         );
         continue;
       }
@@ -190,7 +294,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
             size_bytes: buffer.length,
             cap: MAX_INLINE_ATTACHMENT_BYTES,
           },
-          "[inline-attachments] attachment exceeds server cap — dropping attachment"
+          "[inline-attachments] attachment exceeds server cap — dropping attachment",
         );
         continue;
       }
@@ -207,13 +311,16 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         publishedArtifactIds.push(published.artifactId);
       } catch (error) {
         try {
-          await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
+          await deleteMaterializedArtifacts(
+            publishedArtifactIds,
+            artifactStore,
+          );
         } catch (cleanupError) {
           throw new AttachmentMaterializationError(
             [error, cleanupError],
             cleanupError instanceof MaterializedArtifactCleanupError
               ? cleanupError.artifactIds
-              : [...publishedArtifactIds]
+              : [...publishedArtifactIds],
           );
         }
         throw error;
@@ -226,6 +333,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         artifact_id: published.artifactId,
         download_url: published.downloadUrl,
         size_bytes: published.size,
+        sha256: createHash("sha256").update(buffer).digest("hex"),
         duration_ms: att.duration_ms ?? null,
       };
       rewritten.push(materialized);
@@ -250,7 +358,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
 export async function materializeActionOutputAttachments(
   runId: number,
   actionOutput: Record<string, unknown>,
-  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">
+  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">,
 ): Promise<{
   output: Record<string, unknown>;
   publishedArtifactIds: string[];
@@ -261,7 +369,8 @@ export async function materializeActionOutputAttachments(
   const { items, publishedArtifactIds } = await materializeInlineAttachments(
     [{ id: `action:${runId}`, attachments: actionOutput.attachments }],
     () => runArtifactBinding(runId),
-    artifactStoreOverride
+    artifactStoreOverride,
+    { preserveMaterializedHashes: true },
   );
   return {
     output: { ...actionOutput, attachments: items[0]?.attachments ?? [] },
@@ -271,28 +380,26 @@ export async function materializeActionOutputAttachments(
 
 export async function deleteMaterializedArtifacts(
   artifactIds: string[],
-  artifactStoreOverride?: Pick<ArtifactStore, "delete">
+  artifactStoreOverride?: Pick<ArtifactStore, "delete">,
 ): Promise<void> {
   if (artifactIds.length === 0) return;
   const coreServices = getLobuCoreServices();
   const artifactStore =
-    artifactStoreOverride ?? coreServices?.getArtifactStore?.() ?? new ArtifactStore();
+    artifactStoreOverride ??
+    coreServices?.getArtifactStore?.() ??
+    new ArtifactStore();
   const results = await Promise.allSettled(
-    artifactIds.map((artifactId) => artifactStore.delete(artifactId))
+    artifactIds.map((artifactId) => artifactStore.delete(artifactId)),
   );
   const failures = results.flatMap((result, index) =>
     result.status === "rejected"
-      ? [{ artifactId: artifactIds[index], reason: result.reason }]
-      : []
+      ? [{ artifactId: artifactIds[index]!, reason: result.reason }]
+      : [],
   );
   if (failures.length > 0) {
-    logger.error(
-      { artifact_count: artifactIds.length, failed: failures.length },
-      "[inline-attachments] failed to delete some uncommitted artifacts"
-    );
     throw new MaterializedArtifactCleanupError(
       failures.map((failure) => failure.reason),
-      failures.map((failure) => failure.artifactId)
+      failures.map((failure) => failure.artifactId),
     );
   }
 }
@@ -318,7 +425,7 @@ function inferKindFromMime(mime: string): string {
  */
 export function triggerAudioTranscriptions(
   organizationId: string,
-  pending: AudioTranscriptionPending[]
+  pending: AudioTranscriptionPending[],
 ): void {
   if (pending.length === 0) return;
 
@@ -335,7 +442,7 @@ export function triggerAudioTranscriptions(
       if (!transcriptionService || !artifactStore) {
         logger.info(
           { organizationId, pending: pending.length },
-          "[inline-attachments] transcription skipped — coreServices unavailable"
+          "[inline-attachments] transcription skipped — coreServices unavailable",
         );
         return;
       }
@@ -344,7 +451,7 @@ export function triggerAudioTranscriptions(
       if (!agentId) {
         logger.info(
           { organizationId, pending: pending.length },
-          "[inline-attachments] no STT-capable agent in org — leaving voice-note placeholders"
+          "[inline-attachments] no STT-capable agent in org — leaving voice-note placeholders",
         );
         return;
       }
@@ -355,21 +462,21 @@ export function triggerAudioTranscriptions(
         } catch (err) {
           logger.warn(
             { origin_id: job.originId, err: String(err) },
-            "[inline-attachments] transcription job failed"
+            "[inline-attachments] transcription job failed",
           );
         }
       }
     } catch (err) {
       logger.warn(
         { organizationId, err: String(err) },
-        "[inline-attachments] transcription orchestrator threw"
+        "[inline-attachments] transcription orchestrator threw",
       );
     }
   })();
 }
 
 async function pickTranscriptionAgent(
-  organizationId: string
+  organizationId: string,
 ): Promise<string | null> {
   const coreServices = getLobuCoreServices();
   const transcriptionService = coreServices?.getTranscriptionService?.();
@@ -390,7 +497,7 @@ async function pickTranscriptionAgent(
 async function transcribeOne(
   job: AudioTranscriptionPending,
   organizationId: string,
-  agentId: string
+  agentId: string,
 ): Promise<void> {
   const coreServices = getLobuCoreServices();
   const artifactStore = coreServices!.getArtifactStore();
@@ -401,19 +508,19 @@ async function transcribeOne(
   if (!stored) {
     logger.warn(
       { artifact_id: job.artifactId },
-      "[inline-attachments] artifact missing — cannot transcribe"
+      "[inline-attachments] artifact missing — cannot transcribe",
     );
     return;
   }
   const result = await transcriptionService.transcribe(
     stored.bytes,
     agentId,
-    job.mimeType
+    job.mimeType,
   );
   if ("error" in result) {
     logger.info(
       { origin_id: job.originId, error: result.error },
-      "[inline-attachments] transcription returned error — keeping placeholder"
+      "[inline-attachments] transcription returned error — keeping placeholder",
     );
     return;
   }
@@ -452,7 +559,10 @@ async function transcribeOne(
   const base = baseRows[0];
   if (!base) return;
 
-  const meta = { ...(base.metadata ?? {}), transcript_provider: result.provider };
+  const meta = {
+    ...(base.metadata ?? {}),
+    transcript_provider: result.provider,
+  };
 
   // Tombstone-style supersede: insert a new event that points at the current
   // row. The `current_event_records` view (and findCurrentEventByOrigin) will

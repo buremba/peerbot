@@ -178,6 +178,30 @@ export function stableJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
 }
 
+/**
+ * Artifact ids and signed download URLs identify a particular publication,
+ * not the attachment's content. Once a materialized attachment carries its
+ * verified content hash, compare the stable media metadata and hash so an
+ * identical connector retry remains unchanged and its duplicate publication
+ * can be reclaimed by the caller.
+ */
+function semanticAttachmentState(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const attachment = item as Record<string, unknown>;
+    if (
+      typeof attachment.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(attachment.sha256)
+    ) {
+      return item;
+    }
+    const { artifact_id: _artifactId, download_url: _downloadUrl, ...semantic } =
+      attachment;
+    return semantic;
+  });
+}
+
 function normalizedTimestamp(value?: Date | string | null): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -245,7 +269,8 @@ function isSemanticallyEqual(
     existing.payload_type === (params.payloadType ?? 'text') &&
     stableJson(existing.payload_data ?? {}) === stableJson(params.payloadData ?? {}) &&
     stableJson(existing.payload_template ?? null) === stableJson(params.payloadTemplate ?? null) &&
-    stableJson(existing.attachments ?? []) === stableJson(params.attachments ?? []) &&
+    stableJson(semanticAttachmentState(existing.attachments ?? [])) ===
+      stableJson(semanticAttachmentState(params.attachments ?? [])) &&
     (existing.author_name ?? null) === (params.authorName ?? null) &&
     (existing.source_url ?? null) === (params.sourceUrl ?? null) &&
     // Only compare occurred_at when the caller supplied one. Insert defaults a

@@ -1,9 +1,9 @@
 import { getErrorMessage } from "@lobu/core";
-import { getDb } from "../db/client";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
 import type { OperationDescriptor } from "./types";
 
 const DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS = 120_000;
+const MAX_HTTP_OPERATION_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 export type HttpOperationExecutionResult =
 	| {
@@ -11,7 +11,11 @@ export type HttpOperationExecutionResult =
 			output: Record<string, unknown>;
 			metadata?: Record<string, unknown>;
 	  }
-	| { status: "failed"; error_message: string; output?: Record<string, unknown> };
+	| {
+			status: "failed";
+			error_message: string;
+			output?: Record<string, unknown>;
+	  };
 
 export interface HttpOperationConnection {
 	id: number;
@@ -68,15 +72,7 @@ function pickInterestingHeaders(
 	return Object.keys(values).length > 0 ? values : undefined;
 }
 
-async function failRun(
-	runId: number,
-	organizationId: string,
-	errorMessage: string,
-	deferTerminalWrite = false,
-): Promise<HttpOperationExecutionResult> {
-	if (!deferTerminalWrite) {
-		await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-	}
+function failRun(errorMessage: string): HttpOperationExecutionResult {
 	return { status: "failed", error_message: errorMessage };
 }
 
@@ -115,24 +111,52 @@ function requestAbortSignal(parent?: AbortSignal): {
 	};
 }
 
-/** Execute one OpenAPI-derived HTTP operation and finalize its run row. */
+async function readResponseTextBounded(
+  response: Response,
+): Promise<{ text: string; truncated: boolean }> {
+  const declaredLength = Number(response.headers.get("content-length") ?? "0");
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_HTTP_OPERATION_RESPONSE_BYTES
+  ) {
+    await response.body?.cancel().catch(() => {});
+    return { text: "", truncated: true };
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return { text: "", truncated: false };
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    totalBytes += value.byteLength;
+    if (totalBytes > MAX_HTTP_OPERATION_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {});
+      return { text: "", truncated: true };
+    }
+    chunks.push(value);
+  }
+  return {
+    text: Buffer.concat(chunks).toString("utf8"),
+    truncated: false,
+  };
+}
+
+/**
+ * Execute one OpenAPI-derived HTTP operation. Like the other inline backends
+ * this only reports the outcome; `executeOperationInline` owns every `runs`
+ * transition so a successful apply is persisted before terminalization.
+ */
 export async function executeHttpOperation(
-	runId: number,
 	organizationId: string,
 	connection: HttpOperationConnection,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
 	abortSignal?: AbortSignal,
-	deferTerminalWrite = false,
 ): Promise<HttpOperationExecutionResult> {
-	const sql = getDb();
 	if (operation.backend_config.backend !== "http_operation") {
-		return failRun(
-			runId,
-			organizationId,
-			"Invalid HTTP operation backend config",
-			deferTerminalWrite,
-		);
+		return failRun("Invalid HTTP operation backend config");
 	}
 
 	try {
@@ -142,10 +166,7 @@ export async function executeHttpOperation(
 		);
 		if (!credentials) {
 			return failRun(
-				runId,
-				organizationId,
 				`No active OAuth credentials found for '${connection.connector_key}'.`,
-				deferTerminalWrite,
 			);
 		}
 
@@ -191,6 +212,7 @@ export async function executeHttpOperation(
 		const requestAbort = requestAbortSignal(abortSignal);
 		let response: Response;
 		let text: string;
+		let responseBodyTruncated = false;
 		try {
 			response = await fetch(url, {
 				method: operation.backend_config.method,
@@ -201,7 +223,9 @@ export async function executeHttpOperation(
 				redirect: "manual",
 				signal: requestAbort.signal,
 			});
-			text = await response.text();
+			const boundedBody = await readResponseTextBounded(response);
+			text = boundedBody.text;
+			responseBodyTruncated = boundedBody.truncated;
 		} finally {
 			requestAbort.cleanup();
 		}
@@ -212,9 +236,15 @@ export async function executeHttpOperation(
 		} catch {
 			// Keep non-JSON responses as text.
 		}
-		const output = { body: parsedBody } as Record<string, unknown>;
+		const output = {
+			body: responseBodyTruncated ? null : parsedBody,
+			...(responseBodyTruncated ? { body_truncated: true } : {}),
+		} as Record<string, unknown>;
 		const metadata: Record<string, unknown> = {
 			http_status: response.status,
+			...(responseBodyTruncated
+				? { response_body_truncated: true }
+				: {}),
 		};
 		const headerMetadata = pickInterestingHeaders(response.headers);
 		if (headerMetadata) {
@@ -232,23 +262,14 @@ export async function executeHttpOperation(
 
 		if (!response.ok) {
 			const errorText =
-				typeof parsedBody === "string" ? parsedBody : `HTTP ${response.status}`;
-			if (!deferTerminalWrite) {
-				await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-			}
+				!responseBodyTruncated && typeof parsedBody === "string"
+					? parsedBody
+					: `HTTP ${response.status}`;
 			return { status: "failed", error_message: errorText, output };
 		}
 
-		if (!deferTerminalWrite) {
-			await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-		}
 		return { status: "completed", output, metadata };
 	} catch (error) {
-		return failRun(
-			runId,
-			organizationId,
-			getErrorMessage(error),
-			deferTerminalWrite,
-		);
+		return failRun(getErrorMessage(error));
 	}
 }

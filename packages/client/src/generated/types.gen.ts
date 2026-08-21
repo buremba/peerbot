@@ -262,7 +262,7 @@ export type SaveMemoryData = {
       [key: string]: unknown;
     };
     /**
-     * Array of attachment objects (e.g. files, images).
+     * Files or images, up to 20 per call. To persist bytes, pass { kind, filename, mime_type, data }, where data is base64 and each decoded attachment is limited to 2 MiB. Lobu removes data and returns a durable artifact reference.
      */
     attachments?: Array<{
       [key: string]: unknown;

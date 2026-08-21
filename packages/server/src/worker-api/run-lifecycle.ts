@@ -53,10 +53,13 @@ import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
 import {
 	deleteMaterializedArtifacts,
-	materializeActionOutputAttachments,
 	materializeInlineAttachments,
 	triggerAudioTranscriptions,
 } from "../utils/inline-attachments";
+import {
+	persistAppliedActionOutput,
+	reconcileAppliedActionRun,
+} from "../operations/applied-action-reconciliation";
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
@@ -353,6 +356,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			for (let item of batch.items) {
 				let publishedArtifactIds: string[] = [];
 				let artifactCommitted = false;
+				let itemPersistenceError: unknown;
 			try {
 				const itemOriginType = item.origin_type ?? null;
 				const itemSemanticType =
@@ -561,11 +565,22 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					}
 				}
 			} catch (err) {
+				itemPersistenceError = err;
 				console.error("[stream] Insert failed for item", item.id, ":", err);
 				throw err;
 			} finally {
 				if (!artifactCommitted) {
-					await deleteMaterializedArtifacts(publishedArtifactIds);
+					try {
+						await deleteMaterializedArtifacts(publishedArtifactIds);
+					} catch (cleanupError) {
+						if (itemPersistenceError !== undefined) {
+							throw new AggregateError(
+								[itemPersistenceError, cleanupError],
+								`Event persistence failed and artifact cleanup also failed: ${errorMessage(cleanupError)}`,
+							);
+						}
+						throw cleanupError;
+					}
 				}
 			}
 		}
@@ -1919,7 +1934,6 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
  * Worker signals action run completion (for async high-risk actions).
  */
 export async function completeActionRun(c: Context<{ Bindings: Env }>) {
-	let publishedActionArtifactIds: string[] = [];
 	try {
 		const req = await c.req.json<CompleteActionRequest>();
 
@@ -1930,29 +1944,77 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
-		const materializedActionOutput = req.action_output
-			? await materializeActionOutputAttachments(req.run_id, req.action_output)
-			: undefined;
-		const actionOutput = materializedActionOutput?.output;
-		publishedActionArtifactIds =
-			materializedActionOutput?.publishedArtifactIds ?? [];
+		if (req.status === "success") {
+			const ownedRows = await sql<{ organization_id: string }>`
+				SELECT organization_id FROM runs
+				WHERE id = ${req.run_id} AND claimed_by = ${req.worker_id}
+				LIMIT 1
+			`;
+			const organizationId = ownedRows[0]?.organization_id;
+			if (!organizationId) {
+				return c.json({ success: false, reason: "already_finalized" });
+			}
+			const applied = await persistAppliedActionOutput({
+				runId: req.run_id,
+				organizationId,
+				output: req.action_output ?? {},
+				expectedWorkerId: req.worker_id,
+			});
+			if (!applied) {
+				return c.json({ success: false, reason: "already_finalized" });
+			}
+			const actionKey = applied.action_key ?? "Action";
+			const reconciled = await reconcileAppliedActionRun({
+				runId: req.run_id,
+				organizationId,
+				...(applied.approval_status === "approved"
+					? {
+							card: {
+								title: `${actionKey} — completed`,
+								content: `Action completed: ${actionKey}`,
+								reviewer: null,
+							},
+						}
+					: {}),
+			});
+			// A run the gateway already timed out (or otherwise finalized) is the
+			// same race the pre-reconciliation UPDATE guard rejected: the caller
+			// has already been told `timeout`, so report already_finalized rather
+			// than failing the worker's request.
+			if (reconciled.status === "terminal") {
+				return c.json({ success: false, reason: "already_finalized" });
+			}
+			if (reconciled.status !== "completed") {
+				throw new Error(
+					`Action run ${req.run_id} applied externally and is awaiting durable terminalization`,
+				);
+			}
+			emit(organizationId, {
+				keys: ["contents-filtered", "notifications"],
+			});
+			logger.info(
+				{ run_id: req.run_id, status: req.status },
+				"Action run completed",
+			);
+			return c.json({ success: true });
+		}
+		const actionOutput = req.action_output;
 
-		// Atomic terminal-state transition with the shared F2 guard (see
-		// finalizeRun) AND, for approval-gated runs, the card supersede in ONE
-		// transaction, so a card INSERT failure rolls the run terminal state
+		// Failure path only — success returns above via the applied-output
+		// reconciler. Atomic terminal-state transition with the shared F2 guard
+		// (see finalizeRun) AND, for approval-gated runs, the card supersede in
+		// ONE transaction, so a card INSERT failure rolls the run terminal state
 		// back instead of leaving a terminal run whose timeline is stuck at the
 		// prior card. Auto/no-approval runs (`approval_status='auto'`) have no
 		// card and finalize normally — no supersede is attempted. A no-op (0
 		// rows) means the row was already finalized by another path (e.g.
-		// waitForDeviceActionRun timed out and marked it 'timeout'). Without it a
-		// slow worker could overwrite a gateway-side timeout decision with
-		// success — and the caller has already returned timeout to its caller, so
-		// the action would double-finalize.
+		// waitForDeviceActionRun timed out and marked it 'timeout'), which must
+		// not be overwritten by a late worker verdict.
 		const updatedRuns = await sql.begin(async (tx) => {
 			const rows = await finalizeRun(tx, {
 				runId: req.run_id,
 				workerId: req.worker_id,
-				status: req.status === "success" ? "completed" : "failed",
+				status: "failed",
 				extraSet: tx`,
 					action_output = ${actionOutput ? tx.json(actionOutput) : null},
 					error_message = ${req.error_message ?? null}`,
@@ -1966,31 +2028,25 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 				organizationId &&
 				(rows[0] as any)?.approval_status === "approved"
 			) {
-				const newStatus = req.status === "success" ? "completed" : "failed";
 				const eventId = await supersedeActionEvent(
 					req.run_id,
 					organizationId,
-					newStatus,
-					`${actionKey} — ${newStatus}`,
-					req.status === "success"
-						? `Action completed: ${actionKey}`
-						: `Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
-					req.status === "success"
-						? { action_output: actionOutput }
-						: { error_message: req.error_message },
+					"failed",
+					`${actionKey} — failed`,
+					`Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
+					{ error_message: req.error_message },
 					null,
 					tx,
 				);
 				if (eventId === undefined) {
 					throw new Error(
-						`Cannot finalize approval run ${req.run_id} as '${newStatus}': its approval card is missing`,
+						`Cannot finalize approval run ${req.run_id} as 'failed': its approval card is missing`,
 					);
 				}
 			}
 			return rows;
 		});
 		if (updatedRuns.length === 0) {
-			await deleteMaterializedArtifacts(publishedActionArtifactIds);
 			// Either the run was already finalized (timeout race) or the
 			// worker isn't the claimant. authorizeRunForWorker already gated
 			// ownership, so this is almost always the timeout race; return
@@ -2006,8 +2062,6 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 			return c.json({ success: false, reason: "already_finalized" });
 		}
 
-		// The transaction committed; from here these artifacts are durable run output.
-		publishedActionArtifactIds = [];
 		const organizationId = (updatedRuns[0] as any)?.organization_id;
 
 		if (organizationId) {
@@ -2020,7 +2074,6 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		);
 		return c.json({ success: true });
 	} catch (err: unknown) {
-		await deleteMaterializedArtifacts(publishedActionArtifactIds);
 		logger.error({ error: errorMessage(err) }, "[completeActionRun] Error");
 		return c.json({ error: errorMessage(err) }, 500);
 	}

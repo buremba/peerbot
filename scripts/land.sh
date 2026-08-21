@@ -20,9 +20,30 @@ TIMEOUT_MIN="${TIMEOUT_MIN:-25}"
 
 cd "$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
 
+case "$CHECK_ONLY" in
+  0 | 1) ;;
+  *)
+    echo "CHECK_ONLY must be 0 or 1, got: $CHECK_ONLY" >&2
+    exit 1
+    ;;
+esac
+case "$TIMEOUT_MIN" in
+  '' | *[!0-9]*)
+    echo "TIMEOUT_MIN must be a positive integer, got: $TIMEOUT_MIN" >&2
+    exit 1
+    ;;
+esac
+if [ "$TIMEOUT_MIN" -eq 0 ]; then
+  echo "TIMEOUT_MIN must be greater than zero" >&2
+  exit 1
+fi
+
 if [ -z "$PR" ]; then
   branch="$(git rev-parse --abbrev-ref HEAD)"
-  PR="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)"
+  if ! PR="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')"; then
+    echo "could not query GitHub for an open PR on '$branch'" >&2
+    exit 1
+  fi
   [ -z "$PR" ] && {
     echo "no open PR for '$branch'; pass N=<pr>" >&2
     exit 1
@@ -30,64 +51,102 @@ if [ -z "$PR" ]; then
   echo "resolved PR #$PR from branch $branch"
 fi
 
-# The local branch must be the PR head, or the statuses you post land on a
-# commit the PR does not contain.
-head_sha="$(gh pr view "$PR" --json headRefOid --jq .headRefOid 2>/dev/null)"
-local_sha="$(git rev-parse HEAD)"
-if [ -n "$head_sha" ] && [ "$head_sha" != "$local_sha" ]; then
-  echo "!! local HEAD ($(git rev-parse --short HEAD)) != PR #$PR head (${head_sha:0:7})." >&2
-  echo "   Push first — gate statuses would attach to the wrong commit." >&2
-  exit 1
-fi
+verify_pr_head() {
+  local head_sha local_sha
+  if ! head_sha="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" || [ -z "$head_sha" ]; then
+    echo "!! could not read PR #$PR head; refusing to merge blind." >&2
+    return 1
+  fi
+  local_sha="$(git rev-parse HEAD)"
+  if [ "$head_sha" != "$local_sha" ]; then
+    echo "!! local HEAD ($(git rev-parse --short HEAD)) != PR #$PR head (${head_sha:0:7})." >&2
+    echo "   Push first so the reviewed local commit is the PR head." >&2
+    return 1
+  fi
+}
 
-required="$(gh api "repos/:owner/:repo/branches/main/protection/required_status_checks" \
-  --jq '.contexts[]?' 2>/dev/null | sort)"
-if [ -z "$required" ]; then
+read_required() {
+  gh api "repos/:owner/:repo/branches/main/protection/required_status_checks" \
+    --jq '.contexts[]?' | sort -u
+}
+
+verify_pr_head || exit 1
+
+if ! required="$(read_required)" || [ -z "$required" ]; then
   echo "!! could not read branch protection; refusing to merge blind." >&2
   exit 1
 fi
 echo "required checks:"
-echo "$required" | sed 's/^/  /'
+while IFS= read -r check; do printf '  %s\n' "$check"; done <<<"$required"
 
 echo
 echo ">> waiting for checks on #$PR (timeout ${TIMEOUT_MIN}m)..."
-# --watch is the blocking primitive: one call, returns when every check that
-# has started reaches a terminal state.
-timeout "${TIMEOUT_MIN}m" gh pr checks "$PR" --watch --interval 20 >/dev/null 2>&1
-watch_rc=$?
-
-# --watch returning is necessary but not sufficient: a required check may have
-# started only after it returned, or never started at all. Re-verify the floor.
 deadline=$(($(date +%s) + TIMEOUT_MIN * 60))
 while :; do
-  rollup="$(gh pr checks "$PR" --json name,state,link --jq '.[] | "\(.name)\t\(.state)\t\(.link)"' 2>/dev/null)"
-  reported="$(echo "$rollup" | cut -f1 | sort -u)"
-  missing="$(comm -23 <(echo "$required") <(echo "$reported") 2>/dev/null)"
-  pending="$(echo "$rollup" | awk -F'\t' '$2=="PENDING" || $2=="QUEUED" || $2=="IN_PROGRESS"')"
+  rollup="$(gh pr checks "$PR" --required --json name,bucket,link \
+    --jq '.[] | "\(.name)\t\(.bucket)\t\(.link)"' 2>/dev/null)"
+  reported="$(printf '%s\n' "$rollup" | cut -f1 | sed '/^$/d' | sort -u)"
+  satisfied="$(printf '%s\n' "$rollup" \
+    | awk -F'\t' '$2=="pass" || $2=="skipping" {print $1}' | sort -u)"
+  missing="$(comm -23 <(printf '%s\n' "$required") \
+    <(printf '%s\n' "$reported") 2>/dev/null)"
+  unsatisfied="$(comm -23 <(printf '%s\n' "$required") \
+    <(printf '%s\n' "$satisfied") 2>/dev/null)"
+  failed="$(printf '%s\n' "$rollup" | awk -F'\t' '$2=="fail" || $2=="cancel"')"
+  pending="$(printf '%s\n' "$rollup" | awk -F'\t' '$2=="pending" {print $1}')"
+  unknown="$(printf '%s\n' "$rollup" \
+    | awk -F'\t' '$2!="pass" && $2!="skipping" && $2!="pending" && $2!="fail" && $2!="cancel"')"
 
-  if [ -z "$missing" ] && [ -z "$pending" ]; then break; fi
-  if [ "$(date +%s)" -ge "$deadline" ]; then
+  if [ -n "$failed" ]; then
     echo
-    echo "!! TIMED OUT after ${TIMEOUT_MIN}m — not merging." >&2
-    [ -n "$missing" ] && { echo "   never reported:" >&2; echo "$missing" | sed 's/^/     /' >&2; }
-    [ -n "$pending" ] && { echo "   still running:" >&2; echo "$pending" | cut -f1 | sed 's/^/     /' >&2; }
+    echo "!! FAILING checks — not merging:" >&2
+    printf '%s\n' "$failed" \
+      | awk -F'\t' '{printf "   %-34s %s\n   %s\n", $1, $2, $3}' >&2
     exit 1
   fi
-  sleep 20
+  protection_refresh_failed=0
+  if [ -z "$unsatisfied" ] && [ -z "$pending" ] && [ -z "$unknown" ]; then
+    if ! current_required="$(read_required)" || [ -z "$current_required" ]; then
+      protection_refresh_failed=1
+    elif [ "$current_required" = "$required" ]; then
+      break
+    else
+      echo "branch-protection requirements changed while waiting; using the new floor."
+      required="$current_required"
+    fi
+  fi
+  now="$(date +%s)"
+  if [ "$now" -ge "$deadline" ]; then
+    echo
+    echo "!! TIMED OUT after ${TIMEOUT_MIN}m — not merging." >&2
+    if [ "$protection_refresh_failed" -eq 1 ]; then
+      echo "   could not refresh branch protection" >&2
+    fi
+    if [ -n "$missing" ]; then
+      echo "   never reported:" >&2
+      while IFS= read -r check; do printf '     %s\n' "$check"; done <<<"$missing" >&2
+    fi
+    if [ -n "$pending" ]; then
+      echo "   still running:" >&2
+      while IFS= read -r check; do printf '     %s\n' "$check"; done <<<"$pending" >&2
+    fi
+    if [ -n "$unknown" ]; then
+      echo "   unknown check states:" >&2
+      printf '%s\n' "$unknown" | awk -F'\t' '{printf "     %s (%s)\n", $1, $2}' >&2
+    fi
+    exit 1
+  fi
+  sleep_for=$((deadline - now))
+  [ "$sleep_for" -gt 20 ] && sleep_for=20
+  sleep "$sleep_for"
 done
 
-failed="$(echo "$rollup" | awk -F'\t' '$2=="FAILURE" || $2=="ERROR" || $2=="CANCELLED"')"
-if [ -n "$failed" ]; then
-  echo
-  echo "!! FAILING checks — not merging:" >&2
-  echo "$failed" | awk -F'\t' '{printf "   %-34s %s\n   %s\n", $1, $2, $3}' >&2
-  echo >&2
-  echo "   logs:  gh run view --log-failed --job <id>" >&2
-  exit 1
-fi
-
 echo
-echo "all $(echo "$required" | wc -l | tr -d ' ') required checks reported and green."
+echo "all $(printf '%s\n' "$required" | wc -l | tr -d ' ') required checks are merge-satisfying."
+
+# The PR can be updated during the wait. Do not merge a different commit than
+# the one inspected in this worktree.
+verify_pr_head || exit 1
 
 if [ "$CHECK_ONLY" = "1" ]; then
   echo "CHECK_ONLY=1 — stopping before merge."
@@ -102,5 +161,4 @@ echo "merged. squash commit: ${merge_sha:-unknown}"
 echo
 echo "Prod-visible? Gate rollout on the SQUASH commit, not your branch head:"
 echo "  git merge-base --is-ancestor ${merge_sha:-<sha>} \"\$DEPLOYED_SHA\""
-[ "$watch_rc" -ne 0 ] && echo "(note: gh pr checks --watch exited $watch_rc; the floor check above is authoritative)"
 exit 0

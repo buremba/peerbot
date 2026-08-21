@@ -20,6 +20,8 @@ interface StoredArtifactMetadata {
   contentType: string;
   size: number;
   createdAt: number;
+  /** Immutable Lobu resource identity allowed to read this artifact internally. */
+  binding?: string;
 }
 
 interface PublishArtifactResult {
@@ -33,6 +35,25 @@ interface PublishArtifactResult {
 function sanitizeFilename(filename: string): string {
   const safe = path.basename(filename).trim();
   return safe || "download";
+}
+
+export function runArtifactBinding(runId: number): string {
+  return `run:${runId}`;
+}
+
+export function eventArtifactBinding(params: {
+  organizationId: string;
+  connectionId?: number | null;
+  feedId?: number | null;
+  originId: string;
+}): string {
+  const sourceScope =
+    params.connectionId != null
+      ? `connection:${params.connectionId}`
+      : params.feedId != null
+        ? `feed:${params.feedId}`
+        : "unscoped";
+  return `event:${params.organizationId}:${sourceScope}:${params.originId}`;
 }
 
 function normalizeBaseUrl(publicGatewayUrl: string): string {
@@ -68,6 +89,7 @@ export class ArtifactStore {
     contentType?: string;
     publicGatewayUrl: string;
     ttlMs?: number;
+    binding?: string;
   }): Promise<PublishArtifactResult> {
     const artifactId = randomUUID();
     const filename = sanitizeFilename(params.filename);
@@ -89,6 +111,7 @@ export class ArtifactStore {
           contentType,
           size: params.buffer.length,
           createdAt,
+          ...(params.binding ? { binding: params.binding } : {}),
         } satisfies StoredArtifactMetadata,
         null,
         2
@@ -112,19 +135,28 @@ export class ArtifactStore {
     };
   }
 
-  async read(artifactId: string): Promise<{
+  async read(
+    artifactId: string,
+    options?: { binding?: string }
+  ): Promise<{
     metadata: StoredArtifactMetadata;
     filePath: string;
   } | null> {
     try {
       const raw = await fs.readFile(this.metadataPath(artifactId), "utf8");
       const metadata = JSON.parse(raw) as StoredArtifactMetadata;
+      if (options?.binding && metadata.binding !== options.binding) return null;
       const filePath = this.artifactFilePath(artifactId, metadata.filename);
       await fs.access(filePath);
       return { metadata, filePath };
     } catch {
       return null;
     }
+  }
+
+  async delete(artifactId: string): Promise<void> {
+    await fs.rm(this.artifactDir(artifactId), { recursive: true, force: true });
+    logger.info(`Deleted artifact ${artifactId}`);
   }
 
   createDownloadToken(artifactId: string, ttlMs = this.defaultTtlMs): string {

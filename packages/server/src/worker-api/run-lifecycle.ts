@@ -33,6 +33,7 @@ import { materializeConnectorAutomationSignal } from "../automations/connector-s
 import { feedBackoff } from "../connectors/feed-backoff";
 import { maybeEmitFeedAutoPausedAfterFailure } from "../automations/platform-events";
 import { getDb, parsePgNumberArray } from "../db/client";
+import { eventArtifactBinding } from "../gateway/files/artifact-store";
 import { emit } from "../events/emitter";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import type { Env } from "../index";
@@ -51,6 +52,8 @@ import { applyEventAttributions } from "../utils/entity-link-upsert";
 import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
 import {
+	deleteMaterializedArtifacts,
+	materializeActionOutputAttachments,
 	materializeInlineAttachments,
 	triggerAudioTranscriptions,
 } from "../utils/inline-attachments";
@@ -295,25 +298,10 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		// applyEventAttributions opens one bounded transaction for this batch's
 		// entity attribution writes. The dry path passes a tx that is rolled back.
 		const ingestBatch = async (db: DbClient) => {
-			// Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
-			// come over the wire as base64 in `attachment.data`. Materialize each into
-			// the ArtifactStore before the row hits events.attachments — the events
-			// table is not a binary store. Audio attachments are queued for async
-			// transcription after insert.
-			//
-			// ESCAPES THE TX: this uploads a blob to the ArtifactStore, which no
-			// Postgres rollback can retract. Because the blob is written before the
-			// row that would reference it, a dry run doing this would leave an
-			// orphaned artifact behind — storage that quietly accumulates.
+			// Audio attachments are queued only after their event insert commits.
 			let pendingTranscriptions: Awaited<
 				ReturnType<typeof materializeInlineAttachments>
 			>["pendingTranscriptions"] = [];
-			if (!isDry) {
-				const { items: materializedItems, pendingTranscriptions: pending } =
-					await materializeInlineAttachments(batch.items);
-				batch.items = materializedItems as typeof batch.items;
-				pendingTranscriptions = pending;
-			}
 
 			// Resolve or create entities declared via eventKinds[kind].attributions
 			// before inserting events. One query per (entityType, matchField) per
@@ -362,7 +350,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 				);
 			}
 
-			for (const item of batch.items) {
+			for (let item of batch.items) {
+				let publishedArtifactIds: string[] = [];
+				let artifactCommitted = false;
 			try {
 				const itemOriginType = item.origin_type ?? null;
 				const itemSemanticType =
@@ -408,6 +398,26 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						"[stream] Skipping event with empty payload_text and title"
 					);
 					continue;
+				}
+
+				let itemPendingTranscriptions: typeof pendingTranscriptions = [];
+				if (!isDry) {
+					// ESCAPES THE TX: publish only after validation, immediately before
+					// the event insert. The finally block deletes this item's artifacts
+					// unless insertEvent wrote a row that references them.
+					const materialized = await materializeInlineAttachments(
+						[item],
+						() =>
+							eventArtifactBinding({
+								organizationId: run.organization_id,
+								connectionId: run.connection_id,
+								feedId: run.feed_id,
+								originId: item.id,
+							})
+					);
+					item = materialized.items[0] as typeof item;
+					itemPendingTranscriptions = materialized.pendingTranscriptions;
+					publishedArtifactIds = materialized.publishedArtifactIds;
 				}
 
 				const activations: AutomationActivationResult[] = [];
@@ -499,6 +509,13 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						},
 					}
 				);
+				// `unchanged` reuses the pre-existing row, which still points at the
+				// artifacts published by an earlier sync — the ones we just published
+				// were never referenced by any row, so the finally block reclaims them.
+				if (inserted.change !== "unchanged") {
+					artifactCommitted = true;
+					pendingTranscriptions.push(...itemPendingTranscriptions);
+				}
 				// ESCAPES THE TX: this dispatches real Automation runs to the worker
 				// fleet. The activation ROWS roll back with the tx, but a dispatched
 				// agent run has already left the database — it would run against, and
@@ -546,12 +563,16 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			} catch (err) {
 				console.error("[stream] Insert failed for item", item.id, ":", err);
 				throw err;
+			} finally {
+				if (!artifactCommitted) {
+					await deleteMaterializedArtifacts(publishedArtifactIds);
+				}
 			}
 		}
 
 			// ESCAPES THE TX: transcription is an external, paid API call, and it
 			// is fired detached so nothing awaits it. `pendingTranscriptions` is
-			// already empty on a dry run (nothing was materialized above), but the
+			// already empty on a dry run (nothing was materialized), but the
 			// guard stays so this cannot start costing money if materialization
 			// ever grows a dry path.
 			if (!isDry) {
@@ -1898,6 +1919,7 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
  * Worker signals action run completion (for async high-risk actions).
  */
 export async function completeActionRun(c: Context<{ Bindings: Env }>) {
+	let publishedActionArtifactIds: string[] = [];
 	try {
 		const req = await c.req.json<CompleteActionRequest>();
 
@@ -1908,6 +1930,12 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
+		const materializedActionOutput = req.action_output
+			? await materializeActionOutputAttachments(req.run_id, req.action_output)
+			: undefined;
+		const actionOutput = materializedActionOutput?.output;
+		publishedActionArtifactIds =
+			materializedActionOutput?.publishedArtifactIds ?? [];
 
 		// Atomic terminal-state transition with the shared F2 guard (see
 		// finalizeRun) AND, for approval-gated runs, the card supersede in ONE
@@ -1926,7 +1954,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 				workerId: req.worker_id,
 				status: req.status === "success" ? "completed" : "failed",
 				extraSet: tx`,
-					action_output = ${req.action_output ? tx.json(req.action_output) : null},
+					action_output = ${actionOutput ? tx.json(actionOutput) : null},
 					error_message = ${req.error_message ?? null}`,
 				returning: tx`organization_id, action_key, approval_status`,
 			});
@@ -1948,7 +1976,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 						? `Action completed: ${actionKey}`
 						: `Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
 					req.status === "success"
-						? { action_output: req.action_output }
+						? { action_output: actionOutput }
 						: { error_message: req.error_message },
 					null,
 					tx,
@@ -1962,6 +1990,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 			return rows;
 		});
 		if (updatedRuns.length === 0) {
+			await deleteMaterializedArtifacts(publishedActionArtifactIds);
 			// Either the run was already finalized (timeout race) or the
 			// worker isn't the claimant. authorizeRunForWorker already gated
 			// ownership, so this is almost always the timeout race; return
@@ -1977,6 +2006,8 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 			return c.json({ success: false, reason: "already_finalized" });
 		}
 
+		// The transaction committed; from here these artifacts are durable run output.
+		publishedActionArtifactIds = [];
 		const organizationId = (updatedRuns[0] as any)?.organization_id;
 
 		if (organizationId) {
@@ -1989,6 +2020,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		);
 		return c.json({ success: true });
 	} catch (err: unknown) {
+		await deleteMaterializedArtifacts(publishedActionArtifactIds);
 		logger.error({ error: errorMessage(err) }, "[completeActionRun] Error");
 		return c.json({ error: errorMessage(err) }, 500);
 	}

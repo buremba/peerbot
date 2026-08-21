@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { runArtifactBinding } from "../files/artifact-store.js";
 import { type ArtifactTestEnv, createArtifactTestEnv } from "./setup.js";
 
 describe("ArtifactStore.buildDownloadUrl", () => {
@@ -58,5 +59,24 @@ describe("ArtifactStore.buildDownloadUrl", () => {
     ).toBe(true);
     const read = await env.artifactStore.read(artifactId);
     expect(read?.metadata.filename).toBe("note.txt");
+  });
+
+  test("enforces immutable internal bindings and supports cleanup", async () => {
+    const binding = runArtifactBinding(42);
+    const { artifactId } = await env.artifactStore.publish({
+      buffer: Buffer.from("bound"),
+      filename: "bound.txt",
+      contentType: "text/plain",
+      publicGatewayUrl: "http://localhost:8954/lobu",
+      binding,
+    });
+
+    expect(await env.artifactStore.read(artifactId, { binding })).toBeTruthy();
+    expect(
+      await env.artifactStore.read(artifactId, { binding: runArtifactBinding(43) })
+    ).toBeNull();
+
+    await env.artifactStore.delete(artifactId);
+    expect(await env.artifactStore.read(artifactId)).toBeNull();
   });
 });

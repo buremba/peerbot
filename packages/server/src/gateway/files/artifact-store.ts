@@ -182,7 +182,7 @@ export class ArtifactStore {
       } catch (error) {
         // Server logger errors are forwarded to Sentry. A retained orphan
         // blocks later publication by design, so make that operationally loud
-        // while preserving the fail-closed behavior.
+        // while preserving the fail-closed policy.
         logger.error(
           { err: error, stalePath },
           "Artifact trash drain failed; publication is blocked",

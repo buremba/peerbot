@@ -32,13 +32,10 @@ describe("device-state cache", () => {
 
     await saveDeviceState("local", {
       workerId: "macos:myhost",
-      workerTokenPrefix: "owl_pat_x",
     });
 
     const loaded = await loadDeviceState("local");
     expect(loaded?.workerId).toBe("macos:myhost");
-    expect(loaded?.workerTokenPrefix).toBe("owl_pat_x");
-    expect(loaded?.registeredAt).toBeTruthy();
   });
 
   test("returns null when no state exists", async () => {
@@ -54,7 +51,6 @@ describe("device-state cache", () => {
 
     await saveDeviceState("local", {
       workerId: "macos:x",
-      workerTokenPrefix: null,
     });
     // Corrupt the file to simulate an invalid payload.
     const { writeFileSync } = await import("node:fs");
@@ -72,7 +68,6 @@ describe("device-state cache", () => {
 
     await saveDeviceState("prod/api v1", {
       workerId: "macos:host",
-      workerTokenPrefix: null,
     });
 
     // The context name with slashes/spaces becomes a single safe filename.

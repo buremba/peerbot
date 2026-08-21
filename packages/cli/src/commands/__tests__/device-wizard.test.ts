@@ -47,8 +47,6 @@ function stubFetch(body: { devices?: unknown[] } | { error: string }): void {
 function stubSave(): void {
   spyOn(deviceState, "saveDeviceState").mockResolvedValue({
     workerId: "macos:Mac",
-    workerTokenPrefix: null,
-    registeredAt: new Date().toISOString(),
   });
 }
 
@@ -82,8 +80,6 @@ describe("deviceWizard", () => {
     stubFetch({ error: "Unauthorized" });
     const saveSpy = spyOn(deviceState, "saveDeviceState").mockResolvedValue({
       workerId: "macos:custom",
-      workerTokenPrefix: null,
-      registeredAt: new Date().toISOString(),
     });
 
     const result = await deviceWizard({
@@ -117,8 +113,6 @@ describe("deviceWizard", () => {
     });
     const saveSpy = spyOn(deviceState, "saveDeviceState").mockResolvedValue({
       workerId: "macos:existing-box",
-      workerTokenPrefix: null,
-      registeredAt: new Date().toISOString(),
     });
 
     const result = await deviceWizard({
@@ -161,5 +155,38 @@ describe("deviceWizard", () => {
 
     expect(result.source).toBe("created");
     expect(result.workerId).toBe("macos:Mac");
+  });
+
+  test("only ever sends the stored token to the resolved context origin", async () => {
+    mockContext();
+    spyOn(apiClient, "listOrganizations").mockResolvedValue([
+      { slug: "personal", personal: true },
+    ]);
+    // The wizard takes no caller-supplied apiUrl at all — the token-bearing
+    // GET /api/me/devices is always built from the resolved context's origin,
+    // so a `lobu daemon --api-url attacker.invalid` can never capture the bearer
+    // (mirrors resolveApiTarget's refusal to send context creds elsewhere).
+    stubFetch({
+      devices: [{ id: "d", worker_id: "macos:x", platform: "macos" }],
+    });
+    stubSave();
+
+    await deviceWizard({
+      suggestedWorkerId: "macos:Mac",
+      prompts: fakePrompts({ select: async () => "personal" }),
+    });
+
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof spyOn>).mock
+      .calls as Array<[string | Request, RequestInit?]>;
+    const urls = calls.map((c) => String(c[0]));
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      expect(url.startsWith("http://127.0.0.1:8795/")).toBe(true);
+    }
+    for (const [, init] of calls) {
+      const auth = (init?.headers as Record<string, string> | undefined)
+        ?.Authorization;
+      expect(auth).toBe("Bearer local-token");
+    }
   });
 });

@@ -34,7 +34,6 @@ import {
 
 export interface DeviceWizardOptions {
   context?: string;
-  apiUrl?: string;
   /** Pre-computed default `<platform>:<hostname>` id. */
   suggestedWorkerId: string;
   /** The token the daemon will boot with (WORKER_API_TOKEN), if any. */
@@ -97,7 +96,9 @@ export async function deviceWizard(
 ): Promise<DeviceWizardResult> {
   const prompts = options.prompts ?? { select, confirm, input };
   const target = await resolveContext(options.context);
-  const apiUrl = options.apiUrl?.trim() || target.url;
+  // The stored context token is ONLY ever sent to the resolved context's own
+  // origin — never to a caller-supplied --api-url, which an attacker could point
+  // at themselves to harvest the bearer (see resolveApiTarget's same guard).
   const token = await getToken(target.name);
 
   let orgs: Array<{ slug: string; name?: string; personal?: boolean }> = [];
@@ -108,7 +109,7 @@ export async function deviceWizard(
     orgs = await listOrganizations({ context: target.name }).catch(
       () => [] as Array<{ slug: string; name?: string; personal?: boolean }>
     );
-    devices = await fetchRemoteDevices(apiUrl, token).catch(
+    devices = await fetchRemoteDevices(target.url, token).catch(
       () => [] as RemoteDevice[]
     );
   }
@@ -136,7 +137,8 @@ export async function deviceWizard(
   );
 
   const orgTarget = await prompts.select({
-    message: "Which workspace should this device belong to?",
+    message:
+      "Which workspace will this device run for? (the pin is set by the token you export)",
     choices: [
       { value: personal ?? "__personal__", name: personalLabel },
       ...orgOptions.map((org) => ({ ...org, name: org.name ?? org.value })),
@@ -194,15 +196,19 @@ export async function deviceWizard(
   const contextName = target.name;
   await saveDeviceState(contextName, {
     workerId,
-    workerTokenPrefix: tokenPrefix,
   });
 
   console.log(
-    chalk.green(`\n  Device "${workerId}" pinned to ${orgSlug ?? "personal"}.`)
+    chalk.green(`\n  Device "${workerId}" registered (local setup).`)
   );
   console.log(
     chalk.dim(
       `  ${source === "reused" ? "Reusing an existing device row; the daemon will upsert on the same id." : "New device; it registers on the first poll."}`
+    )
+  );
+  console.log(
+    chalk.dim(
+      `  Device workspace: ${orgSlug ? `"${orgSlug}"` : "personal"}. This is set by the WORKER_API_TOKEN it auths with on poll — the selection above is guidance for which token to use.`
     )
   );
   if (tokenPrefix) {

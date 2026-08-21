@@ -14,6 +14,7 @@ import { apiUrlToGatewayOrigin } from "../internal/context";
 import * as context from "../internal/context";
 import * as credentials from "../internal/credentials";
 import * as deviceState from "../internal/device-state";
+import * as deviceWizardModule from "../commands/_lib/device-wizard";
 
 /**
  * Context URLs carry the SDK path (`https://app.lobu.ai/api/v1`) but the worker
@@ -143,8 +144,6 @@ describe("lobu daemon", () => {
     spyOn(context, "getCurrentContextName").mockResolvedValue("local");
     spyOn(deviceState, "loadDeviceState").mockResolvedValue({
       workerId: "macos:confirmed-box",
-      workerTokenPrefix: "owl_pat_x",
-      registeredAt: new Date().toISOString(),
     });
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
@@ -152,6 +151,36 @@ describe("lobu daemon", () => {
 
     await daemonCommand({});
 
+    expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:confirmed-box");
+  });
+
+  test("interactive boot with a cached device id does not re-prompt via the wizard", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8795",
+      source: "config",
+    });
+    spyOn(context, "getCurrentContextName").mockResolvedValue("local");
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "macos:confirmed-box",
+    });
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:should-not-run",
+      source: "created",
+    });
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+    const originalIsTTY = process.stdin.isTTY;
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    try {
+      await daemonCommand({});
+    } finally {
+      (process.stdin as { isTTY?: boolean }).isTTY = originalIsTTY;
+    }
+
+    // The cached id wins and the wizard never runs once a device is configured.
+    expect(wizard).not.toHaveBeenCalled();
     expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:confirmed-box");
   });
 

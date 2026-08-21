@@ -78,7 +78,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     options.platform?.trim() ||
     (process.platform === "darwin" ? "macos" : "headless");
 
-  const workerId = await resolveWorkerId(options, platform, apiUrl);
+  const workerId = await resolveWorkerId(options, platform);
 
   await startDaemonCommand({
     apiUrl,
@@ -102,17 +102,17 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
 /**
  * Resolve the `worker_id` for this run, in priority order:
  *   1. an explicit `--worker-id` flag (never overridden);
- *   2. interactive first-run → the onboarding wizard (confirms identity, caches);
- *   3. a previously cached device id (so a configured daemon stays consistent);
+ *   2. a previously cached device id (so every later boot — interactive or not —
+ *      stays consistent and never re-prompts);
+ *   3. interactive first-run → the onboarding wizard (confirms identity, caches);
  *   4. the computed `<platform>:<hostname>` default.
  *
- * The wizard only runs on a TTY and only when the explicit id is absent, so
- * headless/scripted boots never prompt.
+ * The wizard only runs on a TTY, only when the id is absent, and only when there
+ * is no cached device yet — so a fully-configured daemon never prompts.
  */
 async function resolveWorkerId(
   options: DaemonOptions,
-  platform: string,
-  apiUrl: string
+  platform: string
 ): Promise<string> {
   const explicit = options.workerId?.trim();
   if (explicit) return explicit;
@@ -121,20 +121,17 @@ async function resolveWorkerId(
   const suggested = `${platform}:${shortHost}`;
 
   const contextName = (await getCurrentContextName()).trim() || undefined;
-  const interactive = process.stdin.isTTY === true;
+  const cached = contextName ? await loadDeviceState(contextName) : null;
+  if (cached?.workerId) return cached.workerId;
 
-  if (interactive) {
+  if (process.stdin.isTTY === true) {
     const result = await deviceWizard({
       context: contextName,
-      apiUrl,
       suggestedWorkerId: suggested,
       workerApiToken: process.env.WORKER_API_TOKEN,
     });
     return result.workerId;
   }
-
-  const cached = contextName ? await loadDeviceState(contextName) : null;
-  if (cached?.workerId) return cached.workerId;
 
   return suggested;
 }

@@ -8,16 +8,13 @@ import { join } from "node:path";
  * This is a LOCAL cache, never the source of truth: the server owns the device
  * row (`device_workers.organization_id`) and its identity (`(user_id,
  * worker_id)`). Its only job is to make a repeated `lobu daemon` on the same
- * machine reuse the same confirmed worker id (and remember the token/org it was
- * pinned with), so a restart does not silently churn into a second device.
+ * machine reuse the same confirmed worker id, so a restart does not silently
+ * churn into a second device. Only `workerId` is stored — nothing else is read
+ * back on load.
  */
 export interface DeviceState {
   /** The confirmed `worker_id` passed to the daemon on every run. */
   workerId: string;
-  /** The token prefix that the org/anchor was pinned with (privacy-safe). */
-  workerTokenPrefix: string | null;
-  /** ISO timestamp the state was written. */
-  registeredAt: string;
 }
 
 function statePath(context: string): string {
@@ -34,15 +31,7 @@ export async function loadDeviceState(
     if (typeof parsed.workerId !== "string" || parsed.workerId.length === 0) {
       return null;
     }
-    return {
-      workerId: parsed.workerId,
-      workerTokenPrefix:
-        typeof parsed.workerTokenPrefix === "string"
-          ? parsed.workerTokenPrefix
-          : null,
-      registeredAt:
-        typeof parsed.registeredAt === "string" ? parsed.registeredAt : "",
-    };
+    return { workerId: parsed.workerId };
   } catch {
     return null;
   }
@@ -50,15 +39,11 @@ export async function loadDeviceState(
 
 export async function saveDeviceState(
   context: string,
-  state: Omit<DeviceState, "registeredAt">
+  state: DeviceState
 ): Promise<DeviceState> {
   await mkdir(join(homedir(), ".lobu", "devices"), { recursive: true });
-  const full: DeviceState = {
-    ...state,
-    registeredAt: new Date().toISOString(),
-  };
-  await writeFile(statePath(context), `${JSON.stringify(full, null, 2)}\n`);
-  return full;
+  await writeFile(statePath(context), `${JSON.stringify(state, null, 2)}\n`);
+  return state;
 }
 
 export function workerTokenPrefix(token: string | undefined): string | null {

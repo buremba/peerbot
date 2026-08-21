@@ -24,6 +24,26 @@ type AppliedActionCard = {
 	reviewer: ApprovalReviewer | null;
 };
 
+type ReconciliationResult =
+	| { status: "completed"; output: Record<string, unknown>; eventId?: number }
+	| { status: "in_progress" }
+	| {
+			status: "terminal";
+			runStatus: string;
+			output: Record<string, unknown> | null;
+	  };
+
+type ReconciliationContext = {
+	db: DbClient;
+	runId: number;
+	organizationId: string;
+	artifactStore?: Pick<ArtifactStore, "publish" | "delete">;
+};
+
+type MaterializedOutput = Awaited<
+	ReturnType<typeof materializeActionOutputAttachments>
+>;
+
 async function loadAppliedRun(
 	db: DbClient,
 	runId: number,
@@ -64,6 +84,205 @@ function referencesEveryArtifact(
 	if (artifactIds.length === 0) return true;
 	const referenced = collectArtifactIds(output);
 	return artifactIds.every((artifactId) => referenced.has(artifactId));
+}
+
+function resultForRun(run: AppliedRunRow | null): ReconciliationResult {
+	if (run?.status === "completed") {
+		return { status: "completed", output: run.action_output ?? {} };
+	}
+	if (run?.status === "running") return { status: "in_progress" };
+	return {
+		status: "terminal",
+		runStatus: run?.status ?? "missing",
+		output: run?.action_output ?? null,
+	};
+}
+
+async function deleteCandidate(
+	context: ReconciliationContext,
+	materialized: MaterializedOutput,
+): Promise<void> {
+	await deleteMaterializedArtifacts(
+		materialized.publishedArtifactIds,
+		context.artifactStore,
+	);
+}
+
+function ownsCandidate(
+	run: AppliedRunRow | null,
+	materialized: MaterializedOutput,
+): boolean {
+	return referencesEveryArtifact(
+		run?.action_output ?? null,
+		materialized.publishedArtifactIds,
+	);
+}
+
+/**
+ * Elect exactly one publisher by replacing the raw apply marker. A loser
+ * deletes only the artifacts it published; an ambiguous DB error keeps any
+ * candidate that the committed row may already own.
+ */
+async function checkpointMaterializedOutput(
+	context: ReconciliationContext,
+	rawOutput: Record<string, unknown>,
+	materialized: MaterializedOutput,
+): Promise<{ owner: true } | { owner: false; result: ReconciliationResult }> {
+	let checkpointed: AppliedRunRow[];
+	try {
+		checkpointed = await context.db<AppliedRunRow>`
+      UPDATE runs
+      SET action_output = ${context.db.json(materialized.output)},
+          last_heartbeat_at = current_timestamp
+      WHERE id = ${context.runId}
+        AND organization_id = ${context.organizationId}
+        AND run_type = 'action'
+        AND status = 'running'
+        AND action_output = ${context.db.json(rawOutput)}
+      RETURNING status, approval_status, action_key, action_output
+    `;
+	} catch (error) {
+		let observed: AppliedRunRow | null;
+		try {
+			observed = await loadAppliedRun(
+				context.db,
+				context.runId,
+				context.organizationId,
+			);
+		} catch {
+			// The write outcome is unknowable. Preserve the candidate because the
+			// committed row may reference it once Postgres is reachable again.
+			throw error;
+		}
+		if (
+			materialized.publishedArtifactIds.length === 0 ||
+			!ownsCandidate(observed, materialized)
+		) {
+			try {
+				await deleteCandidate(context, materialized);
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					"Action output checkpoint failed and candidate artifact cleanup also failed",
+				);
+			}
+		}
+		throw error;
+	}
+
+	if (checkpointed[0]) return { owner: true };
+
+	const winner = await loadAppliedRun(
+		context.db,
+		context.runId,
+		context.organizationId,
+	);
+	if (
+		materialized.publishedArtifactIds.length > 0 &&
+		ownsCandidate(winner, materialized)
+	) {
+		return { owner: false, result: resultForRun(winner) };
+	}
+	await deleteCandidate(context, materialized);
+	return { owner: false, result: resultForRun(winner) };
+}
+
+async function writeTerminalState(
+	context: ReconciliationContext,
+	run: AppliedRunRow,
+	output: Record<string, unknown>,
+	card: AppliedActionCard | undefined,
+): Promise<number | null> {
+	if (run.approval_status === "approved") {
+		if (!card) return null;
+		return terminalizeApprovalRunCompleted(
+			context.runId,
+			context.organizationId,
+			output,
+			{ title: card.title, content: card.content },
+			card.reviewer,
+			context.db,
+		);
+	}
+	if (run.approval_status !== "auto") return null;
+	const updated = await context.db`
+    UPDATE runs
+    SET status = 'completed', completed_at = current_timestamp,
+        action_output = ${context.db.json(output)}
+    WHERE id = ${context.runId}
+      AND organization_id = ${context.organizationId}
+      AND run_type = 'action'
+      AND status = 'running'
+      AND approval_status = 'auto'
+    RETURNING id
+  `;
+	return updated.length > 0 ? 0 : null;
+}
+
+async function observeTerminalWrite(
+	context: ReconciliationContext,
+	materialized: MaterializedOutput,
+): Promise<ReconciliationResult> {
+	const observed = await loadAppliedRun(
+		context.db,
+		context.runId,
+		context.organizationId,
+	);
+	if (
+		observed?.status === "completed" &&
+		!ownsCandidate(observed, materialized)
+	) {
+		await deleteCandidate(context, materialized);
+	}
+	return resultForRun(observed);
+}
+
+/** Terminalize a checkpointed output without ever replaying its external action. */
+async function terminalizeCheckpointedOutput(
+	context: ReconciliationContext,
+	run: AppliedRunRow,
+	materialized: MaterializedOutput,
+	card: AppliedActionCard | undefined,
+): Promise<ReconciliationResult> {
+	if (run.approval_status === "approved" && !card) {
+		return { status: "in_progress" };
+	}
+	if (run.approval_status !== "approved" && run.approval_status !== "auto") {
+		return { status: "in_progress" };
+	}
+
+	try {
+		const eventId = await writeTerminalState(
+			context,
+			run,
+			materialized.output,
+			card,
+		);
+		if (eventId !== null) {
+			return {
+				status: "completed",
+				output: materialized.output,
+				...(eventId > 0 ? { eventId } : {}),
+			};
+		}
+	} catch (error) {
+		const observed = await loadAppliedRun(
+			context.db,
+			context.runId,
+			context.organizationId,
+		).catch(() => null);
+		if (
+			observed?.status === "completed" &&
+			ownsCandidate(observed, materialized)
+		) {
+			return resultForRun(observed);
+		}
+		// The running row owns these references. Preserve them so a retry can
+		// terminalize without re-running the connector or republishing media.
+		throw error;
+	}
+
+	return observeTerminalWrite(context, materialized);
 }
 
 /** Persist the bounded raw result before any post-apply filesystem work. */
@@ -107,196 +326,37 @@ export async function reconcileAppliedActionRun(params: {
 	card?: AppliedActionCard;
 	db?: DbClient;
 	artifactStore?: Pick<ArtifactStore, "publish" | "delete">;
-}): Promise<
-	| { status: "completed"; output: Record<string, unknown>; eventId?: number }
-	| { status: "in_progress" }
-	| {
-			status: "terminal";
-			runStatus: string;
-			output: Record<string, unknown> | null;
-	  }
-> {
-	const db = params.db ?? getDb();
-	const before = await loadAppliedRun(db, params.runId, params.organizationId);
-	if (!before)
-		return { status: "terminal", runStatus: "missing", output: null };
-	if (before.status === "completed") {
-		return { status: "completed", output: before.action_output ?? {} };
-	}
-	if (before.status !== "running" || !before.action_output) {
-		return before.status === "running"
-			? { status: "in_progress" }
-			: {
-					status: "terminal",
-					runStatus: before.status,
-					output: before.action_output,
-				};
+}): Promise<ReconciliationResult> {
+	const context: ReconciliationContext = {
+		db: params.db ?? getDb(),
+		runId: params.runId,
+		organizationId: params.organizationId,
+		artifactStore: params.artifactStore,
+	};
+	const before = await loadAppliedRun(
+		context.db,
+		context.runId,
+		context.organizationId,
+	);
+	if (!before || before.status !== "running" || !before.action_output) {
+		return resultForRun(before);
 	}
 
 	const materialized = await materializeActionOutputAttachments(
 		params.runId,
 		before.action_output,
-		params.artifactStore,
+		context.artifactStore,
 	);
-	const cleanupCandidate = async () => {
-		await deleteMaterializedArtifacts(
-			materialized.publishedArtifactIds,
-			params.artifactStore,
-		);
-	};
-
-	// Checkpoint the exact materialized references while the run is still
-	// running. That makes the filesystem publication durably owned before the
-	// terminal update: a DB error after this point must leave the artifacts in
-	// place so a retry can terminalize without republishing or rerunning the
-	// connector. The old-output guard elects one concurrent materializer; every
-	// loser removes only its own candidates.
-	let checkpointed: AppliedRunRow[];
-	try {
-		checkpointed = await db<AppliedRunRow>`
-      UPDATE runs
-      SET action_output = ${db.json(materialized.output)},
-          last_heartbeat_at = current_timestamp
-      WHERE id = ${params.runId}
-        AND organization_id = ${params.organizationId}
-        AND run_type = 'action'
-        AND status = 'running'
-        AND action_output = ${db.json(before.action_output)}
-      RETURNING status, approval_status, action_key, action_output
-    `;
-	} catch (error) {
-		let owner: AppliedRunRow | null;
-		try {
-			owner = await loadAppliedRun(db, params.runId, params.organizationId);
-		} catch {
-			// The checkpoint outcome is unknowable. Deleting here could remove an
-			// artifact already referenced by the committed row, so fail closed and
-			// preserve it for reconciliation once Postgres is reachable again.
-			throw error;
-		}
-		if (
-			materialized.publishedArtifactIds.length === 0 ||
-			!referencesEveryArtifact(
-				owner?.action_output ?? null,
-				materialized.publishedArtifactIds,
-			)
-		) {
-			try {
-				await cleanupCandidate();
-			} catch (cleanupError) {
-				throw new AggregateError(
-					[error, cleanupError],
-					"Action output checkpoint failed and candidate artifact cleanup also failed",
-				);
-			}
-		}
-		throw error;
-	}
-	if (!checkpointed[0]) {
-		const winner = await loadAppliedRun(
-			db,
-			params.runId,
-			params.organizationId,
-		);
-		if (
-			materialized.publishedArtifactIds.length > 0 &&
-			referencesEveryArtifact(
-				winner?.action_output ?? null,
-				materialized.publishedArtifactIds,
-			)
-		) {
-			if (winner?.status === "completed") {
-				return { status: "completed", output: winner.action_output ?? {} };
-			}
-			return { status: "in_progress" };
-		}
-		await cleanupCandidate();
-		if (winner?.status === "completed") {
-			return { status: "completed", output: winner.action_output ?? {} };
-		}
-		return winner?.status === "running"
-			? { status: "in_progress" }
-			: {
-					status: "terminal",
-					runStatus: winner?.status ?? "missing",
-					output: winner?.action_output ?? null,
-				};
-	}
-
-	try {
-		if (before.approval_status === "approved") {
-			if (!params.card) {
-				return { status: "in_progress" };
-			}
-			const eventId = await terminalizeApprovalRunCompleted(
-				params.runId,
-				params.organizationId,
-				materialized.output,
-				{ title: params.card.title, content: params.card.content },
-				params.card.reviewer,
-				db,
-			);
-			if (eventId !== null) {
-				return { status: "completed", output: materialized.output, eventId };
-			}
-		} else if (before.approval_status === "auto") {
-			const updated = await db`
-        UPDATE runs
-        SET status = 'completed', completed_at = current_timestamp,
-            action_output = ${db.json(materialized.output)}
-        WHERE id = ${params.runId}
-          AND organization_id = ${params.organizationId}
-          AND run_type = 'action'
-          AND status = 'running'
-          AND approval_status = 'auto'
-        RETURNING id
-      `;
-			if (updated.length > 0) {
-				return { status: "completed", output: materialized.output };
-			}
-		} else {
-			return { status: "in_progress" };
-		}
-	} catch (error) {
-		const afterError = await loadAppliedRun(
-			db,
-			params.runId,
-			params.organizationId,
-		).catch(() => null);
-		if (
-			afterError?.status === "completed" &&
-			referencesEveryArtifact(
-				afterError.action_output,
-				materialized.publishedArtifactIds,
-			)
-		) {
-			return { status: "completed", output: afterError.action_output ?? {} };
-		}
-		// The running row already owns these exact artifact references. Preserve
-		// them on an ambiguous/failed terminal write; the next reconciliation can
-		// finish from action_output without another external apply or publication.
-		throw error;
-	}
-
-	const after = await loadAppliedRun(db, params.runId, params.organizationId);
-	if (
-		after?.status === "completed" &&
-		referencesEveryArtifact(
-			after.action_output,
-			materialized.publishedArtifactIds,
-		)
-	) {
-		return { status: "completed", output: after.action_output ?? {} };
-	}
-	if (after?.status === "completed") {
-		await cleanupCandidate();
-		return { status: "completed", output: after.action_output ?? {} };
-	}
-	return after?.status === "running"
-		? { status: "in_progress" }
-		: {
-				status: "terminal",
-				runStatus: after?.status ?? "missing",
-				output: after?.action_output ?? null,
-			};
+	const checkpoint = await checkpointMaterializedOutput(
+		context,
+		before.action_output,
+		materialized,
+	);
+	if (!checkpoint.owner) return checkpoint.result;
+	return terminalizeCheckpointedOutput(
+		context,
+		before,
+		materialized,
+		params.card,
+	);
 }

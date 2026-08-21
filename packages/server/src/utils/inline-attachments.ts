@@ -88,6 +88,9 @@ function decodeInlineBase64(value: string): Buffer | null {
   const expectedLength =
     padding > 0 ? canonical.length : canonical.replace(/=+$/, "").length;
   if (expectedLength !== encodedLength || buffer.length === 0) return null;
+  // Length equality does not reject non-zero pad bits (`Zh==` decodes like
+  // canonical `Zg==`), so compare the MIME-wrapped input without allocating a
+  // second normalized copy.
   let canonicalIndex = 0;
   for (let index = 0; index < value.length; index++) {
     const code = value.charCodeAt(index);

@@ -112,6 +112,114 @@ describe('MCP media resources', () => {
     return sessionId!;
   }
 
+  it('materializes a direct save_memory image and returns a native resource link', async () => {
+    const imageBytes = Buffer.from('direct-save-memory-image');
+    const sessionId = await initSession();
+    const path = `/mcp/${org.slug}`;
+    const response = await post(path, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-media',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            semantic_type: 'note',
+            payload_type: 'media',
+            title: 'Direct memory photo',
+            idempotency_key: 'mcp-media-direct-save',
+            attachments: [
+              {
+                kind: 'image',
+                filename: 'direct-photo.png',
+                mime_type: 'image/png',
+                data: imageBytes.toString('base64'),
+              },
+            ],
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    const resource = body.result?.content?.find(
+      (item: { type?: string }) => item.type === 'resource_link'
+    );
+    expect(resource).toEqual(
+      expect.objectContaining({
+        type: 'resource_link',
+        uri: expect.stringMatching(/^lobu:\/\/event\/\d+\/attachment\/0$/),
+        name: 'direct-photo.png',
+        mimeType: 'image/png',
+        size: imageBytes.length,
+      })
+    );
+    expect(body.result?.structuredContent?.attachments?.[0]).toEqual(
+      expect.objectContaining({
+        kind: 'image',
+        filename: 'direct-photo.png',
+        mime_type: 'image/png',
+        artifact_id: expect.any(String),
+        size_bytes: imageBytes.length,
+      })
+    );
+    expect(body.result?.structuredContent?.attachments?.[0]).not.toHaveProperty('data');
+
+    const firstAttachment = body.result.structuredContent.attachments[0];
+    const objectCount = (await readdir(artifactsDir)).length;
+    const replayResponse = await post(path, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-media-replay',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            semantic_type: 'note',
+            payload_type: 'media',
+            title: 'Ignored replay photo',
+            idempotency_key: 'mcp-media-direct-save',
+            attachments: [
+              {
+                kind: 'image',
+                filename: 'ignored.png',
+                mime_type: 'image/png',
+                data: Buffer.from('must-not-be-published').toString('base64'),
+              },
+            ],
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const replayBody = await replayResponse.json();
+    expect(replayBody.result?.structuredContent?.created).toBe(false);
+    expect(replayBody.result?.structuredContent?.attachments?.[0]).toEqual(firstAttachment);
+    expect((await readdir(artifactsDir)).length).toBe(objectCount);
+
+    const readResponse = await post(path, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'read-direct-save-media',
+        method: 'resources/read',
+        params: { uri: resource.uri },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const readBody = await readResponse.json();
+    expect(readBody.result?.contents?.[0]).toEqual({
+      uri: resource.uri,
+      mimeType: 'image/png',
+      blob: imageBytes.toString('base64'),
+    });
+  });
+
   it('materializes streamed media with connection-over-feed binding and reads its resource', async () => {
     const imageBytes = Buffer.from('durable-event-image');
     const sql = getDb();
@@ -344,7 +452,7 @@ describe('MCP media resources', () => {
   });
 
   it('fails safely for invalid, missing, and oversized resources', async () => {
-    const oversizedBytes = Buffer.alloc(20 * 1024 * 1024 + 1, 1);
+    const oversizedBytes = Buffer.alloc(5 * 1024 * 1024 + 1, 1);
     const artifact = await artifactStore.publish({
       buffer: oversizedBytes,
       filename: 'oversized.bin',
@@ -407,7 +515,7 @@ describe('MCP media resources', () => {
     });
     const oversizedBody = await oversizedResponse.json();
     expect(oversizedBody.result).toBeUndefined();
-    expect(oversizedBody.error?.message).toContain('limit 20971520');
+    expect(oversizedBody.error?.message).toContain('Unknown resource');
   });
 
   it('cleans action artifacts when finalization rolls back or commits zero rows', async () => {

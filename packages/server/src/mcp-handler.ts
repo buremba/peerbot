@@ -45,19 +45,21 @@ import {
   LOBU_INTERACTION_RESOURCE_URI,
 } from './mcp-app-resource-uris';
 import {
+  mcpResourceLinksForToolResult,
+  readMcpAttachmentResource,
+} from './mcp-media-resources';
+import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
   mcpSessionMap,
 } from './mcp-session-state';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
-import { readMcpAttachmentResource } from './mcp-media-resources';
 import {
   type AuthContext,
   executeTool,
   extractAuthContext,
   isSoftErrorResult,
 } from './tools/execute';
-import { getMcpResultContent } from './tools/mcp-result-content';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
@@ -467,8 +469,6 @@ function createServerForContext(
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);
       }
 
-      const attachedContent = getMcpResultContent(result) ?? [];
-
       // executeTool has already passed the rich SDK result through the internal
       // audit seam. Do not expose logs, stacks, org traversal, or call traces to
       // MCP clients.
@@ -476,6 +476,7 @@ function createServerForContext(
         name === 'run_sdk' || name === 'query_sdk'
           ? toMcpPublicSdkScriptResult(result)
           : result;
+      const attachedContent = mcpResourceLinksForToolResult(name, publicResult);
       const text = mcpRequestFormat.getStore()?.rawJson
         ? JSON.stringify(publicResult)
         : formatToolResult(name, publicResult, { includeRawJson: false });

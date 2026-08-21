@@ -1,6 +1,7 @@
 import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../index";
+import * as lobuGateway from "../../lobu/gateway";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { createAutomationRun } from "../../runs/queue-service";
@@ -105,6 +106,10 @@ describe("operations.execute backend lifecycle", () => {
 						required: ["value"],
 					},
 				},
+				image_result: {
+					name: "Image result",
+					kind: "read",
+				},
 				needs_approval: {
 					name: "Needs approval",
 					kind: "write",
@@ -128,6 +133,19 @@ describe("operations.execute backend lifecycle", () => {
 				class ConnectorRuntime {
 					async sync() { return { items: [] }; }
 					async execute(ctx) {
+						if (ctx.actionKey === 'image_result') {
+							return {
+								success: true,
+								output: {
+									attachments: [{
+										kind: 'image',
+										filename: 'inline.png',
+										mime_type: 'image/png',
+										data: 'aW1hZ2UtYnl0ZXM=',
+									}],
+								},
+							};
+						}
 						if (ctx.actionKey === 'stage_browser') {
 							await ctx.sessionState.chrome_dispatcher.dispatch('navigate', {
 								url: 'https://example.test/',
@@ -365,6 +383,84 @@ describe("operations.execute backend lifecycle", () => {
 			output: { backend: "local_action", value: "local-ok" },
 		});
 		expect(Date.now() - started).toBeLessThan(10_000);
+	});
+
+	it("materializes media returned by a server-side inline action", async () => {
+		const result = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "image_result",
+			},
+			{} as Env,
+			ctx,
+		)) as {
+			run_id: number;
+			status: string;
+			output: { attachments: Array<Record<string, unknown>> };
+		};
+
+		expect(result.status).toBe("completed");
+		const [attachment] = result.output.attachments;
+		expect(attachment).toMatchObject({
+			kind: "image",
+			filename: "inline.png",
+			mime_type: "image/png",
+			size_bytes: 11,
+		});
+		expect(attachment.artifact_id).toEqual(expect.any(String));
+		expect(attachment).not.toHaveProperty("data");
+
+		const [persisted] = await getTestDb()`
+			SELECT action_output
+			FROM runs
+			WHERE id = ${result.run_id}
+		`;
+		expect(persisted.action_output).toEqual(result.output);
+	});
+
+	it("does not relabel a successful action when attachment storage fails", async () => {
+		const coreServices = vi
+			.spyOn(lobuGateway, "getLobuCoreServices")
+			.mockReturnValue({
+				getArtifactStore: () => ({
+					publish: async () => {
+						throw new Error("artifact volume unavailable");
+					},
+					delete: async () => {},
+				}),
+			});
+		try {
+			const result = (await manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "image_result",
+				},
+				{} as Env,
+				ctx,
+			)) as {
+				run_id: number;
+				status: string;
+				output: Record<string, unknown>;
+			};
+
+			expect(result).toMatchObject({
+				status: "completed",
+				output: {
+					attachments: [],
+					lobu_attachment_error:
+						"Action completed, but Lobu could not persist one or more returned attachments.",
+				},
+			});
+			const [persisted] = await getTestDb()`
+				SELECT status, action_output FROM runs WHERE id = ${result.run_id}
+			`;
+			expect(persisted.status).toBe("completed");
+			expect(persisted.action_output).toEqual(result.output);
+		} finally {
+			coreServices.mockRestore();
+		}
 	});
 
 	it("replays a completed action instead of executing an idempotency key twice", async () => {

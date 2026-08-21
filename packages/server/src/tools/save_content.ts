@@ -14,12 +14,18 @@ import { resolveAutomationAttribution } from '../automations/automation-source';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
+import { ArtifactStore, eventArtifactBinding } from '../gateway/files/artifact-store';
 import type { Env } from '../index';
+import { getLobuCoreServices } from '../lobu/gateway';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
 import { getConfiguredEmbeddingModel, needsEmbeddingSql } from '../utils/embeddings';
 import { insertEvent } from '../utils/insert-event';
+import {
+  deleteMaterializedArtifacts,
+  materializeInlineAttachments,
+} from '../utils/inline-attachments';
 import logger from '../utils/logger';
 import {
   assertCanAuthorGuidance,
@@ -159,7 +165,8 @@ export const SaveContentSchema = Type.Object({
   ),
   attachments: Type.Optional(
     Type.Array(Type.Record(Type.String(), Type.Any()), {
-      description: 'Array of attachment objects (e.g. files, images).',
+      description:
+        "Files or images. To persist bytes, pass { kind, filename, mime_type, data }, where data is base64 and each decoded attachment is limited to 2 MiB. Lobu removes data and returns a durable artifact reference.",
     })
   ),
   source_url: Type.Optional(
@@ -598,6 +605,21 @@ async function saveContentImpl(
     inserted = false;
     persistedMetadata = prior.metadata;
   } else {
+    // Reuse the gateway's configured artifact store. The fallback keeps
+    // isolated tool tests usable when core services have not been initialized.
+    const artifactStore =
+      getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore();
+    const materialized = await materializeInlineAttachments(
+      [{ id: externalId, attachments: args.attachments }],
+      () =>
+        eventArtifactBinding({
+          organizationId: ctx.organizationId,
+          originId: externalId,
+        }),
+      artifactStore
+    );
+    const persistedAttachments = materialized.items[0]?.attachments;
+    const { publishedArtifactIds } = materialized;
     try {
       row = await insertEvent({
         entityIds: finalEntityIds,
@@ -608,7 +630,7 @@ async function saveContentImpl(
         content: args.content ?? null,
         payloadData: args.payload_data,
         payloadTemplate: args.payload_template ?? null,
-        attachments: args.attachments,
+        attachments: persistedAttachments,
         authorName: args.author,
         sourceUrl: args.source_url ?? parentSourceUrl,
         // The schema promises "Defaults to now if omitted" — honor it. A NULL
@@ -623,6 +645,10 @@ async function saveContentImpl(
         supersedesEventId: args.supersedes_event_id ?? null,
       });
     } catch (error) {
+      // The DB row is the durable authorization anchor. If it did not commit —
+      // including an idempotency race we lost to another replica — the newly
+      // published artifacts have no valid owner and must be removed.
+      await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
       // Two replicas may race after the preflight read. The unique index is the
       // lock; the loser resolves and returns the winner's durable event.
       if (

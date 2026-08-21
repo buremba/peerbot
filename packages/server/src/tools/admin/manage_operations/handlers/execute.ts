@@ -30,6 +30,10 @@ import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-i
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
 import { insertEvent } from "../../../../utils/insert-event";
+import {
+	deleteMaterializedArtifacts,
+	materializeActionOutputAttachments,
+} from "../../../../utils/inline-attachments";
 import logger from "../../../../utils/logger";
 import { buildResourcePermalink } from "../../../../utils/url-builder";
 import { trackAutomationReaction } from "../../../../utils/automation-reactions";
@@ -67,11 +71,61 @@ async function completeRunInline(
 	output: Record<string, unknown>,
 	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
-	if (!deferTerminalWrite) {
-		const sql = getDb();
-		await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	let materialized: Awaited<ReturnType<typeof materializeActionOutputAttachments>>;
+	try {
+		materialized = await materializeActionOutputAttachments(runId, output);
+	} catch (error) {
+		// The connector action has already succeeded. A storage outage must not
+		// relabel that external side effect as failed (which invites a retry).
+		// Drop only the unpersisted inline binaries and preserve the durable
+		// non-media result with an explicit warning for the caller.
+		logger.error(
+			{ run_id: runId, error: getErrorMessage(error) },
+			"Action completed but returned attachments could not be persisted",
+		);
+		const attachments = Array.isArray(output.attachments)
+			? output.attachments.filter(
+					(attachment) =>
+						!attachment ||
+						typeof attachment !== "object" ||
+						!Object.hasOwn(attachment, "data"),
+				)
+			: undefined;
+		materialized = {
+			output: {
+				...output,
+				...(attachments ? { attachments } : {}),
+				lobu_attachment_error:
+					"Action completed, but Lobu could not persist one or more returned attachments.",
+			},
+			publishedArtifactIds: [],
+		};
 	}
-	return { status: "completed", output };
+	if (deferTerminalWrite) {
+		return {
+			status: "completed",
+			output: materialized.output,
+			publishedArtifactIds: materialized.publishedArtifactIds,
+		};
+	}
+
+	const sql = getDb();
+	try {
+		const rows = await sql`
+			UPDATE runs
+			SET status = 'completed', completed_at = NOW(),
+				action_output = ${sql.json(materialized.output)}
+			WHERE id = ${runId} AND organization_id = ${organizationId}
+			RETURNING id
+		`;
+		if (rows.length === 0) {
+			throw new Error(`Run ${runId} disappeared before inline completion`);
+		}
+	} catch (error) {
+		await deleteMaterializedArtifacts(materialized.publishedArtifactIds);
+		throw error;
+	}
+	return { status: "completed", output: materialized.output };
 }
 
 /**

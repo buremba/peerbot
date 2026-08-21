@@ -20,13 +20,9 @@
  * `current_event_records` view exposes the transcribed text. Failures are
  * swallowed — the unsuperseded `[voice note]` placeholder remains usable.
  */
-import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
 import { getLobuCoreServices } from "../lobu/gateway";
-import {
-  runArtifactBinding,
-  type ArtifactStore,
-} from "../gateway/files/artifact-store";
+import { ArtifactStore, runArtifactBinding } from "../gateway/files/artifact-store";
 import { resolvePublicGatewayUrl } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
@@ -39,6 +35,33 @@ import logger from "./logger";
  * through a multipart upload endpoint instead of inline base64.
  */
 const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const MAX_INLINE_ATTACHMENT_BASE64_CHARS =
+  Math.ceil((MAX_INLINE_ATTACHMENT_BYTES * 4) / 3) + 4;
+// MIME wrapping adds only a small amount of whitespace. Keep a generous 2x
+// allowance while bounding the raw scan/allocation before normalization.
+const MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS =
+  MAX_INLINE_ATTACHMENT_BASE64_CHARS * 2;
+
+function decodeInlineBase64(value: string): Buffer | null {
+  if (value.length > MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS) return null;
+  // MIME/PEM-style base64 arrives wrapped at a fixed column (an email
+  // attachment, `base64.encodebytes`); strip that framing before validating so
+  // legitimate payloads are not rejected as junk.
+  const encoded = value.replace(/\s+/g, "");
+  if (
+    encoded.length === 0 ||
+    encoded.length > MAX_INLINE_ATTACHMENT_BASE64_CHARS ||
+    encoded.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)
+  ) {
+    return null;
+  }
+  const unpadded = encoded.replace(/=+$/, "");
+  if (unpadded.length === 0) return null;
+  const buffer = Buffer.from(encoded, "base64");
+  const canonical = buffer.toString("base64").replace(/=+$/, "");
+  return canonical === unpadded ? buffer : null;
+}
 
 interface InlineAttachment {
   kind?: string;
@@ -89,17 +112,16 @@ function publicGatewayUrl(): string {
  */
 export async function materializeInlineAttachments<T extends StreamItemLike>(
   items: T[],
-  bindingForItem?: (item: T) => string | undefined
+  bindingForItem?: (item: T) => string | undefined,
+  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">
 ): Promise<{
   items: T[];
   pendingTranscriptions: AudioTranscriptionPending[];
   publishedArtifactIds: string[];
 }> {
   const coreServices = getLobuCoreServices();
-  const artifactStore = coreServices?.getArtifactStore?.();
-  if (!artifactStore) {
-    return { items, pendingTranscriptions: [], publishedArtifactIds: [] };
-  }
+  const artifactStore =
+    artifactStoreOverride ?? coreServices?.getArtifactStore?.() ?? new ArtifactStore();
 
   const baseUrl = publicGatewayUrl();
   const pendingTranscriptions: AudioTranscriptionPending[] = [];
@@ -120,21 +142,19 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         continue;
       }
       const att = raw as InlineAttachment;
-      if (!att.data || typeof att.data !== "string") {
+      if (!Object.hasOwn(att, "data")) {
         rewritten.push(att);
         continue;
       }
       const filename = att.filename || "attachment";
       const mime = att.mime_type || "application/octet-stream";
       const kind = att.kind || inferKindFromMime(mime);
-      // `Buffer.from(str, 'base64')` never throws on malformed input — it
-      // silently ignores non-base64 chars. An empty result is the only signal
-      // we get that the input was junk, so guard on length here.
-      const buffer = Buffer.from(att.data, "base64");
-      if (buffer.length === 0) {
+      const buffer =
+        typeof att.data === "string" ? decodeInlineBase64(att.data) : null;
+      if (!buffer) {
         logger.warn(
           { item_id: item.id },
-          "[inline-attachments] base64 decoded to 0 bytes — dropping attachment"
+          "[inline-attachments] invalid or oversized base64 — dropping attachment"
         );
         continue;
       }
@@ -161,9 +181,14 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         });
         publishedArtifactIds.push(published.artifactId);
       } catch (error) {
-        await Promise.allSettled(
-          publishedArtifactIds.map((artifactId) => artifactStore.delete(artifactId))
-        );
+        try {
+          await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "Attachment publication failed and partial artifact cleanup also failed"
+          );
+        }
         throw error;
       }
 
@@ -197,7 +222,8 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
 /** Materialize connector-style attachments returned by a device action. */
 export async function materializeActionOutputAttachments(
   runId: number,
-  actionOutput: Record<string, unknown>
+  actionOutput: Record<string, unknown>,
+  artifactStoreOverride?: Pick<ArtifactStore, "publish" | "delete">
 ): Promise<{
   output: Record<string, unknown>;
   publishedArtifactIds: string[];
@@ -207,7 +233,8 @@ export async function materializeActionOutputAttachments(
   }
   const { items, publishedArtifactIds } = await materializeInlineAttachments(
     [{ id: `action:${runId}`, attachments: actionOutput.attachments }],
-    () => runArtifactBinding(runId)
+    () => runArtifactBinding(runId),
+    artifactStoreOverride
   );
   return {
     output: { ...actionOutput, attachments: items[0]?.attachments ?? [] },
@@ -215,19 +242,28 @@ export async function materializeActionOutputAttachments(
   };
 }
 
-export async function deleteMaterializedArtifacts(artifactIds: string[]): Promise<void> {
+export async function deleteMaterializedArtifacts(
+  artifactIds: string[],
+  artifactStoreOverride?: Pick<ArtifactStore, "delete">
+): Promise<void> {
   if (artifactIds.length === 0) return;
   const coreServices = getLobuCoreServices();
-  const artifactStore = coreServices?.getArtifactStore?.();
-  if (!artifactStore) return;
+  const artifactStore =
+    artifactStoreOverride ?? coreServices?.getArtifactStore?.() ?? new ArtifactStore();
   const results = await Promise.allSettled(
     artifactIds.map((artifactId) => artifactStore.delete(artifactId))
   );
-  const failed = results.filter((result) => result.status === "rejected").length;
-  if (failed > 0) {
-    logger.warn(
-      { artifact_count: artifactIds.length, failed },
+  const failures = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected"
+  );
+  if (failures.length > 0) {
+    logger.error(
+      { artifact_count: artifactIds.length, failed: failures.length },
       "[inline-attachments] failed to delete some uncommitted artifacts"
+    );
+    throw new AggregateError(
+      failures.map((failure) => failure.reason),
+      `Failed to delete ${failures.length} uncommitted artifact(s)`
     );
   }
 }
@@ -340,10 +376,8 @@ async function transcribeOne(
     );
     return;
   }
-  const buffer = await readFile(stored.filePath);
-
   const result = await transcriptionService.transcribe(
-    buffer,
+    stored.bytes,
     agentId,
     job.mimeType
   );

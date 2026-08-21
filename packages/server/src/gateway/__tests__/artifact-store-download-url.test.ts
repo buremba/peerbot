@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { runArtifactBinding } from "../files/artifact-store.js";
+import { ArtifactStore, runArtifactBinding } from "../files/artifact-store.js";
 import { type ArtifactTestEnv, createArtifactTestEnv } from "./setup.js";
 
 describe("ArtifactStore.buildDownloadUrl", () => {
@@ -60,7 +60,6 @@ describe("ArtifactStore.buildDownloadUrl", () => {
     const read = await env.artifactStore.read(artifactId);
     expect(read?.metadata.filename).toBe("note.txt");
   });
-
   test("enforces immutable internal bindings and supports cleanup", async () => {
     const binding = runArtifactBinding(42);
     const { artifactId } = await env.artifactStore.publish({
@@ -78,5 +77,93 @@ describe("ArtifactStore.buildDownloadUrl", () => {
 
     await env.artifactStore.delete(artifactId);
     expect(await env.artifactStore.read(artifactId)).toBeNull();
+  });
+});
+
+describe("ArtifactStore shared filesystem backend", () => {
+  let env: ArtifactTestEnv;
+
+  beforeEach(() => {
+    env = createArtifactTestEnv();
+  });
+
+  afterEach(() => env.cleanup());
+
+  test("fails closed when production has no durable artifacts directory", () => {
+    const previousEnvironment = process.env.ENVIRONMENT;
+    const previousArtifactsDir = process.env.LOBU_ARTIFACTS_DIR;
+    try {
+      process.env.ENVIRONMENT = "production";
+      delete process.env.LOBU_ARTIFACTS_DIR;
+      expect(() => new ArtifactStore()).toThrow(
+        "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable shared filesystem",
+      );
+    } finally {
+      if (previousEnvironment === undefined) delete process.env.ENVIRONMENT;
+      else process.env.ENVIRONMENT = previousEnvironment;
+      if (previousArtifactsDir === undefined) delete process.env.LOBU_ARTIFACTS_DIR;
+      else process.env.LOBU_ARTIFACTS_DIR = previousArtifactsDir;
+    }
+  });
+
+  test("shares verified private artifacts across store instances", async () => {
+    const writer = new ArtifactStore(env.artifactsDir);
+    const reader = new ArtifactStore(env.artifactsDir);
+    const binding = runArtifactBinding(314);
+    const bytes = Buffer.from("shared-image-bytes");
+
+    const published = await writer.publish({
+      buffer: bytes,
+      filename: "mémory photo.webp",
+      contentType: "image/webp",
+      publicGatewayUrl: "https://lobu.example.com",
+      binding,
+    });
+
+    expect(
+      await reader.read(published.artifactId, {
+        binding,
+        maxBytes: bytes.length - 1,
+      }),
+    ).toBeNull();
+    expect(
+      await reader.read(published.artifactId, {
+        binding: runArtifactBinding(315),
+      }),
+    ).toBeNull();
+
+    const stored = await reader.read(published.artifactId, { binding });
+    expect(stored?.metadata).toEqual(
+      expect.objectContaining({
+        filename: "mémory photo.webp",
+        contentType: "image/webp",
+        size: bytes.length,
+        binding,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+    expect(stored?.bytes).toEqual(bytes);
+
+    await writer.delete(published.artifactId);
+    expect(await reader.read(published.artifactId)).toBeNull();
+  });
+
+  test("keeps reserved metadata filenames separate from payload bytes", async () => {
+    const bytes = Buffer.from("not artifact metadata");
+    const published = await env.artifactStore.publish({
+      buffer: bytes,
+      filename: "metadata.json",
+      contentType: "application/json",
+      publicGatewayUrl: "https://lobu.example.com",
+    });
+
+    const stored = await env.artifactStore.read(published.artifactId);
+    expect(stored?.metadata.filename).toBe("metadata.json");
+    expect(stored?.bytes).toEqual(bytes);
+  });
+
+  test("rejects artifact ids that can escape the configured directory", async () => {
+    expect(await env.artifactStore.read("../outside")).toBeNull();
+    await expect(env.artifactStore.delete("../outside")).resolves.toBeUndefined();
   });
 });

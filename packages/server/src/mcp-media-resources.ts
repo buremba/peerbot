@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   ArtifactStore,
@@ -6,9 +5,12 @@ import {
   runArtifactBinding,
 } from './gateway/files/artifact-store';
 import type { Env } from './index';
+import { getLobuCoreServices } from './lobu/gateway';
 import { type AuthContext, executeTool } from './tools/execute';
 
-const MAX_MCP_RESOURCE_BYTES = 20 * 1024 * 1024;
+// resources/read embeds base64 in one JSON-RPC response, so keep the decoded
+// cap bounded below the point where concurrent reads amplify app memory.
+const MAX_MCP_RESOURCE_BYTES = 5 * 1024 * 1024;
 
 type ResourceLink = Extract<
   CallToolResult['content'][number],
@@ -109,7 +111,7 @@ function resourceLinksForKnowledgeRead(value: Record<string, unknown>): Resource
  * attachments as MCP resource links. Links use Lobu-owned stable ids, never
  * ephemeral signed download URLs.
  */
-export function mcpResourceLinksForSdkReturnValue(value: unknown): ResourceLink[] {
+function mcpResourceLinksForSdkReturnValue(value: unknown): ResourceLink[] {
   if (!isRecord(value)) return [];
 
   if (value.action === 'execute' && value.status === 'completed') {
@@ -125,6 +127,36 @@ export function mcpResourceLinksForSdkReturnValue(value: unknown): ResourceLink[
   }
 
   return resourceLinksForKnowledgeRead(value);
+}
+
+/**
+ * Add media links at the MCP boundary, after the tool result has already been
+ * reduced to its public shape. This keeps host-only content out of tool
+ * handlers, audit payloads, structuredContent, and output schemas.
+ */
+export function mcpResourceLinksForToolResult(
+  toolName: string,
+  publicResult: unknown
+): ResourceLink[] {
+  if (!isRecord(publicResult)) return [];
+
+  if (toolName === 'run_sdk' || toolName === 'query_sdk') {
+    return mcpResourceLinksForSdkReturnValue(publicResult.return_value);
+  }
+
+  if (toolName === 'save_memory') {
+    const eventId = positiveInteger(publicResult.id);
+    return eventId === null
+      ? []
+      : resourceLinksForAttachments(
+          (index) => eventAttachmentResourceUri(eventId, index),
+          publicResult.attachments
+        );
+  }
+
+  return toolName === 'read_knowledge'
+    ? resourceLinksForKnowledgeRead(publicResult)
+    : [];
 }
 
 function parseAttachmentUri(uri: string): ResourceRef | null {
@@ -169,6 +201,8 @@ async function loadResourceAttachment(
       : null;
   }
 
+  // One requested id can resolve to several lineage rows, so read with
+  // headroom rather than limit: 1 and pick the exact version below.
   const result = await executeTool(
     'read_knowledge',
     { content_ids: [ref.id], limit: 50 },
@@ -181,9 +215,11 @@ async function loadResourceAttachment(
   );
   if (!isRecord(item) || !Array.isArray(item.attachments)) return null;
   const raw = item.attachments[ref.index];
+  const originId = item.origin_id;
   if (!isRecord(raw) || !authCtx.organizationId) return null;
-  const originId = typeof item.origin_id === 'string' ? item.origin_id : '';
-  if (!originId) return null;
+  // read_knowledge renders a NULL origin_id as '', which cannot reproduce the
+  // binding the artifact was published under.
+  if (typeof originId !== 'string' || !originId) return null;
   return {
     attachment: raw,
     binding: eventArtifactBinding({
@@ -217,29 +253,25 @@ export async function readMcpAttachmentResource(
   if (!ref) return null;
 
   const loaded = await loadResourceAttachment(ref, env, authCtx);
-  const attachment = loaded?.attachment;
-  if (!loaded || !attachment || typeof attachment.artifact_id !== 'string') {
+  if (!loaded || typeof loaded.attachment.artifact_id !== 'string') {
     throw new Error(`Unknown resource: ${uri}`);
   }
 
-  const artifactStore = new ArtifactStore();
-  const stored = await artifactStore.read(attachment.artifact_id, {
+  // Reuse the gateway's configured artifact store. The fallback is for
+  // isolated tests that call this module without booting core services.
+  const artifactStore =
+    getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore();
+  const stored = await artifactStore.read(loaded.attachment.artifact_id, {
     binding: loaded.binding,
+    maxBytes: MAX_MCP_RESOURCE_BYTES,
   });
   if (!stored) throw new Error(`Unknown resource: ${uri}`);
-  if (stored.metadata.size > MAX_MCP_RESOURCE_BYTES) {
-    throw new Error(
-      `MCP resource is too large to inline (${stored.metadata.size} bytes; limit ${MAX_MCP_RESOURCE_BYTES})`
-    );
-  }
-
-  const data = await readFile(stored.filePath);
   return {
     contents: [
       {
         uri,
         mimeType: stored.metadata.contentType,
-        blob: data.toString('base64'),
+        blob: stored.bytes.toString('base64'),
       },
     ],
   };

@@ -149,6 +149,20 @@ app:
     size: 20Gi
     storageClass: ""
 
+  # Durable binary artifacts (images, audio, files) shared by every app
+  # replica. When disabled the chart explicitly uses pod-local /tmp, so media
+  # does not survive restarts or reliably cross replicas. The default stays off
+  # for local/self-hosted installs; production should enable this with storage
+  # that every scheduled app pod can mount.
+  # RWO supports multiple pods on one node. Multi-node deployments should use
+  # an RWX-capable storage class and set accessMode to ReadWriteMany.
+  artifacts:
+    enabled: false
+    size: 20Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    mountPath: /var/lib/lobu/artifacts
+
   # Keep replicas off a single node. Without this the scheduler is free to put
   # every replica on one node, where one node loss removes all capacity and the
   # PodDisruptionBudget cannot help (it does not apply to node failure).

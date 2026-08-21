@@ -1,18 +1,14 @@
-import { randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	createLogger,
-	decrypt,
-	getErrorMessage,
-	encrypt,
-} from "@lobu/core";
+import { createLogger, decrypt, encrypt, getErrorMessage } from "@lobu/core";
 
 const logger = createLogger("artifact-store");
 const DEFAULT_ARTIFACTS_DIR = path.join(os.tmpdir(), "lobu-artifacts");
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const ARTIFACT_PAYLOAD_FILENAME = "content";
+const ARTIFACT_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 interface StoredArtifactMetadata {
   artifactId: string;
@@ -20,6 +16,7 @@ interface StoredArtifactMetadata {
   contentType: string;
   size: number;
   createdAt: number;
+  sha256: string;
   /** Immutable Lobu resource identity allowed to read this artifact internally. */
   binding?: string;
 }
@@ -64,19 +61,37 @@ function normalizeBaseUrl(publicGatewayUrl: string): string {
   return trimmed.replace(/\/$/, "");
 }
 
+function sha256(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function resolveArtifactsDir(baseDir: string | undefined): string {
+  const configured = baseDir?.trim() || process.env.LOBU_ARTIFACTS_DIR?.trim();
+  if (configured) return configured;
+  if (process.env.ENVIRONMENT === "production") {
+    throw new Error(
+      "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable shared filesystem"
+    );
+  }
+  return DEFAULT_ARTIFACTS_DIR;
+}
+
 export class ArtifactStore {
+  private readonly baseDir: string;
+
   constructor(
-    private readonly baseDir = process.env.LOBU_ARTIFACTS_DIR ||
-      DEFAULT_ARTIFACTS_DIR,
+    baseDir?: string,
     private readonly defaultTtlMs = DEFAULT_TTL_MS
-  ) {}
+  ) {
+    this.baseDir = resolveArtifactsDir(baseDir);
+  }
 
   private artifactDir(artifactId: string): string {
     return path.join(this.baseDir, artifactId);
   }
 
-  private artifactFilePath(artifactId: string, filename: string): string {
-    return path.join(this.artifactDir(artifactId), sanitizeFilename(filename));
+  private artifactFilePath(artifactId: string): string {
+    return path.join(this.artifactDir(artifactId), ARTIFACT_PAYLOAD_FILENAME);
   }
 
   private metadataPath(artifactId: string): string {
@@ -95,28 +110,26 @@ export class ArtifactStore {
     const filename = sanitizeFilename(params.filename);
     const contentType = params.contentType || "application/octet-stream";
     const createdAt = Date.now();
-    const dir = this.artifactDir(artifactId);
+    const checksum = sha256(params.buffer);
+    const metadata: StoredArtifactMetadata = {
+      artifactId,
+      filename,
+      contentType,
+      size: params.buffer.length,
+      createdAt,
+      sha256: checksum,
+      ...(params.binding ? { binding: params.binding } : {}),
+    };
 
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(
-      this.artifactFilePath(artifactId, filename),
-      params.buffer
-    );
-    await fs.writeFile(
-      this.metadataPath(artifactId),
-      JSON.stringify(
-        {
-          artifactId,
-          filename,
-          contentType,
-          size: params.buffer.length,
-          createdAt,
-          ...(params.binding ? { binding: params.binding } : {}),
-        } satisfies StoredArtifactMetadata,
-        null,
-        2
-      )
-    );
+    const dir = this.artifactDir(artifactId);
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(this.artifactFilePath(artifactId), params.buffer);
+      await fs.writeFile(this.metadataPath(artifactId), JSON.stringify(metadata, null, 2));
+    } catch (error) {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
 
     logger.info(
       `Published artifact ${artifactId} (${filename}, ${params.buffer.length} bytes)`
@@ -137,25 +150,38 @@ export class ArtifactStore {
 
   async read(
     artifactId: string,
-    options?: { binding?: string }
-  ): Promise<{
-    metadata: StoredArtifactMetadata;
-    filePath: string;
-  } | null> {
+    options?: { binding?: string; maxBytes?: number }
+  ): Promise<{ metadata: StoredArtifactMetadata; bytes: Buffer } | null> {
+    if (!ARTIFACT_ID_PATTERN.test(artifactId)) return null;
     try {
       const raw = await fs.readFile(this.metadataPath(artifactId), "utf8");
       const metadata = JSON.parse(raw) as StoredArtifactMetadata;
-      if (options?.binding && metadata.binding !== options.binding) return null;
-      const filePath = this.artifactFilePath(artifactId, metadata.filename);
-      await fs.access(filePath);
-      return { metadata, filePath };
+      if (metadata.artifactId !== artifactId) return null;
+      if (options?.binding && metadata.binding !== options.binding) {
+        return null;
+      }
+      if (options?.maxBytes !== undefined && metadata.size > options.maxBytes) {
+        return null;
+      }
+      const bytes = await fs.readFile(
+        this.artifactFilePath(artifactId)
+      );
+      if (bytes.length !== metadata.size || sha256(bytes) !== metadata.sha256) {
+        logger.warn(`Artifact ${artifactId} failed size/checksum verification`);
+        return null;
+      }
+      return { metadata, bytes };
     } catch {
       return null;
     }
   }
 
   async delete(artifactId: string): Promise<void> {
-    await fs.rm(this.artifactDir(artifactId), { recursive: true, force: true });
+    if (!ARTIFACT_ID_PATTERN.test(artifactId)) return;
+    await fs.rm(this.artifactDir(artifactId), {
+      recursive: true,
+      force: true,
+    });
     logger.info(`Deleted artifact ${artifactId}`);
   }
 
@@ -210,9 +236,5 @@ export class ArtifactStore {
     );
     url.searchParams.set("token", this.createDownloadToken(artifactId, ttlMs));
     return url.toString();
-  }
-
-  createReadStream(artifactId: string, filename: string) {
-    return createReadStream(this.artifactFilePath(artifactId, filename));
   }
 }

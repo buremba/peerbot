@@ -8,8 +8,6 @@ import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
 import { MAX_SCRIPT_TIMEOUT_MS, runScript } from "../sandbox/run-script";
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
-import { mcpResourceLinksForSdkReturnValue } from "../mcp-media-resources";
-import { attachMcpResultContent } from "./mcp-result-content";
 import { attachMcpResultMeta } from "./mcp-result-meta";
 
 const SCRIPT_FIELDS = {
@@ -389,8 +387,6 @@ async function runSandbox(
     // never appear under dry_run:false.
     dry_run: dryRun,
   };
-  const resourceLinks = mcpResourceLinksForSdkReturnValue(result.returnValue);
-  const mcpOutput = attachMcpResultContent(output, resourceLinks);
   const challengeRequestUrl = ctx.requestUrl ?? ctx.baseUrl;
   // Only a failed run carries the challenge: the MCP handler flips any result
   // holding one to isError, and a script that caught the denial and still
@@ -402,7 +398,7 @@ async function runSandbox(
     (ctx.tokenType === "oauth" || ctx.tokenType === "pat") &&
     challengeRequestUrl
   ) {
-    return attachMcpResultMeta(mcpOutput, {
+    return attachMcpResultMeta(output, {
       "mcp/www_authenticate": [
         buildMcpBearerChallenge(challengeRequestUrl, {
           error: "insufficient_scope",
@@ -413,7 +409,7 @@ async function runSandbox(
       ],
     });
   }
-  return mcpOutput;
+  return output;
 }
 
 export const runSdkScript = withValidatedArgs(

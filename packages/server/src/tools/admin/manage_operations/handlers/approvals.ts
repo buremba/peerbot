@@ -22,6 +22,7 @@ import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { insertEvent } from "../../../../utils/insert-event";
+import { deleteMaterializedArtifacts } from "../../../../utils/inline-attachments";
 import { isAdminOrOwnerRole } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import {
@@ -69,15 +70,17 @@ async function persistDurableApplyOutput(
 	runId: number,
 	organizationId: string,
 	output: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
 	const sql = getDb();
-	await sql`
+	const rows = await sql`
 		UPDATE runs SET action_output = ${sql.json(output)}
 		WHERE id = ${runId}
 			AND organization_id = ${organizationId}
 			AND status = 'running'
 			AND approval_status = 'approved'
+		RETURNING id
 	`;
+	return rows.length > 0;
 }
 
 /**
@@ -1495,7 +1498,24 @@ export async function handleApprove(
 		// Phase 2a (durable): persist the execution output BEFORE the
 		// terminalization attempt so a failed completed-card write cannot lose
 		// the only durable record of an already-successful external mutation.
-		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output);
+		let outputPersisted = false;
+		try {
+			outputPersisted = await persistDurableApplyOutput(
+				args.run_id,
+				ctx.organizationId,
+				result.output,
+			);
+		} catch (error) {
+			await deleteMaterializedArtifacts(result.publishedArtifactIds ?? []);
+			throw error;
+		}
+		if (!outputPersisted) {
+			await deleteMaterializedArtifacts(result.publishedArtifactIds ?? []);
+			return {
+				error:
+					"The approval was already decided while this request was in flight. Refresh before acting.",
+			};
+		}
 
 		// Phase 2b (atomic): terminal completed runs write + 'completed' card.
 		// The card guard runs INSIDE the tx so a missing card rolls the

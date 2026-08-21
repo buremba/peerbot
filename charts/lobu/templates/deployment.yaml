@@ -76,6 +76,10 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if not (hasKey .Values.app.env "LOBU_ARTIFACTS_DIR") }}
+            - name: LOBU_ARTIFACTS_DIR
+              value: {{ ternary .Values.app.artifacts.mountPath "/tmp/lobu-artifacts" .Values.app.artifacts.enabled | quote }}
+            {{- end }}
             {{- if .Values.ingress.hosts }}
             - name: BASE_URL
               value: {{ printf "https://%s" (first .Values.ingress.hosts) | quote }}
@@ -147,16 +151,29 @@ spec:
             periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
-          {{- if .Values.app.workspaces.enabled }}
+          {{- if or .Values.app.workspaces.enabled .Values.app.artifacts.enabled }}
           volumeMounts:
+            {{- if .Values.app.workspaces.enabled }}
             - name: workspaces
               mountPath: /app/workspaces
+            {{- end }}
+            {{- if .Values.app.artifacts.enabled }}
+            - name: artifacts
+              mountPath: {{ .Values.app.artifacts.mountPath }}
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.app.resources | nindent 12 }}
-      {{- if .Values.app.workspaces.enabled }}
+      {{- if or .Values.app.workspaces.enabled .Values.app.artifacts.enabled }}
       volumes:
+        {{- if .Values.app.workspaces.enabled }}
         - name: workspaces
           persistentVolumeClaim:
             claimName: {{ include "lobu.fullname" . }}-app-workspaces
+        {{- end }}
+        {{- if .Values.app.artifacts.enabled }}
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ include "lobu.fullname" . }}-app-artifacts
+        {{- end }}
       {{- end }}

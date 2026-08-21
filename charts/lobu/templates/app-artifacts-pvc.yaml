@@ -1,0 +1,20 @@
+{{- if .Values.app.artifacts.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "lobu.fullname" . }}-app-artifacts
+  annotations:
+    "helm.sh/resource-policy": keep
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  accessModes:
+    - {{ .Values.app.artifacts.accessMode }}
+  {{- if .Values.app.artifacts.storageClass }}
+  storageClassName: {{ .Values.app.artifacts.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.app.artifacts.size }}
+{{- end }}

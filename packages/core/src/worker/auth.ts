@@ -21,12 +21,13 @@ export function looksLikeWorkerToken(token: string): boolean {
 
 export interface WorkerTokenData {
   /**
-   * Separates the bearer accepted by worker-facing gateway routes from the
-   * credential exposed to agent subprocesses through HTTP_PROXY.
+   * Separates worker-facing bearers, credentials exposed to agent subprocesses
+   * through HTTP_PROXY, and the server-only embedded MCP credential.
    *
-   * Absent means "worker" for tokens minted before this discriminator existed.
+   * Absent means "worker" for tokens minted before this discriminator existed;
+   * `gateway-mcp` is never returned to or minted inside an agent process.
    */
-  tokenKind?: "worker" | "egress-proxy";
+  tokenKind?: "worker" | "egress-proxy" | "gateway-mcp";
   userId: string;
   conversationId: string;
   channelId: string;
@@ -296,6 +297,25 @@ export function generateWorkerTokenPair(
   };
 }
 
+/**
+ * Narrow a verified worker credential to the embedded MCP hop.
+ *
+ * The gateway derives this only for its internal upstream hop. For tool calls,
+ * that happens after worker authentication and pre-tool policy. The derived
+ * credential preserves the original token's timestamp, revocation id, and
+ * identity claims, but worker-facing routes reject its distinct token kind.
+ */
+export function mintGatewayMcpToken(workerToken: string): string | null {
+  const data = verifyWorkerToken(workerToken);
+  if (!data) return null;
+  return encrypt(
+    JSON.stringify({
+      ...data,
+      tokenKind: "gateway-mcp" satisfies WorkerTokenData["tokenKind"],
+    })
+  );
+}
+
 function parsePositiveIntEnv(
   name: string,
   fallback: number,
@@ -312,7 +332,7 @@ function parsePositiveIntEnv(
  */
 function verifyToken(
   token: string,
-  expectedKind: "worker" | "egress-proxy"
+  expectedKind: "worker" | "egress-proxy" | "gateway-mcp"
 ): WorkerTokenData | null {
   try {
     const parsed: unknown = JSON.parse(decrypt(token));
@@ -329,7 +349,9 @@ function verifyToken(
 
     const tokenKind = data.tokenKind ?? "worker";
     if (
-      (tokenKind !== "worker" && tokenKind !== "egress-proxy") ||
+      (tokenKind !== "worker" &&
+        tokenKind !== "egress-proxy" &&
+        tokenKind !== "gateway-mcp") ||
       tokenKind !== expectedKind
     ) {
       logger.error(`Token rejected: expected ${expectedKind} credential`);
@@ -538,4 +560,8 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
 
 export function verifyEgressProxyToken(token: string): WorkerTokenData | null {
   return verifyToken(token, "egress-proxy");
+}
+
+export function verifyGatewayMcpToken(token: string): WorkerTokenData | null {
+  return verifyToken(token, "gateway-mcp");
 }

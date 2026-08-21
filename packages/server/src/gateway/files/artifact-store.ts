@@ -35,6 +35,27 @@ interface PublishArtifactResult {
   downloadUrl: string;
 }
 
+export class ArtifactStorageError extends Error {
+  readonly code = "ARTIFACT_STORAGE_UNAVAILABLE";
+
+  constructor(operation: string, cause: unknown) {
+    super(
+      `Artifact storage ${operation} failed; operator intervention is required`,
+      { cause },
+    );
+    this.name = "ArtifactStorageError";
+  }
+}
+
+function storageFailure(operation: string, cause: unknown): ArtifactStorageError {
+  if (cause instanceof ArtifactStorageError) return cause;
+  logger.error(
+    { operation, error: getErrorMessage(cause) },
+    "Artifact storage operation failed",
+  );
+  return new ArtifactStorageError(operation, cause);
+}
+
 function sanitizeFilename(filename: string): string {
   const safe = path.basename(filename).trim();
   return safe || "download";
@@ -173,22 +194,17 @@ export class ArtifactStore {
   }
 
   private async drainTrash(): Promise<void> {
-    const trashDir = this.trashDir();
-    await fs.mkdir(trashDir, { recursive: true, mode: 0o700 });
-    for (const stale of await fs.readdir(trashDir)) {
-      const stalePath = path.join(trashDir, stale);
-      try {
-        await fs.rm(stalePath, { recursive: true, force: true });
-      } catch (error) {
-        // Server logger errors are forwarded to Sentry. A retained orphan
-        // blocks later publication by design, so make that operationally loud
-        // while preserving the fail-closed policy.
-        logger.error(
-          { err: error, stalePath },
-          "Artifact trash drain failed; publication is blocked",
-        );
-        throw error;
+    try {
+      const trashDir = this.trashDir();
+      await fs.mkdir(trashDir, { recursive: true, mode: 0o700 });
+      for (const stale of await fs.readdir(trashDir)) {
+        await fs.rm(path.join(trashDir, stale), {
+          recursive: true,
+          force: true,
+        });
       }
+    } catch (error) {
+      throw storageFailure("cleanup", error);
     }
   }
 
@@ -212,7 +228,7 @@ export class ArtifactStore {
         await this.drainTrash();
         return;
       }
-      throw error;
+      throw storageFailure("quarantine", error);
     }
     await this.drainTrash();
   }
@@ -260,11 +276,11 @@ export class ArtifactStore {
         await this.quarantineAndDelete(artifactId);
       } catch (cleanupError) {
         throw new AggregateError(
-          [error, cleanupError],
+          [storageFailure("publication", error), cleanupError],
           `Artifact publication failed and its partial directory could not be quarantined: ${getErrorMessage(cleanupError)}`,
         );
       }
-      throw error;
+      throw storageFailure("publication", error);
     }
 
     logger.info(
@@ -387,7 +403,11 @@ export class ArtifactStore {
 
   async delete(artifactId: string): Promise<void> {
     if (!ARTIFACT_ID_PATTERN.test(artifactId)) return;
-    await this.quarantineAndDelete(artifactId);
+    try {
+      await this.quarantineAndDelete(artifactId);
+    } catch (error) {
+      throw storageFailure("cleanup", error);
+    }
     logger.info(`Deleted artifact ${artifactId}`);
   }
 

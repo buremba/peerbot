@@ -67,6 +67,9 @@ import type {
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
 
+const APPLIED_ACTION_PENDING_MESSAGE =
+	"The operation succeeded and is awaiting durable terminalization. Retry approval to reconcile it without rerunning.";
+
 /**
  * Durably persist a claimed run's apply/execution output in its OWN
  * transaction, BEFORE the terminalization attempt. If the terminal card write
@@ -165,11 +168,10 @@ async function tryReconcileTerminalization(
 			};
 		}
 		if (reconciled.status !== "completed") {
-			return {
-				error:
-					"The operation succeeded and is awaiting durable terminalization. Retry approval to reconcile it without rerunning.",
-			};
+			return { error: APPLIED_ACTION_PENDING_MESSAGE };
 		}
+		// A concurrent reconciler may have terminalized (and written the card)
+		// first, in which case this call completes without minting an event.
 		return {
 			action: "approve",
 			approved: true,
@@ -1550,10 +1552,7 @@ export async function handleApprove(
 			},
 		});
 		if (reconciled.status !== "completed") {
-			return {
-				error:
-					"The operation succeeded and is awaiting durable terminalization. Retry approval to reconcile it without rerunning.",
-			};
+			return { error: APPLIED_ACTION_PENDING_MESSAGE };
 		}
 		return {
 			action: "approve",

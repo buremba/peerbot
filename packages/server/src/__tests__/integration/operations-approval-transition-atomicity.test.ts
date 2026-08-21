@@ -62,6 +62,23 @@ const DROP_FAIL_TRIGGER = `
 DROP TRIGGER IF EXISTS test_fail_terminal_approval_event_trg ON events;
 DROP FUNCTION IF EXISTS test_fail_terminal_approval_event();
 `;
+const SUPPRESS_COMPLETED_RUN_TRIGGER = `
+CREATE OR REPLACE FUNCTION test_suppress_completed_run() RETURNS trigger AS $fn$
+BEGIN
+  IF NEW.status = 'completed' AND OLD.status = 'running' THEN
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+CREATE TRIGGER test_suppress_completed_run_trg
+  BEFORE UPDATE ON runs
+  FOR EACH ROW EXECUTE FUNCTION test_suppress_completed_run();
+`;
+const DROP_SUPPRESS_COMPLETED_RUN_TRIGGER = `
+DROP TRIGGER IF EXISTS test_suppress_completed_run_trg ON runs;
+DROP FUNCTION IF EXISTS test_suppress_completed_run();
+`;
 const FAIL_FAILED_TRIGGER = `
 CREATE OR REPLACE FUNCTION test_fail_failed_approval_event() RETURNS trigger AS $fn$
 BEGIN
@@ -300,12 +317,14 @@ describe("approval-run transition atomicity", () => {
 		await getTestDb().unsafe(DROP_FAIL_TRIGGER);
 		await getTestDb().unsafe(DROP_FAIL_PENDING_TRIGGER);
 		await getTestDb().unsafe(DROP_FAIL_FAILED_TRIGGER);
+		await getTestDb().unsafe(DROP_SUPPRESS_COMPLETED_RUN_TRIGGER);
 	});
 
 	afterAll(async () => {
 		await getTestDb().unsafe(DROP_FAIL_TRIGGER);
 		await getTestDb().unsafe(DROP_FAIL_PENDING_TRIGGER);
 		await getTestDb().unsafe(DROP_FAIL_FAILED_TRIGGER);
+		await getTestDb().unsafe(DROP_SUPPRESS_COMPLETED_RUN_TRIGGER);
 		vi.unstubAllGlobals();
 	});
 
@@ -533,6 +552,114 @@ describe("approval-run transition atomicity", () => {
 		expect((await currentApprovalCard(queued.run_id, orgId))?.interaction_status).toBe(
 			"completed",
 		);
+	});
+
+	it("inline action: an incomplete reconciliation remains retryable without re-executing the mutation", async () => {
+		const sql = getTestDb();
+		const postItemsBefore = postItemsCalls;
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "retry-pending-terminalization" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string };
+		expect(queued.status).toBe("pending_approval");
+
+		await sql.unsafe(FAIL_COMPLETED_TRIGGER);
+		await expect(
+			manageOperations(
+				{ action: "approve", run_id: queued.run_id },
+				{} as Env,
+				humanCtx,
+			),
+		).rejects.toThrow(/terminal approval-event write failure/);
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+
+		await sql.unsafe(DROP_FAIL_TRIGGER);
+		await sql.unsafe(SUPPRESS_COMPLETED_RUN_TRIGGER);
+		const retry = (await manageOperations(
+			{ action: "approve", run_id: queued.run_id },
+			{} as Env,
+			humanCtx,
+		)) as { error?: string };
+		expect(retry.error).toContain("awaiting durable terminalization");
+		expect(retry.error).toContain("without rerunning");
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		const [stillRunning] = await sql`
+			SELECT status, approval_status, action_output
+			FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(stillRunning).toMatchObject({
+			status: "running",
+			approval_status: "approved",
+			action_output: { body: { created: true } },
+		});
+
+		await sql.unsafe(DROP_SUPPRESS_COMPLETED_RUN_TRIGGER);
+		const completed = (await manageOperations(
+			{ action: "approve", run_id: queued.run_id },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; error?: string };
+		expect(completed.error).toBeUndefined();
+		expect(completed.approved).toBe(true);
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+	});
+
+	it("inline action: concurrent terminalization retries both observe completion without re-executing the mutation", async () => {
+		const sql = getTestDb();
+		const postItemsBefore = postItemsCalls;
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "concurrent-terminalization" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string };
+		expect(queued.status).toBe("pending_approval");
+
+		await sql.unsafe(FAIL_COMPLETED_TRIGGER);
+		await expect(
+			manageOperations(
+				{ action: "approve", run_id: queued.run_id },
+				{} as Env,
+				humanCtx,
+			),
+		).rejects.toThrow(/terminal approval-event write failure/);
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		await sql.unsafe(DROP_FAIL_TRIGGER);
+
+		const retries = (await Promise.all([
+			manageOperations(
+				{ action: "approve", run_id: queued.run_id },
+				{} as Env,
+				humanCtx,
+			),
+			manageOperations(
+				{ action: "approve", run_id: queued.run_id },
+				{} as Env,
+				humanCtx,
+			),
+		])) as Array<{ approved?: boolean; error?: string; event_id?: number }>;
+		expect(retries).toHaveLength(2);
+		expect(retries.every((retry) => retry.approved === true)).toBe(true);
+		expect(retries.every((retry) => retry.error === undefined)).toBe(true);
+		expect(retries.filter((retry) => retry.event_id != null)).toHaveLength(1);
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		const [completed] = await sql`
+			SELECT status, action_output FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(completed).toMatchObject({
+			status: "completed",
+			action_output: { body: { created: true } },
+		});
 	});
 
 	it("queueAgentAsk run + pending card commit atomically (card failure leaves no run)", async () => {

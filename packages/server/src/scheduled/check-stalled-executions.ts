@@ -260,6 +260,9 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       // sync retries or other stale actions. The UPDATE reasserts the complete
       // staleness predicate, so a worker heartbeat/completion that wins after
       // the candidate read makes this a no-op rather than being overwritten.
+      // Automatic action runs join this lane ONLY once they carry a durable
+      // action_output: those already applied externally and must be reconciled
+      // to 'completed' rather than swept to 'timeout' by the bulk CTE below.
       const approvedActionCandidates = (await reserved`
         SELECT id, organization_id, action_key, action_output, approval_status
         FROM public.runs
@@ -283,13 +286,14 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         try {
           // A claimed action run with a DURABLE action_output already persisted
           // is a terminalization-PENDING row: the external mutation succeeded
-          // and only the 'completed' card write failed. Complete it from the
-          // durable output — reporting a FALSE timeout here would mislabel an
-          // already-successful mutation as a failure. The completion is guarded
-          // (status='running' AND approval_status='approved') and shares its tx
-          // with the card, so a concurrent human retry or another pod's reaper
-          // tick cannot double-finalize, and a card failure rolls it back for
-          // the next tick to retry.
+          // and only the terminal write (the 'completed' card for an approved
+          // run, the runs row for an automatic one) failed. Complete it from
+          // the durable output — reporting a FALSE timeout here would mislabel
+          // an already-successful mutation as a failure. The reconciler's
+          // writes are guarded on the still-running claim state, so a
+          // concurrent human retry or another pod's reaper tick cannot
+          // double-finalize, and a failed terminal write leaves the run
+          // running for the next tick to retry.
           if (candidate.action_output != null) {
             const actionKey = candidate.action_key ?? 'Action';
             const reconciled = await reconcileAppliedActionRun({

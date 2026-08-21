@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ArtifactStore, runArtifactBinding } from "../files/artifact-store.js";
+import {
+  ArtifactStorageError,
+  ArtifactStore,
+  runArtifactBinding,
+} from "../files/artifact-store.js";
 import { type ArtifactTestEnv, createArtifactTestEnv } from "./setup.js";
 
 describe("ArtifactStore.buildDownloadUrl", () => {
@@ -262,9 +266,12 @@ describe("ArtifactStore shared filesystem backend", () => {
     );
 
     try {
-      await expect(
-        env.artifactStore.delete(published.artifactId),
-      ).rejects.toThrow("injected retained-PVC removal failure");
+      const deletion = env.artifactStore.delete(published.artifactId);
+      await expect(deletion).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(deletion).rejects.toMatchObject({
+        code: "ARTIFACT_STORAGE_UNAVAILABLE",
+      });
+      await expect(deletion).rejects.not.toThrow(env.artifactsDir);
     } finally {
       rmSpy.mockRestore();
     }
@@ -301,16 +308,16 @@ describe("ArtifactStore shared filesystem backend", () => {
     });
 
     try {
-      await expect(env.artifactStore.delete(published.artifactId)).rejects.toThrow(
-        "retained PVC remains unavailable",
-      );
-      await expect(
-        env.artifactStore.publish({
-          buffer: Buffer.from("must-not-publish"),
-          filename: "blocked.bin",
-          publicGatewayUrl: "https://lobu.example.com",
-        }),
-      ).rejects.toThrow("retained PVC remains unavailable");
+      const deletion = env.artifactStore.delete(published.artifactId);
+      await expect(deletion).rejects.toBeInstanceOf(ArtifactStorageError);
+      await expect(deletion).rejects.not.toThrow(env.artifactsDir);
+      const publication = env.artifactStore.publish({
+        buffer: Buffer.from("must-not-publish"),
+        filename: "blocked.bin",
+        publicGatewayUrl: "https://lobu.example.com",
+      });
+      await expect(publication).rejects.toBeInstanceOf(AggregateError);
+      await expect(publication).rejects.not.toThrow(env.artifactsDir);
     } finally {
       rmSpy.mockRestore();
     }

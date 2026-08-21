@@ -1,4 +1,8 @@
-import { looksLikeWorkerToken, verifyWorkerToken } from '@lobu/core';
+import {
+  looksLikeWorkerToken,
+  verifyGatewayMcpToken,
+  verifyWorkerToken,
+} from '@lobu/core';
 import { getAuthConfig as getAuthConfigFromEnv } from '../auth/config';
 import { createAuth } from '../auth/index';
 import { OAuthProvider } from '../auth/oauth/provider';
@@ -11,6 +15,7 @@ import type { AuthInfo } from '../auth/oauth/types';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { isPublicReadable } from '../auth/tool-access';
 import { getDb } from '../db/client';
+import { AUTOMATION_RUN_SOURCE } from '../gateway/automation-run-session';
 import { getRevokedTokenStore } from '../gateway/auth/revoked-token-store';
 import { resolveRestToolGetRoute } from '../http/rest-tool-routes';
 import type { Env } from '../index';
@@ -294,21 +299,27 @@ export class MultiTenantProvider implements WorkspaceProvider {
     }
 
     // 1) Worker-token direct-auth for the in-process lobu-memory MCP. The
-    // gateway proxy marks this lane explicitly; spawned Automation CLIs cannot
-    // attach that internal header, so a verified worker bearer on an MCP route
-    // enters the same lane. Non-worker bearers still fall through to PAT,
-    // OAuth, or session auth.
+    // gateway narrows a verified worker token to the server-only gateway-mcp
+    // kind before forwarding internally, and stamps the internal header. Tool
+    // calls reach that forwarding step only after pre-tool policy.
+    // Spawned Automation CLIs instead use their signed automation-run source
+    // without that header. Ordinary worker tokens are rejected on both paths;
+    // non-worker bearers still fall through to PAT, OAuth, or session auth.
     const directAuthHeader = c.req.header('x-lobu-memory-direct-auth') === '1';
     const directAuthBearer =
-      authHeader?.startsWith('Bearer ') && (directAuthHeader || isMcpRoute)
+      authHeader?.startsWith('Bearer ') && isMcpRoute
         ? authHeader.slice(7)
         : null;
-    const directAuthTokenData =
-      directAuthBearer && looksLikeWorkerToken(directAuthBearer)
+    const gatewayMcpTokenData =
+      directAuthBearer && directAuthHeader && looksLikeWorkerToken(directAuthBearer)
+        ? verifyGatewayMcpToken(directAuthBearer)
+        : null;
+    const workerTokenData =
+      directAuthBearer && !gatewayMcpTokenData && looksLikeWorkerToken(directAuthBearer)
         ? verifyWorkerToken(directAuthBearer)
         : null;
-    if (directAuthBearer && (directAuthHeader || directAuthTokenData)) {
-      const tokenData = directAuthTokenData;
+    if (directAuthBearer && (directAuthHeader || workerTokenData)) {
+      const tokenData = gatewayMcpTokenData ?? workerTokenData;
       if (!tokenData) {
         return c.json(
           { error: 'invalid_token', error_description: 'Invalid or expired worker token' },
@@ -358,6 +369,18 @@ export class MultiTenantProvider implements WorkspaceProvider {
           {
             'WWW-Authenticate': bearerChallenge('invalid_token'),
           }
+        );
+      }
+      if (
+        !gatewayMcpTokenData &&
+        workerTokenData?.source !== AUTOMATION_RUN_SOURCE
+      ) {
+        return c.json(
+          {
+            error: 'insufficient_scope',
+            error_description: 'Worker token is not scoped to direct MCP access',
+          },
+          403
         );
       }
       const agentRows = await sql`

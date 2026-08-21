@@ -1,5 +1,6 @@
 import {
 	MCP_PROTOCOL_VERSION,
+	mintGatewayMcpToken,
 	verifyWorkerToken,
 	type WorkerTokenData,
 } from "@lobu/core";
@@ -138,7 +139,13 @@ export function buildUpstreamHeaders(
 		Accept: "application/json, text/event-stream",
 	};
 
-	if (credentialToken) {
+	if (credentialToken && internal) {
+		const gatewayMcpToken = mintGatewayMcpToken(credentialToken);
+		if (!gatewayMcpToken) {
+			throw new Error("Internal MCP credential must be a verified worker token");
+		}
+		headers.Authorization = `Bearer ${gatewayMcpToken}`;
+	} else if (credentialToken) {
 		headers.Authorization = `Bearer ${credentialToken}`;
 	}
 

@@ -60,6 +60,7 @@ import {
 } from '../utils/window-utils';
 import { buildLatestAutomationRunJoinSql } from '../automations/automation';
 import { computeAutomationHealth } from '../automations/automation-health';
+import { loadRecentAutomationRunStatuses } from '../automations/automation-health-history';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 
@@ -217,6 +218,7 @@ interface AutomationQueryRow {
   schedule: string | null;
   triggers: AutomationTrigger[] | null;
   next_run_at: string | null;
+  last_event_activation_at: string | null;
   agent_id: string | null;
   delivery_target: {
     connection_id: number;
@@ -555,6 +557,7 @@ async function getAutomationImpl(
         i.schedule,
         i.triggers,
         i.next_run_at,
+        i.last_event_activation_at,
         i.agent_id,
         i.delivery_target,
         i.device_worker_id,
@@ -788,9 +791,11 @@ async function getAutomationImpl(
     // Sources come from automation row (or version if present)
     const automationSources = parseAutomationSources(automationRow.sources);
 
-    // Computed health (item 3, #2033) — pure derivation over the
-    // already-selected schedule/run columns; no extra query.
+    // Computed health (item 3, #2033) — derived from the already-selected
+    // schedule/run columns plus one bounded recent-run read.
     const automationRunError = automationRow.automation_run_error ?? null;
+    const automationId = Number(automationRow.automation_id);
+    const recentRunStatuses = await loadRecentAutomationRunStatuses(sql, [automationId]);
     const automationHealth = computeAutomationHealth({
       status: automationRow.status,
       nextRunAt: automationRow.next_run_at,
@@ -798,6 +803,9 @@ async function getAutomationImpl(
       latestRunCreatedAt: automationRow.automation_run_created_at,
       latestRunError: automationRunError,
       latestRunOutcome: automationRow.automation_run_outcome,
+      triggers: automationRow.triggers,
+      lastEventActivationAt: automationRow.last_event_activation_at,
+      recentTerminalRunStatuses: recentRunStatuses.get(automationId) ?? [],
     });
 
     automationMetadata = {

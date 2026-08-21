@@ -75,6 +75,78 @@ describe("computeAutomationHealth", () => {
 		expect(result.reasons).toHaveLength(0);
 	});
 
+	it("degrades an event automation with neither activation stamp nor run", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: null,
+				latestRunStatus: null,
+				triggers: [
+					{ kind: "event", connector_key: "slack", event_types: ["message.created"] },
+				],
+				lastEventActivationAt: null,
+			},
+			NOW,
+		);
+		expect(result.health).toBe("degraded");
+		expect(result.reasons).toContain(
+			"event trigger configured, but no dispatch observed yet",
+		);
+	});
+
+	it("keeps a stamped event automation healthy without Automation run history", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: null,
+				latestRunStatus: null,
+				triggers: [
+					{ kind: "event", connector_key: "slack", event_types: ["message.created"] },
+				],
+				lastEventActivationAt: new Date(NOW - 60_000).toISOString(),
+			},
+			NOW,
+		);
+		expect(result.health).toBe("healthy");
+		expect(result.reasons).toHaveLength(0);
+	});
+
+	it("keeps a severe rolling failure pattern degraded after one success", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: new Date(NOW + 60_000).toISOString(),
+				latestRunStatus: "completed",
+				recentTerminalRunStatuses: [
+					"completed",
+					...Array.from({ length: 99 }, () => "failed"),
+				],
+			},
+			NOW,
+		);
+		expect(result.health).toBe("degraded");
+		expect(result.reasons.join(" ")).toContain(
+			"99 of 100 recent terminal runs failed or timed out",
+		);
+	});
+
+	it("recovers once failures are below half of a meaningful recent window", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: new Date(NOW + 60_000).toISOString(),
+				latestRunStatus: "completed",
+				recentTerminalRunStatuses: [
+					...Array.from({ length: 6 }, () => "completed"),
+					...Array.from({ length: 4 }, () => "failed"),
+				],
+			},
+			NOW,
+		);
+		expect(result.health).toBe("healthy");
+		expect(result.reasons).toHaveLength(0);
+	});
+
 	it("does not degrade an archived automation whose latest run failed", () => {
 		const result = computeAutomationHealth(
 			{

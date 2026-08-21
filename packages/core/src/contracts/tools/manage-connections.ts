@@ -302,7 +302,8 @@ export const ReauthenticateAction = Type.Object({
 
 export const TestAction = Type.Object({
   action: Type.Literal("test", {
-    description: "Probe a connection's credentials/token validity.",
+    description:
+      "Probe a connection's credentials/token validity and required selected-device availability.",
   }),
   connection_id: Type.Number({ description: "Connection ID to test" }),
 });
@@ -827,7 +828,7 @@ export const ManageConnectionsResultSchema = Type.Union([
     message: Type.String(),
     has_token: Type.Optional(Type.Boolean()),
     has_refresh: Type.Optional(Type.Boolean()),
-    /** Present when an auth-free connection is pinned to a device. */
+    /** Present when a connection is pinned to a device. */
     device_online: Type.Optional(Type.Boolean()),
     expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     // Structured error taxonomy (lobu#2051 Item 2), present on error/warning results.

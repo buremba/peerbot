@@ -185,17 +185,36 @@ async function handleListFeeds(
   // Once the feed or its parent connection is paused, its last outcome is
   // lifecycle history rather than current health, so the guard scopes BOTH
   // branches and such a row comes back as neither failing nor healthy. This
-  // mirrors `isPaused` in connectors/feed-health-semantics.ts, so the filter
-  // and the `attention` each row carries cannot disagree — a row the filter
-  // called 'healthy' never renders as attention 'paused'. `health` combined
-  // with `status: 'paused'` is therefore an empty intersection by
-  // construction.
+  // mirrors the lifecycle and execution-failure portions of
+  // `deriveFeedHealthSemantics`, so `healthy` never renders as paused,
+  // last_attempt_failed, or overdue. Auth/device/misconfiguration attention is
+  // intentionally separate from this sync-health filter.
   if (args.health) {
     where = sql`${where} AND f.status = 'active' AND c.status <> 'paused'`;
+    const overdue = sql`
+      COALESCE(f.kind, 'collected') NOT IN ('virtual', 'streaming')
+      AND NOT COALESCE(f.virtual, false)
+      AND COALESCE(f.schedule, '') <> ''
+      AND f.next_run_at IS NOT NULL
+      AND f.next_run_at < now() - interval '1 hour'
+      AND NOT EXISTS (
+        SELECT 1 FROM runs r
+        WHERE r.feed_id = f.id
+          AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+      )
+    `;
     if (args.health === 'failing') {
-      where = sql`${where} AND (f.last_sync_status = 'failed' OR COALESCE(f.consecutive_failures, 0) > 0)`;
+      where = sql`${where} AND (
+        f.last_sync_status = 'failed'
+        OR COALESCE(f.consecutive_failures, 0) > 0
+        OR (${overdue})
+      )`;
     } else {
-      where = sql`${where} AND f.last_sync_status IS DISTINCT FROM 'failed' AND COALESCE(f.consecutive_failures, 0) = 0`;
+      where = sql`${where}
+        AND f.last_sync_status IS DISTINCT FROM 'failed'
+        AND COALESCE(f.consecutive_failures, 0) = 0
+        AND NOT (${overdue})
+      `;
     }
   }
   if (args.feed_ids?.length) {
@@ -321,6 +340,8 @@ async function handleListFeeds(
       last_sync_status: feed.last_sync_status as string | null,
       last_sync_at: feed.last_sync_at as Date | string | null,
       consecutive_failures: feed.consecutive_failures as number | null,
+      next_run_at: feed.next_run_at as Date | string | null,
+      active_runs: feed.active_runs as number | null,
       connection_status: feed.connection_status as string | null,
       auth_profile_status: feed.auth_profile_status as string | null,
       device_worker_id: feed.device_worker_id as string | null,

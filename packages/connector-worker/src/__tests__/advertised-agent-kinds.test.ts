@@ -78,7 +78,7 @@ describe("poll body agent_kinds", () => {
    */
   async function pollWith(
     kinds: string[][],
-    config: { platform?: string } = {}
+    config: { platform?: string; agentKinds?: Array<"claude-code" | "codex" | "opencode" | "pi" | "agy"> } = {}
   ): Promise<{ bodies: Array<Record<string, unknown>>; discoveries: number }> {
     let discoveries = 0;
     mock.module("../daemon/agent-binaries", () => ({
@@ -115,6 +115,15 @@ describe("poll body agent_kinds", () => {
   test("a device worker forwards exactly what discovery returned", async () => {
     const { bodies } = await pollWith([["claude-code"]], { platform: "macos" });
     expect(bodies[0].agent_kinds).toEqual(["claude-code"]);
+  });
+
+  test("an interactive worker advertises only its matching session kind", async () => {
+    const { bodies, discoveries } = await pollWith([["claude-code", "codex", "opencode"]], {
+      platform: "headless",
+      agentKinds: ["codex"],
+    });
+    expect(bodies[0].agent_kinds).toEqual(["codex"]);
+    expect(discoveries).toBe(0);
   });
 
   test("a device with no CLIs still sends the key, so the server stores [] not NULL", async () => {

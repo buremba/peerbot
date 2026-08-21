@@ -42,6 +42,10 @@ import type { CloudCommandOptions } from "./commands/_lib/cloud-options.js";
 // the handler modules are still pulled in only inside each `.action`.
 import type { AgentCommandOptions } from "./commands/agent.js";
 import type { InitOptions } from "./commands/init.js";
+import {
+  opencodePluginCommand,
+  type OpenCodePluginAction,
+} from "./commands/opencode-plugin.js";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +118,7 @@ Local dev:
   validate                 Validate lobu.config.ts
   doctor                   Health checks (deps, DB, pgvector, ports, keys)
   telemetry                Show / toggle anonymous error reporting
+  opencode-plugin <action> Install, inspect, or remove interactive OpenCode support
 
 Cloud:
   login | logout           OAuth device-code login (or --token for CI)
@@ -1163,7 +1168,7 @@ Memory:
     )
     .option(
       "--worker-id <id>",
-      "Device worker id (defaults to <platform>:<hostname>, or a per-session id with --inside-claude)"
+      "Device worker id (defaults to <platform>:<hostname>, or a per-session id in a supported interactive agent)"
     )
     .option(
       "--platform <name>",
@@ -1171,7 +1176,11 @@ Memory:
     )
     .option(
       "--inside-claude",
-      "Demo: hand Claude Code Automations to the interactive parent, with its broader tools and context"
+      "Legacy Claude-only interactive delivery opt-in (supported sessions are now detected automatically)"
+    )
+    .option(
+      "--no-interactive-session",
+      "Disable automatic delivery into an inherited Claude, Codex, or OpenCode session"
     )
     .option(
       "--capabilities <a,b>",
@@ -1188,6 +1197,22 @@ Memory:
     .action(async (options) => {
       const { daemonCommand } = await import("./commands/daemon.js");
       await daemonCommand(options);
+    });
+
+  program
+    .command("opencode-plugin <action>")
+    .description("Manage Lobu's interactive-session plugin for OpenCode")
+    .addHelpText("after", "\nActions: install, status, uninstall\n")
+    .action(async (action: string) => {
+      const actions: OpenCodePluginAction[] = [
+        "install",
+        "status",
+        "uninstall",
+      ];
+      if (!actions.includes(action as OpenCodePluginAction)) {
+        throw new Error(`action must be ${actions.join(", ")}`);
+      }
+      await opencodePluginCommand(action as OpenCodePluginAction);
     });
 
   // ─── automation ─────────────────────────────────────────────────────

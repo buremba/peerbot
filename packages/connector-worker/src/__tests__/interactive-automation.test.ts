@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import type { AutomationPollPayload, PollResponse } from '@lobu/core/contracts/worker/protocol';
-import { executeAutomationRun, isParentClaudeEligible } from '../daemon/automation.js';
-import * as parentClaude from '../daemon/parent-claude.js';
+import { executeAutomationRun, isInteractiveSessionEligible } from '../daemon/automation.js';
+import { executeRun } from '../daemon/executor.js';
+import { executeRun } from '../daemon/executor.js';
+import * as interactive from '../daemon/interactive-session.js';
 import { resolveDaemonWorkerId } from '../daemon/start.js';
 
 function payload(agentKind: 'claude-code' | 'pi' = 'claude-code'): AutomationPollPayload {
@@ -30,43 +32,54 @@ afterEach(() => {
   mock.restore();
 });
 
-describe('inside-Claude routing', () => {
+describe('interactive-session routing', () => {
   test('an explicit worker id wins over the inside-Claude derived identity', () => {
     expect(
       resolveDaemonWorkerId(
-        { workerId: 'headless:operator-selected', insideClaude: true },
+        { workerId: 'headless:operator-selected' },
         'headless',
-        'test-host'
+        'test-host',
+        { kind: 'codex', sessionId: 'session-a', threadId: 'session-a' }
       )
     ).toBe('headless:operator-selected');
   });
 
-  test('requires the explicit flag, claude-code, and a run-scoped agent session', () => {
+  test('requires a matching session kind and a run-scoped agent session', () => {
     const claude = payload();
-    expect(isParentClaudeEligible('claude-code', true, claude)).toBe(true);
-    expect(isParentClaudeEligible('claude-code', false, claude)).toBe(false);
-    expect(isParentClaudeEligible('pi', true, payload('pi'))).toBe(false);
-    delete claude.context.agent_session;
-    expect(isParentClaudeEligible('claude-code', true, claude)).toBe(false);
-  });
-
-  test('never falls back to a subprocess after a prior parent write', async () => {
-    const session: parentClaude.ParentClaudeSession = {
+    const session: interactive.InteractiveSession = {
+      kind: 'claude-code',
       pid: process.pid,
       sessionId: 'parent-session',
       socketPath: '/private/unused-parent.sock',
       messagingToken: 'messaging-token',
       registryPath: '/private/unused-session.json',
     };
-    spyOn(parentClaude, 'detectParentClaudeSession').mockReturnValue({ ok: true, session });
+    expect(isInteractiveSessionEligible('claude-code', session, claude)).toBe(true);
+    expect(isInteractiveSessionEligible('claude-code', undefined, claude)).toBe(false);
+    expect(isInteractiveSessionEligible('pi', session, payload('pi'))).toBe(false);
+    delete claude.context.agent_session;
+    expect(isInteractiveSessionEligible('claude-code', session, claude)).toBe(false);
+  });
+
+  test('never falls back to a subprocess after a prior parent write', async () => {
+    const session: interactive.ParentClaudeSession = {
+      kind: 'claude-code',
+      pid: process.pid,
+      sessionId: 'parent-session',
+      socketPath: '/private/unused-parent.sock',
+      messagingToken: 'messaging-token',
+      registryPath: '/private/unused-session.json',
+    };
+    spyOn(interactive, 'detectInteractiveSession').mockReturnValue({ ok: true, session });
     let finishParent!: () => void;
-    const parentCompletion = new Promise<parentClaude.ParentClaudeCompletion>((resolve) => {
+    const parentCompletion = new Promise<interactive.InteractiveSessionCompletion>((resolve) => {
       finishParent = () =>
         resolve({ kind: 'completed', durationMs: 12, output: 'parent answer' });
     });
-    const handoff = spyOn(parentClaude, 'handoffToParentClaude')
+    const handoff = spyOn(interactive, 'handoffToInteractiveSession')
       .mockResolvedValueOnce({
         kind: 'handed-off',
+        certainty: 'possible',
         helperPath: '/private/helper',
         completion: parentCompletion,
       })
@@ -110,20 +123,22 @@ describe('inside-Claude routing', () => {
     expect(reports[0]?.exit_reason).toBe('ok');
     expect(reports[0]?.output).toBe('parent answer');
     expect(reports[1]?.exit_reason).toBe('crash');
-    expect(reports[1]?.error).toBe('parent Claude delivery failed: inbox closed');
+    expect(reports[1]?.error).toBe('interactive claude-code delivery failed: inbox closed');
   });
 
   test('passes the turn contract to the parent and reports its final result', async () => {
-    const session: parentClaude.ParentClaudeSession = {
+    const session: interactive.ParentClaudeSession = {
+      kind: 'claude-code',
       pid: process.pid,
       sessionId: 'parent-session',
       socketPath: '/private/unused-parent.sock',
       messagingToken: 'messaging-token',
       registryPath: '/private/unused-session.json',
     };
-    spyOn(parentClaude, 'detectParentClaudeSession').mockReturnValue({ ok: true, session });
-    const handoff = spyOn(parentClaude, 'handoffToParentClaude').mockResolvedValue({
+    spyOn(interactive, 'detectInteractiveSession').mockReturnValue({ ok: true, session });
+    const handoff = spyOn(interactive, 'handoffToInteractiveSession').mockResolvedValue({
       kind: 'handed-off',
+      certainty: 'possible',
       helperPath: '/private/helper',
       completion: Promise.resolve({
         kind: 'completed',
@@ -158,16 +173,18 @@ describe('inside-Claude routing', () => {
   });
 
   test('reports no exit code or OS signal, because no child process ran', async () => {
-    const session: parentClaude.ParentClaudeSession = {
+    const session: interactive.ParentClaudeSession = {
+      kind: 'claude-code',
       pid: process.pid,
       sessionId: 'parent-session',
       socketPath: '/private/unused-parent.sock',
       messagingToken: 'messaging-token',
       registryPath: '/private/unused-session.json',
     };
-    spyOn(parentClaude, 'detectParentClaudeSession').mockReturnValue({ ok: true, session });
-    spyOn(parentClaude, 'handoffToParentClaude').mockResolvedValue({
+    spyOn(interactive, 'detectInteractiveSession').mockReturnValue({ ok: true, session });
+    spyOn(interactive, 'handoffToInteractiveSession').mockResolvedValue({
       kind: 'handed-off',
+      certainty: 'possible',
       helperPath: '/private/helper',
       completion: Promise.resolve({
         kind: 'shutdown',
@@ -200,5 +217,99 @@ describe('inside-Claude routing', () => {
     expect(reports[0]?.error).toBe(
       'daemon shut down before parent Claude completed the Automation'
     );
+  });
+
+  test('Codex handoff preserves completion and finalize-resume semantics without subprocess fallback', async () => {
+    const session: interactive.CodexInteractiveSession = {
+      kind: 'codex',
+      sessionId: 'thread-exact',
+      threadId: 'thread-exact',
+    };
+    const handoff = spyOn(interactive, 'handoffToInteractiveSession')
+      .mockResolvedValueOnce({
+        kind: 'handed-off',
+        certainty: 'acknowledged',
+        helperPath: '/private/codex-helper-1',
+        completion: Promise.resolve({ kind: 'completed', durationMs: 12, output: 'round one' }),
+      })
+      .mockResolvedValueOnce({
+        kind: 'handed-off',
+        certainty: 'acknowledged',
+        helperPath: '/private/codex-helper-2',
+        completion: Promise.resolve({ kind: 'completed', durationMs: 8, output: 'round two' }),
+      });
+    const reports: Array<Record<string, unknown>> = [];
+    const client = {
+      id: 'worker-codex',
+      async heartbeat() {},
+      async completeAutomation(_runId: number, request: Record<string, unknown>) {
+        reports.push(request);
+        return reports.length === 1
+          ? { ok: true, status: 'resume', attempt: 1, nudge: 'complete the window now' }
+          : { ok: true, status: 'completed' };
+      },
+    };
+    const codexPayload = payload();
+    codexPayload.automation.agent_kind = 'codex';
+
+    const config = interactive.attachInteractiveSession(
+      {
+        binaryOverrides: { codex: '/definitely/not/a/subprocess-codex' },
+      },
+      session
+    );
+    await executeAutomationRun(
+      client as never,
+      { run_id: 94, run_type: 'automation', payload: codexPayload } satisfies PollResponse,
+      config
+    );
+
+    expect(handoff).toHaveBeenCalledTimes(2);
+    expect(handoff.mock.calls[0]?.[0].codexCommand).toBe('/definitely/not/a/subprocess-codex');
+    expect(handoff.mock.calls[1]?.[0].prompt).toContain('complete the window now');
+    expect(reports.map((report) => report.output)).toEqual(['round one', 'round two']);
+    expect(reports.every((report) => report.exit_reason === 'ok')).toBe(true);
+  });
+
+  test('executeRun carries the attached session into the automation arm', async () => {
+    // The session rides on a non-enumerable symbol, so any spread of the
+    // executor config silently drops it and the run falls back to a subprocess.
+    const session: interactive.CodexInteractiveSession = {
+      kind: 'codex',
+      sessionId: 'thread-through-execute-run',
+      threadId: 'thread-through-execute-run',
+    };
+    const handoff = spyOn(interactive, 'handoffToInteractiveSession').mockResolvedValue({
+      kind: 'handed-off',
+      certainty: 'acknowledged',
+      helperPath: '/private/codex-helper',
+      completion: Promise.resolve({ kind: 'completed', durationMs: 5, output: 'via executeRun' }),
+    });
+    const reports: Array<Record<string, unknown>> = [];
+    const client = {
+      id: 'worker-codex',
+      async heartbeat() {},
+      async completeAutomation(_runId: number, request: Record<string, unknown>) {
+        reports.push(request);
+        return { ok: true, status: 'completed' };
+      },
+    };
+    const codexPayload = payload();
+    codexPayload.automation.agent_kind = 'codex';
+
+    const executorConfig = interactive.attachInteractiveSession(
+      { binaryOverrides: { codex: '/definitely/not/a/subprocess-codex' } },
+      session
+    );
+    await executeRun(
+      client as never,
+      { run_id: 95, run_type: 'automation', payload: codexPayload } satisfies PollResponse,
+      {} as never,
+      executorConfig
+    );
+
+    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.output).toBe('via executeRun');
   });
 });

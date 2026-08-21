@@ -9,6 +9,7 @@ export interface DaemonOptions {
   label?: string;
   debug?: boolean;
   insideClaude?: boolean;
+  interactiveSession?: boolean;
 }
 
 /**
@@ -18,7 +19,8 @@ export interface DaemonOptions {
  * Everything except the token auto-discovers from where it is running:
  *   - api-url  → the logged-in context (`lobu login`), else `--api-url`
  *   - platform → `macos` on darwin, `headless` otherwise
- *   - worker id → `<platform>:<short-hostname>` (per-session with `--inside-claude`)
+ *   - worker id → `<platform>:<short-hostname>` outside a supported interactive
+ *     agent, or a provider/session-derived id when one is inherited
  *   - label → hostname
  *   - capabilities → `os.shell,os.files`
  *
@@ -43,17 +45,10 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     );
   }
 
-  const platform =
-    options.platform?.trim() ||
-    (options.insideClaude === true
-      ? "headless"
-      : process.platform === "darwin"
-        ? "macos"
-        : "headless");
-
   await startDaemonCommand({
     apiUrl,
-    platform,
+    platform: options.platform?.trim() || undefined,
+    defaultPlatform: process.platform === "darwin" ? "macos" : "headless",
     workerId: options.workerId?.trim() || undefined,
     label: options.label?.trim() || undefined,
     capabilities: (options.capabilities ?? "os.shell,os.files")
@@ -62,6 +57,9 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
       .filter(Boolean),
     workerApiToken: process.env.WORKER_API_TOKEN,
     debug: options.debug === true,
+    ...(options.interactiveSession === false
+      ? { interactiveSession: false as const }
+      : {}),
     ...(options.insideClaude === true ? { insideClaude: true } : {}),
   });
 }

@@ -63,7 +63,7 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("http://127.0.0.1:9564");
   });
 
-  test("--inside-claude is explicit and uses an isolated headless device", async () => {
+  test("--inside-claude is forwarded for centralized interactive detection", async () => {
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
@@ -75,7 +75,8 @@ describe("lobu daemon", () => {
 
     expect(start.mock.calls[0]?.[0]).toMatchObject({
       apiUrl: "http://127.0.0.1:9564",
-      platform: "headless",
+      platform: undefined,
+      defaultPlatform: process.platform === "darwin" ? "macos" : "headless",
       insideClaude: true,
     });
   });
@@ -88,5 +89,18 @@ describe("lobu daemon", () => {
     await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
 
     expect(start.mock.calls[0]?.[0]?.insideClaude).toBeUndefined();
+  });
+
+  test("--no-interactive-session is forwarded as an explicit opt-out", async () => {
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({
+      apiUrl: "http://127.0.0.1:9564",
+      interactiveSession: false,
+    });
+
+    expect(start.mock.calls[0]?.[0]?.interactiveSession).toBe(false);
   });
 });

@@ -15,11 +15,15 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { buildDeviceAutomationPrompt } from '@lobu/core/contracts/worker/device-automation';
 import {
-  deriveInsideClaudeWorkerId,
+  deriveInteractiveWorkerId,
+  detectCodexInteractiveSession,
+  detectInteractiveSession,
+  detectOpenCodeInteractiveSession,
   detectParentClaudeSession,
-  handoffToParentClaude,
+  handoffToInteractiveSession,
   type ParentClaudeSession,
-} from '../daemon/parent-claude.js';
+} from '../daemon/interactive-session.js';
+import { resolveDaemonLaunchContext } from '../daemon/start.js';
 
 const execFileAsync = promisify(execFile);
 const cleanupDirs: string[] = [];
@@ -132,6 +136,7 @@ async function parentFixture(): Promise<{
     dir,
     frames,
     session: {
+      kind: 'claude-code',
       pid: process.pid,
       sessionId: 'claude-session-test',
       socketPath,
@@ -190,16 +195,309 @@ describe('detectParentClaudeSession', () => {
   });
 });
 
-describe('deriveInsideClaudeWorkerId', () => {
-  test('is stable within one parent session and distinct across sessions', () => {
-    const first = deriveInsideClaudeWorkerId({ CLAUDE_CODE_SESSION_ID: 'session-a' });
-    expect(first).toBe(deriveInsideClaudeWorkerId({ CLAUDE_CODE_SESSION_ID: 'session-a' }));
-    expect(first).not.toBe(deriveInsideClaudeWorkerId({ CLAUDE_CODE_SESSION_ID: 'session-b' }));
-    expect(first).toMatch(/^headless:claude:[a-f0-9]{24}$/);
+describe('detectInteractiveSession', () => {
+  test('detects an exact Codex thread only when both inherited ids agree', () => {
+    expect(
+      detectCodexInteractiveSession({
+        CODEX_THREAD_ID: 'thread-exact',
+        CODEX_SESSION_ID: 'thread-exact',
+      })
+    ).toEqual({
+      ok: true,
+      session: { kind: 'codex', sessionId: 'thread-exact', threadId: 'thread-exact' },
+    });
+    expect(
+      detectCodexInteractiveSession({
+        CODEX_THREAD_ID: 'thread-a',
+        CODEX_SESSION_ID: 'thread-b',
+      })
+    ).toEqual({
+      ok: false,
+      reason: 'inherited Codex thread and session ids did not match',
+    });
+  });
+
+  test('accepts only owner-safe authenticated OpenCode bridge metadata', async () => {
+    const fixture = await parentFixture();
+    const env = {
+      OPENCODE_PID: String(process.pid),
+      OPENCODE_SESSION_ID: 'ses_exact',
+      LOBU_OPENCODE_BRIDGE_SOCKET: fixture.session.socketPath,
+      LOBU_OPENCODE_BRIDGE_TOKEN: 'b'.repeat(64),
+    };
+    expect(detectOpenCodeInteractiveSession(env)).toEqual({
+      ok: true,
+      session: {
+        kind: 'opencode',
+        pid: process.pid,
+        sessionId: 'ses_exact',
+        socketPath: fixture.session.socketPath,
+        bridgeToken: 'b'.repeat(64),
+      },
+    });
+    for (const token of ['b'.repeat(63), 'b'.repeat(65), 'g'.repeat(64), ` ${'b'.repeat(64)}`]) {
+      expect(
+        detectOpenCodeInteractiveSession({
+          ...env,
+          LOBU_OPENCODE_BRIDGE_TOKEN: token,
+        })
+      ).toEqual({ ok: false, reason: 'invalid inherited OpenCode bridge token' });
+    }
+    expect(
+      detectOpenCodeInteractiveSession({
+        ...env,
+        LOBU_OPENCODE_BRIDGE_TOKEN: 'ABCDEF'.repeat(10) + 'ABCD',
+      })
+    ).toMatchObject({ ok: true });
+    chmodSync(fixture.session.socketPath, 0o666);
+    expect(detectOpenCodeInteractiveSession(env)).toEqual({
+      ok: false,
+      reason: 'OpenCode bridge socket failed local ownership checks',
+    });
+  });
+
+  test('auto detection ignores a partial invalid marker and accepts one valid provider', () => {
+    const codexEnv = {
+      CODEX_THREAD_ID: 'thread-exact',
+      CODEX_SESSION_ID: 'thread-exact',
+    };
+    expect(detectInteractiveSession({ env: codexEnv })).toEqual({
+      ok: true,
+      session: { kind: 'codex', sessionId: 'thread-exact', threadId: 'thread-exact' },
+    });
+    expect(
+      detectInteractiveSession({
+        env: {
+          ...codexEnv,
+          CLAUDE_PID: String(process.pid),
+          CLAUDE_CODE_SESSION_ID: 'partial-claude',
+        },
+      })
+    ).toEqual({
+      ok: true,
+      session: { kind: 'codex', sessionId: 'thread-exact', threadId: 'thread-exact' },
+    });
+  });
+
+  test('auto detection rejects genuinely valid Claude and Codex parents as ambiguous', async () => {
+    const fixture = await parentFixture();
+    expect(
+      detectInteractiveSession({
+        sessionsDir: fixture.dir,
+        env: {
+          CODEX_THREAD_ID: 'thread-exact',
+          CODEX_SESSION_ID: 'thread-exact',
+          CLAUDE_PID: String(process.pid),
+          CLAUDE_CODE_SESSION_ID: fixture.session.sessionId,
+          CLAUDE_CODE_MESSAGING_SOCKET: fixture.session.socketPath,
+          CLAUDE_CODE_MESSAGING_TOKEN: fixture.session.messagingToken,
+        },
+      })
+    ).toEqual({ ok: false, reason: 'multiple supported interactive sessions were inherited' });
   });
 });
 
-describe('handoffToParentClaude', () => {
+describe('deriveInteractiveWorkerId', () => {
+  test('is stable within one parent session and distinct across sessions', () => {
+    const first = deriveInteractiveWorkerId({
+      kind: 'codex',
+      sessionId: 'session-a',
+      threadId: 'session-a',
+    });
+    expect(first).toBe(
+      deriveInteractiveWorkerId({
+        kind: 'codex',
+        sessionId: 'session-a',
+        threadId: 'session-a',
+      })
+    );
+    expect(first).not.toBe(
+      deriveInteractiveWorkerId({
+        kind: 'codex',
+        sessionId: 'session-b',
+        threadId: 'session-b',
+      })
+    );
+    expect(first).toMatch(/^headless:codex:[a-f0-9]{24}$/);
+  });
+});
+
+describe('interactive daemon launch context', () => {
+  test('auto-detected Codex is headless and explicit opt-out leaves the ordinary default unchanged', () => {
+    const env = { CODEX_THREAD_ID: 'thread-exact', CODEX_SESSION_ID: 'thread-exact' };
+    expect(resolveDaemonLaunchContext({ defaultPlatform: 'macos' }, env)).toMatchObject({
+      platform: 'headless',
+      interactiveSession: { kind: 'codex', sessionId: 'thread-exact' },
+    });
+    expect(
+      resolveDaemonLaunchContext(
+        { defaultPlatform: 'macos', interactiveSession: false },
+        env
+      )
+    ).toEqual({ platform: 'macos', interactiveSession: undefined });
+  });
+
+  test('rejects an explicit non-headless platform for an interactive session', () => {
+    const env = { CODEX_THREAD_ID: 'thread-exact', CODEX_SESSION_ID: 'thread-exact' };
+    expect(() => resolveDaemonLaunchContext({ platform: 'macos' }, env)).toThrow(
+      /registers as --platform headless.*Pass --no-interactive-session/s
+    );
+    // The legacy flag has a different escape hatch, so the hint must name it.
+    expect(() =>
+      resolveDaemonLaunchContext({ platform: 'macos', insideClaude: true }, env)
+    ).toThrow(/registers as --platform headless.*Drop --inside-claude/s);
+  });
+
+  test('legacy inside-Claude detects only the exact inherited Claude parent', async () => {
+    const fixture = await parentFixture();
+    const env = {
+      CLAUDE_PID: String(process.pid),
+      CLAUDE_CODE_SESSION_ID: fixture.session.sessionId,
+      CLAUDE_CODE_MESSAGING_SOCKET: fixture.session.socketPath,
+      CLAUDE_CODE_MESSAGING_TOKEN: fixture.session.messagingToken,
+      CODEX_THREAD_ID: 'nested-codex',
+      CODEX_SESSION_ID: 'nested-codex',
+    };
+    expect(
+      resolveDaemonLaunchContext({ insideClaude: true, defaultPlatform: 'macos' }, env, fixture.dir)
+    ).toMatchObject({
+      platform: 'headless',
+      interactiveSession: { kind: 'claude-code', sessionId: fixture.session.sessionId },
+    });
+  });
+
+  test('legacy inside-Claude remains headless and retryable when startup metadata is absent', () => {
+    expect(
+      resolveDaemonLaunchContext({ insideClaude: true, defaultPlatform: 'macos' }, {})
+    ).toEqual({ platform: 'headless', interactiveSession: undefined });
+  });
+});
+
+describe('handoffToInteractiveSession', () => {
+  test('OpenCode bridge routes the exact session without a TCP listener or run credential', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'lobu-opencode-transport-test-'));
+    cleanupDirs.push(dir);
+    const socketPath = path.join(dir, 'bridge.sock');
+    let receiveRequest!: (value: Record<string, unknown>) => void;
+    const request = new Promise<Record<string, unknown>>((resolve) => {
+      receiveRequest = resolve;
+    });
+    await listen(
+      net.createServer({ allowHalfOpen: true }, (socket) => {
+        let body = '';
+        socket.setEncoding('utf8');
+        socket.on('data', (chunk) => {
+          body += chunk;
+          if (!body.endsWith('\n')) return;
+          const parsed = JSON.parse(body) as Record<string, unknown>;
+          receiveRequest(parsed);
+          socket.end(`${JSON.stringify({ ok: true, session_id: parsed.session_id })}\n`);
+        });
+      }),
+      socketPath
+    );
+    chmodSync(socketPath, 0o600);
+    const delivery = await handoffToInteractiveSession({
+      session: {
+        kind: 'opencode',
+        pid: process.pid,
+        sessionId: 'ses_exact',
+        socketPath,
+        bridgeToken: 'bridge-secret',
+      },
+      runId: 69,
+      prompt: 'Do bounded OpenCode work',
+      token: 'run-scoped-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+    });
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+    expect(delivery.certainty).toBe('acknowledged');
+    const bridged = await request;
+    expect(bridged.session_id).toBe('ses_exact');
+    expect(bridged.token).toBe('bridge-secret');
+    expect(String(bridged.prompt)).toContain('Do bounded OpenCode work');
+    expect(String(bridged.prompt)).not.toContain('run-scoped-secret');
+    await runHelper(delivery.helperPath, ['complete'], 'OpenCode completed');
+    expect(await delivery.completion).toMatchObject({
+      kind: 'completed',
+      output: 'OpenCode completed',
+    });
+  });
+
+  test('queues into the exact Codex thread and requires the positive acknowledgement', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'lobu-codex-queue-test-'));
+    cleanupDirs.push(dir);
+    const logPath = path.join(dir, 'args.json');
+    const command = path.join(dir, 'codex');
+    writeFileSync(
+      command,
+      `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.writeFileSync(${JSON.stringify(logPath)},JSON.stringify(args));console.log('Queued message test-message for thread '+args[2]+'.');\n`,
+      { mode: 0o700 }
+    );
+    const delivery = await handoffToInteractiveSession({
+      session: { kind: 'codex', sessionId: 'thread-exact', threadId: 'thread-exact' },
+      runId: 70,
+      prompt: 'Do bounded work',
+      token: 'run-scoped-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      codexCommand: command,
+    });
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+    expect(delivery.certainty).toBe('acknowledged');
+    const args = JSON.parse(readFileSync(logPath, 'utf8')) as string[];
+    expect(args.slice(0, 3)).toEqual(['queue', '--thread', 'thread-exact']);
+    expect(args[3]).toBe('--message');
+    expect(args[4]).toContain('Do bounded work');
+    expect(args[4]).not.toContain('run-scoped-secret');
+    await runHelper(delivery.helperPath, ['complete'], 'Codex completed');
+    expect(await delivery.completion).toMatchObject({
+      kind: 'completed',
+      output: 'Codex completed',
+    });
+  });
+
+  test('missing Codex binary is unambiguously not delivered', async () => {
+    const delivery = await handoffToInteractiveSession({
+      session: { kind: 'codex', sessionId: 'thread-exact', threadId: 'thread-exact' },
+      runId: 71,
+      prompt: 'Do bounded work',
+      token: 'run-scoped-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      codexCommand: path.join(os.tmpdir(), 'lobu-definitely-missing-codex'),
+    });
+    expect(delivery).toEqual({
+      kind: 'not-delivered',
+      reason: 'Codex queue command was unavailable',
+    });
+  });
+
+  test('negative or ambiguous Codex output is possible delivery, never safe fallback', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'lobu-codex-ambiguous-test-'));
+    cleanupDirs.push(dir);
+    const command = path.join(dir, 'codex');
+    writeFileSync(command, `#!${process.execPath}\nprocess.stderr.write('queue failed after send\\n');process.exit(2);\n`, {
+      mode: 0o700,
+    });
+    const delivery = await handoffToInteractiveSession({
+      session: { kind: 'codex', sessionId: 'thread-exact', threadId: 'thread-exact' },
+      runId: 72,
+      prompt: 'Do bounded work',
+      token: 'run-scoped-secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      codexCommand: command,
+    });
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+    expect(delivery.certainty).toBe('possible');
+    await runHelper(delivery.helperPath, ['complete'], 'possibly delivered result');
+    expect(await delivery.completion).toMatchObject({ kind: 'completed' });
+  });
   test('needs no parent ack and keeps the run bearer in an owner-only helper channel', async () => {
     const fixture = await parentFixture();
     const verifierPath = path.join(fixture.dir, 'verifier.sock');
@@ -225,6 +523,17 @@ describe('handoffToParentClaude', () => {
           token: process.env.LOBU_API_TOKEN,
           memoryUrl: process.env.LOBU_MEMORY_URL,
           workerToken: process.env.WORKER_API_TOKEN ?? null,
+          claudePid: process.env.CLAUDE_PID ?? null,
+          claudeSession: process.env.CLAUDE_CODE_SESSION_ID ?? null,
+          claudeSocket: process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? null,
+          claudeToken: process.env.CLAUDE_CODE_MESSAGING_TOKEN ?? null,
+          openCodePid: process.env.OPENCODE_PID ?? null,
+          openCodeSession: process.env.OPENCODE_SESSION_ID ?? null,
+          openCodeDirectory: process.env.OPENCODE_SESSION_DIRECTORY ?? null,
+          openCodeSocket: process.env.LOBU_OPENCODE_BRIDGE_SOCKET ?? null,
+          openCodeToken: process.env.LOBU_OPENCODE_BRIDGE_TOKEN ?? null,
+          codexThread: process.env.CODEX_THREAD_ID ?? null,
+          codexSession: process.env.CODEX_SESSION_ID ?? null,
           args: process.argv.slice(1),
         }));
       });
@@ -240,7 +549,7 @@ describe('handoffToParentClaude', () => {
       77
     );
     const started = Date.now();
-    const delivery = await handoffToParentClaude({
+    const delivery = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 77,
       prompt: `${standardPrompt}\nFinalize via lobu CLI or MCP.`,
@@ -286,12 +595,38 @@ describe('handoffToParentClaude', () => {
 
     const moduleSource = 'export default async () => ({ ok: true })';
     await execFileAsync(delivery.helperPath, ['exec', moduleSource], {
-      env: { ...process.env, PATH: '', WORKER_API_TOKEN: 'daemon-worker-secret' },
+      env: {
+        ...process.env,
+        PATH: '',
+        WORKER_API_TOKEN: 'daemon-worker-secret',
+        CLAUDE_PID: '123',
+        CLAUDE_CODE_SESSION_ID: 'claude-session',
+        CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/claude.sock',
+        CLAUDE_CODE_MESSAGING_TOKEN: 'claude-secret',
+        OPENCODE_PID: '456',
+        OPENCODE_SESSION_ID: 'opencode-session',
+        OPENCODE_SESSION_DIRECTORY: '/tmp/opencode',
+        LOBU_OPENCODE_BRIDGE_SOCKET: '/tmp/opencode.sock',
+        LOBU_OPENCODE_BRIDGE_TOKEN: 'opencode-secret',
+        CODEX_THREAD_ID: 'codex-thread',
+        CODEX_SESSION_ID: 'codex-session',
+      },
     });
     expect(await access).toEqual({
       token: bearer,
       memoryUrl,
       workerToken: null,
+      claudePid: null,
+      claudeSession: null,
+      claudeSocket: null,
+      claudeToken: null,
+      openCodePid: null,
+      openCodeSession: null,
+      openCodeDirectory: null,
+      openCodeSocket: null,
+      openCodeToken: null,
+      codexThread: null,
+      codexSession: null,
       args: ['memory', 'exec', moduleSource],
     });
 
@@ -310,7 +645,7 @@ describe('handoffToParentClaude', () => {
 
   test('caps completion stdin, preserves truncation evidence, and works without PATH', async () => {
     const fixture = await parentFixture();
-    const delivery = await handoffToParentClaude({
+    const delivery = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 78,
       prompt: 'Do work',
@@ -343,7 +678,7 @@ describe('handoffToParentClaude', () => {
     writeFileSync(notExecutable, '#!/bin/sh\n', { mode: 0o600 });
 
     for (const command of ['node', unavailable, notExecutable, '/bin/node\ninjected']) {
-      const delivery = await handoffToParentClaude({
+      const delivery = await handoffToInteractiveSession({
         session: fixture.session,
         runId: 79,
         prompt: 'Do work',
@@ -361,7 +696,7 @@ describe('handoffToParentClaude', () => {
 
   test('rejects malformed and oversized completion frames without settling the attempt', async () => {
     const fixture = await parentFixture();
-    const delivery = await handoffToParentClaude({
+    const delivery = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 80,
       prompt: 'Do work',
@@ -398,7 +733,7 @@ describe('handoffToParentClaude', () => {
 
   test("a prior attempt's credentials cannot complete a later attempt", async () => {
     const fixture = await parentFixture();
-    const first = await handoffToParentClaude({
+    const first = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 81,
       prompt: 'First attempt',
@@ -415,7 +750,7 @@ describe('handoffToParentClaude', () => {
     await runHelper(first.helperPath, ['complete'], 'first answer');
     expect(await first.completion).toMatchObject({ kind: 'completed', output: 'first answer' });
 
-    const second = await handoffToParentClaude({
+    const second = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 81,
       prompt: 'Second attempt',
@@ -454,7 +789,7 @@ describe('handoffToParentClaude', () => {
   test('daemon shutdown completes a delivered handoff and removes its helper', async () => {
     const fixture = await parentFixture();
     const shutdown = new AbortController();
-    const delivery = await handoffToParentClaude({
+    const delivery = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 82,
       prompt: 'Do work',
@@ -473,9 +808,41 @@ describe('handoffToParentClaude', () => {
     expect(existsSync(helperDir)).toBe(false);
   });
 
+  test('daemon shutdown destroys a half-open helper connection before cleanup', async () => {
+    const fixture = await parentFixture();
+    const shutdown = new AbortController();
+    const delivery = await handoffToInteractiveSession({
+      session: fixture.session,
+      runId: 821,
+      prompt: 'Do work',
+      token: 'secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      timeoutMs: 10_000,
+      disconnectCheckIntervalMs: 10_000,
+      shutdownSignal: shutdown.signal,
+    });
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+
+    const helperDir = path.dirname(delivery.helperPath);
+    const config = readHelperConfig(delivery.helperPath);
+    const held = net.createConnection(config.socketPath);
+    await new Promise<void>((resolve, reject) => {
+      held.once('connect', resolve);
+      held.once('error', reject);
+    });
+    const closed = new Promise<void>((resolve) => held.once('close', () => resolve()));
+
+    shutdown.abort();
+    expect(await delivery.completion).toMatchObject({ kind: 'shutdown' });
+    await closed;
+    expect(held.destroyed).toBe(true);
+    expect(existsSync(helperDir)).toBe(false);
+  });
+
   test('the existing run timeout bounds a parent handoff', async () => {
     const fixture = await parentFixture();
-    const delivery = await handoffToParentClaude({
+    const delivery = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 83,
       prompt: 'Do work',
@@ -497,7 +864,7 @@ describe('handoffToParentClaude', () => {
     await close(cleanupServers.pop()!);
     rmSync(fixture.session.socketPath, { force: true });
 
-    const delivery = await handoffToParentClaude({
+    const delivery = await handoffToInteractiveSession({
       session: fixture.session,
       runId: 84,
       prompt: 'Do work',

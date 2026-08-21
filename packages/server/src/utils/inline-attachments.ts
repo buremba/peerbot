@@ -13,7 +13,7 @@
  *
  *   { kind: 'audio', filename: '…', mime_type: '…', artifact_id: '<uuid>',
  *     download_url: 'https://…/lobu/api/v1/files/<id>?token=…',
- *     size_bytes: 23456 }
+ *     size_bytes: 23456, sha256: '<hex>' }
  *
  * Audio attachments additionally enqueue background transcription via
  * TranscriptionService. On success a superseding event is written so the
@@ -57,6 +57,14 @@ interface MaterializedAttachment {
   download_url: string;
   size_bytes: number;
   duration_ms?: number | null;
+  /**
+   * Content hash of the published bytes. `artifact_id` and `download_url` are
+   * minted fresh on every publication of the same source attachment, so this is
+   * the field that answers "did the attachment actually change?" — see
+   * `semanticAttachmentState` in insert-event.ts, which relies on its presence
+   * to tell a re-publication apart from a genuine edit.
+   */
+  sha256: string;
 }
 
 interface StreamItemLike {
@@ -174,6 +182,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         download_url: published.downloadUrl,
         size_bytes: published.size,
         duration_ms: att.duration_ms ?? null,
+        sha256: published.sha256,
       };
       rewritten.push(materialized);
 

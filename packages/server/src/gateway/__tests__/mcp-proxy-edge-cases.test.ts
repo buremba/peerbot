@@ -21,7 +21,12 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken, MCP_PROTOCOL_VERSION, verifyWorkerToken } from "@lobu/core";
+import {
+  generateWorkerToken,
+  MCP_PROTOCOL_VERSION,
+  verifyGatewayMcpToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
@@ -271,8 +276,16 @@ describe("SSRF guard", () => {
     const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
-    globalThis.fetch = async () =>
-      new Response(
+    let forwardedAuthorization: string | null = null;
+    globalThis.fetch = async (_input, init) => {
+      forwardedAuthorization = new Headers(init?.headers).get("authorization");
+      const gatewayToken = verifyGatewayMcpToken(
+        forwardedAuthorization?.slice("Bearer ".length) ?? "",
+      );
+      expect(gatewayToken).toMatchObject({ userId: "user1" });
+      expect(gatewayToken?.source).toBe(verifyWorkerToken(agent1Token)?.source);
+      expect(verifyWorkerToken(forwardedAuthorization?.slice("Bearer ".length) ?? "")).toBeNull();
+      return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
@@ -280,6 +293,7 @@ describe("SSRF guard", () => {
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
+    };
 
     const res = await app.request("/lobu-memory/tools/search_memory", {
       method: "POST",
@@ -290,6 +304,8 @@ describe("SSRF guard", () => {
       body: JSON.stringify({ query: "test" }),
     });
     expect(res.status).toBe(200);
+    expect(forwardedAuthorization).toMatch(/^Bearer /);
+    expect(forwardedAuthorization).not.toBe(`Bearer ${agent1Token}`);
   });
 
   test("blocks GET /tools to reserved-IP MCP via list-all endpoint", async () => {
@@ -1230,7 +1246,7 @@ describe("executeToolDirect", () => {
     expect(requestHeaders.get("x-lobu-memory-direct-auth")).toBe("1");
     const authorization = requestHeaders.get("authorization");
     expect(authorization).toMatch(/^Bearer /);
-    const token = verifyWorkerToken(authorization?.slice("Bearer ".length) ?? "");
+    const token = verifyGatewayMcpToken(authorization?.slice("Bearer ".length) ?? "");
     expect(token).toMatchObject({
       userId: "approving-user",
       agentId: "agent1",
@@ -1295,7 +1311,7 @@ describe("executeToolDirect", () => {
 
     expect(result.isError).toBe(false);
     const authorization = requestHeaders.get("authorization");
-    const token = verifyWorkerToken(authorization?.slice("Bearer ".length) ?? "");
+    const token = verifyGatewayMcpToken(authorization?.slice("Bearer ".length) ?? "");
     // Minting the unpaired claims produces a token the verifier rejects
     // outright (401 on resume); pairing drops the admin tier and the resumed
     // call still authenticates as a plain, non-admin worker.

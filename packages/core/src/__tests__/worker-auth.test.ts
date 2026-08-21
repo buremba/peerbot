@@ -9,7 +9,9 @@ import {
   generateWorkerToken,
   generateWorkerTokenPair,
   looksLikeWorkerToken,
+  mintGatewayMcpToken,
   verifyEgressProxyToken,
+  verifyGatewayMcpToken,
   verifyWorkerToken,
   type WorkerTokenData,
   type WorkerTokenOptions,
@@ -305,15 +307,41 @@ describe("worker auth token", () => {
     expect(verifyWorkerToken(t2)).not.toBeNull();
   });
 
-  test("worker and egress-proxy credentials are accepted only on their own surfaces", () => {
+  test("worker, egress-proxy, and gateway-MCP credentials are accepted only on their own surfaces", () => {
     const pair = generateWorkerTokenPair("u", "c", "d", {
       channelId: "ch",
     });
+    const gatewayMcpToken = mintGatewayMcpToken(pair.workerToken);
 
     expect(verifyWorkerToken(pair.workerToken)).not.toBeNull();
     expect(verifyEgressProxyToken(pair.egressProxyToken)).not.toBeNull();
+    expect(verifyGatewayMcpToken(gatewayMcpToken ?? "")).not.toBeNull();
     expect(verifyWorkerToken(pair.egressProxyToken)).toBeNull();
     expect(verifyEgressProxyToken(pair.workerToken)).toBeNull();
+    expect(verifyWorkerToken(gatewayMcpToken ?? "")).toBeNull();
+    expect(verifyEgressProxyToken(gatewayMcpToken ?? "")).toBeNull();
+    expect(verifyGatewayMcpToken(pair.workerToken)).toBeNull();
+  });
+
+  test("gateway-MCP narrowing preserves every signed claim and its lifetime", () => {
+    const workerToken = generateWorkerToken(
+      "user-2",
+      "conv-2",
+      "deploy-B",
+      ALL_CLAIMS
+    );
+    const worker = verifyWorkerToken(workerToken) as WorkerTokenData;
+    const gatewayMcpToken = mintGatewayMcpToken(workerToken);
+    const narrowed = verifyGatewayMcpToken(gatewayMcpToken ?? "");
+
+    expect(narrowed).toEqual({ ...worker, tokenKind: "gateway-mcp" });
+    expect(narrowed?.timestamp).toBe(worker.timestamp);
+    expect(narrowed?.jti).toBe(worker.jti);
+  });
+
+  test("gateway-MCP narrowing refuses a non-worker credential", () => {
+    const pair = generateWorkerTokenPair("u", "c", "d", { channelId: "ch" });
+    expect(mintGatewayMcpToken(pair.egressProxyToken)).toBeNull();
   });
 
   test("a deployment token pair shares one revocation id", () => {

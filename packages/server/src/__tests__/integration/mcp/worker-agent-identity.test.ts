@@ -1,4 +1,4 @@
-import { generateWorkerToken } from '@lobu/core';
+import { generateWorkerToken, mintGatewayMcpToken } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -37,20 +37,32 @@ describe('worker MCP session agent identity', () => {
       agentId: OTHER_AGENT_ID,
       ownerUserId: user.id,
     });
-    workerToken = generateWorkerToken(user.id, 'conv-agent-turn-1', 'test-deployment', {
-      channelId: 'api-conv-agent-turn-1',
-      agentId: AGENT_ID,
-      organizationId: org.id,
-      platform: 'api',
-      source: 'internal',
-    });
-    otherWorkerToken = generateWorkerToken(user.id, 'conv-agent-turn-2', 'test-deployment', {
+    const rawWorkerToken = generateWorkerToken(
+      user.id,
+      'conv-agent-turn-1',
+      'test-deployment',
+      {
+        channelId: 'api-conv-agent-turn-1',
+        agentId: AGENT_ID,
+        organizationId: org.id,
+        platform: 'api',
+        source: 'internal',
+      }
+    );
+    const rawOtherWorkerToken = generateWorkerToken(user.id, 'conv-agent-turn-2', 'test-deployment', {
       channelId: 'api-conv-agent-turn-2',
       agentId: OTHER_AGENT_ID,
       organizationId: org.id,
       platform: 'api',
       source: 'internal',
     });
+    const narrowedWorkerToken = mintGatewayMcpToken(rawWorkerToken);
+    const narrowedOtherWorkerToken = mintGatewayMcpToken(rawOtherWorkerToken);
+    if (!narrowedWorkerToken || !narrowedOtherWorkerToken) {
+      throw new Error('failed to narrow test worker credentials for the MCP hop');
+    }
+    workerToken = narrowedWorkerToken;
+    otherWorkerToken = narrowedOtherWorkerToken;
   });
 
   /** Mirror the gateway proxy handshake, whose initialize metadata omits agentId. */

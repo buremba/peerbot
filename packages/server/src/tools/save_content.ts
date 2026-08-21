@@ -19,6 +19,11 @@ import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
 import { getConfiguredEmbeddingModel, needsEmbeddingSql } from '../utils/embeddings';
+import { eventArtifactBinding } from '../gateway/files/artifact-store';
+import {
+  deleteMaterializedArtifacts,
+  materializeInlineAttachments,
+} from '../utils/inline-attachments';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import {
@@ -598,6 +603,34 @@ async function saveContentImpl(
     inserted = false;
     persistedMetadata = prior.metadata;
   } else {
+    // Inline media becomes a bound artifact BEFORE the row is written, exactly
+    // as connector ingest does it (run-lifecycle → materializeInlineAttachments).
+    // Without this, `events` is the binary store for anything arriving through
+    // save_memory, and the attachment carries no binding for the download route
+    // to check.
+    //
+    // Publishing escapes the insert: every path below that does not end in a row
+    // referencing these artifacts has to delete them, or a failed save leaks bytes
+    // onto the volume with no owner.
+    let attachments = args.attachments;
+    let publishedArtifactIds: string[] = [];
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      const materialized = await materializeInlineAttachments(
+        [{ id: externalId, attachments }],
+        () =>
+          eventArtifactBinding({
+            organizationId: ctx.organizationId,
+            originId: externalId,
+          })
+      );
+      attachments = materialized.items[0]?.attachments ?? [];
+      publishedArtifactIds = materialized.publishedArtifactIds;
+      // pendingTranscriptions is deliberately dropped: transcription is wired to
+      // connector ingest, and save_memory has never enqueued it. Wiring it here
+      // would change what save_memory DOES; this change only fixes where the
+      // bytes live.
+    }
+
     try {
       row = await insertEvent({
         entityIds: finalEntityIds,
@@ -608,7 +641,7 @@ async function saveContentImpl(
         content: args.content ?? null,
         payloadData: args.payload_data,
         payloadTemplate: args.payload_template ?? null,
-        attachments: args.attachments,
+        attachments,
         authorName: args.author,
         sourceUrl: args.source_url ?? parentSourceUrl,
         // The schema promises "Defaults to now if omitted" — honor it. A NULL
@@ -623,6 +656,10 @@ async function saveContentImpl(
         supersedesEventId: args.supersedes_event_id ?? null,
       });
     } catch (error) {
+      // No row of ours references these artifacts on any branch below — the
+      // idempotency loser returns the winner's event, and everything else
+      // rethrows — so they are unreachable bytes unless we delete them here.
+      await deleteMaterializedArtifacts(publishedArtifactIds);
       // Two replicas may race after the preflight read. The unique index is the
       // lock; the loser resolves and returns the winner's durable event.
       if (

@@ -11,6 +11,7 @@
 import { generateWorkerToken, verifyWorkerToken } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getRevokedTokenStore } from '../../../gateway/auth/revoked-token-store';
+import { buildDeploymentWorkerToken } from '../../../gateway/orchestration/deployment-identity';
 import { buildAutomationRunWorkerAccess } from '../../../gateway/services/automation-run-worker-token';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
@@ -118,6 +119,44 @@ describe('worker-token MCP auth without the direct-auth header', () => {
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error?: string };
     expect(body.error).toBe('invalid_token');
+  });
+
+  it('refuses a chat deployment token with or without the request-controlled direct-auth header', async () => {
+    const deploymentToken = buildDeploymentWorkerToken({
+      userId: 'api-user',
+      conversationId: 'interactive-conversation',
+      deploymentName: 'api-headerless-agent',
+      channelId: 'api-user',
+      agentId: AGENT_ID,
+      organizationId: org.id,
+      platform: 'api',
+    });
+
+    const headerlessResponse = await post(`/mcp/${org.slug}`, {
+      body: INITIALIZE_BODY,
+      token: deploymentToken,
+    });
+    expect(headerlessResponse.status).toBe(403);
+    expect(await headerlessResponse.json()).toMatchObject({ error: 'insufficient_scope' });
+
+    const explicitHeaderResponse = await post(`/mcp/${org.slug}`, {
+      body: INITIALIZE_BODY,
+      token: deploymentToken,
+      headers: { 'X-Lobu-Memory-Direct-Auth': '1' },
+    });
+    expect(explicitHeaderResponse.status).toBe(403);
+    expect(await explicitHeaderResponse.json()).toMatchObject({
+      error: 'insufficient_scope',
+    });
+  });
+
+  it('does not promote a worker token on non-MCP routes', async () => {
+    const response = await post(`/api/${org.slug}/query_sdk`, {
+      body: { sql: 'return lobu.organization.id' },
+      token: workerToken,
+      headers: { 'X-Lobu-Memory-Direct-Auth': '1' },
+    });
+    expect(response.status).toBe(401);
   });
 
   it('a bearer that is not a worker token still falls through to OAuth auth', async () => {

@@ -261,6 +261,16 @@ export async function readMcpAttachmentResource(
   // isolated tests that call this module without booting core services.
   const artifactStore =
     getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore();
+  const metadata = await artifactStore.inspect(
+    loaded.attachment.artifact_id,
+    { binding: loaded.binding },
+  );
+  if (!metadata) throw new Error(`Unknown resource: ${uri}`);
+  if (metadata.size > MAX_MCP_RESOURCE_BYTES) {
+    throw new Error(
+      `MCP resource is too large to inline (${metadata.size} bytes; limit ${MAX_MCP_RESOURCE_BYTES})`,
+    );
+  }
   const stored = await artifactStore.read(loaded.attachment.artifact_id, {
     binding: loaded.binding,
     maxBytes: MAX_MCP_RESOURCE_BYTES,

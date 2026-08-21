@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -22,7 +22,8 @@ interface StoredArtifactMetadata {
   contentType: string;
   size: number;
   createdAt: number;
-  sha256: string;
+  /** Added with the durable filesystem format; absent on pre-PVC artifacts. */
+  sha256?: string;
   /** Immutable Lobu resource identity allowed to read this artifact internally. */
   binding?: string;
 }
@@ -111,8 +112,9 @@ function isStoredArtifactMetadata(
     metadata.size >= 0 &&
     typeof metadata.createdAt === "number" &&
     Number.isFinite(metadata.createdAt) &&
-    typeof metadata.sha256 === "string" &&
-    ARTIFACT_SHA256_PATTERN.test(metadata.sha256) &&
+    (metadata.sha256 === undefined ||
+      (typeof metadata.sha256 === "string" &&
+        ARTIFACT_SHA256_PATTERN.test(metadata.sha256))) &&
     (metadata.binding === undefined ||
       (typeof metadata.binding === "string" && metadata.binding.length <= 2048))
   );
@@ -155,7 +157,7 @@ function resolveArtifactsDir(baseDir: string | undefined): string {
   if (configured) return configured;
   if (process.env.ENVIRONMENT === "production") {
     throw new Error(
-      "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable shared filesystem",
+      "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable mounted filesystem",
     );
   }
   return DEFAULT_ARTIFACTS_DIR;
@@ -181,6 +183,43 @@ export class ArtifactStore {
 
   private metadataPath(artifactId: string): string {
     return path.join(this.artifactDir(artifactId), "metadata.json");
+  }
+
+  private async readMetadataRecord(
+    artifactId: string,
+  ): Promise<{ metadata: StoredArtifactMetadata; dirStat: Stats } | null> {
+    if (!ARTIFACT_ID_PATTERN.test(artifactId)) return null;
+    try {
+      const dirStat = await fs.lstat(this.artifactDir(artifactId));
+      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
+      const raw = await readBoundedRegularFile(
+        this.metadataPath(artifactId),
+        ARTIFACT_METADATA_MAX_BYTES,
+      );
+      if (!raw) return null;
+      const parsed = JSON.parse(raw.toString("utf8")) as unknown;
+      if (!isStoredArtifactMetadata(parsed, artifactId)) return null;
+      return { metadata: parsed, dirStat };
+    } catch {
+      return null;
+    }
+  }
+
+  private async directoryIsUnchanged(
+    artifactId: string,
+    initial: Stats,
+  ): Promise<boolean> {
+    try {
+      const final = await fs.lstat(this.artifactDir(artifactId));
+      return (
+        final.isDirectory() &&
+        !final.isSymbolicLink() &&
+        final.dev === initial.dev &&
+        final.ino === initial.ino
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -304,18 +343,10 @@ export class ArtifactStore {
     artifactId: string,
     options?: { binding?: string; maxBytes?: number },
   ): Promise<{ metadata: StoredArtifactMetadata; bytes: Buffer } | null> {
-    if (!ARTIFACT_ID_PATTERN.test(artifactId)) return null;
     try {
-      const dirStat = await fs.lstat(this.artifactDir(artifactId));
-      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
-      const raw = await readBoundedRegularFile(
-        this.metadataPath(artifactId),
-        ARTIFACT_METADATA_MAX_BYTES,
-      );
-      if (!raw) return null;
-      const parsed = JSON.parse(raw.toString("utf8")) as unknown;
-      if (!isStoredArtifactMetadata(parsed, artifactId)) return null;
-      const metadata = parsed;
+      const record = await this.readMetadataRecord(artifactId);
+      if (!record) return null;
+      const { metadata, dirStat } = record;
       if (options?.binding && metadata.binding !== options.binding) {
         return null;
       }
@@ -327,31 +358,40 @@ export class ArtifactStore {
       ) {
         return null;
       }
-      const bytes = await readBoundedRegularFile(
-        this.artifactFilePath(artifactId),
-        maxBytes,
-      );
+      // The pre-PVC format stored bytes under the sanitized display filename
+      // and had no checksum. Keep those already-published artifacts readable
+      // through a rollout; all new writes use the fixed payload name + sha256.
+      const payloadPath = metadata.sha256
+        ? this.artifactFilePath(artifactId)
+        : path.join(this.artifactDir(artifactId), sanitizeFilename(metadata.filename));
+      const bytes = await readBoundedRegularFile(payloadPath, maxBytes);
       if (
         !bytes ||
         bytes.length !== metadata.size ||
-        sha256(bytes) !== metadata.sha256
+        (metadata.sha256 !== undefined && sha256(bytes) !== metadata.sha256)
       ) {
         logger.warn(`Artifact ${artifactId} failed size/checksum verification`);
         return null;
       }
-      const finalDirStat = await fs.lstat(this.artifactDir(artifactId));
-      if (
-        !finalDirStat.isDirectory() ||
-        finalDirStat.isSymbolicLink() ||
-        finalDirStat.dev !== dirStat.dev ||
-        finalDirStat.ino !== dirStat.ino
-      ) {
-        return null;
-      }
+      if (!(await this.directoryIsUnchanged(artifactId, dirStat))) return null;
       return { metadata, bytes };
     } catch {
       return null;
     }
+  }
+
+  /** Read validated metadata without loading the artifact payload. */
+  async inspect(
+    artifactId: string,
+    options?: { binding?: string },
+  ): Promise<StoredArtifactMetadata | null> {
+    const record = await this.readMetadataRecord(artifactId);
+    if (!record) return null;
+    if (options?.binding && record.metadata.binding !== options.binding) {
+      return null;
+    }
+    if (!(await this.directoryIsUnchanged(artifactId, record.dirStat))) return null;
+    return record.metadata;
   }
 
   /**
@@ -366,39 +406,15 @@ export class ArtifactStore {
     publicGatewayUrl: string;
     ttlMs?: number;
   }): Promise<string | null> {
-    if (!ARTIFACT_ID_PATTERN.test(params.artifactId)) return null;
-    try {
-      const dirStat = await fs.lstat(this.artifactDir(params.artifactId));
-      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
-      const raw = await readBoundedRegularFile(
-        this.metadataPath(params.artifactId),
-        ARTIFACT_METADATA_MAX_BYTES,
-      );
-      if (!raw) return null;
-      const parsed = JSON.parse(raw.toString("utf8")) as unknown;
-      if (
-        !isStoredArtifactMetadata(parsed, params.artifactId) ||
-        parsed.binding !== params.binding
-      ) {
-        return null;
-      }
-      const finalDirStat = await fs.lstat(this.artifactDir(params.artifactId));
-      if (
-        !finalDirStat.isDirectory() ||
-        finalDirStat.isSymbolicLink() ||
-        finalDirStat.dev !== dirStat.dev ||
-        finalDirStat.ino !== dirStat.ino
-      ) {
-        return null;
-      }
-      return this.buildDownloadUrl(
-        params.publicGatewayUrl,
-        params.artifactId,
-        params.ttlMs,
-      );
-    } catch {
-      return null;
-    }
+    const metadata = await this.inspect(params.artifactId, {
+      binding: params.binding,
+    });
+    if (!metadata) return null;
+    return this.buildDownloadUrl(
+      params.publicGatewayUrl,
+      params.artifactId,
+      params.ttlMs,
+    );
   }
 
   async delete(artifactId: string): Promise<void> {

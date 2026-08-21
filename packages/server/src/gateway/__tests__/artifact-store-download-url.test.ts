@@ -117,7 +117,7 @@ describe("ArtifactStore.buildDownloadUrl", () => {
   });
 });
 
-describe("ArtifactStore shared filesystem backend", () => {
+describe("ArtifactStore durable filesystem backend", () => {
   let env: ArtifactTestEnv;
 
   beforeEach(() => {
@@ -133,7 +133,7 @@ describe("ArtifactStore shared filesystem backend", () => {
       process.env.ENVIRONMENT = "production";
       delete process.env.LOBU_ARTIFACTS_DIR;
       expect(() => new ArtifactStore()).toThrow(
-        "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable shared filesystem",
+        "Production artifact storage requires LOBU_ARTIFACTS_DIR on a durable mounted filesystem",
       );
     } finally {
       if (previousEnvironment === undefined) delete process.env.ENVIRONMENT;
@@ -184,6 +184,37 @@ describe("ArtifactStore shared filesystem backend", () => {
 
     await writer.delete(published.artifactId);
     expect(await reader.read(published.artifactId)).toBeNull();
+  });
+
+  test("reads and refreshes links for artifacts written by the previous format", async () => {
+    const artifactId = "00000000-0000-4000-8000-000000000314";
+    const binding = runArtifactBinding(314);
+    const bytes = Buffer.from("pre-pvc-artifact");
+    const artifactDir = join(env.artifactsDir, artifactId);
+    await fs.mkdir(artifactDir, { recursive: false });
+    await writeFile(join(artifactDir, "legacy photo.png"), bytes);
+    await writeFile(
+      join(artifactDir, "metadata.json"),
+      JSON.stringify({
+        artifactId,
+        filename: "legacy photo.png",
+        contentType: "image/png",
+        size: bytes.length,
+        createdAt: Date.now(),
+        binding,
+      }),
+    );
+
+    const stored = await env.artifactStore.read(artifactId, { binding });
+    expect(stored?.bytes).toEqual(bytes);
+    expect(stored?.metadata.sha256).toBeUndefined();
+    expect(
+      await env.artifactStore.mintBoundDownloadUrl({
+        artifactId,
+        binding,
+        publicGatewayUrl: "https://lobu.example.com",
+      }),
+    ).toEqual(expect.stringContaining(`/api/v1/files/${artifactId}?token=`));
   });
 
   test("keeps reserved metadata filenames separate from payload bytes", async () => {

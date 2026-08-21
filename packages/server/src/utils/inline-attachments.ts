@@ -50,8 +50,8 @@ const MAX_INLINE_ATTACHMENTS_PER_ITEM = 20;
 function decodeInlineBase64(value: string): Buffer | null {
   if (value.length > MAX_INLINE_ATTACHMENT_RAW_CHARS) return null;
   // Validate the raw MIME-wrapped string in place. Buffer's base64 decoder
-  // ignores ASCII framing whitespace, so avoiding value.replace() here saves a
-  // second multi-megabyte string allocation on the request path.
+  // ignores ASCII framing whitespace, so no normalized copy is needed for
+  // correctness.
   let encodedLength = 0;
   let padding = 0;
   let sawPadding = false;

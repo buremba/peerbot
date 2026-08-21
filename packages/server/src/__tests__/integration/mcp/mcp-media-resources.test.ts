@@ -826,7 +826,9 @@ describe('MCP media resources', () => {
     });
     const oversizedBody = await oversizedResponse.json();
     expect(oversizedBody.result).toBeUndefined();
-    expect(oversizedBody.error?.message).toContain('Unknown resource');
+    expect(oversizedBody.error?.message).toContain(
+      `MCP resource is too large to inline (${oversizedBytes.length} bytes; limit ${5 * 1024 * 1024})`,
+    );
   });
 
   it('retains a checkpointed action artifact after terminalization rollback without publishing on a terminal retry', async () => {

@@ -597,11 +597,17 @@ async function tryApproveBuilderRun(
 	// INSERT fails, only the completed status rolls back — the output (for
 	// agent_ask, the human's answer) is already durable, so a retry can complete
 	// the run without re-applying or losing the answer.
-	await persistDurableApplyOutput(
+	const persisted = await persistDurableApplyOutput(
 		args.run_id,
 		ctx.organizationId,
 		output as unknown as Record<string, unknown>,
 	);
+	if (!persisted) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
 
 	// Phase 2b (atomic): the terminal completed runs write + the 'completed'
 	// card supersede commit together. The card guard runs INSIDE the tx, so a
@@ -1551,6 +1557,11 @@ export async function handleApprove(
 				reviewer,
 			},
 		});
+		if (reconciled.status === "terminal") {
+			return {
+				error: `The operation is already ${reconciled.runStatus}. Refresh before acting.`,
+			};
+		}
 		if (reconciled.status !== "completed") {
 			return { error: APPLIED_ACTION_PENDING_MESSAGE };
 		}

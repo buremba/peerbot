@@ -344,7 +344,7 @@ describe('MCP media resources', () => {
   });
 
   it('fails safely for invalid, missing, and oversized resources', async () => {
-    const oversizedBytes = Buffer.alloc(20 * 1024 * 1024 + 1, 1);
+    const oversizedBytes = Buffer.alloc(5 * 1024 * 1024 + 1, 1);
     const artifact = await artifactStore.publish({
       buffer: oversizedBytes,
       filename: 'oversized.bin',
@@ -407,7 +407,9 @@ describe('MCP media resources', () => {
     });
     const oversizedBody = await oversizedResponse.json();
     expect(oversizedBody.result).toBeUndefined();
-    expect(oversizedBody.error?.message).toContain('limit 20971520');
+    expect(oversizedBody.error?.message).toContain(
+      `MCP resource is too large to inline (${oversizedBytes.length} bytes; limit ${5 * 1024 * 1024})`
+    );
   });
 
   it('cleans action artifacts when finalization rolls back or commits zero rows', async () => {

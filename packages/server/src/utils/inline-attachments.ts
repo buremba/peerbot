@@ -20,7 +20,6 @@
  * `current_event_records` view exposes the transcribed text. Failures are
  * swallowed — the unsuperseded `[voice note]` placeholder remains usable.
  */
-import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
 import { getLobuCoreServices } from "../lobu/gateway";
 import {
@@ -332,7 +331,9 @@ async function transcribeOne(
   const transcriptionService = coreServices!.getTranscriptionService();
   if (!artifactStore || !transcriptionService) return;
 
-  const stored = await artifactStore.read(job.artifactId);
+  const stored = await artifactStore.read(job.artifactId, {
+    maxBytes: MAX_INLINE_ATTACHMENT_BYTES,
+  });
   if (!stored) {
     logger.warn(
       { artifact_id: job.artifactId },
@@ -340,10 +341,8 @@ async function transcribeOne(
     );
     return;
   }
-  const buffer = await readFile(stored.filePath);
-
   const result = await transcriptionService.transcribe(
-    buffer,
+    stored.bytes,
     agentId,
     job.mimeType
   );

@@ -1264,11 +1264,17 @@ jobs:
           bash scripts/lib/__tests__/review-cache.test.sh
           bash scripts/lib/__tests__/install-bubblewrap.test.sh
 
-      - name: Preview workflow guards
+      - name: Preview and staging workflow guards
         # The preview deploy's mid-flight teardown decides whether to delete a
         # namespace out from under a running PR. It only ever executes on a
         # close/unlabel race, so without this it would first run in anger.
-        run: bash scripts/lib/__tests__/preview-teardown.test.sh
+        # Staging routing is the same shape: its release path runs on an
+        # unlabel, a close, or a manual dispatch, and a wrong answer there hands
+        # staging.lobu.ai to production's wildcard ingress or steals the host
+        # from its holder.
+        run: |
+          bash scripts/lib/__tests__/preview-teardown.test.sh
+          bash scripts/lib/__tests__/staging-routing.test.sh
 
       - name: Kubeconfig workflow guards
         # Mutating deploy workflows must fail closed before their first cluster

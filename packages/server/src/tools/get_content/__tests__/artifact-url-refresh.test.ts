@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test';
 import type { ContentItem } from '@lobu/connector-sdk';
+import { describe, expect, test } from 'vitest';
 import { refreshEventArtifactDownloadUrls } from '../render';
 
 describe('refreshEventArtifactDownloadUrls', () => {

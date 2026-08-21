@@ -363,9 +363,13 @@ async function runCli(
     const supervised = spawnSupervisedCli(binary, args, env);
     const proc = supervised.supervisor;
     supervisor = proc;
+    const { stdout, stderr } = proc;
+    if (!stdout || !stderr) {
+      throw new Error('automation supervisor spawned without stdio pipes');
+    }
 
-    const stdoutPromise = drain(proc.stdout!, STDOUT_CAP);
-    const stderrPromise = drain(proc.stderr!, STDERR_CAP);
+    const stdoutPromise = drain(stdout, STDOUT_CAP);
+    const stderrPromise = drain(stderr, STDERR_CAP);
 
     const initialExit = await waitForTargetExit(supervised.targetExit, timeoutMs, abortSignal);
     const { timedOut, aborted } = initialExit;
@@ -409,8 +413,8 @@ async function runCli(
       { data: stdoutData, truncated: stdoutTruncated },
       { data: stderrData },
     ] = await Promise.all([
-      awaitDrain(stdoutPromise, proc.stdout!, drainDeadlineMs),
-      awaitDrain(stderrPromise, proc.stderr!, drainDeadlineMs),
+      awaitDrain(stdoutPromise, stdout, drainDeadlineMs),
+      awaitDrain(stderrPromise, stderr, drainDeadlineMs),
     ]);
 
     const label = spec.binaryName;

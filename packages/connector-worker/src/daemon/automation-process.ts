@@ -10,7 +10,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
 const SUPPORTS_PROCESS_GROUPS = process.platform !== 'win32';
-const POSIX_TREE_TERM_GRACE_MS = 3000;
+const TREE_TERM_GRACE_MS = 3000;
 const PROCESS_REAP_GRACE_MS = 5000;
 /** Bounds one `ps` snapshot without trusting a partial process table. */
 const PS_OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
@@ -22,94 +22,105 @@ const PS_OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
  * descendants still receive the group signal, while the supervisor remains the
  * ownership anchor until the daemon releases or SIGKILLs it.
  *
- * POSIX caller contract: spawn this source with `detached: true`, making the
- * supervisor the session/process-group leader whose pgid equals its pid. Its
- * parent-loss path uses that invariant for safe negative-pid group signals.
+ * POSIX caller contract: serialize and spawn this closure-free function with
+ * `detached: true`, making the supervisor the session/process-group leader
+ * whose pgid equals its pid. Its parent-loss path uses that invariant for safe
+ * negative-pid group signals.
  */
-export const CLI_SUPERVISOR_SOURCE = String.raw`
-const { spawn } = require('node:child_process');
-const [binary, ...args] = process.argv.slice(1);
-let targetFinished = false;
-let parentLost = false;
-let target;
-const keepAlive = setInterval(() => {}, 2147483647);
-const send = (message) => {
-  try { process.send?.(message); } catch {}
-};
-const finish = (code, signal, error) => {
-  if (targetFinished) return;
-  targetFinished = true;
-  if (!parentLost) send({ type: 'target-exit', code, signal, error });
-};
-const stopAfterParentLoss = () => {
-  if (parentLost) return;
-  parentLost = true;
-  clearInterval(keepAlive);
+function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): void {
+  const [binary, ...args] = process.argv.slice(1);
+  let targetFinished = false;
+  let parentLost = false;
+  let target: ChildProcess | undefined;
+  const keepAlive = setInterval(() => {}, 2147483647);
+  const send = (message: Record<string, unknown>) => {
+    try { process.send?.(message); } catch {}
+  };
+  const finish = (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    error: string | null
+  ) => {
+    if (targetFinished) return;
+    targetFinished = true;
+    if (!parentLost) send({ type: 'target-exit', code, signal, error });
+  };
+  const stopAfterParentLoss = () => {
+    if (parentLost) return;
+    parentLost = true;
+    clearInterval(keepAlive);
 
-  if (process.platform === 'win32') {
-    // Keep this process alive as the tree root until taskkill gets its chance.
-    // The timer is deliberately ref'ed: parent loss must not let the supervisor
-    // exit before the owned CLI tree has been addressed.
+    if (process.platform === 'win32') {
+      // Keep this process alive as the tree root until taskkill gets its chance.
+      // The timer is deliberately ref'ed: parent loss must not let the supervisor
+      // exit before the owned CLI tree has been addressed.
+      try {
+        const killer = spawnChild('taskkill', ['/PID', String(process.pid), '/T', '/F'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        killer.once('error', () => {});
+      } catch {}
+      setTimeout(() => {
+        try { target?.kill('SIGKILL'); } catch {}
+        process.exit(1);
+      }, treeTermGraceMs);
+      return;
+    }
+
+    // This detached supervisor is still the live session/group leader, so its
+    // own negative pid cannot have been recycled. Ignore SIGTERM here while the
+    // target and descendants get a graceful window, then kill the complete group
+    // including this anchor so parent loss cannot leave an immortal orphan.
     try {
-      const killer = spawn('taskkill', ['/PID', String(process.pid), '/T', '/F'], {
-        stdio: 'ignore',
+      process.kill(-process.pid, 'SIGTERM');
+    } catch {
+      try { target?.kill('SIGTERM'); } catch {}
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-process.pid, 'SIGKILL');
+      } catch {
+        try { target?.kill('SIGKILL'); } catch {}
+        process.exit(1);
+      }
+    }, treeTermGraceMs);
+  };
+  process.on('SIGTERM', () => {});
+  process.once('disconnect', stopAfterParentLoss);
+  process.on('message', (message: unknown) => {
+    if (
+      typeof message !== 'object' ||
+      message == null ||
+      (message as Record<string, unknown>).type !== 'release' ||
+      !targetFinished
+    ) return;
+    clearInterval(keepAlive);
+    process.exit(0);
+  });
+  if (!binary) {
+    finish(127, null, 'automation supervisor missing target binary');
+  } else {
+    try {
+      target = spawnChild(binary, args, {
+        env: process.env,
+        stdio: ['ignore', 'inherit', 'inherit'],
         windowsHide: true,
       });
-      killer.once('error', () => {});
-    } catch {}
-    setTimeout(() => {
-      try { target?.kill('SIGKILL'); } catch {}
-      process.exit(1);
-    }, 3000);
-    return;
-  }
-
-  // This detached supervisor is still the live session/group leader, so its
-  // own negative pid cannot have been recycled. Ignore SIGTERM here while the
-  // target and descendants get a graceful window, then kill the complete group
-  // including this anchor so parent loss cannot leave an immortal orphan.
-  try {
-    process.kill(-process.pid, 'SIGTERM');
-  } catch {
-    try { target?.kill('SIGTERM'); } catch {}
-  }
-  setTimeout(() => {
-    try {
-      process.kill(-process.pid, 'SIGKILL');
-    } catch {
-      try { target?.kill('SIGKILL'); } catch {}
-      process.exit(1);
+    } catch (error) {
+      finish(127, null, error instanceof Error ? error.message : String(error));
     }
-  }, 3000);
-};
-process.on('SIGTERM', () => {});
-process.once('disconnect', stopAfterParentLoss);
-process.on('message', (message) => {
-  if (message?.type !== 'release' || !targetFinished) return;
-  clearInterval(keepAlive);
-  process.exit(0);
-});
-if (!binary) {
-  finish(127, null, 'automation supervisor missing target binary');
-} else {
-  try {
-    target = spawn(binary, args, {
-      env: process.env,
-      stdio: ['ignore', 'inherit', 'inherit'],
-      windowsHide: true,
+    target?.once('error', (error) => {
+      finish(127, null, error instanceof Error ? error.message : String(error));
     });
-  } catch (error) {
-    finish(127, null, error instanceof Error ? error.message : String(error));
+    target?.once('exit', (code, signal) => finish(code, signal, null));
   }
-  target?.once('error', (error) => {
-    finish(127, null, error instanceof Error ? error.message : String(error));
+  setImmediate(() => {
+    if (!process.connected) stopAfterParentLoss();
   });
-  target?.once('exit', (code, signal) => finish(code, signal, null));
 }
-setImmediate(() => {
-  if (!process.connected) stopAfterParentLoss();
-});
-`;
+
+export const CLI_SUPERVISOR_SOURCE = `(${runCliSupervisor.toString()})(require('node:child_process').spawn, ${TREE_TERM_GRACE_MS});`;
 
 interface TargetExit {
   exitCode: number | null;
@@ -372,7 +383,7 @@ export async function terminateWindowsProcessTree(
   waitForExit: typeof waitForSignalledExit = waitForSignalledExit
 ): Promise<'SIGTERM' | 'SIGKILL'> {
   const gracefulTreeKillSent = await terminateTree(proc, false);
-  if (gracefulTreeKillSent && (await waitForExit(proc, 3000))) return 'SIGTERM';
+  if (gracefulTreeKillSent && (await waitForExit(proc, TREE_TERM_GRACE_MS))) return 'SIGTERM';
 
   // If taskkill itself is unavailable, direct ChildProcess.kill remains the
   // best-effort fallback. It cannot guarantee cleanup of an already-orphaned
@@ -394,7 +405,7 @@ export async function terminateChild(proc: ChildProcess): Promise<'SIGTERM' | 'S
       await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
       return 'SIGTERM';
     }
-    if (await waitForOwnedPosixTreeToQuiesce(proc, POSIX_TREE_TERM_GRACE_MS)) {
+    if (await waitForOwnedPosixTreeToQuiesce(proc, TREE_TERM_GRACE_MS)) {
       return 'SIGTERM';
     }
     if (!signalOwnedPosixProcessGroup(proc, 'SIGKILL')) proc.kill('SIGKILL');

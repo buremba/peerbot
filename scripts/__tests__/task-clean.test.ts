@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -52,6 +53,7 @@ describe("task-clean worktree removal", () => {
       resolve(import.meta.dir, "..", "lib", "db-name.sh"),
       join(repo, "scripts", "lib", "db-name.sh")
     );
+    writeFileSync(join(repo, "scripts", "sandbox.ts"), "// fixture\n");
 
     expect(command(root, ["git", "init", "-q", repo]).exitCode).toBe(0);
     expect(
@@ -88,6 +90,16 @@ exec /usr/bin/git "$@"
     );
     chmodSync(gitShim, 0o755);
 
+    const sandboxLog = join(root, "sandbox.log");
+    const bunShim = join(bin, "bun");
+    writeFileSync(
+      bunShim,
+      `#!/usr/bin/env bash
+printf '%s|%s\n' "$PWD" "$*" > "${sandboxLog}"
+`
+    );
+    chmodSync(bunShim, 0o755);
+
     const result = command(
       repo,
       ["bash", "scripts/task-clean.sh", "task-clean", "--force"],
@@ -97,6 +109,9 @@ exec /usr/bin/git "$@"
     );
     expect(result.exitCode, output(result)).toBe(0);
     expect(existsSync(worktree)).toBe(false);
+    expect(readFileSync(sandboxLog, "utf8").trim()).toEndWith(
+      "/repo/.claude/worktrees/task-clean|scripts/sandbox.ts rm"
+    );
     expect(
       command(repo, [
         "git",

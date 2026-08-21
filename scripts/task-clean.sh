@@ -112,6 +112,14 @@ if [[ $force -eq 0 ]]; then
   fi
 fi
 
+# The remote dev sandbox is named after this worktree and bills for its disk
+# even when stopped, so it has to go before the directory it is derived from.
+# Non-fatal: no sandbox, no Daytona credentials, and no network are all normal.
+if [[ -f "$worktree_dir/scripts/sandbox.ts" ]] && command -v bun >/dev/null 2>&1; then
+  ( cd "$worktree_dir" && bun scripts/sandbox.ts rm ) 2>/dev/null \
+    || echo "warning: could not remove the Daytona sandbox for '$name' — check: make sandbox-ls" >&2
+fi
+
 echo "→ removing worktree $worktree_dir"
 if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qF "worktree $worktree_dir"; then
   if ! remove_error="$(git -C "$repo" worktree remove "$worktree_dir" --force 2>&1)"; then

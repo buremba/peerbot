@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean ctx land dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pr-fast pr-full owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean ctx land sandbox sandbox-sync sandbox-url sandbox-logs sandbox-run sandbox-stop sandbox-ls dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pr-fast pr-full owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -27,7 +27,13 @@ help:
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
 	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward pointer diffs touching no hosted surface pass as not applicable; OPEN=1 opens the merged PR"
-	@echo "  make pre-pr                                 - Local fast gates before push (GitHub CI is the canonical gate)"
+	@echo "  make sandbox                                - Boot/refresh this worktree's remote Daytona dev stack (server + its own Postgres) and print the preview URL"
+	@echo "  make sandbox-sync                           - Push the working tree to the sandbox without restarting the app"
+	@echo "  make sandbox-run CMD='<cmd>'                - Run a command (build, test suite) inside the sandbox instead of on this Mac"
+	@echo "  make sandbox-logs / sandbox-url             - Tail the sandbox app log / print its preview URL"
+	@echo "  make sandbox-stop                           - Stop the sandbox (frees the running-memory quota; disk and database survive)"
+	@echo "  make sandbox-ls                             - List every lobu sandbox with its state and the quota headroom"
+	@echo "  make pre-pr                                 - Local fast gates before push, minus what the commit hook already runs (GitHub CI is the canonical gate)"
 	@echo "  make pr-fast                                - Optional: broad Linux merge jobs (Daytona sandbox, else local)"
 	@echo "  make pr-full [REMOTE_JOBS='unit …']        - Optional: full Linux CI (Daytona sandbox, else local)"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
@@ -292,6 +298,35 @@ review-fix:
 ui-review:
 	@bun scripts/ui-review.ts
 
+# Per-worktree remote dev stack on Daytona: the full server + embedded Postgres
+# running in a sandbox named after this worktree, reachable on a preview URL.
+# Isolation is the point — the sandbox never sees the Mac's Postgres, ports, or
+# DATABASE_URL, so separate worktrees do not collide.
+sandbox:
+	@bun scripts/sandbox.ts up
+
+sandbox-sync:
+	@bun scripts/sandbox.ts sync
+
+sandbox-url:
+	@bun scripts/sandbox.ts url
+
+sandbox-logs:
+	@bun scripts/sandbox.ts logs
+
+# Offload a build or suite to the sandbox instead of the Mac.
+sandbox-run:
+	@: $${CMD?Usage: make sandbox-run CMD='bun test <path>'}
+	@bun scripts/sandbox.ts run $(CMD)
+
+# Stop frees the org-wide running-memory quota; disk and the database survive,
+# so `make sandbox` afterwards restarts without rebuilding the image.
+sandbox-stop:
+	@bun scripts/sandbox.ts stop
+
+sandbox-ls:
+	@bun scripts/sandbox.ts ls
+
 # One call instead of the git status / diff / log / gh pr view / gh pr checks
 # family. Every tool call re-reads the agent's whole context, so collapsing the
 # family into one call is worth more than speeding up any command in it.
@@ -310,28 +345,35 @@ land:
 # NOT a substitute for the DB-backed suites (make test-integration) when you
 # touch server/runtime code — but it catches the cheap, common misses.
 pre-pr:
-	@echo "🔎 [1/7] Build workspace packages (fresh dist)..."
+	@echo "🔎 [1/5] Build workspace packages (fresh dist)..."
 	@# Typecheck resolves @lobu/* against built dist, not src. Without this a
 	@# stale core dist yields PHANTOM errors on any contract change (e.g. a new
 	@# field the dist predates) — the exact trap CI avoids by building first.
 	@make build-packages
-	@echo "🔎 [2/7] Strict typecheck (root + excluded packages)..."
-	@bun run typecheck
+	@# Root `bun run typecheck` and `bun run check` are deliberately NOT run
+	@# here: .husky/pre-commit already runs both, in FAIL mode, on every commit
+	@# — the identical scripts. Running them twice bought nothing but wall time.
+	@# The per-package loop below has no such twin, so it stays.
+	@echo "🔎 [2/5] Strict typecheck (per-package; root is covered by the commit hook)..."
 	@for pkg in server connector-worker connector-sdk plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp embeddings cli; do \
 		echo "   typecheck packages/$$pkg..."; \
 		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
 	done
-	@echo "🔎 [3/7] Dead-code gate (knip --include files)..."
+	@echo "🔎 [3/5] Dead-code gate (knip --include files)..."
 	@bun run knip --include files
-	@echo "🔎 [4/7] Lint/format (biome)..."
-	@bun run check
-	@echo "🔎 [5/7] Exposed surface naming (Automation is canonical)..."
+	@echo "🔎 [4/5] Exposed surface naming (Automation is canonical)..."
 	@bun scripts/check-exposed-surface-naming.ts
-	@echo "🔎 [6/7] Gateway LLM calls (no unapproved one-off clients)..."
+	@echo "🔎 [5/5] Gateway LLM + entity-write funnel gates..."
 	@node scripts/check-gateway-llm-calls.mjs
-	@echo "🔎 [7/7] Entity writes (no unapproved funnel bypasses)..."
 	@bun scripts/check-entity-write-funnel.mjs
-	@bun test scripts/__tests__/check-entity-write-funnel.test.ts --timeout 30000
+	@# The fixture suite tests the CHECKER, not the tree, so it only needs to run
+	@# when the checker itself moved. CI runs it unconditionally either way.
+	@if git diff --quiet origin/main...HEAD -- scripts/check-entity-write-funnel.mjs scripts/__tests__/check-entity-write-funnel.test.ts 2>/dev/null \
+	   && git diff --quiet -- scripts/check-entity-write-funnel.mjs scripts/__tests__/check-entity-write-funnel.test.ts 2>/dev/null; then \
+		echo "   funnel-checker unchanged; fixture suite skipped (CI still runs it)"; \
+	else \
+		bun test scripts/__tests__/check-entity-write-funnel.test.ts --timeout 30000; \
+	fi
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."
 

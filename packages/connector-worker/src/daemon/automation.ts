@@ -563,7 +563,7 @@ export async function executeAutomationRun(
           const completion = await handoff.completion;
           if (completion.kind === 'completed') {
             return {
-              output: 'Parent Claude signalled Automation completion.',
+              output: completion.output,
               error: null,
               exitCode: 0,
               exitSignal: null,

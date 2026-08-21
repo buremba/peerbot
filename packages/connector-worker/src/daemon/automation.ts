@@ -25,16 +25,16 @@
  * server sent no session for — an older server, or one that could not mint.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import {
-  buildDeviceAutomationPrompt,
-  DEVICE_AGENT_SPECS_BY_KIND,
   type AgentKind,
   type AgentSpec,
+  buildDeviceAutomationPrompt,
+  DEVICE_AGENT_SPECS_BY_KIND,
 } from '@lobu/core/contracts/worker/device-automation';
 import type {
   AutomationPollPayload,
@@ -43,6 +43,13 @@ import type {
   WorkerExitReason,
 } from '@lobu/core/contracts/worker/protocol';
 import { locateBinary, searchDirs } from './agent-binaries.js';
+import {
+  releaseSupervisor,
+  spawnSupervisedCli,
+  terminateChild,
+  waitForTargetExit,
+  waitForTargetExitAfterTermination,
+} from './automation-process.js';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
 import { log } from './log.js';
@@ -68,6 +75,8 @@ export interface AutomationExecutorConfig {
   insideClaude?: boolean;
   /** Stops a pending parent handoff during daemon shutdown. */
   shutdownSignal?: AbortSignal;
+  /** Test-only override; production deliberately uses the 15-second default. */
+  terminalHeartbeatGraceMs?: number;
   /**
    * Agent to use when the Automation names no `agent_kind`.
    *
@@ -105,12 +114,21 @@ const DETAIL_TAIL_CHARS = 500;
 const LOCAL_MAX_ROUNDS = 8;
 const EXIT_REPORT_DELIVERY_ATTEMPTS = 3;
 const EXIT_REPORT_RETRY_DELAY_MS = 2000;
+const TERMINAL_HEARTBEAT_GRACE_MS = 15_000;
 
 /** Sentinel for "binary not on PATH" so it maps to a distinct exit reason. */
 class ExecutableNotFoundError extends Error {
   constructor(name: string) {
     super(`${name} binary not found on PATH`);
     this.name = 'ExecutableNotFoundError';
+  }
+}
+
+/** The server has already finalized or released this claimed run. */
+class AutomationRunNoLongerActiveError extends Error {
+  constructor() {
+    super('automation run is no longer active');
+    this.name = 'AutomationRunNoLongerActiveError';
   }
 }
 
@@ -168,32 +186,6 @@ async function awaitDrain(
   if (outcome !== expired) return outcome;
   stream.destroy();
   return pending;
-}
-
-/** Wait for the child to exit, or report the timeout lapsed. */
-function waitForExit(
-  proc: ChildProcess,
-  timeoutMs: number
-): Promise<{ timedOut: boolean }> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const onExit = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ timedOut: false });
-      }
-    };
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        proc.removeListener('exit', onExit);
-        resolve({ timedOut: true });
-      }
-    }, timeoutMs);
-    timer.unref?.();
-    proc.once('exit', onExit);
-  });
 }
 
 /** Assemble argv from the spec + execution config, mirroring `SpecExecutor`. */
@@ -334,12 +326,20 @@ async function runCli(
   config: AutomationPollPayload['automation']['execution_config'],
   access: AutomationRunAccess,
   timeoutMs: number,
-  binaryPath?: string
+  binaryPath?: string,
+  abortSignal?: AbortSignal,
+  terminalHeartbeatGraceMs = TERMINAL_HEARTBEAT_GRACE_MS
 ): Promise<ExecutorResult> {
+  // One AbortController spans every finalize/resume round. If a terminal 409
+  // landed while the prior exit report was in flight, do not start stale work.
+  if (abortSignal?.aborted) throw new AutomationRunNoLongerActiveError();
+
   const binary = binaryPath ?? locateBinary(spec.binaryName);
   if (!binary || !existsSync(binary)) throw new ExecutableNotFoundError(spec.binaryName);
 
   const { mcpArgs, mcpEnv, cleanup } = buildMcp(spec, access.wiring);
+  let supervisor: ChildProcess | undefined;
+  let supervisorSettled = false;
   try {
     const args = buildArguments(spec, prompt, config, mcpArgs, timeoutMs / 1000);
     const started = Date.now();
@@ -360,33 +360,55 @@ async function runCli(
       env.PATH = `${extraPath}:${currentPath}`;
     }
 
-    const proc = spawn(binary, args, {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const supervised = spawnSupervisedCli(binary, args, env);
+    const proc = supervised.supervisor;
+    supervisor = proc;
+    const { stdout, stderr } = proc;
+    if (!stdout || !stderr) {
+      throw new Error('automation supervisor spawned without stdio pipes');
+    }
 
-    const stdoutPromise = drain(proc.stdout, STDOUT_CAP);
-    const stderrPromise = drain(proc.stderr, STDERR_CAP);
+    const stdoutPromise = drain(stdout, STDOUT_CAP);
+    const stderrPromise = drain(stderr, STDERR_CAP);
 
-    const { timedOut } = await waitForExit(proc, timeoutMs);
+    const initialExit = await waitForTargetExit(supervised.targetExit, timeoutMs, abortSignal);
+    const { timedOut, aborted } = initialExit;
+    let target = initialExit.target;
+    let cancelled = false;
     let killedSignal: string | null = null;
-    if (timedOut) {
-      proc.kill('SIGTERM');
-      killedSignal = 'SIGTERM';
-      await sleep(3000);
-      if (proc.exitCode === null && proc.signalCode === null) {
-        proc.kill('SIGKILL');
-        killedSignal = 'SIGKILL';
-      }
-      // Bounded wait for the process to be reaped so the pipes flush.
-      await Promise.race([
-        new Promise((resolve) => proc.once('exit', resolve)),
-        sleep(5000),
-      ]);
+    let cleanupSignal: string | null = null;
+    if (aborted) {
+      // A 409 is also the normal post-complete_window state. Let a CLI that is
+      // already winding down exit and report its device-side metadata. The
+      // supervisor remains the non-reusable tree owner throughout the grace,
+      // so a normally exiting leader cannot orphan its remaining descendants.
+      const gracefulExit = await waitForTargetExit(
+        supervised.targetExit,
+        terminalHeartbeatGraceMs
+      );
+      target = gracefulExit.target;
+      // Either way the tree must go: a CLI that exited still leaves the
+      // supervisor and any descendants it spawned holding the group.
+      cancelled = !target;
+      const treeSignal = await terminateChild(proc);
+      supervisorSettled = true;
+      target ??=
+        (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
+      cleanupSignal = target && target.signalCode !== 'SIGKILL' ? 'SIGTERM' : treeSignal;
+    } else if (timedOut) {
+      const treeSignal = await terminateChild(proc);
+      supervisorSettled = true;
+      target =
+        (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
+      killedSignal = target && target.signalCode !== 'SIGKILL' ? 'SIGTERM' : treeSignal;
+    } else {
+      await releaseSupervisor(proc);
+      supervisorSettled = true;
     }
 
     // A SIGKILLed child gets a short flush window; a clean exit gets a long one.
-    const drainDeadlineMs = killedSignal === 'SIGKILL' ? 2000 : 60_000;
+    const drainDeadlineMs =
+      cancelled || killedSignal === 'SIGKILL' || cleanupSignal === 'SIGKILL' ? 2000 : 60_000;
     // Both pipes must race the SAME clock. Awaiting them in sequence gave
     // stderr a fresh deadline only after stdout's had expired, so a grandchild
     // holding both ends cost 2x the deadline (measured: 120s for a child that
@@ -395,14 +417,19 @@ async function runCli(
       { data: stdoutData, truncated: stdoutTruncated },
       { data: stderrData },
     ] = await Promise.all([
-      awaitDrain(stdoutPromise, proc.stdout, drainDeadlineMs),
-      awaitDrain(stderrPromise, proc.stderr, drainDeadlineMs),
+      awaitDrain(stdoutPromise, stdout, drainDeadlineMs),
+      awaitDrain(stderrPromise, stderr, drainDeadlineMs),
     ]);
 
     const label = spec.binaryName;
-    const exitCode = proc.exitCode;
+    const exitCode = target?.exitCode ?? null;
+    const targetSignal = target?.signalCode ?? null;
+    // Once the target exits, cleanupSignal belongs only to its supervisor or
+    // descendants and must not overwrite the target's own exit metadata.
     const exitSignal =
-      killedSignal ?? (proc.signalCode != null ? `signal:${proc.signalCode}` : null);
+      killedSignal ??
+      (cancelled ? cleanupSignal : null) ??
+      (targetSignal != null ? `signal:${targetSignal}` : null);
 
     let exitReason: WorkerExitReason;
     let errorMessage: string | null;
@@ -410,12 +437,24 @@ async function runCli(
     // back to stdout. `claude` prints its fatal on stdout ("Credit balance is
     // too low") and leaves stderr empty, so reading stderr alone reported the
     // most likely real failure as a bare "exited with non-zero status 1" with
-    // the cause only in output_tail; `opencode` logs to stderr instead. Bounded
-    // because this lands in `runs.error_message`, and stderr is capped at 1 MiB.
+    // the cause only in output_tail; `opencode` logs to stderr instead. The
+    // supervisor's error is the last resort: on SIGKILL escalation the whole
+    // group dies before the supervisor can report, and its synthetic message
+    // must not mask what the CLI actually wrote. Bounded because this lands in
+    // `runs.error_message`, and stderr is capped at 1 MiB.
     const detail = (
-      stderrData.toString('utf8').trim() || stdoutData.toString('utf8').trim()
+      stderrData.toString('utf8').trim() ||
+      stdoutData.toString('utf8').trim() ||
+      target?.error ||
+      ''
     ).slice(-DETAIL_TAIL_CHARS);
-    if (timedOut) {
+    if (cancelled) {
+      // The server owns the terminal outcome, but complete-automation remains
+      // terminal-safe so it can retain device provenance and duration. Report
+      // this intentional local stop as clean instead of inventing a failure.
+      exitReason = 'ok';
+      errorMessage = null;
+    } else if (timedOut) {
       exitReason = 'timeout';
       const deadline = `${label} exited via ${killedSignal ?? 'SIGTERM'} after ${Math.trunc(timeoutMs / 1000)}s timeout`;
       // The deadline alone says nothing about WHY the CLI stalled, and a
@@ -426,9 +465,9 @@ async function runCli(
     } else if (exitCode === 0) {
       exitReason = 'ok';
       errorMessage = null;
-    } else if (proc.signalCode != null) {
+    } else if (targetSignal != null) {
       exitReason = 'crash';
-      errorMessage = `${label} exited via signal (status=${proc.signalCode})`;
+      errorMessage = `${label} exited via signal (status=${targetSignal})`;
     } else {
       exitReason = 'error_message';
       errorMessage =
@@ -450,6 +489,18 @@ async function runCli(
       durationMs,
     };
   } finally {
+    if (
+      supervisor &&
+      !supervisorSettled &&
+      supervisor.exitCode === null &&
+      supervisor.signalCode === null
+    ) {
+      await terminateChild(supervisor).catch(() => {
+        try {
+          supervisor?.kill('SIGKILL');
+        } catch {}
+      });
+    }
     cleanup();
   }
 }
@@ -535,8 +586,21 @@ export async function executeAutomationRun(
 
   // Heartbeat the run while the CLI executes so the server's stale-run sweeper
   // can distinguish a live turn from an abandoned one.
+  const runAbort = new AbortController();
   const heartbeat = setInterval(() => {
     client.heartbeat(runId).catch((err) => {
+      if (err instanceof WorkerHttpError && err.status === 409) {
+        if (!runAbort.signal.aborted) {
+          log.info(
+            `[executor] Automation run ${runId} is no longer active; waiting for the local CLI to exit`
+          );
+          runAbort.abort();
+          // The outcome is already settled server-side; stop beating at a run
+          // that will 409 for the rest of the terminal grace.
+          clearInterval(heartbeat);
+        }
+        return;
+      }
       log.debug('[executor] Automation heartbeat failed:', err);
     });
   }, cfg.heartbeatIntervalMs ?? 30_000);
@@ -606,7 +670,9 @@ export async function executeAutomationRun(
         payload.automation.execution_config,
         resolveAutomationRunAccess(payload, client.mcpWiring),
         timeoutMs,
-        cfg.binaryOverrides?.[spec.kind]
+        cfg.binaryOverrides?.[spec.kind],
+        runAbort.signal,
+        cfg.terminalHeartbeatGraceMs
       );
     },
     deliver: (result, finalizeAttempt) =>
@@ -634,6 +700,11 @@ export async function dispatchAutomationResumeLoop(
     try {
       result = await io.run(finalizeNudge);
     } catch (err) {
+      if (err instanceof AutomationRunNoLongerActiveError) {
+        // The terminal heartbeat landed before this round spawned, so there is
+        // no local process exit or device metadata to report.
+        return { itemsCollected: 0 };
+      }
       // Unambiguous: nothing has been reported yet. Missing binary is a
       // configuration problem, not a crash.
       const reason: WorkerExitReason =

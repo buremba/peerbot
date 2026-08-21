@@ -62,6 +62,8 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
 export interface ExecutorConfig {
   batchSize: number;
   heartbeatIntervalMs: number;
+  /** Test-only override; production deliberately uses the 15-second default. */
+  terminalHeartbeatGraceMs?: number;
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;

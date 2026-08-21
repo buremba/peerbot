@@ -109,7 +109,7 @@ import { resolveRunnableAgentKinds } from "./agent-binaries.js";
 /** Capability strings the worker advertises, keyed by name (e.g. `browser.debugger`). */
 export type WorkerCapabilities = Record<string, boolean>;
 
-/** HTTP error carrying the status code, so delivery retries can classify it. */
+/** HTTP error carrying the status code for retry and terminal-conflict policy. */
 export class WorkerHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -220,7 +220,8 @@ export class WorkerClient implements ExecutorClient {
     });
     if (!response.ok) {
       const responseText = await response.text();
-      throw new Error(`${path} failed: ${response.status} ${response.statusText} ${responseText}`);
+      const detail = `${response.statusText} ${responseText}`.trim();
+      throw new WorkerHttpError(response.status, path, detail);
     }
     return response;
   }

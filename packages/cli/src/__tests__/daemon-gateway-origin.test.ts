@@ -7,7 +7,6 @@ import {
   spyOn,
   test,
 } from "bun:test";
-import { hostname } from "node:os";
 import * as daemonModule from "@lobu/connector-worker/daemon";
 import { daemonCommand } from "../commands/daemon";
 import { apiUrlToGatewayOrigin } from "../internal/context";
@@ -67,7 +66,6 @@ describe("lobu daemon", () => {
   let originalStdoutIsTTY: boolean | undefined;
 
   beforeEach(() => {
-    spyOn(context, "getCurrentContextName").mockResolvedValue("local");
     for (const key of SESSION_ENV_KEYS) {
       originalEnv.set(key, process.env[key]);
       delete process.env[key];
@@ -93,6 +91,7 @@ describe("lobu daemon", () => {
       url: "https://app.lobu.ai/api/v1",
       source: "config",
     });
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
@@ -102,7 +101,16 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("https://app.lobu.ai");
   });
 
-  test("an explicit --api-url is passed through untouched", async () => {
+  test("an explicit --api-url passes through without context-backed setup", async () => {
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "macos:cached-context-device",
+    });
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:wizard-device",
+      source: "created",
+    });
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
@@ -110,6 +118,36 @@ describe("lobu daemon", () => {
     await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
 
     expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("http://127.0.0.1:9564");
+    expect(load).not.toHaveBeenCalled();
+    expect(wizard).not.toHaveBeenCalled();
+  });
+
+  test("LOBU_API_URL is an override too and never borrows the context's device", async () => {
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:9564",
+      source: "env",
+    });
+    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "macos:cached-context-device",
+    });
+    const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
+      workerId: "macos:wizard-device",
+      source: "created",
+    });
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+
+    expect(load).not.toHaveBeenCalled();
+    expect(wizard).not.toHaveBeenCalled();
+    expect(start.mock.calls[0]?.[0]?.workerId).not.toBe(
+      "macos:cached-context-device"
+    );
   });
 
   test("--inside-claude bypasses cache and wizard so the daemon derives a per-session id", async () => {
@@ -140,17 +178,16 @@ describe("lobu daemon", () => {
     expect(wizard).not.toHaveBeenCalled();
   });
 
-  test("an explicit --worker-id wins while --inside-claude still forces its lane", async () => {
-    spyOn(context, "resolveContext").mockResolvedValue({
-      name: "prod",
-      url: "https://app.lobu.ai/api/v1",
-      source: "config",
+  test("an explicit --worker-id wins over both the cache and the session lane", async () => {
+    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "macos:cached-host",
     });
     const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
       undefined as never
     );
 
     await daemonCommand({
+      apiUrl: "http://127.0.0.1:9564",
       workerId: "headless:attached-explicit",
       insideClaude: true,
     });
@@ -159,6 +196,7 @@ describe("lobu daemon", () => {
       workerId: "headless:attached-explicit",
       insideClaude: true,
     });
+    expect(load).not.toHaveBeenCalled();
   });
 
   test("auto-detected Codex bypasses the host cache and remains in the centralized session lane", async () => {
@@ -183,51 +221,12 @@ describe("lobu daemon", () => {
     expect(wizard).not.toHaveBeenCalled();
   });
 
-  test("non-interactive first run falls back to the computed default id", async () => {
-    spyOn(context, "resolveContext").mockResolvedValue({
-      name: "local",
-      url: "http://127.0.0.1:8795",
-      source: "config",
-    });
-    spyOn(context, "getCurrentContextName").mockResolvedValue("local");
-    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
-    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
-      undefined as never
-    );
-
-    await daemonCommand({});
-
-    expect(start.mock.calls[0]?.[0]?.workerId).toBe(
-      `${process.platform === "darwin" ? "macos" : "headless"}:${hostname().split(".")[0]}`
-    );
-  });
-
-  test("non-interactive boot reuses a cached device id when present", async () => {
-    spyOn(context, "resolveContext").mockResolvedValue({
-      name: "local",
-      url: "http://127.0.0.1:8795",
-      source: "config",
-    });
-    spyOn(context, "getCurrentContextName").mockResolvedValue("local");
-    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
-      workerId: "macos:confirmed-box",
-    });
-    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
-      undefined as never
-    );
-
-    await daemonCommand({});
-
-    expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:confirmed-box");
-  });
-
   test("interactive boot with a cached device id does not re-prompt via the wizard", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "local",
       url: "http://127.0.0.1:8795",
       source: "config",
     });
-    spyOn(context, "getCurrentContextName").mockResolvedValue("local");
     spyOn(deviceState, "loadDeviceState").mockResolvedValue({
       workerId: "macos:confirmed-box",
     });
@@ -258,7 +257,7 @@ describe("lobu daemon", () => {
       undefined as never
     );
     await expect(daemonCommand({})).rejects.toThrow(
-      /durable.*WORKER_API_TOKEN.*device_worker:run/s
+      /durable.*WORKER_API_TOKEN.*lobu token create --raw/s
     );
     expect(start).not.toHaveBeenCalled();
   });
@@ -266,6 +265,11 @@ describe("lobu daemon", () => {
   test("a fresh TTY runs the wizard once and forwards its chosen identity", async () => {
     (process.stdin as { isTTY?: boolean }).isTTY = true;
     (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:9564",
+      source: "config",
+    });
     spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
     const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
       workerId: "macos:chosen-by-wizard",
@@ -275,9 +279,14 @@ describe("lobu daemon", () => {
       undefined as never
     );
 
-    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+    await daemonCommand({});
 
     expect(wizard).toHaveBeenCalledTimes(1);
+    expect(wizard.mock.calls[0]?.[0]).toMatchObject({
+      context: "local",
+      gatewayOrigin: "http://127.0.0.1:9564",
+      platform: process.platform === "darwin" ? "macos" : "headless",
+    });
     expect(start.mock.calls[0]?.[0]?.workerId).toBe("macos:chosen-by-wizard");
   });
 
@@ -285,6 +294,11 @@ describe("lobu daemon", () => {
     process.env.CI = "true";
     (process.stdin as { isTTY?: boolean }).isTTY = true;
     (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:9564",
+      source: "config",
+    });
     spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
     const wizard = spyOn(deviceWizardModule, "deviceWizard").mockResolvedValue({
       workerId: "macos:should-not-run",
@@ -294,7 +308,7 @@ describe("lobu daemon", () => {
       undefined as never
     );
 
-    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+    await daemonCommand({});
 
     expect(wizard).not.toHaveBeenCalled();
     expect(start.mock.calls[0]?.[0]?.workerId).toContain(":");

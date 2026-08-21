@@ -5,7 +5,6 @@ import {
 import { hostname } from "node:os";
 import { apiUrlToGatewayOrigin, resolveContext } from "../internal/context.js";
 import { loadDeviceState } from "../internal/device-state.js";
-import { getCurrentContextName } from "../internal/index.js";
 import { deviceWizard } from "./_lib/device-wizard.js";
 
 export interface DaemonOptions {
@@ -25,11 +24,14 @@ const SETUP_MESSAGE =
   "  - run `lobu login` to configure a context, or\n" +
   "  - pass --api-url <origin>.";
 
+// `device_worker:run` is NOT mintable as a PAT scope (see `AVAILABLE_PAT_SCOPES`
+// server-side); the `/api/workers/*` gate accepts the mintable `mcp:write`
+// scope, so the remediation requests that least-privilege alternative.
 const TOKEN_SETUP_MESSAGE =
   "A device daemon requires a durable owl_pat_ token in WORKER_API_TOKEN; " +
   "a stored OAuth login expires and is never used as daemon authentication.\n" +
-  "Mint a device PAT with the required worker scope, then start the daemon:\n" +
-  '  WORKER_API_TOKEN=$(lobu token create --raw --org <slug> --scope "device_worker:run profile:read") lobu daemon';
+  "Mint a device PAT, then start the daemon:\n" +
+  "  WORKER_API_TOKEN=$(lobu token create --raw --org <slug> --scope mcp:write) lobu daemon";
 
 /**
  * `lobu daemon` — run a device worker that polls the gateway for jobs
@@ -48,19 +50,22 @@ const TOKEN_SETUP_MESSAGE =
  * to that token's org (an org-scoped PAT → that org, personal/session → the
  * personal org).
  *
- * On FIRST interactive boot, a short wizard lets you confirm the device id and
- * see the server's current attachment, then caches the choice at
- * `~/.lobu/devices/<context>.json` so later runs bootstrap silently. Pass
- * `--worker-id`, run non-interactively/under CI, inherit a supported agent
- * session, or delete the cache to bypass the wizard.
+ * On a named context's first interactive boot, a short wizard confirms the
+ * device identity. Explicit URL overrides stay stateless and use the same
+ * deterministic default as other non-interactive starts.
  */
 export async function daemonCommand(options: DaemonOptions): Promise<void> {
   let apiUrl = options.apiUrl?.trim();
+  let contextName: string | undefined;
   if (!apiUrl) {
     try {
       // The worker API is mounted at the ORIGIN, not under the context's
       // `/api/v1` SDK path — see `apiUrlToGatewayOrigin`.
-      apiUrl = apiUrlToGatewayOrigin((await resolveContext()).url);
+      const context = await resolveContext();
+      apiUrl = apiUrlToGatewayOrigin(context.url);
+      // LOBU_API_URL is an override just like --api-url: it must not inherit
+      // device state from the otherwise-current named context.
+      if (context.source !== "env") contextName = context.name;
     } catch {
       // No context configured — surface the explicit requirement below.
     }
@@ -88,12 +93,10 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     ...(options.insideClaude === true ? { insideClaude: true } : {}),
   });
   const explicitWorkerId = options.workerId?.trim() || undefined;
-  // An inherited agent session (or the legacy --inside-claude flag) registers a
-  // per-session headless device, and the shared daemon bootstrap derives that
-  // id itself. Handing it a cached or wizard-chosen id here would override that
-  // routing, so this lane contributes neither an id nor a host platform. The
-  // legacy flag holds the lane even when its startup metadata is momentarily
-  // absent, since detection re-runs on the next boot.
+  // Centralized session detection must own the per-session id. Passing a cache
+  // or wizard id here would override Claude/Codex/OpenCode routing in the shared
+  // daemon bootstrap. The legacy flag stays headless even when its startup
+  // metadata is temporarily absent and detection retries per run.
   const sessionLane =
     launchContext.interactiveSession !== undefined ||
     options.insideClaude === true;
@@ -103,6 +106,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
       ? undefined
       : await resolveWorkerId(
           launchContext.platform ?? defaultPlatform,
+          contextName,
           apiUrl,
           workerApiToken
         ));
@@ -129,28 +133,34 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
 
 /**
  * Resolve an ordinary host device's `worker_id` after explicit and inherited
- * session identities have already been handled by the caller: cached identity,
- * then the TTY-only first-run wizard, then `<platform>:<hostname>`.
+ * session identities have already been handled by the caller: a URL override
+ * takes `<platform>:<hostname>` outright, and a named context takes its cached
+ * identity, then the TTY-only first-run wizard, then `<platform>:<hostname>`.
  *
  * The wizard only runs on a TTY, only when the id is absent, and only when there
  * is no cached device yet — so a fully-configured daemon never prompts.
  */
 async function resolveWorkerId(
   platform: string,
+  contextName: string | undefined,
   apiUrl: string,
   workerApiToken: string
 ): Promise<string> {
   const shortHost = hostname().split(".")[0] || hostname();
   const suggested = `${platform}:${shortHost}`;
 
-  const contextName = (await getCurrentContextName()).trim() || undefined;
-  const cached = contextName ? await loadDeviceState(contextName) : null;
+  // URL overrides are intentionally stateless: they are commonly temporary
+  // local/self-hosted targets and must never borrow another context's identity.
+  if (!contextName) return suggested;
+
+  const cached = await loadDeviceState(contextName, platform);
   if (cached?.workerId) return cached.workerId;
 
   if (canPrompt()) {
     const result = await deviceWizard({
       context: contextName,
-      apiUrl,
+      gatewayOrigin: apiUrl,
+      platform,
       suggestedWorkerId: suggested,
       workerApiToken,
     });

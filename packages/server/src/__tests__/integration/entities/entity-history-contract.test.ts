@@ -7,6 +7,10 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import {
+  insertConnectionlessAuditEvent,
+  recordEdgeChangeEvent,
+} from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEvent } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
@@ -56,6 +60,39 @@ async function waitForEdgeChangeEvent(relationshipId: number, op: 'link' | 'unli
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for ${op} audit event on relationship ${relationshipId}`);
+}
+
+/**
+ * Wait until `count` other backends in this database are parked on a lock.
+ *
+ * Keyed on the count rather than on a query fragment: exactly which statement
+ * each side parks on is an implementation detail of the delete path, and a test
+ * that pinned the text would keep passing — vacuously — the day that path grows
+ * a lock earlier or renames a column in an unrelated SELECT.
+ */
+async function waitForLockWaiters(count: number) {
+  const sql = getTestDb();
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const rows = await sql<{ waiting: number }[]>`
+      SELECT COUNT(*)::int AS waiting
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND wait_event_type = 'Lock'
+    `;
+    if (rows[0].waiting >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const active = await sql`
+    SELECT wait_event_type, wait_event, LEFT(query, 300) AS query
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND pid <> pg_backend_pid()
+      AND state <> 'idle'
+  `;
+  throw new Error(
+    `Timed out waiting for ${count} lock waiters: ${JSON.stringify(active)}`
+  );
 }
 
 describe('entity history contracts', () => {
@@ -238,6 +275,163 @@ describe('entity history contracts', () => {
         AND ${a.entity.id} = ANY(entity_ids)
     `;
     expect(changeEvents).toHaveLength(0);
+  });
+
+  it('does not attach a late edge audit to an already hard-deleted endpoint (#2812)', async () => {
+    const deleted = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Deleted Before Audit',
+    })) as { entity: { id: number } };
+    const survivor = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Surviving Audit Endpoint',
+    })) as { entity: { id: number } };
+
+    await workspace.owner.entities.delete({
+      entity_id: deleted.entity.id,
+      force_delete_tree: true,
+    });
+
+    // Drive the audit writer directly with a synthetic edge: no
+    // `entity_relationships` row is needed (or wanted — the real one would have
+    // been cascaded by the delete above), and the writer FKs on none of these
+    // ids. The offset only keeps the id clear of relationships other tests mint.
+    const relationshipId = deleted.entity.id + 1_000_000_000;
+    recordEdgeChangeEvent({
+      organizationId: workspace.org.id,
+      relationshipId,
+      fromEntityId: deleted.entity.id,
+      toEntityId: survivor.entity.id,
+      relationshipTypeId: 1,
+      relationshipTypeSlug: 'related-brand',
+      op: 'unlink',
+      changes: [{ field: 'exists', old: true, new: false }],
+      createdBy: workspace.users.owner.id,
+    });
+    await waitForEdgeChangeEvent(relationshipId, 'unlink');
+
+    const rows = await getTestDb()<{
+      deleted_still_linked: boolean;
+      survivor_linked: boolean;
+    }[]>`
+      SELECT
+        ${deleted.entity.id} = ANY(entity_ids) AS deleted_still_linked,
+        ${survivor.entity.id} = ANY(entity_ids) AS survivor_linked
+      FROM events
+      WHERE semantic_type = 'change'
+        AND metadata->>'category' = 'relationship'
+        AND metadata->>'relationshipId' = ${String(relationshipId)}
+        AND metadata->>'op' = 'unlink'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      deleted_still_linked: false,
+      survivor_linked: true,
+    });
+  });
+
+  /**
+   * The force-delete dependency report is computed BEFORE the transaction takes
+   * any lock, so an edge audit can commit inside that window and be detached by
+   * a sweep the preflight never counted — the `events_detached` undercount in
+   * #2812. Freeze `events` against writes (EXCLUSIVE still permits the delete's
+   * own SELECTs, so its preflight really does read zero), park the audit on its
+   * INSERT while it holds the org and entity locks, and let the delete queue
+   * behind it.
+   *
+   * Doubles as the regression test for the audit's lock ORDER: it must claim
+   * `organization` before `entities`, the order `lockOrgForAclInvalidation`
+   * documents, because `events_organization_id_fkey` takes the org lock at
+   * INSERT time. Reversed, this interleaving deadlocks and Postgres aborts one
+   * of the two transactions instead of either assertion below being reached.
+   */
+  it('reports the event rows its transaction actually detached, not the preflight (#2812)', async () => {
+    const deleted = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Deleted During Audit',
+    })) as { entity: { id: number } };
+    const survivor = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Concurrent Audit Survivor',
+    })) as { entity: { id: number } };
+    const sql = getTestDb();
+
+    let signalEventsLocked!: () => void;
+    const eventsLocked = new Promise<void>((resolve) => {
+      signalEventsLocked = resolve;
+    });
+    let releaseEventsLock!: () => void;
+    const eventsLockReleased = new Promise<void>((resolve) => {
+      releaseEventsLock = resolve;
+    });
+    const tableBlocker = sql.begin(async (tx) => {
+      await tx`LOCK TABLE events IN EXCLUSIVE MODE`;
+      signalEventsLocked();
+      await eventsLockReleased;
+    });
+
+    await eventsLocked;
+    // Distinct offset from the synthetic edge above, so the two tests' audit
+    // rows can never be mistaken for each other.
+    const relationshipId = deleted.entity.id + 2_000_000_000;
+    const originId = `edge-race-test:${relationshipId}`;
+    let auditPromise: Promise<unknown> | undefined;
+    let deletePromise: Promise<unknown> | undefined;
+    try {
+      auditPromise = insertConnectionlessAuditEvent(
+        {
+          entityIds: [deleted.entity.id, survivor.entity.id],
+          organizationId: workspace.org.id,
+          originId,
+          semanticType: 'change',
+          title: 'Concurrent relationship audit',
+          metadata: {
+            category: 'relationship',
+            op: 'unlink',
+            relationshipId: String(relationshipId),
+          },
+          createdBy: workspace.users.owner.id,
+        },
+        { subject: 'relationship', op: 'unlinked' },
+        { lockAndPruneEntityRefs: true }
+      );
+      await waitForLockWaiters(1);
+
+      deletePromise = workspace.owner.entities.delete({
+        entity_id: deleted.entity.id,
+        force_delete_tree: true,
+      });
+      await waitForLockWaiters(2);
+
+      // Both sides are now frozen, so this is exactly what the delete's
+      // preflight counted. Asserting it pins the discriminator: the report
+      // below can only say 1 if it was recomputed from the sweep.
+      const preflight = await sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count
+        FROM events
+        WHERE ${deleted.entity.id} = ANY(entity_ids)
+      `;
+      expect(preflight[0].count).toBe(0);
+
+      releaseEventsLock();
+      await tableBlocker;
+      await auditPromise;
+      const result = (await deletePromise) as { tree?: Record<string, number> };
+      expect(result.tree?.events_detached).toBe(1);
+    } finally {
+      releaseEventsLock();
+      await tableBlocker.catch(() => undefined);
+      await auditPromise?.catch(() => undefined);
+      await deletePromise?.catch(() => undefined);
+    }
+
+    const rows = await sql<{ deleted_still_linked: boolean }[]>`
+      SELECT ${deleted.entity.id} = ANY(entity_ids) AS deleted_still_linked
+      FROM events
+      WHERE origin_id = ${originId}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deleted_still_linked).toBe(false);
   });
 
   it('hard-deletes a descendant tree with no event history', async () => {

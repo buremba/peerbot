@@ -781,6 +781,57 @@ async function queueWorkspaceEventActivation(args: {
 
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
 
+interface ConnectionlessAuditInsertOptions {
+  /**
+   * Serialize this insert against a concurrent force-delete of the entities it
+   * references, and omit ids that lost the race. Whichever side commits first
+   * wins cleanly: if the audit does, the delete's `entity_ids` sweep sees and
+   * detaches it; if the delete does, the immutable audit row still lands, just
+   * without the ids it would otherwise dangle on.
+   */
+  lockAndPruneEntityRefs?: boolean;
+}
+
+/**
+ * Insert an audit row under the same row locks the force-delete path takes,
+ * dropping any referenced entity that has already been hard-deleted.
+ *
+ * `organization` is claimed BEFORE `entities`, matching
+ * `lockOrgForAclInvalidation`'s documented order. That order is not optional
+ * here: `events_organization_id_fkey` makes the INSERT take a KEY SHARE on the
+ * org row, so locking the entities first and only reaching the org row through
+ * the foreign key inverts the order and deadlocks against a force-delete, which
+ * holds the org row and is waiting for those same entity rows.
+ *
+ * Both locks are the weakest mode that still conflicts with `FOR UPDATE`, so
+ * ordinary readers and non-key updates never wait on an audit write.
+ */
+async function insertAuditEventPruningDeletedEntityRefs(
+  params: InsertEventParams
+): Promise<InsertedEvent> {
+  const entityIdsLiteral = `{${params.entityIds.join(',')}}`;
+  return getDb().begin(async (tx) => {
+    await tx`
+      SELECT 1 FROM organization WHERE id = ${params.organizationId} FOR KEY SHARE
+    `;
+    const surviving = await tx<{ id: number | string }>`
+      SELECT id
+      FROM entities
+      WHERE id = ANY(${entityIdsLiteral}::bigint[])
+      ORDER BY id
+      FOR KEY SHARE
+    `;
+    const survivingIds = new Set(surviving.map((row) => Number(row.id)));
+    return insertEvent(
+      {
+        ...params,
+        entityIds: params.entityIds.filter((id) => survivingIds.has(id)),
+      },
+      { sql: tx }
+    );
+  }) as Promise<InsertedEvent>;
+}
+
 /**
  * Persist a connectionless audit/change event with DB-enforced idempotency.
  *
@@ -799,7 +850,8 @@ const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
  */
 export async function insertConnectionlessAuditEvent(
   params: InsertEventParams,
-  eventType: AuditEventType
+  eventType: AuditEventType,
+  options?: ConnectionlessAuditInsertOptions
 ): Promise<InsertedEvent> {
   const idempotencyKey = `audit:${params.originId}`;
   const formattedEventType = formatAuditEventType(eventType);
@@ -816,12 +868,16 @@ export async function insertConnectionlessAuditEvent(
     params.automationId ?? actingScope?.automationId ?? null;
 
   try {
-    const inserted = await insertEvent({
+    const eventParams = {
       ...params,
       connectionId: null,
       automationId: producerAutomationId,
       metadata,
-    });
+    };
+    const inserted =
+      options?.lockAndPruneEntityRefs && params.entityIds.length > 0
+        ? await insertAuditEventPruningDeletedEntityRefs(eventParams)
+        : await insertEvent(eventParams);
     await queueWorkspaceEventActivation({
       organizationId: params.organizationId,
       eventId: inserted.id,
@@ -984,7 +1040,8 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
       },
       // `verb` not `op`: the stored op is imperative (link/unlink/update_link)
       // while the shared vocabulary is past-tense.
-      { subject: 'relationship', op: verb }),
+      { subject: 'relationship', op: verb },
+      { lockAndPruneEntityRefs: true }),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(

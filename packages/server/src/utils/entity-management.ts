@@ -1537,9 +1537,10 @@ export async function getEntity(
 
 /**
  * Force-delete dependency report: what a hard delete of the tree removes or
- * detaches. Computed up front so `dry_run` can return it without mutating and
- * the real delete can echo exactly what it touched. Event rows are append-only
- * and are only ever detached, never deleted.
+ * detaches. Computed up front so `dry_run` can return it without mutating; a
+ * real delete refreshes `events_detached` from the rows its transaction
+ * actually changed. Event rows are append-only and are only ever detached,
+ * never deleted.
  */
 export interface ForceDeleteTreeReport {
   entities: number;
@@ -1899,6 +1900,7 @@ export async function deleteEntity(
       // Batched so a large history can't push one UPDATE past
       // statement_timeout; still atomic (all batches share this transaction).
       const EVENT_DETACH_BATCH = 5000;
+      let eventsDetached = 0;
       for (;;) {
         const detached = await tx<{ id: number }>`
           UPDATE events e
@@ -1914,8 +1916,13 @@ export async function deleteEntity(
           )
           RETURNING e.id
         `;
+        eventsDetached += detached.length;
         if (detached.length < EVENT_DETACH_BATCH) break;
       }
+      // The preflight count is a useful preview, but an edge audit holding the
+      // org/entity locks this transaction waited on can commit in between.
+      // Report what this transaction actually detached, not the earlier snapshot.
+      report.events_detached = eventsDetached;
 
       await hardDeleteEntityRows({ tx, ids: entityTreeIds });
     });

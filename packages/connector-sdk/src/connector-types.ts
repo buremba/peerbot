@@ -552,6 +552,19 @@ export interface FeedDefinition {
        * identities (see `identities` on the entity-link rule), not as facts.
        */
       attributions?: EventAttributionRule[];
+      /**
+       * Relationships between entities resolved by named attributions in this
+       * event kind. The attribution declarations remain the only identity
+       * resolution surface; these entries reference them by name.
+       */
+      relationships?: Array<{
+        /** Relationship-type slug, preserved verbatim. */
+        type: string;
+        /** Name of the source attribution in this event kind. */
+        from: string;
+        /** Name of the target attribution in this event kind. */
+        to: string;
+      }>;
     }
   >;
 }
@@ -577,6 +590,8 @@ export interface EventAttributionTargetSpec {
  * connected to for recall, ACL, and world-model traversal".
  */
 export interface EventAttributionRule {
+  /** Stable local name when another declaration in this event kind references this rule. */
+  name?: string;
   role: EventAttributionRole;
   target: EventAttributionTargetSpec;
   /** Whether an unmatched target may be materialized by the attribution engine. */

@@ -135,7 +135,9 @@ export function assertNotAuthorizationType(
  * Deliberately NOT used on the relationship-TYPE surfaces: configs legitimately
  * declare `member_of` (`examples/personal-agent/lobu.config.ts`), and refusing
  * the declaration would break every such apply. Declaring a type grants nobody
- * access; creating an edge on it does.
+ * access; creating an edge on it does — which is why the connector install
+ * preflight uses this variant even though it only reads type rows: a connector
+ * that declares a relationship is declaring the edges it will write.
  */
 export function assertNotAclManagedEdge(
   type: { slug?: string | null; purpose?: string | null },

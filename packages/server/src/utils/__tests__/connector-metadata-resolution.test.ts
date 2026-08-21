@@ -26,16 +26,32 @@ import {
 } from '../connector-compiler';
 
 const CONNECTOR_SOURCE = `
-import { ConnectorRuntime } from '@lobu/connector-sdk';
+import { ConnectorRuntime, type ConnectorDefinition } from '@lobu/connector-sdk';
 
 export default class MetaResolutionProbeConnector extends ConnectorRuntime {
-  definition = {
+  definition: ConnectorDefinition = {
     key: 'meta_resolution_probe',
     name: 'Metadata Resolution Probe',
     description: 'Synthetic connector for the #1181 extraction reproducer.',
     version: '0.0.1',
     authSchema: { methods: [{ type: 'none' }] },
-    feeds: {},
+    feeds: {
+      invoices: {
+        key: 'invoices',
+        name: 'Invoices',
+        eventKinds: {
+          invoice: {
+            attributions: [
+              { name: 'invoice', role: 'belongs_to', target: { entityType: 'invoice' } },
+              { name: 'customer', role: 'about', target: { entityType: 'customer' } },
+            ],
+            relationships: [
+              { type: 'invoice_customer', from: 'invoice', to: 'customer' },
+            ],
+          },
+        },
+      },
+    },
   };
 
   async sync() {
@@ -78,6 +94,21 @@ describe('extractConnectorMetadata in a project dir without node_modules', () =>
       expect(metadata.key).toBe('meta_resolution_probe');
       expect(metadata.name).toBe('Metadata Resolution Probe');
       expect(metadata.version).toBe('0.0.1');
+      expect(metadata.feeds).toMatchObject({
+        invoices: {
+          eventKinds: {
+            invoice: {
+              attributions: [
+                { name: 'invoice' },
+                { name: 'customer' },
+              ],
+              relationships: [
+                { type: 'invoice_customer', from: 'invoice', to: 'customer' },
+              ],
+            },
+          },
+        },
+      });
     } finally {
       process.chdir(originalCwd);
     }

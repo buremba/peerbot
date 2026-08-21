@@ -190,7 +190,7 @@ describe("POST /api/v1/agents — agent resolution + cross-tenant isolation", ()
     // Set up: orgA creates a session via POST /api/v1/agents, then orgB
     // tries to GET that exact session URL. Both orgs nominally "own"
     // agentId `owletto-default` (the global constant) — without the
-    // tenant guard in requireAgentOwnership, orgB would pass the
+    // tenant guard in resolveAgentAccess, orgB would pass the
     // (platform, userId, agentId) check and read orgA's session row.
     const orgA = "org-A";
     const orgB = "org-B";
@@ -265,7 +265,7 @@ describe("POST /api/v1/agents — agent resolution + cross-tenant isolation", ()
 
     // Real test: orgB tries the same URL. Ownership check would otherwise
     // pass (orgB also owns agent `owletto-default`) — the tenant guard
-    // inside requireAgentOwnership refuses based on session.organizationId
+    // inside resolveAgentAccess refuses based on session.organizationId
     // (orgA) ≠ caller orgId (orgB).
     const denied = await app.request(
       "/api/v1/agents/owletto-default_owletto-default_org-A",
@@ -283,7 +283,7 @@ describe("POST /api/v1/agents — agent resolution + cross-tenant isolation", ()
     // the up-front tenant guard catches their cross-tenant attempts (the test
     // above). The settings-session COOKIE path populates only a userId —
     // callerOrgId stays undefined and that guard is a no-op. This exercises the
-    // resolved-org fallback inside requireAgentOwnership: verifyOwnedAgentAccess
+    // resolved-org fallback inside resolveAgentAccess: verifyOwnedAgentAccess
     // authorizes orgB's cookie user (they own their own `owletto-default`) but
     // resolves their org to orgB, which must NOT match orgA's session. Without
     // the fallback this GET would return 200 and leak orgA's session.

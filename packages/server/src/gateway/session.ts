@@ -45,6 +45,15 @@ export interface ThreadSession {
    * the session itself was created cleanly.
    */
   organizationId?: string;
+  /**
+   * The authenticated HUMAN who created this session, when one did (web
+   * settings session). Distinct from `userId`, which is only a routing key for
+   * `buildApiConversationId` and may be supplied by the caller — so it proves
+   * nothing about identity. Org members may USE an agent they do not own
+   * (see `authorizeAgentAccess`), and this field is what keeps one member out
+   * of another member's conversation.
+   */
+  createdByUserId?: string;
   /** Process without persisting history */
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */

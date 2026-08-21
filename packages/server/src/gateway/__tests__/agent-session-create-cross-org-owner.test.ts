@@ -91,7 +91,7 @@ function makeSessionManager() {
  * Mount `createAgentApi` behind a wrapper that reproduces the production
  * ambient org-context: `createLobuOrgContextMiddleware` calls
  * `c.set("organizationId", <default org>)` AND wraps the request in
- * `orgContext.run()`. The early tenant guard in `requireAgentOwnership` reads
+ * `orgContext.run()`. The early tenant guard in `resolveAgentAccess` reads
  * `c.get("organizationId")`, so the bug is only reproducible when that ambient
  * value is set on the Hono context — not merely present in AsyncLocalStorage.
  */
@@ -318,7 +318,7 @@ describe("POST /api/v1/agents — owner of a non-default-org agent", () => {
     const res = await postCreate(app, {
       // A non-worker, non-OAuth Bearer (PAT-shaped). The settings-session
       // provider authenticates the user; the Bearer's presence is what makes
-      // the ambient org authoritative in requireAgentOwnership.
+      // the ambient org authoritative in resolveAgentAccess.
       Authorization: "Bearer owl_pat_test_token",
     });
 

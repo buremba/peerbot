@@ -181,6 +181,41 @@ export async function getChatConnectionRow(
 }
 
 /**
+ * Resolve one stored Slack connection's bot credential through the same
+ * secret-aware gateway path used to boot its adapter, then probe Slack itself.
+ * The token never leaves this function; callers receive provider identity only.
+ */
+export async function probeSlackConnectionIdentity(
+	organizationId: string,
+	connectionId: number,
+): Promise<{
+	teamId: string;
+	enterpriseId: string | null;
+	isEnterpriseInstall: boolean;
+}> {
+	const row = await getChatConnectionRow(organizationId, connectionId);
+	if (!row || row.connector_key !== "slack") {
+		throw new Error("Slack connection not found");
+	}
+	const runtimeId = slugToRuntimeConnectionId(row.slug);
+	const manager = requireManager();
+	const config = await orgContext.run({ organizationId }, () =>
+		manager.resolveConnectionConfig(
+			runtimeId,
+			row.config as PlatformAdapterConfig,
+		),
+	);
+	if (!isSlackConfig(config)) {
+		throw new Error("Stored Slack connection config is invalid");
+	}
+	const configured = config.botToken;
+	if (!configured) throw new Error("Slack bot token is missing");
+	const botToken =
+		typeof configured === "function" ? await configured() : configured;
+	return createSlackWebApi().authTest(botToken);
+}
+
+/**
  * Unwind the two placeholder layers on an incoming BYO chat config, in order,
  * before anything treats it as credentials.
  *

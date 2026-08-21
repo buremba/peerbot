@@ -35,7 +35,10 @@ import {
   queueAutomationActivations,
   type RuntimeConnectionAutomationLookup,
 } from "../../automations/activation.js";
-import { claimAutomationCooldownStandalone } from "../../automations/cooldown.js";
+import {
+  claimAutomationCooldownStandalone,
+  markZeroCooldownAutomationActivation,
+} from "../../automations/cooldown.js";
 import {
   buildAgentSettingsUrl,
   buildProviderConnectUrl,
@@ -469,7 +472,11 @@ export class MessageHandlerBridge {
     private commandDispatcher?: CommandDispatcher,
     private automationPlanner: (
       args: RuntimeConnectionAutomationLookup
-    ) => Promise<AutomationActivationPlan> = planAutomationActivationsForRuntimeConnection
+    ) => Promise<AutomationActivationPlan> = planAutomationActivationsForRuntimeConnection,
+    private automationCooldown = {
+      claim: claimAutomationCooldownStandalone,
+      markZero: markZeroCooldownAutomationActivation,
+    },
   ) {
     this.artifactStore = services.getArtifactStore();
     this.publicGatewayUrl = services.getPublicGatewayUrl();
@@ -1229,13 +1236,13 @@ export class MessageHandlerBridge {
     const replyTargetsOffCooldown: ChatReplyActivation[] = [];
     for (const candidate of replyAutomations) {
       // `minCooldownSeconds` is a feature-enabled hint carried on the match, so
-      // an ordinary chat Automation (the 0 default) costs no extra round-trip and
-      // cannot be dropped by a cooldown claim. Automations that opted in re-read
-      // and consume the window under the per-Automation lock; claim failures
-      // propagate out of this handler.
+      // an ordinary chat Automation (the 0 default) skips the serialized
+      // pre-enqueue claim and cannot be dropped by it. Automations that opted in
+      // re-read and consume the window under the per-Automation lock; claim
+      // failures propagate out of this handler.
       if (
         candidate.minCooldownSeconds > 0 &&
-        !(await claimAutomationCooldownStandalone(candidate.automationId))
+        !(await this.automationCooldown.claim(candidate.automationId))
       ) {
         continue;
       }
@@ -1255,6 +1262,7 @@ export class MessageHandlerBridge {
             organizationId: candidate.organizationId,
             model: candidate.model ?? undefined,
             automationId: candidate.automationId,
+            minCooldownSeconds: candidate.minCooldownSeconds,
             instructions: candidate.instructions,
             activeRun: candidate.trigger.active_run ?? "queue",
           }))
@@ -1334,6 +1342,14 @@ export class MessageHandlerBridge {
         spanName: "message_received",
         logMessage: "Message enqueued via Chat SDK bridge",
       });
+      if ("automationId" in target && target.minCooldownSeconds === 0) {
+        // The turn is already durably enqueued, so this cursor is pure
+        // observability: a stamp failure must not abort the remaining targets
+        // in this loop, which would silently drop a co-matched Automation.
+        await this.automationCooldown
+          .markZero(target.automationId)
+          .catch(() => undefined);
+      }
     }
   }
 

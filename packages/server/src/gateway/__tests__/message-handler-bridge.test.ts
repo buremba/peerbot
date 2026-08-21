@@ -22,22 +22,22 @@ import {
   TEST_GATEWAY_URL,
 } from "./setup.js";
 
-/**
- * The reply path consults the cooldown claim, which is Postgres-backed. Stub
- * the module so this suite stays DB-free; `cooldownAllows` defaults to true so
- * every other test behaves exactly as before (they all use the 0 default, which
- * the bridge never claims for anyway).
- */
+/** The reply cooldown operations are injected so this unit suite stays DB-free. */
 const cooldownClaims: number[] = [];
+const activationMarks: number[] = [];
 let cooldownAllows = true;
-mock.module("../../automations/cooldown.js", () => ({
-  claimAutomationCooldownStandalone: async (automationId: number) => {
+let markZeroThrows = false;
+const automationCooldown = {
+  claim: async (automationId: number) => {
     cooldownClaims.push(automationId);
     return cooldownAllows;
   },
-  claimAutomationCooldown: async () => true,
-  lockAutomationForActivation: async () => undefined,
-}));
+  markZero: async (automationId: number) => {
+    if (markZeroThrows) throw new Error("activation stamp unavailable");
+    activationMarks.push(automationId);
+    return true;
+  },
+};
 
 describe("buildAttachmentTranscriptText", () => {
   const file = (id: string, name: string, mimetype: string) => ({
@@ -913,6 +913,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
               }).length > 0,
           ),
         ),
+      automationCooldown,
     );
     return {
       bridge,
@@ -1084,6 +1085,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       },
     ];
     cooldownClaims.length = 0;
+    activationMarks.length = 0;
     cooldownAllows = false;
     try {
       const { bridge, enqueueMessage } = makePreviewHarness({ automations });
@@ -1096,6 +1098,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       );
 
       expect(cooldownClaims).toEqual([81]);
+      expect(activationMarks).toEqual([]);
       expect(enqueueMessage).not.toHaveBeenCalled();
       // A suppressed Automation must not fall through to the connection owner —
       // that would answer the message with a plain chat turn and defeat the
@@ -1136,6 +1139,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       },
     ];
     cooldownClaims.length = 0;
+    activationMarks.length = 0;
     const { bridge, enqueueMessage } = makePreviewHarness({ automations });
     const thread = makeThread(undefined);
 
@@ -1145,10 +1149,97 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       "mention",
     );
 
-    // Ordinary chat must not pay a round-trip per message or encounter a
-    // cooldown-claim failure.
+    // Ordinary chat must not enter the serialized pre-enqueue cooldown claim.
     expect(cooldownClaims).toEqual([]);
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    expect(activationMarks).toEqual([82]);
+  });
+
+  test("a failed zero-cooldown enqueue does not stamp activation", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const automations: MatchingAutomationActivation[] = [
+      {
+        automationId: 83,
+        organizationId: "org-a",
+        agentId: "agent-a",
+        deviceWorkerId: null,
+        agentKind: null,
+        model: null,
+        instructions: "Handle support messages.",
+        minCooldownSeconds: 0,
+        trigger,
+      },
+    ];
+    activationMarks.length = 0;
+    const { bridge, enqueueMessage } = makePreviewHarness({ automations });
+    enqueueMessage.mockImplementationOnce(async () => {
+      throw new Error("queue unavailable");
+    });
+
+    await expect(
+      bridge.handleMessage(
+        makeThread(undefined),
+        makeMessage({ raw: { team_id: "TREAL" } }),
+        "mention",
+      ),
+    ).rejects.toThrow("queue unavailable");
+
+    expect(activationMarks).toEqual([]);
+  });
+
+  test("a failed activation stamp still dispatches every matched Automation", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const base = {
+      organizationId: "org-a",
+      agentId: "agent-a",
+      deviceWorkerId: null,
+      agentKind: null,
+      model: null,
+      instructions: "Handle support messages.",
+      minCooldownSeconds: 0,
+      trigger,
+    };
+    const automations: MatchingAutomationActivation[] = [
+      { ...base, automationId: 84 },
+      { ...base, automationId: 85 },
+    ];
+    activationMarks.length = 0;
+    markZeroThrows = true;
+    try {
+      const { bridge, enqueueMessage } = makePreviewHarness({ automations });
+
+      // The stamp is observability only — the first target's failure must not
+      // abort the loop and strand the second Automation's turn.
+      await bridge.handleMessage(
+        makeThread(undefined),
+        makeMessage({ raw: { team_id: "TREAL" } }),
+        "mention",
+      );
+
+      expect(enqueueMessage).toHaveBeenCalledTimes(2);
+    } finally {
+      markZeroThrows = false;
+    }
   });
 
   test("a rejected Automation filter cannot be bypassed by channel fallback", async () => {
@@ -1163,6 +1254,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       output: "reply_to_source" as const,
       skip_if_unchanged: false,
     };
+    activationMarks.length = 0;
     const { bridge, enqueueMessage, resolveForConnection } = makePreviewHarness({
       agentId: undefined,
       previewMode: false,
@@ -1193,6 +1285,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     );
 
     expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(activationMarks).toEqual([]);
     expect(resolveForConnection).not.toHaveBeenCalled();
     // Linked + filter-rejected must not spam the "link your agent" notice.
     expect(thread.post).not.toHaveBeenCalled();

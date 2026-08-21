@@ -520,6 +520,59 @@ describe("min_cooldown_seconds debounces event-triggered Automations", () => {
 			expect(row.last_event_activation_at).toBeNull();
 		});
 
+		it("clears a zero-cooldown activation stamp when cooldown is enabled", async () => {
+			const fixture = await automationWithCooldown(0);
+			await priorActivation(fixture, 60);
+
+			await manageAutomations(
+				{
+					action: "update",
+					automation_id: String(fixture.automationId),
+					min_cooldown_seconds: 300,
+				},
+				{} as Env,
+				fixture.workspace.ctx,
+			);
+
+			const [row] = await getTestDb()`
+				SELECT min_cooldown_seconds, last_event_activation_at
+				FROM automations
+				WHERE id = ${fixture.automationId}
+			`;
+			expect(Number(row.min_cooldown_seconds)).toBe(300);
+			expect(row.last_event_activation_at).toBeNull();
+		});
+
+		it("preserves the activation cursor across positive cooldown changes", async () => {
+			const fixture = await automationWithCooldown(300);
+			await priorActivation(fixture, 60);
+			const [before] = await getTestDb()`
+				SELECT last_event_activation_at
+				FROM automations
+				WHERE id = ${fixture.automationId}
+			`;
+
+			await manageAutomations(
+				{
+					action: "update",
+					automation_id: String(fixture.automationId),
+					min_cooldown_seconds: 600,
+				},
+				{} as Env,
+				fixture.workspace.ctx,
+			);
+
+			const [after] = await getTestDb()`
+				SELECT min_cooldown_seconds, last_event_activation_at
+				FROM automations
+				WHERE id = ${fixture.automationId}
+			`;
+			expect(Number(after.min_cooldown_seconds)).toBe(600);
+			expect(after.last_event_activation_at).toEqual(
+				before.last_event_activation_at,
+			);
+		});
+
 		it("suppresses a reply when a background activation just consumed the window", async () => {
 			// One Automation, one window: a background firing must debounce a reply
 			// firing and vice versa, or a mixed-trigger Automation would get two

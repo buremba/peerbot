@@ -9,7 +9,7 @@ import logger from "../utils/logger";
  * become durable `automation` runs via `createAutomationEventRun`, and
  * `reply_to_source` targets are handed to the chat transport and never write a
  * run row at all. A predicate over `runs` would therefore be a silent no-op on
- * exactly one half of the feature, so both paths claim the same cursor
+ * exactly one half of the feature, so both paths update the same cursor
  * (`automations.last_event_activation_at`) through this module.
  *
  * The claim must be serialized, or two concurrent deliveries both read "no
@@ -114,6 +114,45 @@ export async function claimAutomationCooldownStandalone(
     logger.error(
       { error, automationId },
       "[cooldown] Could not claim an Automation cooldown window — activation failed",
+    );
+    throw error;
+  }
+}
+
+/**
+ * Record an accepted reply-to-source activation for the zero-cooldown path.
+ *
+ * Zero-cooldown chat Automations intentionally skip the serialized cooldown
+ * claim above. Stamp their canonical activation cursor only after the agent
+ * turn is durably enqueued, so rejected matches and failed queue writes remain
+ * observationally distinct from accepted dispatches. The predicate keeps this
+ * helper from changing the existing positive-cooldown claim semantics.
+ */
+export async function markZeroCooldownAutomationActivation(
+  automationId: number,
+  db?: DbClient,
+): Promise<boolean> {
+  const sql = db ?? getDb();
+  try {
+    const rows = await sql`
+      UPDATE automations
+      SET last_event_activation_at = clock_timestamp()
+      WHERE id = ${automationId}
+        AND min_cooldown_seconds = 0
+      RETURNING id
+    `;
+    if (rows.length === 0) {
+      logger.warn(
+        { automationId },
+        "[cooldown] Zero-cooldown Automation row missing or changed before activation stamp",
+      );
+      return false;
+    }
+    return true;
+  } catch (error) {
+    logger.error(
+      { error, automationId },
+      "[cooldown] Could not stamp a zero-cooldown Automation activation",
     );
     throw error;
   }

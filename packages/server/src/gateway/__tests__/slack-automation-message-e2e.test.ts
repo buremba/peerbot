@@ -128,6 +128,7 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
   let state: StateAdapter;
   let queue: RunsQueue;
   let connectionDbId: number;
+  let slackPostMessage: ReturnType<typeof mock>;
 
   beforeAll(async () => {
     await ensureDbForGatewayTests();
@@ -171,15 +172,6 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
       channelId: CHANNEL_ID,
       teamId: WORKSPACE_TEAM_ID,
     });
-    await createTestAutomationSubscription({
-      organizationId,
-      agentId,
-      connectionId: connectionDbId,
-      platform: "slack",
-      channelId: DM_ID,
-      teamId: WORKSPACE_TEAM_ID,
-    });
-
     queue = new RunsQueue();
     await queue.start();
     const producer = new QueueProducer(queue);
@@ -196,6 +188,8 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
     // assembled server path hermetic while still exercising its calls.
     (adapter as any).fetchMessages = mock(async () => ({ messages: [] }));
     (adapter as any).startTyping = mock(async () => undefined);
+    slackPostMessage = mock(async () => ({ ts: "1787292000.999999" }));
+    (adapter as any).postMessage = slackPostMessage;
     chat = new Chat({
       userName: "lobu",
       adapters: { slack: adapter },
@@ -258,6 +252,50 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
     await queue?.stop();
   });
 
+  test("first-contact message.im posts a setup notice without a DM Automation", async () => {
+    const sql = getDb();
+    const dmTs = "1787292001.000821";
+    const response = await chat.webhooks.slack(
+      signedEventRequest(
+        slackEvent({
+          eventId: "Ev_GRID_DM_FIRST_CONTACT_20260821",
+          channel: DM_ID,
+          channelType: "im",
+          ts: dmTs,
+          text: "LOBU_SLACK_E2E_20260821 first contact dm",
+          user: "U_BURAK",
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    await waitFor(() => {
+      expect(slackPostMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(slackPostMessage.mock.calls[0]?.[0]).toBe(`slack:${DM_ID}:`);
+    expect(String(slackPostMessage.mock.calls[0]?.[1])).toContain(
+      "isn't linked to one of your agents yet",
+    );
+    const runs = await sql`
+      SELECT id FROM runs WHERE run_type = 'chat_message'
+    `;
+    expect(runs).toHaveLength(0);
+    const transcript = await sql`
+      SELECT id
+      FROM channel_messages
+      WHERE organization_id = 'org-slack-grid-e2e'
+        AND connection_id = ${RUNTIME_CONNECTION_ID}
+        AND channel_id = ${DM_ID}
+    `;
+    expect(transcript).toHaveLength(0);
+    const activationCursors = await sql`
+      SELECT last_event_activation_at
+      FROM automations
+      WHERE organization_id = 'org-slack-grid-e2e'
+    `;
+    expect(activationCursors).toEqual([{ last_event_activation_at: null }]);
+  });
+
   test("workspace-stamped channel and DM events persist, activate once, and reply", async () => {
     const sql = getDb();
     const channelTs = "1787292000.000821";
@@ -307,6 +345,24 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
         },
       ]);
     });
+    const [channelAutomation] = await sql<{ id: number }[]>`
+      SELECT id
+      FROM automations
+      WHERE organization_id = 'org-slack-grid-e2e'
+        AND triggers->0->'match'->>'channel_id' = ${CHANNEL_ID}
+      LIMIT 1
+    `;
+    if (!channelAutomation) throw new Error("Channel Automation was not seeded");
+    let channelActivationAt: Date | null = null;
+    await waitFor(async () => {
+      const [row] = await sql<{ last_event_activation_at: Date | null }[]>`
+        SELECT last_event_activation_at
+        FROM automations
+        WHERE id = ${channelAutomation.id}
+      `;
+      expect(row?.last_event_activation_at).not.toBeNull();
+      channelActivationAt = row?.last_event_activation_at ?? null;
+    });
 
     // Delayed Events and normal Slack retries carry the same event_id. The
     // durable adapter marker and message idempotency must leave one transcript
@@ -332,23 +388,41 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
         AND channel_id = ${CHANNEL_ID}
     `;
     expect(transcriptAfterRetry).toHaveLength(1);
+    const [channelAfterRetry] = await sql<
+      { last_event_activation_at: Date | null }[]
+    >`
+      SELECT last_event_activation_at
+      FROM automations
+      WHERE id = ${channelAutomation.id}
+    `;
+    expect(channelAfterRetry?.last_event_activation_at).toEqual(
+      channelActivationAt,
+    );
 
-    // DM ingress remains on the dedicated Chat SDK branch and routes through
-    // the same workspace-scoped Automation planner.
-    const dmTs = "1787292001.000821";
-    const dmResponse = await chat.webhooks.slack(
+    // Linked DM ingress remains on the dedicated Chat SDK branch and routes
+    // through the same workspace-scoped Automation planner.
+    await createTestAutomationSubscription({
+      organizationId: "org-slack-grid-e2e",
+      agentId: "agent-slack-grid-e2e",
+      connectionId: connectionDbId,
+      platform: "slack",
+      channelId: DM_ID,
+      teamId: WORKSPACE_TEAM_ID,
+    });
+    const linkedDmTs = "1787292001.100821";
+    const linkedDmResponse = await chat.webhooks.slack(
       signedEventRequest(
         slackEvent({
-          eventId: "Ev_GRID_DM_20260821",
+          eventId: "Ev_GRID_DM_LINKED_20260821",
           channel: DM_ID,
           channelType: "im",
-          ts: dmTs,
-          text: "LOBU_SLACK_E2E_20260821 integration dm",
+          ts: linkedDmTs,
+          text: "LOBU_SLACK_E2E_20260821 linked dm",
           user: "U_BURAK",
         }),
       ),
     );
-    expect(dmResponse.status).toBe(200);
+    expect(linkedDmResponse.status).toBe(200);
     await waitFor(async () => {
       const rows = await sql`
         SELECT id FROM runs WHERE run_type = 'chat_message' ORDER BY id
@@ -364,9 +438,28 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
           AND channel_id = ${DM_ID}
       `;
       expect(rows).toEqual([
-        { platform_message_id: dmTs, team_id: WORKSPACE_TEAM_ID },
+        { platform_message_id: linkedDmTs, team_id: WORKSPACE_TEAM_ID },
       ]);
     });
+    const [dmAutomation] = await sql<
+      { id: number; last_event_activation_at: Date | null }[]
+    >`
+      SELECT id, last_event_activation_at
+      FROM automations
+      WHERE organization_id = 'org-slack-grid-e2e'
+        AND triggers->0->'match'->>'channel_id' = ${DM_ID}
+      LIMIT 1
+    `;
+    expect(dmAutomation?.last_event_activation_at).not.toBeNull();
+    const activationTimesBeforeBots = new Map(
+      (
+        await sql<{ id: number; last_event_activation_at: Date | null }[]>`
+          SELECT id, last_event_activation_at
+          FROM automations
+          WHERE organization_id = 'org-slack-grid-e2e'
+        `
+      ).map((row) => [Number(row.id), row.last_event_activation_at]),
+    );
 
     // The bot's own Slack echo is filtered by Chat SDK before the catch-all;
     // another app's bot message is rejected by the bridge's loop guard.
@@ -394,6 +487,18 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
       SELECT id FROM runs WHERE run_type = 'chat_message'
     `;
     expect(afterBots).toHaveLength(2);
+    const activationTimesAfterBots = await sql<
+      { id: number; last_event_activation_at: Date | null }[]
+    >`
+      SELECT id, last_event_activation_at
+      FROM automations
+      WHERE organization_id = 'org-slack-grid-e2e'
+    `;
+    for (const row of activationTimesAfterBots) {
+      expect(row.last_event_activation_at).toEqual(
+        activationTimesBeforeBots.get(Number(row.id)),
+      );
+    }
 
     // Feed the authoritative terminal text into the real Slack transport. The
     // only fake is chat.postMessage itself, Slack's external HTTP boundary.

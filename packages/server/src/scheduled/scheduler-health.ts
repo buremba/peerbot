@@ -59,10 +59,10 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
   try {
     // Get feed counts.
     //
-    // A feed whose connection is pinned to an offline device for EXECUTION is
-    // held back on purpose (check-due-feeds.ts): only that device can claim the
-    // run, so the feed stays past next_run_at until the device polls again.
-    // Counting those as overdue would put this endpoint in a permanent 503 for
+    // Device-owned feeds are held back on purpose (check-due-feeds.ts) until a
+    // claim-capable device actually polls. That includes an offline execution
+    // pin and an unpinned connector with a required device capability. Counting
+    // either as scheduler lag would put this endpoint in a permanent 503 for
     // the ordinary case of a closed laptop — the same "train operators to
     // ignore it" failure the approval-TTL grace below avoids.
     //
@@ -71,20 +71,18 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
     // connectors/connector-health.ts). "Is the scheduler firing" and "is that
     // laptop on" are different questions, answered on different surfaces.
     //
-    // The device predicate must stay the exact complement of the scheduler's,
-    // browser-affinity carve-out included: a chrome-extension pin on a
-    // non-chrome connector still runs on the fleet, so such a feed is genuinely
-    // overdue.
+    // Browser affinity stays a fleet lane: a chrome-extension pin on a
+    // non-chrome connector is genuinely overdue. A fresh execution pin also
+    // remains overdue here until its 2-minute liveness proxy ages out, making a
+    // sustained stopped poll loop visible without charging source health.
     const feedStats = await sql`
       WITH scheduling AS (
         SELECT
           f.status,
           f.next_run_at,
-          EXISTS (
-            SELECT 1
-            FROM connections c
-            JOIN device_workers dw ON dw.id = c.device_worker_id
-            WHERE c.id = f.connection_id
+          (
+            (
+              c.device_worker_id IS NOT NULL
               AND dw.last_seen_at <= current_timestamp
                 - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
               AND NOT COALESCE(
@@ -92,8 +90,24 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
                   AND c.connector_key NOT LIKE 'chrome%',
                 false
               )
+            )
+            OR (
+              c.device_worker_id IS NULL
+              AND cd.required_capability IS NOT NULL
+            )
           ) AS device_deferred
         FROM feeds f
+        LEFT JOIN connections c ON c.id = f.connection_id
+        LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
+        LEFT JOIN LATERAL (
+          SELECT definitions.required_capability
+          FROM connector_definitions definitions
+          WHERE definitions.key = c.connector_key
+            AND definitions.organization_id = f.organization_id
+            AND definitions.status = 'active'
+          ORDER BY definitions.updated_at DESC, definitions.id DESC
+          LIMIT 1
+        ) cd ON true
         WHERE f.deleted_at IS NULL
       )
       SELECT

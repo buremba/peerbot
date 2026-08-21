@@ -2,9 +2,12 @@
  * How fresh a device worker's `last_seen_at` must be for the device to count
  * as online, and how to describe that freshness to a human.
  *
- * `device_workers.last_seen_at` is written on every `/api/workers/poll` and on
- * device registration — nowhere else — so it is a true liveness signal rather
- * than a config timestamp.
+ * `device_workers.last_seen_at` is written on every `/api/workers/poll`, on
+ * device registration, and when a device refreshes its child credential. A
+ * stale value proves no poll occurred after it; a fresh value is only a
+ * liveness proxy, not proof that the claim query ran. Scheduled execution pins
+ * therefore use the current poll itself as their stronger readiness signal
+ * (check-due-feeds.ts), while this window remains useful for UI/offline hints.
  *
  * ## Why 2 minutes
  *

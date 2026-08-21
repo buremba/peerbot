@@ -4,9 +4,9 @@
  * dead on arrival. Nothing at build time catches the mismatch — a counter can
  * be incremented on a hot path for months while reading as "no events".
  *
- * This walks every `incrementCounter("literal")` call in the server source and
- * asserts the name was registered, so adding a counter without registering it
- * fails here instead of in production silence.
+ * This walks every `incrementCounter("literal")` call in the server source
+ * (either quote style) and asserts the name was registered, so adding a
+ * counter without registering it fails here instead of in production silence.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -16,7 +16,10 @@ import { describe, expect, test } from "bun:test";
 import { getMetricsText } from "../prometheus";
 
 const SRC_ROOT = join(import.meta.dir, "../../..");
-const CALL_RE = /incrementCounter\(\s*"([a-z_0-9]+)"/g;
+// Both quote styles: server sources are biome-excluded and mix ' and ", so a
+// double-quote-only pattern silently skipped whole files (poll.ts,
+// with-retry.ts, task-scheduler.ts, check-stalled-executions.ts).
+const CALL_RE = /incrementCounter\(\s*["']([a-z_0-9]+)["']/g;
 
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {

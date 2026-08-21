@@ -39,10 +39,9 @@
  */
 
 import type { ReservedSql } from 'postgres';
-import { maybeEmitFeedAutoPausedAfterFailure } from '../automations/platform-events';
 import { intervals } from '../config/intervals';
-import { feedBackoff } from '../connectors/feed-backoff';
 import { type DbClient, getDb } from '../db/client';
+import { incrementCounter } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
 import { classifyRunOutcome } from '../runs/run-outcome';
 import {
@@ -162,6 +161,27 @@ export async function sweepAbandonedVirtualFeedReadRuns(
   return Number(result.count ?? 0);
 }
 
+type DispatchFailureReason =
+  | 'fleet_or_unpinned_no_claim'
+  | 'fleet_or_browser_affinity_no_claim'
+  | 'pinned_device_missing'
+  | 'no_device_poll_during_pending_window'
+  | 'device_ineligible_required_capability'
+  | 'device_activity_seen_but_unclaimed';
+
+interface DispatchFailureDiagnostic {
+  runId: number;
+  runType: string;
+  connectorKey: string | null;
+  connectionId: number | null;
+  deviceWorkerId: string | null;
+  platform: string | null;
+  pendingAgeSeconds: number;
+  lastDeviceActivityAt: string | null;
+  requiredCapability: string | null;
+  reason: DispatchFailureReason;
+}
+
 interface ReapStaleRunsResult {
   /** Whether the advisory lock was acquired. False means another pod is
    *  already running the sweep; the caller should treat this as a no-op. */
@@ -170,6 +190,8 @@ interface ReapStaleRunsResult {
   reaped: number;
   /** Retry rows inserted for stalled claimed/running sync runs (never pending). */
   retriesCreated: number;
+  /** Never-claimed rows, classified independently from connector/source health. */
+  dispatchFailures: DispatchFailureDiagnostic[];
 }
 
 /**
@@ -207,7 +229,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
     `) as unknown as Array<{ acquired: boolean }>;
     const acquired = !!lockRows[0]?.acquired;
     if (!acquired) {
-      return { acquired: false, reaped: 0, retriesCreated: 0 };
+      return { acquired: false, reaped: 0, retriesCreated: 0, dispatchFailures: [] };
     }
 
     try {
@@ -232,11 +254,6 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
 
       const heartbeatErrorMessage = 'worker_heartbeat_lost';
       const claimErrorMessage = 'worker_claim_timeout';
-      // Failure-backoff / auto-pause policy shared with the completion path
-      // (run-lifecycle.ts) so both apply identical math (item 5, #2033).
-      const backoffBaseMs = feedBackoff.baseMs;
-      const backoffMaxMs = feedBackoff.maxMs;
-      const pauseThreshold = feedBackoff.pauseThreshold;
 
       // Approval-gated action runs have a durable card, so their timeout must
       // supersede that card in the SAME transaction as the runs write. Process
@@ -342,9 +359,10 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       }
 
       // Reap + recover in a single statement using CTEs. Claimed/running sync
-      // rows get one fresh retry; never-claimed rows are finalized on the feed
-      // without a retry because another pending row would only repeat the same
-      // unavailable-worker failure. Doing this in one statement makes
+      // rows get one fresh retry. Never-claimed rows are audit-only dispatch
+      // failures: connector code never ran, so they must not mutate source
+      // health, consume its failure budget, or auto-pause its feed. Doing the
+      // timeout + claimed-run retry in one statement makes
       // the timeout + retry atomic — if the process crashes after the
       // statement returns, both writes are durable; if it crashes
       // before, neither is. The previous shape (bulk UPDATE RETURNING +
@@ -386,7 +404,8 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           FROM stale_candidates c
           WHERE r.id = c.id
           RETURNING r.id, r.run_type, r.feed_id, r.connection_id, r.connector_key,
-                    r.connector_version, r.organization_id, r.dry_run, c.stale_status
+                    r.connector_version, r.organization_id, r.dry_run, r.created_at,
+                    c.stale_status
         ),
         retries AS (
           INSERT INTO public.runs (
@@ -421,44 +440,45 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
             )
           RETURNING id, feed_id
         ),
-        finalized_pending_feeds AS (
-          -- Never-claimed sync runs (device/worker offline). Without a
-          -- next_run_at backoff these feeds re-enqueue every plain cadence
-          -- (check-due-feeds picks next_run_at <= now()), so an offline device
-          -- gets hammered every 5 min forever. Apply the SAME exponential
-          -- backoff as the completion path (feed-backoff.ts), computed from the
-          -- post-increment failure count, and hard-pause past the threshold
-          -- (the feeds trigger nulls next_run_at on status='paused').
-          UPDATE public.feeds f
-          SET last_sync_at = current_timestamp,
-              last_sync_status = 'failed',
-              last_error = ${claimErrorMessage},
-              consecutive_failures = f.consecutive_failures + 1,
-              first_failure_at = COALESCE(f.first_failure_at, current_timestamp),
-              status = CASE
-                WHEN f.consecutive_failures + 1 >= ${pauseThreshold} THEN 'paused'
-                ELSE f.status
-              END,
-              next_run_at = CASE
-                WHEN f.consecutive_failures + 1 >= ${pauseThreshold} THEN NULL
-                ELSE GREATEST(
-                  COALESCE(f.next_run_at, current_timestamp),
-                  current_timestamp + (LEAST(
-                    ${backoffBaseMs}::bigint * (2 ^ LEAST(f.consecutive_failures, 30))::bigint,
-                    ${backoffMaxMs}::bigint
-                  ) || ' milliseconds')::interval
-                )
-              END,
-              updated_at = current_timestamp
+        dispatch_failures AS (
+          SELECT
+            t.id,
+            t.run_type,
+            t.connector_key,
+            t.connection_id,
+            c.device_worker_id,
+            dw.platform,
+            EXTRACT(EPOCH FROM (current_timestamp - t.created_at)) AS pending_age_seconds,
+            dw.last_seen_at,
+            cd.required_capability,
+            CASE
+              WHEN c.device_worker_id IS NULL
+                THEN 'fleet_or_unpinned_no_claim'
+              WHEN dw.id IS NULL
+                THEN 'pinned_device_missing'
+              WHEN dw.platform = 'chrome-extension'
+                AND t.connector_key NOT LIKE 'chrome%'
+                THEN 'fleet_or_browser_affinity_no_claim'
+              WHEN dw.last_seen_at < t.created_at
+                THEN 'no_device_poll_during_pending_window'
+              WHEN cd.required_capability IS NOT NULL
+                AND NOT COALESCE(dw.capabilities ? cd.required_capability, false)
+                THEN 'device_ineligible_required_capability'
+              ELSE 'device_activity_seen_but_unclaimed'
+            END AS reason
           FROM timed_out t
-          WHERE t.run_type = 'sync'
-            AND t.stale_status = 'pending'
-            -- A never-claimed dry run must not stamp the feed failed, back off
-            -- next_run_at, or auto-pause — those record the outcome of REAL
-            -- syncs, which a dry run leaves untouched (see runs.dry_run).
-            AND NOT t.dry_run
-            AND t.feed_id = f.id
-          RETURNING f.id, f.consecutive_failures, f.status
+          LEFT JOIN public.connections c ON c.id = t.connection_id
+          LEFT JOIN public.device_workers dw ON dw.id = c.device_worker_id
+          LEFT JOIN LATERAL (
+            SELECT definitions.required_capability
+            FROM public.connector_definitions definitions
+            WHERE definitions.key = t.connector_key
+              AND definitions.organization_id = t.organization_id
+              AND definitions.status = 'active'
+            ORDER BY definitions.updated_at DESC, definitions.id DESC
+            LIMIT 1
+          ) cd ON true
+          WHERE t.stale_status = 'pending'
         )
         SELECT
           (SELECT count(*)::int FROM timed_out) AS reaped,
@@ -474,20 +494,26 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
               AND NOT dry_run) AS sync_eligible,
           (SELECT coalesce(
              json_agg(json_build_object(
-               'id', id,
-               'consecutive_failures', consecutive_failures
+               'runId', id,
+               'runType', run_type,
+               'connectorKey', connector_key,
+               'connectionId', connection_id,
+               'deviceWorkerId', device_worker_id,
+               'platform', platform,
+               'pendingAgeSeconds', pending_age_seconds,
+               'lastDeviceActivityAt', last_seen_at,
+               'requiredCapability', required_capability,
+               'reason', reason
              )),
              '[]'::json
            )
-           FROM finalized_pending_feeds
-           WHERE status = 'paused'
-             AND consecutive_failures = ${pauseThreshold}
-          ) AS auto_paused_feeds
+           FROM dispatch_failures
+          ) AS dispatch_failures
       `) as unknown as Array<{
         reaped: number;
         retries_created: number;
         sync_eligible: number;
-        auto_paused_feeds: unknown;
+        dispatch_failures: unknown;
       }>;
 
       const reapedRow = reaped[0];
@@ -497,31 +523,55 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       const syncEligible = reapedRow?.sync_eligible ?? 0;
 
       if (reapedCount === 0) {
-        return { acquired: true, reaped: 0, retriesCreated: 0 };
+        return { acquired: true, reaped: 0, retriesCreated: 0, dispatchFailures: [] };
       }
 
-      // Threshold-crossing hard pauses from the never-claimed path → Automation signal.
-      const autoPausedRaw = reapedRow?.auto_paused_feeds;
-      const autoPausedList: Array<{ id: number; consecutive_failures: number }> =
-        Array.isArray(autoPausedRaw)
-          ? (autoPausedRaw as Array<{ id: number; consecutive_failures: number }>)
-          : typeof autoPausedRaw === 'string'
-            ? (JSON.parse(autoPausedRaw) as Array<{
-                id: number;
-                consecutive_failures: number;
-              }>)
-            : [];
-      for (const paused of autoPausedList) {
-        void maybeEmitFeedAutoPausedAfterFailure({
-          feedId: Number(paused.id),
-          consecutiveFailures: Number(paused.consecutive_failures),
-          pauseThreshold,
-        }).catch((err) => {
-          logger.error(
-            { feed_id: paused.id, error: String(err) },
-            '[reaper] maybeEmitFeedAutoPausedAfterFailure threw',
-          );
+      const dispatchFailuresRaw = reapedRow?.dispatch_failures;
+      const parsedDispatchFailures = Array.isArray(dispatchFailuresRaw)
+        ? dispatchFailuresRaw
+        : typeof dispatchFailuresRaw === 'string'
+          ? JSON.parse(dispatchFailuresRaw)
+          : [];
+      const dispatchFailures = (parsedDispatchFailures as Array<Record<string, unknown>>).map(
+        (failure): DispatchFailureDiagnostic => ({
+          runId: Number(failure.runId),
+          runType: String(failure.runType),
+          connectorKey: failure.connectorKey == null ? null : String(failure.connectorKey),
+          connectionId: failure.connectionId == null ? null : Number(failure.connectionId),
+          deviceWorkerId:
+            failure.deviceWorkerId == null ? null : String(failure.deviceWorkerId),
+          platform: failure.platform == null ? null : String(failure.platform),
+          pendingAgeSeconds: Number(failure.pendingAgeSeconds),
+          lastDeviceActivityAt:
+            failure.lastDeviceActivityAt == null
+              ? null
+              : String(failure.lastDeviceActivityAt),
+          requiredCapability:
+            failure.requiredCapability == null ? null : String(failure.requiredCapability),
+          reason: String(failure.reason) as DispatchFailureReason,
+        })
+      );
+      for (const failure of dispatchFailures) {
+        incrementCounter('lobu_worker_dispatch_failures_total', {
+          run_type: failure.runType,
+          reason: failure.reason,
         });
+        logger.warn(
+          {
+            classification: 'dispatch_unavailable',
+            run_id: failure.runId,
+            run_type: failure.runType,
+            connector_key: failure.connectorKey,
+            connection_id: failure.connectionId,
+            device_worker_id: failure.deviceWorkerId,
+            platform: failure.platform,
+            pending_age_seconds: failure.pendingAgeSeconds,
+            device_last_activity_at: failure.lastDeviceActivityAt,
+            required_capability: failure.requiredCapability,
+            claim_eligibility_reject_reason: failure.reason,
+          },
+          '[reaper] Worker never claimed connector run'
+        );
       }
 
       logger.warn(
@@ -547,7 +597,12 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         );
       }
 
-      return { acquired: true, reaped: reapedCount, retriesCreated };
+      return {
+        acquired: true,
+        reaped: reapedCount,
+        retriesCreated,
+        dispatchFailures,
+      };
     } finally {
       await reserved`SELECT pg_advisory_unlock(${REAPER_ADVISORY_LOCK_KEY})`;
     }

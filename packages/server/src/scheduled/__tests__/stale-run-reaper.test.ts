@@ -186,15 +186,23 @@ async function currentApprovalCardStatus(runId: number): Promise<string> {
 }
 
 describe("reapStaleRuns — connector lanes", () => {
-	test("a stale never-claimed sync is finalized without an immediate retry", async () => {
+	test("a stale never-claimed sync is a dispatch failure and preserves source health", async () => {
 		const feedId = 3131;
 		await seedFeed(feedId);
 		const sql = getDb();
 		await sql`
       UPDATE feeds
-      SET last_sync_status = 'pending',
+      SET last_sync_status = 'success',
+          last_error = NULL,
+          consecutive_failures = 19,
+          first_failure_at = current_timestamp - INTERVAL '1 day',
           next_run_at = current_timestamp + INTERVAL '1 hour'
       WHERE id = ${feedId}
+    `;
+		const [feedBefore] = await sql`
+      SELECT last_sync_status, last_error, consecutive_failures,
+             first_failure_at, next_run_at, status
+      FROM feeds WHERE id = ${feedId}
     `;
 		const pendingId = await seedRun({
 			status: "pending",
@@ -208,6 +216,10 @@ describe("reapStaleRuns — connector lanes", () => {
 
 		expect(result.reaped).toBe(1);
 		expect(result.retriesCreated).toBe(0);
+		expect(result.dispatchFailures).toHaveLength(1);
+		expect(result.dispatchFailures[0]?.reason).toBe(
+			"fleet_or_unpinned_no_claim",
+		);
 		expect(await statusOf(pendingId)).toBe("timeout");
 
 		const pending = await sql`
@@ -216,15 +228,93 @@ describe("reapStaleRuns — connector lanes", () => {
     `;
 		expect(pending).toHaveLength(0);
 		const [feed] = await sql`
-      SELECT last_sync_status, last_error, consecutive_failures, next_run_at
+      SELECT last_sync_status, last_error, consecutive_failures,
+             first_failure_at, next_run_at, status
       FROM feeds WHERE id = ${feedId}
     `;
-		expect(String(feed.last_sync_status)).toBe("failed");
-		expect(String(feed.last_error)).toBe("worker_claim_timeout");
-		expect(Number(feed.consecutive_failures)).toBe(1);
-		expect(new Date(String(feed.next_run_at)).getTime()).toBeGreaterThan(
-			Date.now(),
+		expect(feed).toEqual(feedBefore);
+	});
+
+	test("classifies no device poll separately from a poll that was capability-ineligible", async () => {
+		const sql = getDb();
+		await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (
+        'reaper-device-user', 'Reaper Device User', 'reaper-device@test.local',
+        true, current_timestamp, current_timestamp
+      )
+    `;
+		await sql`
+      INSERT INTO connector_definitions (
+        key, name, version, organization_id, status, required_capability,
+        created_at, updated_at
+      ) VALUES (
+        'fake', 'Fake Device Connector', '1.0.0', ${ORG_ID}, 'active',
+        'os.shell', current_timestamp, current_timestamp
+      )
+    `;
+		const devices = (await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label,
+        organization_id, last_seen_at
+      ) VALUES
+        (
+          'reaper-device-user', 'reaper-offline', 'macos', ${sql.json(["os.shell"])},
+          'Offline device', ${ORG_ID}, current_timestamp - INTERVAL '10 minutes'
+        ),
+        (
+          'reaper-device-user', 'reaper-ineligible', 'macos', ${sql.json([])},
+          'Ineligible device', ${ORG_ID}, current_timestamp
+        )
+      RETURNING id, worker_id
+    `) as unknown as Array<{ id: string; worker_id: string }>;
+		const offlineDevice = devices.find((device) => device.worker_id === "reaper-offline");
+		const ineligibleDevice = devices.find(
+			(device) => device.worker_id === "reaper-ineligible",
 		);
+		expect(offlineDevice).toBeDefined();
+		expect(ineligibleDevice).toBeDefined();
+
+		const offlineFeedId = 4101;
+		const ineligibleFeedId = 4102;
+		await seedFeed(offlineFeedId);
+		await seedFeed(ineligibleFeedId);
+		await sql`
+      UPDATE connections
+      SET device_worker_id = CASE id
+        WHEN ${offlineFeedId} THEN ${offlineDevice?.id}::uuid
+        WHEN ${ineligibleFeedId} THEN ${ineligibleDevice?.id}::uuid
+      END
+      WHERE id IN (${offlineFeedId}, ${ineligibleFeedId})
+    `;
+		const offlineRunId = await seedRun({
+			status: "pending",
+			lastHeartbeatAgoSeconds: null,
+			runType: "sync",
+			feedId: offlineFeedId,
+			createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+		});
+		const ineligibleRunId = await seedRun({
+			status: "pending",
+			lastHeartbeatAgoSeconds: null,
+			runType: "sync",
+			feedId: ineligibleFeedId,
+			createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+		});
+		await sql`
+      UPDATE runs
+      SET connection_id = feed_id, connector_key = 'fake'
+      WHERE id IN (${offlineRunId}, ${ineligibleRunId})
+    `;
+
+		const result = await reapStaleRuns();
+		const reasons = Object.fromEntries(
+			result.dispatchFailures.map((failure) => [failure.runId, failure.reason]),
+		);
+		expect(reasons).toEqual({
+			[offlineRunId]: "no_device_poll_during_pending_window",
+			[ineligibleRunId]: "device_ineligible_required_capability",
+		});
 	});
 
 	test("a fresh never-claimed sync remains pending", async () => {
@@ -275,7 +365,19 @@ describe("reapStaleRuns — connector lanes", () => {
 		const result = await reapStaleRuns();
 
 		expect(result.reaped).toBe(1);
+		expect(result.retriesCreated).toBe(0);
+		expect(result.dispatchFailures).toEqual([
+			expect.objectContaining({
+				runId: autoId,
+				runType: "action",
+				reason: "fleet_or_unpinned_no_claim",
+			}),
+		]);
 		expect(await statusOf(autoId)).toBe("timeout");
+		const [row] = await getDb()`
+			SELECT error_message FROM runs WHERE id = ${autoId}
+		`;
+		expect(row.error_message).toBe("worker_claim_timeout");
 	});
 
 	test("a page-activated action waits until its explicit expiry", async () => {
@@ -955,15 +1057,14 @@ describe("reapStaleRuns — atomic timeout + retry (lobu#862)", () => {
  * would come back as a REAL sync and persist everything the operator asked to
  * only preview — silently, on a timer, with no one watching.
  *
- * The never-claimed path is the same class of bug in the other direction: it
- * stamps the FEED failed, increments consecutive_failures, backs off
- * next_run_at and can auto-pause. Those record the outcome of real syncs; a
- * dry run must not degrade the real schedule.
+ * The never-claimed path is a dispatch failure for both real and dry syncs, so
+ * neither may stamp connector/source failure state. The dry-run control keeps
+ * that invariant explicit while its stronger no-resurrection rule is tested.
  *
- * The non-dry controls for both live above ("a stale never-claimed sync is
- * finalized without an immediate retry" and "a stale sync run gets timed out
- * AND a retry queued in one statement") — without them these tests would pass
- * against a reaper that had stopped working entirely.
+ * The non-dry controls for both live above ("a stale never-claimed sync is a
+ * dispatch failure and preserves source health" and "a stale sync run gets
+ * timed out AND a retry queued in one statement") — without them these tests
+ * would pass against a reaper that had stopped working entirely.
  */
 describe("reapStaleRuns — dry runs are reaped but never resurrected", () => {
 	test("a stale claimed dry sync is timed out and NOT retried as a real sync", async () => {

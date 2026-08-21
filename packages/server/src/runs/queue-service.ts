@@ -427,12 +427,13 @@ async function createSyncRunWithClient(
   const nextRunAt = feed.schedule
     ? nextRunAtFromCron(feed.schedule, new Date(), feed.timezone)
     : null;
-  // A dry run inserts the run row and stops there. The sibling `UPDATE feeds`
-  // below is a real side effect — it stamps `last_sync_status = 'pending'`,
-  // clears `last_error`, and rolls `next_run_at` forward to the next cron slot.
-  // Letting a dry run do that would move the feed's schedule and overwrite the
-  // recorded outcome of the last REAL sync, which is exactly the state a dry
-  // run exists to leave untouched.
+  // A dry run inserts the run row and stops there. A real enqueue advances only
+  // the schedule. Source health (`last_sync_status`, `last_error`, and the
+  // failure budget) remains the outcome of the last EXECUTED connector run
+  // until a worker actually claims this one. Treating a merely queued run as
+  // connector activity made never-claimed dispatch failures overwrite source
+  // health. poll.ts marks the feed pending atomically with a successful claim.
+  // A dry run must not move the schedule either.
   const inserted = dryRun
     ? await sql`
     INSERT INTO runs (
@@ -458,9 +459,7 @@ async function createSyncRunWithClient(
       RETURNING id, feed_id
     )
     UPDATE feeds f
-    SET last_sync_status = 'pending',
-        last_error = NULL,
-        next_run_at = ${nextRunAt},
+    SET next_run_at = ${nextRunAt},
         updated_at = current_timestamp
     FROM inserted i
     WHERE f.id = i.feed_id

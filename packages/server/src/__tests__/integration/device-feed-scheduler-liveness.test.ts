@@ -1,8 +1,9 @@
 /**
  * Scheduled feed materialization must respect the liveness of a connection's
  * pinned device. An offline device cannot claim the run, so queueing one only
- * creates a worker_claim_timeout failure episode. The feed stays overdue while
- * the device is offline and is materialized as soon as that device polls again.
+ * produces a run that ages into a worker_claim_timeout dispatch failure. The
+ * feed stays overdue while the device is offline and is materialized as soon
+ * as that device polls again.
  *
  * Only EXECUTION pins defer. A chrome-extension pin on a non-chrome connector
  * is browser affinity — worker-api/poll.ts keeps that parent sync on the fleet
@@ -10,11 +11,17 @@
  * syncing while the browser is closed.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { Hono } from 'hono';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../index';
-import { materializeDueFeeds } from '../../scheduled/check-due-feeds';
+import {
+  type DueFeedClaimContext,
+  materializeDueFeeds,
+} from '../../scheduled/check-due-feeds';
 import { getSchedulerHealth } from '../../scheduled/scheduler-health';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../../utils/device-liveness';
+import logger from '../../utils/logger';
+import { pollWorkerJob } from '../../worker-api/poll';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import {
   createTestConnection,
@@ -174,5 +181,324 @@ describe('scheduled feed device liveness', () => {
       [affinityFeedId]: 1,
       [unpinnedFeedId]: 1,
     });
+  });
+
+  it('materializes one due feed only when the current idle poller can claim it', async () => {
+    const sql = getTestDb();
+    const { org, user } = await seedOwnerContext({
+      orgName: 'Poll Scoped Feed Scheduler Org',
+    });
+
+    async function createDevice(
+      workerId: string,
+      platform: 'macos' | 'chrome-extension',
+      capabilities: string[]
+    ): Promise<string> {
+      const [device] = (await sql`
+        INSERT INTO device_workers (
+          user_id, worker_id, platform, capabilities, label,
+          organization_id, last_seen_at
+        ) VALUES (
+          ${user.id}, ${workerId}, ${platform}, ${sql.json(capabilities)},
+          ${workerId}, ${org.id}, current_timestamp
+        )
+        RETURNING id
+      `) as unknown as Array<{ id: string }>;
+      return device.id;
+    }
+
+    async function createDueFeed(options: {
+      connectorKey: string;
+      deviceId?: string;
+      requiredCapability?: string;
+    }): Promise<number> {
+      await createTestConnectorDefinition({
+        key: options.connectorKey,
+        name: options.connectorKey,
+        feeds_schema: { items: { description: 'Items' } },
+        organization_id: org.id,
+      });
+      if (options.requiredCapability) {
+        await sql`
+          UPDATE connector_definitions
+          SET required_capability = ${options.requiredCapability}
+          WHERE key = ${options.connectorKey}
+            AND organization_id = ${org.id}
+        `;
+      }
+      const connection = await createTestConnection({
+        organization_id: org.id,
+        connector_key: options.connectorKey,
+        created_by: user.id,
+        createDefaultFeed: false,
+      });
+      if (options.deviceId) {
+        await sql`
+          UPDATE connections
+          SET device_worker_id = ${options.deviceId}::uuid
+          WHERE id = ${connection.id}
+        `;
+      }
+      const [feed] = (await sql`
+        INSERT INTO feeds (
+          organization_id, connection_id, feed_key, status, kind, virtual,
+          schedule, next_run_at, created_at, updated_at
+        ) VALUES (
+          ${org.id}, ${connection.id}, 'items', 'active', 'collected', false,
+          '* * * * *', current_timestamp - INTERVAL '5 minutes',
+          current_timestamp, current_timestamp
+        )
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+      return Number(feed.id);
+    }
+
+    const macDeviceId = await createDevice('poll-scoped-mac', 'macos', ['os.shell']);
+    const chromeDeviceId = await createDevice('poll-scoped-chrome', 'chrome-extension', [
+      'browser.history',
+    ]);
+    const macPinnedFeedId = await createDueFeed({
+      connectorKey: 'test.poll-scoped.mac',
+      deviceId: macDeviceId,
+    });
+    const chromePinnedFeedId = await createDueFeed({
+      connectorKey: 'chrome.history',
+      deviceId: chromeDeviceId,
+    });
+    const browserAffinityFeedId = await createDueFeed({
+      connectorKey: 'test.poll-scoped.affinity',
+      deviceId: chromeDeviceId,
+    });
+    const fleetFeedId = await createDueFeed({
+      connectorKey: 'test.poll-scoped.fleet',
+    });
+    const brokenFleetFeedId = await createDueFeed({
+      connectorKey: 'test.poll-scoped.broken-fleet',
+    });
+    await sql`
+      DELETE FROM connector_versions
+      WHERE connector_key = 'test.poll-scoped.broken-fleet'
+    `;
+    await sql`
+      UPDATE feeds
+      SET next_run_at = current_timestamp - INTERVAL '10 minutes'
+      WHERE id = ${brokenFleetFeedId}
+    `;
+    const capabilityFeedId = await createDueFeed({
+      connectorKey: 'test.poll-scoped.capability',
+      requiredCapability: 'os.shell',
+    });
+    const healthBeforePoll = await getSchedulerHealth({} as Env);
+    expect(healthBeforePoll.metrics.activeFeeds).toBe(6);
+    expect(healthBeforePoll.metrics.overdueFeeds).toBe(5);
+    const fleetContext: DueFeedClaimContext = {
+      isUserScopedWorker: false,
+      deviceWorkerId: null,
+      authorizedCapabilities: [],
+      capabilityMatchSet: [''],
+      orgScopeIds: [''],
+      baseOrgScopeIds: [''],
+      workerHardensDbEgress: true,
+    };
+    const macContext: DueFeedClaimContext = {
+      isUserScopedWorker: true,
+      deviceWorkerId: macDeviceId,
+      authorizedCapabilities: ['os.shell'],
+      capabilityMatchSet: ['os.shell'],
+      orgScopeIds: [org.id],
+      baseOrgScopeIds: [org.id],
+      workerHardensDbEgress: false,
+    };
+    const chromeContext: DueFeedClaimContext = {
+      isUserScopedWorker: true,
+      deviceWorkerId: chromeDeviceId,
+      authorizedCapabilities: ['browser.history'],
+      capabilityMatchSet: ['browser.history'],
+      orgScopeIds: [org.id],
+      baseOrgScopeIds: [org.id],
+      workerHardensDbEgress: false,
+    };
+
+    // Production incident shape: the Mac is recently seen but busy, so it is not
+    // the worker polling here. A fleet poll must not enqueue its
+    // execution-pinned work — it only gets the fleet feed and the
+    // browser-affinity one, which is deliberately fleet work. The deliberately
+    // unrunnable oldest fleet feed throws, so it counts as neither created nor
+    // skipped — the loop logs it and moves on rather than letting it
+    // monopolize the poller's single successful creation slot.
+    expect(
+      await materializeDueFeeds({} as Env, sql, {
+        claimContext: fleetContext,
+        maxRunsCreated: 1,
+      })
+    ).toEqual({ dueFeeds: 3, runsCreated: 1, skipped: 0 });
+    expect(
+      await materializeDueFeeds({} as Env, sql, {
+        claimContext: fleetContext,
+        maxRunsCreated: 1,
+      })
+    ).toEqual({ dueFeeds: 2, runsCreated: 1, skipped: 0 });
+
+    // The device registry upsert is best-effort. If it transiently fails but
+    // the fallback resolves the existing device row, this current poll is
+    // stronger readiness evidence than its stale stored timestamp.
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = current_timestamp - INTERVAL '10 minutes'
+      WHERE id = ${macDeviceId}::uuid
+    `;
+
+    // The Mac poll owns both its explicit pin and the unpinned capability lane,
+    // but each idle poll materializes only one claim slot.
+    expect(
+      await materializeDueFeeds({} as Env, sql, {
+        claimContext: macContext,
+        maxRunsCreated: 1,
+      })
+    ).toEqual({ dueFeeds: 2, runsCreated: 1, skipped: 0 });
+    expect(
+      await materializeDueFeeds({} as Env, sql, {
+        claimContext: macContext,
+        maxRunsCreated: 1,
+      })
+    ).toEqual({ dueFeeds: 1, runsCreated: 1, skipped: 0 });
+
+    expect(
+      await materializeDueFeeds({} as Env, sql, {
+        claimContext: chromeContext,
+        maxRunsCreated: 1,
+      })
+    ).toEqual({ dueFeeds: 1, runsCreated: 1, skipped: 0 });
+
+    const runs = (await sql`
+      SELECT feed_id, COUNT(*)::int AS count
+      FROM runs
+      WHERE run_type = 'sync'
+      GROUP BY feed_id
+      ORDER BY feed_id
+    `) as unknown as Array<{ feed_id: number; count: number }>;
+    expect(
+      Object.fromEntries(runs.map((run) => [Number(run.feed_id), Number(run.count)]))
+    ).toEqual({
+      [macPinnedFeedId]: 1,
+      [chromePinnedFeedId]: 1,
+      [browserAffinityFeedId]: 1,
+      [fleetFeedId]: 1,
+      [capabilityFeedId]: 1,
+    });
+    expect(runs.some((run) => Number(run.feed_id) === brokenFleetFeedId)).toBe(false);
+  });
+
+  it('delivers an overdue execution-pinned feed when its device resumes polling', async () => {
+    const sql = getTestDb();
+    const { org, user } = await seedOwnerContext({
+      orgName: 'Resumed Device Scheduler Org',
+    });
+    const workerId = 'resumed-device-worker';
+    const [device] = (await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label,
+        organization_id, last_seen_at
+      ) VALUES (
+        ${user.id}, ${workerId}, 'macos', ${sql.json([])}, 'Resumed Mac',
+        ${org.id}, current_timestamp - INTERVAL '10 minutes'
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: string }>;
+    await createTestConnectorDefinition({
+      key: 'test.scheduler-resumed-device',
+      name: 'Resumed Device Connector',
+      feeds_schema: { items: { description: 'Items' } },
+      organization_id: org.id,
+    });
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'test.scheduler-resumed-device',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+    await sql`
+      UPDATE connections
+      SET device_worker_id = ${device.id}::uuid
+      WHERE id = ${connection.id}
+    `;
+    const [feed] = (await sql`
+      INSERT INTO feeds (
+        organization_id, connection_id, feed_key, status, kind, virtual,
+        schedule, next_run_at, created_at, updated_at
+      ) VALUES (
+        ${org.id}, ${connection.id}, 'items', 'active', 'collected', false,
+        '* * * * *', current_timestamp - INTERVAL '5 minutes',
+        current_timestamp, current_timestamp
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const app = new Hono();
+    app.post(
+      '/api/workers/poll',
+      async (c, next) => {
+        c.set('workerAuthMode' as never, 'user' as never);
+        c.set('workerUserId' as never, user.id as never);
+        c.set('workerOrgIds' as never, [org.id] as never);
+        c.set('organizationId' as never, org.id as never);
+        c.set('mcpAuthInfo' as never, { scopes: ['device_worker:run'] } as never);
+        await next();
+      },
+      (c) => pollWorkerJob(c as never)
+    );
+    const poll = (pollingWorkerId: string) =>
+      app.fetch(
+        new Request('http://localhost/api/workers/poll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worker_id: pollingWorkerId,
+            platform: 'macos',
+            app_version: '1.0.0',
+            capabilities: {},
+          }),
+        }),
+        {} as never
+      );
+
+    const info = vi.spyOn(logger, 'info');
+    try {
+      // A different idle worker polls first and materializes nothing — the feed
+      // is pinned to this device, so it is outside that worker's claim lanes.
+      // The exact device can materialize it on its next poll.
+      expect((await poll('bystander-device-worker')).status).toBe(200);
+
+      const response = await poll(workerId);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(Number(body.feed_id)).toBe(Number(feed.id));
+      expect(body.run_type).toBe('sync');
+
+      const runs = await sql`
+        SELECT id, status, claimed_by
+        FROM runs
+        WHERE feed_id = ${feed.id}
+          AND run_type = 'sync'
+      `;
+      expect(runs).toHaveLength(1);
+      expect(String(runs[0].status)).toBe('running');
+      expect(String(runs[0].claimed_by)).toBe(workerId);
+
+      const dispatchEvents = info.mock.calls.filter(
+        (call) => call[1] === '[pollWorkerJob] Materialized due sync for current poller'
+      );
+      expect(dispatchEvents).toHaveLength(1);
+      expect(dispatchEvents[0]?.[0]).toMatchObject({
+        dispatch_event: 'worker_scoped_sync_materialized',
+        run_id: Number(runs[0].id),
+        feed_id: Number(feed.id),
+        worker_id: workerId,
+        device_worker_id: device.id,
+        eligibility_lane: 'device_pin',
+      });
+    } finally {
+      info.mockRestore();
+    }
   });
 });

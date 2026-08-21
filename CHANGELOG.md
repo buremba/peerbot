@@ -1,5 +1,25 @@
 # Changelog
 
+## [15.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.5.0...lobu-v15.6.0) (2026-08-21)
+
+
+### Features
+
+* **dev:** per-worktree Daytona dev sandbox ([#3044](https://github.com/lobu-ai/lobu/issues/3044)) ([8737beb](https://github.com/lobu-ai/lobu/commit/8737bebe52503cb2c2292bc0124bccbdfb079560))
+* **helm:** add durable artifact PVC topology ([#3036](https://github.com/lobu-ai/lobu/issues/3036)) ([ecee020](https://github.com/lobu-ai/lobu/commit/ecee0206e9ea54bf6ceefc792180b41d9d1d2b5e))
+
+
+### Bug Fixes
+
+* **automation:** fail fast on OpenCode quota waits ([#3041](https://github.com/lobu-ai/lobu/issues/3041)) ([c9de7dd](https://github.com/lobu-ai/lobu/commit/c9de7dd7f27540d20d4de60fd5b345f664fb2e9f))
+* preserve explicit OAuth feed pauses ([#3046](https://github.com/lobu-ai/lobu/issues/3046)) ([03899b8](https://github.com/lobu-ai/lobu/commit/03899b82c05cb6e7af47ee85d2bff91525fd8aca))
+* **server:** accept Slack Grid org-wide auth identity ([#3047](https://github.com/lobu-ai/lobu/issues/3047)) ([3972c84](https://github.com/lobu-ai/lobu/commit/3972c847268cecc445ee48843a51be048a4946b9))
+* **server:** persist and verify media artifacts ([#3037](https://github.com/lobu-ai/lobu/issues/3037)) ([f4dd811](https://github.com/lobu-ai/lobu/commit/f4dd811371c76c4b2b14070299e99394ad7ca34d))
+* **server:** report truthful automation and feed health ([#3038](https://github.com/lobu-ai/lobu/issues/3038)) ([af7a64b](https://github.com/lobu-ai/lobu/commit/af7a64b3596bb4638fbbe45ee17fdbc2169a9051))
+* **server:** route Slack channel automations ([#3039](https://github.com/lobu-ai/lobu/issues/3039)) ([dcd04bb](https://github.com/lobu-ai/lobu/commit/dcd04bb9cd5d58b33cb95b59178d6c1b537cd910))
+* **server:** serialize edge audits with force delete ([#3048](https://github.com/lobu-ai/lobu/issues/3048)) ([4d43503](https://github.com/lobu-ai/lobu/commit/4d43503e10fd011643666450bb95a77b9da28024))
+* **server:** verify Slack chat reliability ([#3045](https://github.com/lobu-ai/lobu/issues/3045)) ([dddfc08](https://github.com/lobu-ai/lobu/commit/dddfc084c16b27aa980348ffb7c79a93192e0ca1))
+
 ## [15.5.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.4.0...lobu-v15.5.0) (2026-08-21)
 
 

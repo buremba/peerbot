@@ -6,7 +6,10 @@ import {
 	getErrorMessage,
 } from "@lobu/core";
 import { Hono } from "hono";
-import type { ArtifactStore } from "../../files/artifact-store.js";
+import {
+  type ArtifactStore,
+  MAX_ARTIFACT_BYTES,
+} from "../../files/artifact-store.js";
 import type { PlatformRegistry } from "../../platform.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
@@ -108,6 +111,9 @@ export function createFileRoutes(
 
       if (!file) {
         return errorResponse(c, "No file provided", 400);
+      }
+      if (file.size > MAX_ARTIFACT_BYTES) {
+        return errorResponse(c, "File exceeds the artifact storage limit", 413);
       }
 
       const filename = (formData.get("filename") as string) || file.name;
@@ -225,6 +231,13 @@ export function createFileRoutes(
 
       if (!fileEntries || fileEntries.length === 0) {
         return errorResponse(c, "No files provided", 400);
+      }
+      if (
+        fileEntries.some(
+          (entry) => entry instanceof File && entry.size > MAX_ARTIFACT_BYTES
+        )
+      ) {
+        return errorResponse(c, "File exceeds the artifact storage limit", 413);
       }
 
       const captured = await captureSideEffect(c, "files.upload_batch", {

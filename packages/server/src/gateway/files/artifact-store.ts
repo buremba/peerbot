@@ -15,7 +15,7 @@ const ARTIFACT_PAYLOAD_FILENAME = "content";
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const ARTIFACT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const ARTIFACT_METADATA_MAX_BYTES = 16 * 1024;
-const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
+export const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
 const ARTIFACT_TRASH_DIRNAME = ".trash";
 const DOWNLOAD_TOKEN_MAX_CHARS = 4096;
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
+import { MAX_ARTIFACT_BYTES } from "../files/artifact-store.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { IFileHandler } from "../platform/file-handler.js";
 import { createFileRoutes } from "../routes/internal/files.js";
@@ -175,5 +176,35 @@ describe("file routes", () => {
     expect(seen?.threadTs).toBe("conv-1");
     expect(seen?.channelId).not.toBe("victim-channel");
     expect(seen?.threadTs).not.toBe("victim-conv");
+  });
+
+  test.each([
+    { path: "/internal/files/upload", field: "file" },
+    { path: "/internal/files/upload-batch", field: "files" },
+  ])("rejects an oversized file before $path materializes it", async ({
+    path,
+    field,
+  }) => {
+    const app = buildApp();
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const form = new FormData();
+    form.set(
+      field,
+      new File([new Uint8Array(MAX_ARTIFACT_BYTES + 1)], "oversized.bin")
+    );
+
+    const response = await app.request(path, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "File exceeds the artifact storage limit",
+    });
   });
 });

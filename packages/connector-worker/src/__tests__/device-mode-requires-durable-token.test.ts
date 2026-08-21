@@ -28,7 +28,21 @@ async function runDaemon(
   args: string[]
 ): Promise<string> {
   const proc = Bun.spawn(["bun", BIN, "daemon", "--api-url", DEAD_API, ...args], {
-    env: { ...process.env, WORKER_API_TOKEN: undefined, ...env },
+    env: {
+      ...process.env,
+      WORKER_API_TOKEN: undefined,
+      CODEX_THREAD_ID: undefined,
+      CODEX_SESSION_ID: undefined,
+      CLAUDE_PID: undefined,
+      CLAUDE_CODE_SESSION_ID: undefined,
+      CLAUDE_CODE_MESSAGING_SOCKET: undefined,
+      CLAUDE_CODE_MESSAGING_TOKEN: undefined,
+      OPENCODE_PID: undefined,
+      OPENCODE_SESSION_ID: undefined,
+      LOBU_OPENCODE_BRIDGE_SOCKET: undefined,
+      LOBU_OPENCODE_BRIDGE_TOKEN: undefined,
+      ...env,
+    },
     stderr: "pipe",
     stdout: "pipe",
   });

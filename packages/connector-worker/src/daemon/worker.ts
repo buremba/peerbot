@@ -5,8 +5,13 @@
  */
 
 import type { Env } from '@lobu/connector-sdk';
+import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import { type WorkerCapabilities, WorkerClient } from './client.js';
 import { type ExecutorConfig, executeRun } from './executor.js';
+import {
+  attachedInteractiveSession,
+  attachInteractiveSession,
+} from './interactive-session.js';
 import { log } from './log.js';
 
 export interface DaemonConfig {
@@ -24,6 +29,8 @@ export interface DaemonConfig {
   label?: string;
   /** Device-manifest connector definitions to register on each poll. */
   manifests?: unknown[];
+  /** Fixed advertisement for an exact interactive session. */
+  agentKinds?: AgentKind[];
 }
 
 const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
@@ -47,6 +54,7 @@ export class WorkerDaemon {
   private shutdownController?: AbortController;
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
+    const interactiveSession = attachedInteractiveSession(daemonConfig);
     this.client = new WorkerClient({
       apiUrl: daemonConfig.apiUrl,
       workerId: daemonConfig.workerId,
@@ -59,22 +67,26 @@ export class WorkerDaemon {
       // The poll advertisement and the spawn path must resolve the same
       // binaries, or the device advertises a kind it then fails to launch.
       binaryOverrides: daemonConfig.executor?.binaryOverrides,
+      agentKinds: daemonConfig.agentKinds,
     });
 
     this.env = env;
-    this.shutdownController = daemonConfig.executor?.insideClaude
-      ? new AbortController()
-      : undefined;
+    this.shutdownController =
+      interactiveSession || daemonConfig.executor?.insideClaude
+        ? new AbortController()
+        : undefined;
+    const executor = {
+      timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
+      ...(daemonConfig.executor ?? {}),
+      ...(this.shutdownController
+        ? { shutdownSignal: this.shutdownController.signal }
+        : {}),
+    };
+    if (interactiveSession) attachInteractiveSession(executor, interactiveSession);
     this.config = {
       pollIntervalMs: daemonConfig.pollIntervalMs ?? 10000,
       maxConcurrentJobs: daemonConfig.maxConcurrentJobs ?? 1,
-      executor: {
-        timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
-        ...(daemonConfig.executor ?? {}),
-        ...(this.shutdownController
-          ? { shutdownSignal: this.shutdownController.signal }
-          : {}),
-      },
+      executor,
     };
   }
 

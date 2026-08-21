@@ -54,10 +54,11 @@ import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
 import { log } from './log.js';
 import {
-  detectParentClaudeSession,
-  handoffToParentClaude,
-  type ParentClaudeSession,
-} from './parent-claude.js';
+  attachedInteractiveSession,
+  detectInteractiveSession,
+  handoffToInteractiveSession,
+  type InteractiveSession,
+} from './interactive-session.js';
 
 /**
  * The slice of the daemon's `ExecutorConfig` the automation arm reads.
@@ -71,9 +72,9 @@ import {
 export interface AutomationExecutorConfig {
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
-  /** Opt-in demo: hand Claude Code Automations to the interactive parent. */
+  /** Legacy explicit Claude opt-in; normal startup detects a session once internally. */
   insideClaude?: boolean;
-  /** Stops a pending parent handoff during daemon shutdown. */
+  /** Stops a pending interactive handoff during daemon shutdown. */
   shutdownSignal?: AbortSignal;
   /** Test-only override; production deliberately uses the 15-second default. */
   terminalHeartbeatGraceMs?: number;
@@ -306,15 +307,14 @@ export function resolveAutomationRunAccess(
   };
 }
 
-/** Parent delivery is deliberately narrower than agent-kind advertisement. */
-export function isParentClaudeEligible(
+/** Interactive delivery requires the run kind and run-scoped access to match. */
+export function isInteractiveSessionEligible(
   kind: AgentKind,
-  insideClaude: boolean | undefined,
+  session: InteractiveSession | undefined,
   payload: AutomationPollPayload
 ): boolean {
   return (
-    insideClaude === true &&
-    kind === 'claude-code' &&
+    session?.kind === kind &&
     payload.context.agent_session != null
   );
 }
@@ -572,15 +572,21 @@ export async function executeAutomationRun(
       ? configuredTimeout * 1000
       : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-  // Eligibility already required a run-scoped `agent_session`, so capture it
-  // alongside the parent session: the two are only ever used together.
-  const parentDetection = isParentClaudeEligible(spec.kind, cfg.insideClaude, payload)
-    ? detectParentClaudeSession()
-    : null;
+  // `--inside-claude` remains accepted for callers that construct this config
+  // directly. Normal daemon startup detects once and attaches it internally.
+  const interactiveSession =
+    attachedInteractiveSession(cfg) ??
+    (cfg.insideClaude
+      ? (() => {
+          const detected = detectInteractiveSession({ claudeOnly: true });
+          return detected.ok ? detected.session : undefined;
+        })()
+      : undefined);
   const agentSession = payload.context.agent_session;
-  const parentSession: ParentClaudeSession | null =
-    parentDetection?.ok === true && agentSession ? parentDetection.session : null;
-  let executionRoute: 'undecided' | 'parent' | 'subprocess' = parentSession
+  const selectedSession = isInteractiveSessionEligible(spec.kind, interactiveSession, payload)
+    ? interactiveSession
+    : undefined;
+  let executionRoute: 'undecided' | 'interactive' | 'subprocess' = selectedSession
     ? 'undecided'
     : 'subprocess';
 
@@ -611,19 +617,24 @@ export async function executeAutomationRun(
       if (finalizeNudge && finalizeNudge !== '') {
         prompt += `\n\n---\nFINALIZE NUDGE (prior attempt did not complete the window):\n${finalizeNudge}\n`;
       }
-      if (parentSession && agentSession && executionRoute !== 'subprocess') {
-        const handoff = await handoffToParentClaude({
-          session: parentSession,
+      if (selectedSession && agentSession && executionRoute !== 'subprocess') {
+        const handoff = await handoffToInteractiveSession({
+          session: selectedSession,
           runId,
           prompt,
           token: agentSession.token,
           memoryUrl: agentSession.mcp_url,
           timeoutMs,
+          ...(selectedSession.kind === 'codex' && cfg.binaryOverrides?.codex
+            ? { codexCommand: cfg.binaryOverrides.codex }
+            : {}),
           ...(cfg.shutdownSignal ? { shutdownSignal: cfg.shutdownSignal } : {}),
         });
         if (handoff.kind === 'handed-off') {
-          executionRoute = 'parent';
-          log.info(`[executor] Automation run ${runId} handed to parent Claude session`);
+          executionRoute = 'interactive';
+          log.info(
+            `[executor] Automation run ${runId} handed to interactive ${selectedSession.kind} session (${handoff.certainty})`
+          );
           const completion = await handoff.completion;
           if (completion.kind === 'completed') {
             return {
@@ -647,12 +658,12 @@ export async function executeAutomationRun(
           };
         }
 
-        if (executionRoute === 'parent') {
-          // A prior message reached the parent. Never mix in a subprocess,
+        if (executionRoute === 'interactive') {
+          // A prior message may have reached the session. Never mix in a subprocess,
           // even if a later finalize-nudge delivery fails before writing.
           return {
             output: '',
-            error: `parent Claude delivery failed: ${handoff.reason}`,
+            error: `interactive ${selectedSession.kind} delivery failed: ${handoff.reason}`,
             exitCode: null,
             exitSignal: null,
             exitReason: 'crash',
@@ -661,7 +672,7 @@ export async function executeAutomationRun(
         }
         executionRoute = 'subprocess';
         log.info(
-          `[executor] Automation run ${runId}: parent Claude unavailable before delivery; using subprocess`
+          `[executor] Automation run ${runId}: interactive ${selectedSession.kind} unavailable before delivery; using subprocess`
         );
       }
       return runCli(

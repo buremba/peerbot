@@ -13,7 +13,13 @@ import { buildConnectorWorkerEnv } from '../env.js';
 import { DEVICE_MANIFESTS_BY_PLATFORM } from './device-manifests.js';
 import { startDaemon, type WorkerDaemon } from './index.js';
 import { log, setDebug } from './log.js';
-import { deriveInsideClaudeWorkerId } from './parent-claude.js';
+import {
+  attachInteractiveSession,
+  deriveInteractiveWorkerId,
+  deriveLegacyClaudeWorkerId,
+  detectInteractiveSession,
+  type InteractiveSession,
+} from './interactive-session.js';
 
 /**
  * Accepted `--worker-id` shape. Deliberately narrow: the default is
@@ -29,29 +35,76 @@ export interface DaemonStartOptions {
   version?: string;
   /** Host platform for device registration (macos, headless, …). */
   platform?: string;
+  /** Device default supplied by `lobu daemon`; omitted by fleet worker callers. */
+  defaultPlatform?: string;
   label?: string;
   /** Declared capability names (already comma-split). */
   capabilities?: string[];
   /** Durable `owl_pat_…` personal access token for device mode. */
   workerApiToken?: string;
   debug?: boolean;
-  /** Opt-in demo: deliver Claude Code Automations to the interactive parent. */
+  /** False only when the operator explicitly disables inherited-session delivery. */
+  interactiveSession?: false;
+  /** Legacy explicit Claude-only detection. */
   insideClaude?: boolean;
 }
 
 export function resolveDaemonWorkerId(
   opts: Pick<DaemonStartOptions, 'workerId' | 'insideClaude'>,
   platform: string | undefined,
-  shortHostname: string
+  shortHostname: string,
+  interactiveSession?: InteractiveSession,
+  env: NodeJS.ProcessEnv = process.env
 ): string {
   return (
     opts.workerId ??
-    (opts.insideClaude
-      ? deriveInsideClaudeWorkerId()
+    (interactiveSession
+      ? deriveInteractiveWorkerId(interactiveSession)
+      : opts.insideClaude
+        ? deriveLegacyClaudeWorkerId(env)
       : platform
         ? `${platform}:${shortHostname}`
         : `worker-${randomUUID().slice(0, 8)}`)
   );
+}
+
+export function resolveDaemonLaunchContext(
+  opts: Pick<
+    DaemonStartOptions,
+    'platform' | 'defaultPlatform' | 'insideClaude' | 'interactiveSession'
+  >,
+  env: NodeJS.ProcessEnv = process.env,
+  sessionsDir?: string
+): { platform: string | undefined; interactiveSession: InteractiveSession | undefined } {
+  if (opts.insideClaude && opts.interactiveSession === false) {
+    throw new Error('--inside-claude cannot be combined with --no-interactive-session');
+  }
+  const detected =
+    opts.interactiveSession === false
+      ? undefined
+      : (() => {
+          const result = detectInteractiveSession({
+            env,
+            ...(sessionsDir ? { sessionsDir } : {}),
+            claudeOnly: opts.insideClaude === true,
+          });
+          return result.ok ? result.session : undefined;
+        })();
+  if ((detected || opts.insideClaude) && opts.platform && opts.platform !== 'headless') {
+    // Interactive delivery registers a per-session headless device, so it can
+    // never also claim the host's own platform identity.
+    const optOut = opts.insideClaude ? 'Drop --inside-claude' : 'Pass --no-interactive-session';
+    throw new Error(
+      `an inherited interactive agent session registers as --platform headless, so it cannot be combined with --platform ${opts.platform}. ${optOut} to register this host as a ${opts.platform} device instead.`
+    );
+  }
+  return {
+    platform:
+      detected || opts.insideClaude
+        ? 'headless'
+        : (opts.platform ?? opts.defaultPlatform),
+    interactiveSession: detected,
+  };
 }
 
 /**
@@ -62,7 +115,10 @@ export async function startDaemonCommand(
   opts: DaemonStartOptions
 ): Promise<WorkerDaemon> {
   setDebug(opts.debug === true);
-  const { platform, capabilities = [] } = opts;
+  const launch = resolveDaemonLaunchContext(opts);
+  const detected = launch.interactiveSession;
+  const platform = launch.platform;
+  const { capabilities = [] } = opts;
 
   if (platform && !isKnownPlatform(platform)) {
     throw new Error(`unknown device platform '${platform}'`);
@@ -103,10 +159,11 @@ export async function startDaemonCommand(
     : { db_egress_hardening: true };
   // Auto-discover device identity from the host when not passed: a device
   // worker defaults to `<platform>:<short-hostname>` and a hostname label. An
-  // inside-Claude daemon instead derives its id from the parent session, so
-  // each session registers its own device rather than stealing the host's.
+  // interactive daemon instead derives its id from the exact inherited
+  // provider session, so each TUI registers its own device rather than stealing
+  // the host's. Explicit --worker-id remains authoritative.
   const shortHostname = hostname().split('.')[0] || hostname();
-  const workerId = resolveDaemonWorkerId(opts, platform, shortHostname);
+  const workerId = resolveDaemonWorkerId(opts, platform, shortHostname, detected);
   const label = opts.label ?? (platform ? shortHostname : undefined);
 
   // Crash loud at boot if the runtime image is missing a connector dep.
@@ -121,25 +178,35 @@ export async function startDaemonCommand(
       `[cli] device mode: platform=${platform} capabilities=${capabilities.join(',') || '(none)'}`
     );
   }
-  if (opts.insideClaude) {
+  if (detected) {
     log.info(
-      '[cli] inside-Claude demo enabled: Automations run with the parent session’s broader tools, context, MCP servers, credentials, and permission mode'
+      `[cli] interactive-session delivery enabled for ${detected.kind}`
     );
+  } else if (opts.insideClaude) {
+    log.info('[cli] legacy inside-Claude delivery enabled; parent detection will retry per run');
   }
 
-  return startDaemon(
-    {
-      apiUrl: opts.apiUrl,
-      workerId,
-      version: opts.version ?? '1.0.0',
-      workerApiToken: opts.workerApiToken,
-      capabilities: workerCapabilities,
-      ...(platform ? { platform } : {}),
-      ...(label ? { label } : {}),
-      ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
-      ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
-      ...(opts.insideClaude ? { executor: { insideClaude: true } } : {}),
-    },
-    env
-  );
+  const daemonConfig = {
+    apiUrl: opts.apiUrl,
+    workerId,
+    version: opts.version ?? '1.0.0',
+    workerApiToken: opts.workerApiToken,
+    capabilities: workerCapabilities,
+    ...(platform ? { platform } : {}),
+    ...(label ? { label } : {}),
+    ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
+    ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
+    ...(detected
+      ? {
+          agentKinds: [detected.kind],
+          executor: {
+            defaultAgentKind: detected.kind,
+          }
+        }
+      : opts.insideClaude
+        ? { executor: { insideClaude: true } }
+        : {}),
+  };
+  if (detected) attachInteractiveSession(daemonConfig, detected);
+  return startDaemon(daemonConfig, env);
 }

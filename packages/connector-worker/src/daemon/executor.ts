@@ -13,6 +13,7 @@ import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
 import { executeAutomationRun } from './automation.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
+import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
 
 /**
@@ -67,10 +68,12 @@ export interface ExecutorConfig {
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;
-  /** Opt-in delivery of Claude Code Automations to an interactive parent. */
+  /** Legacy explicit Claude-only delivery. */
   insideClaude?: boolean;
-  /** Daemon lifecycle signal used only by pending parent-Claude handoffs. */
+  /** Daemon lifecycle signal used only by pending interactive handoffs. */
   shutdownSignal?: AbortSignal;
+  /** Local agent kind used when an Automation omits agent_kind. */
+  defaultAgentKind?: AgentKind;
   /**
    * Explicit per-agent binary paths for the automation arm (else PATH lookup).
    * Lets an operator point the daemon at a non-PATH CLI install, and is the
@@ -136,6 +139,11 @@ export async function executeRun(
   config: Partial<ExecutorConfig> = {}
 ): Promise<{ itemsCollected: number; error?: string }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+  // The inherited session rides on a non-enumerable symbol, which a spread
+  // drops; re-attach it or every interactive run silently falls back to a
+  // subprocess.
+  const inheritedSession = attachedInteractiveSession(config);
+  if (inheritedSession) attachInteractiveSession(cfg, inheritedSession);
   // Fold the gateway's authoritative egress config in once so every downstream
   // mode handler gets the same non-downgradable policy and operator exemptions.
   const env = resolveEffectiveEnv(workerEnv, job);

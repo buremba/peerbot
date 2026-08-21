@@ -148,6 +148,7 @@ export class WorkerClient implements ExecutorClient {
   private label?: string;
   private manifests: unknown[] = [];
   private binaryOverrides?: Partial<Record<AgentKind, string>>;
+  private fixedAgentKinds?: AgentKind[];
   private agentKindsCache: { kinds: AgentKind[]; at: number } | null = null;
 
   constructor(config: {
@@ -164,6 +165,8 @@ export class WorkerClient implements ExecutorClient {
     manifests?: unknown[];
     /** Executor binary overrides, so advertised kinds match what the arm spawns. */
     binaryOverrides?: Partial<Record<AgentKind, string>>;
+    /** Exact session workers advertise only the one CLI they can receive. */
+    agentKinds?: AgentKind[];
   }) {
     this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
@@ -174,6 +177,7 @@ export class WorkerClient implements ExecutorClient {
     this.label = config.label?.trim() || undefined;
     this.manifests = config.manifests ?? [];
     this.binaryOverrides = config.binaryOverrides;
+    this.fixedAgentKinds = config.agentKinds;
   }
 
   /**
@@ -183,6 +187,7 @@ export class WorkerClient implements ExecutorClient {
    * poll (default 10s) buys nothing.
    */
   private runnableAgentKinds(): AgentKind[] {
+    if (this.fixedAgentKinds) return this.fixedAgentKinds;
     const now = Date.now();
     if (this.agentKindsCache && now - this.agentKindsCache.at < AGENT_KIND_DISCOVERY_TTL_MS) {
       return this.agentKindsCache.kinds;

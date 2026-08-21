@@ -420,20 +420,6 @@ export class ArtifactStore {
     return { metadata, bytes };
   }
 
-  /** Read validated metadata without loading the artifact payload. */
-  async inspect(
-    artifactId: string,
-    options?: { binding?: string },
-  ): Promise<StoredArtifactMetadata | null> {
-    const record = await this.readMetadataRecord(artifactId);
-    if (!record) return null;
-    if (options?.binding && record.metadata.binding !== options.binding) {
-      return null;
-    }
-    if (!(await this.directoryIsUnchanged(artifactId, record.dirStat))) return null;
-    return record.metadata;
-  }
-
   async delete(artifactId: string): Promise<void> {
     if (!ARTIFACT_ID_PATTERN.test(artifactId)) return;
     try {

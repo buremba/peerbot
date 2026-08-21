@@ -200,11 +200,6 @@ describe("ArtifactStore durable filesystem backend", () => {
     await fs.writeFile(metadataPath, JSON.stringify(metadata));
 
     expect(await env.artifactStore.read(published.artifactId)).toBeNull();
-    expect(
-      await env.artifactStore.inspect(published.artifactId, {
-        binding: runArtifactBinding(314),
-      }),
-    ).toBeNull();
   });
 
   test("keeps reserved metadata filenames separate from payload bytes", async () => {

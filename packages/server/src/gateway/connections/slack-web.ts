@@ -64,13 +64,14 @@ export interface SlackWebApi {
   revokeToken(botToken: string): Promise<boolean>;
   /**
    * `auth.test` — identify the workspace and Enterprise installation semantics
-   * a bot token belongs to. Returns the concrete `T…` workspace separately
-   * from the optional `E…` enterprise id; callers must never compare them as
-   * aliases. Used by `connections.test` to prove a stored credential is live and
-   * still names the workspace we routed it to, and by the ACL sync to self-heal a
-   * BYO connection created without an OAuth install (so it never persisted a
-   * `teamId`): we resolve the token's REAL team from Slack, verify it matches the
-   * channel binding's team before graphing, and backfill it onto the connection row.
+   * a bot token belongs to. Workspace installs return a concrete `T…` team id;
+   * an org-wide install may instead return its `E…` enterprise id as `team_id`
+   * with no concrete workspace. Used by `connections.test` to prove a stored
+   * credential is live and still names the stored scope, and by the ACL sync to
+   * self-heal a workspace-scoped BYO connection created without an OAuth install
+   * (so it never persisted a `teamId`): we resolve the token's real team from
+   * Slack, verify it matches the channel binding's team before graphing, and
+   * backfill it onto the connection row.
    * Throws on a Slack-level error (an invalid/revoked token yields `invalid_auth`).
    */
   authTest(botToken: string): Promise<{

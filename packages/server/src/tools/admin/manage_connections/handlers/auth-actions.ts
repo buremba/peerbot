@@ -222,16 +222,15 @@ export async function handleTest(
           ...testErrorFields('AUTH_INVALID'),
         });
       }
+      // `slackIdentityMismatch` has already proven the shape: an `E…` team id
+      // here is an org-wide install whose enterprise id is present and equal.
+      const scope = SLACK_ENTERPRISE_ID.test(identity.teamId)
+        ? `org-wide enterprise ${identity.teamId}, no separate concrete workspace`
+        : `workspace ${identity.teamId}, ${identity.enterpriseId ? `enterprise ${identity.enterpriseId}` : 'no enterprise'}`;
       return withDeviceHealth({
         action: 'test',
         status: 'ok',
-        message: [
-          `Slack auth.test succeeded: workspace ${identity.teamId}`,
-          identity.enterpriseId
-            ? `enterprise ${identity.enterpriseId}`
-            : 'no enterprise',
-          `enterprise_install=${identity.isEnterpriseInstall}`,
-        ].join(', '),
+        message: `Slack auth.test succeeded: ${scope}, enterprise_install=${identity.isEnterpriseInstall}`,
       });
     } catch (error) {
       const message = getErrorMessage(error);
@@ -485,8 +484,9 @@ function connectorSupportsNoAuth(authSchema: unknown): boolean {
   return Array.isArray(methods) && methods.some((m) => m?.type === 'none');
 }
 
-/** Slack workspace ids are `T…`; an enterprise id is `E…`. Never interchangeable. */
+/** Slack workspace ids are `T…`; enterprise ids are `E…`. Never interchangeable. */
 const SLACK_WORKSPACE_ID = /^T[A-Z0-9]+$/i;
+const SLACK_ENTERPRISE_ID = /^E[A-Z0-9]+$/i;
 
 function slackIdentityMismatch(
   conn: {
@@ -517,12 +517,37 @@ function slackIdentityMismatch(
       typeof value === 'string' && SLACK_WORKSPACE_ID.test(value)
   );
   const storedEnterpriseId =
-    typeof metadata.enterpriseId === 'string'
+    typeof metadata.enterpriseId === 'string' &&
+    SLACK_ENTERPRISE_ID.test(metadata.enterpriseId)
       ? metadata.enterpriseId
-      : storedTenantId?.startsWith('E')
+      : storedTenantId && SLACK_ENTERPRISE_ID.test(storedTenantId)
         ? storedTenantId
         : null;
   const storedEnterpriseInstall = metadata.isEnterpriseInstall === true;
+
+  // An ORG-WIDE Grid install has no concrete workspace, so `auth.test` reports
+  // the `E…` enterprise id in `team_id` — the same identity key the OAuth
+  // install path persists (`slack-web.ts` falls back to `enterprise.id` when
+  // `oauth.v2.access` returns no `team`). Validate that shape on its own terms
+  // instead of failing it as a malformed `T…`.
+  if (SLACK_ENTERPRISE_ID.test(upstream.teamId)) {
+    if (!upstream.isEnterpriseInstall) {
+      return `upstream reports workspace-scoped install but named enterprise '${upstream.teamId}' as its workspace`;
+    }
+    if (!storedEnterpriseInstall) {
+      return 'upstream credential is org-wide but stored connection is workspace-scoped';
+    }
+    if (!upstream.enterpriseId || !SLACK_ENTERPRISE_ID.test(upstream.enterpriseId)) {
+      return `upstream enterprise '${upstream.enterpriseId ?? 'none'}' is not a Slack E id`;
+    }
+    if (upstream.teamId !== upstream.enterpriseId) {
+      return `upstream org-wide identity '${upstream.teamId}' does not match upstream enterprise '${upstream.enterpriseId}'`;
+    }
+    if (upstream.enterpriseId !== storedEnterpriseId) {
+      return `upstream enterprise '${upstream.enterpriseId}' does not match stored enterprise '${storedEnterpriseId ?? 'none'}'`;
+    }
+    return null;
+  }
 
   if (!SLACK_WORKSPACE_ID.test(upstream.teamId)) {
     return `upstream workspace id '${upstream.teamId}' is not a Slack T id`;
@@ -531,7 +556,10 @@ function slackIdentityMismatch(
     if (!storedEnterpriseInstall) {
       return 'upstream credential is org-wide but stored connection is workspace-scoped';
     }
-    if (!upstream.enterpriseId || upstream.enterpriseId !== storedEnterpriseId) {
+    if (!upstream.enterpriseId || !SLACK_ENTERPRISE_ID.test(upstream.enterpriseId)) {
+      return `upstream enterprise '${upstream.enterpriseId ?? 'none'}' is not a Slack E id`;
+    }
+    if (upstream.enterpriseId !== storedEnterpriseId) {
       return `upstream enterprise '${upstream.enterpriseId ?? 'none'}' does not match stored enterprise '${storedEnterpriseId ?? 'none'}'`;
     }
     return null;

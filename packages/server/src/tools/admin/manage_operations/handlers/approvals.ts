@@ -153,14 +153,28 @@ async function tryReconcileTerminalization(
 				reviewer,
 			},
 		});
-		if (reconciled.status !== "completed" || reconciled.eventId == null) {
+		if (
+			reconciled.status === "terminal" &&
+			reconciled.runStatus === "missing"
+		) {
 			return null;
+		}
+		if (reconciled.status === "terminal") {
+			return {
+				error: `The operation is already ${reconciled.runStatus}. Refresh before acting.`,
+			};
+		}
+		if (reconciled.status !== "completed") {
+			return {
+				error:
+					"The operation succeeded and is awaiting durable terminalization. Retry approval to reconcile it without rerunning.",
+			};
 		}
 		return {
 			action: "approve",
 			approved: true,
 			run_id: args.run_id,
-			event_id: reconciled.eventId,
+			...(reconciled.eventId == null ? {} : { event_id: reconciled.eventId }),
 			message: "Operation approved and executed.",
 		};
 	}

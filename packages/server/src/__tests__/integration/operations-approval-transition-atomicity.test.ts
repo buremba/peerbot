@@ -486,6 +486,36 @@ describe("approval-run transition atomicity", () => {
 		// Re-approve after the trigger is gone: the run completes from the
 		// durable output — the external mutation is NOT repeated.
 		await sql.unsafe(DROP_FAIL_TRIGGER);
+		await sql.unsafe(`
+			CREATE FUNCTION suppress_action_terminalization() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.status = 'completed' AND OLD.status = 'running'
+					AND NEW.action_key = 'create_item' THEN
+					RETURN NULL;
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+			CREATE TRIGGER suppress_action_terminalization_trigger
+				BEFORE UPDATE ON runs
+				FOR EACH ROW EXECUTE FUNCTION suppress_action_terminalization();
+		`);
+		let awaiting: { error?: string } | undefined;
+		try {
+			awaiting = (await manageOperations(
+				{ action: "approve", run_id: queued.run_id },
+				{} as Env,
+				humanCtx,
+			)) as { error?: string };
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS suppress_action_terminalization_trigger ON runs;
+				DROP FUNCTION IF EXISTS suppress_action_terminalization();
+			`);
+		}
+		expect(awaiting?.error).toContain("awaiting durable terminalization");
+		expect(awaiting?.error).not.toContain("not pending approval");
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
 		const retried = (await manageOperations(
 			{ action: "approve", run_id: queued.run_id },
 			{} as Env,

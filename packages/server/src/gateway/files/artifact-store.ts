@@ -3,9 +3,9 @@ import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createLogger, decrypt, encrypt, getErrorMessage } from "@lobu/core";
+import { decrypt, encrypt, getErrorMessage } from "@lobu/core";
+import logger from "../../utils/logger";
 
-const logger = createLogger("artifact-store");
 const DEFAULT_ARTIFACTS_DIR = path.join(os.tmpdir(), "lobu-artifacts");
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTIFACT_PAYLOAD_FILENAME = "content";
@@ -176,10 +176,19 @@ export class ArtifactStore {
     const trashDir = this.trashDir();
     await fs.mkdir(trashDir, { recursive: true, mode: 0o700 });
     for (const stale of await fs.readdir(trashDir)) {
-      await fs.rm(path.join(trashDir, stale), {
-        recursive: true,
-        force: true,
-      });
+      const stalePath = path.join(trashDir, stale);
+      try {
+        await fs.rm(stalePath, { recursive: true, force: true });
+      } catch (error) {
+        // Server logger errors are forwarded to Sentry. A retained orphan
+        // blocks later publication by design, so make that operationally loud
+        // while preserving the fail-closed behavior.
+        logger.error(
+          { err: error, stalePath },
+          "Artifact trash drain failed; publication is blocked",
+        );
+        throw error;
+      }
     }
   }
 
@@ -324,6 +333,53 @@ export class ArtifactStore {
         return null;
       }
       return { metadata, bytes };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Mint a fresh public URL only when the persisted artifact still belongs to
+   * the exact Lobu resource being returned. This is the read-boundary refresh
+   * for expiring URLs; verifying the immutable binding prevents a caller from
+   * grafting another workspace's artifact id into a readable event.
+   */
+  async mintBoundDownloadUrl(params: {
+    artifactId: string;
+    binding: string;
+    publicGatewayUrl: string;
+    ttlMs?: number;
+  }): Promise<string | null> {
+    if (!ARTIFACT_ID_PATTERN.test(params.artifactId)) return null;
+    try {
+      const dirStat = await fs.lstat(this.artifactDir(params.artifactId));
+      if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return null;
+      const raw = await readBoundedRegularFile(
+        this.metadataPath(params.artifactId),
+        ARTIFACT_METADATA_MAX_BYTES,
+      );
+      if (!raw) return null;
+      const parsed = JSON.parse(raw.toString("utf8")) as unknown;
+      if (
+        !isStoredArtifactMetadata(parsed, params.artifactId) ||
+        parsed.binding !== params.binding
+      ) {
+        return null;
+      }
+      const finalDirStat = await fs.lstat(this.artifactDir(params.artifactId));
+      if (
+        !finalDirStat.isDirectory() ||
+        finalDirStat.isSymbolicLink() ||
+        finalDirStat.dev !== dirStat.dev ||
+        finalDirStat.ino !== dirStat.ino
+      ) {
+        return null;
+      }
+      return this.buildDownloadUrl(
+        params.publicGatewayUrl,
+        params.artifactId,
+        params.ttlMs,
+      );
     } catch {
       return null;
     }

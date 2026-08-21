@@ -91,6 +91,23 @@ describe("ArtifactStore.buildDownloadUrl", () => {
       }),
     ).toBeNull();
 
+    const freshUrl = await env.artifactStore.mintBoundDownloadUrl({
+      artifactId,
+      binding,
+      publicGatewayUrl: "https://lobu.example.com/lobu",
+    });
+    expect(freshUrl).not.toBeNull();
+    expect(new URL(freshUrl as string).pathname).toBe(
+      `/lobu/api/v1/files/${artifactId}`,
+    );
+    expect(
+      await env.artifactStore.mintBoundDownloadUrl({
+        artifactId,
+        binding: runArtifactBinding(43),
+        publicGatewayUrl: "https://lobu.example.com/lobu",
+      }),
+    ).toBeNull();
+
     await env.artifactStore.delete(artifactId);
     expect(await env.artifactStore.read(artifactId)).toBeNull();
   });

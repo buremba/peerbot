@@ -181,7 +181,14 @@ export async function reconcileAppliedActionRun(params: {
 				materialized.publishedArtifactIds,
 			)
 		) {
-			await cleanupCandidate();
+			try {
+				await cleanupCandidate();
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					"Action output checkpoint failed and candidate artifact cleanup also failed",
+				);
+			}
 		}
 		throw error;
 	}

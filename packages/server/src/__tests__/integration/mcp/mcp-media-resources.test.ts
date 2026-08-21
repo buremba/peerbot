@@ -14,6 +14,7 @@ import {
 import type { Env } from '../../../index';
 import * as lobuGateway from '../../../lobu/gateway';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import { reconcileAppliedActionRun } from '../../../operations/applied-action-reconciliation';
 import type { ToolContext } from '../../../tools/registry';
 import { saveContent } from '../../../tools/save_content';
 import { insertEvent } from '../../../utils/insert-event';
@@ -308,10 +309,92 @@ describe('MCP media resources', () => {
     expect(
       (thrown as AggregateError).errors.map((error) => String(error)).join('\n'),
     ).toContain('forced retained-PVC cleanup failure');
-    for (const candidateId of await readArtifactIds(artifactsDir)) {
-      if (!baselineArtifacts.includes(candidateId)) {
-        await artifactStore.delete(candidateId);
-      }
+    const survivingCandidates = (await readArtifactIds(artifactsDir)).filter(
+      (candidateId) => !baselineArtifacts.includes(candidateId),
+    );
+    expect(survivingCandidates).toHaveLength(1);
+    const survivingCandidate = survivingCandidates[0];
+    if (!survivingCandidate) throw new Error('Expected one surviving artifact');
+    expect(await artifactStore.read(survivingCandidate)).toBeTruthy();
+    for (const candidateId of survivingCandidates) {
+      await artifactStore.delete(candidateId);
+    }
+    expect(await readArtifactIds(artifactsDir)).toEqual(baselineArtifacts);
+  });
+
+  it('preserves both a checkpoint failure and its candidate cleanup failure', async () => {
+    const sql = getDb();
+    const baselineArtifacts = await readArtifactIds(artifactsDir);
+    const [run] = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, action_key, action_output
+      ) VALUES (
+        ${org.id}, 'action', 'running', 'auto', 'checkpoint-cleanup-failure',
+        ${sql.json({
+          attachments: [
+            {
+              kind: 'image',
+              filename: 'checkpoint.png',
+              mime_type: 'image/png',
+              data: Buffer.from('checkpoint-candidate').toString('base64'),
+            },
+          ],
+        })}
+      )
+      RETURNING id
+    `;
+    const runId = Number(run?.id);
+    expect(Number.isSafeInteger(runId)).toBe(true);
+    await sql.unsafe(`
+      CREATE FUNCTION fail_media_checkpoint_update() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.action_key = 'checkpoint-cleanup-failure'
+          AND NEW.action_output IS DISTINCT FROM OLD.action_output THEN
+          RAISE EXCEPTION 'forced action checkpoint failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_media_checkpoint_update_trigger
+        BEFORE UPDATE ON runs
+        FOR EACH ROW EXECUTE FUNCTION fail_media_checkpoint_update();
+    `);
+    const deleteSpy = vi
+      .spyOn(artifactStore, 'delete')
+      .mockRejectedValueOnce(new Error('forced checkpoint candidate cleanup failure'));
+
+    let thrown: unknown;
+    try {
+      await reconcileAppliedActionRun({
+        runId,
+        organizationId: org.id,
+        artifactStore,
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      deleteSpy.mockRestore();
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS fail_media_checkpoint_update_trigger ON runs;
+        DROP FUNCTION IF EXISTS fail_media_checkpoint_update();
+      `);
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    const errors = (thrown as AggregateError).errors
+      .map((error) => String(error))
+      .join('\n');
+    expect(errors).toContain('forced action checkpoint failure');
+    expect(errors).toContain('forced checkpoint candidate cleanup failure');
+    const survivingCandidates = (await readArtifactIds(artifactsDir)).filter(
+      (candidateId) => !baselineArtifacts.includes(candidateId),
+    );
+    expect(survivingCandidates).toHaveLength(1);
+    const survivingCandidate = survivingCandidates[0];
+    if (!survivingCandidate) throw new Error('Expected one surviving artifact');
+    expect(await artifactStore.read(survivingCandidate)).toBeTruthy();
+    for (const candidateId of survivingCandidates) {
+      await artifactStore.delete(candidateId);
     }
     expect(await readArtifactIds(artifactsDir)).toEqual(baselineArtifacts);
   });
@@ -500,14 +583,32 @@ describe('MCP media resources', () => {
         ),
       },
     });
-    for (const candidateId of await readArtifactIds(artifactsDir)) {
-      if (!artifactsBeforeUnchangedRetry.includes(candidateId)) {
-        await artifactStore.delete(candidateId);
-      }
+    const survivingCandidates = (await readArtifactIds(artifactsDir)).filter(
+      (candidateId) => !artifactsBeforeUnchangedRetry.includes(candidateId),
+    );
+    expect(survivingCandidates).toHaveLength(1);
+    const survivingCandidate = survivingCandidates[0];
+    if (!survivingCandidate) throw new Error('Expected one surviving artifact');
+    expect(await artifactStore.read(survivingCandidate)).toBeTruthy();
+    for (const candidateId of survivingCandidates) {
+      await artifactStore.delete(candidateId);
     }
     expect(await readArtifactIds(artifactsDir)).toEqual(
       artifactsBeforeUnchangedRetry,
     );
+
+    const expiredDownloadUrl = artifactStore.buildDownloadUrl(
+      'http://localhost',
+      artifactId,
+      -1,
+    );
+    await sql`
+      UPDATE events
+      SET attachments = ${sql.json([
+        { ...attachment, download_url: expiredDownloadUrl },
+      ])}
+      WHERE id = ${eventId}
+    `;
 
     const sessionId = await initSession();
     const path = `/mcp/${org.slug}`;
@@ -529,6 +630,19 @@ describe('MCP media resources', () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
+    const returnedAttachment =
+      body.result?.structuredContent?.return_value?.content?.find(
+        (item: { id?: number }) => item.id === eventId,
+      )?.attachments?.[0];
+    const freshDownloadUrl = returnedAttachment?.download_url;
+    expect(freshDownloadUrl).toEqual(expect.any(String));
+    expect(freshDownloadUrl).not.toBe(expiredDownloadUrl);
+    const freshToken = new URL(freshDownloadUrl).searchParams.get('token');
+    expect(freshToken).toBeTruthy();
+    if (!freshToken) throw new Error('Expected a fresh download token');
+    expect(
+      artifactStore.validateDownloadToken(freshToken, artifactId).valid,
+    ).toBe(true);
     const resource = body.result?.content?.find(
       (item: { type?: string }) => item.type === 'resource_link',
     );

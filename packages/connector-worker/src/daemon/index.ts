@@ -18,6 +18,7 @@ export type { DaemonConfig } from './worker.js';
 export { startDaemon, WorkerDaemon } from './worker.js';
 export {
   resolveDaemonLaunchContext,
+  resolveDaemonWorkerId,
   startDaemonCommand,
   type DaemonStartOptions,
 } from './start.js';

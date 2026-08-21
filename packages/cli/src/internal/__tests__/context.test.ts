@@ -12,6 +12,7 @@ import {
   addContext,
   DEFAULT_CONTEXT_NAME,
   findContextByMemoryUrl,
+  findContextByOrigin,
   findContextByUrl,
   getActiveOrg,
   getMemoryUrl,
@@ -89,6 +90,59 @@ describe("context management", () => {
 
     const none = await findContextByUrl("https://unknown.ai");
     expect(none).toBeUndefined();
+  });
+
+  test("finds a context by gateway origin across SDK path spellings", async () => {
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        currentContext: "lobu",
+        contexts: {
+          lobu: { url: "https://app.lobu.ai/api/v1" },
+          buremba: { url: "https://buremba.lobu.ai/api/v1" },
+        },
+      })
+    );
+
+    expect((await findContextByOrigin("https://buremba.lobu.ai"))?.name).toBe(
+      "buremba"
+    );
+    expect(
+      await findContextByOrigin("https://different.lobu.ai/api/v1")
+    ).toBeUndefined();
+  });
+
+  test("prefers the current context over the built-in one on the same origin", async () => {
+    // The built-in "lobu" context is always materialized at the hosted origin.
+    // Matching it ahead of the user's own context for that installation would
+    // read credentials from a slot they never logged into.
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        currentContext: "prod",
+        contexts: {
+          prod: { url: "https://app.lobu.ai/api/v1" },
+        },
+      })
+    );
+
+    expect((await findContextByOrigin("https://app.lobu.ai"))?.name).toBe(
+      "prod"
+    );
+  });
+
+  test("prefers a user-named matching context when current points elsewhere", async () => {
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        currentContext: "local",
+        contexts: {
+          local: { url: "http://127.0.0.1:8787" },
+          prod: { url: "https://app.lobu.ai/api/v1" },
+        },
+      })
+    );
+
+    expect((await findContextByOrigin("https://app.lobu.ai"))?.name).toBe(
+      "prod"
+    );
   });
 
   test("reads legacy apiUrl contexts and saves the new url shape", async () => {

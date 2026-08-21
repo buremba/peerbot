@@ -42,28 +42,41 @@ docker run -d --name lobu-pg -p 5432:5432 \
 ## Device workers
 
 Run `lobu daemon` on a machine that should execute local connector work or
-device-pinned Automations. The daemon requires a durable, org-scoped personal
-access token; a stored OAuth login is intentionally not used for this
-long-running process.
+device-pinned Automations. A normal interactive login automatically authorizes
+the daemon with a worker-bound child credential; you do not need to create or
+export a personal access token.
 
 ```bash
-lobu login
-WORKER_API_TOKEN="$(lobu token create --raw --org <slug> --scope mcp:write)" \
-  lobu daemon
+npx -y @lobu/cli@latest daemon --api-url https://your-lobu.example.com
 ```
+
+If that installation is not logged in yet, the command creates an
+origin-specific context and, on a TTY, runs its device-code login; a
+non-interactive start prints the `lobu login` command to run first. A login for
+another URL is never reused. `WORKER_API_TOKEN` remains available as an explicit
+unattended/advanced override.
 
 On the first interactive boot for a named context, the CLI confirms the
 `<platform>:<hostname>` identity and can reuse an offline device from the same
-platform. The choice is stored per context and platform. Reusing a device keeps
-its existing server-side workspace attachment; a new device is attached by the
-PAT on its first poll.
+platform. The identity and worker-bound child credential are stored owner-only,
+per context and platform. Reusing a device keeps its existing server-side
+workspace attachment. Team workspaces reach a personal device through a pinned
+connection or Automation; `lobu daemon` therefore has no `--org` flag.
 
-An explicit `--worker-id` always wins. Direct `--api-url` and `LOBU_API_URL`
-overrides stay stateless and use the deterministic host identity instead of
-borrowing a named context's cached device. When the daemon starts inside a
-supported Claude Code, Codex, or OpenCode session, that session receives its own
-identity so interactive delivery does not replace the machine's durable device
-mapping; pass `--no-interactive-session` to opt out.
+An explicit `--worker-id` overrides both the wizard and the cached identity; on
+the login path it must start with `headless:` so it cannot claim another
+platform's device. Direct `--api-url` and `LOBU_API_URL` targets match only a
+context on the same URL origin; when none exists, the login path creates one for
+that installation. When the daemon starts inside a supported Claude Code, Codex,
+or OpenCode session, that session receives its own identity so interactive
+delivery does not replace the machine's durable device mapping; pass
+`--no-interactive-session` to opt out.
+
+Older CLI releases registered a terminal daemon as `macos` when run on a Mac.
+The terminal and Docker methods now register as `headless` so they cannot
+impersonate the native Mac app. The first upgraded run creates a new Worker
+device; reselect that Worker for any connection or Automation pinned to the old
+CLI-created Mac device.
 
 ## License
 

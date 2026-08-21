@@ -1,11 +1,31 @@
 import {
   resolveDaemonLaunchContext,
+  resolveDaemonWorkerId,
   startDaemonCommand,
 } from "@lobu/connector-worker/daemon";
 import { hostname } from "node:os";
-import { apiUrlToGatewayOrigin, resolveContext } from "../internal/context.js";
-import { loadDeviceState } from "../internal/device-state.js";
+import {
+  addContext,
+  apiUrlToGatewayOrigin,
+  findContextByOrigin,
+  loadContextConfig,
+  type ResolvedContext,
+  resolveContext,
+} from "../internal/context.js";
+import { getContextToken } from "../internal/credentials.js";
+import {
+  type DeviceState,
+  loadDeviceState,
+  saveDeviceState,
+  updateDeviceState,
+} from "../internal/device-state.js";
+import {
+  extractApiError,
+  fetchWithRetry,
+  parseJsonResponse,
+} from "../internal/http.js";
 import { deviceWizard } from "./_lib/device-wizard.js";
+import { loginCommand } from "./login.js";
 
 export interface DaemonOptions {
   apiUrl?: string;
@@ -18,103 +38,211 @@ export interface DaemonOptions {
   interactiveSession?: boolean;
 }
 
+interface DaemonTarget {
+  gatewayOrigin: string;
+  contextName?: string;
+}
+
+interface MintedDeviceCredential {
+  workerId: string;
+  workerApiToken: string;
+  expiresAt?: number;
+}
+
+interface MintDeviceCredentialOptions {
+  gatewayOrigin: string;
+  bearer: string;
+  platform: string;
+  workerId: string;
+  label: string;
+}
+
+class DeviceMintError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message);
+    this.name = "DeviceMintError";
+  }
+}
+
+/**
+ * How much of a cached child PAT's life must remain for this start to reuse it
+ * instead of re-minting. The daemon snapshots its bearer for the whole process
+ * lifetime and polls for weeks, so the buffer has to outlast a realistic run:
+ * with a shorter one, a start that reuses a nearly-expired token leaves the
+ * worker polling 401 forever a day or two later — the exact silent failure
+ * `startDaemonCommand`'s boot check exists to prevent. A third of the server's
+ * 90-day child expiry keeps re-mints rare while staying well past that.
+ */
+const CHILD_TOKEN_REFRESH_BUFFER_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** Shown when `lobu daemon` can't find anything to authorize against. */
 const SETUP_MESSAGE =
   "Could not determine a gateway to poll. Configure one of:\n" +
   "  - run `lobu login` to configure a context, or\n" +
   "  - pass --api-url <origin>.";
 
-// `device_worker:run` is NOT mintable as a PAT scope (see `AVAILABLE_PAT_SCOPES`
-// server-side); the `/api/workers/*` gate accepts the mintable `mcp:write`
-// scope, so the remediation requests that least-privilege alternative.
-const TOKEN_SETUP_MESSAGE =
-  "A device daemon requires a durable owl_pat_ token in WORKER_API_TOKEN; " +
-  "a stored OAuth login expires and is never used as daemon authentication.\n" +
-  "Mint a device PAT, then start the daemon:\n" +
-  "  WORKER_API_TOKEN=$(lobu token create --raw --org <slug> --scope mcp:write) lobu daemon";
+const LOGIN_SETUP_MESSAGE = (contextName: string) =>
+  `This Lobu installation is not logged in. Run \`lobu login --force --context ${contextName}\` in an interactive terminal, then retry.`;
 
 /**
- * `lobu daemon` — run a device worker that polls the gateway for jobs
- * (connector syncs/actions, and device Automations via the local agent CLIs).
+ * Run a headless device worker against one Lobu installation.
  *
- * Everything except the token auto-discovers from where it is running:
- *   - api-url  → the logged-in context (`lobu login`), else `--api-url`
- *   - platform → `macos` on darwin, `headless` otherwise
- *   - worker id → `<platform>:<short-hostname>` outside a supported interactive
- *     agent, or a provider/session-derived id when one is inherited
- *   - label → hostname
- *   - capabilities → `os.shell,os.files`
- *
- * Org binding is the token, not a flag: pass a durable `owl_pat_…` PAT in
- * `WORKER_API_TOKEN` (`lobu token create --raw`); the server anchors the worker
- * to that token's org (an org-scoped PAT → that org, personal/session → the
- * personal org).
- *
- * On a named context's first interactive boot, a short wizard confirms the
- * device identity. Explicit URL overrides stay stateless and use the same
- * deterministic default as other non-interactive starts.
+ * WORKER_API_TOKEN remains an escape hatch for unattended setups. Ordinarily
+ * the command uses the target installation's named OAuth context to mint and
+ * cache a worker-bound child PAT. The short-lived OAuth bearer is never handed
+ * to the long-running worker and never crosses URL origins.
  */
 export async function daemonCommand(options: DaemonOptions): Promise<void> {
-  let apiUrl = options.apiUrl?.trim();
-  let contextName: string | undefined;
-  if (!apiUrl) {
-    try {
-      // The worker API is mounted at the ORIGIN, not under the context's
-      // `/api/v1` SDK path — see `apiUrlToGatewayOrigin`.
-      const context = await resolveContext();
-      apiUrl = apiUrlToGatewayOrigin(context.url);
-      // LOBU_API_URL is an override just like --api-url: it must not inherit
-      // device state from the otherwise-current named context.
-      if (context.source !== "env") contextName = context.name;
-    } catch {
-      // No context configured — surface the explicit requirement below.
-    }
-  }
-  if (!apiUrl) {
-    throw new Error(SETUP_MESSAGE);
-  }
+  const explicitWorkerToken = process.env.WORKER_API_TOKEN?.trim();
+  const target = await resolveDaemonTarget(options.apiUrl);
 
-  // Stored login credentials are short-lived admin/session auth. A daemon polls
-  // for weeks and snapshots its bearer at boot, so only the explicitly exported
-  // worker PAT is accepted here (the shared daemon bootstrap validates again).
-  const workerApiToken = process.env.WORKER_API_TOKEN?.trim();
-  if (!workerApiToken?.startsWith("owl_pat_")) {
-    throw new Error(TOKEN_SETUP_MESSAGE);
-  }
-
-  const platform = options.platform?.trim() || undefined;
-  const defaultPlatform = process.platform === "darwin" ? "macos" : "headless";
+  const requestedPlatform = options.platform?.trim() || undefined;
+  // The native macOS app owns the `macos` platform. A terminal daemon is a
+  // headless device on every host, including a Mac running Herdr.
+  const defaultPlatform = "headless";
   const launchContext = resolveDaemonLaunchContext({
-    platform,
+    platform: requestedPlatform,
     defaultPlatform,
     ...(options.interactiveSession === false
       ? { interactiveSession: false as const }
       : {}),
     ...(options.insideClaude === true ? { insideClaude: true } : {}),
   });
-  const explicitWorkerId = options.workerId?.trim() || undefined;
-  // Centralized session detection must own the per-session id. Passing a cache
-  // or wizard id here would override Claude/Codex/OpenCode routing in the shared
-  // daemon bootstrap. The legacy flag stays headless even when its startup
-  // metadata is temporarily absent and detection retries per run.
+  const platform = launchContext.platform ?? defaultPlatform;
   const sessionLane =
     launchContext.interactiveSession !== undefined ||
     options.insideClaude === true;
-  const workerId =
-    explicitWorkerId ??
-    (sessionLane
-      ? undefined
-      : await resolveWorkerId(
-          launchContext.platform ?? defaultPlatform,
+  const shortHost = hostname().split(".")[0] || hostname();
+  const explicitWorkerId = options.workerId?.trim() || undefined;
+  const sessionWorkerId = sessionLane
+    ? resolveDaemonWorkerId(
+        {
+          workerId: explicitWorkerId,
+          ...(options.insideClaude === true ? { insideClaude: true } : {}),
+        },
+        platform,
+        shortHost,
+        launchContext.interactiveSession
+      )
+    : undefined;
+
+  let contextName = target.contextName;
+  if (!explicitWorkerToken) {
+    // Checked before any context is saved: an advanced platform override has no
+    // login-based path, so a doomed start must not leave a new context behind.
+    if (platform !== "headless") {
+      throw new Error(
+        `Login-based daemon setup supports the headless platform, not "${platform}". Omit --platform, or provide an explicit WORKER_API_TOKEN for this advanced platform override.`
+      );
+    }
+    if (explicitWorkerId && !explicitWorkerId.startsWith(`${platform}:`)) {
+      throw new Error(
+        `Login-based daemon worker id "${explicitWorkerId}" does not match platform "${platform}". Use an id beginning with "${platform}:", or omit --worker-id.`
+      );
+    }
+    if (!contextName) {
+      contextName = await ensureInstallationContext(target.gatewayOrigin);
+    }
+  }
+
+  // One cache slot per persisted identity: the host default shares the bare
+  // platform key the wizard writes, while an explicit --worker-id gets its own.
+  const statePlatform = explicitWorkerId
+    ? `${platform}-worker-${explicitWorkerId}`
+    : platform;
+  // Agent-session identities are deterministic but ephemeral, so they get no
+  // cache slot at all. Keep their PAT in this process only: a restart can mint
+  // the same worker id again, while the server reaper owns cleanup of
+  // abandoned unbound devices and tokens.
+  const cachedState =
+    contextName && !sessionLane
+      ? await loadDeviceState(contextName, statePlatform)
+      : null;
+
+  let workerId = explicitWorkerId ?? sessionWorkerId ?? cachedState?.workerId;
+  let workerApiToken = explicitWorkerToken;
+
+  if (workerApiToken) {
+    if (!workerApiToken.startsWith("owl_pat_")) {
+      throw new Error(
+        "WORKER_API_TOKEN must be a Lobu personal access token with an owl_pat_ prefix."
+      );
+    }
+    if (!workerId) {
+      workerId = await resolveHostWorkerId(
+        platform,
+        contextName,
+        target.gatewayOrigin,
+        workerApiToken
+      );
+    }
+  } else {
+    // Assigned above whenever WORKER_API_TOKEN is unset; restated so the mint
+    // helpers below see a `string`.
+    if (!contextName) throw new Error(SETUP_MESSAGE);
+
+    if (
+      workerId &&
+      cachedState?.workerId === workerId &&
+      hasUsableCachedWorkerToken(cachedState)
+    ) {
+      workerApiToken = cachedState.workerApiToken;
+    } else {
+      let mintBearer = cachedState?.workerApiToken;
+      if (!workerId) {
+        mintBearer = await requireInstallationLogin(contextName);
+        workerId = await resolveHostWorkerId(
+          platform,
           contextName,
-          apiUrl,
-          workerApiToken
-        ));
-  const daemonPlatform = sessionLane ? "headless" : platform;
+          target.gatewayOrigin,
+          mintBearer
+        );
+      }
+
+      const bearer =
+        mintBearer ?? (await requireInstallationLogin(contextName));
+      const minted = await mintDeviceCredentialWithReauth({
+        contextName,
+        initialBearerIsChild:
+          mintBearer !== undefined &&
+          mintBearer === cachedState?.workerApiToken,
+        options: {
+          gatewayOrigin: target.gatewayOrigin,
+          bearer,
+          platform,
+          workerId,
+          label: options.label?.trim() || shortHost,
+        },
+      });
+
+      if (minted.workerId !== workerId) {
+        throw new Error(
+          `The gateway registered worker id "${minted.workerId}" instead of "${workerId}"; refusing to start with a mismatched credential.`
+        );
+      }
+      if (!sessionLane) {
+        await persistDeviceCredential(contextName, statePlatform, minted);
+      }
+      workerApiToken = minted.workerApiToken;
+    }
+  }
+
+  // Every path above assigns both. Asserted at the package boundary because
+  // the fallthrough is `startDaemonCommand`'s own boot check, whose message
+  // tells the user to set WORKER_API_TOKEN — the wrong advice on the login path.
+  if (!workerId || !workerApiToken) {
+    throw new Error(
+      `Could not resolve a device identity and credential for ${target.gatewayOrigin}.`
+    );
+  }
 
   await startDaemonCommand({
-    apiUrl,
-    platform: daemonPlatform,
+    apiUrl: target.gatewayOrigin,
+    platform: sessionLane ? "headless" : requestedPlatform,
     defaultPlatform,
     workerId,
     label: options.label?.trim() || undefined,
@@ -131,43 +259,255 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
   });
 }
 
+async function resolveDaemonTarget(
+  explicitApiUrl: string | undefined
+): Promise<DaemonTarget> {
+  const explicit = explicitApiUrl?.trim();
+  if (explicit) {
+    const gatewayOrigin = requireGatewayOrigin(explicit);
+    const matched = await findContextByOrigin(gatewayOrigin);
+    return {
+      gatewayOrigin,
+      ...(matched ? { contextName: matched.name } : {}),
+    };
+  }
+
+  // Only the lookup itself falls back to the setup message: an unusable URL has
+  // to keep reporting the address the user actually configured.
+  let context: ResolvedContext;
+  try {
+    context = await resolveContext();
+  } catch {
+    throw new Error(SETUP_MESSAGE);
+  }
+  const gatewayOrigin = requireGatewayOrigin(context.url);
+  // LOBU_API_URL is an override just like --api-url: it must not inherit the
+  // device state of the otherwise-current named context, only of a context
+  // configured for that same origin.
+  if (context.source !== "env") {
+    return { gatewayOrigin, contextName: context.name };
+  }
+  const matched = await findContextByOrigin(gatewayOrigin);
+  return {
+    gatewayOrigin,
+    ...(matched ? { contextName: matched.name } : {}),
+  };
+}
+
+function requireGatewayOrigin(value: string): string {
+  const origin = apiUrlToGatewayOrigin(value);
+  try {
+    return new URL(origin).origin;
+  } catch {
+    throw new Error(`Invalid gateway URL: ${value}`);
+  }
+}
+
+async function ensureInstallationContext(
+  gatewayOrigin: string
+): Promise<string> {
+  const matched = await findContextByOrigin(gatewayOrigin);
+  if (matched) return matched.name;
+
+  const config = await loadContextConfig();
+  const host = new URL(gatewayOrigin).hostname.toLowerCase();
+  const baseName = host || "lobu-installation";
+  let name = baseName;
+  let suffix = 2;
+  while (config.contexts[name]) {
+    name = `${baseName}-${suffix}`;
+    suffix += 1;
+  }
+  await addContext(name, gatewayOrigin);
+  console.log(
+    `\n  Saved Lobu installation context "${name}" (${gatewayOrigin}).`
+  );
+  return name;
+}
+
+async function requireInstallationLogin(contextName: string): Promise<string> {
+  const existing = await getContextToken(contextName);
+  if (existing) return existing;
+  return refreshInstallationLogin(contextName);
+}
+
+async function refreshInstallationLogin(contextName: string): Promise<string> {
+  if (!canPrompt()) throw new Error(LOGIN_SETUP_MESSAGE(contextName));
+
+  // The stored credential is absent, expired, revoked, or predates the daemon's
+  // device_worker:run scope. Without --force `lobu login` can short-circuit on
+  // that same credential with "Already logged in" and authorize nothing.
+  await loginCommand({ context: contextName, force: true });
+  const authenticated = await getContextToken(contextName);
+  if (!authenticated) throw new Error(LOGIN_SETUP_MESSAGE(contextName));
+  return authenticated;
+}
+
+async function mintDeviceCredentialWithReauth({
+  contextName,
+  initialBearerIsChild,
+  options,
+}: {
+  contextName: string;
+  initialBearerIsChild: boolean;
+  options: MintDeviceCredentialOptions;
+}): Promise<MintedDeviceCredential> {
+  try {
+    return await mintDeviceCredential(options);
+  } catch (error) {
+    if (!isDeviceMintAuthError(error)) throw error;
+
+    // A cached child may have expired or been revoked. Retry with this exact
+    // installation's stored login first; never borrow a different context.
+    if (initialBearerIsChild) {
+      const installationBearer = await requireInstallationLogin(contextName);
+      try {
+        return await mintDeviceCredential({
+          ...options,
+          bearer: installationBearer,
+        });
+      } catch (loginError) {
+        if (!isDeviceMintAuthError(loginError)) throw loginError;
+      }
+    }
+
+    // A stored login can be valid for ordinary MCP work but lack the newer
+    // device_worker:run scope. Interactive starts repair it through the same
+    // device-code flow; non-interactive starts receive the exact login command.
+    return mintDeviceCredential({
+      ...options,
+      bearer: await refreshInstallationLogin(contextName),
+    });
+  }
+}
+
 /**
- * Resolve an ordinary host device's `worker_id` after explicit and inherited
- * session identities have already been handled by the caller: a URL override
- * takes `<platform>:<hostname>` outright, and a named context takes its cached
- * identity, then the TTY-only first-run wizard, then `<platform>:<hostname>`.
- *
- * The wizard only runs on a TTY, only when the id is absent, and only when there
- * is no cached device yet — so a fully-configured daemon never prompts.
+ * True only for a refusal that re-authenticating can actually clear: an expired
+ * or revoked bearer (401), or a bearer the endpoint refuses to mint from
+ * (`insufficient_scope` — a missing `device_worker:run`, an MCP resource-bound
+ * token, or a child reaching past its own worker id). Every other 403 is a
+ * standing account condition (`personal_org_missing`); retrying it would
+ * force-revoke a working login through `lobu login --force` and still fail.
  */
-async function resolveWorkerId(
+function isDeviceMintAuthError(error: unknown): error is DeviceMintError {
+  if (!(error instanceof DeviceMintError)) return false;
+  if (error.status === 401) return true;
+  return error.status === 403 && error.code === "insufficient_scope";
+}
+
+function hasUsableCachedWorkerToken(state: DeviceState): boolean {
+  return Boolean(
+    state.workerApiToken?.startsWith("owl_pat_") &&
+      typeof state.expiresAt === "number" &&
+      state.expiresAt > Date.now() + CHILD_TOKEN_REFRESH_BUFFER_MS
+  );
+}
+
+async function mintDeviceCredential(
+  options: MintDeviceCredentialOptions
+): Promise<MintedDeviceCredential> {
+  const url = `${options.gatewayOrigin}/api/me/devices/mint-child-token`;
+  const res = await fetchWithRetry(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${options.bearer}`,
+      "Content-Type": "application/json",
+      "X-Lobu-Client": "cli",
+    },
+    body: JSON.stringify({
+      platform: options.platform,
+      worker_id: options.workerId,
+      label: options.label,
+    }),
+  });
+  const parsed = (await parseJsonResponse(res, url, (message: string) => {
+    throw new DeviceMintError(message, res.status);
+  })) as Record<string, unknown> | undefined;
+  if (!res.ok) {
+    const { message, code } = extractApiError(
+      parsed,
+      res.status,
+      res.statusText
+    );
+    throw new DeviceMintError(
+      `Could not authorize this device: ${message}`,
+      res.status,
+      code
+    );
+  }
+
+  const workerId =
+    typeof parsed?.worker_id === "string" ? parsed.worker_id : "";
+  const workerApiToken =
+    typeof parsed?.access_token === "string" ? parsed.access_token : "";
+  const expiresAt =
+    typeof parsed?.expires_at === "string"
+      ? Date.parse(parsed.expires_at)
+      : Number.NaN;
+  if (!workerId || !workerApiToken.startsWith("owl_pat_")) {
+    throw new DeviceMintError(
+      "The gateway returned an invalid device credential.",
+      res.status
+    );
+  }
+  return {
+    workerId,
+    workerApiToken,
+    ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+  };
+}
+
+async function persistDeviceCredential(
+  contextName: string,
+  statePlatform: string,
+  credential: MintedDeviceCredential
+): Promise<void> {
+  const state: DeviceState = {
+    workerId: credential.workerId,
+    workerApiToken: credential.workerApiToken,
+    ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+  };
+  const existing = await loadDeviceState(contextName, statePlatform);
+  if (existing) {
+    await updateDeviceState(contextName, statePlatform, state);
+    return;
+  }
+  try {
+    await saveDeviceState(contextName, statePlatform, state);
+  } catch (error) {
+    const winner = await loadDeviceState(contextName, statePlatform);
+    if (winner?.workerId !== state.workerId) throw error;
+    await updateDeviceState(contextName, statePlatform, state);
+  }
+}
+
+/**
+ * Resolve a normal host identity for a device that has no cached one yet: the
+ * TTY first-run wizard, else the deterministic `<platform>:<hostname>`. Callers
+ * consume the cache themselves, so reaching here means there is nothing saved.
+ */
+async function resolveHostWorkerId(
   platform: string,
   contextName: string | undefined,
-  apiUrl: string,
-  workerApiToken: string
+  gatewayOrigin: string,
+  authorizationToken: string
 ): Promise<string> {
   const shortHost = hostname().split(".")[0] || hostname();
   const suggested = `${platform}:${shortHost}`;
-
-  // URL overrides are intentionally stateless: they are commonly temporary
-  // local/self-hosted targets and must never borrow another context's identity.
+  // A URL override with no matching context is stateless: it has no context to
+  // save the wizard's choice under, so take the deterministic id.
   if (!contextName) return suggested;
+  if (!canPrompt()) return suggested;
 
-  const cached = await loadDeviceState(contextName, platform);
-  if (cached?.workerId) return cached.workerId;
-
-  if (canPrompt()) {
-    const result = await deviceWizard({
-      context: contextName,
-      gatewayOrigin: apiUrl,
-      platform,
-      suggestedWorkerId: suggested,
-      workerApiToken,
-    });
-    return result.workerId;
-  }
-
-  return suggested;
+  const result = await deviceWizard({
+    context: contextName,
+    gatewayOrigin,
+    platform,
+    suggestedWorkerId: suggested,
+    authorizationToken,
+  });
+  return result.workerId;
 }
 
 function canPrompt(): boolean {

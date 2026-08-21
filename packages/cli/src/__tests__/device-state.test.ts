@@ -10,7 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import * as os from "node:os";
 import { join } from "node:path";
-import { loadDeviceState, saveDeviceState } from "../internal/device-state";
+import {
+  loadDeviceState,
+  saveDeviceState,
+  updateDeviceState,
+} from "../internal/device-state";
 
 describe("device-state cache", () => {
   let home: string | undefined;
@@ -58,6 +62,44 @@ describe("device-state cache", () => {
     await expect(
       saveDeviceState("local", "macos", { workerId: "macos:myhost" })
     ).rejects.toThrow(/already exists or is unreadable/);
+  });
+
+  test("stores and rotates an owner-only worker credential for the same identity", async () => {
+    const dir = useTemporaryHome();
+    await saveDeviceState("buremba", "headless", {
+      workerId: "headless:herdr",
+    });
+
+    await updateDeviceState("buremba", "headless", {
+      workerId: "headless:herdr",
+      workerApiToken: "owl_pat_child-one",
+      expiresAt: 4_000_000_000_000,
+    });
+
+    expect(await loadDeviceState("buremba", "headless")).toEqual({
+      workerId: "headless:herdr",
+      workerApiToken: "owl_pat_child-one",
+      expiresAt: 4_000_000_000_000,
+    });
+    const [file] = readdirSync(join(dir, ".config", "lobu", "devices"));
+    expect(
+      statSync(join(dir, ".config", "lobu", "devices", file as string)).mode &
+        0o777
+    ).toBe(0o600);
+  });
+
+  test("refuses to rotate credentials onto a different saved worker identity", async () => {
+    useTemporaryHome();
+    await saveDeviceState("buremba", "headless", {
+      workerId: "headless:first",
+    });
+
+    await expect(
+      updateDeviceState("buremba", "headless", {
+        workerId: "headless:second",
+        workerApiToken: "owl_pat_child-two",
+      })
+    ).rejects.toThrow(/saved worker id changed/);
   });
 
   test("rejects a concurrent first setup instead of starting two daemons", async () => {

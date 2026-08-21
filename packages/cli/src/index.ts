@@ -1172,7 +1172,7 @@ Memory:
     )
     .option(
       "--platform <name>",
-      "Device platform (defaults to macos/headless by host)"
+      "Device platform (defaults to headless; native macOS uses Owletto)"
     )
     .option(
       "--inside-claude",

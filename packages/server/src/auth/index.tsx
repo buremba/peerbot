@@ -309,7 +309,7 @@ export async function createAuth(
 					// whose auto-provisioned org was deleted, or who manually created
 					// their first org via the UI, ends up with NULL `workerOrgIds`
 					// in the device-worker auth middleware (index.ts:602-607), so
-					// their Lobu bridge gets a 403 on every poll.
+					// their personal worker gets a 403 on every poll.
 					afterCreateOrganization: async ({ organization: org, user }) => {
 						// The org row is already committed when this hook fires. Audit
 						// first so the creation trail survives a personal-org marker

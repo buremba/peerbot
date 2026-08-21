@@ -1,5 +1,20 @@
 # Changelog
 
+## [15.7.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.6.0...lobu-v15.7.0) (2026-08-21)
+
+
+### Features
+
+* **connectors:** declare attributed entity relationships ([#3057](https://github.com/lobu-ai/lobu/issues/3057)) ([aaf3897](https://github.com/lobu-ai/lobu/commit/aaf389713743d7f99c1070014ed740f867859243))
+
+
+### Bug Fixes
+
+* **auth:** scope direct MCP worker credentials ([#3053](https://github.com/lobu-ai/lobu/issues/3053)) ([288c691](https://github.com/lobu-ai/lobu/commit/288c69177f8f18e7b329df4448f437798e2b455d))
+* **cli:** finish authenticated daemon onboarding ([#3056](https://github.com/lobu-ai/lobu/issues/3056)) ([68678d3](https://github.com/lobu-ai/lobu/commit/68678d38bd386146157b11fbb588ee864f9f71e5))
+* **dev:** resolve a remote-only branch in task-setup ([#3051](https://github.com/lobu-ai/lobu/issues/3051)) ([1133495](https://github.com/lobu-ai/lobu/commit/113349570eba1d3ad9bfb39a167cb471f75e5591))
+* **server:** bind save_memory media and stop re-sync supersede loops ([#3054](https://github.com/lobu-ai/lobu/issues/3054)) ([fe69416](https://github.com/lobu-ai/lobu/commit/fe694168bba305850ec8f86574ab6b13cb8e91c1))
+
 ## [15.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.5.0...lobu-v15.6.0) (2026-08-21)
 
 

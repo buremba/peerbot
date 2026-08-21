@@ -146,6 +146,173 @@ describe("connections.test — live Slack identity", () => {
 		expect(JSON.stringify(result)).not.toContain(token);
 	});
 
+	it("rejects an org-wide workspace identity with malformed matching enterprise ids", async () => {
+		const { org, ctx } = await seedOwnerContext({
+			orgName: "Slack Grid Malformed Workspace Enterprise Org",
+		});
+		const { connectionId, token } = await seedManagedSlackConnection({
+			organizationId: org.id,
+			runtimeId: "slackinst-grid-malformed-workspace-enterprise",
+			externalTenantId: "T0WORKSPACE",
+			teamId: "T0WORKSPACE",
+			enterpriseId: "NOT_SLACK_ENTERPRISE",
+			isEnterpriseInstall: true,
+		});
+		globalThis.fetch = vi.fn(async () =>
+			new Response(
+				JSON.stringify({
+					ok: true,
+					team_id: "T0WORKSPACE",
+					enterprise_id: "NOT_SLACK_ENTERPRISE",
+					is_enterprise_install: true,
+				}),
+			),
+		) as typeof fetch;
+
+		const result = await manageConnections(
+			{ action: "test", connection_id: connectionId },
+			{} as Env,
+			ctx,
+		);
+
+		expect(result).toMatchObject({
+			action: "test",
+			status: "error",
+			error_code: "AUTH_INVALID",
+			retryable: false,
+		});
+		expect(String((result as { message: string }).message)).toContain(
+			"upstream enterprise 'NOT_SLACK_ENTERPRISE' is not a Slack E id",
+		);
+		expect(JSON.stringify(result)).not.toContain(token);
+	});
+
+	it("accepts an org-wide auth.test identity with no concrete workspace", async () => {
+		const { org, ctx } = await seedOwnerContext({
+			orgName: "Slack Grid Enterprise Probe Org",
+		});
+		const { connectionId, token } = await seedManagedSlackConnection({
+			organizationId: org.id,
+			runtimeId: "slackinst-grid-enterprise-probe",
+			externalTenantId: "E0BQ0T88H3R",
+			teamId: "E0BQ0T88H3R",
+			enterpriseId: "E0BQ0T88H3R",
+			isEnterpriseInstall: true,
+		});
+		globalThis.fetch = vi.fn(async () =>
+			new Response(
+				JSON.stringify({
+					ok: true,
+					team_id: "E0BQ0T88H3R",
+					enterprise_id: "E0BQ0T88H3R",
+					is_enterprise_install: true,
+				}),
+			),
+		) as typeof fetch;
+
+		const result = await manageConnections(
+			{ action: "test", connection_id: connectionId },
+			{} as Env,
+			ctx,
+		);
+
+		expect(result).toMatchObject({
+			action: "test",
+			status: "ok",
+		});
+		expect(String((result as { message: string }).message)).toContain(
+			"org-wide enterprise E0BQ0T88H3R",
+		);
+		expect(String((result as { message: string }).message)).toContain(
+			"no separate concrete workspace",
+		);
+		expect(JSON.stringify(result)).not.toContain(token);
+	});
+
+	it.each([
+		{
+			slug: "upstream-disagrees",
+			name: "the upstream org-wide id and enterprise disagree",
+			storedEnterpriseId: "E0STORED",
+			upstreamTeamId: "E0UPSTREAM",
+			upstreamEnterpriseId: "E0OTHER",
+			upstreamEnterpriseInstall: true,
+			expected: "does not match upstream enterprise",
+		},
+		{
+			slug: "malformed-enterprise",
+			name: "the upstream enterprise is malformed",
+			storedEnterpriseId: "E0STORED",
+			upstreamTeamId: "E0STORED",
+			upstreamEnterpriseId: "T0WORKSPACE",
+			upstreamEnterpriseInstall: true,
+			expected: "is not a Slack E id",
+		},
+		{
+			slug: "stored-differs",
+			name: "the stored enterprise differs",
+			storedEnterpriseId: "E0STORED",
+			upstreamTeamId: "E0UPSTREAM",
+			upstreamEnterpriseId: "E0UPSTREAM",
+			upstreamEnterpriseInstall: true,
+			expected: "does not match stored enterprise",
+		},
+		{
+			slug: "enterprise-id-without-org-wide-install",
+			name: "an enterprise id arrives on a workspace-scoped install",
+			storedEnterpriseId: "E0STORED",
+			upstreamTeamId: "E0STORED",
+			upstreamEnterpriseId: "E0STORED",
+			upstreamEnterpriseInstall: false,
+			expected:
+				"upstream reports workspace-scoped install but named enterprise 'E0STORED' as its workspace",
+		},
+	])("rejects an org-wide enterprise-only identity when $name", async ({
+		slug,
+		storedEnterpriseId,
+		upstreamTeamId,
+		upstreamEnterpriseId,
+		upstreamEnterpriseInstall,
+		expected,
+	}) => {
+		const { org, ctx } = await seedOwnerContext({
+			orgName: `Slack Grid Rejected Probe ${slug}`,
+		});
+		const { connectionId, token } = await seedManagedSlackConnection({
+			organizationId: org.id,
+			runtimeId: `slackinst-grid-rejected-${slug}`,
+			externalTenantId: storedEnterpriseId,
+			teamId: storedEnterpriseId,
+			enterpriseId: storedEnterpriseId,
+			isEnterpriseInstall: true,
+		});
+		globalThis.fetch = vi.fn(async () =>
+			new Response(
+				JSON.stringify({
+					ok: true,
+					team_id: upstreamTeamId,
+					enterprise_id: upstreamEnterpriseId,
+					is_enterprise_install: upstreamEnterpriseInstall,
+				}),
+			),
+		) as typeof fetch;
+
+		const result = await manageConnections(
+			{ action: "test", connection_id: connectionId },
+			{} as Env,
+			ctx,
+		);
+
+		expect(result).toMatchObject({
+			action: "test",
+			status: "error",
+			error_code: "AUTH_INVALID",
+			retryable: false,
+		});
+		expect(String((result as { message: string }).message)).toContain(expected);
+		expect(JSON.stringify(result)).not.toContain(token);
+	});
+
 	it("rejects a sibling workspace for a workspace-scoped install", async () => {
 		const { org, ctx } = await seedOwnerContext({
 			orgName: "Slack Workspace Probe Org",

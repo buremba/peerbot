@@ -1,5 +1,20 @@
 # Changelog
 
+## [15.5.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.4.0...lobu-v15.5.0) (2026-08-21)
+
+
+### Features
+
+* **cli:** first-run device wizard + consistent daemon worker id ([#3014](https://github.com/lobu-ai/lobu/issues/3014)) ([c8f0efb](https://github.com/lobu-ai/lobu/commit/c8f0efb87d923c1675af6f2ed61abbaf29e04e44))
+* **dev:** add make ctx and make land composite commands ([#3026](https://github.com/lobu-ai/lobu/issues/3026)) ([df662c1](https://github.com/lobu-ai/lobu/commit/df662c1ae7286914dae5e56c7f88ac067f7de153))
+
+
+### Bug Fixes
+
+* **ci:** stop merges cancelling main's validation, build the graph in task-setup ([#3028](https://github.com/lobu-ai/lobu/issues/3028)) ([dd61596](https://github.com/lobu-ai/lobu/commit/dd61596f736c4d65a41ec8ed2eb0cea34ab387b4))
+* **mcp:** mark audited retrieval tools read-only ([#3029](https://github.com/lobu-ai/lobu/issues/3029)) ([16019d1](https://github.com/lobu-ai/lobu/commit/16019d145fb149ca65b261eb00e171b172187917))
+* **test:** reap embedded-Postgres clusters orphaned by a killed run ([#3025](https://github.com/lobu-ai/lobu/issues/3025)) ([093548b](https://github.com/lobu-ai/lobu/commit/093548b9208c9850e1dd381069171f3c0c1a753e))
+
 ## [15.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.3.1...lobu-v15.4.0) (2026-08-21)
 
 

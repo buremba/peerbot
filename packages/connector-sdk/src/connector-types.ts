@@ -639,6 +639,12 @@ export interface EntityIdentitySpec {
    * Distinct from the deleted `uniquePerOrg` flag, which was CARDINALITY — does
    * this value name one entity or many (`email_domain` names many). Scope is
    * orthogonal: `email_domain` is many-per-org yet globally meaningful.
+   *
+   * NOT the same field as `scope` on the auth schema (`ConnectorAuthEnvKeys`,
+   * `ConnectorAuthOAuth`, `ConnectorAuthInteractive`), which shares this name and
+   * this exact value union but scopes a CREDENTIAL, not an identity namespace.
+   * Check which one you are setting: writing `'connection'` here because you
+   * wrote it there forks one person into one entity per connection.
    */
   scope?: 'organization' | 'connection';
 }

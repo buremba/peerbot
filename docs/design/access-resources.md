@@ -359,7 +359,11 @@ WHERE e.organization_id = :organization_id
         SELECT 1
         FROM caller_resources cr
         WHERE cr.resource_id = CASE
-          WHEN (e.metadata->>required.field_name) ~ '^[1-9][0-9]{0,18}$'
+          WHEN (e.metadata->>required.field_name) ~ '^[1-9][0-9]{0,17}$'
+            OR (
+              (e.metadata->>required.field_name) ~ '^[1-9][0-9]{18}$'
+              AND (e.metadata->>required.field_name) <= '9223372036854775807'
+            )
           THEN (e.metadata->>required.field_name)::bigint
           ELSE NULL
         END
@@ -369,7 +373,8 @@ WHERE e.organization_id = :organization_id
 ```
 
 The positive membership check is deliberately nested inside the anti-join. A
-missing, null, zero, negative, non-numeric, or oversized reference produces no
+missing, null, zero, negative, non-numeric, or out-of-range reference—including
+9223372036854775808, one above PostgreSQL's signed-bigint maximum—produces no
 matching caller resource, so the outer query hides the row. Production SQL should
 avoid repeated JSON extraction, but the fail-closed semantics stay this small. Its
 `caller_resources` CTE

@@ -52,17 +52,6 @@ const IN_FLIGHT_RUN_STATUSES = new Set(['claimed', 'running']);
 /** Terminal execution failures that degrade an active automation. */
 const FAILED_RUN_STATUSES = new Set(['failed', 'timeout']);
 
-/**
- * Both the connector and the workspace event trigger use `kind: 'event'`, so
- * this one predicate covers every activation that fires off an event rather
- * than a cron. Shared by list and get_automation so their verdicts agree.
- */
-export function hasEventTrigger(
-  triggers: AutomationTrigger[] | null | undefined
-): boolean {
-  return (triggers ?? []).some((trigger) => trigger.kind === 'event');
-}
-
 export interface AutomationHealthInput {
   /** Automation `status` (only `active` automations can be degraded). */
   status: string | null | undefined;
@@ -81,8 +70,10 @@ export interface AutomationHealthInput {
    * July-2026 z.ai quota storm lacked. NULL on pre-backfill rows.
    */
   latestRunOutcome?: string | null;
-  /** Whether the persisted trigger set contains an event/chat activation. */
-  hasEventTrigger?: boolean;
+  /** Persisted triggers, used to distinguish event-driven Automations. */
+  triggers?: AutomationTrigger[] | null;
+  /** Canonical proof that an event/chat activation dispatched. */
+  lastEventActivationAt?: string | Date | null;
   /** Newest-first scored terminal outcomes from the bounded recent-run read. */
   recentTerminalRunStatuses?: string[];
 }
@@ -108,8 +99,7 @@ function toMs(value: string | Date | null | undefined): number | null {
  * Derive an automation's health from already-selected fields.
  *
  * `degraded` when the automation is `active` AND any of:
- *   - it activates on an event but has never produced a run — configured, not
- *     yet proven to fire; or
+ *   - it activates on an event but has neither a run nor an activation stamp;
  *   - its latest run ended in a terminal failure (`failed`/`timeout`) — the
  *     automation ran and broke, regardless of the scheduler cursor; or
  *   - at least half of a meaningful window of recent terminal runs failed — a
@@ -142,8 +132,15 @@ export function computeAutomationHealth(
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
 
-  if (input.hasEventTrigger && input.latestRunStatus == null) {
-    reasons.push('event trigger configured, but no runs observed yet');
+  const hasEventTrigger = (input.triggers ?? []).some(
+    (trigger) => trigger.kind === 'event'
+  );
+  if (
+    hasEventTrigger &&
+    input.latestRunStatus == null &&
+    input.lastEventActivationAt == null
+  ) {
+    reasons.push('event trigger configured, but no dispatch observed yet');
   }
 
   if (FAILED_RUN_STATUSES.has(input.latestRunStatus ?? '')) {

@@ -172,7 +172,7 @@ describe("automation health surfacing (#2033)", () => {
     expect(row?.last_scheduling_error).toBe("No model is configured");
   });
 
-  it("3.1 (integration): a never-fired event automation is configured but unverified", async () => {
+  it("3.1 (integration): an unstamped event automation without runs is unverified", async () => {
     const { automationId, ctx } = await createScheduledAutomation();
     await getTestDb()`
       UPDATE automations
@@ -184,7 +184,7 @@ describe("automation health surfacing (#2033)", () => {
           execution: "turn",
           active_run: "coalesce",
         },
-      ])}, next_run_at = NULL
+      ])}, next_run_at = NULL, last_event_activation_at = NULL
       WHERE id = ${automationId}
     `;
 
@@ -196,7 +196,55 @@ describe("automation health surfacing (#2033)", () => {
         String(automationId),
     ) as { health?: string; health_reasons?: string[] } | undefined;
     expect(row?.health).toBe("degraded");
-    expect(row?.health_reasons?.join(" ")).toContain("no runs observed");
+    expect(row?.health_reasons).toContain(
+      "event trigger configured, but no dispatch observed yet",
+    );
+
+    const detail = await getAutomation(
+      { automation_id: String(automationId) },
+      {} as Env,
+      ctx,
+    );
+    expect(detail.automation?.health).toBe("degraded");
+    expect(detail.automation?.health_reasons).toContain(
+      "event trigger configured, but no dispatch observed yet",
+    );
+  });
+
+  it("3.1 (integration): an activation stamp proves an event automation dispatched", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    await getTestDb()`
+      UPDATE automations
+      SET triggers = ${getTestDb().json([
+        {
+          kind: "event",
+          connector_key: "slack",
+          event_types: ["message.created"],
+          execution: "turn",
+          active_run: "coalesce",
+        },
+      ])}, next_run_at = NULL, last_event_activation_at = current_timestamp
+      WHERE id = ${automationId}
+    `;
+
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (automation) =>
+        String((automation as { automation_id?: unknown }).automation_id) ===
+        String(automationId),
+    ) as Record<string, unknown> | undefined;
+    expect(row?.health).toBe("healthy");
+    expect(row).not.toHaveProperty("health_reasons");
+    expect(row).not.toHaveProperty("health_last_event_activation_at");
+
+    const detail = await getAutomation(
+      { automation_id: String(automationId) },
+      {} as Env,
+      ctx,
+    );
+    expect(detail.automation?.health).toBe("healthy");
+    expect(detail.automation?.health_reasons).toBeUndefined();
   });
 
   it("3.1 (integration): a latest success does not hide 44 failures in 74 recent runs", async () => {

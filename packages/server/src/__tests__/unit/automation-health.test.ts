@@ -75,18 +75,40 @@ describe("computeAutomationHealth", () => {
 		expect(result.reasons).toHaveLength(0);
 	});
 
-	it("does not call a never-fired event automation proven healthy", () => {
+	it("degrades an event automation with neither activation stamp nor run", () => {
 		const result = computeAutomationHealth(
 			{
 				status: "active",
 				nextRunAt: null,
 				latestRunStatus: null,
-				hasEventTrigger: true,
+				triggers: [
+					{ kind: "event", connector_key: "slack", event_types: ["message.created"] },
+				],
+				lastEventActivationAt: null,
 			},
 			NOW,
 		);
 		expect(result.health).toBe("degraded");
-		expect(result.reasons.join(" ")).toContain("no runs observed");
+		expect(result.reasons).toContain(
+			"event trigger configured, but no dispatch observed yet",
+		);
+	});
+
+	it("keeps a stamped event automation healthy without Automation run history", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: null,
+				latestRunStatus: null,
+				triggers: [
+					{ kind: "event", connector_key: "slack", event_types: ["message.created"] },
+				],
+				lastEventActivationAt: new Date(NOW - 60_000).toISOString(),
+			},
+			NOW,
+		);
+		expect(result.health).toBe("healthy");
+		expect(result.reasons).toHaveLength(0);
 	});
 
 	it("keeps a severe rolling failure pattern degraded after one success", () => {

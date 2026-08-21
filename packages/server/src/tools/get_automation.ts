@@ -59,10 +59,7 @@ import {
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestAutomationRunJoinSql } from '../automations/automation';
-import {
-  computeAutomationHealth,
-  hasEventTrigger,
-} from '../automations/automation-health';
+import { computeAutomationHealth } from '../automations/automation-health';
 import { loadRecentAutomationRunStatuses } from '../automations/automation-health-history';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
@@ -221,6 +218,7 @@ interface AutomationQueryRow {
   schedule: string | null;
   triggers: AutomationTrigger[] | null;
   next_run_at: string | null;
+  last_event_activation_at: string | null;
   agent_id: string | null;
   delivery_target: {
     connection_id: number;
@@ -559,6 +557,7 @@ async function getAutomationImpl(
         i.schedule,
         i.triggers,
         i.next_run_at,
+        i.last_event_activation_at,
         i.agent_id,
         i.delivery_target,
         i.device_worker_id,
@@ -804,7 +803,8 @@ async function getAutomationImpl(
       latestRunCreatedAt: automationRow.automation_run_created_at,
       latestRunError: automationRunError,
       latestRunOutcome: automationRow.automation_run_outcome,
-      hasEventTrigger: hasEventTrigger(automationRow.triggers),
+      triggers: automationRow.triggers,
+      lastEventActivationAt: automationRow.last_event_activation_at,
       recentTerminalRunStatuses: recentRunStatuses.get(automationId) ?? [],
     });
 

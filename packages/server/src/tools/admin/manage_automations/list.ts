@@ -17,10 +17,7 @@ import {
 	getPublicWebUrl,
 } from "../../../utils/url-builder";
 import { buildLatestAutomationRunJoinSql } from "../../../automations/automation";
-import {
-	computeAutomationHealth,
-	hasEventTrigger,
-} from "../../../automations/automation-health";
+import { computeAutomationHealth } from "../../../automations/automation-health";
 import { loadRecentAutomationRunStatuses } from "../../../automations/automation-health-history";
 import type { ToolContext } from "../../registry";
 import { batchCountUnanalyzedContent } from "./shared";
@@ -61,6 +58,7 @@ export async function handleList(
       i.updated_at,
       i.triggers,
       i.next_run_at,
+      i.last_event_activation_at AS health_last_event_activation_at,
       i.agent_id,
       i.device_worker_id,
       i.last_fired_at,
@@ -225,7 +223,11 @@ export async function handleList(
 			? buildAutomationUrl(orgSlug, automationId, baseUrl)
 			: undefined;
 
-		const { organization_id: _orgId, ...rest } = automation;
+		const {
+			organization_id: _orgId,
+			health_last_event_activation_at: lastEventActivationAt,
+			...rest
+		} = automation;
 
 		if (!args.include_details) {
 			delete (rest as Record<string, unknown>).prompt;
@@ -248,8 +250,6 @@ export async function handleList(
 			);
 		}
 
-		// Computed health (item 3, #2033) — derived from the
-		// already-selected schedule/run columns, no extra query.
 		const automationHealth = computeAutomationHealth({
 			status: automation.status,
 			nextRunAt: automation.next_run_at,
@@ -260,7 +260,8 @@ export async function handleList(
 				| null
 				| undefined,
 			latestRunOutcome: automation.automation_run_outcome,
-			hasEventTrigger: hasEventTrigger(automation.triggers),
+			triggers: automation.triggers,
+			lastEventActivationAt,
 			recentTerminalRunStatuses: recentRunStatuses.get(automationId) ?? [],
 		});
 

@@ -209,8 +209,12 @@ const READ_ONLY = {
 // OpenAI Apps submission semantics reserve `openWorldHint` for tools that can
 // CHANGE public internet or third-party state. Live reads from a user's private
 // connectors remain closed-world even though they contact an external service.
+//
+// These tools only retrieve data. Their invocation audit is server bookkeeping,
+// not an operation on workspace or third-party state, so it does not make the
+// tool a write. Authorization stays separately pinned by `authorizationReadOnly`.
 const AUDITED_READ = {
-  readOnlyHint: false,
+  readOnlyHint: true,
   destructiveHint: false,
   openWorldHint: false,
   idempotentHint: false,

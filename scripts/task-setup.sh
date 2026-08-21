@@ -129,8 +129,16 @@ fi
 if [[ $refresh_only -eq 0 ]]; then
   echo "→ creating lobu worktree: $worktree_dir on $branch"
   (cd "$repo" && git fetch origin --quiet)
+  # Same three-way resolution the submodule block below already uses: a local
+  # branch, else the remote one, else fresh off main. Without the middle case,
+  # picking up an existing PR whose branch lives only on origin silently starts
+  # the worktree at origin/main — the branch name matches, so it looks correct
+  # right up until the PR's commits are missing.
   if (cd "$repo" && git show-ref --verify --quiet "refs/heads/$branch"); then
     (cd "$repo" && git worktree add "$worktree_dir" "$branch")
+  elif (cd "$repo" && git show-ref --verify --quiet "refs/remotes/origin/$branch"); then
+    echo "→ tracking existing remote branch origin/$branch"
+    (cd "$repo" && git worktree add --track -b "$branch" "$worktree_dir" "origin/$branch")
   else
     (cd "$repo" && git worktree add "$worktree_dir" -b "$branch" origin/main)
   fi

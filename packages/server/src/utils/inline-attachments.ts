@@ -97,6 +97,31 @@ interface AudioTranscriptionPending {
   mimeType: string;
 }
 
+/** Publication failed and rollback could not remove every artifact it created. */
+export class AttachmentMaterializationError extends AggregateError {
+  constructor(
+    errors: unknown[],
+    readonly publishedArtifactIds: string[]
+  ) {
+    super(
+      errors,
+      "Attachment publication failed and partial artifact cleanup also failed"
+    );
+    this.name = "AttachmentMaterializationError";
+  }
+}
+
+/** A best-effort artifact rollback left these IDs behind. */
+export class MaterializedArtifactCleanupError extends AggregateError {
+  constructor(errors: unknown[], readonly artifactIds: string[]) {
+    super(
+      errors,
+      `Failed to delete ${artifactIds.length} uncommitted artifact(s)`
+    );
+    this.name = "MaterializedArtifactCleanupError";
+  }
+}
+
 function publicGatewayUrl(): string {
   return resolvePublicGatewayUrl();
 }
@@ -184,9 +209,11 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         try {
           await deleteMaterializedArtifacts(publishedArtifactIds, artifactStore);
         } catch (cleanupError) {
-          throw new AggregateError(
+          throw new AttachmentMaterializationError(
             [error, cleanupError],
-            "Attachment publication failed and partial artifact cleanup also failed"
+            cleanupError instanceof MaterializedArtifactCleanupError
+              ? cleanupError.artifactIds
+              : [...publishedArtifactIds]
           );
         }
         throw error;
@@ -253,17 +280,19 @@ export async function deleteMaterializedArtifacts(
   const results = await Promise.allSettled(
     artifactIds.map((artifactId) => artifactStore.delete(artifactId))
   );
-  const failures = results.filter(
-    (result): result is PromiseRejectedResult => result.status === "rejected"
+  const failures = results.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [{ artifactId: artifactIds[index], reason: result.reason }]
+      : []
   );
   if (failures.length > 0) {
     logger.error(
       { artifact_count: artifactIds.length, failed: failures.length },
       "[inline-attachments] failed to delete some uncommitted artifacts"
     );
-    throw new AggregateError(
+    throw new MaterializedArtifactCleanupError(
       failures.map((failure) => failure.reason),
-      `Failed to delete ${failures.length} uncommitted artifact(s)`
+      failures.map((failure) => failure.artifactId)
     );
   }
 }

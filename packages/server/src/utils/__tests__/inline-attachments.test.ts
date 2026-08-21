@@ -7,7 +7,9 @@ import {
   runArtifactBinding,
 } from '../../gateway/files/artifact-store';
 import {
+  AttachmentMaterializationError,
   deleteMaterializedArtifacts,
+  MaterializedArtifactCleanupError,
   materializeActionOutputAttachments,
 } from '../inline-attachments';
 
@@ -114,19 +116,21 @@ describe('materializeActionOutputAttachments', () => {
 
   it('surfaces a failed partial-publication cleanup', async () => {
     let publishCalls = 0;
+    let firstArtifactId: string | undefined;
     const failingCleanupStore = {
       publish: async (params: Parameters<ArtifactStore['publish']>[0]) => {
         publishCalls += 1;
         if (publishCalls === 2) throw new Error('second publish failed');
-        return artifactStore.publish(params);
+        const published = await artifactStore.publish(params);
+        firstArtifactId = published.artifactId;
+        return published;
       },
       delete: async () => {
         throw new Error('cleanup failed');
       },
     };
 
-    await expect(
-      materializeActionOutputAttachments(
+    const materialization = materializeActionOutputAttachments(
         78,
         {
           attachments: [
@@ -143,10 +147,28 @@ describe('materializeActionOutputAttachments', () => {
           ],
         },
         failingCleanupStore
-      )
-    ).rejects.toThrow(
-      'Attachment publication failed and partial artifact cleanup also failed'
+      );
+    await expect(materialization).rejects.toBeInstanceOf(
+      AttachmentMaterializationError
     );
+    await expect(materialization).rejects.toMatchObject({
+      publishedArtifactIds: [firstArtifactId],
+      errors: [
+        expect.objectContaining({ message: 'second publish failed' }),
+        expect.objectContaining({ message: 'Failed to delete 1 uncommitted artifact(s)' }),
+      ],
+    });
+  });
+
+  it('reports exactly which artifact rollbacks failed', async () => {
+    const cleanup = deleteMaterializedArtifacts(['kept', 'deleted'], {
+      delete: async (artifactId: string) => {
+        if (artifactId === 'kept') throw new Error('volume unavailable');
+      },
+    });
+
+    await expect(cleanup).rejects.toBeInstanceOf(MaterializedArtifactCleanupError);
+    await expect(cleanup).rejects.toMatchObject({ artifactIds: ['kept'] });
   });
 
   it('deletes materialized action artifacts when finalization is abandoned', async () => {

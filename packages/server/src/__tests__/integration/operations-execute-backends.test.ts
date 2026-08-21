@@ -110,6 +110,10 @@ describe("operations.execute backend lifecycle", () => {
 					name: "Image result",
 					kind: "read",
 				},
+				image_result_pair: {
+					name: "Image result pair",
+					kind: "read",
+				},
 				needs_approval: {
 					name: "Needs approval",
 					kind: "write",
@@ -133,16 +137,19 @@ describe("operations.execute backend lifecycle", () => {
 				class ConnectorRuntime {
 					async sync() { return { items: [] }; }
 					async execute(ctx) {
-						if (ctx.actionKey === 'image_result') {
+						if (ctx.actionKey === 'image_result' || ctx.actionKey === 'image_result_pair') {
+							const attachment = {
+								kind: 'image',
+								filename: 'inline.png',
+								mime_type: 'image/png',
+								data: 'aW1hZ2UtYnl0ZXM=',
+							};
 							return {
 								success: true,
 								output: {
-									attachments: [{
-										kind: 'image',
-										filename: 'inline.png',
-										mime_type: 'image/png',
-										data: 'aW1hZ2UtYnl0ZXM=',
-									}],
+									attachments: ctx.actionKey === 'image_result_pair'
+										? [attachment, { ...attachment, filename: 'inline-2.png' }]
+										: [attachment],
 								},
 							};
 						}
@@ -451,6 +458,64 @@ describe("operations.execute backend lifecycle", () => {
 					attachments: [],
 					lobu_attachment_error:
 						"Action completed, but Lobu could not persist one or more returned attachments.",
+				},
+			});
+			const [persisted] = await getTestDb()`
+				SELECT status, action_output FROM runs WHERE id = ${result.run_id}
+			`;
+			expect(persisted.status).toBe("completed");
+			expect(persisted.action_output).toEqual(result.output);
+		} finally {
+			coreServices.mockRestore();
+		}
+	});
+
+	it("persists artifact IDs when partial attachment rollback remains unavailable", async () => {
+		let publishCalls = 0;
+		const coreServices = vi
+			.spyOn(lobuGateway, "getLobuCoreServices")
+			.mockReturnValue({
+				getArtifactStore: () => ({
+					publish: async () => {
+						publishCalls += 1;
+						if (publishCalls === 2) throw new Error("second publish failed");
+						return {
+							artifactId: "uncommitted-artifact-1",
+							filename: "inline.png",
+							contentType: "image/png",
+							downloadUrl: "https://gateway.test/files/uncommitted-artifact-1",
+							size: 11,
+						};
+					},
+					delete: async () => {
+						throw new Error("artifact volume unavailable");
+					},
+				}),
+			});
+		try {
+			const result = (await manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "image_result_pair",
+				},
+				{} as Env,
+				ctx,
+			)) as {
+				run_id: number;
+				status: string;
+				output: Record<string, unknown>;
+			};
+
+			expect(result).toMatchObject({
+				status: "completed",
+				output: {
+					attachments: [],
+					lobu_attachment_error:
+						"Action completed, but Lobu could not persist one or more returned attachments.",
+					lobu_attachment_cleanup_pending_artifact_ids: [
+						"uncommitted-artifact-1",
+					],
 				},
 			});
 			const [persisted] = await getTestDb()`

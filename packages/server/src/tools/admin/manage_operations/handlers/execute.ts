@@ -31,7 +31,9 @@ import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
 import { insertEvent } from "../../../../utils/insert-event";
 import {
+	AttachmentMaterializationError,
 	deleteMaterializedArtifacts,
+	MaterializedArtifactCleanupError,
 	materializeActionOutputAttachments,
 } from "../../../../utils/inline-attachments";
 import logger from "../../../../utils/logger";
@@ -75,6 +77,29 @@ async function completeRunInline(
 	try {
 		materialized = await materializeActionOutputAttachments(runId, output);
 	} catch (error) {
+		let cleanupPendingArtifactIds =
+			error instanceof AttachmentMaterializationError
+				? error.publishedArtifactIds
+				: [];
+		if (cleanupPendingArtifactIds.length > 0) {
+			try {
+				await deleteMaterializedArtifacts(cleanupPendingArtifactIds);
+				cleanupPendingArtifactIds = [];
+			} catch (cleanupError) {
+				cleanupPendingArtifactIds =
+					cleanupError instanceof MaterializedArtifactCleanupError
+						? cleanupError.artifactIds
+						: cleanupPendingArtifactIds;
+				logger.error(
+					{
+						run_id: runId,
+						artifact_ids: cleanupPendingArtifactIds,
+						error: getErrorMessage(cleanupError),
+					},
+					"Action attachment rollback remains incomplete",
+				);
+			}
+		}
 		// The connector action has already succeeded. A storage outage must not
 		// relabel that external side effect as failed (which invites a retry).
 		// Drop only the unpersisted inline binaries and preserve the durable
@@ -97,8 +122,14 @@ async function completeRunInline(
 				...(attachments ? { attachments } : {}),
 				lobu_attachment_error:
 					"Action completed, but Lobu could not persist one or more returned attachments.",
+				...(cleanupPendingArtifactIds.length > 0
+					? {
+							lobu_attachment_cleanup_pending_artifact_ids:
+								cleanupPendingArtifactIds,
+						}
+					: {}),
 			},
-			publishedArtifactIds: [],
+			publishedArtifactIds: cleanupPendingArtifactIds,
 		};
 	}
 	if (deferTerminalWrite) {
@@ -122,7 +153,14 @@ async function completeRunInline(
 			throw new Error(`Run ${runId} disappeared before inline completion`);
 		}
 	} catch (error) {
-		await deleteMaterializedArtifacts(materialized.publishedArtifactIds);
+		try {
+			await deleteMaterializedArtifacts(materialized.publishedArtifactIds);
+		} catch (cleanupError) {
+			throw new AggregateError(
+				[error, cleanupError],
+				"Run completion failed and artifact cleanup also failed",
+			);
+		}
 		throw error;
 	}
 	return { status: "completed", output: materialized.output };

@@ -13,11 +13,8 @@ on:
 permissions:
   contents: read
 
-# Auto-cancel superseded runs. PR revisions are obsolete after a force-push or
-# rebase, and a newer main SHA contains every older main SHA. Keeping stale main
-# runs alive consumed the same 20-slot hosted-runner pool while newer required
-# PR checks waited. Deployment is driven by Build and Push Images, not this
-# workflow, so only the newest CI result per ref is useful.
+# Auto-cancel superseded PR runs. PR revisions are obsolete after a force-push
+# or rebase, so keeping them alive only makes newer required checks wait.
 #
 # CI_LINUX_RUNNER is an optional repository variable used for runner A/B tests.
 # Leaving it unset preserves GitHub-hosted execution; setting it changes only
@@ -27,20 +24,37 @@ permissions:
 # author (TRUSTED_AUTHORS, whitespace-separated). Pushes, workflow_dispatch,
 # and the `make pr-full` Depot gate are never routed to it.
 #
-# The `github.run_id` fallback exists for `depot ci run`, which `make
-# pr-full` uses to execute this same file against a local staged tree.
-# That path supplies no ref, so `github.ref` expanded empty and every local
-# dispatch in the org collapsed into one group literally named `ci-`. Combined
-# with cancel-in-progress, the newest gate anywhere killed whatever was running
-# — a different branch, a different worktree, a different person — and the
-# victim saw only "Cancelled due to the workflow concurrency policy", which
-# names this block rather than any Depot-side limit. Two dispatchers that each
-# retry on cancellation then deadlock, neither ever attesting. Falling back to
-# the run id gives each local dispatch its own group. GitHub keeps the per-ref
-# semantics unchanged: `github.ref` is always set for push and pull_request.
+# Pull requests share a per-ref group and cancel obsolete revisions. EVERY OTHER
+# execution gets its own run-id group, so it neither cancels nor is cancelled.
+#
+# Main pushes used to share the group too, because `github.ref` is
+# `refs/heads/main` for every merge — so each merge killed the previous merge's
+# full-graph run. Measured over 40 consecutive main runs: 15 cancelled, 23
+# green, 2 failed. About a third of merged commits never completed a
+# validation, the release commit for 15.3.1 among them, and the PR check that
+# preceded each one only ever validated the PR head rather than what landed.
+#
+# Setting `cancel-in-progress: false` would NOT have been enough: a concurrency
+# group holds only one PENDING run, so a third merge still evicts the second
+# before it starts. Only a distinct group per run removes the contention.
+#
+# The tradeoff, which was the original reason for cancelling: main runs no
+# longer yield, so they hold slots in the same 20-slot hosted pool that
+# required PR checks draw from. That is accepted deliberately — a merged commit
+# nobody validated is worse than a PR check that waits — but if the pool starts
+# starving, revisit here rather than reinstating blanket cancellation.
+#
+# The run-id group is also load-bearing for `depot ci run`, which `make pr-full`
+# uses to execute this file against a local staged tree. That path supplies no
+# ref, so `github.ref` expanded empty and every local dispatch in the org
+# collapsed into one group literally named `ci-`; the newest gate anywhere
+# killed whatever was running — a different branch, worktree, or person — and
+# the victim saw only "Cancelled due to the workflow concurrency policy", which
+# names THIS block rather than any Depot-side limit. Two dispatchers that each
+# retry on cancellation then deadlock, neither ever attesting.
 concurrency:
-  group: ci-${{ github.ref || github.run_id }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Resolve the Linux runner backend from the PR author. Trusted authors

@@ -19,7 +19,8 @@
 #   1. Creates a lobu worktree at .claude/worktrees/<name> on branch feat/<name>.
 #   2. Initializes packages/owletto submodule on a real named branch feat/<name>
 #      (never detached HEAD — fixes the "we keep losing changes" bug).
-#   3. Runs `bun install` after submodule init (avoids the bun.lock prune bug).
+#   3. Runs `bun install` after submodule init (avoids the bun.lock prune bug),
+#      then builds the package graph so the server unit suite can actually run.
 #   4. Copies .env from the main repo (gitignored secrets don't auto-carry into
 #      a fresh worktree, so `make dev` / `lobu run` would otherwise fail at boot).
 #   5. Writes .env.local with PORT / WORKER_PROXY_PORT picked to avoid collisions
@@ -153,6 +154,18 @@ if [[ $refresh_only -eq 0 ]]; then
 
   echo "→ bun install"
   (cd "$worktree_dir" && bun install)
+
+  # Server unit modules import `@lobu/connector-worker/compile`, whose workspace
+  # export points at generated `dist/compile/index.js`. A fresh worktree has no
+  # dist, so `bun install` alone leaves the suite unrunnable — and it fails as
+  # "Cannot find module '@lobu/connector-worker/compile'", which reads like a
+  # missing DEPENDENCY rather than a missing BUILD. That misdirection is the
+  # whole cost: CI runs this same command before its own `bun test` ("Build
+  # package graph for unit-test runtime resolution"), so CI stayed green while
+  # every new worktree did not. ~10s, so it rides along rather than hiding
+  # behind a flag.
+  echo "→ building package graph (needed by the server unit suite)"
+  (cd "$worktree_dir" && node scripts/build-packages.mjs --skip-applications)
 fi
 
 if [[ -f "$repo/.env" ]]; then

@@ -12,6 +12,7 @@ import {
   isSenderAllowed,
   MessageHandlerBridge,
   parsePreviewLinkCode,
+  registerMessageHandlers,
 } from "../connections/message-handler-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
@@ -384,6 +385,201 @@ function makeThread(adapter: unknown) {
     startTyping: mock(async () => undefined),
   };
 }
+
+describe("registerMessageHandlers linked-channel ingress", () => {
+  test("does not add a catch-all to non-Slack adapters", () => {
+    const onNewMessage = mock(() => undefined);
+    registerMessageHandlers(
+      {
+        onNewMention: mock(() => undefined),
+        onDirectMessage: mock(() => undefined),
+        onSubscribedMessage: mock(() => undefined),
+        onNewMessage,
+      },
+      { ...buildConnection(), platform: "telegram" },
+      {
+        getArtifactStore: () => null,
+        getPublicGatewayUrl: () => "https://gateway.example.com",
+      } as any,
+      { getInstance: () => null } as any,
+    );
+
+    expect(onNewMessage).not.toHaveBeenCalled();
+  });
+
+  test("Enterprise Grid ordinary channel events reach the Automation bridge", async () => {
+    let unmatchedHandler:
+      | ((thread: unknown, message: unknown) => Promise<void>)
+      | undefined;
+    const chat = {
+      onNewMention: mock(() => undefined),
+      onDirectMessage: mock(() => undefined),
+      onSubscribedMessage: mock(() => undefined),
+      onNewMessage: mock(
+        (
+          _pattern: RegExp,
+          handler: (thread: unknown, message: unknown) => Promise<void>,
+        ) => {
+          unmatchedHandler = handler;
+        },
+      ),
+    };
+    const channelHasMessageSubscription = mock(async () => true);
+    const connection: PlatformConnection = {
+      ...buildConnection(),
+      id: "slackinst-grid",
+      organizationId: "org-grid",
+      agentId: undefined,
+      metadata: {
+        teamId: "E0ENTERPRISE",
+        enterpriseId: "E0ENTERPRISE",
+        isEnterpriseInstall: true,
+        botUserId: "U_BOT",
+      },
+    };
+    const services = {
+      getArtifactStore: () => null,
+      getPublicGatewayUrl: () => "https://gateway.example.com",
+      getAutomationSubscriptionService: () => ({
+        channelHasMessageSubscription,
+      }),
+    } as any;
+    const bridge = registerMessageHandlers(
+      chat,
+      connection,
+      services,
+      { getInstance: () => null } as any,
+    );
+    const handleMessage = mock(async () => undefined);
+    bridge.handleMessage = handleMessage as typeof bridge.handleMessage;
+    // Real adapter shape: `channelIdFromThreadId` returns the prefixed
+    // `slack:C…`, which the subscription reader normalizes to native `C…`.
+    const thread = {
+      id: "slack:C0CHANNEL:1787290503.806889",
+      channelId: "slack:C0CHANNEL",
+    };
+    const message = makeMessage({
+      id: "1787290503.806889",
+      isMention: false,
+      raw: { team_id: "T0WORKSPACE" },
+    });
+
+    expect(unmatchedHandler).toBeDefined();
+    await unmatchedHandler!(thread, message);
+
+    expect(channelHasMessageSubscription).toHaveBeenCalledWith(
+      "slackinst-grid",
+      "slack:C0CHANNEL",
+      "org-grid",
+      false,
+    );
+    expect(handleMessage).toHaveBeenCalledWith(thread, message, "subscribed");
+  });
+
+  test("ordinary messages in unlinked channels stay silent", async () => {
+    let unmatchedHandler:
+      | ((thread: unknown, message: unknown) => Promise<void>)
+      | undefined;
+    const chat = {
+      onNewMention: mock(() => undefined),
+      onDirectMessage: mock(() => undefined),
+      onSubscribedMessage: mock(() => undefined),
+      onNewMessage: mock(
+        (
+          _pattern: RegExp,
+          handler: (thread: unknown, message: unknown) => Promise<void>,
+        ) => {
+          unmatchedHandler = handler;
+        },
+      ),
+    };
+    const channelHasMessageSubscription = mock(async () => false);
+    const connection: PlatformConnection = {
+      ...buildConnection(),
+      id: "slackinst-grid",
+      organizationId: "org-grid",
+      agentId: undefined,
+    };
+    const bridge = registerMessageHandlers(
+      chat,
+      connection,
+      {
+        getArtifactStore: () => null,
+        getPublicGatewayUrl: () => "https://gateway.example.com",
+        getAutomationSubscriptionService: () => ({
+          channelHasMessageSubscription,
+        }),
+      } as any,
+      { getInstance: () => null } as any,
+    );
+    const handleMessage = mock(async () => undefined);
+    bridge.handleMessage = handleMessage as typeof bridge.handleMessage;
+
+    await unmatchedHandler!(
+      { id: "slack:C_OTHER:1", channelId: "slack:C_OTHER" },
+      makeMessage({ id: "1", text: "unlinked" }),
+    );
+
+    expect(channelHasMessageSubscription).toHaveBeenCalledTimes(1);
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+
+  test("bot-authored catch-all messages cannot create reply loops", async () => {
+    let unmatchedHandler:
+      | ((thread: unknown, message: unknown) => Promise<void>)
+      | undefined;
+    const chat = {
+      onNewMention: mock(() => undefined),
+      onDirectMessage: mock(() => undefined),
+      onSubscribedMessage: mock(() => undefined),
+      onNewMessage: mock(
+        (
+          _pattern: RegExp,
+          handler: (thread: unknown, message: unknown) => Promise<void>,
+        ) => {
+          unmatchedHandler = handler;
+        },
+      ),
+    };
+    const channelHasMessageSubscription = mock(async () => true);
+    const connection: PlatformConnection = {
+      ...buildConnection(),
+      id: "slackinst-grid",
+      organizationId: "org-grid",
+      agentId: undefined,
+    };
+    const bridge = registerMessageHandlers(
+      chat,
+      connection,
+      {
+        getArtifactStore: () => null,
+        getPublicGatewayUrl: () => "https://gateway.example.com",
+        getAutomationSubscriptionService: () => ({
+          channelHasMessageSubscription,
+        }),
+      } as any,
+      { getInstance: () => null } as any,
+    );
+    const handleMessage = mock(async () => undefined);
+    bridge.handleMessage = handleMessage as typeof bridge.handleMessage;
+
+    await unmatchedHandler!(
+      { id: "slack:C_LINKED:2", channelId: "slack:C_LINKED" },
+      makeMessage({
+        id: "2",
+        author: {
+          userId: "B_OTHER",
+          userName: "otherbot",
+          isBot: true,
+          isMe: false,
+        },
+      }),
+    );
+
+    expect(channelHasMessageSubscription).not.toHaveBeenCalled();
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+});
 
 function priorMessage(id: string, text: string, isMe: boolean, whenMs: number) {
   return {

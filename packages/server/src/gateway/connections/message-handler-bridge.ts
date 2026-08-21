@@ -440,6 +440,21 @@ export function registerMessageHandlers(
     await handler.handleMessage(thread, message, "subscribed");
   });
 
+  // Chat SDK subscriptions are thread-scoped. Slack gives every top-level
+  // channel message a fresh thread id (`slack:C…:<message-ts>`), so an
+  // Automation linked to the CHANNEL can never pre-subscribe the ids of future
+  // messages. Those ordinary `message.channels` events therefore fall through
+  // the SDK's mention/DM/subscribed branches into its pattern handlers. The
+  // SDK routes subscribed → mention → patterns and returns at the first match,
+  // so this catch-all only ever sees events the branches above declined; it
+  // cannot double-dispatch a mention. Admit only channels that already have a
+  // durable message Automation — unlinked channels stay silent.
+  if (connection.platform === "slack") {
+    chat.onNewMessage(/[\s\S]*/, async (thread: any, message: any) => {
+      await handler.handleUnmatchedChannelMessage(thread, message);
+    });
+  }
+
   return handler;
 }
 
@@ -468,6 +483,44 @@ export class MessageHandlerBridge {
     return (
       this.manager.getInstance(this.connection.id)?.conversationState ?? null
     );
+  }
+
+  /**
+   * Route an ordinary channel message that Chat SDK could not classify as a
+   * DM, mention, or subscribed THREAD. Lobu's chat-link contract is
+   * channel-scoped, so the canonical Automation subscription is the admission
+   * check. Trigger filters (team, mention_only, and so on) remain authoritative
+   * in {@link handleMessage}; this method only decides whether the otherwise
+   * unmatched event is worth sending through that planner.
+   */
+  async handleUnmatchedChannelMessage(
+    thread: { id: string; channelId: string },
+    message: { author?: { isBot?: boolean | "unknown"; isMe?: boolean } },
+  ): Promise<void> {
+    // The catch-all pattern sees bot-authored channel events too. Chat SDK
+    // already suppresses this installation's own posts before dispatch, but
+    // rejecting every bot author here also prevents two apps from answering
+    // each other forever in a linked channel.
+    if (message.author?.isBot === true || message.author?.isMe === true) return;
+
+    const organizationId = this.connection.organizationId;
+    const subscriptions = this.services.getAutomationSubscriptionService();
+    if (!organizationId || !subscriptions) return;
+
+    // `thread.channelId` is the adapter's `channelIdFromThreadId(thread.id)` —
+    // for Slack, `slack:C…`, which the subscription reader normalizes to the
+    // native `C…`. Never fall back to `thread.id`: a top-level Slack message's
+    // thread id is `slack:C…:<ts>`, and that reader strips only one prefix
+    // segment, so the lookup key would become `C…:<ts>` and match nothing.
+    const linked = await subscriptions.channelHasMessageSubscription(
+      this.connection.id,
+      thread.channelId,
+      organizationId,
+      this.connection.settings?.previewMode === true,
+    );
+    if (!linked) return;
+
+    await this.handleMessage(thread, message, "subscribed");
   }
 
   /**

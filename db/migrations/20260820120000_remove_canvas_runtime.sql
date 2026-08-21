@@ -247,6 +247,10 @@ FROM canvas_run_map mapping
 JOIN canvas_members head ON head.event_id = mapping.head_event_id
 WHERE run.id = mapping.run_id;
 
+-- Synthesized completed runs stamp automations.last_run_completed_at. Flush the
+-- table's deferred version FK before the structural cutover alters automations.
+SET CONSTRAINTS ALL IMMEDIATE;
+
 -- canvas-result-cutover:end
 
 -- Child work used the Canvas root as its parent key. Prefer the producer that

@@ -100,6 +100,12 @@ describe('Automation schema vocabulary', () => {
       await sql.begin(async (tx: typeof sql) => {
         const windowStart = '2026-08-18T00:00:00.000Z';
         const windowEnd = '2026-08-19T00:00:00.000Z';
+        await tx`
+          ALTER TABLE automations
+            ALTER CONSTRAINT automations_current_version_id_fkey DEFERRABLE INITIALLY DEFERRED,
+            ADD COLUMN notification_channel text,
+            ADD COLUMN notification_priority text
+        `;
         const createLegacyCanvas = async (params: {
           slug: string;
           payload: Record<string, unknown>;
@@ -159,6 +165,20 @@ describe('Automation schema vocabulary', () => {
           metadataIdKey: 'watcher_id',
           contentAnalyzed: 5,
         });
+        const [legacyVersion] = await tx<{ id: number }[]>`
+          INSERT INTO automation_versions (
+            automation_id, version, name, created_by, prompt, version_sources
+          ) VALUES (
+            ${legacyResult.automationId}, 1, 'Legacy result cutover', ${user.id},
+            'Preserve the legacy result', '[]'::jsonb
+          )
+          RETURNING id
+        `;
+        await tx`
+          UPDATE automations
+          SET current_version_id = ${legacyVersion.id}
+          WHERE id = ${legacyResult.automationId}
+        `;
 
         // The marked section runs before the full migration drops this legacy
         // relation key; the test database has already applied that final drop.
@@ -187,6 +207,12 @@ describe('Automation schema vocabulary', () => {
           RETURNING id
         `;
         await tx.unsafe(loadCanvasResultCutover());
+        // Production rejected the later structural cutover while this FK check was pending.
+        await tx`
+          ALTER TABLE automations
+            DROP COLUMN notification_channel,
+            DROP COLUMN notification_priority
+        `;
         await tx.unsafe(loadOrphanReactionCutover());
 
         const [run] = await tx`

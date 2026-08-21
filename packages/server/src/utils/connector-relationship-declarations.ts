@@ -152,10 +152,13 @@ export async function preflightConnectorRelationshipTypes(params: {
     const label = context(params.metadata, reference.feedKey, reference.eventKind);
     const row = rows[0];
     if (!row) {
-      throw new Error(`${label}: relationship type '${type}' does not exist in this organization.`);
+      throw new ToolUserError(
+        `${label}: relationship type '${type}' does not exist in this organization.`,
+        400
+      );
     }
     if (row.status !== 'active' || row.deleted_at !== null) {
-      throw new Error(`${label}: relationship type '${type}' is not active.`);
+      throw new ToolUserError(`${label}: relationship type '${type}' is not active.`, 400);
     }
     try {
       assertNotAclManagedEdge(row, 'connector relationship preflight');

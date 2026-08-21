@@ -86,9 +86,12 @@ describe('connector relationship-type preflight', () => {
   });
 
   it('rejects a missing relationship type with connector/feed/event context', async () => {
-    await expect(install('missing-relationship', 'missing_type')).rejects.toThrow(
-      /missing-relationship.*feed 'invoices'.*event kind 'invoice'.*missing_type/i
-    );
+    await expect(install('missing-relationship', 'missing_type')).rejects.toMatchObject({
+      httpStatus: 400,
+      message: expect.stringMatching(
+        /missing-relationship.*feed 'invoices'.*event kind 'invoice'.*missing_type/i
+      ),
+    });
   });
 
   it.each([
@@ -97,9 +100,10 @@ describe('connector relationship-type preflight', () => {
   ])('rejects an %s relationship type', async (label, values) => {
     const slug = `${label}_relationship`;
     await createRelationshipType(slug, values);
-    await expect(install(`${label}-connector`, slug)).rejects.toThrow(
-      new RegExp(`${label}-connector.*${slug}.*not active`, 'i')
-    );
+    await expect(install(`${label}-connector`, slug)).rejects.toMatchObject({
+      httpStatus: 400,
+      message: expect.stringMatching(new RegExp(`${label}-connector.*${slug}.*not active`, 'i')),
+    });
   });
 
   it('resolves the active row past a newer same-slug tombstone', async () => {

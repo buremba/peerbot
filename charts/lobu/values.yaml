@@ -149,6 +149,23 @@ app:
     size: 20Gi
     storageClass: ""
 
+  # Durable binary artifacts (images, audio, files) shared by every app
+  # replica. When disabled the chart explicitly uses pod-local /tmp, so media
+  # does not survive restarts or reliably cross replicas. The default stays off
+  # for local/self-hosted installs; production should enable this with storage
+  # that every scheduled app pod can mount.
+  # When enabled, ReadWriteOnce is supported only with replicaCount: 1; more
+  # than one app replica requires an RWX-capable class and accessMode:
+  # ReadWriteMany, and rendering fails closed otherwise. Leaving this disabled
+  # on a multi-replica install still renders — media then lands on pod-local
+  # /tmp and neither survives a restart nor crosses replicas.
+  artifacts:
+    enabled: false
+    size: 20Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    mountPath: /var/lib/lobu/artifacts
+
   # Keep replicas off a single node. Without this the scheduler is free to put
   # every replica on one node, where one node loss removes all capacity and the
   # PodDisruptionBudget cannot help (it does not apply to node failure).

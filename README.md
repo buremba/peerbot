@@ -46,16 +46,19 @@ Point any MCP client at Lobu. No Lobu agent runtime or `lobu.config.ts` is requi
 
 ```bash
 # Claude Code
-claude mcp add --transport http lobu https://lobu.ai/mcp
+npx @lobu/cli@latest connect claude-code
 
 # Codex
-codex mcp add lobu --url https://lobu.ai/mcp
+npx @lobu/cli@latest connect codex
+
+# OpenCode
+npx @lobu/cli@latest connect opencode
 ```
 
 Complete OAuth when prompted, connect the sources you want to share, and ask your agent to use
 Lobu when it needs shared context.
 
-The same MCP endpoint works with **ChatGPT, Claude Desktop, Gemini CLI, Cursor**, and custom MCP clients. `lobu memory init` detects Claude Code, Codex, Gemini CLI, and Cursor, and prints manual setup steps for Claude Desktop and ChatGPT.
+The same MCP endpoint works with **Claude Code, Codex, OpenCode, Antigravity, ChatGPT, Claude Desktop, Cursor**, and custom MCP clients. Run `lobu connect` to detect a client, install the supported MCP and skill bundle, or get the exact native handoff when the host requires UI setup. Authentication happens in that agent on first use.
 
 Setup guides: [Claude](https://lobu.ai/connect-from/claude/) · [ChatGPT](https://lobu.ai/connect-from/chatgpt/) · [Codex](https://lobu.ai/connect-from/codex/) · [Grok](https://lobu.ai/connect-from/grok/)
 

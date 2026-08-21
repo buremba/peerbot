@@ -507,11 +507,11 @@ expect_grep_absent "lobu memory seed skips platform-owned member_of" \
 # memory exec -- run a trivial ClientSDK script.
 echo 'export default async () => "cli-smoke-exec-ok";' > "$RUN_DIR/exec.ts"
 expect_ok "lobu memory exec (ClientSDK script)" "$PROJ" memory exec "$RUN_DIR/exec.ts" -c local
-# memory init -- wire a local MCP client to the memory MCP url. Cursor's config
-# is a deterministic file write under the isolated HOME, with no external CLI
-# process or browser handoff. --url skips the picker; --skip-auth skips login.
-( cd "$PROJ" && timeout 30 node "$LOBU_BIN" memory init --url "http://localhost:$GW_PORT/mcp" --agent cursor --skip-auth ) > "$OUT" 2>&1 </dev/null; RC=$?
-[ "$RC" -eq 0 ] && pass "lobu memory init --url --agent --skip-auth" || softfail "lobu memory init (exit=$RC)"
+# connect -- wire a local MCP client to the memory MCP URL. Cursor's config is
+# a deterministic file write under the isolated HOME, with no external process
+# or browser handoff. Authentication belongs to the client on first use.
+( cd "$PROJ" && timeout 30 node "$LOBU_BIN" connect cursor --url "http://localhost:$GW_PORT/mcp" ) > "$OUT" 2>&1 </dev/null; RC=$?
+[ "$RC" -eq 0 ] && pass "lobu connect cursor --url" || softfail "lobu connect cursor (exit=$RC)"
 expect_grep "lobu doctor --memory-only" "ok: true" "$PROJ" doctor --memory-only
 
 note "login / logout (round-trip on a throwaway loopback context)"

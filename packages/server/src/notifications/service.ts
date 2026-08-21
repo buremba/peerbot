@@ -63,6 +63,8 @@ interface CreateNotificationParams {
 	resourceId?: string | null;
 	resourceUrl?: string | null;
 	browserUrl?: string | null;
+	/** Page-activated action run that makes browserUrl actionable. */
+	browserRunId?: number | null;
 	/** Stable producer key used to collapse retried notification sends. */
 	idempotencyKey?: string | null;
 	/** When set, deliver only through this specific bot connection */
@@ -837,6 +839,7 @@ export async function createNotificationForUsers(
 		resource_id: params.resourceId ?? null,
 		resource_url: params.resourceUrl ?? null,
 		browser_url: params.browserUrl ?? null,
+		browser_handoff_run_id: params.browserRunId ?? null,
 		// Persisted, not just handed to the fan-out: the card IS the notification's
 		// rendered form, and a connection that was offline at send time (or a
 		// surface that renders it later) has no other way to recover it.
@@ -891,8 +894,8 @@ export async function createNotificationForUsers(
 			);
 
 			await tx`
-      INSERT INTO notification_targets (event_id, user_id, browser_url)
-      SELECT ${event.id}, uid, ${params.browserUrl ?? null}
+      INSERT INTO notification_targets (event_id, user_id, browser_url, browser_run_id)
+      SELECT ${event.id}, uid, ${params.browserUrl ?? null}, ${params.browserRunId ?? null}
       FROM unnest(${pgTextArray(userIds)}::text[]) AS u(uid)
       ON CONFLICT DO NOTHING
     `;
@@ -965,6 +968,53 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
       t.browser_url AS browser_url,
+      CASE
+        WHEN t.browser_url IS NULL THEN NULL
+        -- No linked run: nothing to recreate from, so the message must not
+        -- promise a retry the recreate endpoint would answer with 404.
+        WHEN browser_run.id IS NULL THEN jsonb_build_object(
+          'run_id', NULL,
+          'state', 'expired',
+          'expires_at', NULL,
+          'error_message', 'This browser handoff is no longer linked to a draft. Open the page yourself, or ask for a fresh draft.'
+        )
+        WHEN browser_run.status IN ('failed', 'timeout') THEN
+          jsonb_build_object(
+            'run_id', browser_run.id,
+            'state', 'expired',
+            'expires_at', browser_run.expires_at,
+            'error_message', COALESCE(
+              browser_run.error_message,
+              'The browser draft could not be populated. Recreate it to try again.'
+            )
+          )
+        WHEN browser_run.status = 'completed' OR browser_run.activated_at IS NOT NULL THEN
+          jsonb_build_object(
+            'run_id', browser_run.id,
+            'state', 'completed',
+            'expires_at', browser_run.expires_at,
+            'error_message', NULL
+          )
+        WHEN browser_run.status = 'pending'
+          AND browser_run.approval_status = 'auto'
+          AND browser_run.activation_kind = 'page_visit'
+          AND browser_run.expires_at > current_timestamp THEN
+          jsonb_build_object(
+            'run_id', browser_run.id,
+            'state', 'ready',
+            'expires_at', browser_run.expires_at,
+            'error_message', NULL
+          )
+        ELSE jsonb_build_object(
+          'run_id', browser_run.id,
+          'state', 'expired',
+          'expires_at', browser_run.expires_at,
+          'error_message', COALESCE(
+            browser_run.error_message,
+            'This draft expired before the page was opened. Recreate it to continue.'
+          )
+        )
+      END AS browser_handoff,
       e.connector_key AS platform,
       e.connection_id,
       source_connection.display_name AS connection_name,
@@ -1016,6 +1066,9 @@ export async function listNotifications(opts: {
     LEFT JOIN runs source_run
       ON source_run.id = e.run_id
      AND source_run.organization_id = e.organization_id
+    LEFT JOIN runs browser_run
+      ON browser_run.id = t.browser_run_id
+     AND browser_run.organization_id = e.organization_id
     LEFT JOIN agents agent
       ON agent.id = COALESCE(
         NULLIF(e.metadata->>'agent_id', ''),

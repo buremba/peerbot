@@ -2145,7 +2145,7 @@ export type ManageConnectionsData = {
       }
     | {
         /**
-         * Probe a connection's credentials/token validity.
+         * Probe a connection's credentials/token validity and required selected-device availability.
          */
         action: "test";
         /**
@@ -3915,6 +3915,12 @@ export type ManageOperationsResponses = {
           unread?: boolean;
           notification_id?: number;
           browser_url?: string;
+          browser_handoff?: {
+            run_id: number | null;
+            state: "ready" | "expired" | "completed";
+            expires_at: string | null;
+            error_message: string | null;
+          };
           run_id?: number;
           interaction_type?: string;
           interaction_status?: string;
@@ -3995,6 +4001,10 @@ export type NotifyData = {
      * HTTP(S) page for an explicit browser-side "Open" action in the current user tab.
      */
     browser_url?: string;
+    /**
+     * Page-activated operation run that will populate browser_url when its owner visits the page. The run must belong to the same workspace, target the same normalized URL, and be owned by one of the resolved recipients; delivery then narrows to that owner, since nobody else can activate it.
+     */
+    browser_handoff_run_id?: number;
     /**
      * Stable producer key. Repeating a send with the same key returns success without creating or delivering a duplicate.
      */

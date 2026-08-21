@@ -1,6 +1,9 @@
 import type { Context } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from '../index';
+import { ToolUserError, parsePositiveIntegerId } from '../utils/errors';
 import { requireOrgUser } from '../utils/require-org-user';
+import { recreateBrowserHandoff } from './browser-handoff';
 import {
   deleteNotification,
   getUnreadCount,
@@ -90,4 +93,27 @@ export async function restDeleteNotification(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Not found' }, 404);
   }
   return c.json({ success: true });
+}
+
+export async function restRecreateBrowserHandoff(c: Context<{ Bindings: Env }>) {
+  const auth = requireOrgUser(c);
+  if (!auth) return c.json({ error: 'Unauthorized' }, 401);
+
+  try {
+    const id = parsePositiveIntegerId(c.req.param('id') ?? '', 'notification id');
+    const result = await recreateBrowserHandoff(
+      auth.organizationId,
+      auth.userId,
+      id
+    );
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof ToolUserError) {
+      return c.json(
+        { error: error.message },
+        error.httpStatus as ContentfulStatusCode
+      );
+    }
+    throw error;
+  }
 }

@@ -1,12 +1,15 @@
 import { Hono } from "hono";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
+import { restRecreateBrowserHandoff } from "../../notifications/routes";
 import {
 	createNotificationForUsers,
 	listNotifications,
 } from "../../notifications/service";
 import { createConnectorOperationRun } from "../../runs/queue-service";
 import { listOrgActivity } from "../../tools/admin/manage_operations/activity-feed";
+import { notify } from "../../tools/admin/notify";
+import type { ToolContext } from "../../tools/registry";
 import { dispatchChromeActionToExtension } from "../../worker-api/dispatch-chrome-action";
 import { activatePageRun } from "../../worker-api/page-activation";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -29,6 +32,14 @@ async function seed() {
 		name: "X",
 		organization_id: org.id,
 	});
+	await sql`
+		UPDATE connector_definitions
+		SET actions_schema = ${sql.json({
+			prepare_reply: { name: "Prepare reply", kind: "write" },
+		})}
+		WHERE organization_id = ${org.id}
+		  AND key = 'x'
+	`;
 	await sql`
 		INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
 		VALUES (${`member-${Date.now()}`}, ${org.id}, ${user.id}, 'owner', NOW())
@@ -72,9 +83,15 @@ function appFor(userId: string, orgId: string) {
 		c.set("workerAuthMode", "user");
 		c.set("workerUserId", userId);
 		c.set("workerOrgIds", [orgId]);
+		c.set("organizationId", orgId);
+		c.set("user", { id: userId } as never);
 		await next();
 	});
 	app.post("/activate", activatePageRun);
+	app.post(
+		"/notifications/:id/browser-handoff/recreate",
+		restRecreateBrowserHandoff,
+	);
 	return app;
 }
 
@@ -396,14 +413,41 @@ describe("page-activated operation runs", () => {
 
 	it("carries the browser action URL through notifications and the shared activity feed", async () => {
 		const seeded = await seed();
-		await createNotificationForUsers([seeded.user.id], {
+		const ctx = {
 			organizationId: seeded.org.id,
-			type: "agent_message",
-			title: "Draft ready for Ada on X",
-			body: "Draft: Hello",
-			resourceUrl: `/${seeded.org.slug}/memory?content_ids=1`,
-			browserUrl: "https://x.com/ada/status/123",
-		});
+			userId: seeded.user.id,
+			memberRole: "owner",
+			isAuthenticated: true,
+			tokenType: "oauth",
+			scopedToOrg: false,
+			allowCrossOrg: true,
+			scopes: ["mcp:admin"],
+			sourceContext: null,
+		} as ToolContext;
+		await expect(
+			notify(
+				{
+					action: "send",
+					title: "Mismatched draft",
+					browser_url: "https://x.com/home",
+					browser_handoff_run_id: seeded.run.id,
+				},
+				{} as never,
+				ctx,
+			),
+		).rejects.toThrow("must match the linked page-activation run");
+		const createdNotification = (await notify(
+			{
+				action: "send",
+				title: "Draft ready for Ada on X",
+				body: "Draft: Hello",
+				resource_url: `/${seeded.org.slug}/memory?content_ids=1`,
+				browser_url: "https://x.com/ada/status/123",
+				browser_handoff_run_id: seeded.run.id,
+			},
+			{} as never,
+			ctx,
+		)) as { event_id: number };
 		const listed = await listNotifications({
 			organizationId: seeded.org.id,
 			userId: seeded.user.id,
@@ -411,6 +455,10 @@ describe("page-activated operation runs", () => {
 		expect(listed.notifications[0]?.browser_url).toBe(
 			"https://x.com/ada/status/123",
 		);
+		expect(listed.notifications[0]?.browser_handoff).toMatchObject({
+			run_id: seeded.run.id,
+			state: "ready",
+		});
 		const activity = await listOrgActivity({
 			organizationId: seeded.org.id,
 			userId: seeded.user.id,
@@ -418,6 +466,136 @@ describe("page-activated operation runs", () => {
 			includeRuns: false,
 		});
 		expect(activity.items[0]?.browser_url).toBe("https://x.com/ada/status/123");
+		expect(activity.items[0]?.browser_handoff).toMatchObject({
+			run_id: seeded.run.id,
+			state: "ready",
+		});
+
+		await sql`
+			UPDATE runs
+			SET status = 'failed',
+			    error_message = 'Composer controls changed',
+			    activated_at = NOW(),
+			    activated_by_device_worker_id = ${seeded.workers[0]?.id}::uuid,
+			    activation_tab_id = 17,
+			    completed_at = NOW(),
+			    expires_at = NOW() - interval '1 minute'
+			WHERE id = ${seeded.run.id}
+		`;
+		const expired = await listNotifications({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+		});
+		expect(expired.notifications[0]?.browser_handoff).toMatchObject({
+			run_id: seeded.run.id,
+			state: "expired",
+			error_message: "Composer controls changed",
+		});
+
+		const recreatePath = `/notifications/${createdNotification.event_id}/browser-handoff/recreate`;
+		const recreateApp = appFor(seeded.user.id, seeded.org.id);
+		const recreateResponses = await Promise.all([
+			recreateApp.request(recreatePath, { method: "POST" }),
+			recreateApp.request(recreatePath, { method: "POST" }),
+		]);
+		expect(recreateResponses.map((response) => response.status)).toEqual([
+			200, 200,
+		]);
+		const recreatedResults = (await Promise.all(
+			recreateResponses.map((response) => response.json()),
+		)) as Array<{
+			browser_url: string;
+			browser_handoff: { run_id: number; state: string };
+		}>;
+		expect(recreatedResults[1]?.browser_handoff.run_id).toBe(
+			recreatedResults[0]?.browser_handoff.run_id,
+		);
+		const recreated = recreatedResults[0]!;
+		expect(recreated).toMatchObject({
+			browser_url: "https://x.com/ada/status/123",
+			browser_handoff: { state: "ready" },
+		});
+		expect(recreated.browser_handoff.run_id).not.toBe(seeded.run.id);
+		const [target] = await sql<{ browser_run_id: number }>`
+			SELECT browser_run_id
+			FROM notification_targets
+			WHERE event_id = ${createdNotification.event_id}
+			  AND user_id = ${seeded.user.id}
+		`;
+		expect(target?.browser_run_id).toBe(recreated.browser_handoff.run_id);
+		const recreatedList = await listNotifications({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+		});
+		expect(recreatedList.notifications[0]?.browser_handoff).toMatchObject({
+			run_id: recreated.browser_handoff.run_id,
+			state: "ready",
+		});
+
+		await sql`
+			UPDATE runs
+			SET status = 'running',
+			    activated_at = NOW(),
+			    activated_by_device_worker_id = ${seeded.workers[0]?.id}::uuid,
+			    activation_tab_id = 29
+			WHERE id = ${recreated.browser_handoff.run_id}
+		`;
+		const completedList = await listNotifications({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+		});
+		expect(completedList.notifications[0]?.browser_handoff).toMatchObject({
+			run_id: recreated.browser_handoff.run_id,
+			state: "completed",
+		});
+		const completedResponse = await appFor(
+			seeded.user.id,
+			seeded.org.id,
+		).request(
+			`/notifications/${createdNotification.event_id}/browser-handoff/recreate`,
+			{ method: "POST" },
+		);
+		expect(completedResponse.status).toBe(409);
+		await expect(completedResponse.json()).resolves.toMatchObject({
+			error: expect.stringContaining("already activated"),
+		});
+	});
+
+	it("reports a browser handoff with no linked run as expired, with nothing to retry", async () => {
+		const seeded = await seed();
+		const created = await createNotificationForUsers([seeded.user.id], {
+			organizationId: seeded.org.id,
+			type: "agent_message",
+			title: "Draft ready for Ada on X",
+			body: "Draft: Hello",
+			browserUrl: "https://x.com/ada/status/123",
+		});
+		const listed = await listNotifications({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+		});
+		expect(listed.notifications[0]?.browser_handoff).toMatchObject({
+			run_id: null,
+			state: "expired",
+		});
+		// There is no saved action input to rebuild from, so the state's message
+		// must not offer a recreate the endpoint can only answer with 404.
+		expect(
+			String(
+				(listed.notifications[0]?.browser_handoff as { error_message: string })
+					.error_message,
+			),
+		).not.toMatch(/recreate/i);
+		if (created.eventId == null)
+			throw new Error("Notification was not created");
+		const missingResponse = await appFor(seeded.user.id, seeded.org.id).request(
+			`/notifications/${created.eventId}/browser-handoff/recreate`,
+			{ method: "POST" },
+		);
+		expect(missingResponse.status).toBe(404);
+		await expect(missingResponse.json()).resolves.toEqual({
+			error: "Browser handoff not found.",
+		});
 	});
 
 	it("keeps an undismissed browser-handoff draft beyond the recent-window cap", async () => {
@@ -458,9 +636,11 @@ describe("page-activated operation runs", () => {
 			includeRuns: false,
 			limit: 50,
 		});
-		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
-			true,
-		);
+		expect(
+			activity.items.some(
+				(item) => item.browser_url === "https://x.com/ada/status/123",
+			),
+		).toBe(true);
 		// Respects the declared limit even when the undismissed draft is pinned.
 		expect(activity.items.length).toBeLessThanOrEqual(50);
 		// Items stay in chronological order (oldest first).
@@ -492,9 +672,11 @@ describe("page-activated operation runs", () => {
 			kinds: ["sync"],
 			limit: 50,
 		});
-		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
-			false,
-		);
+		expect(
+			activity.items.some(
+				(item) => item.browser_url === "https://x.com/ada/status/123",
+			),
+		).toBe(false);
 	});
 
 	it("pins a draft that sits inside the window but outside the final limit", async () => {
@@ -526,9 +708,11 @@ describe("page-activated operation runs", () => {
 			includeRuns: false,
 			limit: 24,
 		});
-		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
-			true,
-		);
+		expect(
+			activity.items.some(
+				(item) => item.browser_url === "https://x.com/ada/status/123",
+			),
+		).toBe(true);
 		expect(activity.items.length).toBeLessThanOrEqual(24);
 	});
 

@@ -207,12 +207,12 @@ beforeAll(async () => {
   );
   writeFileSync(
     parentLossIgnoringGrandchildBinary,
-    `#!/usr/bin/env node\nconst fs = require('node:fs');\nif (process.env.FAKE_CLI_GRANDCHILD_PID) fs.writeFileSync(process.env.FAKE_CLI_GRANDCHILD_PID, String(process.pid));\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n`
+    `#!/usr/bin/env node\nconst fs = require('node:fs');\nif (process.env.FAKE_CLI_PID_LOG) fs.appendFileSync(process.env.FAKE_CLI_PID_LOG, process.pid + '\\n');\nif (process.env.FAKE_CLI_CLEANUP_FILE) {\n  setInterval(() => {\n    if (fs.existsSync(process.env.FAKE_CLI_CLEANUP_FILE)) process.exit(0);\n  }, 25);\n  setTimeout(() => process.exit(0), 30_000);\n}\nif (process.env.FAKE_CLI_GRANDCHILD_PID) fs.writeFileSync(process.env.FAKE_CLI_GRANDCHILD_PID, String(process.pid));\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n`
   );
   chmodSync(parentLossIgnoringGrandchildBinary, 0o755);
   writeFileSync(
     parentLossIgnoringTargetBinary,
-    `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst { spawn } = require('node:child_process');\nspawn(process.env.FAKE_CLI_GRANDCHILD_BINARY, [], { env: process.env, stdio: 'ignore' });\nif (process.env.FAKE_CLI_PID) fs.writeFileSync(process.env.FAKE_CLI_PID, String(process.pid));\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n`
+    `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst { spawn } = require('node:child_process');\nif (process.env.FAKE_CLI_PID_LOG) fs.appendFileSync(process.env.FAKE_CLI_PID_LOG, process.pid + '\\n');\nif (process.env.FAKE_CLI_CLEANUP_FILE) {\n  setInterval(() => {\n    if (fs.existsSync(process.env.FAKE_CLI_CLEANUP_FILE)) process.exit(0);\n  }, 25);\n  setTimeout(() => process.exit(0), 30_000);\n}\nspawn(process.env.FAKE_CLI_GRANDCHILD_BINARY, [], { env: process.env, stdio: 'ignore' });\nif (process.env.FAKE_CLI_PID) fs.writeFileSync(process.env.FAKE_CLI_PID, String(process.pid));\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n`
   );
   chmodSync(parentLossIgnoringTargetBinary, 0o755);
   process.env.FAKE_CLI_LOG = argsLog;
@@ -381,6 +381,40 @@ describe('automation arm e2e', () => {
       await cleanupFailedParentLossTest(supervisorPid, ownedPids);
     }
   }, 15_000);
+
+  test('TERM-ignoring parent-loss fixtures obey the synthetic cleanup backstop', async () => {
+    if (process.platform === 'win32') return;
+    let targetPid: number | undefined;
+    let ownedPids: number[] = [];
+    try {
+      const target = spawn(parentLossIgnoringTargetBinary, [], {
+        detached: true,
+        env: {
+          ...process.env,
+          FAKE_CLI_PID: parentLossTargetPid,
+          FAKE_CLI_GRANDCHILD_BINARY: parentLossIgnoringGrandchildBinary,
+          FAKE_CLI_GRANDCHILD_PID: parentLossGrandchildPid,
+        },
+        stdio: 'ignore',
+      });
+      targetPid = target.pid;
+      await waitForFiles([parentLossTargetPid, parentLossGrandchildPid], 1000);
+      ownedPids = [
+        Number(readFileSync(parentLossTargetPid, 'utf8')),
+        Number(readFileSync(parentLossGrandchildPid, 'utf8')),
+      ];
+
+      writeFileSync(syntheticCleanupSignal, 'exit');
+      expect(await waitForProcessesToExit(ownedPids, 1000)).toBe(true);
+      const loggedPids = readFileSync(syntheticPidLog, 'utf8')
+        .trim()
+        .split('\n')
+        .map(Number);
+      for (const pid of ownedPids) expect(loggedPids).toContain(pid);
+    } finally {
+      await cleanupFailedParentLossTest(targetPid, ownedPids);
+    }
+  }, 10_000);
 
   test('spawns the CLI, drains output, and posts the exit report', async () => {
     completions = [];

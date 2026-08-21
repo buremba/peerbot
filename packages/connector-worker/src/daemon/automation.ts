@@ -118,6 +118,10 @@ const PROCESS_REAP_GRACE_MS = 5000;
  * underneath it. The supervisor deliberately ignores SIGTERM; the CLI and its
  * descendants still receive the group signal, while the supervisor remains the
  * ownership anchor until the daemon releases or SIGKILLs it.
+ *
+ * POSIX caller contract: spawn this source with `detached: true`, making the
+ * supervisor the session/process-group leader whose pgid equals its pid. Its
+ * parent-loss path uses that invariant for safe negative-pid group signals.
  */
 export const CLI_SUPERVISOR_SOURCE = String.raw`
 const { spawn } = require('node:child_process');
@@ -317,6 +321,15 @@ function waitForTargetExit(
   });
 }
 
+/** Await the target metadata after process-tree termination. */
+export async function waitForTargetExitAfterTermination(
+  targetExit: Promise<TargetExit>,
+  timeoutMs = PROCESS_REAP_GRACE_MS
+): Promise<TargetExit | null> {
+  const { target } = await waitForTargetExit(targetExit, timeoutMs);
+  return target ?? null;
+}
+
 /** Wait a bounded interval for a signal sent to the child to take effect. */
 function waitForSignalledExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
@@ -443,19 +456,29 @@ async function releaseSupervisor(proc: ChildProcess, timeoutMs = 1000): Promise<
  * fork across the observation. A process outside this new session cannot join
  * the group, so releasing the sole remaining supervisor is then race-free.
  */
-async function waitForOwnedPosixTreeToQuiesce(
+export async function waitForOwnedPosixTreeToQuiesce(
   proc: ChildProcess,
-  timeoutMs: number
+  timeoutMs: number,
+  listMembers: (pgid: number) => Promise<number[] | null> = listPosixProcessGroupMembers,
+  wait: (ms: number) => Promise<void> = sleep
 ): Promise<boolean> {
   const pgid = proc.pid;
   if (pgid == null) return false;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const members = await listPosixProcessGroupMembers(pgid);
-    if (members == null) return false;
+    const members = await listMembers(pgid);
+    if (members == null) {
+      // An unavailable or overloaded `ps` removes our proof that only the
+      // ownership anchor remains; it must not also remove the target's TERM
+      // grace. Consume the remaining window, then escalate while the anchor is
+      // still live and the negative pgid is still safe.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs > 0) await wait(remainingMs);
+      return false;
+    }
     if (members.length === 1 && members[0] === pgid) {
       if (!signalOwnedPosixProcessGroup(proc, 'SIGSTOP')) return false;
-      const frozenMembers = await listPosixProcessGroupMembers(pgid);
+      const frozenMembers = await listMembers(pgid);
       if (frozenMembers?.length === 1 && frozenMembers[0] === pgid) {
         if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
         return releaseSupervisor(proc);
@@ -463,7 +486,7 @@ async function waitForOwnedPosixTreeToQuiesce(
       // The anchor is still live and stopped, so this cannot target a reused id.
       if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
     }
-    await sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+    await wait(Math.min(25, Math.max(1, deadline - Date.now())));
   }
   return false;
 }
@@ -789,7 +812,8 @@ async function runCli(
     } else if (timedOut) {
       killedSignal = await terminateChild(proc);
       supervisorSettled = true;
-      target = await supervised.targetExit;
+      target =
+        (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
     } else {
       await releaseSupervisor(proc);
       supervisorSettled = true;

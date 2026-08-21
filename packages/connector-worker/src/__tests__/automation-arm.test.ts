@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import type { ChildProcess } from 'node:child_process';
 import { DEVICE_AGENT_SPECS_BY_KIND } from '@lobu/core/contracts/worker/device-automation';
 import type {
   CompleteAutomationResponse,
@@ -9,6 +10,8 @@ import {
   dispatchAutomationResumeLoop,
   signalOwnedPosixProcessGroup,
   terminateWindowsProcessTree,
+  waitForOwnedPosixTreeToQuiesce,
+  waitForTargetExitAfterTermination,
   type AutomationRunIo,
   type ExecutorResult,
 } from '../daemon/automation.js';
@@ -48,6 +51,44 @@ describe('POSIX process-group ownership', () => {
     const liveOwner = { pid: 4242, exitCode: null, signalCode: null };
     expect(signalOwnedPosixProcessGroup(liveOwner, 'SIGTERM', sendSignal)).toBe(true);
     expect(signals).toEqual([{ pid: -4242, signal: 'SIGTERM' }]);
+  });
+
+  test('an unavailable membership probe preserves the remaining SIGTERM grace', async () => {
+    const waits: number[] = [];
+    const owner = {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+    } as unknown as ChildProcess;
+
+    expect(
+      await waitForOwnedPosixTreeToQuiesce(
+        owner,
+        3000,
+        async () => null,
+        async (ms) => {
+          waits.push(ms);
+        }
+      )
+    ).toBe(false);
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeGreaterThan(2900);
+  });
+});
+
+describe('terminated target metadata', () => {
+  test('an absent supervisor report is bounded by the reap deadline', async () => {
+    const lateTarget = new Promise<{
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+      error: string | null;
+    }>((resolve) => {
+      setTimeout(() => resolve({ exitCode: 0, signalCode: null, error: null }), 50);
+    });
+
+    const result = await waitForTargetExitAfterTermination(lateTarget, 5);
+
+    expect(result).toBeNull();
   });
 });
 

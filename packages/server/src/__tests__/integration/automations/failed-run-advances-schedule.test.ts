@@ -243,6 +243,31 @@ describe("provider quota reset parsing", () => {
     ).toBe("2026-08-05T12:01:00.000Z");
   });
 
+  it("honors OpenCode Go's relative account-limit reset", () => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+    const message =
+      "Monthly usage limit reached. Resets in 14 days. " +
+      "To continue using this model now, enable usage from your available balance";
+
+    expect(
+      deviceProviderQuotaResetNotBefore(message, now)?.toISOString()
+    ).toBe("2026-08-19T10:01:00.000Z");
+  });
+
+  // A CLI's own limits reuse the "limit reached" phrasing but are not provider
+  // quota, and a relative "resets in" would otherwise park a durable schedule
+  // for hours or days on a run that should simply retry next tick.
+  it.each([
+    "Context limit reached. Please start a new session.",
+    "Session limit reached. Resets in 5 hours.",
+    "Tool call limit reached after 50 iterations",
+    "File size limit reached, resets in 2 days",
+  ])("does not park a non-quota CLI limit (%s)", (message) => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+
+    expect(deviceProviderQuotaResetNotBefore(message, now)).toBeNull();
+  });
+
   it.each([
     "Gemini returned an error: 429 status code (no body)",
     "429 Too Many Requests",

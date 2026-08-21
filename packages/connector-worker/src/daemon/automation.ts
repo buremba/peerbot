@@ -46,6 +46,11 @@ import { locateBinary, searchDirs } from './agent-binaries.js';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
 import { log } from './log.js';
+import {
+  detectParentClaudeSession,
+  handoffToParentClaude,
+  type ParentClaudeSession,
+} from './parent-claude.js';
 
 /**
  * The slice of the daemon's `ExecutorConfig` the automation arm reads.
@@ -59,6 +64,10 @@ import { log } from './log.js';
 export interface AutomationExecutorConfig {
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
+  /** Opt-in demo: hand Claude Code Automations to the interactive parent. */
+  insideClaude?: boolean;
+  /** Stops a pending parent handoff during daemon shutdown. */
+  shutdownSignal?: AbortSignal;
   /**
    * Agent to use when the Automation names no `agent_kind`.
    *
@@ -305,6 +314,19 @@ export function resolveAutomationRunAccess(
   };
 }
 
+/** Parent delivery is deliberately narrower than agent-kind advertisement. */
+export function isParentClaudeEligible(
+  kind: AgentKind,
+  insideClaude: boolean | undefined,
+  payload: AutomationPollPayload
+): boolean {
+  return (
+    insideClaude === true &&
+    kind === 'claude-code' &&
+    payload.context.agent_session != null
+  );
+}
+
 /** Spawn one CLI run and classify how it ended. */
 async function runCli(
   spec: AgentSpec,
@@ -499,6 +521,18 @@ export async function executeAutomationRun(
       ? configuredTimeout * 1000
       : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
+  // Eligibility already required a run-scoped `agent_session`, so capture it
+  // alongside the parent session: the two are only ever used together.
+  const parentDetection = isParentClaudeEligible(spec.kind, cfg.insideClaude, payload)
+    ? detectParentClaudeSession()
+    : null;
+  const agentSession = payload.context.agent_session;
+  const parentSession: ParentClaudeSession | null =
+    parentDetection?.ok === true && agentSession ? parentDetection.session : null;
+  let executionRoute: 'undecided' | 'parent' | 'subprocess' = parentSession
+    ? 'undecided'
+    : 'subprocess';
+
   // Heartbeat the run while the CLI executes so the server's stale-run sweeper
   // can distinguish a live turn from an abandoned one.
   const heartbeat = setInterval(() => {
@@ -512,6 +546,59 @@ export async function executeAutomationRun(
       let prompt = buildDeviceAutomationPrompt(payload, runId);
       if (finalizeNudge && finalizeNudge !== '') {
         prompt += `\n\n---\nFINALIZE NUDGE (prior attempt did not complete the window):\n${finalizeNudge}\n`;
+      }
+      if (parentSession && agentSession && executionRoute !== 'subprocess') {
+        const handoff = await handoffToParentClaude({
+          session: parentSession,
+          runId,
+          prompt,
+          token: agentSession.token,
+          memoryUrl: agentSession.mcp_url,
+          timeoutMs,
+          ...(cfg.shutdownSignal ? { shutdownSignal: cfg.shutdownSignal } : {}),
+        });
+        if (handoff.kind === 'handed-off') {
+          executionRoute = 'parent';
+          log.info(`[executor] Automation run ${runId} handed to parent Claude session`);
+          const completion = await handoff.completion;
+          if (completion.kind === 'completed') {
+            return {
+              output: 'Parent Claude signalled Automation completion.',
+              error: null,
+              exitCode: 0,
+              exitSignal: null,
+              exitReason: 'ok',
+              durationMs: completion.durationMs,
+            };
+          }
+          // No child process ran, so there is no exit code or OS signal to
+          // report — `error` carries why the handoff ended.
+          return {
+            output: '',
+            error: completion.error,
+            exitCode: null,
+            exitSignal: null,
+            exitReason: completion.kind === 'timeout' ? 'timeout' : 'crash',
+            durationMs: completion.durationMs,
+          };
+        }
+
+        if (executionRoute === 'parent') {
+          // A prior message reached the parent. Never mix in a subprocess,
+          // even if a later finalize-nudge delivery fails before writing.
+          return {
+            output: '',
+            error: `parent Claude delivery failed: ${handoff.reason}`,
+            exitCode: null,
+            exitSignal: null,
+            exitReason: 'crash',
+            durationMs: 0,
+          };
+        }
+        executionRoute = 'subprocess';
+        log.info(
+          `[executor] Automation run ${runId}: parent Claude unavailable before delivery; using subprocess`
+        );
       }
       return runCli(
         spec,

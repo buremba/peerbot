@@ -62,4 +62,31 @@ describe("lobu daemon", () => {
 
     expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("http://127.0.0.1:9564");
   });
+
+  test("--inside-claude is explicit and uses an isolated headless device", async () => {
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({
+      apiUrl: "http://127.0.0.1:9564",
+      insideClaude: true,
+    });
+
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      apiUrl: "http://127.0.0.1:9564",
+      platform: "headless",
+      insideClaude: true,
+    });
+  });
+
+  test("the default daemon does not enable parent delivery", async () => {
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+
+    expect(start.mock.calls[0]?.[0]?.insideClaude).toBeUndefined();
+  });
 });

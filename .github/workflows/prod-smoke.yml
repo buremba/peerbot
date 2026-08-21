@@ -40,7 +40,7 @@ on:
         description: Require this commit to be live (ancestor test)
         required: false
       rollout_wait:
-        description: Seconds to wait for expect_sha to appear (default 600 when expect_sha is set)
+        description: Seconds to wait for expect_sha to appear (default 1200 when expect_sha is set)
         required: false
 
 permissions:

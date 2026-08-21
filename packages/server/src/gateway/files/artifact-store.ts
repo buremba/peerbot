@@ -36,6 +36,12 @@ interface PublishArtifactResult {
   size: number;
   contentType: string;
   downloadUrl: string;
+  /**
+   * Content hash of the stored bytes. `artifactId` is per-publication, so this
+   * is the only field a caller can use to ask "are these the same bytes?"
+   * across two publications of the same source attachment.
+   */
+  sha256: string;
 }
 
 export class ArtifactStorageError extends Error {
@@ -172,6 +178,26 @@ async function writeDurableFile(
   const handle = await fs.open(filePath, "wx", 0o600);
   try {
     await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * fsync a directory so the entries created inside it survive a crash.
+ *
+ * Syncing a file only promises its CONTENTS are on disk; the link that makes it
+ * findable lives in the parent directory and is durable only once that
+ * directory is itself synced. Without this an unclean shutdown can leave an
+ * artifact dir holding `metadata.json` but not `content`, or leave the artifact
+ * dir missing entirely while both files are on the platters — exactly the
+ * half-written states `read()`'s checksum and metadata checks then report as a
+ * corrupt artifact.
+ */
+async function syncDirectoryEntry(dirPath: string): Promise<void> {
+  const handle = await fs.open(dirPath, "r");
+  try {
     await handle.sync();
   } finally {
     await handle.close();
@@ -350,6 +376,10 @@ export class ArtifactStore {
         this.metadataPath(artifactId),
         JSON.stringify(metadata, null, 2),
       );
+      // Both files, then the directory that links them, then the directory that
+      // links THAT — a publish that returns has survived power loss end to end.
+      await syncDirectoryEntry(dir);
+      await syncDirectoryEntry(this.baseDir);
     } catch (error) {
       if (ownsDir) {
         try {
@@ -384,6 +414,7 @@ export class ArtifactStore {
         params.ttlMs,
         params.binding,
       ),
+      sha256: checksum,
     };
   }
 

@@ -6,6 +6,7 @@ import logger from "../utils/logger";
 const PROVIDER_RESET_GRACE_MS = 60_000;
 const PROVIDER_RETRY_GRACE_MS = 1_000;
 const PROVIDER_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
+const PROVIDER_RELATIVE_RESET_MAX_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
  * Extract the reset timestamp from provider quota errors such as:
@@ -160,6 +161,35 @@ export function parseProviderRetryAfter(
 }
 
 /**
+ * Extract a long account-window boundary such as OpenCode Go's
+ * "Monthly usage limit reached. Resets in 14 days." These are not transient
+ * Retry-After delays: they exceed an Automation's process budget and should
+ * park the cron cursor until the provider says the account window resets.
+ */
+function parseProviderQuotaResetIn(
+	message: string,
+	now: Date = new Date()
+): Date | null {
+	const match = message.match(
+		/\breset(?:s)?\s+in\s+(\d+(?:\.\d+)?)\s*(hours?|days?|weeks?)\b/i
+	);
+	if (!match) return null;
+	const value = Number(match[1]);
+	if (!Number.isFinite(value) || value <= 0) return null;
+	const unit = match[2].toLowerCase();
+	const unitMs = unit.startsWith("week")
+		? 7 * 24 * 60 * 60 * 1000
+		: unit.startsWith("day")
+			? 24 * 60 * 60 * 1000
+			: 60 * 60 * 1000;
+	const delayMs = value * unitMs;
+	if (!Number.isFinite(delayMs) || delayMs > PROVIDER_RELATIVE_RESET_MAX_MS) {
+		return null;
+	}
+	return new Date(now.getTime() + delayMs + PROVIDER_RESET_GRACE_MS);
+}
+
+/**
  * How long a depleted balance parks a schedule.
  *
  * A depleted balance is not a rate limit: it does not tick back on a timer, so
@@ -239,15 +269,21 @@ export function deviceProviderQuotaResetNotBefore(
 	// Balance wording is quota evidence by definition; composing the matchers
 	// keeps them in lockstep so a new balance alternate cannot silently fail to
 	// park on this path.
+	// "limit reached" is qualified by `usage`: OpenCode Go reports an account
+	// window as "Monthly usage limit reached", while a CLI's own "context limit
+	// reached" / "session limit reached" / "tool call limit reached" are not
+	// provider quota and must not park a durable schedule — the same hazard the
+	// doc comment above names for "session resets at ...".
 	const hasQuotaEvidence =
 		PROVIDER_BALANCE_EXHAUSTED.test(message) ||
-		/limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
+		/limit exhausted|usage limit reached|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
 			message
 		);
 	if (!hasQuotaEvidence) return null;
 	return (
 		parseProviderQuotaResetAt(message, now) ??
 		parseProviderRetryAfter(message, now) ??
+		parseProviderQuotaResetIn(message, now) ??
 		balanceExhaustedNotBefore(message, now)
 	);
 }

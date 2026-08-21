@@ -294,11 +294,15 @@ async function completeSkippedAutomationRun(
 	runId: number,
 	granularity: AutomationTimeGranularity,
 ): Promise<void> {
+	// A server-side skip has no child stdout. Preserve the historical `{}`
+	// action_output for consumers, while output_tail makes the terminal no-op
+	// intentional to humans and run_metadata remains the machine-readable signal.
 	await sql`
 		UPDATE runs
 		SET status = 'completed',
 		    outcome = ${classifyRunOutcome({ status: "completed" })},
 		    action_output = '{}'::jsonb,
+		    output_tail = 'No-op: scheduled source content is unchanged.',
 		    approved_input = COALESCE(approved_input, '{}'::jsonb)
 		      || jsonb_build_object('granularity', ${granularity}::text),
 		    run_metadata = COALESCE(run_metadata, '{}'::jsonb)

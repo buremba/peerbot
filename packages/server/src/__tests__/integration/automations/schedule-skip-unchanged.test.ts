@@ -68,11 +68,18 @@ describe("scheduled Automation unchanged gate", () => {
 		});
 		const runs = await sql`
 			SELECT id, approved_input->>'window_start' AS window_start,
-			       approved_input->>'window_end' AS window_end, run_metadata
+			       approved_input->>'window_end' AS window_end, run_metadata,
+			       action_output, output_tail, outcome, status
 			FROM runs
 			WHERE automation_id = ${automationId} AND run_type = 'automation'
 		`;
 		expect(runs).toHaveLength(1);
+		expect(runs[0]).toMatchObject({
+			status: "completed",
+			outcome: "scoreable",
+			action_output: {},
+			output_tail: "No-op: scheduled source content is unchanged.",
+		});
 		expect(runs[0].run_metadata).toMatchObject({
 			content_analyzed: 0,
 			skipped_unchanged: true,

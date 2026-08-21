@@ -29,6 +29,9 @@ const fakeBinary = path.join(tmp, 'pi');
 const heartbeatConflictBinary = path.join(tmp, 'pi-heartbeat-conflict');
 const heartbeatConflictGrandchildBinary = path.join(tmp, 'pi-heartbeat-grandchild');
 const transientHeartbeatBinary = path.join(tmp, 'pi-transient-heartbeat');
+const openCodeQuotaBinary = path.join(tmp, 'opencode-quota-stall');
+const openCodeGenericErrorBinary = path.join(tmp, 'opencode-generic-error-stall');
+const openCodeQuotaThenExitBinary = path.join(tmp, 'opencode-quota-then-exit');
 const argsLog = path.join(tmp, 'args.log');
 const heartbeatConflictPid = path.join(tmp, 'heartbeat-conflict.pid');
 const heartbeatConflictTerminated = path.join(tmp, 'heartbeat-conflict-terminated.log');
@@ -67,6 +70,16 @@ function automationJob(): PollResponse {
       context: { device: { worker_id: 'wrk_1' }, user: { user_id: 'usr_1' } },
     },
   };
+}
+
+function openCodeAutomationJob(): PollResponse {
+  const job = automationJob();
+  if (!job.payload) throw new Error('automation test payload missing');
+  job.payload.automation.agent_kind = 'opencode';
+  job.payload.automation.execution_config = {
+    model: 'opencode-go/deepseek-v4-flash',
+  };
+  return job;
 }
 
 let server: http.Server;
@@ -202,6 +215,21 @@ beforeAll(async () => {
     `#!/usr/bin/env node\nsetTimeout(() => {\n  process.stdout.write('TRANSIENT_HEARTBEAT_OUTPUT');\n  process.exit(0);\n}, 150);\n`
   );
   chmodSync(transientHeartbeatBinary, 0o755);
+  writeFileSync(
+    openCodeQuotaBinary,
+    `#!/usr/bin/env node\nconst fs = require('node:fs');\nif (process.env.FAKE_CLI_PID_LOG) fs.appendFileSync(process.env.FAKE_CLI_PID_LOG, process.pid + '\\n');\nif (process.env.FAKE_CLI_LOG) fs.appendFileSync(process.env.FAKE_CLI_LOG, process.argv.slice(2).join('\\n') + '\\n');\nconsole.error('timestamp=2026-08-21T04:25:04.987Z level=ERROR run=389ea1b7 message="stream error" providerID=opencode-go modelID=deepseek-v4-flash error.error="AI_APICallError: Monthly usage limit reached. Resets in 14 days. To continue using this model now, enable usage from your available balance"');\nsetTimeout(() => {\n  if (process.env.FAKE_CLI_PID) fs.writeFileSync(process.env.FAKE_CLI_PID, String(process.pid));\n}, 100);\nprocess.on('SIGTERM', () => {\n  if (process.env.FAKE_CLI_TERMINATED) fs.writeFileSync(process.env.FAKE_CLI_TERMINATED, 'SIGTERM');\n  process.exit(0);\n});\nsetInterval(() => {}, 1000);\n`
+  );
+  chmodSync(openCodeQuotaBinary, 0o755);
+  writeFileSync(
+    openCodeGenericErrorBinary,
+    `#!/usr/bin/env node\nconst fs = require('node:fs');\nconsole.error('timestamp=2026-08-21T04:25:04.987Z level=ERROR run=389ea1b7 message="stream error" providerID=opencode-go modelID=deepseek-v4-flash error.error="AI_APICallError: Provider service temporarily unavailable"');\nif (process.env.FAKE_CLI_PID) fs.writeFileSync(process.env.FAKE_CLI_PID, String(process.pid));\nsetInterval(() => {}, 1000);\n`
+  );
+  chmodSync(openCodeGenericErrorBinary, 0o755);
+  writeFileSync(
+    openCodeQuotaThenExitBinary,
+    `#!/usr/bin/env node\nconsole.error('timestamp=2026-08-21T04:25:04.987Z level=ERROR run=389ea1b7 message="stream error" providerID=opencode-go modelID=deepseek-v4-flash error.error="AI_APICallError: Monthly usage limit reached. Resets in 14 days."');\nsetTimeout(() => {\n  process.stdout.write('RECOVERED_AND_SUCCEEDED');\n  process.exit(0);\n}, 400);\n`
+  );
+  chmodSync(openCodeQuotaThenExitBinary, 0o755);
   writeFileSync(
     parentLossHarness,
     `const fs = require('node:fs');\nconst { spawn } = require('node:child_process');\nconst supervisor = spawn(process.execPath, ['-e', ${JSON.stringify(CLI_SUPERVISOR_SOURCE)}, '--', process.env.FAKE_CLI_BINARY], { detached: true, env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });\nfs.writeFileSync(process.env.FAKE_CLI_SUPERVISOR_PID_FILE, String(supervisor.pid));\nconst deadline = Date.now() + 3000;\nconst ready = setInterval(() => {\n  if (fs.existsSync(process.env.FAKE_CLI_PID) && fs.existsSync(process.env.FAKE_CLI_GRANDCHILD_PID)) {\n    clearInterval(ready);\n    process.exit(0);\n  }\n  if (Date.now() >= deadline) process.exit(2);\n}, 25);\n`
@@ -689,6 +717,93 @@ describe('automation arm failure diagnosis', () => {
     expect(completions[0].body.exit_reason).toBe('error_message');
     expect(completions[0].body.error).toContain('Credit balance is too low');
   });
+
+  test('terminates an OpenCode account-limit retry instead of waiting for the outer timeout', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const quotaStall = cfg();
+    quotaStall.timeoutMs = 8000;
+    quotaStall.binaryOverrides = { opencode: openCodeQuotaBinary };
+
+    const startedAt = Date.now();
+    await executeAutomationRun(client(), openCodeAutomationJob(), quotaStall);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('error_message');
+    expect(completions[0].body.error).toContain(
+      'Monthly usage limit reached. Resets in 14 days.'
+    );
+    expect(completions[0].body.error).not.toContain('timeout');
+    expect(readArgsLog()).toContain('--print-logs');
+    expect(readArgsLog()).toContain('ERROR');
+    expect(readFileSync(heartbeatConflictTerminated, 'utf8')).toBe('SIGTERM');
+    const childPid = Number(readFileSync(heartbeatConflictPid, 'utf8'));
+    expect(() => process.kill(childPid, 0)).toThrow();
+    // The fixture's outer deadline plus tree cleanup is ~11s on current main.
+    expect(elapsedMs).toBeLessThan(6000);
+  }, 20_000);
+
+  test('leaves generic OpenCode stream retries on the normal timeout path', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const genericStall = cfg();
+    // Long enough that process spawn cannot beat the deadline: the fixture must
+    // actually have written its stderr line for the assertion below to mean
+    // anything. At 300ms this raced spawn latency and failed under suite load.
+    genericStall.timeoutMs = 2000;
+    genericStall.binaryOverrides = { opencode: openCodeGenericErrorBinary };
+
+    await executeAutomationRun(client(), openCodeAutomationJob(), genericStall);
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('timeout');
+    expect(completions[0].body.error).toContain('Provider service temporarily unavailable');
+    // The generic class must never take the diagnostic stop: no early kill.
+    expect(existsSync(heartbeatConflictTerminated)).toBe(false);
+  }, 15_000);
+
+  /**
+   * OpenCode logs the account-limit line and then recovers on its own. The
+   * diagnostic must not interrupt a CLI that is still making progress: killing
+   * it discarded the output it went on to produce and reported the successful
+   * run as `error_message` with an empty `output`.
+   */
+  test('keeps the real exit when the CLI logs an account limit and then succeeds', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const recovers = cfg();
+    recovers.timeoutMs = 8000;
+    recovers.binaryOverrides = { opencode: openCodeQuotaThenExitBinary };
+
+    await executeAutomationRun(client(), openCodeAutomationJob(), recovers);
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('ok');
+    expect(completions[0].body.error).toBeFalsy();
+    expect(completions[0].body.output).toContain('RECOVERED_AND_SUCCEEDED');
+  }, 20_000);
+
+  test('a server cancellation wins when it races the OpenCode account-limit stop', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    heartbeatStatus = 409;
+    heartbeatReadyFiles = [heartbeatConflictPid];
+    const conflict = cfg();
+    conflict.heartbeatIntervalMs = 10;
+    conflict.timeoutMs = 8000;
+    conflict.terminalHeartbeatGraceMs = 100;
+    conflict.binaryOverrides = { opencode: openCodeQuotaBinary };
+
+    const result = await executeAutomationRun(client(), openCodeAutomationJob(), conflict);
+
+    expect(result).toEqual({ itemsCollected: 0 });
+    expect(heartbeatRequests).toBeGreaterThan(0);
+    expect(completions).toHaveLength(1);
+    expect(completions[0].body.exit_reason).toBe('ok');
+    expect(completions[0].body.error).toBeFalsy();
+    expect(readFileSync(heartbeatConflictTerminated, 'utf8')).toBe('SIGTERM');
+  }, 15_000);
 });
 
 /**

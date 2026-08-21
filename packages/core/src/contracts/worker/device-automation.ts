@@ -118,7 +118,12 @@ export const DEVICE_AGENT_SPECS: readonly AgentSpec[] = [
       kind: "opencode-config-env",
       variable: "OPENCODE_CONFIG_CONTENT",
     },
-    headlessArgs: ["--auto"],
+    // OpenCode retries a provider account limit whose reset window is far
+    // longer than an Automation's wall-clock budget (600s by default). Its
+    // error-level log is the only headless signal it emits while waiting, so
+    // the connector-worker supervisor reads it to end deterministic
+    // account-limit waits instead of burning the whole budget.
+    headlessArgs: ["--auto", "--print-logs", "--log-level", "ERROR"],
     modelFlag: "-m",
     effortFlag: "--variant",
     permissionModeFlag: null,

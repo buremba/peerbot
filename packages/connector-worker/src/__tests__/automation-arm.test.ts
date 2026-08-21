@@ -294,6 +294,8 @@ describe('buildArguments (ported AgentSpec table)', () => {
   test('opencode: positional after `run`, model flag is `-m`', () => {
     const args = buildArguments(opencode, 'the prompt', { model: 'gpt-5' }, [], 600);
     expect(args[0]).toBe('run');
+    expect(args).toContain('--print-logs');
+    expect(args).toContain('ERROR');
     expect(args).toContain('-m');
     expect(args).toContain('gpt-5');
     expect(args.at(-1)).toBe('the prompt');

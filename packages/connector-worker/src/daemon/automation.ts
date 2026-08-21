@@ -30,6 +30,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
+import { PROVIDER_BALANCE_EXHAUSTED } from '@lobu/core';
 import {
   type AgentKind,
   type AgentSpec,
@@ -42,6 +43,7 @@ import type {
   PollResponse,
   WorkerExitReason,
 } from '@lobu/core/contracts/worker/protocol';
+import { redactOutput } from '../executor/redact.js';
 import { locateBinary, searchDirs } from './agent-binaries.js';
 import {
   releaseSupervisor,
@@ -109,6 +111,17 @@ export interface ExecutorResult {
 
 const STDOUT_CAP = 4 * 1024 * 1024;
 const STDERR_CAP = 1 * 1024 * 1024;
+/** Rolling OpenCode diagnostics needed only until a terminal retry is found. */
+const OPENCODE_DIAGNOSTIC_CAP = 32 * 1024;
+/**
+ * How long the account-limit diagnostic must go unanswered before the run is
+ * interrupted. OpenCode logs the line and then sleeps for the provider's reset
+ * window, so silence is the actual stall signal. A CLI that writes anything
+ * further — or exits — inside this window was still making progress and keeps
+ * its own exit; without the window, a run that logged the line and recovered
+ * was killed and its output discarded.
+ */
+const OPENCODE_DIAGNOSTIC_SETTLE_MS = 1_500;
 const DEFAULT_TIMEOUT_MS = 600_000;
 /** Cap on the CLI-output tail folded into `runs.error_message`. */
 const DETAIL_TAIL_CHARS = 500;
@@ -164,6 +177,40 @@ function drain(stream: Readable, capBytes: number): Promise<{ data: Buffer; trun
     // `close` covers the forced-destroy path below, which emits neither.
     stream.on('close', settle);
   });
+}
+
+/**
+ * Extract the provider reason from OpenCode's structured error log, but only
+ * for deterministic account limits. Generic stream errors remain owned by the
+ * CLI and its own retry loop.
+ *
+ * The wording accepted here must stay a subset of what the server's
+ * `deviceProviderQuotaResetNotBefore` recognizes as quota evidence. Killing a
+ * run the server will not park just moves the same failure to the next cron
+ * tick, which is the waste this path exists to stop.
+ */
+function openCodeTerminalRetryDiagnostic(output: string): string | null {
+  const lines = output.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!/\blevel=ERROR\b/.test(line) || !/\bmessage="stream error"/.test(line)) continue;
+    const encoded = line.match(/\berror\.error=("(?:\\.|[^"\\])*")/)?.[1];
+    if (!encoded) continue;
+
+    let detail: string;
+    try {
+      detail = JSON.parse(encoded);
+    } catch {
+      continue;
+    }
+    detail = detail.replace(/^AI_[A-Za-z]+Error:\s*/, '').trim();
+    const isTerminalAccountLimit =
+      PROVIDER_BALANCE_EXHAUSTED.test(detail) ||
+      (/\b(?:daily|weekly|monthly) usage limit reached\b/i.test(detail) &&
+        /\breset(?:s)?\s+in\s+\d+(?:\.\d+)?\s*(?:hours?|days?|weeks?)\b/i.test(detail));
+    if (isTerminalAccountLimit) return redactOutput(detail);
+  }
+  return null;
 }
 
 /**
@@ -371,13 +418,69 @@ async function runCli(
     const stdoutPromise = drain(stdout, STDOUT_CAP);
     const stderrPromise = drain(stderr, STDERR_CAP);
 
-    const initialExit = await waitForTargetExit(supervised.targetExit, timeoutMs, abortSignal);
+    // OpenCode can sleep for the provider's full account reset window and
+    // otherwise emits no headless progress. Observe its error-level diagnostic
+    // while the normal capped drain keeps collecting output, then interrupt
+    // only the deterministic account-limit class.
+    //
+    // The wait is aborted by two unrelated causes that end the run differently:
+    // the server's 409 is an intentional stop that keeps the graceful grace
+    // window and reports `ok`, while a diagnostic stop is a provider failure.
+    // `diagnosticStop` records which one fired, so a 409 that races a quota log
+    // is still handled as a cancellation.
+    let terminalDiagnostic: string | null = null;
+    let diagnosticStop = false;
+    let diagnosticBuffer = '';
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    const waitAbort = new AbortController();
+    const forwardAbort = () => waitAbort.abort();
+    abortSignal?.addEventListener('abort', forwardAbort, { once: true });
+    if (abortSignal?.aborted) forwardAbort();
+    const observeDiagnostic = (chunk: Buffer | string) => {
+      // Any stderr byte after the diagnostic is progress: cancel the pending
+      // stop, then re-arm only while the rolling diagnostics still contain the
+      // account-limit reason.
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+        settleTimer = undefined;
+      }
+      diagnosticBuffer = (diagnosticBuffer + chunk.toString()).slice(-OPENCODE_DIAGNOSTIC_CAP);
+      terminalDiagnostic = openCodeTerminalRetryDiagnostic(diagnosticBuffer);
+      if (!terminalDiagnostic || abortSignal?.aborted) return;
+      settleTimer = setTimeout(() => {
+        if (abortSignal?.aborted) return;
+        diagnosticStop = true;
+        waitAbort.abort();
+      }, OPENCODE_DIAGNOSTIC_SETTLE_MS);
+      settleTimer.unref?.();
+    };
+    const initialExit = await (async () => {
+      if (spec.kind === 'opencode') stderr.on('data', observeDiagnostic);
+      try {
+        return await waitForTargetExit(supervised.targetExit, timeoutMs, waitAbort.signal);
+      } finally {
+        stderr.off('data', observeDiagnostic);
+        if (settleTimer) clearTimeout(settleTimer);
+        abortSignal?.removeEventListener('abort', forwardAbort);
+      }
+    })();
     const { timedOut, aborted } = initialExit;
     let target = initialExit.target;
     let cancelled = false;
     let killedSignal: string | null = null;
     let cleanupSignal: string | null = null;
-    if (aborted) {
+    let diagnosticSignal: string | null = null;
+    // Authoritative: the wait must actually have been aborted BY the diagnostic.
+    // A late stderr chunk can set `diagnosticStop` after the target already
+    // exited on its own, and that run keeps its real exit.
+    const diagnosticInterrupted = aborted && diagnosticStop && terminalDiagnostic != null;
+    if (diagnosticInterrupted) {
+      const treeSignal = await terminateChild(proc);
+      supervisorSettled = true;
+      target =
+        (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
+      diagnosticSignal = target && target.signalCode !== 'SIGKILL' ? 'SIGTERM' : treeSignal;
+    } else if (aborted) {
       // A 409 is also the normal post-complete_window state. Let a CLI that is
       // already winding down exit and report its device-side metadata. The
       // supervisor remains the non-reusable tree owner throughout the grace,
@@ -408,7 +511,12 @@ async function runCli(
 
     // A SIGKILLed child gets a short flush window; a clean exit gets a long one.
     const drainDeadlineMs =
-      cancelled || killedSignal === 'SIGKILL' || cleanupSignal === 'SIGKILL' ? 2000 : 60_000;
+      cancelled ||
+      killedSignal === 'SIGKILL' ||
+      cleanupSignal === 'SIGKILL' ||
+      diagnosticSignal === 'SIGKILL'
+        ? 2000
+        : 60_000;
     // Both pipes must race the SAME clock. Awaiting them in sequence gave
     // stderr a fresh deadline only after stdout's had expired, so a grandchild
     // holding both ends cost 2x the deadline (measured: 120s for a child that
@@ -427,6 +535,7 @@ async function runCli(
     // Once the target exits, cleanupSignal belongs only to its supervisor or
     // descendants and must not overwrite the target's own exit metadata.
     const exitSignal =
+      diagnosticSignal ??
       killedSignal ??
       (cancelled ? cleanupSignal : null) ??
       (targetSignal != null ? `signal:${targetSignal}` : null);
@@ -448,7 +557,13 @@ async function runCli(
       target?.error ||
       ''
     ).slice(-DETAIL_TAIL_CHARS);
-    if (cancelled) {
+    if (diagnosticInterrupted) {
+      // Only the diagnostic-interrupted run is reclassified. A CLI that logged
+      // the same line and then exited on its own — recovering, or failing for
+      // another reason — keeps the exit it actually reported.
+      exitReason = 'error_message';
+      errorMessage = `${label} provider error: ${terminalDiagnostic}`;
+    } else if (cancelled) {
       // The server owns the terminal outcome, but complete-automation remains
       // terminal-safe so it can retain device provenance and duration. Report
       // this intentional local stop as clean instead of inventing a failure.

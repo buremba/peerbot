@@ -166,7 +166,7 @@ export const SaveContentSchema = Type.Object({
   attachments: Type.Optional(
     Type.Array(Type.Record(Type.String(), Type.Any()), {
       description:
-        'Files or images, up to 20 per call. To persist bytes, pass { kind, filename, mime_type, data }, where data is base64 and each decoded attachment is limited to 2 MiB. Lobu removes data and returns a durable artifact reference.',
+        'Files or images, up to 20 per call. To persist bytes, pass { kind, filename, mime_type, data }, where data is canonical RFC 4648 base64 (the standard +/ alphabet, not base64url) and each decoded attachment is limited to 2 MiB. Lobu removes data and returns a durable artifact reference.',
     })
   ),
   source_url: Type.Optional(

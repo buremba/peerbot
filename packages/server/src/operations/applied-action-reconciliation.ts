@@ -44,6 +44,10 @@ type MaterializedOutput = Awaited<
 	ReturnType<typeof materializeActionOutputAttachments>
 >;
 
+type TerminalWriteResult =
+	| { applied: false }
+	| { applied: true; eventId?: number };
+
 async function loadAppliedRun(
 	db: DbClient,
 	runId: number,
@@ -192,10 +196,10 @@ async function writeTerminalState(
 	run: AppliedRunRow,
 	output: Record<string, unknown>,
 	card: AppliedActionCard | undefined,
-): Promise<number | null> {
+): Promise<TerminalWriteResult> {
 	if (run.approval_status === "approved") {
-		if (!card) return null;
-		return terminalizeApprovalRunCompleted(
+		if (!card) return { applied: false };
+		const eventId = await terminalizeApprovalRunCompleted(
 			context.runId,
 			context.organizationId,
 			output,
@@ -203,8 +207,9 @@ async function writeTerminalState(
 			card.reviewer,
 			context.db,
 		);
+		return eventId === null ? { applied: false } : { applied: true, eventId };
 	}
-	if (run.approval_status !== "auto") return null;
+	if (run.approval_status !== "auto") return { applied: false };
 	const updated = await context.db`
     UPDATE runs
     SET status = 'completed', completed_at = current_timestamp,
@@ -216,7 +221,7 @@ async function writeTerminalState(
       AND approval_status = 'auto'
     RETURNING id
   `;
-	return updated.length > 0 ? 0 : null;
+	return { applied: updated.length > 0 };
 }
 
 async function observeTerminalWrite(
@@ -252,17 +257,17 @@ async function terminalizeCheckpointedOutput(
 	}
 
 	try {
-		const eventId = await writeTerminalState(
+		const write = await writeTerminalState(
 			context,
 			run,
 			materialized.output,
 			card,
 		);
-		if (eventId !== null) {
+		if (write.applied) {
 			return {
 				status: "completed",
 				output: materialized.output,
-				...(eventId > 0 ? { eventId } : {}),
+				...(write.eventId === undefined ? {} : { eventId: write.eventId }),
 			};
 		}
 	} catch (error) {

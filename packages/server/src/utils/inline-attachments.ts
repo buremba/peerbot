@@ -5,7 +5,7 @@
  * inline inside a stream batch:
  *
  *   { kind: 'audio', filename: 'AUD-…opus', mime_type: 'audio/opus',
- *     data: '<base64 bytes>', size_bytes: 23456 }
+ *     data: '<canonical RFC 4648 standard-base64 bytes>', size_bytes: 23456 }
  *
  * Before the row hits `events.attachments` we strip the bytes out — events
  * are not a binary store — and put them in the ArtifactStore, then leave a

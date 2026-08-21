@@ -226,15 +226,6 @@ export async function readMcpAttachmentResource(
   const coreServices = getLobuCoreServices();
   if (!coreServices) throw new Error('MCP resource service unavailable');
   const artifactStore = coreServices.getArtifactStore();
-  const metadata = await artifactStore.inspect(attachment.artifact_id, {
-    binding: loaded.binding,
-  });
-  if (!metadata) throw new Error(`Unknown resource: ${uri}`);
-  if (metadata.size > MAX_MCP_RESOURCE_BYTES) {
-    throw new Error(
-      `MCP resource is too large to inline (${metadata.size} bytes; limit ${MAX_MCP_RESOURCE_BYTES})`
-    );
-  }
   const stored = await artifactStore.read(attachment.artifact_id, {
     binding: loaded.binding,
     maxBytes: MAX_MCP_RESOURCE_BYTES,

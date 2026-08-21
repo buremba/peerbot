@@ -331,14 +331,6 @@ async function transcribeOne(
   const transcriptionService = coreServices!.getTranscriptionService();
   if (!artifactStore || !transcriptionService) return;
 
-  const metadata = await artifactStore.inspect(job.artifactId);
-  if (metadata && metadata.size > MAX_INLINE_ATTACHMENT_BYTES) {
-    logger.info(
-      { artifact_id: job.artifactId, size: metadata.size },
-      '[inline-attachments] artifact exceeds the inline limit — skipping transcription'
-    );
-    return;
-  }
   const stored = await artifactStore.read(job.artifactId, {
     maxBytes: MAX_INLINE_ATTACHMENT_BYTES,
   });

@@ -22,8 +22,7 @@ interface StoredArtifactMetadata {
   contentType: string;
   size: number;
   createdAt: number;
-  /** Added with the durable filesystem format; absent on pre-PVC artifacts. */
-  sha256?: string;
+  sha256: string;
   /** Immutable Lobu resource identity allowed to read this artifact internally. */
   binding?: string;
 }
@@ -112,9 +111,8 @@ function isStoredArtifactMetadata(
     metadata.size >= 0 &&
     typeof metadata.createdAt === "number" &&
     Number.isFinite(metadata.createdAt) &&
-    (metadata.sha256 === undefined ||
-      (typeof metadata.sha256 === "string" &&
-        ARTIFACT_SHA256_PATTERN.test(metadata.sha256))) &&
+    typeof metadata.sha256 === "string" &&
+    ARTIFACT_SHA256_PATTERN.test(metadata.sha256) &&
     (metadata.binding === undefined ||
       (typeof metadata.binding === "string" && metadata.binding.length <= 2048))
   );
@@ -358,17 +356,14 @@ export class ArtifactStore {
       ) {
         return null;
       }
-      // The pre-PVC format stored bytes under the sanitized display filename
-      // and had no checksum. Keep those already-published artifacts readable
-      // through a rollout; all new writes use the fixed payload name + sha256.
-      const payloadPath = metadata.sha256
-        ? this.artifactFilePath(artifactId)
-        : path.join(this.artifactDir(artifactId), sanitizeFilename(metadata.filename));
-      const bytes = await readBoundedRegularFile(payloadPath, maxBytes);
+      const bytes = await readBoundedRegularFile(
+        this.artifactFilePath(artifactId),
+        maxBytes,
+      );
       if (
         !bytes ||
         bytes.length !== metadata.size ||
-        (metadata.sha256 !== undefined && sha256(bytes) !== metadata.sha256)
+        sha256(bytes) !== metadata.sha256
       ) {
         logger.warn(`Artifact ${artifactId} failed size/checksum verification`);
         return null;

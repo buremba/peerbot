@@ -186,35 +186,30 @@ describe("ArtifactStore durable filesystem backend", () => {
     expect(await reader.read(published.artifactId)).toBeNull();
   });
 
-  test("reads and refreshes links for artifacts written by the previous format", async () => {
-    const artifactId = "00000000-0000-4000-8000-000000000314";
-    const binding = runArtifactBinding(314);
-    const bytes = Buffer.from("pre-pvc-artifact");
-    const artifactDir = join(env.artifactsDir, artifactId);
-    await fs.mkdir(artifactDir, { recursive: false });
-    await writeFile(join(artifactDir, "legacy photo.png"), bytes);
-    await writeFile(
-      join(artifactDir, "metadata.json"),
-      JSON.stringify({
-        artifactId,
-        filename: "legacy photo.png",
-        contentType: "image/png",
-        size: bytes.length,
-        createdAt: Date.now(),
-        binding,
-      }),
+  test("rejects metadata without the required checksum", async () => {
+    const published = await env.artifactStore.publish({
+      buffer: Buffer.from("verified-bytes"),
+      filename: "verified.txt",
+      publicGatewayUrl: "https://lobu.example.com",
+      binding: runArtifactBinding(314),
+    });
+    const metadataPath = join(
+      env.artifactsDir,
+      published.artifactId,
+      "metadata.json",
     );
+    const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8"));
+    delete metadata.sha256;
+    await writeFile(metadataPath, JSON.stringify(metadata));
 
-    const stored = await env.artifactStore.read(artifactId, { binding });
-    expect(stored?.bytes).toEqual(bytes);
-    expect(stored?.metadata.sha256).toBeUndefined();
+    expect(await env.artifactStore.read(published.artifactId)).toBeNull();
     expect(
       await env.artifactStore.mintBoundDownloadUrl({
-        artifactId,
-        binding,
+        artifactId: published.artifactId,
+        binding: runArtifactBinding(314),
         publicGatewayUrl: "https://lobu.example.com",
       }),
-    ).toEqual(expect.stringContaining(`/api/v1/files/${artifactId}?token=`));
+    ).toBeNull();
   });
 
   test("keeps reserved metadata filenames separate from payload bytes", async () => {

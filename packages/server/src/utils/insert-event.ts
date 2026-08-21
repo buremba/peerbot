@@ -178,6 +178,57 @@ export function stableJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
 }
 
+/**
+ * The fields of a materialized attachment that survive re-publication.
+ *
+ * Everything else on the reference is minted per publication and says nothing
+ * about whether the attachment changed. `artifact_id` and `download_url` are
+ * obviously so. `filename` is too, and less obviously: the whatsapp.local
+ * bridge names voice notes with a fresh UUID each time, so prod carries
+ * supersede chains where the same 18623 bytes were stored as
+ * `1c692a09-….opus` and then `cc9eab3c-….opus`. `size_bytes` and `duration_ms`
+ * are derived from the bytes, so `sha256` already covers them.
+ */
+const DURABLE_ATTACHMENT_KEYS = ['kind', 'mime_type', 'sha256'] as const;
+
+/**
+ * Dedup view of `events.attachments`.
+ *
+ * A re-sync re-publishes the same bytes, so comparing attachments raw makes
+ * every re-sync look like a new version and supersedes forever — prod has
+ * three stored versions of one voice note that differ only by re-publication.
+ * An attachment IS its bytes, so a materialized one is compared on its content
+ * hash and how it is presented, and nothing else.
+ *
+ * Reducing to those keys is conditional on `sha256` being present, and the
+ * condition is load-bearing rather than defensive. An attachment without one
+ * was not published by us (a connector may reference an artifact it already
+ * owns), so its `artifact_id` is durable identity, not a per-publication
+ * accident — dropping it would collapse two distinct references into one. Rows
+ * written before this field existed also land here, so the first re-sync after
+ * deploy supersedes once and is stable from then on.
+ *
+ * Deliberate consequence: renaming an attachment without changing its bytes no
+ * longer mints a new stored version.
+ */
+function semanticAttachmentState(attachments: unknown[] | undefined): string {
+  if (!Array.isArray(attachments)) return stableJson([]);
+  return stableJson(
+    attachments.map((attachment) => {
+      if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+        return attachment;
+      }
+      const record = attachment as Record<string, unknown>;
+      if (typeof record.sha256 !== 'string' || record.sha256.length === 0) return record;
+      const durable: Record<string, unknown> = {};
+      for (const key of DURABLE_ATTACHMENT_KEYS) {
+        if (record[key] !== undefined) durable[key] = record[key];
+      }
+      return durable;
+    })
+  );
+}
+
 function normalizedTimestamp(value?: Date | string | null): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -245,7 +296,8 @@ function isSemanticallyEqual(
     existing.payload_type === (params.payloadType ?? 'text') &&
     stableJson(existing.payload_data ?? {}) === stableJson(params.payloadData ?? {}) &&
     stableJson(existing.payload_template ?? null) === stableJson(params.payloadTemplate ?? null) &&
-    stableJson(existing.attachments ?? []) === stableJson(params.attachments ?? []) &&
+    semanticAttachmentState(existing.attachments) ===
+      semanticAttachmentState(params.attachments) &&
     (existing.author_name ?? null) === (params.authorName ?? null) &&
     (existing.source_url ?? null) === (params.sourceUrl ?? null) &&
     // Only compare occurred_at when the caller supplied one. Insert defaults a

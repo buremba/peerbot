@@ -45,6 +45,33 @@ jobs:
             exit 1
           fi
 
+      - name: Render durable artifact storage
+        run: |
+          helm template lobu charts/lobu --namespace lobu \
+            --set app.artifacts.enabled=true \
+            --set app.artifacts.storageClass=lobu-local-retain \
+            >/tmp/lobu-artifacts.yaml
+          grep -q '^kind: PersistentVolumeClaim$' /tmp/lobu-artifacts.yaml
+          grep -q 'storageClassName: lobu-local-retain' /tmp/lobu-artifacts.yaml
+          grep -q 'name: LOBU_ARTIFACTS_DIR' /tmp/lobu-artifacts.yaml
+          grep -q 'mountPath: /var/lib/lobu/artifacts' /tmp/lobu-artifacts.yaml
+          grep -q 'claimName: lobu-app-artifacts' /tmp/lobu-artifacts.yaml
+
+      - name: Require a chart version bump for runtime chart changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags origin "$BASE_SHA"
+          if git diff --quiet "$BASE_SHA"...HEAD -- \
+            charts/lobu/templates charts/lobu/values.yaml; then
+            exit 0
+          fi
+          if git diff --quiet "$BASE_SHA"...HEAD -- charts/lobu/Chart.yaml; then
+            echo "ChartVersion reconciliation requires charts/lobu/Chart.yaml to change with runtime chart templates or values." >&2
+            exit 1
+          fi
+
       - name: Render migration upgrade with mandatory quiescence
         run: |
           helm template lobu charts/lobu --namespace lobu --is-upgrade \

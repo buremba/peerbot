@@ -321,6 +321,8 @@ async function handleListFeeds(
       last_sync_status: feed.last_sync_status as string | null,
       last_sync_at: feed.last_sync_at as Date | string | null,
       consecutive_failures: feed.consecutive_failures as number | null,
+      next_run_at: feed.next_run_at as Date | string | null,
+      active_runs: feed.active_runs as number | null,
       connection_status: feed.connection_status as string | null,
       auth_profile_status: feed.auth_profile_status as string | null,
       device_worker_id: feed.device_worker_id as string | null,

@@ -37,6 +37,8 @@
  *     within the liveness window.
  *   - `last_attempt_failed` — the most recent attempt failed (failing state,
  *     including backoff episodes).
+ *   - `overdue` — a scheduled feed has had no active run for more than an hour
+ *     past `next_run_at`.
  *   - `never_run` — never synced.
  *   - `healthy` — everything else.
  *
@@ -60,6 +62,7 @@ type FeedAttentionState =
   | "paused"
   | "needs_auth"
   | "last_attempt_failed"
+  | "overdue"
   | "never_run"
   | "device_offline"
   | "misconfigured";
@@ -80,6 +83,10 @@ interface FeedHealthSemanticsInput {
   last_sync_at?: Date | string | null;
   /** `feeds.consecutive_failures`. */
   consecutive_failures?: number | null;
+  /** `feeds.next_run_at` — only meaningful when schedule is present. */
+  next_run_at?: Date | string | null;
+  /** Number of pending/claimed/running sync runs selected by list_feeds. */
+  active_runs?: number | null;
   /** `connections.status` — 'active' | 'paused' | 'error' | 'revoked' |
    *  'pending_auth'. */
   connection_status?: string | null;
@@ -139,6 +146,21 @@ function lastAttemptFailed(input: FeedHealthSemanticsInput): boolean {
   );
 }
 
+const FEED_OVERDUE_MARGIN_MS = 60 * 60 * 1000;
+
+function scheduledExecutionOverdue(
+  input: FeedHealthSemanticsInput,
+  now: number
+): boolean {
+  if (!isScheduled(input) || (input.active_runs ?? 0) > 0) return false;
+  if (input.next_run_at == null) return false;
+  const nextRun =
+    input.next_run_at instanceof Date
+      ? input.next_run_at.getTime()
+      : new Date(input.next_run_at).getTime();
+  return Number.isFinite(nextRun) && nextRun < now - FEED_OVERDUE_MARGIN_MS;
+}
+
 /** The feed is paused, by operator or auto-pause. */
 function isPaused(input: FeedHealthSemanticsInput): boolean {
   return input.status === "paused" || input.connection_status === "paused";
@@ -164,7 +186,8 @@ function nonCollectorAttention(
  * state wins).
  */
 export function deriveFeedHealthSemantics(
-  input: FeedHealthSemanticsInput
+  input: FeedHealthSemanticsInput,
+  now: number = Date.now()
 ): FeedHealthSemantics {
   // Virtual feeds are evaluated on demand; they have no unattended runtime.
   if (isVirtual(input)) {
@@ -198,6 +221,8 @@ export function deriveFeedHealthSemantics(
     attention = "device_offline";
   } else if (lastAttemptFailed(input)) {
     attention = "last_attempt_failed";
+  } else if (scheduledExecutionOverdue(input, now)) {
+    attention = "overdue";
   } else if (
     input.last_sync_at == null &&
     input.last_sync_status !== "success"

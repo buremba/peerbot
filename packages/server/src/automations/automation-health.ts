@@ -8,11 +8,11 @@
  * into a single `health` verdict + a `last_scheduling_error` so the API and UI
  * can flag an automation that stopped firing or whose latest run failed.
  *
- * Pure + input-only: every field it reads is already selected by both
- * get_automation.ts and manage_automations/list.ts, so no migration and no extra
- * query — this is a projection, kept in one place so both call sites agree.
+ * Pure + input-only: the caller selects every field it reads, so this stays a
+ * projection kept in one place and both call sites agree on the verdict.
  */
 
+import type { AutomationTrigger } from '../types/automations';
 import { intervals } from '../config/intervals';
 
 export type AutomationHealthStatus = 'healthy' | 'degraded';
@@ -52,6 +52,17 @@ const IN_FLIGHT_RUN_STATUSES = new Set(['claimed', 'running']);
 /** Terminal execution failures that degrade an active automation. */
 const FAILED_RUN_STATUSES = new Set(['failed', 'timeout']);
 
+/**
+ * Both the connector and the workspace event trigger use `kind: 'event'`, so
+ * this one predicate covers every activation that fires off an event rather
+ * than a cron. Shared by list and get_automation so their verdicts agree.
+ */
+export function hasEventTrigger(
+  triggers: AutomationTrigger[] | null | undefined
+): boolean {
+  return (triggers ?? []).some((trigger) => trigger.kind === 'event');
+}
+
 export interface AutomationHealthInput {
   /** Automation `status` (only `active` automations can be degraded). */
   status: string | null | undefined;
@@ -70,6 +81,10 @@ export interface AutomationHealthInput {
    * July-2026 z.ai quota storm lacked. NULL on pre-backfill rows.
    */
   latestRunOutcome?: string | null;
+  /** Whether the persisted trigger set contains an event/chat activation. */
+  hasEventTrigger?: boolean;
+  /** Newest-first scored terminal outcomes from the bounded recent-run read. */
+  recentTerminalRunStatuses?: string[];
 }
 
 export interface AutomationHealth {
@@ -93,8 +108,12 @@ function toMs(value: string | Date | null | undefined): number | null {
  * Derive an automation's health from already-selected fields.
  *
  * `degraded` when the automation is `active` AND any of:
+ *   - it activates on an event but has never produced a run — configured, not
+ *     yet proven to fire; or
  *   - its latest run ended in a terminal failure (`failed`/`timeout`) — the
  *     automation ran and broke, regardless of the scheduler cursor; or
+ *   - at least half of a meaningful window of recent terminal runs failed — a
+ *     pattern one fresh success must not hide; or
  *   - its `next_run_at` is in the past by more than the missed-firing margin
  *     (a missed firing), UNLESS a run is currently in flight (claimed/running)
  *     — an active dispatch is healthy, we don't false-degrade mid-tick; or
@@ -123,11 +142,28 @@ export function computeAutomationHealth(
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
 
+  if (input.hasEventTrigger && input.latestRunStatus == null) {
+    reasons.push('event trigger configured, but no runs observed yet');
+  }
+
   if (FAILED_RUN_STATUSES.has(input.latestRunStatus ?? '')) {
     const label = lastOutcome
       ? `latest run ${input.latestRunStatus} (${lastOutcome})`
       : `latest run ${input.latestRunStatus}`;
     reasons.push(lastError ? `${label}: ${lastError}` : label);
+  }
+
+  const recentStatuses = input.recentTerminalRunStatuses ?? [];
+  const recentFailures = recentStatuses.filter((status) =>
+    FAILED_RUN_STATUSES.has(status)
+  ).length;
+  // Ten outcomes is enough evidence to avoid one-off noise; at least half
+  // failing is a severe, explainable pattern. A success recovers immediately
+  // only when it brings the bounded window below that threshold.
+  if (recentStatuses.length >= 10 && recentFailures * 2 >= recentStatuses.length) {
+    reasons.push(
+      `${recentFailures} of ${recentStatuses.length} recent terminal runs failed or timed out`
+    );
   }
 
   // Missed firing: next_run_at is well in the past and nothing is dispatching.

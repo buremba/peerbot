@@ -199,6 +199,8 @@ export async function handleTest(
   }
 
   const conn = rows[0] as any;
+  const withDeviceHealth = (result: ConnectionTestResult): ConnectionTestResult =>
+    applySelectedDeviceHealth(conn, result);
   const authProfile = await getAuthProfileById(
     organizationId,
     Number(conn.auth_profile_id) || null
@@ -218,29 +220,29 @@ export async function handleTest(
     `;
 
     if (accountRows.length === 0) {
-      return {
+      return withDeviceHealth({
         action: 'test',
         status: 'error',
         message: 'Linked OAuth account not found',
         ...testErrorFields('NOT_FOUND'),
-      };
+      });
     }
 
     const account = accountRows[0] as any;
     if (!account.has_token) {
-      return {
+      return withDeviceHealth({
         action: 'test',
         status: 'error',
         message: 'No access token available. Re-authenticate.',
         ...testErrorFields('AUTH_MISSING'),
-      };
+      });
     }
 
     const expiresAt = account.accessTokenExpiresAt ? new Date(account.accessTokenExpiresAt) : null;
     const isExpired = expiresAt && expiresAt.getTime() < Date.now();
     const hardExpired = isExpired && !account.has_refresh;
 
-    return {
+    return withDeviceHealth({
       action: 'test',
       status: hardExpired ? 'error' : 'ok',
       message: isExpired
@@ -252,7 +254,7 @@ export async function handleTest(
       has_refresh: account.has_refresh,
       expires_at: expiresAt?.toISOString() ?? null,
       ...(hardExpired ? testErrorFields('AUTH_INVALID') : {}),
-    };
+    });
   }
 
   const profileToTest =
@@ -266,14 +268,14 @@ export async function handleTest(
     const creds = normalizeAuthValues(profileToTest.auth_data);
     const label = profileToTest.profile_kind === 'oauth_app' ? 'App auth' : 'Auth';
     const hasKeys = Object.keys(creds).length > 0;
-    return {
+    return withDeviceHealth({
       action: 'test',
       status: hasKeys ? 'ok' : 'warning',
       message: hasKeys
         ? `${label} profile '${profileToTest.slug}' configured`
         : `${label} profile '${profileToTest.slug}' has no credentials`,
       ...(hasKeys ? {} : testErrorFields('AUTH_MISSING')),
-    };
+    });
   }
 
   if (authProfile?.profile_kind === 'browser_session') {
@@ -282,7 +284,7 @@ export async function handleTest(
       const readiness = await getBrowserSessionReadiness(authProfile.auth_data, conn.connector_key);
       // A configured-but-unreachable CDP endpoint is transient (the browser may
       // come back), so this warning is retryable — unlike the missing-cookie ones.
-      return {
+      return withDeviceHealth({
         action: 'test',
         status: readiness.usable ? 'ok' : 'warning',
         message: readiness.usable
@@ -290,27 +292,27 @@ export async function handleTest(
           : `Browser auth profile '${authProfile.slug}' CDP configured but endpoint not responding at ${summary.cdp_url}`,
         expires_at: summary.expires_at,
         ...(readiness.usable ? {} : testErrorFields('NETWORK')),
-      };
+      });
     }
     if (summary.cookie_count === 0) {
-      return {
+      return withDeviceHealth({
         action: 'test',
         status: 'warning',
         message: `Browser auth profile '${authProfile.slug}' has no cookies`,
         expires_at: summary.expires_at,
         ...testErrorFields('AUTH_MISSING'),
-      };
+      });
     }
     if (!summary.auth_cookie_name) {
-      return {
+      return withDeviceHealth({
         action: 'test',
         status: 'warning',
         message: `Browser auth profile '${authProfile.slug}' has no likely auth cookie`,
         expires_at: summary.expires_at,
         ...testErrorFields('AUTH_MISSING'),
-      };
+      });
     }
-    return {
+    return withDeviceHealth({
       action: 'test',
       status: summary.is_expired ? 'error' : 'ok',
       message: summary.is_expired
@@ -318,7 +320,7 @@ export async function handleTest(
         : `${summary.auth_cookie_name} valid`,
       expires_at: summary.expires_at,
       ...(summary.is_expired ? testErrorFields('AUTH_INVALID') : {}),
-    };
+    });
   }
 
   // Auth-free device connections such as apple.computer_use run on a paired
@@ -369,6 +371,53 @@ export async function handleTest(
     status: 'warning',
     message: 'No auth profile configured',
     ...testErrorFields('AUTH_MISSING'),
+  };
+}
+
+type ConnectionTestResult = Extract<ManageConnectionsResult, { action: 'test' }>;
+
+/**
+ * A credential-backed connection may still require its selected device to
+ * execute (for example X OAuth plus browser-backed feeds). Credential validity
+ * and execution availability are conjunctive: a successful auth probe cannot
+ * turn an offline required device into an overall `ok` result.
+ */
+function applySelectedDeviceHealth(
+  conn: {
+    device_worker_id?: unknown;
+    device_online?: unknown;
+    device_label?: unknown;
+    device_last_seen_at?: Date | string | null;
+  },
+  result: ConnectionTestResult
+): ConnectionTestResult {
+  if (!conn.device_worker_id) return result;
+  if (conn.device_online === true) {
+    return { ...result, device_online: true };
+  }
+
+  const deviceName =
+    typeof conn.device_label === 'string' && conn.device_label.trim()
+      ? conn.device_label
+      : 'paired device';
+  const deviceMessage = `Device '${deviceName}' is offline (${describeDeviceLastSeen(
+    conn.device_last_seen_at
+  )}) — bring it online to execute`;
+
+  // An auth finding the probe already made is the more actionable one and must
+  // survive: overwriting e.g. a non-retryable AUTH_MISSING with NETWORK would
+  // tell the caller to retry a connection only a human re-auth can fix. Only an
+  // otherwise-clean result takes the device's retryable NETWORK classification.
+  const deviceErrorFields = result.error_code
+    ? {}
+    : testErrorFields('NETWORK');
+
+  return {
+    ...result,
+    status: result.status === 'error' ? 'error' : 'warning',
+    message: `${result.message}; ${deviceMessage}`,
+    device_online: false,
+    ...deviceErrorFields,
   };
 }
 

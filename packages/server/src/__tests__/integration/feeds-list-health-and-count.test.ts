@@ -227,4 +227,35 @@ describe("list_feeds health filter and true total", () => {
 			expect(f).not.toHaveProperty("incident_eligible");
 		}
 	});
+
+	it("distinguishes an overdue scheduled feed from an old no-schedule feed", async () => {
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: "hackernews",
+			createDefaultFeed: false,
+		});
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, status, kind, schedule,
+				next_run_at, last_sync_status, last_sync_at, consecutive_failures,
+				entity_ids, created_at, updated_at
+			) VALUES
+				(
+					${orgId}, ${conn.id}, 'scheduled-overdue', 'active', 'collected',
+					'0 * * * *', current_timestamp - interval '2 hours', 'success',
+					current_timestamp - interval '3 hours', 0, ARRAY[]::bigint[], NOW(), NOW()
+				),
+				(
+					${orgId}, ${conn.id}, 'no-schedule-old', 'active', 'collected',
+					NULL, NULL, 'success', current_timestamp - interval '30 days', 0,
+					ARRAY[]::bigint[], NOW(), NOW()
+				)
+		`;
+
+		const listed = await runList({ connection_id: conn.id, limit: 10 });
+		const byKey = new Map(listed.feeds.map((feed) => [feed.feed_key, feed]));
+		expect(byKey.get("scheduled-overdue")?.attention).toBe("overdue");
+		expect(byKey.get("no-schedule-old")?.attention).toBe("healthy");
+	});
 });

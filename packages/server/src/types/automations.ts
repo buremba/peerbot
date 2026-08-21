@@ -156,9 +156,9 @@ export const AutomationMetadataSchema = Type.Object({
   available_versions: Type.Optional(Type.Array(AutomationVersionInfoSchema)),
   reaction_script: Type.Optional(Type.String()),
   automation_run: Type.Optional(AutomationRunSchema),
-  /** Computed health (item 3, #2033): `degraded` when an active
-   *  automation's latest run failed/timed out, it missed a firing, or its latest
-   *  run is stuck pending past the stale interval; else `healthy`. */
+  /** Computed health: `degraded` when an active Automation is unverified,
+   *  misses/stalls a firing, fails its latest run, or has a severe bounded
+   *  recent failure pattern; else `healthy`. */
   health: Type.Optional(
     Type.Union([Type.Literal('healthy'), Type.Literal('degraded')])
   ),

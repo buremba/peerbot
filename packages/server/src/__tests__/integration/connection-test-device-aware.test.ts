@@ -14,6 +14,7 @@ import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
+import { createAuthProfile } from "../../utils/auth-profiles";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
@@ -105,6 +106,43 @@ describe("connections.test device availability", () => {
 		expect(result.status).toBe("warning");
 		expect(result.device_online).toBe(false);
 		expect(result.retryable).toBe(true);
+		expect(String(result.message)).toMatch(/offline/i);
+	});
+
+	it("does not let valid OAuth credentials mask an offline selected device", async () => {
+		const sql = getTestDb();
+		const accountId = `acct_hybrid_${Date.now()}`;
+		await sql`
+			INSERT INTO "account" (
+				id, "accountId", "providerId", "userId", "accessToken",
+				"refreshToken", "accessTokenExpiresAt", scope, "createdAt", "updatedAt"
+			) VALUES (
+				${accountId}, ${accountId}, 'x', ${userId}, 'valid-token',
+				'refresh-token', ${new Date(Date.now() + 60 * 60 * 1000).toISOString()},
+				'read', NOW(), NOW()
+			)
+		`;
+		const profile = await createAuthProfile({
+			organizationId: orgId,
+			connectorKey: CONNECTOR_KEY,
+			displayName: "X OAuth",
+			profileKind: "oauth_account",
+			provider: "x",
+			accountId,
+			createdBy: userId,
+		});
+		const id = await seedDeviceConnection(false);
+		await sql`
+			UPDATE connections
+			SET auth_profile_id = ${profile.id}, visibility = 'private'
+			WHERE id = ${id}
+		`;
+
+		const result = await test(id);
+		expect(result.status).toBe("warning");
+		expect(result.device_online).toBe(false);
+		expect(result.retryable).toBe(true);
+		expect(String(result.message)).toContain("Credentials valid");
 		expect(String(result.message)).toMatch(/offline/i);
 	});
 });

@@ -17,7 +17,11 @@ import {
 	getPublicWebUrl,
 } from "../../../utils/url-builder";
 import { buildLatestAutomationRunJoinSql } from "../../../automations/automation";
-import { computeAutomationHealth } from "../../../automations/automation-health";
+import {
+	computeAutomationHealth,
+	hasEventTrigger,
+} from "../../../automations/automation-health";
+import { loadRecentAutomationRunStatuses } from "../../../automations/automation-health-history";
 import type { ToolContext } from "../../registry";
 import { batchCountUnanalyzedContent } from "./shared";
 
@@ -186,6 +190,7 @@ export async function handleList(
 
 	const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
 	const automationIds = (result as any[]).map((i) => Number(i.automation_id));
+	const recentRunStatuses = await loadRecentAutomationRunStatuses(sql, automationIds);
 
 	let counts: Map<number, { pending: number; historical: number }>;
 	try {
@@ -255,6 +260,8 @@ export async function handleList(
 				| null
 				| undefined,
 			latestRunOutcome: automation.automation_run_outcome,
+			hasEventTrigger: hasEventTrigger(automation.triggers),
+			recentTerminalRunStatuses: recentRunStatuses.get(automationId) ?? [],
 		});
 
 		return {

@@ -75,6 +75,56 @@ describe("computeAutomationHealth", () => {
 		expect(result.reasons).toHaveLength(0);
 	});
 
+	it("does not call a never-fired event automation proven healthy", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: null,
+				latestRunStatus: null,
+				hasEventTrigger: true,
+			},
+			NOW,
+		);
+		expect(result.health).toBe("degraded");
+		expect(result.reasons.join(" ")).toContain("no runs observed");
+	});
+
+	it("keeps a severe rolling failure pattern degraded after one success", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: new Date(NOW + 60_000).toISOString(),
+				latestRunStatus: "completed",
+				recentTerminalRunStatuses: [
+					"completed",
+					...Array.from({ length: 99 }, () => "failed"),
+				],
+			},
+			NOW,
+		);
+		expect(result.health).toBe("degraded");
+		expect(result.reasons.join(" ")).toContain(
+			"99 of 100 recent terminal runs failed or timed out",
+		);
+	});
+
+	it("recovers once failures are below half of a meaningful recent window", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: new Date(NOW + 60_000).toISOString(),
+				latestRunStatus: "completed",
+				recentTerminalRunStatuses: [
+					...Array.from({ length: 6 }, () => "completed"),
+					...Array.from({ length: 4 }, () => "failed"),
+				],
+			},
+			NOW,
+		);
+		expect(result.health).toBe("healthy");
+		expect(result.reasons).toHaveLength(0);
+	});
+
 	it("does not degrade an archived automation whose latest run failed", () => {
 		const result = computeAutomationHealth(
 			{

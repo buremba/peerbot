@@ -223,6 +223,38 @@ describe("attention state", () => {
     ).toBe("healthy");
   });
 
+  test("an active scheduled feed overdue by more than an hour needs attention", () => {
+    const now = Date.parse("2026-08-21T12:00:00Z");
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "collected",
+        schedule: "0 * * * *",
+        status: "active",
+        connection_status: "active",
+        last_sync_status: "success",
+        last_sync_at: "2026-08-21T09:00:00Z",
+        next_run_at: "2026-08-21T10:00:00Z",
+        active_runs: 0,
+      }, now).attention
+    ).toBe("overdue");
+  });
+
+  test("a no-schedule feed is not stale solely because its last sync is old", () => {
+    const now = Date.parse("2026-08-21T12:00:00Z");
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "collected",
+        schedule: null,
+        status: "active",
+        connection_status: "active",
+        last_sync_status: "success",
+        last_sync_at: "2026-01-01T00:00:00Z",
+        next_run_at: null,
+        active_runs: 0,
+      }, now).attention
+    ).toBe("healthy");
+  });
+
   test("error connection status is misconfigured when not auth", () => {
     expect(
       deriveFeedHealthSemantics({

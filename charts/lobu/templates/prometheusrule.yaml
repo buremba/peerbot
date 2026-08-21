@@ -77,4 +77,48 @@ spec:
           annotations:
             summary: "Lobu scheduled job {{`{{ $labels.task }}`}} is failing"
             description: "The {{`{{ $labels.task }}`}} cron task threw on every run over 15m."
+    - name: lobu-worker-dispatch
+      rules:
+        # A single device/action timeout is useful audit evidence but not a page.
+        # Catch both a sharp regression (3 in 15m) and the historical slow-burn
+        # shape (5 in 6h is already a 20/day pace) without recreating the noisy
+        # source-health alerts this metric replaced.
+        - alert: LobuWorkerDispatchFailuresElevated
+          expr: |
+            sum(increase(lobu_worker_dispatch_failures_total{namespace="{{ .Release.Namespace }}"}[15m])) by (run_type, reason) >= 3
+            or
+            sum(increase(lobu_worker_dispatch_failures_total{namespace="{{ .Release.Namespace }}"}[6h])) by (run_type, reason) >= 5
+          for: 5m
+          labels:
+            severity: warning
+            service: lobu
+          annotations:
+            summary: "Lobu worker dispatch failures are recurring"
+            description: "{{`{{ $labels.run_type }}`}} runs are repeatedly going unclaimed (reason={{`{{ $labels.reason }}`}}): at least 3 in 15m or 5 in 6h. Connector code did not run; inspect worker poll logs, claim eligibility, and DB/pool health rather than source authentication."
+        # This counter increments only after the claim query exhausted its DB
+        # retry budget, so one event is already actionable control-plane evidence.
+        - alert: LobuWorkerClaimQueryError
+          expr: |
+            sum(increase(lobu_worker_claim_query_errors_total{namespace="{{ .Release.Namespace }}"}[10m])) by (worker_kind, platform) > 0
+          for: 0m
+          labels:
+            severity: warning
+            service: lobu
+          annotations:
+            summary: "Lobu worker claim query failed after retries"
+            description: "A {{`{{ $labels.worker_kind }}`}} worker poll (platform={{`{{ $labels.platform }}`}}) exhausted DB retries while claiming work. Check app logs for classification=dispatch_unavailable and stage=worker_claim_query, then inspect DB pool/lock health."
+        # Fleet workers poll every 10s in production. A 5m lookback held false
+        # for another 5m detects roughly 10m of silence while ignoring Recreate
+        # rollout gaps. Device polls are intentionally excluded: laptops being
+        # offline is normal and is handled by due-feed deferral.
+        - alert: LobuFleetWorkerPollingSilent
+          expr: |
+            (sum(increase(lobu_worker_polls_total{namespace="{{ .Release.Namespace }}",worker_kind="fleet"}[5m])) or on() vector(0)) == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: lobu
+          annotations:
+            summary: "Lobu fleet workers have stopped polling"
+            description: "No authorized fleet-worker poll was observed for roughly 10m. Cloud connector work cannot be admitted or claimed. Check worker pods, /api/worker/poll traffic, app ingress, and DB availability."
 {{- end }}

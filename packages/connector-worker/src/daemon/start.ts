@@ -13,11 +13,13 @@ import { buildConnectorWorkerEnv } from '../env.js';
 import { DEVICE_MANIFESTS_BY_PLATFORM } from './device-manifests.js';
 import { startDaemon, type WorkerDaemon } from './index.js';
 import { log, setDebug } from './log.js';
+import { deriveInsideClaudeWorkerId } from './parent-claude.js';
 
 /**
  * Accepted `--worker-id` shape. Deliberately narrow: the default is
- * `<platform>:<short-hostname>`, and anything a shell, a URL path, or a JSON
- * payload would mangle has no business being a durable device identity.
+ * `<platform>:<short-hostname>` (or a session-derived id under
+ * `--inside-claude`), and anything a shell, a URL path, or a JSON payload
+ * would mangle has no business being a durable device identity.
  */
 const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -33,6 +35,23 @@ export interface DaemonStartOptions {
   /** Durable `owl_pat_…` personal access token for device mode. */
   workerApiToken?: string;
   debug?: boolean;
+  /** Opt-in demo: deliver Claude Code Automations to the interactive parent. */
+  insideClaude?: boolean;
+}
+
+export function resolveDaemonWorkerId(
+  opts: Pick<DaemonStartOptions, 'workerId' | 'insideClaude'>,
+  platform: string | undefined,
+  shortHostname: string
+): string {
+  return (
+    opts.workerId ??
+    (opts.insideClaude
+      ? deriveInsideClaudeWorkerId()
+      : platform
+        ? `${platform}:${shortHostname}`
+        : `worker-${randomUUID().slice(0, 8)}`)
+  );
 }
 
 /**
@@ -83,11 +102,11 @@ export async function startDaemonCommand(
     ? Object.fromEntries(capabilities.map((name) => [name, true]))
     : { db_egress_hardening: true };
   // Auto-discover device identity from the host when not passed: a device
-  // worker defaults to `<platform>:<short-hostname>` and a hostname label.
+  // worker defaults to `<platform>:<short-hostname>` and a hostname label. An
+  // inside-Claude daemon instead derives its id from the parent session, so
+  // each session registers its own device rather than stealing the host's.
   const shortHostname = hostname().split('.')[0] || hostname();
-  const workerId =
-    opts.workerId ??
-    (platform ? `${platform}:${shortHostname}` : `worker-${randomUUID().slice(0, 8)}`);
+  const workerId = resolveDaemonWorkerId(opts, platform, shortHostname);
   const label = opts.label ?? (platform ? shortHostname : undefined);
 
   // Crash loud at boot if the runtime image is missing a connector dep.
@@ -102,6 +121,11 @@ export async function startDaemonCommand(
       `[cli] device mode: platform=${platform} capabilities=${capabilities.join(',') || '(none)'}`
     );
   }
+  if (opts.insideClaude) {
+    log.info(
+      '[cli] inside-Claude demo enabled: Automations run with the parent session’s broader tools, context, MCP servers, credentials, and permission mode'
+    );
+  }
 
   return startDaemon(
     {
@@ -114,6 +138,7 @@ export async function startDaemonCommand(
       ...(label ? { label } : {}),
       ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
       ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
+      ...(opts.insideClaude ? { executor: { insideClaude: true } } : {}),
     },
     env
   );

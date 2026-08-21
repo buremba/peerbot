@@ -65,6 +65,10 @@ export interface ExecutorConfig {
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;
+  /** Opt-in delivery of Claude Code Automations to an interactive parent. */
+  insideClaude?: boolean;
+  /** Daemon lifecycle signal used only by pending parent-Claude handoffs. */
+  shutdownSignal?: AbortSignal;
   /**
    * Explicit per-agent binary paths for the automation arm (else PATH lookup).
    * Lets an operator point the daemon at a non-PATH CLI install, and is the

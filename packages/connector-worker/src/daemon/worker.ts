@@ -44,6 +44,7 @@ export class WorkerDaemon {
   };
   private running = false;
   private activeJobs = 0;
+  private shutdownController?: AbortController;
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
     this.client = new WorkerClient({
@@ -61,12 +62,18 @@ export class WorkerDaemon {
     });
 
     this.env = env;
+    this.shutdownController = daemonConfig.executor?.insideClaude
+      ? new AbortController()
+      : undefined;
     this.config = {
       pollIntervalMs: daemonConfig.pollIntervalMs ?? 10000,
       maxConcurrentJobs: daemonConfig.maxConcurrentJobs ?? 1,
       executor: {
         timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
         ...(daemonConfig.executor ?? {}),
+        ...(this.shutdownController
+          ? { shutdownSignal: this.shutdownController.signal }
+          : {}),
       },
     };
   }
@@ -110,6 +117,7 @@ export class WorkerDaemon {
   stop(): void {
     log.info('[daemon] Stopping...');
     this.running = false;
+    this.shutdownController?.abort();
   }
 
   /**

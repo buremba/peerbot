@@ -8,6 +8,7 @@ export interface DaemonOptions {
   capabilities?: string;
   label?: string;
   debug?: boolean;
+  insideClaude?: boolean;
 }
 
 /**
@@ -17,7 +18,8 @@ export interface DaemonOptions {
  * Everything except the token auto-discovers from where it is running:
  *   - api-url  → the logged-in context (`lobu login`), else `--api-url`
  *   - platform → `macos` on darwin, `headless` otherwise
- *   - worker id / label → `<platform>:<short-hostname>` / hostname
+ *   - worker id → `<platform>:<short-hostname>` (per-session with `--inside-claude`)
+ *   - label → hostname
  *   - capabilities → `os.shell,os.files`
  *
  * Org binding is the token, not a flag: pass a durable `owl_pat_…` PAT in
@@ -43,7 +45,11 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
 
   const platform =
     options.platform?.trim() ||
-    (process.platform === "darwin" ? "macos" : "headless");
+    (options.insideClaude === true
+      ? "headless"
+      : process.platform === "darwin"
+        ? "macos"
+        : "headless");
 
   await startDaemonCommand({
     apiUrl,
@@ -56,5 +62,6 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
       .filter(Boolean),
     workerApiToken: process.env.WORKER_API_TOKEN,
     debug: options.debug === true,
+    ...(options.insideClaude === true ? { insideClaude: true } : {}),
   });
 }

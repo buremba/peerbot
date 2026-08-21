@@ -1163,11 +1163,15 @@ Memory:
     )
     .option(
       "--worker-id <id>",
-      "Device worker id (defaults to <platform>:<hostname>)"
+      "Device worker id (defaults to <platform>:<hostname>, or a per-session id with --inside-claude)"
     )
     .option(
       "--platform <name>",
       "Device platform (defaults to macos/headless by host)"
+    )
+    .option(
+      "--inside-claude",
+      "Demo: hand Claude Code Automations to the interactive parent, with its broader tools and context"
     )
     .option(
       "--capabilities <a,b>",

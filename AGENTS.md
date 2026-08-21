@@ -36,7 +36,7 @@
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title).
 8. `make review` **once** on the settled HEAD; it posts the required `pi-review` status. Narrow path/content-gated safe classes skip the cross-harness review; this includes pure `packages/owletto` pointer bumps and exact `model:` literal swaps, but not mixed runtime and source changes. The submodule's own repo owns its content review.
 9. `make ui-review`. Non-Owletto changes and complete, forward-only Owletto pointer diffs confined to unhosted trees (`deploy/`, `apps/chrome/`, `apps/mac/`, `scripts/`) pass as not applicable; other pointer changes need exact hosted proof (`ARTIFACT=<url>`; see the playbook).
-10. `gh pr merge <n> --squash --admin` once green — never `--admin` past a check that has not reported. Lobu's required `integration` fan-in is absent from `gh pr checks` until it starts, not pending, so diff against the branch-protection list (playbook).
+10. `make land N=<n>` once pushed — it waits, verifies the full required list, and squash-merges. Never `--admin` past a check that has not reported. Lobu's required `integration` fan-in is absent from `gh pr checks` until it starts, not pending, so diff against the branch-protection list (playbook).
 11. Prod-visible surface? Verify live after rollout: gate on the **squash commit**, not your branch head, keeping the argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`. Record the result.
 
 ## How to work
@@ -50,6 +50,10 @@
 - One branch = one concern. Never `git stash`; use WIP commits.
 - Prefer `bun`, never npm/yarn/pnpm. Before adding an env var, grep for the one already read, and do not rename existing vars unasked.
 - Block only on irreversible or destructive actions and decisions genuinely the user's; otherwise take the recommended option and flag it in your summary.
+- **Batch independent tool calls into one message.** Every call re-reads the whole context (~228k tokens here), so N serial calls cost N full reads. Measured batching factor across this repo's transcripts is 1.06 — 95% of turns carry exactly one call. Independent greps, a diff plus a file list, a status check plus a log read: send them together. Only genuinely dependent calls go serial.
+- **`make ctx` instead of the git/gh status family.** One call prints branch, working tree, changed-vs-base file list, commits, submodule pointer, and PR + required-check gaps. That family is ~20% of all shell calls in the transcripts; do not rebuild it by hand.
+- **`make land [N=<pr>]` to merge.** One blocking call: waits for CI, diffs the reported checks against the branch-protection required list, and refuses while anything required has not reported — the `--admin` footgun in step 10. `CHECK_ONLY=1` waits and reports without merging.
+- Keep working context under ~150k: 86.5% of all tokens in this repo's transcripts were spent on turns above that line. Start a fresh session at each PR boundary and push open-ended search into read-only subagents rather than growing one session until it compacts.
 - Never poll in the foreground — run long waits in the background and act on the notification. Poll delegated CLIs at most once every 4.5 minutes unless they finish or request input.
 - Prefer DOM reads over screenshots, the top context-bloat source. The paired Owletto extension drives the user's real logged-in browser; CDP is not required (`docs/BROWSER_TESTING.md`).
 - Slack link pasted → run `scripts/slack-thread-viewer.js "<link>"` first.

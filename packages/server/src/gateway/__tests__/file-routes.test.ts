@@ -227,7 +227,7 @@ describe("file routes", () => {
               '--artifact-boundary\r\nContent-Disposition: form-data; name="file"; filename="large.bin"\r\n\r\n',
             ),
           );
-        } else if (emitted <= 52) {
+        } else if (emitted <= 200) {
           controller.enqueue(chunk);
         } else {
           controller.enqueue(
@@ -251,7 +251,7 @@ describe("file routes", () => {
     const response = await app.fetch(request);
 
     expect(response.status).toBe(413);
-    expect(emitted).toBeLessThanOrEqual(53);
+    expect(emitted).toBeLessThan(60);
   });
 
   test("rejects a decoded single file over the storage limit", async () => {

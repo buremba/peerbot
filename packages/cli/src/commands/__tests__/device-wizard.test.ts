@@ -2,14 +2,14 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as deviceState from "../../internal/device-state";
 import { deviceWizard, type DeviceWizardPrompts } from "../_lib/device-wizard";
 
-const API_URL = "http://127.0.0.1:8795";
+const GATEWAY_ORIGIN = "http://127.0.0.1:8795";
 const WORKER_TOKEN = "owl_pat_durable-device-token";
 
 function fakePrompts(
   overrides: Partial<DeviceWizardPrompts> = {}
 ): DeviceWizardPrompts {
   return {
-    select: async () => "personal",
+    select: async () => "__lobu_new_device__",
     confirm: async () => true,
     input: async () => "macos:custom",
     ...overrides,
@@ -21,7 +21,8 @@ function wizardOptions(
 ): Parameters<typeof deviceWizard>[0] {
   return {
     context: "local",
-    apiUrl: API_URL,
+    gatewayOrigin: GATEWAY_ORIGIN,
+    platform: "macos",
     suggestedWorkerId: "macos:Mac",
     workerApiToken: WORKER_TOKEN,
     prompts: fakePrompts(),
@@ -39,35 +40,17 @@ function response(body: unknown, status = 200): Response {
   } as never;
 }
 
-function stubFetch(options: {
-  devices?: unknown[];
-  devicesStatus?: number;
-  tokenOrg?: string;
-}): ReturnType<typeof spyOn> {
-  return spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-    const url = String(input);
-    if (url.endsWith("/oauth/userinfo")) {
-      return response({
-        organization_slug: options.tokenOrg ?? "personal",
-        personal_org_slug: "personal",
-        organizations: [
-          { slug: "personal", name: "Personal", personal: true },
-          { slug: "org-a", name: "Org A", personal: false },
-          { slug: "org-b", name: "Org B", personal: false },
-        ],
-      });
-    }
-    return response(
-      options.devicesStatus === 200 || options.devicesStatus === undefined
-        ? { devices: options.devices ?? [] }
-        : { error: "Unauthorized" },
-      options.devicesStatus ?? 200
-    );
-  });
+function stubDevices(
+  devices: unknown[],
+  status = 200
+): ReturnType<typeof spyOn> {
+  return spyOn(globalThis, "fetch").mockResolvedValue(
+    response(status === 200 ? { devices } : { error: "Unauthorized" }, status)
+  );
 }
 
-function stubSave(workerId = "macos:Mac"): ReturnType<typeof spyOn> {
-  return spyOn(deviceState, "saveDeviceState").mockResolvedValue({ workerId });
+function stubSave(): ReturnType<typeof spyOn> {
+  return spyOn(deviceState, "saveDeviceState").mockResolvedValue();
 }
 
 afterEach(() => {
@@ -75,19 +58,33 @@ afterEach(() => {
 });
 
 describe("deviceWizard", () => {
-  test("confirms and persists a fresh identity when the server has no devices", async () => {
-    stubFetch({ devices: [] });
+  test("confirms and persists a fresh identity without a no-op workspace prompt", async () => {
+    stubDevices([]);
     const save = stubSave();
+    const select = mock(async () => "__lobu_new_device__");
+    const logs: string[] = [];
+    spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.map(String).join(" "));
+    });
 
-    const result = await deviceWizard(wizardOptions());
+    const result = await deviceWizard(
+      wizardOptions({ prompts: fakePrompts({ select }) })
+    );
 
     expect(result).toEqual({ source: "created", workerId: "macos:Mac" });
-    expect(save.mock.calls[0]?.[1]).toEqual({ workerId: "macos:Mac" });
+    expect(select).not.toHaveBeenCalled();
+    expect(save.mock.calls[0]).toEqual([
+      "local",
+      "macos",
+      { workerId: "macos:Mac" },
+    ]);
+    expect(logs.join("\n")).not.toContain("Token:");
+    expect(logs.join("\n")).not.toContain("selected workspace");
   });
 
   test("uses a custom id when the user declines the suggestion", async () => {
-    stubFetch({ devices: [] });
-    const save = stubSave("macos:custom");
+    stubDevices([]);
+    const save = stubSave();
 
     const result = await deviceWizard(
       wizardOptions({
@@ -98,92 +95,139 @@ describe("deviceWizard", () => {
       })
     );
 
-    expect(result.workerId).toBe("macos:custom");
-    expect(save.mock.calls[0]?.[1]).toEqual({ workerId: "macos:custom" });
+    expect(result).toEqual({ source: "created", workerId: "macos:custom" });
+    expect(save.mock.calls[0]?.[2]).toEqual({ workerId: "macos:custom" });
   });
 
-  test("maps a selected server device id back to its exact worker identity", async () => {
-    stubFetch({
-      devices: [
-        {
-          id: "dev-1",
-          worker_id: "__new__",
-          platform: "macos",
-          label: "Literal sentinel worker",
-          organization_slug: "personal",
-        },
-      ],
-    });
-    stubSave("__new__");
-    const selections = ["personal", "dev-1"];
+  test("offers only offline devices from the daemon platform", async () => {
+    stubDevices([
+      {
+        id: "matching-offline",
+        worker_id: "macos:offline",
+        platform: "macos",
+        online: false,
+        label: "Offline Mac",
+      },
+      {
+        id: "wrong-platform",
+        worker_id: "headless:box",
+        platform: "headless",
+        online: false,
+      },
+      {
+        id: "matching-online",
+        worker_id: "macos:online",
+        platform: "macos",
+        online: true,
+      },
+    ]);
+    stubSave();
+    const offered: string[] = [];
 
     const result = await deviceWizard(
       wizardOptions({
-        prompts: fakePrompts({ select: async () => selections.shift() ?? "" }),
+        prompts: fakePrompts({
+          select: async (config) => {
+            offered.push(
+              ...config.choices.flatMap((choice) =>
+                "value" in choice ? [String(choice.value)] : []
+              )
+            );
+            return "matching-offline";
+          },
+        }),
       })
     );
 
-    expect(result).toEqual({ source: "reused", workerId: "__new__" });
+    expect(result).toEqual({ source: "reused", workerId: "macos:offline" });
+    expect(offered).toContain("matching-offline");
+    expect(offered).not.toContain("wrong-platform");
+    expect(offered).not.toContain("matching-online");
   });
 
-  test("cross-org reuse reports the server org and never claims the selected workspace is the pin", async () => {
-    stubFetch({
-      tokenOrg: "org-a",
-      devices: [
-        {
-          id: "dev-b",
-          worker_id: "macos:org-b-device",
-          platform: "macos",
-          label: "Org B Mac",
-          organization_slug: "org-b",
-          organization_name: "Org B",
-        },
-      ],
-    });
-    stubSave("macos:org-b-device");
-    const selections = ["org-a", "dev-b"];
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((...args) => {
-      logs.push(args.map(String).join(" "));
-    });
-
-    const result = await deviceWizard(
-      wizardOptions({
-        prompts: fakePrompts({ select: async () => selections.shift() ?? "" }),
-      })
-    );
-
-    const output = logs.join("\n");
-    expect(result).toEqual({
-      source: "reused",
-      workerId: "macos:org-b-device",
-    });
-    expect(output).toContain('server reports workspace "org-b"');
-    expect(output).toContain('selected workspace "org-a" was guidance only');
-    expect(output).not.toContain('Device workspace: "org-a"');
-    expect(output).not.toContain("org-scoped to org-a");
-  });
-
-  test("a new device says only that the worker PAT determines attachment", async () => {
-    stubFetch({ devices: [], tokenOrg: "org-a" });
+  test("reports the reused device's server workspace", async () => {
+    stubDevices([
+      {
+        id: "dev-b",
+        worker_id: "macos:org-b-device",
+        platform: "macos",
+        online: false,
+        organization_slug: "org-b",
+      },
+    ]);
     stubSave();
     const logs: string[] = [];
     spyOn(console, "log").mockImplementation((...args) => {
       logs.push(args.map(String).join(" "));
     });
 
-    await deviceWizard(wizardOptions());
-
-    const output = logs.join("\n");
-    expect(output).toContain(
-      "WORKER_API_TOKEN determines its workspace attachment on first poll"
+    await deviceWizard(
+      wizardOptions({
+        prompts: fakePrompts({ select: async () => "dev-b" }),
+      })
     );
-    expect(output).not.toContain("Device workspace:");
-    expect(output).not.toContain("org-scoped to");
+
+    expect(logs.join("\n")).toContain('server workspace: "org-b"');
   });
 
-  test("device-list failures stop setup instead of silently creating a duplicate", async () => {
-    stubFetch({ devicesStatus: 401 });
+  test("a new id matching an offline device reuses it instead of duplicating", async () => {
+    stubDevices([
+      {
+        id: "same-box",
+        worker_id: "macos:Mac",
+        platform: "macos",
+        online: false,
+        organization_slug: "org-a",
+      },
+    ]);
+    const save = stubSave();
+
+    const result = await deviceWizard(
+      wizardOptions({
+        prompts: fakePrompts({ select: async () => "__lobu_new_device__" }),
+      })
+    );
+
+    expect(result).toEqual({ source: "reused", workerId: "macos:Mac" });
+    expect(save.mock.calls[0]?.[2]).toEqual({ workerId: "macos:Mac" });
+  });
+
+  test("rejects a new id already bound to another platform", async () => {
+    stubDevices([
+      {
+        id: "other-platform",
+        worker_id: "macos:Mac",
+        platform: "headless",
+        online: false,
+      },
+    ]);
+    const save = stubSave();
+
+    await expect(deviceWizard(wizardOptions())).rejects.toThrow(
+      /registered as headless/
+    );
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  test("rejects a new id that is already online", async () => {
+    stubDevices([
+      {
+        id: "already-running",
+        worker_id: "macos:Mac",
+        platform: "macos",
+        online: true,
+      },
+    ]);
+    const save = stubSave();
+
+    await expect(deviceWizard(wizardOptions())).rejects.toThrow(
+      /already online/
+    );
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  test("device-list failures stop setup instead of creating a duplicate", async () => {
+    stubDevices([], 401);
     const save = stubSave();
 
     await expect(deviceWizard(wizardOptions())).rejects.toThrow(
@@ -192,31 +236,17 @@ describe("deviceWizard", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  test("uses only the durable worker PAT against the daemon origin", async () => {
-    const fetchSpy = stubFetch({ devices: [] });
+  test("uses the durable worker PAT only against the resolved gateway", async () => {
+    const fetchSpy = stubDevices([]);
     stubSave();
 
-    await deviceWizard(
-      wizardOptions({ apiUrl: "https://gateway.example.test/api/v1" })
+    await deviceWizard(wizardOptions());
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [input, init] = fetchSpy.mock.calls[0] as [unknown, RequestInit];
+    expect(String(input)).toBe(`${GATEWAY_ORIGIN}/api/me/devices`);
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      `Bearer ${WORKER_TOKEN}`
     );
-
-    expect(fetchSpy).toHaveBeenCalled();
-    for (const [input, init] of fetchSpy.mock.calls) {
-      expect(String(input).startsWith("https://gateway.example.test/")).toBe(
-        true
-      );
-      expect((init?.headers as Record<string, string>).Authorization).toBe(
-        `Bearer ${WORKER_TOKEN}`
-      );
-    }
-  });
-
-  test("returns the first-writer cache identity from an overlapping first boot", async () => {
-    stubFetch({ devices: [] });
-    stubSave("macos:other-process-won");
-
-    const result = await deviceWizard(wizardOptions());
-
-    expect(result.workerId).toBe("macos:other-process-won");
   });
 });

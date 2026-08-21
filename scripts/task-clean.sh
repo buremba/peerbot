@@ -114,11 +114,28 @@ fi
 
 echo "→ removing worktree $worktree_dir"
 if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qF "worktree $worktree_dir"; then
-  git -C "$repo" worktree remove "$worktree_dir" --force
+  if ! remove_error="$(git -C "$repo" worktree remove "$worktree_dir" --force 2>&1)"; then
+    # Keep locked worktrees and unexpected Git failures intact. Older Git
+    # versions reject any removal that contains a submodule, even when the
+    # worktree has passed the existing cleanliness and push guards.
+    if [[ "$remove_error" != *"containing submodules"* ]]; then
+      printf '%s\n' "$remove_error" >&2
+      exit 1
+    fi
+    printf '%s\n' "$remove_error" >&2
+    rm -rf "$worktree_dir"
+  fi
 else
   echo "→ worktree path already gone from git"
   rm -rf "$worktree_dir" 2>/dev/null || true
 fi
+
+# Drop any registration still pointing at the path we just removed. Without
+# this, `git branch -D` below fails with "cannot delete branch ... used by
+# worktree at <path>" for a worktree whose directory no longer exists — git
+# keeps the admin files under .git/worktrees until pruned. The `rm -rf` branch
+# above guarantees that state. Cheap and idempotent, so it runs unconditionally.
+git -C "$repo" worktree prune
 
 # Returns 0 if branch <b> in <gitdir> carries no local-only commits (its tip is
 # reachable from origin/main, or equals its pushed remote ref). Used to protect

@@ -5,7 +5,7 @@
  * platform binding, capability authorization, and multi-lane run claiming.
  */
 
-import { authorizeCapabilities } from '@lobu/core';
+import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
 import type { PollRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
 import {
@@ -23,16 +23,17 @@ import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
+import { incrementCounter } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
 import { claimPendingAutomationRun } from '../runs/queue-service';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
-import { materializeDueFeeds } from '../scheduled/check-due-feeds';
+import {
+  type MaterializedDueFeedRun,
+  materializeDueFeeds,
+} from '../scheduled/check-due-feeds';
 import { reconcileDeviceCapabilities } from './device-reconcile';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
-import {
-  DB_EGRESS_HARDENED_CONNECTOR_KEYS,
-  assertConnectorAllowedInCloud,
-} from '../utils/connector-cloud-gate';
+import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
@@ -46,6 +47,10 @@ import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
 import { storedManifestMap, validateDeviceConnectorManifests } from './device-manifests';
 import type { RunOutcome } from '../runs/run-outcome';
+import {
+  type ConnectorClaimContext,
+  connectorClaimLaneSql,
+} from './connector-claim-lanes';
 
 // A failure at the DISPATCH stage means the agent never ran: the run is not
 // evidence about the agent regardless of the message, so no message
@@ -53,8 +58,6 @@ import type { RunOutcome } from '../runs/run-outcome';
 const DISPATCH_FAILURE_OUTCOME: RunOutcome = 'infra_error';
 
 const DUE_FEEDS_LOCK_KEY = 71001;
-const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
-let lastDueFeedMaterializeAttemptAt = 0;
 
 /**
  * Fail a run that this worker already claimed. Approval-gated actions also
@@ -312,9 +315,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // predates the hardening (it would default to allow-private and reopen
   // private-IP/plaintext egress). Read the RAW advertised map — this is a fleet
   // worker, not a device-authorized one, so the platform-authorized set does not
-  // apply. Gated in the (1A) fleet claim branch below; only active in cloud mode.
+  // apply. Gated in the shared fleet claim lane; only active in cloud mode.
   const workerHardensDbEgress = capabilities.db_egress_hardening === true;
-  const dbEgressHardenedKeys = pgTextArray([...DB_EGRESS_HARDENED_CONNECTOR_KEYS]);
 
   // Device-worker registry: upsert device_workers row for user-scoped workers
   // so /api/me/devices can enumerate them. Also ensure advertised capability
@@ -472,13 +474,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // re-anchored local device, whose org is claimableOrgIds. A signed-in
   // worker with no org in scope can claim nothing; a re-anchored device with no
   // org falls through to the empty-array gate (claims only by capability).
-  if (c.var.workerAuthMode === 'user' && (!claimableOrgIds || claimableOrgIds.length === 0)) {
-    // No org in scope — nothing this worker can ever claim.
-    return c.json({
-      next_poll_seconds: 30,
-      ...(effectivePlatform === 'chrome-extension' ? { page_activations: [] } : {}),
-    });
-  }
+  const hasEmptyUserOrgScope =
+    c.var.workerAuthMode === 'user' && (!claimableOrgIds || claimableOrgIds.length === 0);
   const orgScopeActive = isUserScopedWorker;
   // Always pass a non-empty array to ANY() to keep the SQL valid; the gate
   // below only activates when orgScopeActive is true.
@@ -493,6 +490,40 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     orgScopeActive && effectiveWorkerOrgIds && effectiveWorkerOrgIds.length > 0
       ? effectiveWorkerOrgIds
       : [''];
+  const connectorClaimContext: ConnectorClaimContext = {
+    isUserScopedWorker,
+    deviceWorkerId,
+    authorizedCapabilities,
+    capabilityMatchSet,
+    orgScopeIds,
+    baseOrgScopeIds,
+    workerHardensDbEgress,
+  };
+  const workerKind = isUserScopedWorker ? 'device' : 'fleet';
+  // `platform` is self-reported in the poll body and is only pinned to the
+  // stored value once a device_workers row exists, so it must be collapsed to
+  // the known set before it becomes a metric label — an unbounded label value
+  // both blows up series cardinality and is emitted unescaped by
+  // getMetricsText().
+  const platformLabel = effectivePlatform
+    ? isKnownPlatform(effectivePlatform)
+      ? effectivePlatform
+      : 'unknown'
+    : 'none';
+  incrementCounter('lobu_worker_polls_total', {
+    worker_kind: workerKind,
+    platform: platformLabel,
+  });
+  if (hasEmptyUserOrgScope) {
+    // No org in scope — nothing this worker can ever claim. The rejection is
+    // deferred to here (rather than returning at the check above) so the poll
+    // is still counted: "this worker is alive but claims nothing" and "this
+    // worker stopped polling" must not look identical on the metric.
+    return c.json({
+      next_poll_seconds: 30,
+      ...(effectivePlatform === 'chrome-extension' ? { page_activations: [] } : {}),
+    });
+  }
 
   const pageActivations =
     isUserScopedWorker && effectivePlatform === 'chrome-extension'
@@ -551,90 +582,16 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             -- (1) Connector-worker lanes: sync / action / embed_backfill / auth.
             (
               r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
-              AND (
-                -- (1A) trusted/anonymous fleet worker: no-capability cloud
-                --      connectors, any org — never a connection pinned for
-                --      *execution*. Browser-affinity pins (chrome-extension on
-                --      non-chrome parent syncs) still allow fleet claim.
-                (
-                  ${!isUserScopedWorker}
-                  AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
-                  -- Capability negotiation: in cloud mode, a fleet worker may
-                  -- only claim a DB-egress-hardened connector run (postgres,
-                  -- future warehouses) if it advertises db_egress_hardening.
-                  -- Old workers that predate the hardening advertise nothing and
-                  -- leave the run pending for a new worker. Empty set / non-cloud
-                  -- / hardened worker => no-op. Device (user-scoped) branches
-                  -- below are untouched: postgres is a fleet no-capability
-                  -- connector, never a device-pinned one, so they never see it.
-                  AND (
-                    ${!isCloudMode()}
-                    OR ${workerHardensDbEgress}
-                    OR NOT (r.connector_key = ANY(${dbEgressHardenedKeys}::text[]))
-                  )
-                  AND (
-                    -- Page activation chooses the browser that owns subsequent
-                    -- sub-actions; it does not choose the worker that executes
-                    -- the connector parent. The parent always stays on fleet.
-                    (
-                      r.activation_kind = 'page_visit'
-                      AND r.activated_at IS NOT NULL
-                    )
-                    OR con.device_worker_id IS NULL
-                    OR (
-                      -- Browser affinity (not job host). Exclude run_type=action:
-                      -- scrape actions are always connector_key='chrome' and use
-                      -- the org chrome connection pin, not the parent
-                      -- connection's browser-affinity pin.
-                      pin_dw.platform = 'chrome-extension'
-                      AND r.run_type IN ('sync', 'auth', 'embed_backfill')
-                      AND r.connector_key NOT LIKE 'chrome%'
-                    )
-                  )
-                )
-                -- (1B) user-scoped device worker: an unpinned capability-matched
-                --      device connector in an org this worker can see. Capability
-                --      match goes through the authorized set — a chrome-extension
-                --      claiming os.shell is dropped server-side (see
-                --      @lobu/core/capabilities), and that dropped string MUST NOT
-                --      match a connectors required_capability here either.
-                OR (
-                  ${isUserScopedWorker}
-                  AND cd.required_capability IS NOT NULL
-                  AND cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
-                  AND con.device_worker_id IS NULL
-                  AND NOT COALESCE(
-                    r.activation_kind = 'page_visit'
-                    AND r.activated_at IS NOT NULL,
-                    false
-                  )
-                  AND r.organization_id = ANY(${pgTextArray(baseOrgScopeIds)}::text[])
-                )
-                -- ... or any connection explicitly pinned to THIS device for
-                --     *execution* (e.g. WhatsApp on Mac). Browser-affinity pins
-                --     (chrome-extension + non-chrome parent sync) must NOT be
-                --     claimed by the extension — those runs stay on the fleet.
-                OR (
-                  ${isUserScopedWorker}
-                  AND ${deviceWorkerId}::uuid IS NOT NULL
-                  AND con.device_worker_id = ${deviceWorkerId}::uuid
-                  AND NOT COALESCE(
-                    r.activation_kind = 'page_visit'
-                    AND r.activated_at IS NOT NULL,
-                    false
-                  )
-                  AND (
-                    cd.required_capability IS NULL
-                    OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
-                  )
-                  AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
-                  AND NOT (
-                    pin_dw.platform = 'chrome-extension'
-                    AND r.run_type IN ('sync', 'auth', 'embed_backfill')
-                    AND r.connector_key NOT LIKE 'chrome%'
-                  )
-                )
-              )
+              AND ${connectorClaimLaneSql(tx, connectorClaimContext, {
+                runType: tx`r.run_type`,
+                connectorKey: tx`r.connector_key`,
+                organizationId: tx`r.organization_id`,
+                activationKind: tx`r.activation_kind`,
+                activatedAt: tx`r.activated_at`,
+                connectionDeviceWorkerId: tx`con.device_worker_id`,
+                pinPlatform: tx`pin_dw.platform`,
+                requiredCapability: tx`cd.required_capability`,
+              })}
             )
             -- (2) Automation lane: an automation run with approved_input.device_worker_id
             --     matching this device. Automations don't carry a connection_id and
@@ -715,19 +672,37 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         if (!claimed) return null;
       } else {
         const claimed = await tx`
-          UPDATE runs
-          SET status = 'running',
-              claimed_at = current_timestamp,
-              last_heartbeat_at = current_timestamp,
-              claimed_by = ${worker_id}
-          WHERE id = ${runId}
-            AND status = 'pending'
-            AND (
-              run_type <> 'action'
-              OR expires_at IS NULL
-              OR expires_at > now()
-            )
-          RETURNING id
+          WITH claimed_run AS (
+            UPDATE runs
+            SET status = 'running',
+                claimed_at = current_timestamp,
+                last_heartbeat_at = current_timestamp,
+                claimed_by = ${worker_id}
+            WHERE id = ${runId}
+              AND status = 'pending'
+              AND (
+                run_type <> 'action'
+                OR expires_at IS NULL
+                OR expires_at > now()
+              )
+            RETURNING id, run_type, feed_id, dry_run
+          ), marked_feed AS (
+            -- Feed health describes connector/source execution, not queue
+            -- admission. Only a successful worker claim starts a real sync.
+            -- Nothing SELECTs from this CTE: a data-modifying WITH sub-statement
+            -- runs exactly once and to completion whether or not the primary
+            -- query reads it, so the stamp lands atomically with the claim.
+            UPDATE feeds f
+            SET last_sync_status = 'pending',
+                last_error = NULL,
+                updated_at = current_timestamp
+            FROM claimed_run claimed
+            WHERE claimed.run_type = 'sync'
+              AND NOT claimed.dry_run
+              AND claimed.feed_id = f.id
+            RETURNING f.id
+          )
+          SELECT id FROM claimed_run
         `;
         if (claimed.length === 0) return null;
       }
@@ -798,27 +773,78 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       return rows[0] ?? null;
     });
 
-  let pending = await withDbRetry('worker_poll_claim', claimNextPendingRun);
+  const claimWithDiagnostics = async () => {
+    try {
+      return await withDbRetry('worker_poll_claim', claimNextPendingRun);
+    } catch (err) {
+      incrementCounter('lobu_worker_claim_query_errors_total', {
+        worker_kind: workerKind,
+        platform: platformLabel,
+      });
+      logger.error(
+        {
+          classification: 'dispatch_unavailable',
+          stage: 'worker_claim_query',
+          worker_id,
+          device_worker_id: deviceWorkerId,
+          worker_kind: workerKind,
+          platform: effectivePlatform,
+          error: errorMessage(err),
+        },
+        '[pollWorkerJob] Worker claim query failed after retries'
+      );
+      throw err;
+    }
+  };
+
+  let pending = await claimWithDiagnostics();
 
   if (!pending) {
-    const now = Date.now();
-    if (now - lastDueFeedMaterializeAttemptAt >= DUE_FEED_MATERIALIZE_COOLDOWN_MS) {
-      lastDueFeedMaterializeAttemptAt = now;
-
-      await sql.begin(async (tx) => {
+    // Keep the explicit return type: TypeScript cannot infer the assignment
+    // made inside onRunCreated when it narrows the transaction result.
+    const materializedRun = await sql.begin(
+      async (tx): Promise<MaterializedDueFeedRun | null> => {
         const lockRows = await tx<{ acquired: boolean }>`
           SELECT pg_try_advisory_xact_lock(${DUE_FEEDS_LOCK_KEY}) AS acquired
         `;
 
         if (!lockRows[0]?.acquired) {
-          return;
+          return null;
         }
 
-        await materializeDueFeeds(c.env, tx);
-      });
+        let createdRun: MaterializedDueFeedRun | null = null;
+        await materializeDueFeeds(c.env, tx, {
+          claimContext: connectorClaimContext,
+          // The caller has exactly one free claim slot. Scan past broken or
+          // raced head rows, but stop after filling that one slot.
+          maxRunsCreated: 1,
+          onRunCreated: (run) => {
+            createdRun = run;
+          },
+        });
+        return createdRun;
+      }
+    );
 
-      pending = await withDbRetry('worker_poll_claim', claimNextPendingRun);
+    // Production Pino defaults to info. Emit one correlatable event only
+    // when this exact poller actually materialized a scoped sync, after the
+    // transaction committed. Ordinary empty polls stay metric-only, avoiding
+    // per-worker log volume and high-cardinality metric labels.
+    if (materializedRun) {
+      logger.info(
+        {
+          dispatch_event: 'worker_scoped_sync_materialized',
+          run_id: materializedRun.runId,
+          feed_id: materializedRun.feedId,
+          worker_id,
+          device_worker_id: deviceWorkerId,
+          eligibility_lane: materializedRun.eligibilityLane,
+        },
+        '[pollWorkerJob] Materialized due sync for current poller'
+      );
     }
+
+    pending = await claimWithDiagnostics();
   }
 
   if (!pending) {

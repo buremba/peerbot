@@ -3,8 +3,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
-import type { Env } from '../../index';
-import { materializeDueFeeds } from '../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestConnection, createTestConnectorDefinition } from '../setup/test-fixtures';
 import { post } from '../setup/test-helpers';
@@ -119,25 +117,10 @@ async function poll(
   });
 }
 
-/**
- * Poll and claim the just-installed connector's due feed run. When the poll
- * handler's materialize cooldown is hot (see the primer comment below), the
- * first poll installs the connector but claims nothing; running the
- * materializer directly and re-polling is the deterministic equivalent of
- * waiting out the 5s cooldown.
- */
 async function pollClaimingDueFeed(workerId: string, connectorManifests: unknown[]) {
-  const first = await poll(workerId, connectorManifests);
-  expect(first.status).toBe(200);
-  const firstBody = await first.json();
-  if (firstBody.connector_key) {
-    return firstBody;
-  }
-
-  await materializeDueFeeds({} as Env, getTestDb());
-  const second = await poll(workerId, connectorManifests);
-  expect(second.status).toBe(200);
-  return second.json();
+  const response = await poll(workerId, connectorManifests);
+  expect(response.status).toBe(200);
+  return response.json();
 }
 
 const OWLETTO_MANIFEST_DIRS = (() => {
@@ -188,15 +171,6 @@ describe('device connector manifests', () => {
 
   it('installs a metadata-only device connector from poll and claims its feed run without compiled_code', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
-
-    // Prime the poll handler's module-level due-feed-materialize cooldown
-    // (worker-api/poll.ts). The integration suite runs singleFork +
-    // isolate:false, so any poll in the previous ~5s — from this file or any
-    // other — leaves the cooldown hot and the next poll skips materialization.
-    // Making that state explicit turns a timing-dependent flake into a
-    // deterministic scenario.
-    const primer = await poll(workerId, []);
-    expect(primer.status).toBe(200);
 
     const body = await pollClaimingDueFeed(workerId, [manifest()]);
 

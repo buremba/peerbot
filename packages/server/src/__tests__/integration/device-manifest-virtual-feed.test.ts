@@ -207,11 +207,14 @@ describe('device manifest auto-wire — virtual feeds', () => {
       await pollWithManifest(workerId, [shippingManifest()]);
 
       // Simulate a row created before the manifest declared this key virtual:
-      // it has collected history and a due time. Reconcile must not convert it
+      // it has collected history and a scheduled time. Keep that time in the
+      // future so this test isolates manifest reconciliation from the poller's
+      // separate responsibility to materialize genuinely due collected feeds.
+      // Reconcile must not convert it
       // (that would strand its events behind a live-read path) and must not
-      // clear its due time while leaving it collected (that would freeze it).
+      // clear its schedule while leaving it collected (that would freeze it).
       const sql = getTestDb();
-      const dueAt = new Date('2026-08-19T00:00:00Z');
+      const dueAt = new Date('2099-08-19T00:00:00Z');
       await sql`
         UPDATE feeds SET kind = 'collected', virtual = false, next_run_at = ${dueAt}
         WHERE feed_key = ${VIRTUAL_FEED}

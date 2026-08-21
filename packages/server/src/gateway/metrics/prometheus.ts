@@ -93,6 +93,21 @@ function initializeMetrics() {
     "counter"
   );
   registerMetric(
+    "lobu_worker_dispatch_failures_total",
+    "Connector runs that timed out before any worker claimed them, by run type and bounded reason",
+    "counter"
+  );
+  registerMetric(
+    "lobu_worker_claim_query_errors_total",
+    "Worker poll claim queries that failed after DB retries, by worker kind and platform",
+    "counter"
+  );
+  registerMetric(
+    "lobu_worker_polls_total",
+    "Authorized worker polls received, by worker kind and platform",
+    "counter"
+  );
+  registerMetric(
     "lobu_process_start_time_seconds",
     "Start time of the process since unix epoch in seconds",
     "gauge"

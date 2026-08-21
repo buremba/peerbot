@@ -47,6 +47,9 @@ interface MaterializeDueItemsOptions<T> {
   onFound?: (items: readonly T[]) => void;
   /** Called once after the loop with the final counts (only when due > 0). */
   onDone?: (counts: DueMaterializeCounts) => void;
+  /** Stop after this many successful run creations, while still scanning past
+   * skipped or broken head rows. Omit to process the full fetched batch. */
+  maxRunsCreated?: number;
 }
 
 export async function materializeDueItems<T>(
@@ -64,6 +67,9 @@ export async function materializeDueItems<T>(
   let skipped = 0;
 
   for (const item of items) {
+    if (options.maxRunsCreated !== undefined && runsCreated >= options.maxRunsCreated) {
+      break;
+    }
     try {
       const outcome = await options.createRun(item);
       if (outcome === 'created') runsCreated++;

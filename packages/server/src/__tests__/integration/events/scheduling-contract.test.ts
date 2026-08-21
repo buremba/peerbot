@@ -144,10 +144,12 @@ describe('scheduler and worker ingestion contracts', () => {
     });
     const [feed] = await sql`
       INSERT INTO feeds (
-        organization_id, connection_id, feed_key, status, schedule, next_run_at, created_at, updated_at
+        organization_id, connection_id, feed_key, status, schedule, next_run_at,
+        last_sync_status, last_error, consecutive_failures, created_at, updated_at
       ) VALUES (
         ${org.id}, ${connection.id}, 'mentions', 'active', '* * * * *',
-        current_timestamp - INTERVAL '1 minute', current_timestamp, current_timestamp
+        current_timestamp - INTERVAL '1 minute', 'failed', 'previous_source_error', 2,
+        current_timestamp, current_timestamp
       )
       RETURNING id
     `;
@@ -156,11 +158,13 @@ describe('scheduler and worker ingestion contracts', () => {
     expect(materialized.runsCreated).toBe(1);
 
     const [queuedFeed] = await sql`
-      SELECT last_sync_status, next_run_at
+      SELECT last_sync_status, last_error, consecutive_failures, next_run_at
       FROM feeds
       WHERE id = ${feed.id}
     `;
-    expect(String(queuedFeed.last_sync_status)).toBe('pending');
+    expect(String(queuedFeed.last_sync_status)).toBe('failed');
+    expect(String(queuedFeed.last_error)).toBe('previous_source_error');
+    expect(Number(queuedFeed.consecutive_failures)).toBe(2);
     expect(new Date(String(queuedFeed.next_run_at)).getTime()).toBeGreaterThan(Date.now());
 
     const [responseA, responseB] = await Promise.all([
@@ -185,9 +189,18 @@ describe('scheduler and worker ingestion contracts', () => {
     expect(runs).toHaveLength(1);
     expect(String(runs[0].status)).toBe('running');
     expect(['worker-a', 'worker-b']).toContain(String(runs[0].claimed_by));
+
+    const [claimedFeed] = await sql`
+      SELECT last_sync_status, last_error, consecutive_failures
+      FROM feeds
+      WHERE id = ${feed.id}
+    `;
+    expect(String(claimedFeed.last_sync_status)).toBe('pending');
+    expect(claimedFeed.last_error).toBeNull();
+    expect(Number(claimedFeed.consecutive_failures)).toBe(2);
   });
 
-  it('projects a manually triggered sync as pending immediately', async () => {
+  it('preserves source health while a manually triggered sync awaits dispatch', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Manual Sync State Org' });
 
@@ -206,10 +219,11 @@ describe('scheduler and worker ingestion contracts', () => {
     const [feed] = await sql`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, status, schedule, next_run_at,
-        created_at, updated_at
+        last_sync_status, last_error, consecutive_failures, created_at, updated_at
       ) VALUES (
         ${org.id}, ${connection.id}, 'mentions', 'active', '0 * * * *',
-        current_timestamp - INTERVAL '1 minute', current_timestamp, current_timestamp
+        current_timestamp - INTERVAL '1 minute', 'failed', 'previous_source_error', 2,
+        current_timestamp, current_timestamp
       )
       RETURNING id
     `;
@@ -219,11 +233,13 @@ describe('scheduler and worker ingestion contracts', () => {
     expect(runId).not.toBeNull();
 
     const [queuedFeed] = await sql`
-      SELECT last_sync_status, next_run_at
+      SELECT last_sync_status, last_error, consecutive_failures, next_run_at
       FROM feeds
       WHERE id = ${feed.id}
     `;
-    expect(String(queuedFeed.last_sync_status)).toBe('pending');
+    expect(String(queuedFeed.last_sync_status)).toBe('failed');
+    expect(String(queuedFeed.last_error)).toBe('previous_source_error');
+    expect(Number(queuedFeed.consecutive_failures)).toBe(2);
     expect(new Date(String(queuedFeed.next_run_at)).getTime()).toBeGreaterThan(Date.now());
   });
 });

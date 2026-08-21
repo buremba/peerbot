@@ -35,7 +35,7 @@ import {
   waitForDeviceActionRunWithOptions,
 } from '../../tools/admin/device-action-wait';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-import { createTestOrganization } from '../setup/test-fixtures';
+import { createTestOrganization, seedOwnerContext } from '../setup/test-fixtures';
 
 async function insertChromeConnector(organizationId: string): Promise<void> {
   const sql = getTestDb();
@@ -357,6 +357,79 @@ describe('createConnectorOperationRun — ephemeral expires_at semantics', () =>
     const expiresInMs = (expiresAt as Date).getTime() - createdBefore;
     expect(expiresInMs).toBeGreaterThan(DEVICE_ACTION_QUEUE_BUDGET_MS - 5_000);
     expect(expiresInMs).toBeLessThan(DEVICE_ACTION_QUEUE_BUDGET_MS + 5_000);
+  });
+
+  it('a device-pinned action queued behind a busy serial worker times out once without redispatch', async () => {
+    const sql = getTestDb();
+    const { org, user } = await seedOwnerContext({
+      orgName: 'Busy Device Action Org',
+    });
+    await insertChromeConnector(org.id);
+    const workerId = 'busy-device-action-worker';
+    const [device] = (await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label,
+        organization_id, last_seen_at
+      ) VALUES (
+        ${user.id}, ${workerId}, 'chrome-extension',
+        ${sql.json(['browser.debugger'])}, 'Busy Chrome', ${org.id}, current_timestamp
+      )
+      RETURNING id
+    `) as Array<{ id: string }>;
+    const connId = await insertChromeConnection(org.id, device.id);
+
+    // Device workers execute serially. Model the exact worker already holding
+    // one action while another direct action is queued for the same pin. The
+    // due-feed pull path cannot defer this row because actions are created by
+    // their caller, not by the scheduled-feed materializer.
+    await sql`
+      INSERT INTO runs (
+        organization_id, run_type, connection_id, connector_key,
+        connector_version, action_key, action_input, approval_status, status,
+        claimed_at, last_heartbeat_at, claimed_by, created_at
+      ) VALUES (
+        ${org.id}, 'action', ${connId}, 'chrome', '0.2.0', 'busy_action',
+        ${sql.json({})}, 'auto', 'running', current_timestamp,
+        current_timestamp, ${workerId}, current_timestamp
+      )
+    `;
+    const createdBefore = Date.now();
+    const queued = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'queued_behind_busy',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+    });
+    expect(queued.status).toBe('pending');
+    const expiresAt = await expiresAtOf(queued.runId);
+    expect(expiresAt).not.toBeNull();
+    const expiresInMs = (expiresAt as Date).getTime() - createdBefore;
+    expect(expiresInMs).toBeGreaterThan(DEVICE_ACTION_QUEUE_BUDGET_MS - 5_000);
+    expect(expiresInMs).toBeLessThan(DEVICE_ACTION_QUEUE_BUDGET_MS + 5_000);
+
+    const out = await waitForDeviceActionRunWithOptions(
+      queued.runId,
+      org.id,
+      FAST_BUDGETS
+    );
+    expect(out.status).toBe('timeout');
+    expect(out.error_message).toContain('was never claimed');
+    expect(out.error_message).toContain('Busy Chrome');
+
+    const queuedRows = await sql`
+      SELECT status, error_message
+      FROM runs
+      WHERE organization_id = ${org.id}
+        AND run_type = 'action'
+        AND action_key = 'queued_behind_busy'
+    `;
+    expect(queuedRows).toHaveLength(1);
+    expect(queuedRows[0].status).toBe('timeout');
+    expect(String(queuedRows[0].error_message)).toContain('no device claimed the run');
+    expect(String(queuedRows[0].error_message)).toContain('Busy Chrome');
   });
 
   it('queued (durable human-decision) runs get NO expires_at', async () => {

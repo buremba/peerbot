@@ -355,14 +355,24 @@ WHERE e.organization_id = :organization_id
       FROM jsonb_array_elements_text(
         et.metadata_schema->'x-lobu-visibility'->'requireFields'
       ) AS required(field_name)
-      WHERE (e.metadata->>required.field_name)::bigint
-            NOT IN (SELECT resource_id FROM caller_resources)
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM caller_resources cr
+        WHERE cr.resource_id = CASE
+          WHEN (e.metadata->>required.field_name) ~ '^[1-9][0-9]{0,18}$'
+          THEN (e.metadata->>required.field_name)::bigint
+          ELSE NULL
+        END
+      )
     )
   );
 ```
 
-Production SQL must additionally validate numeric shapes and avoid repeated
-JSON extraction, but the semantics stay this small. Its `caller_resources` CTE
+The positive membership check is deliberately nested inside the anti-join. A
+missing, null, zero, negative, non-numeric, or oversized reference produces no
+matching caller resource, so the outer query hides the row. Production SQL should
+avoid repeated JSON extraction, but the fail-closed semantics stay this small. Its
+`caller_resources` CTE
 must include only protected membership edges whose authority is `manual` or whose
 connector ACL state is fresh. A stale connector authority therefore removes the
 resource from the caller's effective set without deleting or trusting stale edges.

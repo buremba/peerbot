@@ -7,13 +7,14 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { CompleteAutomationResponse, PollResponse } from '@lobu/core/contracts/worker/protocol';
+import { executeAutomationRun } from '../daemon/automation.js';
+import { CLI_SUPERVISOR_SOURCE } from '../daemon/automation-process.js';
 import { WorkerClient } from '../daemon/client.js';
-import { CLI_SUPERVISOR_SOURCE, executeAutomationRun } from '../daemon/automation.js';
 import type { ExecutorConfig } from '../daemon/executor.js';
 
 /**

@@ -37,6 +37,9 @@ pipeline also used by `@lobu/cli` and `@lobu/server`.
   it spawns the user's local agent CLI per its `AgentSpec` (from
   `@lobu/core/contracts/worker/device-automation`) with the user's own
   environment minus `WORKER_API_TOKEN` — not the connector-child env allowlist.
+  `automation-process.ts` owns that CLI's OS process tree: it spawns the agent
+  under a process-group anchor so descendants can be terminated through an
+  identity the kernel cannot recycle underneath the daemon.
 - `self-check/` — connector-runtime parity assertions (packaging only; no
   network or DB).
 - `embeddings*.ts` — local/remote embedding generation for emitted content and

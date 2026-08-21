@@ -5,21 +5,23 @@ import type {
   CompleteAutomationResponse,
 } from '@lobu/core/contracts/worker/protocol';
 import {
+  type AutomationRunIo,
   buildArguments,
   deliverExitReport,
   dispatchAutomationResumeLoop,
+  type ExecutorResult,
+} from '../daemon/automation.js';
+import {
   signalOwnedPosixProcessGroup,
   terminateWindowsProcessTree,
   waitForOwnedPosixTreeToQuiesce,
   waitForTargetExitAfterTermination,
-  type AutomationRunIo,
-  type ExecutorResult,
-} from '../daemon/automation.js';
+} from '../daemon/automation-process.js';
 import {
+  type ExecutorClient,
   interpretCompleteAutomationResponse,
   WorkerDecodeError,
   WorkerHttpError,
-  type ExecutorClient,
 } from '../daemon/client.js';
 
 function okResult(): ExecutorResult {
@@ -104,7 +106,7 @@ describe('Windows process-tree termination', () => {
         directSignals.push(signal);
         return true;
       },
-    } as unknown as import('node:child_process').ChildProcess;
+    } as unknown as ChildProcess;
 
     const result = await terminateWindowsProcessTree(
       proc,

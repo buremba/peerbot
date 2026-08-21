@@ -7,6 +7,9 @@ import {
   normalizeScopeList,
 } from '../auth/oauth/scopes';
 
+export const OAUTH_SCOPE_PAUSE_LAST_ERROR =
+  'Required OAuth scopes are missing; reconnect the connection to grant access.';
+
 export async function syncOAuthConnectionsForAuthProfile(
   organizationId: string,
   authProfileId: number
@@ -25,7 +28,14 @@ export async function syncOAuthConnectionsForAuthProfile(
     `;
     await sql`
       UPDATE feeds f
-      SET status = 'paused', next_run_at = NULL, updated_at = NOW()
+      SET status = 'paused',
+          next_run_at = NULL,
+          last_error = CASE
+            WHEN f.status = 'active'
+              THEN ${OAUTH_SCOPE_PAUSE_LAST_ERROR}
+            ELSE f.last_error
+          END,
+          updated_at = NOW()
       FROM connections c
       WHERE f.connection_id = c.id
         AND c.organization_id = ${organizationId}
@@ -87,7 +97,7 @@ export async function syncOAuthConnectionsForAuthProfile(
   }
 
   const feedRows = await sql`
-    SELECT f.id, f.feed_key, f.status, c.id AS connection_id
+    SELECT f.id, f.feed_key, f.status, f.last_error, c.id AS connection_id
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE c.organization_id = ${organizationId}
@@ -98,29 +108,56 @@ export async function syncOAuthConnectionsForAuthProfile(
 
   const feedsSchema =
     (connectorRow as { feeds_schema?: Record<string, unknown> } | undefined)?.feeds_schema ?? null;
-  const connectionActiveIds = new Set<number>();
+  const connectionEligibleIds = new Set<number>();
 
   for (const row of feedRows as Array<{
     id: number;
     feed_key: string;
     status: string;
+    last_error: string | null;
     connection_id: number;
   }>) {
     const feedScopesOk = hasAllScopes(
       grantedScopes,
       getFeedRequiredScopes(feedsSchema, row.feed_key)
     );
-    const nextFeedStatus = connectorScopesOk && feedScopesOk ? 'active' : 'paused';
-    if (nextFeedStatus === 'active') {
-      connectionActiveIds.add(row.connection_id);
+    const feedEligible = connectorScopesOk && feedScopesOk;
+    if (feedEligible) {
+      connectionEligibleIds.add(row.connection_id);
     }
-    if (row.status !== nextFeedStatus) {
+    const scopePaused = row.last_error === OAUTH_SCOPE_PAUSE_LAST_ERROR;
+    if (row.status === 'active' && !feedEligible) {
       await sql`
         UPDATE feeds
-        SET status = ${nextFeedStatus},
-            next_run_at = ${nextFeedStatus === 'active' ? sql`NOW()` : sql`NULL`},
+        SET status = 'paused',
+            next_run_at = NULL,
+            last_error = ${OAUTH_SCOPE_PAUSE_LAST_ERROR},
             updated_at = NOW()
         WHERE id = ${row.id}
+          AND status = 'active'
+      `;
+    } else if (row.status === 'paused' && feedEligible && scopePaused) {
+      await sql`
+        UPDATE feeds
+        SET status = 'active',
+            next_run_at = CASE
+              WHEN kind = 'collected' AND schedule IS NOT NULL THEN NOW()
+              ELSE NULL
+            END,
+            last_error = NULL,
+            updated_at = NOW()
+        WHERE id = ${row.id}
+          AND status = 'paused'
+          AND last_error = ${OAUTH_SCOPE_PAUSE_LAST_ERROR}
+      `;
+    } else if (row.status === 'active' && feedEligible && scopePaused) {
+      await sql`
+        UPDATE feeds
+        SET last_error = NULL,
+            updated_at = NOW()
+        WHERE id = ${row.id}
+          AND status = 'active'
+          AND last_error = ${OAUTH_SCOPE_PAUSE_LAST_ERROR}
       `;
     }
   }
@@ -136,7 +173,7 @@ export async function syncOAuthConnectionsForAuthProfile(
   const hasAnyFeeds = feedRows.length > 0;
   for (const row of connectionRows as Array<{ id: number }>) {
     const nextConnectionStatus =
-      connectorScopesOk && (!hasAnyFeeds || connectionActiveIds.has(row.id))
+      connectorScopesOk && (!hasAnyFeeds || connectionEligibleIds.has(row.id))
         ? 'active'
         : 'pending_auth';
     await sql`

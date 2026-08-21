@@ -1191,6 +1191,43 @@ Memory:
     .command("automation")
     .description("Device Automation execution");
 
+  automation
+    .command("attach <automation-id>")
+    .description(
+      "Route an already device-pinned Automation to this Claude Code session"
+    )
+    .option(
+      "--session-id <id>",
+      "Attach an exact live Claude session id (defaults to CLAUDE_CODE_SESSION_ID)"
+    )
+    .action(async (automationId, options) => {
+      const { automationAttachCommand } = await import(
+        "./commands/automation.js"
+      );
+      await automationAttachCommand(automationId, options);
+    });
+
+  automation
+    .command("detach <automation-id>")
+    .description("Remove a local Automation-to-Claude session route")
+    .action(async (automationId) => {
+      const { automationDetachCommand } = await import(
+        "./commands/automation.js"
+      );
+      await automationDetachCommand(automationId);
+    });
+
+  automation
+    .command("attachments")
+    .alias("list-attachments")
+    .description("List local Automation-to-Claude routes and online status")
+    .action(async () => {
+      const { automationAttachmentsCommand } = await import(
+        "./commands/automation.js"
+      );
+      await automationAttachmentsCommand();
+    });
+
   withCommonOpts(
     automation
       .command("execute")

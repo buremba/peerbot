@@ -3,11 +3,12 @@
  *
  * The connector-worker daemon claims connector sync/action/auth/embed jobs. For
  * `run_type='automation'` (device mode only — the gateway never hands an
- * automation run to a trusted fleet worker), the daemon now spawns the user's
- * local agent CLI (`claude`, `codex`, …) the same way the Mac app's
- * `AutomationDispatcher` does: build the prompt from the poll envelope, spawn
- * headless, heartbeat, then post the process exit to `/complete-automation` and
- * honour the server's `resume` decision.
+ * automation run to a trusted fleet worker), the daemon builds the prompt from
+ * the poll envelope and either hands an explicitly attached Claude Automation
+ * to that exact live interactive session, or spawns the user's local agent CLI
+ * (`claude`, `codex`, …) as before. Both routes heartbeat, post their local
+ * finish/exit to `/complete-automation`, and honour the server's `resume`
+ * decision.
  *
  * Ported from `packages/owletto`'s `AutomationDispatcher` (AgentSpec routing,
  * `SpecExecutor` subprocess supervision, and the finalize/resume loop). The
@@ -43,6 +44,8 @@ import type {
   WorkerExitReason,
 } from '@lobu/core/contracts/worker/protocol';
 import { locateBinary, searchDirs } from './agent-binaries.js';
+import { createAttachedClaudeRun, type ClaudeAutomationRunOptions } from './claude-automation-run.js';
+import { getClaudeAutomationAttachment } from './claude-attachments.js';
 import type { ExecutorClient } from './client.js';
 import { WorkerDecodeError, WorkerHttpError } from './client.js';
 import { log } from './log.js';
@@ -76,6 +79,11 @@ export interface AutomationExecutorConfig {
    * use to drive a fake binary.
    */
   binaryOverrides?: Partial<Record<AgentKind, string>>;
+}
+
+/** Package-internal filesystem/process seams for hermetic local-routing tests. */
+export interface AutomationLocalRoutingOptions extends ClaudeAutomationRunOptions {
+  attachmentsFile?: string;
 }
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
@@ -459,13 +467,15 @@ export interface AutomationRunIo {
 }
 
 /**
- * Execute a device automation run: spawn the local CLI per its AgentSpec, then
- * post the exit report and honour the server's `resume` decision.
+ * Execute a device automation run: hand off to its fixed attached Claude
+ * session or spawn the local CLI, then post the exit report and honour the
+ * server's `resume` decision.
  */
 export async function executeAutomationRun(
   client: ExecutorClient,
   job: PollResponse,
-  cfg: AutomationExecutorConfig
+  cfg: AutomationExecutorConfig,
+  localRouting: AutomationLocalRoutingOptions = {}
 ): Promise<{ itemsCollected: number; error?: string }> {
   const runId = job.run_id;
   const payload = job.payload;
@@ -499,10 +509,41 @@ export async function executeAutomationRun(
       ? configuredTimeout * 1000
       : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
+  let attachedRun: ReturnType<typeof createAttachedClaudeRun> | null = null;
+  if (spec.kind === 'claude-code') {
+    try {
+      const attachedSessionId = await getClaudeAutomationAttachment(
+        payload.automation.id,
+        localRouting.attachmentsFile
+      );
+      if (attachedSessionId) {
+        attachedRun = createAttachedClaudeRun(
+          attachedSessionId,
+          resolveAutomationRunAccess(payload, client.mcpWiring),
+          localRouting
+        );
+        log.info(
+          `[executor] Automation run ${runId} routed to attached Claude session ${attachedSessionId}`
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await completeAutomationWithError(client, runId, message, 'error_message');
+      return { itemsCollected: 0, error: message };
+    }
+  }
+
+  let signalTerminalHeartbeat: (() => void) | null = null;
+
   // Heartbeat the run while the CLI executes so the server's stale-run sweeper
   // can distinguish a live turn from an abandoned one.
   const heartbeat = setInterval(() => {
     client.heartbeat(runId).catch((err) => {
+      if (attachedRun && err instanceof WorkerHttpError && err.status === 409) {
+        signalTerminalHeartbeat?.();
+        signalTerminalHeartbeat = null;
+        return;
+      }
       log.debug('[executor] Automation heartbeat failed:', err);
     });
   }, cfg.heartbeatIntervalMs ?? 30_000);
@@ -512,6 +553,20 @@ export async function executeAutomationRun(
       let prompt = buildDeviceAutomationPrompt(payload, runId);
       if (finalizeNudge && finalizeNudge !== '') {
         prompt += `\n\n---\nFINALIZE NUDGE (prior attempt did not complete the window):\n${finalizeNudge}\n`;
+      }
+      if (attachedRun) {
+        let signalThisAttempt = () => {};
+        const terminalHeartbeat = new Promise<void>((resolve) => {
+          signalThisAttempt = resolve;
+          signalTerminalHeartbeat = resolve;
+        });
+        try {
+          return await attachedRun.run(prompt, timeoutMs, terminalHeartbeat);
+        } finally {
+          if (signalTerminalHeartbeat === signalThisAttempt) {
+            signalTerminalHeartbeat = null;
+          }
+        }
       }
       return runCli(
         spec,
@@ -532,6 +587,7 @@ export async function executeAutomationRun(
     return await dispatchAutomationResumeLoop(io);
   } finally {
     clearInterval(heartbeat);
+    attachedRun?.cleanup();
   }
 }
 

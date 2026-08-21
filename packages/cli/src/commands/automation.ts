@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 import { AGENT_KINDS } from "@lobu/core/contracts/worker/device-automation";
 import type { AgentKind } from "@lobu/core/contracts/worker/device-automation";
 import {
+  attachClaudeAutomation,
   executeClaimedAutomationRun,
+  detachClaudeAutomation,
+  listClaudeAutomationAttachments,
+  resolveClaudeSession,
+  type ClaudeSessionResolverOptions,
   UnexecutableRunError,
 } from "@lobu/connector-worker/daemon";
 import { apiUrlToGatewayOrigin, resolveContext } from "../internal/context.js";
@@ -14,6 +19,95 @@ export interface AutomationExecuteOptions {
   defaultAgentKind?: string;
   context?: string;
   debug?: boolean;
+}
+
+export interface AutomationAttachOptions {
+  sessionId?: string;
+}
+
+interface AutomationAttachmentCommandDeps {
+  attachmentsFile?: string;
+  env?: NodeJS.ProcessEnv;
+  sessionResolver?: ClaudeSessionResolverOptions;
+}
+
+/** Record a local-only exact Automation → interactive Claude session route. */
+export async function automationAttachCommand(
+  automationId: string,
+  options: AutomationAttachOptions,
+  deps: AutomationAttachmentCommandDeps = {}
+): Promise<void> {
+  const env = deps.env ?? process.env;
+  const requestedSessionId =
+    options.sessionId?.trim() ?? env.CLAUDE_CODE_SESSION_ID?.trim();
+  if (!requestedSessionId) {
+    throw new UnexecutableRunError(
+      "No Claude Code session id is available. Run this command inside Claude Code, or pass --session-id <id> for testing/manual attachment."
+    );
+  }
+  const session = resolveClaudeSession(
+    requestedSessionId,
+    deps.sessionResolver
+  );
+  await attachClaudeAutomation(
+    automationId,
+    session.sessionId,
+    deps.attachmentsFile
+  );
+  console.log(
+    `Attached Automation ${automationId.trim()} locally to Claude session ${session.sessionId}.`
+  );
+  console.log(
+    "This only configures routing for the standalone `lobu daemon`; the Automation must already be pinned to this Lobu device."
+  );
+}
+
+/** Remove one local Automation → Claude route without mutating the Automation. */
+export async function automationDetachCommand(
+  automationId: string,
+  deps: AutomationAttachmentCommandDeps = {}
+): Promise<void> {
+  const removed = await detachClaudeAutomation(
+    automationId,
+    deps.attachmentsFile
+  );
+  if (removed) {
+    console.log(
+      `Detached Automation ${automationId.trim()} from its local Claude session.`
+    );
+  } else {
+    console.log(
+      `Automation ${automationId.trim()} has no local Claude attachment.`
+    );
+  }
+  console.log("No remote Automation or device pin was changed.");
+}
+
+/** List exact local routes and resolve current online/offline state. */
+export async function automationAttachmentsCommand(
+  deps: AutomationAttachmentCommandDeps = {}
+): Promise<void> {
+  const attachments = await listClaudeAutomationAttachments(
+    deps.attachmentsFile
+  );
+  if (attachments.length === 0) {
+    console.log("No local Claude Automation attachments.");
+    return;
+  }
+  for (const attachment of attachments) {
+    let status = "online";
+    try {
+      resolveClaudeSession(attachment.sessionId, deps.sessionResolver);
+    } catch (error) {
+      status = `offline (${error instanceof Error ? error.message : String(error)})`;
+    }
+    console.log(
+      `${attachment.automationId}\t${attachment.sessionId}\t${status}`
+    );
+  }
+  console.log(
+    "Attachments are local routes for the standalone `lobu daemon`; device pinning remains server-managed."
+  );
 }
 
 /**

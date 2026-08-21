@@ -293,15 +293,14 @@ ui-review:
 	@bun scripts/ui-review.ts
 
 # One call instead of the git status / diff / log / gh pr view / gh pr checks
-# family. That family is ~20% of all shell calls in this repo's agent
-# transcripts, and every call re-reads the full model context, so collapsing
-# the family is worth more than speeding up any single command in it.
+# family. Every tool call re-reads the agent's whole context, so collapsing the
+# family into one call is worth more than speeding up any command in it.
 ctx:
 	@bash scripts/ctx.sh
 
-# Wait for CI then squash-merge, in one blocking call. Refuses to merge while
-# any branch-protection required check has not reported — `gh pr checks` omits
-# checks that never started, so --admin would otherwise sail past them.
+# Wait for CI then squash-merge, in one blocking call. Refuses while any
+# branch-protection required check is not merge-satisfying — `gh pr checks`
+# omits checks that never started, so --admin would otherwise sail past them.
 land:
 	@bash scripts/land.sh
 

@@ -351,17 +351,20 @@ describe('promotions pause — the funnel decision', () => {
     const { getDb } = await import('../../db/client.js');
     const sql = getDb();
     const [catalog] = await sql`
-      SELECT i.indpred IS NULL AS non_partial
+      SELECT
+        i.indpred IS NULL AS non_partial,
+        pg_get_indexdef(i.indexrelid) AS definition
       FROM pg_index i
       JOIN pg_class c ON c.oid = i.indexrelid
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relname = 'idx_events_org_origin'
     `;
     expect(catalog?.non_partial).toBe(true);
+    expect(catalog?.definition).toContain('(organization_id, origin_id)');
 
-    const plans = await sql.begin(async (tx) => {
+    const production = await sql.begin(async (tx) => {
       await tx`SET LOCAL enable_seqscan = off`;
-      const production = await tx`
+      return tx`
         EXPLAIN (FORMAT JSON)
         SELECT 1
         FROM events
@@ -375,18 +378,8 @@ describe('promotions pause — the funnel decision', () => {
           AND jsonb_typeof(payload_data->'manifest'->'state') = 'object'
         LIMIT 1
       `;
-      const orgOrigin = await tx`
-        EXPLAIN (FORMAT JSON)
-        SELECT 1
-        FROM events
-        WHERE organization_id = ${ORG}
-          AND origin_id = ${`deployment_${ROLLED_BACK}`}
-        LIMIT 1
-      `;
-      return { production, orgOrigin };
     });
-    expect(JSON.stringify(plans.production)).toContain('Index Scan');
-    expect(JSON.stringify(plans.production)).not.toContain('Seq Scan');
-    expect(JSON.stringify(plans.orgOrigin)).toContain('idx_events_org_origin');
+    expect(JSON.stringify(production)).toContain('Index Scan');
+    expect(JSON.stringify(production)).not.toContain('Seq Scan');
   });
 });

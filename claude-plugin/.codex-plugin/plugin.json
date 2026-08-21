@@ -1,0 +1,30 @@
+{
+  "name": "lobu",
+  "version": "0.2.0",
+  "description": "Shared, permission-aware company context and governed actions through Lobu MCP.",
+  "author": {
+    "name": "Lobu",
+    "url": "https://lobu.ai"
+  },
+  "homepage": "https://lobu.ai/connectors/clients/",
+  "repository": "https://github.com/lobu-ai/lobu",
+  "license": "Apache-2.0",
+  "keywords": ["agents", "mcp", "company-context", "memory", "permissions"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Lobu",
+    "shortDescription": "Shared context and governed actions for agents",
+    "longDescription": "Connect Codex to shared, permission-aware company context, durable organizational memory, and governed actions through Lobu MCP.",
+    "developerName": "Lobu",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://lobu.ai",
+    "defaultPrompt": [
+      "What does our workspace know about this project?",
+      "Find the current company context for this task.",
+      "Show me the Lobu tools available for this workflow."
+    ],
+    "brandColor": "#F5333A"
+  }
+}

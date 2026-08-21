@@ -1,5 +1,21 @@
 # Changelog
 
+## [15.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.2.1...lobu-v15.3.0) (2026-08-21)
+
+
+### Features
+
+* **automation:** run Claude Automations in parent session ([#3010](https://github.com/lobu-ai/lobu/issues/3010)) ([6120c04](https://github.com/lobu-ai/lobu/commit/6120c04bcb5b8404ef595fa444930ec26784472c))
+* expose media attachments as MCP resources ([#2885](https://github.com/lobu-ai/lobu/issues/2885)) ([795935f](https://github.com/lobu-ai/lobu/commit/795935f5f86e9178698ee43717e36b8eb2068db4))
+
+
+### Bug Fixes
+
+* **deploy:** enforce the promotions pause server-side, not just in the CLI ([#2936](https://github.com/lobu-ai/lobu/issues/2936)) ([e02a8e0](https://github.com/lobu-ai/lobu/commit/e02a8e0bfb33ab276a905bc2c7457b998f9fabb0))
+* **migrations:** flush deferred Automation trigger [migration-never-applied] ([#3008](https://github.com/lobu-ai/lobu/issues/3008)) ([477484d](https://github.com/lobu-ai/lobu/commit/477484d609ddb5a1764697485bbd0acaa6629d3d))
+* **scripts:** prune the worktree registration before deleting its branch ([#2874](https://github.com/lobu-ai/lobu/issues/2874)) ([f3a989e](https://github.com/lobu-ai/lobu/commit/f3a989e26a757d60fd8ccd8d2abf5e47ac7f7f41))
+* **server:** let an org member use an agent they do not own ([#2900](https://github.com/lobu-ai/lobu/issues/2900)) ([7e893d5](https://github.com/lobu-ai/lobu/commit/7e893d59601e61d04467dfd3324936026f5e76d6))
+
 ## [15.2.1](https://github.com/lobu-ai/lobu/compare/lobu-v15.2.0...lobu-v15.2.1) (2026-08-20)
 
 

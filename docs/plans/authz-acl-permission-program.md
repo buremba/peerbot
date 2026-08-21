@@ -1,5 +1,12 @@
 # Authorization / ACL — finalized architecture
 
+> **Design-history notice (2026-08-20):** The current consolidation direction is
+> [`../design/access-resources.md`](../design/access-resources.md). This file
+> remains the source-ACL program history. In particular, the shipped access graph
+> uses protected direct `member_of` edges from effective members to resources;
+> the newer design does not introduce the `can_read`/`deny_read` vocabulary
+> proposed below.
+
 > **Status (2026-07-15):** **Partial** — the Slack and GitHub resource ACL gates are live (`authz_source_acl_state`, `AuthzScope`); derived-artifact provenance, deny ACLs, identity breadth, and the remaining source compilers are pending.
 
 > **Related design docs:** connector authorization & data attribution model →

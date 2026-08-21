@@ -1,5 +1,12 @@
 # Connector authorization & data attribution model
 
+> **Design-history notice (2026-08-20):** The current generic-data and ERP
+> consolidation direction is
+> [`../design/access-resources.md`](../design/access-resources.md). This RFC
+> remains useful for the org-backbone/per-user-overlay trade-off and source
+> identity decisions; its open implementation details should be read through the
+> newer access-resource model.
+
 > **Status (2026-07-15):** **Open RFC** — no implementation; attribution work so far is per-connector, not this org-backbone model.
 
 Status: design / RFC. Builds on `authz-acl-permission-program.md` (the access-graph

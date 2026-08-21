@@ -487,11 +487,12 @@ export async function findContextByUrl(
 /**
  * Find the named context whose API URL belongs to the same gateway origin.
  *
- * Device endpoints live at the origin while older hosted contexts commonly
- * retain an `/api/v1` suffix. Matching those two spellings is safe because an
- * OAuth bearer never crosses the URL origin boundary. The current context wins
- * ties; otherwise user-named contexts win over the always-present built-in
- * context, because that is normally where the installation login is stored.
+ * Device endpoints live at the origin while a hosted context carries the
+ * `/api/v1` SDK suffix — the built-in `lobu` context included. Matching those
+ * two spellings is safe because an OAuth bearer never crosses the URL origin
+ * boundary. The current context wins ties; otherwise user-named contexts win
+ * over the always-present built-in context, because that is normally where the
+ * installation login is stored.
  */
 export async function findContextByOrigin(
   apiUrl: string

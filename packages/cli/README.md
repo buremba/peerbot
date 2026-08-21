@@ -63,12 +63,14 @@ per context and platform. Reusing a device keeps its existing server-side
 workspace attachment. Team workspaces reach a personal device through a pinned
 connection or Automation; `lobu daemon` therefore has no `--org` flag.
 
-An explicit `--worker-id` always wins. Direct `--api-url` and `LOBU_API_URL`
-targets match only a context on the same URL origin; when none exists, the
-login path creates one for that installation. When the daemon starts
-inside a supported Claude Code, Codex, or OpenCode session, that session
-receives its own identity so interactive delivery does not replace the
-machine's durable device mapping; pass `--no-interactive-session` to opt out.
+An explicit `--worker-id` overrides both the wizard and the cached identity; on
+the login path it must start with `headless:` so it cannot claim another
+platform's device. Direct `--api-url` and `LOBU_API_URL` targets match only a
+context on the same URL origin; when none exists, the login path creates one for
+that installation. When the daemon starts inside a supported Claude Code, Codex,
+or OpenCode session, that session receives its own identity so interactive
+delivery does not replace the machine's durable device mapping; pass
+`--no-interactive-session` to opt out.
 
 Older CLI releases registered a terminal daemon as `macos` when run on a Mac.
 The terminal and Docker methods now register as `headless` so they cannot

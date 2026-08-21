@@ -17,7 +17,12 @@ export interface DeviceWizardOptions {
   gatewayOrigin: string;
   platform: string;
   suggestedWorkerId: string;
-  workerApiToken: string;
+  /**
+   * Bearer for `GET /api/me/devices`. Either the installation's OAuth login
+   * (login-based setup) or an explicit `WORKER_API_TOKEN` — the wizard only
+   * lists devices, so it never depends on which one it was handed.
+   */
+  authorizationToken: string;
   prompts?: DeviceWizardPrompts;
 }
 
@@ -47,7 +52,7 @@ export async function deviceWizard(
   const prompts = options.prompts ?? { select, confirm, input };
   const devices = await fetchRemoteDevices(
     options.gatewayOrigin,
-    options.workerApiToken
+    options.authorizationToken
   );
   const reusable = devices.filter(
     (device) => device.platform === options.platform && !device.online

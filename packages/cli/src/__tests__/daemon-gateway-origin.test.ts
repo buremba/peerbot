@@ -358,7 +358,7 @@ describe("lobu daemon", () => {
     spyOn(deviceState, "loadDeviceState").mockResolvedValue({
       workerId: "headless:cached",
       workerApiToken: "owl_pat_cached-child",
-      expiresAt: Date.now() + 30 * 86_400_000,
+      expiresAt: Date.now() + 60 * 86_400_000,
     });
     const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
       "oauth-should-not-be-read"
@@ -484,6 +484,44 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.workerApiToken).toBe(
       "owl_pat_refreshed-child"
     );
+  });
+
+  test("a 403 that re-authenticating cannot clear surfaces instead of forcing a new login", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    (process.stdin as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-installation-login"
+    );
+    const login = spyOn(loginModule, "loginCommand").mockResolvedValue();
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        {
+          error: "personal_org_missing",
+          error_description: "User has no personal org to bind the device to.",
+        },
+        403
+      )
+    );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await expect(
+      daemonCommand({ workerId: "headless:test-host" })
+    ).rejects.toThrow(/User has no personal org to bind the device to/);
+
+    // `lobu login --force` revokes the stored credential on its way in, so a
+    // 403 that a fresh grant cannot clear must never be retried that way.
+    expect(login).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
   });
 
   test("a non-interactive start without a stored login refuses instead of polling unauthenticated", async () => {

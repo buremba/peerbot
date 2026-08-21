@@ -60,14 +60,24 @@ interface MintDeviceCredentialOptions {
 class DeviceMintError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    readonly code?: string
   ) {
     super(message);
     this.name = "DeviceMintError";
   }
 }
 
-const CHILD_TOKEN_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
+/**
+ * How much of a cached child PAT's life must remain for this start to reuse it
+ * instead of re-minting. The daemon snapshots its bearer for the whole process
+ * lifetime and polls for weeks, so the buffer has to outlast a realistic run:
+ * with a shorter one, a start that reuses a nearly-expired token leaves the
+ * worker polling 401 forever a day or two later — the exact silent failure
+ * `startDaemonCommand`'s boot check exists to prevent. A third of the server's
+ * 90-day child expiry keeps re-mints rare while staying well past that.
+ */
+const CHILD_TOKEN_REFRESH_BUFFER_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Shown when `lobu daemon` can't find anything to authorize against. */
 const SETUP_MESSAGE =
@@ -221,7 +231,9 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     }
   }
 
-  // Both are set on every path above; this narrows them for the call below.
+  // Every path above assigns both. Asserted at the package boundary because
+  // the fallthrough is `startDaemonCommand`'s own boot check, whose message
+  // tells the user to set WORKER_API_TOKEN — the wrong advice on the login path.
   if (!workerId || !workerApiToken) {
     throw new Error(
       `Could not resolve a device identity and credential for ${target.gatewayOrigin}.`
@@ -369,11 +381,18 @@ async function mintDeviceCredentialWithReauth({
   }
 }
 
+/**
+ * True only for a refusal that re-authenticating can actually clear: an expired
+ * or revoked bearer (401), or a bearer the endpoint refuses to mint from
+ * (`insufficient_scope` — a missing `device_worker:run`, an MCP resource-bound
+ * token, or a child reaching past its own worker id). Every other 403 is a
+ * standing account condition (`personal_org_missing`); retrying it would
+ * force-revoke a working login through `lobu login --force` and still fail.
+ */
 function isDeviceMintAuthError(error: unknown): error is DeviceMintError {
-  return (
-    error instanceof DeviceMintError &&
-    (error.status === 401 || error.status === 403)
-  );
+  if (!(error instanceof DeviceMintError)) return false;
+  if (error.status === 401) return true;
+  return error.status === 403 && error.code === "insufficient_scope";
 }
 
 function hasUsableCachedWorkerToken(state: DeviceState): boolean {
@@ -406,10 +425,15 @@ async function mintDeviceCredential(
     throw new DeviceMintError(message, res.status);
   })) as Record<string, unknown> | undefined;
   if (!res.ok) {
-    const { message } = extractApiError(parsed, res.status, res.statusText);
+    const { message, code } = extractApiError(
+      parsed,
+      res.status,
+      res.statusText
+    );
     throw new DeviceMintError(
       `Could not authorize this device: ${message}`,
-      res.status
+      res.status,
+      code
     );
   }
 
@@ -481,7 +505,7 @@ async function resolveHostWorkerId(
     gatewayOrigin,
     platform,
     suggestedWorkerId: suggested,
-    workerApiToken: authorizationToken,
+    authorizationToken,
   });
   return result.workerId;
 }

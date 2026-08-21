@@ -24,7 +24,7 @@ function wizardOptions(
     gatewayOrigin: GATEWAY_ORIGIN,
     platform: "macos",
     suggestedWorkerId: "macos:Mac",
-    workerApiToken: WORKER_TOKEN,
+    authorizationToken: WORKER_TOKEN,
     prompts: fakePrompts(),
     ...overrides,
   };

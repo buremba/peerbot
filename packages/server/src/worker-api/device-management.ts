@@ -171,9 +171,10 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
  * instead of living until someone revokes it by hand. A device refreshes by
  * re-minting through this endpoint with its stored worker_id (the reuse branch
  * keeps the device identity and revokes the old token). `lobu daemon` does this
- * for itself: on start it re-mints from its cached child PAT once that token is
- * within a day of expiring. A bearer is still snapshotted for the process
- * lifetime, so a daemon left running past day 90 rotates only on its next start.
+ * for itself: on start it re-mints from its cached child PAT once less than a
+ * third of that token's life remains. A bearer is still snapshotted for the
+ * process lifetime, so a daemon left running past day 90 rotates only on its
+ * next start.
  *
  * Forward-only: legacy children (minted before this shipped) keep their null
  * expiry until they rotate. A retroactive backfill would hard-kill working

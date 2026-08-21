@@ -8,7 +8,11 @@ import {
   MAX_ARTIFACT_BYTES,
   runArtifactBinding,
 } from "../files/artifact-store.js";
-import { type ArtifactTestEnv, createArtifactTestEnv } from "./setup.js";
+import {
+  type ArtifactTestEnv,
+  createArtifactTestEnv,
+  TEST_GATEWAY_URL,
+} from "./setup.js";
 
 describe("ArtifactStore.buildDownloadUrl", () => {
   let env: ArtifactTestEnv;
@@ -98,6 +102,92 @@ describe("ArtifactStore.buildDownloadUrl", () => {
 
     await env.artifactStore.delete(artifactId);
     expect(await env.artifactStore.read(artifactId)).toBeNull();
+  });
+
+  test("carries the binding inside the token so the download route can enforce it", async () => {
+    const binding = runArtifactBinding(42);
+    const { artifactId } = await env.artifactStore.publish({
+      buffer: Buffer.from("bound"),
+      filename: "bound.txt",
+      contentType: "text/plain",
+      publicGatewayUrl: TEST_GATEWAY_URL,
+      binding,
+    });
+
+    const token = new URL(
+      env.artifactStore.buildDownloadUrl(
+        TEST_GATEWAY_URL,
+        artifactId,
+        undefined,
+        binding,
+      ),
+    ).searchParams.get("token") as string;
+
+    const validation = env.artifactStore.validateDownloadToken(
+      token,
+      artifactId,
+    );
+    expect(validation.valid).toBe(true);
+    expect(validation.binding).toBe(binding);
+  });
+
+  test("a bound token cannot be redeemed against another resource's artifact", async () => {
+    // The grafting attack the binding exists to stop: an id belonging to one
+    // Lobu resource, re-signed under the binding of a resource the caller can
+    // read. The mint side never touches the filesystem, so this is the only
+    // place the mismatch can be caught.
+    const { artifactId } = await env.artifactStore.publish({
+      buffer: Buffer.from("someone else's bytes"),
+      filename: "victim.txt",
+      publicGatewayUrl: TEST_GATEWAY_URL,
+      binding: runArtifactBinding(1),
+    });
+
+    const attackerBinding = runArtifactBinding(2);
+    const token = new URL(
+      env.artifactStore.buildDownloadUrl(
+        TEST_GATEWAY_URL,
+        artifactId,
+        undefined,
+        attackerBinding,
+      ),
+    ).searchParams.get("token") as string;
+
+    const validation = env.artifactStore.validateDownloadToken(
+      token,
+      artifactId,
+    );
+    // The token itself is well-formed — only the binding check refuses it.
+    expect(validation.valid).toBe(true);
+    expect(validation.binding).toBe(attackerBinding);
+    expect(
+      await env.artifactStore.read(artifactId, {
+        binding: validation.binding,
+      }),
+    ).toBeNull();
+  });
+
+  test("an unbound token stays as permissive as it is today", async () => {
+    // `resignFileRefs` mints unbound tokens from transcript text; changing
+    // their semantics would break agent-history downloads.
+    const { artifactId } = await env.artifactStore.publish({
+      buffer: Buffer.from("unbound"),
+      filename: "u.txt",
+      publicGatewayUrl: TEST_GATEWAY_URL,
+      binding: runArtifactBinding(7),
+    });
+
+    const token = new URL(
+      env.artifactStore.buildDownloadUrl(TEST_GATEWAY_URL, artifactId),
+    ).searchParams.get("token") as string;
+
+    const validation = env.artifactStore.validateDownloadToken(
+      token,
+      artifactId,
+    );
+    expect(validation.valid).toBe(true);
+    expect(validation.binding).toBeUndefined();
+    expect(await env.artifactStore.read(artifactId)).toBeTruthy();
   });
 });
 

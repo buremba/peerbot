@@ -336,7 +336,8 @@ describe('MCP media resources', () => {
   });
 
   it('fails safely for invalid, missing, and oversized resources', async () => {
-    const oversizedBytes = Buffer.alloc(5 * 1024 * 1024 + 1, 1);
+    // One byte past the 20 MB inline cap this endpoint has always served.
+    const oversizedBytes = Buffer.alloc(20 * 1024 * 1024 + 1, 1);
     const artifact = await artifactStore.publish({
       buffer: oversizedBytes,
       filename: 'oversized.bin',
@@ -399,7 +400,12 @@ describe('MCP media resources', () => {
     });
     const oversizedBody = await oversizedResponse.json();
     expect(oversizedBody.result).toBeUndefined();
-    expect(oversizedBody.error?.message).toContain('Unknown resource');
+    // Distinguishable from an absent resource: the payload exists, it just
+    // cannot be inlined. A bounded read alone would report it as "Unknown".
+    expect(oversizedBody.error?.message).toContain('too large to inline');
+    expect(oversizedBody.error?.message).toContain(
+      String(oversizedBytes.length)
+    );
   });
 
   it('cleans action artifacts when finalization rolls back or commits zero rows', async () => {

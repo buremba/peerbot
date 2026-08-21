@@ -382,6 +382,7 @@ export class ArtifactStore {
         normalizeBaseUrl(params.publicGatewayUrl),
         artifactId,
         params.ttlMs,
+        params.binding,
       ),
     };
   }
@@ -420,6 +421,26 @@ export class ArtifactStore {
     return { metadata, bytes };
   }
 
+  /**
+   * Validated metadata without loading the payload. Lets a caller tell
+   * "too large to inline" apart from "absent", which a bounded `read` alone
+   * reports identically.
+   */
+  async inspect(
+    artifactId: string,
+    options?: { binding?: string },
+  ): Promise<StoredArtifactMetadata | null> {
+    const record = await this.readMetadataRecord(artifactId);
+    if (!record) return null;
+    if (options?.binding && record.metadata.binding !== options.binding) {
+      return null;
+    }
+    if (!(await this.directoryIsUnchanged(artifactId, record.dirStat))) {
+      return null;
+    }
+    return record.metadata;
+  }
+
   async delete(artifactId: string): Promise<void> {
     if (!ARTIFACT_ID_PATTERN.test(artifactId)) return;
     try {
@@ -430,11 +451,27 @@ export class ArtifactStore {
     logger.info(`Deleted artifact ${artifactId}`);
   }
 
-  createDownloadToken(artifactId: string, ttlMs = this.defaultTtlMs): string {
+  /**
+   * A token carries the binding it was minted for so the download route can
+   * enforce it without the minting side touching the filesystem. Only this
+   * process can mint one (the payload is encrypted with the app key), so the
+   * binding inside is as trustworthy as the artifact id beside it.
+   *
+   * A tokenless-ref re-sign (`resignFileRefs`) still mints unbound tokens: the
+   * ids come from a transcript the caller is already authorized to read, and
+   * there is no per-ref binding to carry. Unbound stays exactly as permissive
+   * as it is today; bound is strictly tighter.
+   */
+  createDownloadToken(
+    artifactId: string,
+    ttlMs = this.defaultTtlMs,
+    binding?: string,
+  ): string {
     return encrypt(
       JSON.stringify({
         artifactId,
         exp: Date.now() + ttlMs,
+        ...(binding ? { binding } : {}),
       }),
     );
   }
@@ -445,6 +482,7 @@ export class ArtifactStore {
   ): {
     valid: boolean;
     error?: string;
+    binding?: string;
   } {
     if (
       token.length === 0 ||
@@ -457,6 +495,7 @@ export class ArtifactStore {
       const payload = JSON.parse(decrypt(token)) as {
         artifactId?: string;
         exp?: number;
+        binding?: unknown;
       };
       if (payload.artifactId !== artifactId) {
         return { valid: false, error: "artifact_mismatch" };
@@ -464,7 +503,11 @@ export class ArtifactStore {
       if (!payload.exp || Date.now() > payload.exp) {
         return { valid: false, error: "expired" };
       }
-      return { valid: true };
+      const binding =
+        typeof payload.binding === "string" && payload.binding.length > 0
+          ? payload.binding
+          : undefined;
+      return { valid: true, ...(binding ? { binding } : {}) };
     } catch {
       return { valid: false, error: "malformed" };
     }
@@ -474,6 +517,7 @@ export class ArtifactStore {
     publicGatewayUrl: string,
     artifactId: string,
     ttlMs = this.defaultTtlMs,
+    binding?: string,
   ): string {
     const baseUrl = normalizeBaseUrl(publicGatewayUrl);
     // Concatenate onto the base rather than `new URL("/api/v1/...", baseUrl)`:
@@ -483,7 +527,10 @@ export class ArtifactStore {
     const url = new URL(
       `${baseUrl}/api/v1/files/${encodeURIComponent(artifactId)}`,
     );
-    url.searchParams.set("token", this.createDownloadToken(artifactId, ttlMs));
+    url.searchParams.set(
+      "token",
+      this.createDownloadToken(artifactId, ttlMs, binding),
+    );
     return url.toString();
   }
 }

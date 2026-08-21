@@ -1,5 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
+  ArtifactStore,
   eventArtifactBinding,
   runArtifactBinding,
 } from './gateway/files/artifact-store';
@@ -7,9 +8,11 @@ import type { Env } from './index';
 import { getLobuCoreServices } from './lobu/gateway';
 import { type AuthContext, executeTool } from './tools/execute';
 
-// resources/read embeds base64 in one JSON-RPC response, so keep the decoded
-// cap bounded below the point where concurrent reads amplify app memory.
-const MAX_MCP_RESOURCE_BYTES = 5 * 1024 * 1024;
+// resources/read embeds base64 in one JSON-RPC response, so the decoded cap
+// bounds how much a single read can amplify app memory. Kept at the limit
+// this endpoint already served: lowering it would silently start rejecting
+// media that reads fine today.
+const MAX_MCP_RESOURCE_BYTES = 20 * 1024 * 1024;
 
 type ResourceLink = Extract<
   CallToolResult['content'][number],
@@ -223,9 +226,21 @@ export async function readMcpAttachmentResource(
     throw new Error(`Unknown resource: ${uri}`);
   }
 
-  const coreServices = getLobuCoreServices();
-  if (!coreServices) throw new Error('MCP resource service unavailable');
-  const artifactStore = coreServices.getArtifactStore();
+  const artifactStore =
+    getLobuCoreServices()?.getArtifactStore() ?? new ArtifactStore();
+  // Metadata first: a bounded `read` reports an oversized artifact as simply
+  // absent, and the caller needs to be told the payload exists but cannot be
+  // inlined.
+  const metadata = await artifactStore.inspect(attachment.artifact_id, {
+    binding: loaded.binding,
+  });
+  if (!metadata) throw new Error(`Unknown resource: ${uri}`);
+  if (metadata.size > MAX_MCP_RESOURCE_BYTES) {
+    throw new Error(
+      `MCP resource is too large to inline (${metadata.size} bytes; limit ${MAX_MCP_RESOURCE_BYTES})`
+    );
+  }
+
   const stored = await artifactStore.read(attachment.artifact_id, {
     binding: loaded.binding,
     maxBytes: MAX_MCP_RESOURCE_BYTES,

@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import {
   ArtifactStorageError,
   MAX_ARTIFACT_BYTES,
+  runArtifactBinding,
 } from "../files/artifact-store.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { IFileHandler } from "../platform/file-handler.js";
@@ -296,6 +297,41 @@ describe("file routes", () => {
     expect(await response.json()).toEqual({
       error: "Batch exceeds the artifact storage limit",
     });
+  });
+
+  test("refuses a bound download URL pointed at another resource's artifact", async () => {
+    // Event attachment URLs are re-minted on every read without touching the
+    // store, so the binding travels inside the token and this route is where
+    // it is checked. Without that check the grafted id downloads fine.
+    const app = buildApp();
+    const { artifactId } = await env.artifactStore.publish({
+      buffer: Buffer.from("someone else's bytes"),
+      filename: "victim.txt",
+      contentType: "text/plain",
+      publicGatewayUrl: TEST_GATEWAY_URL,
+      binding: runArtifactBinding(1),
+    });
+
+    const grafted = env.artifactStore.buildDownloadUrl(
+      TEST_GATEWAY_URL,
+      artifactId,
+      undefined,
+      runArtifactBinding(2)
+    );
+    const denied = await app.request(new URL(grafted).pathname + new URL(grafted).search);
+    expect(denied.status).toBe(404);
+
+    const legitimate = env.artifactStore.buildDownloadUrl(
+      TEST_GATEWAY_URL,
+      artifactId,
+      undefined,
+      runArtifactBinding(1)
+    );
+    const allowed = await app.request(
+      new URL(legitimate).pathname + new URL(legitimate).search
+    );
+    expect(allowed.status).toBe(200);
+    expect(await allowed.text()).toBe("someone else's bytes");
   });
 
   test("returns a generic 503 when artifact storage is unavailable", async () => {

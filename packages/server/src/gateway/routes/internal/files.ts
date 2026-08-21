@@ -204,6 +204,8 @@ export function createFileRoutes(
         artifactId: result.artifactId,
       });
     } catch (error) {
+      // Hono does not export `BodyLimitError`, so its name is the only handle
+      // on it; `instanceof` has no class to test against.
       if (error instanceof Error && error.name === "BodyLimitError") {
         return errorResponse(c, "File exceeds the artifact storage limit", 413);
       }
@@ -336,6 +338,8 @@ export function createFileRoutes(
 
       return c.json({ results });
     } catch (error) {
+      // Hono does not export `BodyLimitError`, so its name is the only handle
+      // on it; `instanceof` has no class to test against.
       if (error instanceof Error && error.name === "BodyLimitError") {
         return errorResponse(c, "File exceeds the artifact storage limit", 413);
       }

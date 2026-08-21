@@ -36,7 +36,13 @@ export function createPublicFileRoutes(artifactStore: ArtifactStore): Hono {
 
     let artifact: Awaited<ReturnType<ArtifactStore["read"]>>;
     try {
-      artifact = await artifactStore.read(artifactId);
+      // When the token names a binding, the artifact must still belong to that
+      // exact Lobu resource. This is the single enforcement point for bound
+      // links, so a re-signed event attachment cannot be pointed at another
+      // workspace's artifact by grafting its id into a readable row.
+      artifact = await artifactStore.read(artifactId, {
+        ...(validation.binding ? { binding: validation.binding } : {}),
+      });
     } catch (error) {
       logger.error("Artifact storage unavailable during download", {
         code: error instanceof ArtifactStorageError ? error.code : "UNKNOWN",

@@ -795,61 +795,8 @@ export async function executePlan(
 
   let connectorVersions: Record<string, string> = {};
 
-  // 0) Connector definitions FIRST — install/update them (the plan was already
-  //    confirmed), refetch the catalog, then re-validate connection/feed config
-  //    against the now-current schemas. Doing this before any other resource
-  //    means a post-install schema rejection halts apply before mutating
-  //    anything unrelated.
-  if (hasDesiredConnectors(ctx.state)) {
-    const installed = await installConnectorDefinitions(
-      ctx.client,
-      ctx.state,
-      ctx.remote.connectorDefinitions,
-      ctx.plan
-    );
-    const freshCatalog = installed.catalog;
-    connectorVersions = installed.connectorVersions;
-    for (const warning of validateConnectorState(ctx.state, freshCatalog, {
-      requireInstalled: true,
-    })) {
-      printText(chalk.yellow(`Warning: ${warning}`));
-    }
-  }
-
-  // 1) Agents
-  for (const row of rowsByKind("agent")) {
-    if (row.kind !== "agent") continue;
-    if (!row.desired) continue;
-    const desired = ctx.state.agents.find((a) => a.metadata.agentId === row.id);
-    if (!desired) continue;
-    if (row.verb === "create") {
-      await ctx.client.upsertAgent(desired.metadata);
-    } else {
-      await ctx.client.patchAgentMetadata(row.id, {
-        name: desired.metadata.name,
-        description: desired.metadata.description,
-      });
-    }
-    printText(renderProgress(row.verb, "agent", row.id));
-  }
-
-  // 2) Settings
-  for (const row of rowsByKind("settings")) {
-    if (row.kind !== "settings") continue;
-    const desired = ctx.state.agents.find((a) => a.metadata.agentId === row.id);
-    if (!desired) continue;
-    await ctx.client.patchAgentSettings(row.id, desired.settings);
-    printText(
-      renderProgress(
-        row.verb,
-        "settings",
-        row.id,
-        row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
-      )
-    );
-  }
-
-  // 4) Entity types
+  // 0) Entity types first: relationship-type rules may reference types created
+  //    by this same desired apply.
   for (const row of rowsByKind("entity-type")) {
     if (row.kind !== "entity-type") continue;
     if (!row.desired) continue;
@@ -901,12 +848,65 @@ export async function executePlan(
     printText(renderProgress(row.verb, "entity-type", row.id));
   }
 
-  // 5) Relationship types
+  // 1) Relationship types before connector definitions: server preflight
+  //    resolves connector-declared relationship slugs against the active org
+  //    schema, so a type created by this same apply must already exist.
   for (const row of rowsByKind("relationship-type")) {
     if (row.kind !== "relationship-type") continue;
     if (!row.desired) continue;
     await ctx.client.upsertRelationshipType(row.desired);
     printText(renderProgress(row.verb, "relationship-type", row.id));
+  }
+
+  // 2) Connector definitions — install/update them, refetch the catalog, then
+  //    re-validate connection/feed config against the now-current schemas.
+  if (hasDesiredConnectors(ctx.state)) {
+    const installed = await installConnectorDefinitions(
+      ctx.client,
+      ctx.state,
+      ctx.remote.connectorDefinitions,
+      ctx.plan
+    );
+    const freshCatalog = installed.catalog;
+    connectorVersions = installed.connectorVersions;
+    for (const warning of validateConnectorState(ctx.state, freshCatalog, {
+      requireInstalled: true,
+    })) {
+      printText(chalk.yellow(`Warning: ${warning}`));
+    }
+  }
+
+  // 3) Agents
+  for (const row of rowsByKind("agent")) {
+    if (row.kind !== "agent") continue;
+    if (!row.desired) continue;
+    const desired = ctx.state.agents.find((a) => a.metadata.agentId === row.id);
+    if (!desired) continue;
+    if (row.verb === "create") {
+      await ctx.client.upsertAgent(desired.metadata);
+    } else {
+      await ctx.client.patchAgentMetadata(row.id, {
+        name: desired.metadata.name,
+        description: desired.metadata.description,
+      });
+    }
+    printText(renderProgress(row.verb, "agent", row.id));
+  }
+
+  // 4) Settings
+  for (const row of rowsByKind("settings")) {
+    if (row.kind !== "settings") continue;
+    const desired = ctx.state.agents.find((a) => a.metadata.agentId === row.id);
+    if (!desired) continue;
+    await ctx.client.patchAgentSettings(row.id, desired.settings);
+    printText(
+      renderProgress(
+        row.verb,
+        "settings",
+        row.id,
+        row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
+      )
+    );
   }
 
   // Automations are applied after connections so declarative connection slugs

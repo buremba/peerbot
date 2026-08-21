@@ -7,11 +7,14 @@ CLI for running Lobu locally and managing Lobu agents through the same REST API 
 ```bash
 npx @lobu/cli@latest init my-bot
 cd my-bot
-# edit .env to set DATABASE_URL
+# edit .env to set the provider keys your agent uses
 lobu run
 ```
 
-Lobu boots as a single Node process. Postgres (with pgvector) is a user-provided external. `lobu doctor` reports what's missing.
+Lobu boots as a single Node process with embedded Postgres (including pgvector)
+by default. `lobu init` writes `DATABASE_URL=file://.`; `file://` values select
+an embedded database, while `postgres://` or `postgresql://` connects to an
+external Postgres instance. `lobu doctor` reports what's missing.
 
 ```bash
 docker run -d --name lobu-pg -p 5432:5432 \
@@ -29,10 +32,38 @@ docker run -d --name lobu-pg -p 5432:5432 \
 - `lobu doctor` — Postgres connectivity, pgvector extension, port availability, provider API keys, workspace dir.
 - `lobu link` / `lobu unlink` — bind this directory to a (context, org) at `.lobu/project.json`. `lobu apply` refuses to push mismatched targets unless `--force` is set.
 - `lobu apply` (alias: `lobu deploy`) — idempotent sync of `lobu.config.ts` to Lobu Cloud.
+- `lobu daemon` — map this machine as a device worker for connector syncs,
+  actions, and device Automations.
 - `lobu agent scaffold <id>` — add a second/third agent to an existing project.
 - `lobu telemetry {status,on,off}` — Sentry is off by default; toggle here.
 
 > Note: Lobu's in-house YAML eval runner has been removed. Author evals with [promptfoo](https://www.promptfoo.dev) + `@lobu/promptfoo-provider`; see `examples/personal-finance/evals/promptfooconfig.yaml` for the new pattern.
+
+## Device workers
+
+Run `lobu daemon` on a machine that should execute local connector work or
+device-pinned Automations. The daemon requires a durable, org-scoped personal
+access token; a stored OAuth login is intentionally not used for this
+long-running process.
+
+```bash
+lobu login
+WORKER_API_TOKEN="$(lobu token create --raw --org <slug> --scope mcp:write)" \
+  lobu daemon
+```
+
+On the first interactive boot for a named context, the CLI confirms the
+`<platform>:<hostname>` identity and can reuse an offline device from the same
+platform. The choice is stored per context and platform. Reusing a device keeps
+its existing server-side workspace attachment; a new device is attached by the
+PAT on its first poll.
+
+An explicit `--worker-id` always wins. Direct `--api-url` and `LOBU_API_URL`
+overrides stay stateless and use the deterministic host identity instead of
+borrowing a named context's cached device. When the daemon starts inside a
+supported Claude Code, Codex, or OpenCode session, that session receives its own
+identity so interactive delivery does not replace the machine's durable device
+mapping; pass `--no-interactive-session` to opt out.
 
 ## License
 

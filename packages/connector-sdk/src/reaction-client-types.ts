@@ -124,6 +124,8 @@ export interface NotificationsSendInput {
   resource_url?: string;
   /** HTTP(S) page a browser-side notification action should open in the current user tab. */
   browser_url?: string;
+  /** Page-activated operation run that will populate browser_url when visited. */
+  browser_handoff_run_id?: number;
   /** Stable producer key used to collapse retried sends. */
   idempotency_key?: string;
   /** Deliver only through this specific bot connection (its id). */

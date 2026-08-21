@@ -416,6 +416,18 @@ export const ManageOperationsResultSchema = Type.Union([
         unread: Type.Optional(Type.Boolean()),
         notification_id: Type.Optional(Type.Integer()),
         browser_url: Type.Optional(Type.String()),
+        browser_handoff: Type.Optional(
+          Type.Object({
+            run_id: Type.Union([Type.Integer(), Type.Null()]),
+            state: Type.Union([
+              Type.Literal("ready"),
+              Type.Literal("expired"),
+              Type.Literal("completed"),
+            ]),
+            expires_at: Type.Union([Type.String(), Type.Null()]),
+            error_message: Type.Union([Type.String(), Type.Null()]),
+          })
+        ),
         run_id: Type.Optional(Type.Integer()),
         /**
          * Kind of pending interaction behind this notification (events

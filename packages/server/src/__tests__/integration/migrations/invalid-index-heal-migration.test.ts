@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import {
 	executeMigrationSection,
+	loadMigrationDown,
 	loadMigrationUp,
 } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -87,7 +88,15 @@ const HEAL_MIGRATIONS = [
 		index: "idx_events_org_origin",
 		seedSql: `
       CREATE INDEX IF NOT EXISTS idx_events_org_origin
-        ON events (id)
+			ON events (id)
+    `,
+	},
+	{
+		files: ["20260821222000_notification_targets_browser_run.sql"],
+		index: "idx_notification_targets_browser_run_id",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS idx_notification_targets_browser_run_id
+        ON notification_targets (event_id)
     `,
 	},
 ] as const;
@@ -139,17 +148,21 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 		await cleanupTestDatabase();
 	});
 
-	it.each(HEAL_MIGRATIONS)(
-		"replays $files over an INVALID $index and leaves a VALID index",
-		async ({ files, index, seedSql }) => {
-			const migrationsDir = resolveMigrationsDir();
-			const sql = getDb();
+	it.each(
+		HEAL_MIGRATIONS,
+	)("replays $files over an INVALID $index and leaves a VALID index", async ({
+		files,
+		index,
+		seedSql,
+	}) => {
+		const migrationsDir = resolveMigrationsDir();
+		const sql = getDb();
 
-			// Drop any live index from prior suite setup, then seed a same-named
-			// INVALID carcass the way a crashed CREATE INDEX CONCURRENTLY would.
-			await sql.unsafe(`DROP INDEX IF EXISTS public.${index}`);
-			await sql.unsafe(seedSql);
-			await sql.unsafe(`
+		// Drop any live index from prior suite setup, then seed a same-named
+		// INVALID carcass the way a crashed CREATE INDEX CONCURRENTLY would.
+		await sql.unsafe(`DROP INDEX IF EXISTS public.${index}`);
+		await sql.unsafe(seedSql);
+		await sql.unsafe(`
         UPDATE pg_index
         SET indisvalid = false
         WHERE indexrelid = (
@@ -161,22 +174,76 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
         )
       `);
 
-			const before = await indexValidity(index);
-			expect(before).toEqual({ exists: true, valid: false });
+		const before = await indexValidity(index);
+		expect(before).toEqual({ exists: true, valid: false });
 
-			// Apply the pair in order: the companion heal migration drops the
-			// INVALID carcass, then the transaction:false migration rebuilds it
-			// CONCURRENTLY. Statement-at-a-time mirrors the runtime runner.
-			for (const file of files) {
-				const up = loadMigrationUp(migrationsDir, file);
-				await executeMigrationSection(
-					(statement) => sql.unsafe(statement),
-					up,
-				);
-			}
+		// Apply the pair in order: the companion heal migration drops the
+		// INVALID carcass, then the transaction:false migration rebuilds it
+		// CONCURRENTLY. Statement-at-a-time mirrors the runtime runner.
+		for (const file of files) {
+			const up = loadMigrationUp(migrationsDir, file);
+			await executeMigrationSection((statement) => sql.unsafe(statement), up);
+		}
 
-			const after = await indexValidity(index);
-			expect(after).toEqual({ exists: true, valid: true });
-		},
-	);
+		const after = await indexValidity(index);
+		expect(after).toEqual({ exists: true, valid: true });
+	});
+
+	it("round-trips the notification browser-run column, index, and foreign key", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260821222000_notification_targets_browser_run.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+
+		await executeMigrationSection(
+			execute,
+			loadMigrationDown(migrationsDir, file),
+		);
+
+		const [afterDown] = await sql<{
+			column_exists: boolean;
+			index_exists: boolean;
+		}>`
+			SELECT
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'notification_targets'
+					  AND column_name = 'browser_run_id'
+				) AS column_exists,
+				to_regclass('public.idx_notification_targets_browser_run_id') IS NOT NULL
+					AS index_exists
+		`;
+		expect(afterDown).toEqual({ column_exists: false, index_exists: false });
+
+		await executeMigrationSection(
+			execute,
+			loadMigrationUp(migrationsDir, file),
+		);
+
+		const [afterUp] = await sql<{
+			column_exists: boolean;
+			index_exists: boolean;
+			foreign_key_exists: boolean;
+		}>`
+			SELECT
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'notification_targets'
+					  AND column_name = 'browser_run_id'
+				) AS column_exists,
+				to_regclass('public.idx_notification_targets_browser_run_id') IS NOT NULL
+					AS index_exists,
+				EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname = 'notification_targets_browser_run_id_fkey'
+				) AS foreign_key_exists
+		`;
+		expect(afterUp).toEqual({
+			column_exists: true,
+			index_exists: true,
+			foreign_key_exists: true,
+		});
+	});
 });

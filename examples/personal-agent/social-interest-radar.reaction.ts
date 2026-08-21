@@ -338,7 +338,10 @@ export default async (
         "",
         "Open the post in Chrome and Lobu will place this draft in the composer. You still choose whether to post it.",
       ]),
-      recipients: "admins",
+      // Page activation belongs to the connection's visibility user, who may
+      // not be an admin. "all" lets notify resolve that owner, then its handoff
+      // guard narrows delivery back to that single actionable recipient.
+      recipients: "all",
       resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${[
         sourceEventId,
         draft.id,
@@ -346,6 +349,7 @@ export default async (
         .filter((id) => Number.isSafeInteger(id) && id > 0)
         .join(",")}`,
       browser_url: targetUrl,
+      browser_handoff_run_id: result.run_id,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       automation_source: automationSource,
     });

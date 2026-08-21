@@ -390,13 +390,17 @@ async function runCli(
       // Either way the tree must go: a CLI that exited still leaves the
       // supervisor and any descendants it spawned holding the group.
       cancelled = !target;
-      cleanupSignal = await terminateChild(proc);
+      const treeSignal = await terminateChild(proc);
       supervisorSettled = true;
+      target ??=
+        (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
+      cleanupSignal = target && target.signalCode !== 'SIGKILL' ? 'SIGTERM' : treeSignal;
     } else if (timedOut) {
-      killedSignal = await terminateChild(proc);
+      const treeSignal = await terminateChild(proc);
       supervisorSettled = true;
       target =
         (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
+      killedSignal = target && target.signalCode !== 'SIGKILL' ? 'SIGTERM' : treeSignal;
     } else {
       await releaseSupervisor(proc);
       supervisorSettled = true;

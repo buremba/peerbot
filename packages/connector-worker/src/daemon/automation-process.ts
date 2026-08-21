@@ -7,13 +7,10 @@
  */
 
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 
 const SUPPORTS_PROCESS_GROUPS = process.platform !== 'win32';
 const TREE_TERM_GRACE_MS = 3000;
 const PROCESS_REAP_GRACE_MS = 5000;
-/** Bounds one `ps` snapshot without trusting a partial process table. */
-const PS_OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
 
 /**
  * Keep a process-group leader alive after the actual CLI exits. The daemon can
@@ -225,67 +222,6 @@ export function signalOwnedPosixProcessGroup(
   }
 }
 
-/** Read a snapshot of one POSIX group without signalling its numeric id. */
-function listPosixProcessGroupMembers(pgid: number): Promise<number[] | null> {
-  const psBinary = existsSync('/bin/ps')
-    ? '/bin/ps'
-    : existsSync('/usr/bin/ps')
-      ? '/usr/bin/ps'
-      : 'ps';
-  return new Promise((resolve) => {
-    let proc: ChildProcess;
-    try {
-      proc = spawn(psBinary, ['-axo', 'pid=,pgid='], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-      });
-    } catch {
-      resolve(null);
-      return;
-    }
-    let settled = false;
-    let output = '';
-    const settle = (members: number[] | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(members);
-    };
-    const timer = setTimeout(() => {
-      proc.kill('SIGKILL');
-      settle(null);
-    }, 1000);
-    timer.unref?.();
-    // A dropped chunk would silently shrink the member list, and an
-    // undercount is exactly what makes releasing the anchor unsafe. Cap the
-    // buffer, but treat hitting the cap as "no proof" rather than a short read.
-    let truncated = false;
-    proc.stdout?.setEncoding('utf8');
-    proc.stdout?.on('data', (chunk: string) => {
-      if (output.length + chunk.length > PS_OUTPUT_CAP_BYTES) {
-        truncated = true;
-        return;
-      }
-      output += chunk;
-    });
-    proc.once('error', () => settle(null));
-    proc.once('close', (code) => {
-      if (code !== 0 || truncated) {
-        settle(null);
-        return;
-      }
-      const members: number[] = [];
-      for (const line of output.split('\n')) {
-        const [pidText, pgidText] = line.trim().split(/\s+/);
-        const pid = Number(pidText);
-        const rowPgid = Number(pgidText);
-        if (Number.isInteger(pid) && rowPgid === pgid) members.push(pid);
-      }
-      settle(members);
-    });
-  });
-}
-
 /** Ask the supervisor to release its non-reusable group identity and reap it. */
 export async function releaseSupervisor(proc: ChildProcess, timeoutMs = 1000): Promise<boolean> {
   if (proc.exitCode !== null || proc.signalCode !== null) return true;
@@ -301,47 +237,6 @@ export async function releaseSupervisor(proc: ChildProcess, timeoutMs = 1000): P
   // failed release into a negative-pgid signal after the anchor might be gone.
   proc.kill('SIGKILL');
   await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
-  return false;
-}
-
-/**
- * Wait until SIGTERM leaves only the supervisor in its group. Before releasing
- * the anchor, freeze the group and take a second snapshot so no live member can
- * fork across the observation. A process outside this new session cannot join
- * the group, so releasing the sole remaining supervisor is then race-free.
- */
-export async function waitForOwnedPosixTreeToQuiesce(
-  proc: ChildProcess,
-  timeoutMs: number,
-  listMembers: (pgid: number) => Promise<number[] | null> = listPosixProcessGroupMembers,
-  wait: (ms: number) => Promise<void> = sleep
-): Promise<boolean> {
-  const pgid = proc.pid;
-  if (pgid == null) return false;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const members = await listMembers(pgid);
-    if (members == null) {
-      // An unavailable or overloaded `ps` removes our proof that only the
-      // ownership anchor remains; it must not also remove the target's TERM
-      // grace. Consume the remaining window, then escalate while the anchor is
-      // still live and the negative pgid is still safe.
-      const remainingMs = deadline - Date.now();
-      if (remainingMs > 0) await wait(remainingMs);
-      return false;
-    }
-    if (members.length === 1 && members[0] === pgid) {
-      if (!signalOwnedPosixProcessGroup(proc, 'SIGSTOP')) return false;
-      const frozenMembers = await listMembers(pgid);
-      if (frozenMembers?.length === 1 && frozenMembers[0] === pgid) {
-        if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
-        return releaseSupervisor(proc);
-      }
-      // The anchor is still live and stopped, so this cannot target a reused id.
-      if (!signalOwnedPosixProcessGroup(proc, 'SIGCONT')) return false;
-    }
-    await wait(Math.min(100, Math.max(1, deadline - Date.now())));
-  }
   return false;
 }
 
@@ -405,9 +300,11 @@ export async function terminateChild(proc: ChildProcess): Promise<'SIGTERM' | 'S
       await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
       return 'SIGTERM';
     }
-    if (await waitForOwnedPosixTreeToQuiesce(proc, TREE_TERM_GRACE_MS)) {
-      return 'SIGTERM';
-    }
+    // The supervisor deliberately survives SIGTERM, keeping the pgid owned for
+    // the complete grace window. Escalating that still-owned group avoids both
+    // PID reuse and the process-table scan/freeze/recount machinery that an
+    // early release would require.
+    await sleep(TREE_TERM_GRACE_MS);
     if (!signalOwnedPosixProcessGroup(proc, 'SIGKILL')) proc.kill('SIGKILL');
     await waitForSignalledExit(proc, PROCESS_REAP_GRACE_MS);
     return 'SIGKILL';

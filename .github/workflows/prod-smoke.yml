@@ -40,7 +40,7 @@ on:
         description: Require this commit to be live (ancestor test)
         required: false
       rollout_wait:
-        description: Seconds to wait for expect_sha to appear (default 600 when expect_sha is set)
+        description: Seconds to wait for expect_sha to appear (default 1200 when expect_sha is set)
         required: false
 
 permissions:
@@ -55,7 +55,10 @@ jobs:
     # still covers plain health.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Must exceed ROLLOUT_WAIT (1200s) plus the full-history checkout the
+    # is-ancestor test needs and the remaining checks, or the job is killed
+    # mid-wait and reports nothing rather than a verdict.
+    timeout-minutes: 30
     steps:
       # Full history: the rollout gate runs `git merge-base --is-ancestor`
       # against the SHA prod reports, which a shallow clone cannot resolve.
@@ -75,15 +78,31 @@ jobs:
                 || (github.event_name == 'workflow_run'
                     && github.event.workflow_run.head_sha)
                 || '' }}
-          # Flux polls the registry then rolls the deployment; ~10min covers a
-          # normal rollout without turning a genuinely stuck deploy into a
-          # 25-minute job. Any run that expects a SHA gets that wait, including a
-          # manual spot-check dispatched right after a merge; a manual run with
-          # no expect_sha has nothing to wait for.
+          # Flux polls the registry then rolls the deployment. Every Flux
+          # interval on the path is 1m (ImageRepository, ImagePolicy,
+          # ImageUpdateAutomation, GitRepository, Kustomization), so a healthy
+          # rollout lands 2-3min after build-app pushes — measured on 6120c04b,
+          # which went live ~2.5min after its push.
+          #
+          # 600s had no headroom over that, and on 2026-08-21 it expired twice
+          # inside one hour (795935f5 at 01:00:11, 2cbb2492 at 01:03:37) while
+          # prod still reported 97808ba7. Both SHAs did deploy shortly after,
+          # so the gate alarmed on a rollout that was merely slower than
+          # typical, on the Slack channel that a genuinely stuck deploy also
+          # pages. 1200s keeps the alarm meaningful while still bounding a
+          # wedged deploy, and stays under timeout-minutes.
+          #
+          # NOTE: why a 1m-interval path took >10min twice is NOT explained by
+          # this change; it only stops the detector firing inside the normal
+          # spread. See the issue linked in the PR.
+          #
+          # Any run that expects a SHA gets that wait, including a manual
+          # spot-check dispatched right after a merge; a manual run with no
+          # expect_sha has nothing to wait for.
           ROLLOUT_WAIT: >-
             ${{ inputs.rollout_wait
                 || ((github.event_name == 'workflow_run' || inputs.expect_sha)
-                    && '600')
+                    && '1200')
                 || '0' }}
         run: |
           chmod +x scripts/prod-smoke.sh

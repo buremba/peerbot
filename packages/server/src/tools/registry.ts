@@ -623,6 +623,12 @@ const listedToolsCache = new Map<string, ReturnType<typeof computeListedTools>>(
 type ListedToolOptions = {
   publicOnly?: boolean;
   maxAccessLevel?: 'read' | 'write' | 'admin';
+  /**
+   * Advertise the progressive `mcp:admin` elevation on `run_sdk` only when
+   * the authenticated organization role can actually receive that scope.
+   * Regular members keep the existing write-only contract.
+   */
+  adminScopeEligible?: boolean;
 };
 
 /**
@@ -684,11 +690,12 @@ export function getRawDispatchTools(): RawDispatchTool[] {
 function getListedTools(source: ToolDefinition[], options?: ListedToolOptions) {
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
+  const adminScopeEligible = options?.adminScopeEligible ?? false;
   const sourceKey = source === ALL_MCP_TOOLS ? 'mcp' : 'all';
-  const cacheKey = `${sourceKey}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
+  const cacheKey = `${sourceKey}:${publicOnly ? 1 : 0}:${maxAccessLevel}:${adminScopeEligible ? 1 : 0}`;
   let cached = listedToolsCache.get(cacheKey);
   if (!cached) {
-    cached = computeListedTools(source, publicOnly, maxAccessLevel);
+    cached = computeListedTools(source, publicOnly, maxAccessLevel, adminScopeEligible);
     listedToolsCache.set(cacheKey, cached);
   }
   return cached;
@@ -697,7 +704,8 @@ function getListedTools(source: ToolDefinition[], options?: ListedToolOptions) {
 function computeListedTools(
   source: ToolDefinition[],
   publicOnly: boolean,
-  maxAccessLevel: 'read' | 'write' | 'admin'
+  maxAccessLevel: 'read' | 'write' | 'admin',
+  adminScopeEligible: boolean
 ) {
   return source
     .filter((tool) => !publicOnly || getPublicReadableActions(tool.name) !== undefined)
@@ -713,6 +721,17 @@ function computeListedTools(
         inputSchema = filterSchemaForPublicActions(tool.name, inputSchema);
       }
       if (!inputSchema) return null;
+
+      // `run_sdk` is a write tool whose nested SDK surface also contains
+      // admin methods. OpenAI hosts require that possible elevation in the
+      // tool's securitySchemes before they will act on an insufficient-scope
+      // challenge. Keep it role-aware: advertising an ungrantable admin scope
+      // to regular members makes strict clients reject an otherwise valid
+      // read/write connection.
+      const securityScopes =
+        tool.name === 'run_sdk' && adminScopeEligible
+          ? Array.from(new Set([...(tool.securityScopes ?? []), 'mcp:admin']))
+          : tool.securityScopes;
 
       inputSchema = filterSchemaForAccessLevel(
         tool.name,
@@ -735,8 +754,8 @@ function computeListedTools(
         description: tool.description,
         inputSchema,
         ...(tool.annotations && { annotations: tool.annotations }),
-        ...(tool.securityScopes && {
-          securitySchemes: [{ type: 'oauth2' as const, scopes: tool.securityScopes }],
+        ...(securityScopes && {
+          securitySchemes: [{ type: 'oauth2' as const, scopes: securityScopes }],
         }),
         ...(tool.mcpMeta && { _meta: tool.mcpMeta }),
         // outputSchema keeps its discriminated variants (no flattening, no

@@ -51,6 +51,7 @@ import {
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
 import { readMcpAttachmentResource } from './mcp-media-resources';
+import { isAdminOrOwnerRole } from './tools/access-control';
 import {
   type AuthContext,
   executeTool,
@@ -59,8 +60,8 @@ import {
 } from './tools/execute';
 import { getMcpResultContent } from './tools/mcp-result-content';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
-import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
+import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { validateToolResult } from './tools/validate-args';
 import { renderMcpAppTemplate } from './utils/mcp-app-bundle';
 import { resolvePublicOrigin } from './utils/public-origin';
@@ -314,6 +315,7 @@ function createServerForContext(
     const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
+      adminScopeEligible: isAdminOrOwnerRole(authCtx.memberRole),
     })
       .filter((t) => {
         const visibility = (t._meta?.ui as { visibility?: unknown } | undefined)?.visibility;

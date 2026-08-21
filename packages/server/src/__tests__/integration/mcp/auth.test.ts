@@ -1148,6 +1148,13 @@ describe('MCP Authentication', () => {
         scope: 'mcp:read mcp:write',
       });
 
+      const listed = await mcpListTools({ token, orgSlug: roleOrg.slug });
+      const runSdk = listed.tools.find((tool: any) => tool.name === 'run_sdk');
+      expect(runSdk?.securitySchemes).toEqual([
+        { type: 'oauth2', scopes: ['mcp:write', 'mcp:admin'] },
+      ]);
+      expect(runSdk?._meta?.securitySchemes).toEqual(runSdk?.securitySchemes);
+
       const discovery = await mcpToolsCall(
         'search_sdk',
         { query: 'connections.installConnector' },
@@ -1177,7 +1184,7 @@ describe('MCP Authentication', () => {
         { path: 'connections.installConnector', access: 'admin', count: 1 },
       ]);
       expect(challenge).toContain('error="insufficient_scope"');
-      expect(challenge).toContain('scope="mcp:admin"');
+      expect(challenge).toContain('scope="mcp:read mcp:write mcp:admin"');
     });
 
     it('does not challenge when an owner catches a nested admin denial and run_sdk succeeds', async () => {
@@ -1254,6 +1261,12 @@ describe('MCP Authentication', () => {
       const { token } = await createTestPAT(member.id, roleOrg.id, {
         scope: 'mcp:read mcp:write',
       });
+
+      const listed = await mcpListTools({ token, orgSlug: roleOrg.slug });
+      const runSdk = listed.tools.find((tool: any) => tool.name === 'run_sdk');
+      expect(runSdk?.securitySchemes).toEqual([
+        { type: 'oauth2', scopes: ['mcp:write'] },
+      ]);
 
       const discovery = await mcpToolsCall(
         'search_sdk',

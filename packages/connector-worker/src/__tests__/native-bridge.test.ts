@@ -87,7 +87,7 @@ describe('native bridge framing', () => {
   });
 });
 
-function helloFrame(workerId = 'mac:test', generation: number | undefined = 4) {
+function helloFrame(workerId = 'mac:test', generation: number | null = 4) {
   return encodeNativeBridgeFrame({
     version: 1,
     kind: 'hello',
@@ -101,7 +101,7 @@ function helloFrame(workerId = 'mac:test', generation: number | undefined = 4) {
       nonce: 'nonce-1',
       capabilities: { 'os.files': true },
       connector_manifests: [{ key: 'apple.files', version: '1.0.0' }],
-      ...(generation === undefined ? {} : { generation }),
+      ...(generation === null ? {} : { generation }),
     },
   });
 }
@@ -116,8 +116,9 @@ describe('native bridge handshake', () => {
       generation: 0,
     });
     const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
-    input.write(helloFrame('mac:test', undefined));
+    input.write(helloFrame('mac:test', null));
     await expect(bridge.handshake()).resolves.toBeUndefined();
+    expect(provider.snapshot().generation).toBe(1);
     input.destroy();
     output.destroy();
   });

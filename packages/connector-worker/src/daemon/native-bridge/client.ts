@@ -254,7 +254,9 @@ export class NativeBridgeClient {
         const snapshot: WorkerAdvertisementSnapshot = {
           capabilities: hello.capabilities,
           manifests: hello.connector_manifests,
-          generation: hello.generation,
+          // Legacy hello frames predate generation. Advance the seeded
+          // snapshot so the first real advertisement can replace it.
+          generation: hello.generation ?? this.provider.snapshot().generation + 1,
         };
         this.provider.update(snapshot);
         await this.send({
@@ -531,7 +533,7 @@ function parseHello(payload: Record<string, unknown>): {
   nonce: string;
   capabilities: Record<string, boolean>;
   connector_manifests: unknown[];
-  generation: number;
+  generation?: number;
 } {
   const appBuild = readNonEmptyString(payload.app_build, 'hello.app_build');
   const daemonBuild = readNonEmptyString(payload.daemon_build, 'hello.daemon_build');
@@ -553,8 +555,7 @@ function parseHello(payload: Record<string, unknown>): {
     connector_manifests: readManifests(payload.connector_manifests),
     generation:
       readNonNegativeInteger(payload.generation) ??
-      readNonNegativeInteger(payload.capability_generation) ??
-      0,
+      readNonNegativeInteger(payload.capability_generation),
   };
 }
 

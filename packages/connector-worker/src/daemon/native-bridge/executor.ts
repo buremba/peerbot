@@ -47,7 +47,7 @@ export async function executeNativeBridgeRun(
     const payload = {
       run_id: runId,
       worker_id: client.id,
-      status: errorMessage ? 'failed' : 'success',
+      status: errorMessage ? ('failed' as const) : ('success' as const),
       items_collected: itemsCollected,
       ...(!errorMessage && checkpoint ? { checkpoint } : {}),
       ...(result.auth_update ? { auth_update: result.auth_update } : {}),
@@ -60,7 +60,7 @@ export async function executeNativeBridgeRun(
     const payload = {
       run_id: runId,
       worker_id: client.id,
-      status: errorMessage ? 'failed' : 'success',
+      status: errorMessage ? ('failed' as const) : ('success' as const),
       ...(errorMessage ? { error_message: errorMessage } : { action_output: output }),
     };
     await deliverTerminal(() => client.completeAction(payload));
@@ -69,7 +69,7 @@ export async function executeNativeBridgeRun(
     const payload = {
       run_id: runId,
       worker_id: client.id,
-      status: errorMessage ? 'failed' : 'success',
+      status: errorMessage ? ('failed' as const) : ('success' as const),
       ...(result.credentials ? { credentials: result.credentials } : {}),
       ...(result.metadata ? { metadata: result.metadata } : {}),
       ...(errorMessage ? { error_message: errorMessage } : {}),

@@ -26,6 +26,7 @@ Options:
   --poll-interval-ms <ms>     Poll interval (default: 10000)
   --max-concurrent-jobs <n>   Maximum active Automations (default: 1)
   --default-agent-kind <kind> Agent fallback for Automations without a kind
+  --supervised-stdio         Treat stdin EOF as a supervised-parent shutdown
   --no-poll                   Validate the executable without contacting a server
   --debug                     Enable poll and heartbeat diagnostics
   --help                      Show this help
@@ -46,6 +47,7 @@ function parseArgs(args: string[]): Record<string, string | true> {
     'poll-interval-ms',
     'max-concurrent-jobs',
     'default-agent-kind',
+    'supervised-stdio',
     'no-poll',
     'debug',
     'help',
@@ -104,10 +106,14 @@ async function main(): Promise<void> {
   const maxConcurrent =
     option(raw, 'max-concurrent-jobs') ?? process.env.WORKER_MAX_CONCURRENT_JOBS;
   const defaultAgentKind = option(raw, 'default-agent-kind');
+  const supervisedStdio = raw['supervised-stdio'] === true;
   const debug = raw.debug === true;
   if (raw.debug !== undefined && !debug) throw new Error('--debug does not accept a value');
   if (raw['no-poll'] !== undefined && !noPoll) {
     throw new Error('--no-poll does not accept a value');
+  }
+  if (raw['supervised-stdio'] !== undefined && !supervisedStdio) {
+    throw new Error('--supervised-stdio does not accept a value');
   }
 
   const options = {
@@ -120,6 +126,7 @@ async function main(): Promise<void> {
     ...(defaultAgentKind ? { defaultAgentKind: defaultAgentKind as AgentKind } : {}),
     debug,
     noPoll,
+    supervisedStdio,
   };
   if (pollInterval) {
     if (!/^[1-9]\d*$/.test(pollInterval)) {

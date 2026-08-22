@@ -18,6 +18,11 @@ export interface WorkerPollLoopOptions {
 
 export type WorkerPollLoopExit = (code: number) => void;
 
+export interface WorkerPollLoopSignalOptions {
+  /** Only a supervised parent/child launch treats stdin EOF as shutdown. */
+  stdinEof?: boolean;
+}
+
 export class WorkerPollLoop {
   private readonly client: WorkerClient;
   private readonly pollIntervalMs: number;
@@ -131,13 +136,16 @@ export function createWorkerPollLoopShutdownHandler(
 
 export function installWorkerPollLoopSignals(
   loop: WorkerPollLoop,
-  onShutdown: () => void = () => loop.stop()
+  onShutdown: () => void = () => loop.stop(),
+  options: WorkerPollLoopSignalOptions = { stdinEof: true }
 ): void {
   const gracefulShutdown = createWorkerPollLoopShutdownHandler(loop, onShutdown);
   process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
   process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
-  process.stdin.once('end', () => void gracefulShutdown('EOF'));
-  process.stdin.resume();
+  if (options.stdinEof === true) {
+    process.stdin.once('end', () => void gracefulShutdown('EOF'));
+    process.stdin.resume();
+  }
 }
 
 export async function startWorkerPollLoop(

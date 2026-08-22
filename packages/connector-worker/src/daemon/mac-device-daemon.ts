@@ -5,6 +5,7 @@ import {
 } from '@lobu/core/contracts/worker/device-automation';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 import { executeAutomationRun, type AutomationExecutorConfig } from './automation.js';
+import { resolveRunnableAgentKinds } from './agent-binaries.js';
 import { WorkerClient, type WorkerCapabilities } from './client.js';
 import { installWorkerPollLoopSignals, WorkerPollLoop } from './poll-loop.js';
 import { setDebug } from './log.js';
@@ -12,6 +13,7 @@ import { setDebug } from './log.js';
 export const MAC_DEVICE_DAEMON_PROTOCOL = 'device-daemon/v1';
 export const MAC_DEVICE_PLATFORM = 'macos';
 const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const WORKER_PAT_PATTERN = /^owl_pat_[A-Za-z0-9_-]{32}$/;
 const DEFAULT_POLL_INTERVAL_MS = 10000;
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
 
@@ -25,6 +27,7 @@ export interface MacDeviceDaemonOptions {
   defaultAgentKind?: AgentKind;
   debug?: boolean;
   noPoll?: boolean;
+  supervisedStdio?: boolean;
 }
 
 export interface MacDeviceDaemonMetadata {
@@ -64,6 +67,31 @@ function validateAgentKind(value: AgentKind | undefined): AgentKind | undefined 
     throw new Error(`invalid --default-agent-kind '${value}' (expected ${AGENT_KINDS.join(', ')})`);
   }
   return value;
+}
+
+export function selectMacDeviceDaemonAgentKind(
+  runnableAgentKinds: readonly AgentKind[],
+  explicitAgentKind?: AgentKind
+): AgentKind | undefined {
+  if (explicitAgentKind !== undefined) {
+    if (!runnableAgentKinds.includes(explicitAgentKind)) {
+      throw new Error(
+        `--default-agent-kind '${explicitAgentKind}' is not runnable on this machine (available: ${runnableAgentKinds.join(', ') || 'none'})`
+      );
+    }
+    return explicitAgentKind;
+  }
+  return runnableAgentKinds[0];
+}
+
+export function createMacDeviceDaemonShutdown(
+  controller: AbortController,
+  loop: WorkerPollLoop
+): () => void {
+  return () => {
+    controller.abort();
+    loop.stop();
+  };
 }
 
 export function validateMacDeviceDaemonOptions(
@@ -111,9 +139,9 @@ export function validateMacDeviceDaemonOptions(
   if (!apiUrl) throw new Error('--api-url or API_URL is required unless --no-poll is set');
 
   const workerApiToken = options.workerApiToken?.trim();
-  if (!workerApiToken?.startsWith('owl_pat_')) {
+  if (!workerApiToken || !WORKER_PAT_PATTERN.test(workerApiToken)) {
     throw new Error(
-      'device mode requires WORKER_API_TOKEN with an owl_pat_ prefix; session OAuth tokens are not durable'
+      'device mode requires WORKER_API_TOKEN in the form owl_pat_<32 base64url characters>; session OAuth tokens are not durable'
     );
   }
 
@@ -169,18 +197,28 @@ export function createMacDeviceDaemon(options: MacDeviceDaemonOptions): WorkerPo
   const validated = validateMacDeviceDaemonOptions(options);
   if (validated.noPoll) throw new Error('cannot create a polling daemon with --no-poll');
 
+  const runnableAgentKinds = resolveRunnableAgentKinds();
+  const defaultAgentKind = selectMacDeviceDaemonAgentKind(
+    runnableAgentKinds,
+    validated.defaultAgentKind
+  );
+  const shutdownController = new AbortController();
+
   const client = new WorkerClient({
     apiUrl: validated.apiUrl,
     workerId: validated.workerId,
     authToken: validated.workerApiToken,
-    capabilities: {} satisfies WorkerCapabilities,
+    capabilities: { 'automations.execute': true } satisfies WorkerCapabilities,
     version: validated.version,
     platform: MAC_DEVICE_PLATFORM,
+    agentKinds: runnableAgentKinds,
   });
   const automationConfig: AutomationExecutorConfig = {
     heartbeatIntervalMs: 30000,
     timeoutMs: 600000,
-    ...(validated.defaultAgentKind ? { defaultAgentKind: validated.defaultAgentKind } : {}),
+    ...(defaultAgentKind ? { defaultAgentKind } : {}),
+    requireRunScopedSession: true,
+    shutdownSignal: shutdownController.signal,
   };
   const loop = new WorkerPollLoop({
     client,
@@ -193,7 +231,9 @@ export function createMacDeviceDaemon(options: MacDeviceDaemonOptions): WorkerPo
       return rejectUnsupportedRun(client, job);
     },
   });
-  installWorkerPollLoopSignals(loop);
+  installWorkerPollLoopSignals(loop, createMacDeviceDaemonShutdown(shutdownController, loop), {
+    stdinEof: validated.supervisedStdio === true,
+  });
   return loop;
 }
 

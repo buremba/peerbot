@@ -40,7 +40,7 @@ function binDirWith(names: string[]): string {
 }
 
 describe("resolveRunnableAgentKinds", () => {
-  test("reports only kinds whose binary resolves, in spec order", () => {
+  test("reports only kinds whose binary resolves, in canonical AGENT_KINDS order", () => {
     // `claude` → claude-code, `pi` → pi. codex/opencode/agy are absent.
     const dirs = [binDirWith(["pi", "claude"])];
     expect(resolveRunnableAgentKinds(undefined, dirs)).toEqual(["claude-code", "pi"]);

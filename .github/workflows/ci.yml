@@ -1681,7 +1681,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/connector-worker/|packages/core/|scripts/(build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "mac=true" >> "$GITHUB_OUTPUT"
           else
             echo "mac=false" >> "$GITHUB_OUTPUT"
@@ -1733,6 +1733,19 @@ jobs:
       - name: Skip on fork PRs without submodule access
         if: steps.submodule.outputs.stubbed == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: echo "::notice::Submodule stubbed on fork PR — skipping Mac smoke build."
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.submodule.outputs.stubbed != 'true'
+        with:
+          bun-version: 1.3.5
+
+      - name: Install workspace dependencies for Mac daemon smoke
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Build and smoke standalone Mac device daemon
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: scripts/test-mac-device-daemon-package.sh
 
       # The Mac app has no XCTest target, so xcodebuild does not discover the
       # standalone @main tests under apps/mac/Tests — before this step they ran

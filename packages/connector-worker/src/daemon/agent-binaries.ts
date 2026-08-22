@@ -16,7 +16,10 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
-import { DEVICE_AGENT_SPECS } from '@lobu/core/contracts/worker/device-automation';
+import {
+  AGENT_KINDS,
+  DEVICE_AGENT_SPECS_BY_KIND,
+} from '@lobu/core/contracts/worker/device-automation';
 
 /** Search prefixes for CLI discovery — mirrors the Mac app's detector list. */
 export function searchDirs(): string[] {
@@ -59,9 +62,11 @@ export function resolveRunnableAgentKinds(
   overrides?: Partial<Record<AgentKind, string>>,
   dirs?: string[]
 ): AgentKind[] {
-  return DEVICE_AGENT_SPECS.filter((spec) => {
-    const override = overrides?.[spec.kind];
+  return AGENT_KINDS.filter((kind) => {
+    const spec = DEVICE_AGENT_SPECS_BY_KIND.get(kind);
+    if (!spec) return false;
+    const override = overrides?.[kind];
     if (override) return existsSync(override);
     return locateBinary(spec.binaryName, dirs) !== null;
-  }).map((spec) => spec.kind);
+  });
 }

@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
   MAC_DEVICE_DAEMON_PROTOCOL,
+  createMacDeviceDaemonShutdown,
   macDeviceDaemonMetadata,
+  selectMacDeviceDaemonAgentKind,
   validateMacDeviceDaemonOptions,
 } from '../daemon/mac-device-daemon';
+import { executeAutomationRun } from '../daemon/automation';
 import {
   createWorkerPollLoopShutdownHandler,
   WorkerPollLoop,
@@ -34,7 +37,7 @@ describe('Mac device daemon options', () => {
       validateMacDeviceDaemonOptions({
         version: '15.8.0',
         apiUrl: 'file:///tmp/api',
-        workerApiToken: 'owl_pat_test',
+        workerApiToken: 'owl_pat_1234567890123456789012345678',
       })
     ).toThrow('expected an http(s) URL');
     expect(() =>
@@ -50,7 +53,7 @@ describe('Mac device daemon options', () => {
     const base = {
       version: '15.8.0',
       apiUrl: 'https://example.test',
-      workerApiToken: 'owl_pat_test',
+      workerApiToken: 'owl_pat_12345678901234567890123456789012',
     };
     expect(() => validateMacDeviceDaemonOptions({ ...base, workerId: 'bad id' })).toThrow(
       'invalid --worker-id'
@@ -61,10 +64,69 @@ describe('Mac device daemon options', () => {
     expect(() =>
       validateMacDeviceDaemonOptions({ ...base, defaultAgentKind: 'not-an-agent' as never })
     ).toThrow('--default-agent-kind');
+    expect(() =>
+      validateMacDeviceDaemonOptions({ ...base, workerApiToken: 'owl_pat_' })
+    ).toThrow('32 base64url characters');
+  });
+
+  test('selects the first runnable kind in canonical order and rejects unavailable overrides', () => {
+    expect(selectMacDeviceDaemonAgentKind(['pi', 'codex'])).toBe('pi');
+    expect(selectMacDeviceDaemonAgentKind(['codex', 'pi'], 'pi')).toBe('pi');
+    expect(() => selectMacDeviceDaemonAgentKind(['codex'], 'pi')).toThrow('not runnable');
+  });
+
+  test('supports explicit supervised stdio without making it the default', () => {
+    const base = {
+      version: '15.8.0',
+      apiUrl: 'https://example.test',
+      workerApiToken: 'owl_pat_12345678901234567890123456789012',
+    };
+    expect(validateMacDeviceDaemonOptions({ ...base }).supervisedStdio).toBeUndefined();
+    expect(validateMacDeviceDaemonOptions({ ...base, supervisedStdio: true }).supervisedStdio).toBe(
+      true
+    );
+  });
+
+  test('aborts Automation execution before stopping the poll loop', () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    controller.signal.addEventListener('abort', () => events.push('abort'));
+    const loop = { stop: () => events.push('stop') } as never;
+
+    createMacDeviceDaemonShutdown(controller, loop)();
+
+    expect(events).toEqual(['abort', 'stop']);
   });
 });
 
 describe('WorkerPollLoop', () => {
+  test('fails closed when a capable daemon receives no run-scoped session', async () => {
+    let report: Record<string, unknown> | undefined;
+    const client = {
+      id: 'mac-worker',
+      completeAutomation: async (_runId: number, req: Record<string, unknown>) => {
+        report = req;
+        return { status: 'completed' } as never;
+      },
+    } as never;
+    const result = await executeAutomationRun(
+      client,
+      {
+        run_id: 7,
+        run_type: 'automation',
+        payload: {
+          automation: { id: 'automation-7', agent_kind: 'pi' },
+          event: { fired_at: '2026-08-22T00:00:00Z' },
+          context: { device: { worker_id: 'mac-worker' }, user: {} },
+        },
+      } as never,
+      { requireRunScopedSession: true }
+    );
+
+    expect(result.error).toContain('required run-scoped agent session');
+    expect(report?.error).toContain('required run-scoped agent session');
+  });
+
   test('honors the server idle delay instead of hot-looping at the local interval', async () => {
     let polls = 0;
     const client = {

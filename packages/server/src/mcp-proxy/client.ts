@@ -15,7 +15,22 @@ import {
   type ResolvedCredentials,
   resolveCredentialsByConnectionId,
 } from './credential-resolver';
-import { parseJsonRpcResponse } from './http-response';
+import {
+  assertRequestBodySize,
+  createMcpAbortScope,
+  getMcpAbortReason,
+  isMcpToolCallRequest,
+  inspectMcpJsonRpcBody,
+  MCP_REQUEST_BODY_LIMIT,
+  MCP_RESPONSE_BODY_LIMIT,
+  isMcpSessionError,
+  logMcpTerminalOutcome,
+  newMcpCallId,
+  McpTransportError,
+  normalizeMcpAbortError,
+  parseJsonRpcResponse,
+  readResponseBody,
+} from './http-response';
 import type {
   DiscoveredTool,
   JsonRpcResponse,
@@ -29,10 +44,84 @@ const FETCH_TIMEOUT_TOOL_MS = 30_000;
 const TOOL_CACHE_TTL_MS = 5 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
-function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+async function fetchMcpResponse(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): Promise<Response> {
+  const callId = newMcpCallId();
+  const requestBytes = typeof init.body === 'string' ? new TextEncoder().encode(init.body).byteLength : 0;
+  const startedAt = Date.now();
+  let responseStatus: number | null = null;
+  let responseBytes = 0;
+  let diagnosticPreview: string | undefined;
+  let jsonRpcStatus: 'success' | 'error' | 'unknown' = 'unknown';
+  let failure: unknown;
+  const scope = createMcpAbortScope({
+    timeoutMs,
+    callerSignal,
+    upstreamSignal: init.signal ?? undefined,
+  });
+  try {
+    if (typeof init.body === 'string') assertRequestBodySize(init.body);
+    const response = await fetch(url, { ...init, signal: scope.signal });
+    responseStatus = response.status;
+    const responseHadBody = response.body !== null;
+    const bounded = await readResponseBody(response, {
+      signal: scope.signal,
+      limit: MCP_RESPONSE_BODY_LIMIT,
+    });
+    responseBytes = bounded.byteLength;
+    diagnosticPreview = bounded.preview;
+    jsonRpcStatus = inspectMcpJsonRpcBody(
+      bounded.bytes,
+      response.headers.get('content-type')
+    ).status;
+    return new Response(responseHadBody ? bounded.bytes : null, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } catch (error) {
+    const normalized = normalizeMcpAbortError(error, scope.signal);
+    failure = normalized;
+    if (
+      normalized instanceof McpTransportError &&
+      normalized.kind !== 'oversized_request'
+    ) {
+      responseBytes = normalized.bytes ?? responseBytes;
+      diagnosticPreview = normalized.preview ?? diagnosticPreview;
+    }
+    throw normalized;
+  } finally {
+    const normalized =
+      failure instanceof McpTransportError
+        ? failure
+        : scope.signal.reason instanceof McpTransportError
+          ? scope.signal.reason
+          : undefined;
+    const abortReason = getMcpAbortReason(normalized, scope.signal);
+    logMcpTerminalOutcome(logger, {
+      call_id: callId,
+      request_bytes: requestBytes,
+      response_bytes: responseBytes,
+      request_limit: MCP_REQUEST_BODY_LIMIT,
+      response_limit: MCP_RESPONSE_BODY_LIMIT,
+      duration_ms: Date.now() - startedAt,
+      http_status: responseStatus,
+      jsonrpc_status: jsonRpcStatus,
+      truncated: normalized?.kind === 'oversized_response' || normalized?.kind === 'oversized_request',
+      aborted: abortReason !== null,
+      abort_reason: abortReason,
+      retryable: false,
+      ambiguous_execution: typeof init.body === 'string' && isMcpToolCallRequest(init.body),
+      ...(diagnosticPreview && (failure || responseStatus === null || responseStatus >= 400)
+        ? { diagnostic_preview: diagnosticPreview }
+        : {}),
+    });
+    scope.cleanup();
+  }
 }
 
 /**
@@ -43,14 +132,6 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
  */
 type McpSessionState = { sessionId: string; protocolVersion: string };
 const sessions = new TtlCache<McpSessionState>(SESSION_TTL_MS);
-
-/**
- * The upstream rejected the request because it does not recognize our session
- * id (MCP Streamable HTTP: an unknown/expired session MUST get a 404). The
- * upstream never reached the tool, so replaying after a fresh handshake cannot
- * double-execute an action — unlike a timeout or a 5xx, which stay fatal.
- */
-class McpSessionExpiredError extends Error {}
 
 class McpOAuthRequiredError extends Error {
   constructor(readonly metadata: McpOAuthMetadata) {
@@ -148,7 +229,7 @@ async function sendRequest(
   const session = sessions.get(key) ?? null;
   const headers = buildHeaders(credentials, session);
 
-  const response = await fetchWithTimeout(
+  const response = await fetchMcpResponse(
     upstreamUrl,
     { method: 'POST', headers, body },
     timeoutMs
@@ -164,10 +245,10 @@ async function sendRequest(
   }
 
   if (!response.ok) {
-    const text = await response.text();
+    const text = new TextDecoder().decode((await readResponseBody(response)).bytes);
     if (response.status === 404 && session) {
       sessions.delete(key);
-      throw new McpSessionExpiredError(`Upstream MCP returned 404: ${text}`);
+      throw new Error(`Upstream MCP returned 404: ${text}`);
     }
     if (response.status === 401) {
       throw new McpAuthRejectedError(`Upstream MCP returned 401: ${text}`);
@@ -177,7 +258,9 @@ async function sendRequest(
 
   const request = JSON.parse(body) as { id?: unknown };
   const expectedId = Object.hasOwn(request, 'id') ? request.id : undefined;
-  return (await parseJsonRpcResponse(response, expectedId)) as JsonRpcResponse;
+  const parsed = (await parseJsonRpcResponse(response, expectedId)) as JsonRpcResponse;
+  if (isMcpSessionError(parsed.error?.message)) sessions.delete(key);
+  return parsed;
 }
 
 /**
@@ -372,7 +455,8 @@ export async function discoverTools(
 
 /**
  * Call a tool on an upstream MCP server.
- * Handles stale session recovery: reinitialize + retry once.
+ * Establishes a session before dispatch and only refreshes a rejected credential
+ * before one retry; ambiguous tool outcomes are never replayed.
  */
 export async function callTool(
   connectorKey: string,
@@ -434,79 +518,31 @@ export async function callTool(
       connectionId
     );
 
-  // One bounded recovery loop for every safe-to-retry outcome. The ONLY
-  // retried cases are explicit no-execution signals: a 401 auth rejection
-  // (first attempt never produced a response), a 404 session rejection, or a
-  // JSON-RPC "not initialized" error. A timeout/5xx is ambiguous (the upstream
-  // may have executed the action) and must surface, never replay. Each
-  // recovery can rotate the token at most once (canRefreshAfter401) and
-  // rehandshake at most once per class, so the loop cannot spin. Every
-  // initializeSession call runs INSIDE the try so a 401 from a recovery
-  // reinitialize routes back through the refresh path instead of escaping.
+  // Only a credential rejection is retried: it is rejected before dispatch.
+  // A 404/session error, timeout, abort, 5xx, or any other post-dispatch
+  // failure is ambiguous for tools/call and must never replay the action.
   let response: JsonRpcResponse;
-  let phase: 'send' | 'reinitialize' = 'send';
-  let sessionRecovered = false;
-  while (true) {
-    try {
-      if (phase === 'reinitialize') {
-        await initializeSession(
-          config.upstream_url,
-          credentials,
-          orgId,
-          connectorKey,
-          connectionId
-        );
-      }
-      response = await send();
-    } catch (error) {
-      // Refresh-on-401: the upstream rejected the access token even though its
-      // stored expiry looked valid (tokens get revoked upstream). Re-resolve
-      // against the exact rejected token under the per-account lock, drop the
-      // stale session, reinitialize, and retry once. A still-failing 401 means
-      // the refresh token itself is dead — surface it rather than loop.
-      if (canRefreshAfter401 && error instanceof McpAuthRejectedError) {
-        canRefreshAfter401 = false;
-        logger.info(
-          { connectorKey, originalToolName, connectionId },
-          '[McpProxy] Upstream rejected access token; refreshing and retrying once'
-        );
-        const refreshed = await refreshRejectedCredentials(connectionId, orgId, credentials);
-        if (!refreshed?.accessToken) throw error;
-        credentials = refreshed;
-        sessions.delete(sessionKey(orgId, connectorKey, connectionId));
-        phase = 'reinitialize';
-        continue;
-      }
-      // A rejected session id means the call never ran upstream; rehandshake
-      // and replay. This reinitialize may itself 401 (both an expired session
-      // AND a revoked token) — the loop routes that through the refresh above.
-      if (!sessionRecovered && error instanceof McpSessionExpiredError) {
-        sessionRecovered = true;
-        logger.info(
-          { connectorKey, originalToolName },
-          '[McpProxy] Session rejected, reinitializing'
-        );
-        phase = 'reinitialize';
-        continue;
-      }
-      // Ambiguous transport failure — the upstream may have executed the action.
-      throw error;
-    }
-
-    // Stale-session response recovery ("not initialized"): the call never ran,
-    // so rehandshake and replay — same uniform path as the thrown 404 above.
-    if (response.error && /not initialized/i.test(response.error.message || '')) {
-      if (!sessionRecovered) {
-        sessionRecovered = true;
-        logger.info(
-          { connectorKey, originalToolName },
-          '[McpProxy] Session expired, reinitializing'
-        );
-        phase = 'reinitialize';
-        continue;
-      }
-    }
-    break;
+  try {
+    response = await send();
+  } catch (error) {
+    if (!(canRefreshAfter401 && error instanceof McpAuthRejectedError)) throw error;
+    canRefreshAfter401 = false;
+    logger.info(
+      { connectorKey, originalToolName, connectionId },
+      '[McpProxy] Upstream rejected access token; refreshing and retrying once'
+    );
+    const refreshed = await refreshRejectedCredentials(connectionId, orgId, credentials);
+    if (!refreshed?.accessToken) throw error;
+    credentials = refreshed;
+    sessions.delete(sessionKey(orgId, connectorKey, connectionId));
+    await initializeSession(
+      config.upstream_url,
+      credentials,
+      orgId,
+      connectorKey,
+      connectionId
+    );
+    response = await send();
   }
 
   if (response.error) {
@@ -613,13 +649,13 @@ function assertSafeOAuthEndpoint(url: string): void {
 
 async function fetchJsonObject(url: string): Promise<Record<string, unknown> | null> {
   assertSafeOAuthEndpoint(url);
-  const response = await fetchWithTimeout(
+  const response = await fetchMcpResponse(
     url,
     { headers: { Accept: 'application/json' } },
     FETCH_TIMEOUT_INIT_MS
   );
   if (!response.ok) return null;
-  const value = (await response.json()) as unknown;
+  const value = JSON.parse(new TextDecoder().decode((await readResponseBody(response)).bytes)) as unknown;
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
@@ -771,7 +807,7 @@ export async function registerMcpOAuthClient(params: {
   for (const redirectUri of redirectUris) assertSafeOAuthRedirectUri(redirectUri);
 
   const requestedMethod = selectMcpOAuthClientAuthMethod(params.metadata);
-  const response = await fetchWithTimeout(
+  const response = await fetchMcpResponse(
     registrationUrl,
     {
       method: 'POST',
@@ -790,11 +826,11 @@ export async function registerMcpOAuthClient(params: {
     FETCH_TIMEOUT_INIT_MS
   );
   if (!response.ok) {
-    const text = await response.text();
+    const text = new TextDecoder().decode((await readResponseBody(response)).bytes);
     throw new Error(`MCP OAuth dynamic registration returned ${response.status}: ${text}`);
   }
 
-  const body = (await response.json()) as Record<string, unknown>;
+  const body = JSON.parse(new TextDecoder().decode((await readResponseBody(response)).bytes)) as Record<string, unknown>;
   const clientId = typeof body.client_id === 'string' ? body.client_id : null;
   if (!clientId) throw new Error('MCP OAuth dynamic registration omitted client_id');
   const returnedMethod =
@@ -842,9 +878,10 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
       headers['MCP-Protocol-Version'] = protocolVersion ?? MCP_PROTOCOL_VERSION;
     }
 
-    const response = await fetchWithTimeout(
+    const serializedBody = JSON.stringify(body);
+    const response = await fetchMcpResponse(
       upstreamUrl,
-      { method: 'POST', headers, body: JSON.stringify(body) },
+      { method: 'POST', headers, body: serializedBody },
       FETCH_TIMEOUT_INIT_MS
     );
 
@@ -859,7 +896,7 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
         );
         if (metadata) throw new McpOAuthRequiredError(metadata);
       }
-      const text = await response.text();
+      const text = new TextDecoder().decode((await readResponseBody(response)).bytes);
       throw new Error(`MCP server returned ${response.status}: ${text}`);
     }
 

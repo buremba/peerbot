@@ -31,6 +31,7 @@ import { orgContext } from "../../lobu/stores/org-context.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
+import { buildSessionKey, computeScopeKey } from "../auth/mcp/proxy-shared.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
 
@@ -92,6 +93,20 @@ function initializeResponse(sessionId: string) {
         "Mcp-Session-Id": sessionId,
       },
     }
+  );
+}
+
+function seedRestSession(
+  proxy: McpProxy,
+  mcpId: string,
+  agentId = "agent1",
+  userId = "user1",
+) {
+  orgContext.run({ organizationId: "test-org" }, () =>
+    proxy.upstream.setSession(
+      buildSessionKey(agentId, mcpId, computeScopeKey(userId)),
+      `${mcpId}-session`,
+    ),
   );
 }
 
@@ -241,6 +256,7 @@ describe("SSRF guard", () => {
       "pub-mcp": { id: "pub-mcp", upstreamUrl: "http://public-mcp.example.com:9000/mcp" },
     });
     const proxy = new McpProxy(configSource, {    });
+    seedRestSession(proxy, "pub-mcp");
     const app = proxy.getApp();
 
     globalThis.fetch = async () =>
@@ -274,6 +290,7 @@ describe("SSRF guard", () => {
       },
     });
     const proxy = new McpProxy(configSource, {    });
+    seedRestSession(proxy, "lobu-memory");
     const app = proxy.getApp();
 
     let forwardedAuthorization: string | null = null;
@@ -391,6 +408,7 @@ describe("cross-agent JWT isolation", () => {
     };
 
     const proxy = new McpProxy(configSource, {    });
+    seedRestSession(proxy, "secure-mcp");
     const app = proxy.getApp();
 
     globalThis.fetch = async () =>
@@ -425,6 +443,7 @@ describe("cross-agent JWT isolation", () => {
     const proxy = new McpProxy(configSource, {      toolCache,
       grantStore,
     });
+    seedRestSession(proxy, "shared-mcp");
     const app = proxy.getApp();
 
     // Seed destructive tool in cache for both agents (org-scoped cache → seed
@@ -489,6 +508,8 @@ describe("tool registry collision — same tool name on two MCPs", () => {
       teams: { id: "teams", upstreamUrl: "http://teams.example.com/mcp" },
     });
     const proxy = new McpProxy(configSource, {    });
+    seedRestSession(proxy, "slack");
+    seedRestSession(proxy, "teams");
     const app = proxy.getApp();
 
     let lastUrl = "";
@@ -685,6 +706,7 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     const proxy = new McpProxy(configSource, {      toolCache,
       grantStore,
     });
+    seedRestSession(proxy, "gh-mcp");
     const app = proxy.getApp();
 
     globalThis.fetch = async () =>
@@ -856,6 +878,7 @@ describe("SSE-framed JSON-RPC response", () => {
       "sse-mcp": { id: "sse-mcp", upstreamUrl: "http://sse.example.com/mcp" },
     });
     const proxy = new McpProxy(configSource, {    });
+    seedRestSession(proxy, "sse-mcp");
     const app = proxy.getApp();
 
     const sseBody = [
@@ -934,6 +957,7 @@ describe("concurrent tool calls", () => {
       "conc-mcp": { id: "conc-mcp", upstreamUrl: "http://conc.example.com/mcp" },
     });
     const proxy = new McpProxy(configSource, {    });
+    seedRestSession(proxy, "conc-mcp");
     const app = proxy.getApp();
 
     let callCount = 0;
@@ -1047,7 +1071,7 @@ describe("executeToolDirect", () => {
     expect(requestHeaders[2]?.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
   });
 
-  test("approved execution re-initializes and retries once when the cached session went stale mid-call", async () => {
+  test("approved execution does not replay after a post-dispatch JSON-RPC session error", async () => {
     const configSource = createConfigSource({
       "lobu-memory": {
         id: "lobu-memory",
@@ -1069,18 +1093,15 @@ describe("executeToolDirect", () => {
         return new Response(null, { status: 202 });
       }
       toolCalls++;
-      // The first session the upstream handed out is already gone by the time
-      // the tool call arrives — only the re-initialized session succeeds.
-      const sessionId = new Headers(init?.headers).get("mcp-session-id");
       return new Response(
         JSON.stringify(
-          sessionId === "session-2"
-            ? {
+          toolCalls === 1
+            ? { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "Session not found" } }
+            : {
                 jsonrpc: "2.0",
                 id: 1,
                 result: { content: [{ type: "text", text: "approved" }], isError: false },
-              }
-            : { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "Session not found" } },
+              },
         ),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
@@ -1099,7 +1120,24 @@ describe("executeToolDirect", () => {
       },
     );
 
-    expect(result).toEqual({
+    expect(result).toEqual({ content: [{ type: "text", text: "Session not found" }], isError: true });
+    expect(initCount).toBe(1);
+    expect(toolCalls).toBe(1);
+
+    const nextResult = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+      },
+    );
+
+    expect(nextResult).toEqual({
       content: [{ type: "text", text: "approved" }],
       isError: false,
     });
@@ -1107,7 +1145,7 @@ describe("executeToolDirect", () => {
     expect(toolCalls).toBe(2);
   });
 
-  test("approved execution re-initializes and retries once on an upstream 404 (unknown session)", async () => {
+  test("approved execution invalidates an upstream 404 session without replaying the call", async () => {
     const configSource = createConfigSource({
       "lobu-memory": {
         id: "lobu-memory",
@@ -1129,10 +1167,7 @@ describe("executeToolDirect", () => {
         return new Response(null, { status: 202 });
       }
       toolCalls++;
-      const sessionId = new Headers(init?.headers).get("mcp-session-id");
-      if (sessionId !== "session-2") {
-        return new Response("Session not found", { status: 404 });
-      }
+      if (toolCalls === 1) return new Response("Session not found", { status: 404 });
       return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -1156,7 +1191,24 @@ describe("executeToolDirect", () => {
       },
     );
 
-    expect(result).toEqual({
+    expect(result).toEqual({ content: [{ type: "text", text: "Tool call failed: 404 Session not found" }], isError: true });
+    expect(initCount).toBe(1);
+    expect(toolCalls).toBe(1);
+
+    const nextResult = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+      },
+    );
+
+    expect(nextResult).toEqual({
       content: [{ type: "text", text: "approved" }],
       isError: false,
     });

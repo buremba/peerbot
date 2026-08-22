@@ -339,6 +339,88 @@ describe('device connector manifests', () => {
     expect(versionRows[0]?.source_path).toBe(`device-manifest://macos/${CONNECTOR_KEY}@0.1.0`);
   });
 
+  it('marks only the exact authorized bridge artifact in the poll response', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const bridgeManifest = manifest({
+      runtime: { platforms: ['macos'], execution: 'bridge' },
+    });
+
+    const body = await pollClaimingDueFeed(workerId, [bridgeManifest]);
+
+    expect(body.execution_backend).toBe('native_bridge');
+    expect(body.connector_version).toBe('0.1.0');
+    expect(body.connector_manifest_hash).toBe(
+      deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
+    );
+    expect(body.compiled_code).toBeUndefined();
+
+    const sql = getTestDb();
+    const [run] = (await sql`
+      SELECT status, claimed_by FROM runs
+      WHERE organization_id = ${orgId}
+        AND connector_key = ${CONNECTOR_KEY}
+      ORDER BY id DESC
+      LIMIT 1
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(run.status).toBe('running');
+    expect(run.claimed_by).toBe(workerId);
+
+    await settleRunsAndFeeds(orgId);
+    const [refs] = (await sql`
+      SELECT c.id AS connection_id, f.id AS feed_id
+      FROM connections c
+      JOIN feeds f ON f.connection_id = c.id AND f.feed_key = 'snapshots'
+      WHERE c.organization_id = ${orgId} AND c.connector_key = ${CONNECTOR_KEY}
+      LIMIT 1
+    `) as unknown as Array<{ connection_id: number; feed_id: number }>;
+    await sql`
+      INSERT INTO runs (
+        organization_id, run_type, feed_id, connection_id, connector_key,
+        connector_version, approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'sync', ${refs.feed_id}, ${refs.connection_id}, ${CONNECTOR_KEY},
+        '0.1.0', 'auto', 'pending', NOW()
+      )
+    `;
+    await sql`
+      UPDATE device_workers
+      SET connector_manifests = ${sql.json({
+        [CONNECTOR_KEY]: {
+          manifest: bridgeManifest,
+          manifest_hash: 'unauthorized-hash',
+          received_at: new Date().toISOString(),
+        },
+      })}
+      WHERE worker_id = ${workerId}
+    `;
+    const unauthorizedResponse = await post('/api/workers/poll', {
+      body: {
+        worker_id: workerId,
+        platform: 'macos',
+        app_version: '9.9.0',
+        capabilities: { screentime: true },
+      },
+    });
+    expect(unauthorizedResponse.status).toBe(200);
+    const unauthorizedBody = (await unauthorizedResponse.json()) as { execution_backend?: string };
+    expect(unauthorizedBody.execution_backend).toBeUndefined();
+  });
+
+  it('claims a bridge manifest after reconciliation when auth_schema is omitted', async () => {
+    const { workerId } = await seedDeviceOwner();
+    const bridgeManifest = manifest({
+      runtime: { platforms: ['macos'], execution: 'bridge' },
+      auth_schema: undefined,
+    });
+
+    const body = await pollClaimingDueFeed(workerId, [bridgeManifest]);
+
+    expect(body.execution_backend).toBe('native_bridge');
+    expect(body.connector_manifest_hash).toBe(
+      deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
+    );
+  });
+
   it('reconciles a same-version compiled artifact back to manifest-only poll payload', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();

@@ -6,9 +6,16 @@ import {
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 import { executeAutomationRun, type AutomationExecutorConfig } from './automation.js';
 import { resolveRunnableAgentKinds } from './agent-binaries.js';
-import { WorkerClient, type WorkerCapabilities } from './client.js';
+import {
+  MutableWorkerAdvertisementProvider,
+  WorkerClient,
+  type WorkerCapabilities,
+} from './client.js';
 import { installWorkerPollLoopSignals, WorkerPollLoop } from './poll-loop.js';
 import { setDebug } from './log.js';
+import { NativeBridgeClient } from './native-bridge/client.js';
+import { executeNativeBridgeRun } from './native-bridge/executor.js';
+import { reportTerminalFailure } from './terminal-failure.js';
 
 export const MAC_DEVICE_DAEMON_PROTOCOL = 'device-daemon/v1';
 export const MAC_DEVICE_PLATFORM = 'macos';
@@ -16,6 +23,7 @@ const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const WORKER_PAT_PATTERN = /^owl_pat_[A-Za-z0-9_-]{32}$/;
 const DEFAULT_POLL_INTERVAL_MS = 10000;
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
+const NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS = 5000;
 
 export interface MacDeviceDaemonOptions {
   apiUrl?: string;
@@ -86,12 +94,51 @@ export function selectMacDeviceDaemonAgentKind(
 
 export function createMacDeviceDaemonShutdown(
   controller: AbortController,
-  loop: WorkerPollLoop
-): () => void {
-  return () => {
-    controller.abort();
+  loop: WorkerPollLoop,
+  bridge?: NativeBridgeClient,
+  shutdownTimeoutMs = NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS
+): () => Promise<void> {
+  return async () => {
     loop.stop();
+    controller.abort();
+    if (!bridge) return;
+
+    let shutdownError: unknown;
+    const deadline = Date.now() + shutdownTimeoutMs;
+    try {
+      await withTimeout(
+        bridge.cancelActiveRuns(),
+        Math.max(1, deadline - Date.now()),
+        'native bridge cancellation',
+      );
+    } catch (error) {
+      shutdownError = error;
+    }
+    try {
+      await withTimeout(
+        bridge.shutdown(),
+        Math.max(1, deadline - Date.now()),
+        'native bridge shutdown',
+      );
+    } catch (error) {
+      shutdownError ??= error;
+    }
+    // The app may close the transport as soon as it has acknowledged the
+    // shutdown frame, so keep the writer alive until the shared poll-loop
+    // shutdown handler observes terminal failures from active jobs.
+    bridge.close(new Error('native bridge daemon shutdown'));
+    if (shutdownError) throw shutdownError;
   };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    promise.then(resolve, reject).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  });
 }
 
 export function validateMacDeviceDaemonOptions(
@@ -156,44 +203,19 @@ export function validateMacDeviceDaemonOptions(
   };
 }
 
-function rejectUnsupportedRun(client: WorkerClient, job: PollResponse): Promise<void> {
+async function rejectUnsupportedRun(client: WorkerClient, job: PollResponse): Promise<void> {
   const message = `macOS device daemon does not execute run_type '${job.run_type ?? 'unknown'}'; no native connector capabilities are advertised`;
-  if (job.run_id == null) return Promise.resolve();
-  if (job.run_type === 'action') {
-    return client.completeAction({
-      run_id: job.run_id,
-      worker_id: client.id,
-      status: 'failed',
-      error_message: message,
-    });
-  }
-  if (job.run_type === 'auth') {
-    return client.completeAuth({
-      run_id: job.run_id,
-      worker_id: client.id,
-      status: 'failed',
-      error_message: message,
-    });
-  }
-  if (job.run_type === 'automation') {
-    return client.completeAutomation(job.run_id, {
-      worker_id: client.id,
-      output: '',
-      error: message,
-      duration_ms: 0,
-      exit_reason: 'error_message',
-    }).then(() => undefined);
-  }
-  return client.complete({
-    run_id: job.run_id,
-    worker_id: client.id,
-    status: 'failed',
-    error_message: message,
-    items_collected: 0,
-  });
+  await reportTerminalFailure(client, job, message, 'error_message');
 }
 
-export function createMacDeviceDaemon(options: MacDeviceDaemonOptions): WorkerPollLoop {
+export function createMacDeviceDaemon(
+  options: MacDeviceDaemonOptions,
+  dependencies: {
+    advertisementProvider?: MutableWorkerAdvertisementProvider;
+    bridge?: NativeBridgeClient;
+    shutdownController?: AbortController;
+  } = {}
+): WorkerPollLoop {
   const validated = validateMacDeviceDaemonOptions(options);
   if (validated.noPoll) throw new Error('cannot create a polling daemon with --no-poll');
 
@@ -202,7 +224,8 @@ export function createMacDeviceDaemon(options: MacDeviceDaemonOptions): WorkerPo
     runnableAgentKinds,
     validated.defaultAgentKind
   );
-  const shutdownController = new AbortController();
+  const shutdownController = dependencies.shutdownController ?? new AbortController();
+  const nativeBridge = dependencies.bridge;
 
   const client = new WorkerClient({
     apiUrl: validated.apiUrl,
@@ -212,6 +235,9 @@ export function createMacDeviceDaemon(options: MacDeviceDaemonOptions): WorkerPo
     version: validated.version,
     platform: MAC_DEVICE_PLATFORM,
     agentKinds: runnableAgentKinds,
+    ...(dependencies.advertisementProvider
+      ? { advertisementProvider: dependencies.advertisementProvider }
+      : {}),
   });
   const automationConfig: AutomationExecutorConfig = {
     heartbeatIntervalMs: 30000,
@@ -228,12 +254,22 @@ export function createMacDeviceDaemon(options: MacDeviceDaemonOptions): WorkerPo
       if (job.run_type === 'automation') {
         return executeAutomationRun(client, job, automationConfig);
       }
+      if (job.execution_backend === 'native_bridge') {
+        if (!nativeBridge) {
+          return rejectUnsupportedRun(client, job);
+        }
+        return executeNativeBridgeRun(client, nativeBridge, job);
+      }
       return rejectUnsupportedRun(client, job);
     },
   });
-  installWorkerPollLoopSignals(loop, createMacDeviceDaemonShutdown(shutdownController, loop), {
+  installWorkerPollLoopSignals(
+    loop,
+    createMacDeviceDaemonShutdown(shutdownController, loop, nativeBridge),
+    {
     stdinEof: validated.supervisedStdio === true,
-  });
+    }
+  );
   return loop;
 }
 
@@ -241,5 +277,38 @@ export async function runMacDeviceDaemon(options: MacDeviceDaemonOptions): Promi
   setDebug(options.debug === true);
   const validated = validateMacDeviceDaemonOptions(options);
   if (validated.noPoll) return;
+  if (validated.supervisedStdio) {
+    const advertisementProvider = new MutableWorkerAdvertisementProvider({
+      capabilities: {},
+      manifests: [],
+      generation: 0,
+    });
+    const bridge = new NativeBridgeClient(
+      process.stdin,
+      process.stdout,
+      advertisementProvider,
+      validated.workerId,
+      validated.version,
+    );
+    // The app is the authority for the worker identity and its current
+    // connector generation. No health check or poll happens until this
+    // handshake has validated both sides and echoed the nonce.
+    await bridge.handshake();
+    const shutdownController = new AbortController();
+    const loop = createMacDeviceDaemon(validated, {
+      advertisementProvider,
+      bridge,
+      shutdownController,
+    });
+    bridge.onTransportFailure(() => {
+      shutdownController.abort();
+      loop.stop();
+    });
+    // createMacDeviceDaemon installs the signal handlers. The bridge's
+    // pending native requests are cancelled by the loop's normal shutdown
+    // path before its bounded active-job wait.
+    await loop.start();
+    return;
+  }
   await createMacDeviceDaemon(validated).start();
 }

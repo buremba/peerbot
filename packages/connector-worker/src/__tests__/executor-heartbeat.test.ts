@@ -159,6 +159,23 @@ describe('executor heartbeats (lobu#860)', () => {
     expect(intervalsEverScheduledMs).toContain(30_000);
   });
 
+  test('generic compiled executor refuses native bridge runs', async () => {
+    const client = makeStubClient();
+    const job = {
+      run_id: 101,
+      run_type: 'action',
+      execution_backend: 'native_bridge',
+      connector_key: 'apple.files',
+      action_key: 'open',
+      action_input: {},
+      compiled_code: 'must-not-execute',
+    } as any;
+
+    const result = await executeRun(client as any, job, {} as any);
+    expect(result.error).toContain('native_bridge runs must be handled by the native bridge daemon');
+    expect(executeCompiledConnectorMock).not.toHaveBeenCalled();
+  });
+
   test('executeEmbedBackfillRun heartbeats at least twice over a 70s simulated run', async () => {
     const client = makeStubClient();
 

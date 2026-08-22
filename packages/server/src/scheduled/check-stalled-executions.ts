@@ -471,7 +471,10 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
               WHEN dw.last_seen_at < t.created_at
                 THEN 'no_device_poll_during_pending_window'
               WHEN cd.run_required_capability IS NOT NULL
-                AND NOT COALESCE(dw.capabilities ? cd.run_required_capability, false)
+                AND NOT COALESCE(
+                  dw.capabilities @> jsonb_build_array(cd.run_required_capability),
+                  false
+                )
                 THEN 'device_ineligible_required_capability'
               ELSE 'device_activity_seen_but_unclaimed'
             END AS reason

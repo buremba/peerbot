@@ -146,7 +146,8 @@ export function selectedConnectorVersionArtifactSql<TFragment>(
       cv.compiled_code_hash AS artifact_hash,
       cv.source_path AS artifact_source_path,
       cv.compiled_code AS artifact_compiled_code,
-      cv.compile_config_hash AS artifact_compile_config_hash
+      cv.compile_config_hash AS artifact_compile_config_hash,
+      (cv.source_code IS NOT NULL) AS artifact_has_source_code
     FROM connector_versions cv
     WHERE cv.connector_key = ${refs.connectorKey}
       AND cv.version = ${refs.version}

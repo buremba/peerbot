@@ -35,6 +35,7 @@ export class WorkerPollLoop {
   private readonly maxConcurrentJobs: number;
   private readonly execute: (job: PollResponse) => Promise<unknown>;
   private running = false;
+  private admittingJobs = true;
   private activeJobs = 0;
 
   constructor(options: WorkerPollLoopOptions) {
@@ -53,6 +54,7 @@ export class WorkerPollLoop {
     if (!(await this.client.healthCheck())) {
       throw new Error('Backend health check failed');
     }
+    if (!this.admittingJobs) return;
 
     log.info('[daemon] Starting worker daemon...');
     this.running = true;
@@ -63,7 +65,7 @@ export class WorkerPollLoop {
       } catch (err) {
         log.info('[daemon] Poll error:', err);
       }
-      await this.sleep(nextDelayMs ?? this.pollIntervalMs);
+      if (this.running) await this.sleep(nextDelayMs ?? this.pollIntervalMs);
     }
     log.info('[daemon] Stopped');
   }
@@ -71,6 +73,7 @@ export class WorkerPollLoop {
   stop(): void {
     log.info('[daemon] Stopping...');
     this.running = false;
+    this.admittingJobs = false;
   }
 
   async waitForActiveJobs(timeoutMs = 30000, pollMs = 500): Promise<boolean> {
@@ -94,9 +97,11 @@ export class WorkerPollLoop {
   }
 
   private async pollAndExecute(): Promise<number | undefined> {
+    if (!this.admittingJobs) return undefined;
     const capacityAvailable = Math.max(0, this.maxConcurrentJobs - this.activeJobs);
     const job = await this.client.poll(capacityAvailable);
     if (!job.run_id) {
+      if (!this.admittingJobs) return undefined;
       const nextPoll = job.next_poll_seconds ?? 30;
       log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);
       return Number.isFinite(nextPoll) && nextPoll > 0 ? nextPoll * 1000 : 1000;
@@ -130,7 +135,7 @@ export class WorkerPollLoop {
 
 export function createWorkerPollLoopShutdownHandler(
   loop: WorkerPollLoop,
-  onShutdown: () => void = () => loop.stop(),
+  onShutdown: () => void | Promise<void> = () => loop.stop(),
   exit: WorkerPollLoopExit = process.exit
 ): (signal: string) => Promise<void> {
   let shuttingDown = false;
@@ -142,16 +147,22 @@ export function createWorkerPollLoopShutdownHandler(
     }
     shuttingDown = true;
     log.info(`\n[daemon] Received ${signal}, shutting down...`);
-    onShutdown();
+    let shutdownHookSucceeded = true;
+    try {
+      await onShutdown();
+    } catch (error) {
+      shutdownHookSucceeded = false;
+      log.info('[daemon] Shutdown hook failed:', error);
+    }
     const allDone = await loop.waitForActiveJobs();
     if (!allDone) log.info('[daemon] Forcing exit with active jobs still running');
-    exit(allDone ? 0 : 1);
+    exit(allDone && shutdownHookSucceeded ? 0 : 1);
   };
 }
 
 export function installWorkerPollLoopSignals(
   loop: WorkerPollLoop,
-  onShutdown: () => void = () => loop.stop(),
+  onShutdown: () => void | Promise<void> = () => loop.stop(),
   options: WorkerPollLoopSignalOptions = { stdinEof: false }
 ): void {
   const gracefulShutdown = createWorkerPollLoopShutdownHandler(loop, onShutdown);

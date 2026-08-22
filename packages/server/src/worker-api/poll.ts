@@ -47,6 +47,7 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
+import { classifySelectedConnectorExecution } from '../utils/connector-execution-backend';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
@@ -622,6 +623,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           WHERE cd.key = r.connector_key
             AND cd.organization_id = r.organization_id
             AND cd.status = 'active'
+            AND (r.connector_version IS NULL OR cd.version = r.connector_version)
           ORDER BY cd.updated_at DESC, cd.id DESC
           LIMIT 1
         ) cd ON true
@@ -801,11 +803,21 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         cv.artifact_row_id AS connector_version_row_id,
         cv.artifact_compiled_code AS compiled_code,
         cv.artifact_compile_config_hash AS compile_config_hash,
+        cv.artifact_hash AS connector_manifest_hash,
+        cv.artifact_source_path AS artifact_source_path,
+        cv.artifact_has_source_code AS artifact_has_source_code,
         COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
         CASE WHEN cd.version = r.connector_version THEN cd.runtime ELSE NULL END
           AS connector_runtime,
         CASE WHEN cd.version = r.connector_version THEN cd.required_capability ELSE NULL END
           AS connector_required_capability,
+        CASE WHEN cd.version = r.connector_version THEN cd.name ELSE NULL END AS connector_name,
+        CASE WHEN cd.version = r.connector_version THEN cd.description ELSE NULL END AS connector_description,
+        CASE WHEN cd.version = r.connector_version THEN cd.favicon_domain ELSE NULL END AS connector_favicon_domain,
+        CASE WHEN cd.version = r.connector_version THEN cd.auth_schema ELSE NULL END AS connector_auth_schema,
+        CASE WHEN cd.version = r.connector_version THEN cd.feeds_schema ELSE NULL END AS connector_feeds_schema,
+        CASE WHEN cd.version = r.connector_version THEN cd.actions_schema ELSE NULL END AS connector_actions_schema,
+        CASE WHEN cd.version = r.connector_version THEN cd.options_schema ELSE NULL END AS connector_options_schema,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS automation_name,
         w.agent_id AS automation_agent_id,
@@ -826,9 +838,16 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           organizationId: tx`r.organization_id`,
         })}
       ) cv ON TRUE
-      LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
-        AND cd.organization_id = r.organization_id
-        AND cd.status = 'active'
+      LEFT JOIN LATERAL (
+        SELECT cd.*
+        FROM connector_definitions cd
+        WHERE cd.key = r.connector_key
+          AND cd.organization_id = r.organization_id
+          AND cd.status = 'active'
+          AND (r.connector_version IS NULL OR cd.version = r.connector_version)
+        ORDER BY cd.updated_at DESC, cd.id DESC
+        LIMIT 1
+      ) cd ON TRUE
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
       LEFT JOIN automations w ON w.id = r.automation_id
       LEFT JOIN automation_versions wv
@@ -940,9 +959,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connector_version_row_id: number | null;
     compiled_code: string | null;
     compile_config_hash: string | null;
+    connector_manifest_hash: string | null;
+    artifact_source_path: string | null;
+    artifact_has_source_code: boolean;
     connector_manifest_backed: boolean;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
+    connector_name: string | null;
+    connector_description: string | null;
+    connector_favicon_domain: string | null;
+    connector_auth_schema: unknown;
+    connector_feeds_schema: unknown;
+    connector_actions_schema: unknown;
+    connector_options_schema: unknown;
     run_created_at: string | Date | null;
     // Automation run fields (populated via LEFT JOINs)
     automation_id: number | null;
@@ -960,6 +989,58 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
   };
+
+  const selectedExecution =
+    row.connector_key && row.connector_version
+      ? classifySelectedConnectorExecution({
+          artifact: {
+            sourcePath: row.artifact_source_path,
+            manifestHash: row.connector_manifest_hash,
+            compiledCode: row.compiled_code,
+            compileConfigHash: row.compile_config_hash,
+            hasSourceCode: row.artifact_has_source_code,
+          },
+          definition:
+            row.connector_name && row.connector_runtime
+              ? {
+                  key: row.connector_key,
+                  version: row.connector_version,
+                  name: row.connector_name,
+                  description: row.connector_description,
+                  faviconDomain: row.connector_favicon_domain,
+                  requiredCapability: row.connector_required_capability,
+                  runtime: row.connector_runtime,
+                  authSchema: row.connector_auth_schema,
+                  feeds: row.connector_feeds_schema,
+                  actions: row.connector_actions_schema,
+                  optionsSchema: row.connector_options_schema,
+                }
+              : null,
+          connectorKey: row.connector_key,
+          connectorVersion: row.connector_version,
+          authorizations: manifestClaimAuthorizations,
+          expectedPlatform: effectivePlatform,
+        })
+      : { manifestBacked: false };
+  if (selectedExecution.inconsistency) {
+    const message = selectedExecution.inconsistency;
+    await failClaimedWorkerRun({
+      runId: row.run_id,
+      workerId: worker_id,
+      errorMessage: message,
+    });
+    logger.error(
+      { run_id: row.run_id, connector_key: row.connector_key, connector_version: row.connector_version },
+      '[poll] rejected inconsistent native bridge artifact'
+    );
+    return c.json({
+      next_poll_seconds: 1,
+      skipped_run_id: row.run_id,
+      error: message,
+      ...pollMetadata,
+    });
+  }
+  const isNativeBridgeRun = selectedExecution.backend === 'native_bridge';
 
   // Automation run: device worker is going to spawn a local CLI executor and
   // return the result via /api/workers/me/runs/:runId/complete-automation. No
@@ -1254,7 +1335,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const deviceWillExecuteNativeConnector =
     isUserScopedWorker &&
     !hasStoredCompiledCode &&
-    (row.connector_manifest_backed ||
+    (isNativeBridgeRun ||
+      row.connector_manifest_backed ||
       (row.connector_required_capability != null &&
         authorizedCapabilities.includes(row.connector_required_capability)));
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
@@ -1295,7 +1377,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth =
-    !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
+    !isNativeBridgeRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
   // `user_data_dir` and `cdp_url` for device-bound browser profiles flow to
   // the worker via `sessionState.user_data_dir` / `sessionState.cdp_url`
   // (set inside resolveExecutionAuth). No need to thread them as separate
@@ -1341,7 +1423,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
   // The worker provisions these on PATH via nix-shell before executing.
   const nixPackages = (
-    row.connector_manifest_backed ? [] : (row.connector_runtime?.nix?.packages ?? [])
+    isNativeBridgeRun || row.connector_manifest_backed
+      ? []
+      : (row.connector_runtime?.nix?.packages ?? [])
   ).filter(
     (p): p is string => typeof p === 'string'
   );
@@ -1352,6 +1436,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key,
     connector_version: row.connector_version ?? undefined,
+    ...(isNativeBridgeRun
+      ? {
+          execution_backend: 'native_bridge' as const,
+          connector_manifest_hash: selectedExecution.manifestHash,
+        }
+      : {}),
     nix_packages: nixPackages.length > 0 ? nixPackages : undefined,
     feed_key: row.feed_key ?? undefined,
     feed_id: row.feed_id ?? undefined,

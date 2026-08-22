@@ -94,15 +94,58 @@ describe('Mac device daemon options', () => {
     expect(shouldHandleWorkerPollLoopStdinEof({ stdinEof: true })).toBe(true);
   });
 
-  test('aborts Automation execution before stopping the poll loop', () => {
+  test('aborts Automation execution before stopping the poll loop', async () => {
     const events: string[] = [];
     const controller = new AbortController();
     controller.signal.addEventListener('abort', () => events.push('abort'));
     const loop = { stop: () => events.push('stop') } as never;
 
-    createMacDeviceDaemonShutdown(controller, loop)();
+    await createMacDeviceDaemonShutdown(controller, loop)();
 
-    expect(events).toEqual(['abort', 'stop']);
+    expect(events).toEqual(['stop', 'abort']);
+  });
+
+  test('awaits native bridge cancellation, terminal reporting, and shutdown in order', async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const loop = {
+      stop: () => events.push('stop'),
+      waitForActiveJobs: async () => {
+        events.push('wait');
+        return true;
+      },
+    } as unknown as WorkerPollLoop;
+    const bridge = {
+      cancelActiveRuns: async () => events.push('cancel'),
+      shutdown: async () => events.push('shutdown'),
+      close: () => events.push('close'),
+    } as never;
+
+    await createMacDeviceDaemonShutdown(controller, loop, bridge)();
+
+    expect(events).toEqual(['stop', 'cancel', 'shutdown', 'close']);
+  });
+
+  test('bounds native cancellation and shutdown without a duplicate active-job wait', async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const loop = {
+      stop: () => events.push('stop'),
+      waitForActiveJobs: async () => {
+        events.push('wait');
+        return true;
+      },
+    } as unknown as WorkerPollLoop;
+    const bridge = {
+      cancelActiveRuns: () => new Promise<void>(() => undefined),
+      shutdown: async () => events.push('shutdown'),
+      close: () => events.push('close'),
+    } as never;
+
+    await expect(createMacDeviceDaemonShutdown(controller, loop, bridge, 1)()).rejects.toThrow(
+      'timed out',
+    );
+    expect(events).toEqual(['stop', 'shutdown', 'close']);
   });
 });
 
@@ -183,6 +226,34 @@ describe('WorkerPollLoop', () => {
     release();
     expect(await loop.waitForActiveJobs(1000, 1)).toBe(true);
     await started;
+  });
+
+  test('drains a poll result claimed while shutdown begins', async () => {
+    let releasePoll!: (job: unknown) => void;
+    let executions = 0;
+    const pollResult = new Promise((resolve) => {
+      releasePoll = resolve;
+    });
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => pollResult,
+    } as never;
+    const loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 1,
+      execute: async () => {
+        executions++;
+      },
+    });
+
+    const started = loop.start();
+    await Bun.sleep(5);
+    loop.stop();
+    releasePoll({ run_id: 2, run_type: 'action' });
+    await started;
+
+    expect(await loop.waitForActiveJobs(1000, 1)).toBe(true);
+    expect(executions).toBe(1);
   });
 
   test('releases the active-job slot when execution throws synchronously', async () => {

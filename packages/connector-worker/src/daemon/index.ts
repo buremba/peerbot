@@ -9,9 +9,17 @@ export type {
   ContentItem,
   PollResponse,
   StreamBatch,
+  WorkerAdvertisementProvider,
+  WorkerAdvertisementSnapshot,
   WorkerCapabilities,
 } from './client.js';
-export { WorkerClient } from './client.js';
+export { MutableWorkerAdvertisementProvider, WorkerClient } from './client.js';
+export {
+  NATIVE_BRIDGE_PROTOCOL,
+  NATIVE_BRIDGE_PROTOCOL_VERSION,
+  NativeBridgeProtocolError,
+} from './native-bridge/protocol.js';
+export { NativeBridgeClient } from './native-bridge/client.js';
 export type { ExecutorConfig } from './executor.js';
 export { executeRun } from './executor.js';
 export type { DaemonConfig } from './worker.js';

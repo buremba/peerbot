@@ -67,6 +67,7 @@ export function connectorClaimLaneSql(
       WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
         AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
         AND auth_item->>'manifestHash' = ${refs.runManifestHash}
+        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
     )
   `;
   const legacyHashlessManifestAuthorization = sql`
@@ -75,6 +76,15 @@ export function connectorClaimLaneSql(
     AND ${refs.runRequiredCapability} IS NOT NULL
     AND ${refs.runRequiredCapability} = ANY(
       ${pgTextArray(context.authorizedCapabilities)}::text[]
+    )
+    -- A legacy capability poll may retain the pre-bridge metadata-only
+    -- contract, but it must never authorize a bridge execution. A
+    -- hash-attested historical artifact has no active definition runtime, so
+    -- it still requires the exact retained manifest authorization above.
+    AND COALESCE(${refs.runRuntime}->>'execution', '') <> 'bridge'
+    AND (
+      NOT COALESCE(${refs.runManifestBacked}, false)
+      OR ${refs.runRuntime} IS NOT NULL
     )
     AND ${context.workerPlatform ?? ''}::text <> 'chrome-extension'
     AND COALESCE(

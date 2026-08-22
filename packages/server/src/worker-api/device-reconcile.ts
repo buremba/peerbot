@@ -273,6 +273,8 @@ async function ensureDeviceConnectorWired(
       connectorKey: currentSource.key,
       connectorVersion: currentSource.metadata.version,
       manifestHash: currentSource.manifestHash,
+      sourcePath: currentSource.sourcePath,
+      runtimeExecution: currentSource.metadata.runtime?.execution,
     };
   };
   const selectedArtifactMatches = async (
@@ -1128,15 +1130,17 @@ export async function reconcileDeviceCapabilities(
       .filter((source) => source.advertiserDeviceIds.includes(pollingDeviceId))
       .map((source) => source.key)
   );
-  if (
-    [...currentWinnerKeysForPoller].some(
+  const failedCurrentWinnerKeys = new Set(
+    [...currentWinnerKeysForPoller].filter(
       (key) => !reconciledAuthorizations.some((authorization) => authorization.connectorKey === key)
     )
-  ) {
-    return [];
-  }
-
-  const all = [...reconciledAuthorizations, ...pollingDeviceAuthorizations];
+  );
+  const all = [
+    ...reconciledAuthorizations,
+    ...pollingDeviceAuthorizations.filter(
+      (authorization) => !failedCurrentWinnerKeys.has(authorization.connectorKey)
+    ),
+  ];
   return [...new Map(
     all.map((authorization) => [
       `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,

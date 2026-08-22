@@ -98,6 +98,9 @@ export const OAuthCredentialsSchema = Type.Object({
 
 // ── poll ────────────────────────────────────────────────────────────────────
 
+/** Server-selected execution path for an exact pinned connector artifact. */
+export const ExecutionBackendSchema = Type.Literal("native_bridge");
+
 /** `POST /api/workers/poll` request body. */
 export const PollRequestSchema = Type.Object({
   worker_id: Type.String(),
@@ -231,6 +234,9 @@ export const PollResponseSchema = Type.Object({
   ),
   connector_key: Type.Optional(Type.String()),
   feed_key: Type.Optional(Type.String()),
+  connector_manifest_hash: Type.Optional(Type.String({ minLength: 1 })),
+  /** Server-selected execution path for the exact pinned connector artifact. */
+  execution_backend: Type.Optional(ExecutionBackendSchema),
   config: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   db_egress_policy: Type.Optional(
     Type.Union([Type.Literal("block-private"), Type.Literal("allow-private")])
@@ -255,6 +261,8 @@ export const PollResponseSchema = Type.Object({
   session_state: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   connector_version: Type.Optional(Type.String()),
   action_key: Type.Optional(Type.String()),
+  /** Native device operation key; public connector operations use action_key. */
+  operation_key: Type.Optional(Type.String()),
   action_input: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   entity: Type.Optional(
     Type.Object({
@@ -501,6 +509,7 @@ export const DispatchChromeActionResponseSchema = Type.Object({
 export type RunType = Static<typeof RunTypeSchema>;
 export type WorkerExitReason = Static<typeof WorkerExitReasonSchema>;
 export type WorkerExitDiagnostics = Static<typeof WorkerExitDiagnosticsSchema>;
+export type ExecutionBackend = Static<typeof ExecutionBackendSchema>;
 export type OAuthCredentials = Static<typeof OAuthCredentialsSchema>;
 export type PollRequest = Static<typeof PollRequestSchema>;
 export type PollResponse = Static<typeof PollResponseSchema>;

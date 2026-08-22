@@ -1,0 +1,155 @@
+import { deviceManifestHash, type DeviceConnectorManifest } from '@lobu/connector-sdk';
+import { describe, expect, test } from 'vitest';
+import {
+  classifySelectedConnectorExecution,
+  type SelectedConnectorDefinition,
+} from '../connector-execution-backend';
+
+const manifest: DeviceConnectorManifest = {
+  key: 'apple.files',
+  version: '1.0.0',
+  name: 'Apple Files',
+  required_capability: 'os.files',
+  runtime: { platforms: ['macos'], execution: 'bridge' },
+  auth_schema: { methods: [{ type: 'none' }] },
+  feeds_schema: { files: { key: 'files' } },
+  actions_schema: { open: { key: 'open' } },
+};
+
+const definition: SelectedConnectorDefinition = {
+  key: manifest.key,
+  version: manifest.version,
+  name: manifest.name,
+  requiredCapability: manifest.required_capability,
+  runtime: manifest.runtime,
+  authSchema: manifest.auth_schema,
+  feeds: manifest.feeds_schema,
+  actions: manifest.actions_schema,
+  optionsSchema: manifest.options_schema,
+};
+
+const hash = deviceManifestHash(manifest);
+const sourcePath = `device-manifest://macos/${manifest.key}@${manifest.version}`;
+
+function classify(overrides: Record<string, unknown> = {}) {
+  return classifySelectedConnectorExecution({
+    artifact: {
+      sourcePath,
+      manifestHash: hash,
+      compiledCode: null,
+      compileConfigHash: null,
+      hasSourceCode: false,
+    },
+    definition,
+    connectorKey: manifest.key,
+    connectorVersion: manifest.version,
+    authorizations: [{
+      connectorKey: manifest.key,
+      connectorVersion: manifest.version,
+      manifestHash: hash,
+      sourcePath,
+      runtimeExecution: 'bridge',
+    }],
+    expectedPlatform: 'macos',
+    ...overrides,
+  });
+}
+
+describe('selected connector execution backend', () => {
+  test('marks the exact canonical bridge artifact', () => {
+    expect(classify()).toEqual({
+      manifestBacked: true,
+      backend: 'native_bridge',
+      manifestHash: hash,
+    });
+  });
+
+  test('accepts a historical pinned version from durable manifest authorization', () => {
+    expect(classify({ definition: null })).toMatchObject({
+      manifestBacked: true,
+      backend: 'native_bridge',
+      manifestHash: hash,
+    });
+  });
+
+  test('rejects org compiled precedence and forged provenance', () => {
+    expect(classify({
+      artifact: {
+        sourcePath,
+        manifestHash: hash,
+        compiledCode: 'compiled override',
+        compileConfigHash: null,
+        hasSourceCode: false,
+      },
+    }).inconsistency).toContain('non-manifest');
+    expect(classify({
+      artifact: { sourcePath: sourcePath.replace('apple.files', 'forged'), manifestHash: hash, compiledCode: null, compileConfigHash: null, hasSourceCode: false },
+    }).backend).toBeUndefined();
+  });
+
+  test('does not infer bridge execution from a connector key alone', () => {
+    expect(classify({
+      artifact: {
+        sourcePath: 'connectors/apple-files.ts',
+        manifestHash: null,
+        compiledCode: 'compiled connector',
+        compileConfigHash: null,
+        hasSourceCode: false,
+      },
+      definition: { ...definition, runtime: { platforms: ['macos'] } },
+      authorizations: [],
+    })).toEqual({ manifestBacked: false });
+  });
+
+  test('active exact non-bridge definition wins over retained bridge authorization', () => {
+    expect(classify({
+      definition: { ...definition, runtime: { platforms: ['macos'], execution: 'compiled' } },
+    })).toEqual({ manifestBacked: true, inconsistency: 'active exact definition is not bridge execution' });
+  });
+
+  test('rejects a bridge artifact that is not authorized by the claiming device', () => {
+    expect(classify({ authorizations: [] }).inconsistency).toContain('not authorized');
+    expect(classify({ authorizations: [] }).backend).toBeUndefined();
+  });
+
+  test('rejects a canonical definition whose hash differs from the artifact', () => {
+    expect(classify({ definition: { ...definition, name: 'Tampered Name' } }).inconsistency).toContain(
+      'canonical definition',
+    );
+    expect(classify({ definition: { ...definition, name: 'Tampered Name' } }).backend).toBeUndefined();
+  });
+
+  test('rejects a manifest artifact from another platform', () => {
+    expect(classify({ expectedPlatform: 'chrome-extension' }).inconsistency).toContain(
+      'does not match worker platform',
+    );
+    expect(classify({ expectedPlatform: 'chrome-extension' }).backend).toBeUndefined();
+  });
+
+  test('accepts a reconciled bridge definition whose wire manifest omitted auth_schema', () => {
+    const omittedAuthManifest = { ...manifest, auth_schema: undefined };
+    const omittedAuthHash = deviceManifestHash(omittedAuthManifest);
+    const omittedSourcePath = `device-manifest://macos/${manifest.key}@${manifest.version}`;
+    expect(classify({
+      artifact: {
+        sourcePath: omittedSourcePath,
+        manifestHash: omittedAuthHash,
+        compiledCode: null,
+        compileConfigHash: null,
+        hasSourceCode: false,
+      },
+      definition,
+      authorizations: [{
+        connectorKey: manifest.key,
+        connectorVersion: manifest.version,
+        manifestHash: omittedAuthHash,
+        sourcePath: omittedSourcePath,
+        runtimeExecution: 'bridge',
+      }],
+    })).toEqual({
+      manifestBacked: true,
+      backend: 'native_bridge',
+      manifestHash: omittedAuthHash,
+    });
+  });
+});

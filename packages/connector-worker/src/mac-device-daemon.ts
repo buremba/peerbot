@@ -17,8 +17,9 @@ function printHelp(): void {
 Usage:
   lobu-device-daemon [options]
 
-Runs the lean macOS device daemon. It advertises no native connector
-capabilities and executes only device Automations through local agent CLIs.
+Runs the lean macOS device daemon. In supervised mode, Owletto supplies the
+native connector capabilities/manifests over framed stdio; the daemon executes
+only those authorized bridge runs and local device Automations.
 
 Options:
   --api-url <url>             Worker API origin (or API_URL)

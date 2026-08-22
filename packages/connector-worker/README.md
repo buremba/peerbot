@@ -11,8 +11,10 @@ connector-worker daemon --api-url https://api.example.com
 The lean macOS device artifact is built on an arm64 Mac with
 `bun run build:mac-device-daemon`. It is a standalone `lobu-device-daemon`
 Mach-O; `--no-poll` validates the packaged executable without server access.
-The artifact advertises no native connector capabilities and only runs the
-canonical device Automation arm.
+The artifact advertises its supervised native connector capabilities and runs
+the canonical device Automation arm. Native bridge runs are framed over the
+bounded little-endian stdio protocol; Automation runs remain on the daemon's
+separate local execution arm.
 
 ## Development
 

@@ -39,6 +39,10 @@ export interface ManifestClaimAuthorization {
   connectorKey: string;
   connectorVersion: string;
   manifestHash: string;
+  /** Exact artifact provenance; present for manifest-backed claims. */
+  sourcePath?: string;
+  /** Canonical runtime marker from the validated manifest. */
+  runtimeExecution?: DeviceConnectorManifest['runtime']['execution'];
 }
 
 export interface DeviceManifestClaimAuthorization extends ManifestClaimAuthorization {
@@ -302,6 +306,7 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
       connectorVersion: validated.manifest.version,
       manifestHash: validated.manifest_hash,
       sourcePath: `device-manifest://${row.platform}/${validated.manifest.key}@${validated.manifest.version}`,
+      runtimeExecution: validated.manifest.runtime.execution,
     };
     authorizations.set(
       `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,

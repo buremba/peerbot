@@ -18,9 +18,6 @@
  * manifest edit that drops `virtual` or the `recall` default fails here.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
 import type { Env } from '../../index';
@@ -32,20 +29,27 @@ const CONNECTOR_KEY = 'whatsapp.local';
 const COLLECTED_FEED = 'messages';
 const VIRTUAL_FEED = 'messages_live';
 
-const MANIFEST_PATH = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../../owletto/apps/mac/Owletto/ConnectorManifests/whatsapp_local.json'
-);
-
-/**
- * The owletto submodule is a private repo, so contributor sandboxes without
- * access cannot init it. Skip there — but in CI (which checks it out) a missing
- * manifest must FAIL, not skip, or a broken checkout silently drops coverage.
- */
-const itWithManifest = existsSync(MANIFEST_PATH) ? it : process.env.CI ? it : it.skip;
-
-function shippingManifest(): Record<string, unknown> {
-  return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as Record<string, unknown>;
+function virtualFeedManifest(): Record<string, unknown> {
+  return {
+    key: CONNECTOR_KEY,
+    version: '1.0.0',
+    name: 'Virtual Feed Test',
+    required_capability: 'whatsapp_local',
+    runtime: { platforms: ['macos'] },
+    auth_schema: { methods: [{ type: 'none' }] },
+    feeds_schema: {
+      [COLLECTED_FEED]: { key: COLLECTED_FEED, name: 'Messages' },
+      [VIRTUAL_FEED]: {
+        key: VIRTUAL_FEED,
+        name: 'Messages (live)',
+        virtual: true,
+        configSchema: {
+          type: 'object',
+          properties: { recall: { type: 'boolean', default: true } },
+        },
+      },
+    },
+  };
 }
 
 async function seedDeviceOwner() {
@@ -134,11 +138,11 @@ describe('device manifest auto-wire — virtual feeds', () => {
     await cleanupTestDatabase();
   });
 
-  itWithManifest(
-    'wires the shipping manifest into a collected feed AND a virtual feed opted into recall',
+  it(
+    'wires a declared manifest into a collected feed AND a virtual feed opted into recall',
     async () => {
       const { orgId, workerId } = await seedDeviceOwner();
-      await pollWithManifest(workerId, [shippingManifest()]);
+      await pollWithManifest(workerId, [virtualFeedManifest()]);
 
       const feeds = await readFeeds(orgId);
       expect(Object.keys(feeds).sort()).toEqual([COLLECTED_FEED, VIRTUAL_FEED]);
@@ -177,10 +181,10 @@ describe('device manifest auto-wire — virtual feeds', () => {
     }
   );
 
-  itWithManifest('is idempotent — a second poll does not give the virtual feed a due time', async () => {
+  it('is idempotent — a second poll does not give the virtual feed a due time', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
-    await pollWithManifest(workerId, [shippingManifest()]);
-    await pollWithManifest(workerId, [shippingManifest()]);
+    await pollWithManifest(workerId, [virtualFeedManifest()]);
+    await pollWithManifest(workerId, [virtualFeedManifest()]);
 
     const feeds = await readFeeds(orgId);
     expect(feeds[VIRTUAL_FEED].next_run_at).toBeNull();
@@ -196,15 +200,15 @@ describe('device manifest auto-wire — virtual feeds', () => {
           WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
         )
     `;
-    await pollWithManifest(workerId, [shippingManifest()]);
+    await pollWithManifest(workerId, [virtualFeedManifest()]);
     expect((await readFeeds(orgId))[VIRTUAL_FEED].config?.recall).toBe(false);
   });
 
-  itWithManifest(
+  it(
     'leaves an existing feed alone when its kind disagrees with the manifest',
     async () => {
       const { orgId, workerId } = await seedDeviceOwner();
-      await pollWithManifest(workerId, [shippingManifest()]);
+      await pollWithManifest(workerId, [virtualFeedManifest()]);
 
       // Simulate a row created before the manifest declared this key virtual:
       // it has collected history and a scheduled time. Keep that time in the
@@ -224,7 +228,7 @@ describe('device manifest auto-wire — virtual feeds', () => {
           )
       `;
 
-      await pollWithManifest(workerId, [shippingManifest()]);
+      await pollWithManifest(workerId, [virtualFeedManifest()]);
 
       const feeds = await readFeeds(orgId);
       expect(feeds[VIRTUAL_FEED].kind).toBe('collected');

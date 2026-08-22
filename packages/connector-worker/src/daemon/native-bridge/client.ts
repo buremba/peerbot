@@ -154,7 +154,7 @@ export class NativeBridgeClient {
       request_id: requestId,
       run_id: runId,
       payload: { reason: 'daemon_shutdown' },
-    }, `${requestId}:${runId}`);
+    }, { requestId, runKey: requestId + ':' + runId });
   }
 
   async cancelActiveRuns(): Promise<void> {

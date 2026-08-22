@@ -826,16 +826,15 @@ function formatGetAutomationResult(result: any, _options: FormatterOptions): str
 }
 
 /**
- * Tell the run which periods were skipped to bring this Automation current.
+ * Explain a gap created by an explicitly requested later range.
  *
  * Silent unless something actually was skipped, which never happens on a healthy
  * run — `window_lag.guidance` is absent whenever `periods_skipped` is zero, so
  * the threshold lives in `describeWindowLag` and there is none to tune here.
  *
- * The catching-up itself is not this notice's job: `nextAutomationWindowStart`
- * floors the dispatched window at one period, so the gap closes whether or not
- * the run reads a word of this. What is left is the one decision that is the
- * run's — whether the skipped span is worth reading back.
+ * Normal Automation dispatch is sequential and never emits this notice. What is
+ * left is the caller's decision about whether an explicitly omitted span is
+ * worth reading back.
  */
 function formatWindowLag(lag: any): string {
   // The prose is `describeWindowLag`'s string, the SAME one the JSON payload

@@ -198,6 +198,7 @@ export type UnprocessedRange = Static<typeof UnprocessedRangeSchema>;
 
 export const PendingAnalysisSchema = Type.Object({
   unprocessed_count: Type.Integer(),
+  unprocessed_content_count: Type.Optional(Type.Integer()),
   next_window: Type.Union([
     Type.Object({
       start: Type.String(),

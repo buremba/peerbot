@@ -506,6 +506,10 @@ export const ManageAutomationsSchema = Type.Object(
         Type.Literal("complete_window", {
           description: "Submit an Automation window result.",
         }),
+        Type.Literal("claim_next_window", {
+          description:
+            "Atomically claim the oldest completed Automation period and return bounded source context plus a fenced window token.",
+        }),
         Type.Literal("trigger", {
           description: "Manually fire an Automation run.",
         }),
@@ -539,6 +543,26 @@ export const ManageAutomationsSchema = Type.Object(
         }),
       ],
       { description: "Action to perform" }
+    ),
+    lease_seconds: Type.Optional(
+      Type.Integer({
+        minimum: 30,
+        maximum: 3600,
+        description:
+          "[claim_next_window] Lease duration in seconds (default 900).",
+      })
+    ),
+    before_occurred_at: Type.Optional(
+      Type.String({
+        description:
+          "[claim_next_window continuation] Cursor timestamp from context.page.next_cursor.",
+      })
+    ),
+    before_id: Type.Optional(
+      Type.Integer({
+        description:
+          "[claim_next_window continuation] Cursor id from context.page.next_cursor.",
+      })
     ),
 
     // Automation identity (the persisted DB column is automation_id)
@@ -688,7 +712,7 @@ export const ManageAutomationsSchema = Type.Object(
         ],
         {
           description:
-            "[list] Filter by each Automation's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Automations with unhandled runs — manual-open pending runs are completable by any client via complete_window.",
+            "[list] Filter by each Automation's latest run status (active runs take precedence). External processors should use claim_next_window to atomically lease expected work.",
         }
       )
     ),
@@ -771,13 +795,13 @@ export const ManageAutomationsSchema = Type.Object(
     window_token: Type.Optional(
       Type.String({
         description:
-          "[complete_window] JWT from read_knowledge(automation_id, since, until). Pass this or window_tokens.",
+          "[complete_window] Signed JWT from claim_next_window or an internal Automation knowledge read. Pass this or window_tokens.",
       })
     ),
     window_tokens: Type.Optional(
       Type.Array(Type.String(), {
         description:
-          "[complete_window] Multiple page JWTs from read_knowledge for the same Automation window. Content IDs are unioned and linked atomically.",
+          "[complete_window] Every signed page token for the same Automation window. Content IDs are unioned and linked atomically; incomplete page chains are rejected.",
       })
     ),
     client_id: Type.Optional(
@@ -1031,6 +1055,13 @@ export const ManageAutomationsResultSchema = Type.Union([
     window_start: Type.String(),
     window_end: Type.String(),
     content_linked: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal("claim_next_window"),
+    automation_id: Type.String(),
+    run_id: Type.Integer(),
+    lease_expires_at: Type.String(),
+    context: Type.Record(Type.String(), Type.Unknown()),
   }),
   Type.Object({
     action: Type.Literal("trigger"),

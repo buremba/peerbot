@@ -8,6 +8,7 @@
  * - update: Modify config (model, schedule, sources)
  * - create_version: Create a new version for an automation (prompt/schema/sources)
  * - create_from_version: Create a new automation from an existing version
+ * - claim_next_window: Atomically lease expected work and return bounded context
  * - complete_window: Complete a window using window_token from read_knowledge
  * - trigger: Manually trigger an automation run
  * - delete: Remove automation
@@ -70,6 +71,7 @@ import {
   handleGetVersionDetails,
 } from './manage_automations/version-actions';
 import { handleCompleteWindow } from './manage_automations/complete-window';
+import { handleClaimNextWindow } from './manage_automations/claim-next-window';
 import { handleTrigger, handleSetReactionScript } from './manage_automations/trigger';
 import {
   handleSubmitFeedback,
@@ -146,6 +148,8 @@ async function manageAutomationsImpl(
   } else if (args.action === 'update' && args.automation_id) {
     await requireAutomationAccess(pgSql, [args.automation_id], ctx, 'write');
   } else if (args.action === 'trigger' && args.automation_id) {
+    await requireAutomationAccess(pgSql, [args.automation_id], ctx, 'write');
+  } else if (args.action === 'claim_next_window' && args.automation_id) {
     await requireAutomationAccess(pgSql, [args.automation_id], ctx, 'write');
   } else if (args.action === 'delete' && args.automation_ids && args.automation_ids.length > 0) {
     // delete alone allows missing ids to fall through to its per-id aggregate
@@ -340,7 +344,7 @@ function automationWriteAction(
     case 'delete':
       return 'delete';
     default:
-      // list/get/trigger/complete_window/feedback etc. aren't definition writes.
+      // list/get/trigger/claim/complete/feedback etc. aren't definition writes.
       return null;
   }
 }
@@ -1028,6 +1032,7 @@ const runManageAutomations = defineFlatActionTool<ManageAutomationsArgs, ManageA
     update: flatAction((args, ctx, env) => handleUpdate(args, env, ctx)),
     create_version: flatAction((args, ctx, env) => handleCreateVersion(args, env, ctx)),
     complete_window: flatAction((args, ctx, env) => handleCompleteWindow(args, env, ctx)),
+    claim_next_window: flatAction((args, ctx, env) => handleClaimNextWindow(args, env, ctx)),
     trigger: flatAction((args, _ctx, env) => handleTrigger(args, env)),
     delete: flatAction((args, ctx) => handleDelete(args, ctx)),
     set_reaction_script: flatAction((args, ctx, env) => handleSetReactionScript(args, env, ctx)),

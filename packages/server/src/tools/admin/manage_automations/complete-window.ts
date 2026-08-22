@@ -7,6 +7,7 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
+import type { AutomationTimeGranularity } from '@lobu/connector-sdk';
 import {
   enqueueWorkspaceEventActivations,
   findSubscribedWorkspaceEventTypes,
@@ -44,7 +45,10 @@ import { normalizeExtractedData, parseJson, requireAutomationAccess } from './sh
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
 import { AUTOMATION_EVAL_RUN_TYPE, AUTOMATION_RUN_TYPE } from "../../../runs/run-types.js";
-import { automationOutputOccurredAt } from '../../../utils/window-utils';
+import {
+  advanceExpectedAutomationWindow,
+  automationOutputOccurredAt,
+} from '../../../utils/window-utils';
 
 /** Cap on the content ids echoed into `dry_run_preview` — the preview exists to
  *  be read, and an unbounded id list on a wide window is neither useful nor
@@ -70,6 +74,64 @@ export function reactionErrorIsNonTransient(error: string | undefined): boolean 
       error
     )
   );
+}
+
+function assertCompleteWindowPageChain(
+  tokens: Array<{
+    page_before_occurred_at?: string;
+    page_before_id?: number;
+    page_next_occurred_at?: string;
+    page_next_id?: number;
+    page_has_more?: boolean;
+    truncated_source_names?: string[];
+  }>
+): void {
+  const truncated = [
+    ...new Set(tokens.flatMap((token) => token.truncated_source_names ?? [])),
+  ];
+  if (truncated.length > 0) {
+    throw new ToolUserError(
+      `Automation sources ${truncated.join(', ')} exceed the bounded page and cannot be completed safely. ` +
+        'Narrow those source queries or the Automation granularity, then retry the claim.',
+      409
+    );
+  }
+  const paged = tokens.filter((token) => token.page_has_more !== undefined);
+  if (paged.length === 0) return;
+  const roots = paged.filter(
+    (token) => token.page_before_occurred_at == null && token.page_before_id == null
+  );
+  if (roots.length !== 1) {
+    throw new ToolUserError('window_tokens must contain exactly one first source page.', 409);
+  }
+  const visited = new Set<(typeof paged)[number]>();
+  let current = roots[0];
+  while (true) {
+    if (visited.has(current)) {
+      throw new ToolUserError('window_tokens contain a cyclic page chain.', 409);
+    }
+    visited.add(current);
+    if (!current.page_has_more) break;
+    if (!current.page_next_occurred_at || current.page_next_id == null) {
+      throw new ToolUserError('A truncated Automation source page has no continuation cursor.', 409);
+    }
+    const next = paged.find(
+      (token) =>
+        token.page_before_occurred_at === current.page_next_occurred_at &&
+        token.page_before_id === current.page_next_id
+    );
+    if (!next) {
+      throw new ToolUserError(
+        'More Automation source pages remain. Call automations.claimNextWindow with the same run_id ' +
+          'and context.page.next_cursor, then pass every returned window_token to completeWindow.',
+        409
+      );
+    }
+    current = next;
+  }
+  if (visited.size !== paged.length) {
+    throw new ToolUserError('window_tokens contain disconnected or duplicate source pages.', 409);
+  }
 }
 
 // Initialize AJV for JSON Schema validation
@@ -153,7 +215,7 @@ export async function handleCompleteWindow(
   if (windowTokens.length === 0) {
     throw new ToolUserError(
       'window_token or window_tokens is required for complete_window action. ' +
-        'Get tokens from read_knowledge({ automation_id: ... }) responses.',
+        'Use the tokens returned by automations.claimNextWindow or the internal Automation read.',
       400
     );
   }
@@ -182,14 +244,21 @@ export async function handleCompleteWindow(
     // Agent-recoverable validation (the message says how) — ToolUserError so
     // it returns 400 and stays out of the Sentry feed (was LOBU-BACKEND-D).
     throw new ToolUserError(
-      `Invalid window_token: ${errorMsg}. ` +
+        `Invalid window_token: ${errorMsg}. ` +
         'The token may have expired or been tampered with. ' +
-        'Get a fresh token from read_knowledge({ automation_id: ... }).'
+        'Claim the expected window again after its lease becomes available.'
     );
   }
 
   const firstToken = tokenPayloads[0];
   const { automation_id: automationId, window_start, window_end, granularity } = firstToken;
+  const claimToken = tokenPayloads.find((token) => token.run_id != null);
+  if (claimToken?.run_id !== undefined && claimToken.run_id !== runId) {
+    throw new ToolUserError(
+      `window_token is fenced to Automation run ${claimToken.run_id}, not ${runId}.`,
+      409
+    );
+  }
 
   for (const token of tokenPayloads) {
     if (
@@ -201,6 +270,19 @@ export async function handleCompleteWindow(
       throw new ToolUserError('All window_tokens must belong to the same Automation window.', 400);
     }
   }
+  for (const token of tokenPayloads) {
+    if (token.run_id != null && token.run_id !== runId) {
+      throw new ToolUserError('window_tokens are fenced to different run attempts.', 409);
+    }
+    if (
+      token.lease_expires_at != null &&
+      claimToken?.lease_expires_at != null &&
+      token.lease_expires_at !== claimToken.lease_expires_at
+    ) {
+      throw new ToolUserError('window_tokens are fenced to different leases.', 409);
+    }
+  }
+  assertCompleteWindowPageChain(tokenPayloads);
 
   const pgSql = createDbClientFromEnv(env);
   await requireAutomationAccess(pgSql, [String(automationId)], ctx, 'write');
@@ -250,26 +332,6 @@ export async function handleCompleteWindow(
     );
   }
 
-  // Manual-open runs (no agent, no device pin) pend for any connected MCP
-  // client — there is no claim step, so the completing client transitions the
-  // run pending->running here. Claimed only after the period check above, so a
-  // client submitting a stale token leaves the run pending and retryable rather
-  // than stranding it 'running' until the stale sweeper times it out.
-  // Best-effort and race-safe: concurrent completers both see an active run,
-  // and the completion transition below is idempotent. Addressed runs (agent
-  // dispatch / device lane) never match this filter, so an external client
-  // cannot hijack a dispatched run.
-  await sql`
-    UPDATE runs
-    SET status = 'running',
-        claimed_at = COALESCE(claimed_at, current_timestamp)
-    WHERE id = ${runId}
-      AND automation_id = ${automationId}
-      AND run_type = ${callerRunType}
-      AND status = 'pending'
-      AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
-      AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
-  `;
   if (snapshotVersionId == null && runRows[0].version_id != null) {
     snapshotVersionId = Number(runRows[0].version_id);
   }
@@ -322,7 +384,7 @@ export async function handleCompleteWindow(
       AND cc.extraction_config IS NOT NULL
   `;
 
-  const timeGranularity = granularity || 'weekly';
+  const timeGranularity = (granularity || 'weekly') as AutomationTimeGranularity;
   const classifiers = classifierRows.map((r) => ({
     id: r.id as number,
     slug: r.slug as string,
@@ -432,13 +494,6 @@ export async function handleCompleteWindow(
   });
 
   const batchContentIds = [...new Set(perTokenIds.flat())];
-  const summedContentCount = perTokenIds.reduce((sum, ids) => sum + ids.length, 0);
-  if (batchContentIds.length !== summedContentCount) {
-    throw new ToolUserError(
-      'window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.',
-      409
-    );
-  }
 
   const oldestTokenIssuedAt = Math.min(...tokenPayloads.map((token) => token.iat));
   const tokenAge = Math.floor(Date.now() / 1000) - oldestTokenIssuedAt;
@@ -526,8 +581,17 @@ export async function handleCompleteWindow(
   // the window commits.
   let deferredApprovals: DeferredMutation[] = [];
   const result = await sql.begin(async (tx) => {
-    const [lockedRun] = await tx`
-      SELECT status
+    const [lockedAutomation] = await tx`
+      SELECT id FROM automations
+      WHERE id = ${automationId} AND organization_id = ${automationOrgId}
+      FOR UPDATE
+    `;
+    if (!lockedAutomation) throw new ToolUserError(`Automation ${automationId} not found.`, 404);
+    const [lockedRun] = await tx<{
+      status: string;
+      expires_at: string | Date | null;
+    }>`
+      SELECT status, expires_at
       FROM runs
       WHERE id = ${runId}
         AND organization_id = ${automationOrgId}
@@ -548,6 +612,15 @@ export async function handleCompleteWindow(
         content_linked: 0,
         completed_now: false,
       };
+    }
+    if (lockedRun.expires_at != null) {
+      const leaseExpiresAt = new Date(lockedRun.expires_at).toISOString();
+      if (!claimToken?.lease_expires_at || claimToken.lease_expires_at !== leaseExpiresAt) {
+        throw new ToolUserError('window_token does not own the current Automation lease.', 409);
+      }
+      if (new Date(lockedRun.expires_at).getTime() <= Date.now()) {
+        throw new ToolUserError('Automation window lease has expired.', 409);
+      }
     }
     if (lockedRun.status !== 'running' && lockedRun.status !== 'claimed') {
       throw new ToolUserError(`Automation run ${runId} is no longer completable.`, 409);
@@ -764,6 +837,12 @@ export async function handleCompleteWindow(
     // replays (no window created, no run transitioned) must not push
     // next_run_at forward, or each retry would shift the schedule.
     if (completedRun.dispatch_source !== 'event') {
+      await advanceExpectedAutomationWindow(
+        tx,
+        automationId,
+        new Date(window_start),
+        timeGranularity
+      );
       await advanceAutomationSchedule(tx, automationId);
     }
 

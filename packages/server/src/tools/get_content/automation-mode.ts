@@ -346,8 +346,8 @@ async function queryContentData(
 /**
  * Cheap-vs-LLM schedule gate: execute the same normalized sources used by
  * read_knowledge and fingerprint their JSON rows. No model is called. The
- * A skipped window is persisted as durable zero-content cursor progress, so
- * subsequent ticks fingerprint the next period instead of retrying stale time.
+ * An unchanged window is persisted as durable zero-content cursor progress, so
+ * subsequent ticks fingerprint the next period instead of retrying the same time.
  */
 export async function fingerprintAutomationSources(args: {
   sql: DbClient;
@@ -412,6 +412,13 @@ export async function handleAutomationMode(
     userId: string | null;
     /** Exclude workspace-identity audit rows for ordinary-member reads. */
     excludeWorkspaceAudit?: boolean;
+    claimedWindow?: {
+      runId: number;
+      windowStart: string;
+      windowEnd: string;
+      leaseExpiresAt?: string;
+    };
+    throwOnSourceError?: boolean;
   }
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
@@ -534,7 +541,11 @@ export async function handleAutomationMode(
 
   // Compute window dates - use since/until if provided, else compute pending window
   let windowStart: Date, windowEnd: Date, windowCursor: Date | null;
-  if (args.since && args.until) {
+  if (context.claimedWindow) {
+    windowStart = new Date(context.claimedWindow.windowStart);
+    windowEnd = new Date(context.claimedWindow.windowEnd);
+    windowCursor = await readWindowCursor(sql, automationId);
+  } else if (args.since && args.until) {
     // An agent-chosen range, aligned to the granularity so an agent-written
     // window is indistinguishable in shape from a server-computed one.
     ({ windowStart, windowEnd } = alignRequestedWindow(
@@ -551,8 +562,8 @@ export async function handleAutomationMode(
     ));
   }
 
-  // How the window being handed out sits against the clock, and which periods
-  // (if any) were skipped to produce it. Measured against the WINDOW, not the
+  // How the window being handed out sits against the clock, and whether an
+  // explicit range omitted periods. Measured against the WINDOW, not the
   // cursor: at the moment a run reads, the cursor is the period the PREVIOUS run
   // completed, so a healthy daily Automation is two periods behind by that measure
   // and one by this one.
@@ -595,6 +606,7 @@ export async function handleAutomationMode(
       ? { [triggerInputSourceName]: triggerContentIds.length }
       : undefined,
     automationId: Number(automation.id),
+    throwOnSourceError: context.throwOnSourceError,
     excludeWorkspaceAudit: context.excludeWorkspaceAudit,
     page: {
       sourceName: 'content',
@@ -620,8 +632,8 @@ export async function handleAutomationMode(
   // Generate signed JWT window token with the exact content IDs returned to
   // the worker. complete_window uses these IDs directly, so window bookkeeping
   // matches what the agent actually saw.
-  // The signed content set is independent of run identity. complete_window
-  // receives the run id separately from the dispatch prompt or Automation list.
+  // Claimed/internal execution tokens also carry the run attempt and optional
+  // external lease fence. Interactive ad-hoc reads remain unbound.
   const windowToken = await generateWindowToken(
     {
       automation_id: automationId,
@@ -630,6 +642,28 @@ export async function handleAutomationMode(
       granularity: timeGranularity,
       content_count: contentIds.length,
       content_ids: contentIds,
+      ...(context.claimedWindow
+        ? {
+            run_id: context.claimedWindow.runId,
+            ...(context.claimedWindow.leaseExpiresAt
+              ? { lease_expires_at: context.claimedWindow.leaseExpiresAt }
+              : {}),
+          }
+        : {}),
+      ...(args.before_occurred_at
+        ? { page_before_occurred_at: new Date(args.before_occurred_at).toISOString() }
+        : {}),
+      ...(args.before_id ? { page_before_id: args.before_id } : {}),
+      ...(contentPage?.next_cursor
+        ? {
+            page_next_occurred_at: contentPage.next_cursor.occurred_at,
+            page_next_id: contentPage.next_cursor.id,
+          }
+        : {}),
+      page_has_more: contentPage?.has_more ?? false,
+      truncated_source_names: Object.entries(sourcesPage)
+        .filter(([sourceName, page]) => sourceName !== 'content' && page.has_more)
+        .map(([sourceName]) => sourceName),
     },
     env
   );

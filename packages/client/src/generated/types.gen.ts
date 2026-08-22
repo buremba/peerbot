@@ -4222,6 +4222,7 @@ export type ManageAutomationsData = {
       | "update"
       | "create_version"
       | "complete_window"
+      | "claim_next_window"
       | "trigger"
       | "delete"
       | "set_reaction_script"
@@ -4232,6 +4233,18 @@ export type ManageAutomationsData = {
       | "get_feedback"
       | "list_promoted"
       | "create_from_version";
+    /**
+     * [claim_next_window] Lease duration in seconds (default 900).
+     */
+    lease_seconds?: number;
+    /**
+     * [claim_next_window continuation] Cursor timestamp from context.page.next_cursor.
+     */
+    before_occurred_at?: string;
+    /**
+     * [claim_next_window continuation] Cursor id from context.page.next_cursor.
+     */
+    before_id?: number;
     /**
      * [list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Automation ID (numeric string)
      */
@@ -4448,7 +4461,7 @@ export type ManageAutomationsData = {
      */
     order_dir?: "asc" | "desc";
     /**
-     * [list] Filter by each Automation's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Automations with unhandled runs — manual-open pending runs are completable by any client via complete_window.
+     * [list] Filter by each Automation's latest run status (active runs take precedence). External processors should use claim_next_window to atomically lease expected work.
      */
     run_status?: "pending" | "claimed" | "running" | "completed" | "failed";
     /**
@@ -4543,11 +4556,11 @@ export type ManageAutomationsData = {
       [key: string]: unknown;
     };
     /**
-     * [complete_window] JWT from read_knowledge(automation_id, since, until). Pass this or window_tokens.
+     * [complete_window] Signed JWT from claim_next_window or an internal Automation knowledge read. Pass this or window_tokens.
      */
     window_token?: string;
     /**
-     * [complete_window] Multiple page JWTs from read_knowledge for the same Automation window. Content IDs are unioned and linked atomically.
+     * [complete_window] Every signed page token for the same Automation window. Content IDs are unioned and linked atomically; incomplete page chains are rejected.
      */
     window_tokens?: Array<string>;
     /**
@@ -4670,6 +4683,15 @@ export type ManageAutomationsResponses = {
         window_start: string;
         window_end: string;
         content_linked: number;
+      }
+    | {
+        action: "claim_next_window";
+        automation_id: string;
+        run_id: number;
+        lease_expires_at: string;
+        context: {
+          [key: string]: unknown;
+        };
       }
     | {
         action: "trigger";
@@ -5059,6 +5081,7 @@ export type GetAutomationResponses = {
     };
     pending_analysis?: {
       unprocessed_count: number;
+      unprocessed_content_count?: number;
       next_window: {
         start: string;
         end: string;

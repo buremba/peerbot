@@ -3,23 +3,9 @@
  *
  * The SCHEDULE cursor (`automations.next_run_at`) is recomputed from `now`, so a
  * missed occurrence is never replayed. The WINDOW cursor
- * (the latest completed run period) advances one period per completed run.
- * Wall-clock moves one period per period, so under pure chaining an Automation that
- * falls behind stays behind: the gap freezes at whatever width the outage left
- * it, and closing it would take one successful run per missed period.
- *
- * Prod Automation 2 ("HN engagement — draft replies", daily) measured 2026-08-06:
- * newest window `2026-06-17`, written by a run on `2026-07-15`. Drift by window,
- * monotonic — covers 06-06 written 06-11 (5d), 06-14 written 06-27 (13d), 06-15
- * written 07-08 (23d), 06-17 written 07-15 (28d). It was not failing: those late
- * windows carry `content_analyzed = 40`. It read forty real Hacker News stories
- * and drafted real replies to threads a month dead, and reported success.
- *
- * The fix is a FLOOR in `nextAutomationWindowStart`: never hand out a window older
- * than one period. That closes any gap in a single run without the agent having
- * to notice anything, which is the only form of this fix that holds for every
- * model. What the run is then told is the span the server skipped, and the one
- * decision left to it — whether that span is worth reading back.
+ * (`automations.next_window_start`) owns the oldest unfinished logical period.
+ * It advances exactly one period after a successful completion, while lag
+ * reporting describes how much closed history remains.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -42,27 +28,19 @@ const utcDate = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) =>
 	new Date(Date.UTC(y, mo - 1, d, h, mi, s));
 
 /**
- * The guarantee. Everything else in this file reports; only this closes the gap,
- * and it does so without the agent participating at all.
+ * The guarantee: chaining advances one period and never jumps over a missing one.
  */
-describe("nextAutomationWindowStart — the floor", () => {
-	// THE REGRESSION. Prod Automation 2: cursor at June 17, clock at August 6.
-	// Chaining alone hands out June 18 and would need fifty more successful runs
-	// to reach the present. The floor hands out yesterday, once.
-	test("a fifty-period gap closes in one run", () => {
+describe("nextAutomationWindowStart — sequential recovery", () => {
+	test("a fifty-period gap returns the oldest missing period", () => {
 		const next = nextAutomationWindowStart(
 			new Date("2026-06-17T00:00:00.000Z"),
 			new Date("2026-08-06T09:30:00.000Z"),
 			"daily",
 		);
-		expect(iso(next)).toBe("2026-08-05T00:00:00.000Z");
-		expect(iso(next)).not.toBe("2026-06-18T00:00:00.000Z");
+		expect(iso(next)).toBe("2026-06-18T00:00:00.000Z");
 	});
 
-	// ...and stays closed. The run after the catch-up chains normally rather than
-	// sticking to the floor, which is what makes this a one-off correction and not
-	// an Automation permanently pinned to yesterday.
-	test("the run after a catch-up chains normally", () => {
+	test("the next run continues chaining normally", () => {
 		const next = nextAutomationWindowStart(
 			new Date("2026-08-05T00:00:00.000Z"),
 			new Date("2026-08-07T09:30:00.000Z"),
@@ -71,9 +49,7 @@ describe("nextAutomationWindowStart — the floor", () => {
 		expect(iso(next)).toBe("2026-08-06T00:00:00.000Z");
 	});
 
-	// The healthy steady state must be untouched: a once-per-period Automation
-	// analyses the period that just closed. If the floor moved this to "today" it
-	// would hand every daily Automation a half-finished period.
+	// A once-per-period Automation analyses the period that just closed.
 	test("a healthy daily Automation still gets the period that just closed", () => {
 		const next = nextAutomationWindowStart(
 			new Date("2026-08-04T00:00:00.000Z"),
@@ -83,8 +59,7 @@ describe("nextAutomationWindowStart — the floor", () => {
 		expect(iso(next)).toBe("2026-08-05T00:00:00.000Z");
 	});
 
-	// A sub-daily cron gets the same day every run. The floor must not push this
-	// backwards to yesterday.
+	// A sub-daily cron gets the same day every run.
 	test("a sub-period cron keeps resolving to the current period", () => {
 		const next = nextAutomationWindowStart(
 			new Date("2026-08-06T00:00:00.000Z"),
@@ -118,9 +93,7 @@ describe("nextAutomationWindowStart — the floor", () => {
 		).toBe("2026-02-01T00:00:00.000Z");
 	});
 
-	test("floors at every granularity", () => {
-		// Weekly: 2026-08-03 is the Monday of the current week, so the floor is the
-		// Monday before it.
+	test("chains at every granularity", () => {
 		expect(
 			iso(
 				nextAutomationWindowStart(
@@ -129,7 +102,7 @@ describe("nextAutomationWindowStart — the floor", () => {
 					"weekly",
 				),
 			),
-		).toBe("2026-07-27T00:00:00.000Z");
+		).toBe("2026-01-12T00:00:00.000Z");
 		expect(
 			iso(
 				nextAutomationWindowStart(
@@ -138,7 +111,7 @@ describe("nextAutomationWindowStart — the floor", () => {
 					"monthly",
 				),
 			),
-		).toBe("2026-07-01T00:00:00.000Z");
+		).toBe("2026-02-01T00:00:00.000Z");
 		expect(
 			iso(
 				nextAutomationWindowStart(
@@ -147,7 +120,7 @@ describe("nextAutomationWindowStart — the floor", () => {
 					"quarterly",
 				),
 			),
-		).toBe("2026-04-01T00:00:00.000Z");
+		).toBe("2025-04-01T00:00:00.000Z");
 	});
 
 	// A corrupt stored start must not propagate. Prod holds 14 windows written
@@ -196,9 +169,8 @@ describe("computeWindowLag", () => {
 		expect(lag.periodsSkipped).toBe(0);
 	});
 
-	// The prod case after the floor: cursor still at June 17, window now August 5,
-	// so June 18 through August 4 — 48 days — are skipped and named.
-	test("names the span the floor skipped", () => {
+	// A caller-selected later window reports the periods it did not include.
+	test("names the span omitted by an explicitly later window", () => {
 		const lag = computeWindowLag(
 			new Date("2026-06-17T00:00:00.000Z"),
 			new Date("2026-08-05T00:00:00.000Z"),
@@ -276,7 +248,7 @@ describe("computeWindowLag", () => {
 		expect(lag.skippedTo).toBeNull();
 	});
 
-	// The floor caps at the current period, so a future window should be
+	// The current-period cap means a future window should be
 	// impossible — but prod has held future-dated rows and a negative age would
 	// render as nonsense.
 	test("a window ahead of the clock clamps to zero, never negative", () => {
@@ -409,7 +381,7 @@ describe("read_knowledge markdown — skipped periods", () => {
 		expect(render(0)).not.toContain("Skipped Periods");
 	});
 
-	test("names the skipped span once the floor has jumped", () => {
+	test("names the span omitted by an explicitly later window", () => {
 		const md = render(48);
 		expect(md).toContain("Skipped Periods");
 		expect(md).toContain("48 daily period(s)");
@@ -417,17 +389,14 @@ describe("read_knowledge markdown — skipped periods", () => {
 		expect(md).toContain("2026-08-04T00:00:00.000Z");
 	});
 
-	test("tells the run it can read the skipped span back", () => {
+	test("states that the sequential cursor still owns the oldest missing period", () => {
 		const md = render(48);
-		expect(md).toContain("since");
-		expect(md).toContain("until");
-		expect(md).toContain("read_knowledge");
+		expect(md).toContain("sequential Automation cursor");
+		expect(md).toContain("oldest missing period");
 	});
 
-	// The safety property is the reason a run can act on this without risk, so it
-	// has to be stated, not implied.
-	test("states that a backfill cannot drag the cursor back", () => {
-		expect(render(48)).toContain("cannot make this Automation stale again");
+	test("does not claim the intervening periods were processed", () => {
+		expect(render(48)).toContain("without treating the intervening periods as processed");
 	});
 
 	test("an Automation with no lag field renders unchanged", () => {
@@ -441,51 +410,6 @@ describe("read_knowledge markdown — skipped periods", () => {
 		});
 		expect(md).toContain("Automation Window");
 		expect(md).not.toContain("Skipped Periods");
-	});
-});
-
-/**
- * `get_automation.pending_analysis.next_action` hands an MCP client a literal
- * `read_knowledge` call for the window it just previewed. That suggestion has to
- * round-trip: feeding its `since`/`until` back through `alignRequestedWindow`
- * must reproduce the previewed window exactly, or the server is telling clients
- * to write windows the dispatcher would never emit.
- *
- * It did not. `until` was `next_window.end` — the EXCLUSIVE boundary — so a
- * one-day window was advertised as a two-day range.
- */
-describe("next_action round-trips to the previewed window", () => {
-	// Mirrors the construction in get_automation.ts: `until` is the last instant
-	// inside the window, rendered as a date.
-	const suggest = (start: string, end: string) => ({
-		since: start.split("T")[0],
-		until: new Date(new Date(end).getTime() - 1).toISOString().split("T")[0],
-	});
-
-	test.each([
-		["daily", "2026-06-18T00:00:00.000Z", "2026-06-19T00:00:00.000Z"],
-		["weekly", "2026-06-15T00:00:00.000Z", "2026-06-22T00:00:00.000Z"],
-		["monthly", "2026-06-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z"],
-		["quarterly", "2026-04-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z"],
-	] as const)("%s", (granularity, start, end) => {
-		const { since, until } = suggest(start, end);
-		const round = alignRequestedWindow(
-			parseAutomationWindowDate(since),
-			parseAutomationWindowDate(until),
-			granularity,
-		);
-		expect(iso(round.windowStart)).toBe(start);
-		expect(iso(round.windowEnd)).toBe(end);
-	});
-
-	// The bug, pinned directly: the exclusive end as `until` widens by a period.
-	test("passing the exclusive end as until widens the window", () => {
-		const wrong = alignRequestedWindow(
-			parseAutomationWindowDate("2026-06-18"),
-			parseAutomationWindowDate("2026-06-19"),
-			"daily",
-		);
-		expect(iso(wrong.windowEnd)).toBe("2026-06-20T00:00:00.000Z");
 	});
 });
 

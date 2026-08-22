@@ -13,7 +13,7 @@ import {
 } from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { isInProcessSystemCall } from '../../tools/access-control';
-import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
+import { createDbClientFromEnv, type DbClient, getDb, pgBigintArray } from '../../db/client';
 import { AUTOMATION_RUN_SOURCE } from '../../gateway/automation-run-session';
 import { ArtifactStore } from '../../gateway/files/artifact-store';
 import { parseAutomationRunConversationId } from '../../gateway/permissions/automation-run-intent';
@@ -55,6 +55,38 @@ import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
 const MAX_EXACT_CONTENT_IDS = 2000;
+
+async function loadClaimedAutomationWindow(
+  sql: DbClient,
+  runId: number,
+  automationId: number
+): Promise<
+  | { runId: number; windowStart: string; windowEnd: string; leaseExpiresAt?: string }
+  | undefined
+> {
+  const [run] = await sql<{
+    window_start: string | null;
+    window_end: string | null;
+    expires_at: string | null;
+  }>`
+    SELECT approved_input->>'window_start' AS window_start,
+           approved_input->>'window_end' AS window_end,
+           expires_at
+    FROM runs
+    WHERE id = ${runId}
+      AND automation_id = ${automationId}
+      AND run_type IN ('automation', 'automation_eval')
+      AND status IN ('claimed', 'running')
+    LIMIT 1
+  `;
+  if (!run?.window_start || !run.window_end) return undefined;
+  return {
+    runId,
+    windowStart: new Date(run.window_start).toISOString(),
+    windowEnd: new Date(run.window_end).toISOString(),
+    ...(run.expires_at ? { leaseExpiresAt: new Date(run.expires_at).toISOString() } : {}),
+  };
+}
 
 /**
  * Connection-visibility principal for Automation knowledge.read.
@@ -325,6 +357,13 @@ async function getContentImpl(
           403
         );
       }
+      const runIdentity = ctx.sourceContext?.conversationId
+        ? parseAutomationRunConversationId(ctx.sourceContext.conversationId)
+        : null;
+      const claimedWindow =
+        runIdentity && runIdentity.automationId === args.automation_id
+          ? await loadClaimedAutomationWindow(sql, runIdentity.runId, args.automation_id)
+          : undefined;
       return await handleAutomationMode(args, env, sql, {
         organizationId: ctx.organizationId,
         // Interactive reads keep the caller's private-connection scope.
@@ -334,6 +373,7 @@ async function getContentImpl(
         // inherit that author's private feeds.
         userId: resolveAutomationVisibilityUserId(ctx, args.automation_id),
         excludeWorkspaceAudit,
+        claimedWindow,
       });
     }
 

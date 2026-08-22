@@ -52,7 +52,7 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// stays admin-tier below. `trigger` is write-tier: manual activation is the
 	// open lane — any member (or their MCP client) may fire an Automation and
 	// complete the resulting run.
-	manage_automations: new Set(["complete_window", "trigger"]),
+	manage_automations: new Set(["claim_next_window", "complete_window", "trigger"]),
 	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the
 	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
 	// decide their own run. The handler enforces admin-or-run-owner per run — a

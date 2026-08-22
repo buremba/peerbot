@@ -4,7 +4,10 @@ import {
   macDeviceDaemonMetadata,
   validateMacDeviceDaemonOptions,
 } from '../daemon/mac-device-daemon';
-import { WorkerPollLoop } from '../daemon/poll-loop';
+import {
+  createWorkerPollLoopShutdownHandler,
+  WorkerPollLoop,
+} from '../daemon/poll-loop';
 
 describe('Mac device daemon options', () => {
   test('emits versioned protocol metadata', () => {
@@ -62,6 +65,28 @@ describe('Mac device daemon options', () => {
 });
 
 describe('WorkerPollLoop', () => {
+  test('honors the server idle delay instead of hot-looping at the local interval', async () => {
+    let polls = 0;
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => {
+        polls++;
+        return { next_poll_seconds: 0.05 } as never;
+      },
+    } as never;
+    const loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 1,
+      execute: async () => undefined,
+    });
+
+    const started = loop.start();
+    await Bun.sleep(10);
+    expect(polls).toBe(1);
+    loop.stop();
+    await started;
+  });
+
   test('stops polling and waits for the active job during shutdown', async () => {
     let polls = 0;
     let release!: () => void;
@@ -89,5 +114,24 @@ describe('WorkerPollLoop', () => {
     release();
     expect(await loop.waitForActiveJobs(1000, 1)).toBe(true);
     await started;
+  });
+
+  test('runs the daemon stop callback before draining active jobs', async () => {
+    const events: string[] = [];
+    const loop = {
+      waitForActiveJobs: async () => {
+        events.push('wait');
+        return true;
+      },
+    } as unknown as WorkerPollLoop;
+    const handler = createWorkerPollLoopShutdownHandler(
+      loop,
+      () => events.push('daemon-stop'),
+      (code) => events.push(`exit:${code}`)
+    );
+
+    await handler('SIGTERM');
+
+    expect(events).toEqual(['daemon-stop', 'wait', 'exit:0']);
   });
 });

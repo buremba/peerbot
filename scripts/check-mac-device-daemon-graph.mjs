@@ -1,6 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const FORBIDDEN_GRAPH_PATTERNS = [
   /packages\/connector-worker\/src\/(?:compile(?:-connector)?|embeddings(?:[-/]|\.))/,
@@ -28,7 +30,11 @@ export function assertMacDeviceDaemonGraph(inputs) {
   return inputs;
 }
 
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+const isMain =
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMain) {
   const metafile = process.argv[2];
   if (!metafile)
     throw new Error("usage: check-mac-device-daemon-graph.mjs <metafile.json>");

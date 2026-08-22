@@ -16,6 +16,8 @@ export interface WorkerPollLoopOptions {
   execute: (job: PollResponse) => Promise<unknown>;
 }
 
+export type WorkerPollLoopExit = (code: number) => void;
+
 export class WorkerPollLoop {
   private readonly client: WorkerClient;
   private readonly pollIntervalMs: number;
@@ -44,12 +46,13 @@ export class WorkerPollLoop {
     log.info('[daemon] Starting worker daemon...');
     this.running = true;
     while (this.running) {
+      let nextDelayMs: number | undefined;
       try {
-        await this.pollAndExecute();
+        nextDelayMs = await this.pollAndExecute();
       } catch (err) {
         log.info('[daemon] Poll error:', err);
       }
-      await this.sleep(this.pollIntervalMs);
+      await this.sleep(nextDelayMs ?? this.pollIntervalMs);
     }
     log.info('[daemon] Stopped');
   }
@@ -79,14 +82,14 @@ export class WorkerPollLoop {
     return true;
   }
 
-  private async pollAndExecute(): Promise<void> {
-    if (this.activeJobs >= this.maxConcurrentJobs) return;
+  private async pollAndExecute(): Promise<number | undefined> {
+    if (this.activeJobs >= this.maxConcurrentJobs) return undefined;
 
     const job = await this.client.poll();
     if (!job.run_id) {
       const nextPoll = job.next_poll_seconds ?? 30;
       log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);
-      return;
+      return Number.isFinite(nextPoll) && nextPoll > 0 ? nextPoll * 1000 : 1000;
     }
 
     this.activeJobs++;
@@ -104,21 +107,32 @@ export class WorkerPollLoop {
   }
 }
 
-export function installWorkerPollLoopSignals(loop: WorkerPollLoop): void {
+export function createWorkerPollLoopShutdownHandler(
+  loop: WorkerPollLoop,
+  onShutdown: () => void = () => loop.stop(),
+  exit: WorkerPollLoopExit = process.exit
+): (signal: string) => Promise<void> {
   let shuttingDown = false;
-  const gracefulShutdown = async (signal: string) => {
+  return async (signal: string) => {
     if (shuttingDown) {
       console.error(`[daemon] Received ${signal} during shutdown, forcing exit`);
-      process.exit(130);
+      exit(130);
+      return;
     }
     shuttingDown = true;
     log.info(`\n[daemon] Received ${signal}, shutting down...`);
-    loop.stop();
+    onShutdown();
     const allDone = await loop.waitForActiveJobs();
     if (!allDone) log.info('[daemon] Forcing exit with active jobs still running');
-    process.exit(allDone ? 0 : 1);
+    exit(allDone ? 0 : 1);
   };
+}
 
+export function installWorkerPollLoopSignals(
+  loop: WorkerPollLoop,
+  onShutdown: () => void = () => loop.stop()
+): void {
+  const gracefulShutdown = createWorkerPollLoopShutdownHandler(loop, onShutdown);
   process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
   process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
   process.stdin.once('end', () => void gracefulShutdown('EOF'));

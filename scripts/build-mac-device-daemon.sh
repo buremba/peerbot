@@ -28,7 +28,7 @@ META="$BUILD_TMP/metafile.json"
     --outfile="$OUTPUT"
 )
 
-node "$ROOT/scripts/check-mac-device-daemon-graph.mjs" "$META"
+bun "$ROOT/scripts/check-mac-device-daemon-graph.mjs" "$META"
 chmod 0755 "$OUTPUT"
 file "$OUTPUT"
 stat -f 'artifact_bytes=%z' "$OUTPUT"

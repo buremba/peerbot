@@ -300,7 +300,7 @@ async function ensureDeviceConnectorWired(
         AND cd.key = ${connectorKey}
         AND cd.status = 'active'
         AND cd.version = ${currentSource.metadata.version}
-        AND cv.source_path LIKE 'device-manifest://%'
+        AND cv.source_path = ${currentSource.sourcePath}
         AND cv.compiled_code IS NULL
         AND cv.compiled_code_hash = ${currentSource.manifestHash}
         AND cv.compile_config_hash IS NULL
@@ -427,7 +427,7 @@ async function ensureDeviceConnectorWired(
         row.def_name === m.name &&
         (row.def_description ?? null) === (m.description ?? null) &&
         row.def_version === m.version &&
-        row.version_source_path?.startsWith('device-manifest://') === true &&
+        row.version_source_path === source.sourcePath &&
         row.version_compiled_code == null &&
         row.version_artifact_hash === source.manifestHash &&
         row.version_compile_config_hash == null &&

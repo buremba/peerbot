@@ -391,6 +391,49 @@ describe('device connector manifests', () => {
     });
   });
 
+  it('repairs stale same-hash device-manifest provenance on the fast path', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
+    const sql = getTestDb();
+    const chromeManifest = whatsappManifest('chrome-extension');
+    const pollOptions = { 'browser.scripting': true };
+
+    expect((await poll(workerId, [chromeManifest], 'chrome-extension', pollOptions)).status).toBe(
+      200,
+    );
+    await settleRunsAndFeeds(orgId);
+
+    await sql`
+      UPDATE connector_versions
+      SET source_path = 'device-manifest://macos/whatsapp.local@2.0.0'
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = '2.0.0'
+    `;
+    const rows = await readWhatsAppRows(orgId);
+    const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
+    expect(messagesFeed).toBeDefined();
+    const runId = await insertPendingWhatsAppRun({
+      orgId,
+      connectionId: Number(rows.connections[0].id),
+      feedId: Number(messagesFeed!.id),
+      version: '2.0.0',
+    });
+
+    const repairedPoll = await poll(workerId, [chromeManifest], 'chrome-extension', pollOptions);
+    expect(repairedPoll.status).toBe(200);
+    expect(((await repairedPoll.json()) as { run_id?: number }).run_id).toBe(runId);
+    const [artifact] = (await sql`
+      SELECT source_path
+      FROM connector_versions
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = '2.0.0'
+    `) as unknown as Array<{ source_path: string | null }>;
+    expect(artifact.source_path).toBe(
+      'device-manifest://chrome-extension/whatsapp.local@2.0.0',
+    );
+  });
+
   it('ships compiled code for a TypeScript connector claimed by a local-files device worker', async () => {
     const connectorKey = 'test.local_files';
     const compiledCode = 'module.exports = { sync: async () => ({ items: [] }) }';

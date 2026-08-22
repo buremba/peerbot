@@ -1,5 +1,26 @@
 # Changelog
 
+## [15.8.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.7.0...lobu-v15.8.0) (2026-08-22)
+
+
+### Features
+
+* **cli:** unify external agent onboarding ([#3059](https://github.com/lobu-ai/lobu/issues/3059)) ([c4113eb](https://github.com/lobu-ai/lobu/commit/c4113eb3f92c0066729c0f0232e3679cb2ce7993))
+* **lens:** ship context-aware picture-in-picture ([#3070](https://github.com/lobu-ai/lobu/issues/3070)) ([2b33c8d](https://github.com/lobu-ai/lobu/commit/2b33c8ddaf86564067ea9f4b382f047bbea37087))
+
+
+### Bug Fixes
+
+* **classification:** scope the parent-context join by org and connection ([#3069](https://github.com/lobu-ai/lobu/issues/3069)) ([ae1dad8](https://github.com/lobu-ai/lobu/commit/ae1dad8b46faeca3a9830b179d67fb987fd33d9c)), closes [#3068](https://github.com/lobu-ai/lobu/issues/3068)
+* make browser draft handoffs actionable ([#3064](https://github.com/lobu-ai/lobu/issues/3064)) ([c1091ff](https://github.com/lobu-ai/lobu/commit/c1091ffb1d0e3ec576bd952054d29689059db11b))
+* **mcp:** support admin scope upgrades ([#3062](https://github.com/lobu-ai/lobu/issues/3062)) ([a169f5d](https://github.com/lobu-ai/lobu/commit/a169f5d91fae28415ae221db497f7e9da1ec3f01))
+* **server:** sanitize NUL at persistence boundaries ([#3073](https://github.com/lobu-ai/lobu/issues/3073)) ([50b6706](https://github.com/lobu-ai/lobu/commit/50b6706231fe50a9cc9e164d6c0f73c0fa27e8d6))
+
+
+### Performance Improvements
+
+* **events:** reconcile volatile counters in place instead of superseding ([#3071](https://github.com/lobu-ai/lobu/issues/3071)) ([0ce7f12](https://github.com/lobu-ai/lobu/commit/0ce7f12a9f84a22fd1d775534b250a24ce1771e5)), closes [#3065](https://github.com/lobu-ai/lobu/issues/3065)
+
 ## [15.7.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.6.0...lobu-v15.7.0) (2026-08-21)
 
 

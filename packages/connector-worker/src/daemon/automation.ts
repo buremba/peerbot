@@ -21,8 +21,8 @@
  * Its Lobu credential is the poll envelope's per-run `agent_session` when the
  * server minted one (see `resolveAutomationRunAccess`): the run authenticates
  * as the Automation's assigned agent, not as the daemon or the user's ambient
- * CLI session. The daemon's own bearer remains only the fallback for a run the
- * server sent no session for — an older server, or one that could not mint.
+ * CLI session. Capable standalone Mac daemons fail closed when that session is
+ * absent; legacy workers retain the pre-session fallback.
  */
 
 import type { ChildProcess } from 'node:child_process';
@@ -78,6 +78,8 @@ export interface AutomationExecutorConfig {
   insideClaude?: boolean;
   /** Stops a pending interactive handoff during daemon shutdown. */
   shutdownSignal?: AbortSignal;
+  /** Standalone Mac daemons must never use the device PAT for MCP writes. */
+  requireRunScopedSession?: boolean;
   /** Test-only override; production deliberately uses the 15-second default. */
   terminalHeartbeatGraceMs?: number;
   /**
@@ -367,7 +369,7 @@ export function isInteractiveSessionEligible(
 }
 
 /** Spawn one CLI run and classify how it ended. */
-async function runCli(
+export async function runCli(
   spec: AgentSpec,
   prompt: string,
   config: AutomationPollPayload['automation']['execution_config'],
@@ -375,6 +377,7 @@ async function runCli(
   timeoutMs: number,
   binaryPath?: string,
   abortSignal?: AbortSignal,
+  shutdownSignal?: AbortSignal,
   terminalHeartbeatGraceMs = TERMINAL_HEARTBEAT_GRACE_MS
 ): Promise<ExecutorResult> {
   // One AbortController spans every finalize/resume round. If a terminal 409
@@ -467,6 +470,7 @@ async function runCli(
     const { timedOut, aborted } = initialExit;
     let target = initialExit.target;
     let cancelled = false;
+    let intentionalCancellation = false;
     let killedSignal: string | null = null;
     let cleanupSignal: string | null = null;
     let diagnosticSignal: string | null = null;
@@ -481,18 +485,19 @@ async function runCli(
         (await waitForTargetExitAfterTermination(supervised.targetExit)) ?? undefined;
       diagnosticSignal = target && target.signalCode !== 'SIGKILL' ? 'SIGTERM' : treeSignal;
     } else if (aborted) {
+      const shutdownCancelled = shutdownSignal?.aborted === true;
+      intentionalCancellation = shutdownCancelled;
       // A 409 is also the normal post-complete_window state. Let a CLI that is
       // already winding down exit and report its device-side metadata. The
       // supervisor remains the non-reusable tree owner throughout the grace,
       // so a normally exiting leader cannot orphan its remaining descendants.
-      const gracefulExit = await waitForTargetExit(
-        supervised.targetExit,
-        terminalHeartbeatGraceMs
-      );
+      const gracefulExit = shutdownCancelled
+        ? { target: undefined }
+        : await waitForTargetExit(supervised.targetExit, terminalHeartbeatGraceMs);
       target = gracefulExit.target;
       // Either way the tree must go: a CLI that exited still leaves the
       // supervisor and any descendants it spawned holding the group.
-      cancelled = !target;
+      cancelled = shutdownCancelled || !target;
       const treeSignal = await terminateChild(proc);
       supervisorSettled = true;
       target ??=
@@ -567,7 +572,7 @@ async function runCli(
       // The server owns the terminal outcome, but complete-automation remains
       // terminal-safe so it can retain device provenance and duration. Report
       // this intentional local stop as clean instead of inventing a failure.
-      exitReason = 'ok';
+      exitReason = intentionalCancellation ? 'cancelled' : 'ok';
       errorMessage = null;
     } else if (timedOut) {
       exitReason = 'timeout';
@@ -666,6 +671,12 @@ export async function executeAutomationRun(
     return { itemsCollected: 0, error: message };
   }
 
+  if (cfg.requireRunScopedSession && !payload.context.agent_session) {
+    const message = 'macOS Automation run is missing its required run-scoped agent session';
+    await completeAutomationWithError(client, runId, message, 'error_message');
+    return { itemsCollected: 0, error: message };
+  }
+
   // The Automation's explicit kind wins; the caller's device-level default is
   // the fallback, matching how the Mac app has always resolved an unset kind.
   const kind = payload.automation.agent_kind ?? cfg.defaultAgentKind ?? null;
@@ -708,6 +719,13 @@ export async function executeAutomationRun(
   // Heartbeat the run while the CLI executes so the server's stale-run sweeper
   // can distinguish a live turn from an abandoned one.
   const runAbort = new AbortController();
+  let shutdownRequested = false;
+  const onShutdown = () => {
+    shutdownRequested = true;
+    runAbort.abort();
+  };
+  cfg.shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
+  if (cfg.shutdownSignal?.aborted) onShutdown();
   const heartbeat = setInterval(() => {
     client.heartbeat(runId).catch((err) => {
       if (err instanceof WorkerHttpError && err.status === 409) {
@@ -728,6 +746,17 @@ export async function executeAutomationRun(
 
   const io: AutomationRunIo = {
     run: async (finalizeNudge) => {
+      if (runAbort.signal.aborted) {
+        if (!shutdownRequested) throw new AutomationRunNoLongerActiveError();
+        return {
+          output: '',
+          error: null,
+          exitCode: null,
+          exitSignal: 'SIGTERM',
+          exitReason: 'cancelled',
+          durationMs: 0,
+        };
+      }
       let prompt = buildDeviceAutomationPrompt(payload, runId);
       if (finalizeNudge && finalizeNudge !== '') {
         prompt += `\n\n---\nFINALIZE NUDGE (prior attempt did not complete the window):\n${finalizeNudge}\n`;
@@ -798,6 +827,7 @@ export async function executeAutomationRun(
         timeoutMs,
         cfg.binaryOverrides?.[spec.kind],
         runAbort.signal,
+        cfg.shutdownSignal,
         cfg.terminalHeartbeatGraceMs
       );
     },
@@ -811,6 +841,7 @@ export async function executeAutomationRun(
     return await dispatchAutomationResumeLoop(io);
   } finally {
     clearInterval(heartbeat);
+    cfg.shutdownSignal?.removeEventListener('abort', onShutdown);
   }
 }
 

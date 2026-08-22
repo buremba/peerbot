@@ -1313,6 +1313,40 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		return c.json({ ok: true, status: "failed" });
 	}
 
+	// A standalone device daemon can be intentionally stopped while its local
+	// CLI is still running. Preserve that terminal intent instead of sending the
+	// run through the missing-completeWindow resume budget or failure taxonomy.
+	if (body.exit_reason === "cancelled") {
+		const cancelledRows = (await sql`
+      UPDATE runs
+      SET status = 'cancelled',
+          completed_at = current_timestamp,
+          error_message = NULL,
+          output_tail = ${output ? output.slice(-2000) : null},
+          exit_code = ${body.exit_code ?? null},
+          exit_signal = ${body.exit_signal ?? null},
+          exit_reason = 'cancelled'
+      WHERE id = ${runId}
+        AND status = 'running'
+        AND claimed_by = ${body.worker_id}
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+		if (cancelledRows.length === 0) {
+			return c.json({ ok: true, status: run.status, idempotent: true });
+		}
+		await sql`
+      UPDATE automations
+      SET last_fired_at = NOW(), updated_at = NOW()
+      WHERE id = ${automationId}
+    `;
+		return c.json({
+			ok: true,
+			status: "cancelled",
+			reason_code: "device_daemon_shutdown",
+			run_id: runId,
+		});
+	}
+
 	// Clean exit + run already completed: the agent finished the job over MCP
 	// (query_sdk → completeWindow) before the subprocess exited. Stamp
 	// the device-side provenance the pipeline can't know — exit metadata and

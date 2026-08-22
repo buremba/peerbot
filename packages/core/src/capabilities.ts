@@ -42,6 +42,10 @@ export const IOS_CAPABILITIES = [
 // connector means adding its capability string here so the gateway lets
 // the device claim its runs.
 export const MAC_DEVICE_CAPABILITIES = [
+  // The standalone Mac daemon opts into run-scoped Automation sessions by
+  // advertising this capability. Legacy Swift workers omit it and retain the
+  // existing instructions-only/legacy session handling.
+  "automations.execute",
   "screentime",
   "local_directory",
   "healthkit",

@@ -8,6 +8,12 @@ Self-hosted Lobu memory worker. Polls the backend for sync jobs, executes connec
 connector-worker daemon --api-url https://api.example.com
 ```
 
+The lean macOS device artifact is built on an arm64 Mac with
+`bun run build:mac-device-daemon`. It is a standalone `lobu-device-daemon`
+Mach-O; `--no-poll` validates the packaged executable without server access.
+The artifact advertises no native connector capabilities and only runs the
+canonical device Automation arm.
+
 ## Development
 
 ```bash

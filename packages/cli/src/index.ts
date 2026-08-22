@@ -1307,7 +1307,7 @@ Memory:
   // ─── memory ─────────────────────────────────────────────────────────
   const memory = program
     .command("memory")
-    .description("Lobu memory MCP — tools, seeding, and client configuration");
+    .description("Lobu memory MCP — tools, seeding, and browser-auth capture");
 
   const memoryOrg = memory
     .command("org")

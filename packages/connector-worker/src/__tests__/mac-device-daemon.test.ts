@@ -126,7 +126,7 @@ describe('Mac device daemon options', () => {
     expect(events).toEqual(['stop', 'cancel', 'shutdown', 'close']);
   });
 
-  test('bounds native cancellation and shutdown before waiting for jobs', async () => {
+  test('bounds native cancellation and shutdown without a duplicate active-job wait', async () => {
     const events: string[] = [];
     const controller = new AbortController();
     const loop = {

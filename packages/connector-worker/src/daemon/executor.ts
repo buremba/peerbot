@@ -15,6 +15,7 @@ import { executeAutomationRun } from './automation.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
+import { reportTerminalFailure } from './terminal-failure.js';
 
 /**
  * Resolve the executable compiled code for a job.
@@ -141,42 +142,10 @@ export async function executeRun(
   const cfg = { ...DEFAULT_CONFIG, ...config };
   if (job.execution_backend === 'native_bridge') {
     const message = 'native_bridge runs must be handled by the native bridge daemon';
-    if (job.run_id) {
-      try {
-        if (job.run_type === 'action') {
-          await client.completeAction({
-            run_id: job.run_id,
-            worker_id: client.id,
-            status: 'failed',
-            error_message: message,
-          });
-        } else if (job.run_type === 'auth') {
-          await client.completeAuth({
-            run_id: job.run_id,
-            worker_id: client.id,
-            status: 'failed',
-            error_message: message,
-          });
-        } else if (job.run_type === 'automation') {
-          await client.completeAutomation(job.run_id, {
-            worker_id: client.id,
-            output: '',
-            error: message,
-            duration_ms: 0,
-            exit_reason: 'error_message',
-          });
-        } else {
-          await client.complete({
-            run_id: job.run_id,
-            worker_id: client.id,
-            status: 'failed',
-            error_message: message,
-            items_collected: 0,
-          });
-        }
-      } catch (error) {
-        log.info('[executor] Failed to reject native bridge run:', error);
-      }
+    try {
+      await reportTerminalFailure(client, job, message, 'error_message');
+    } catch (error) {
+      log.info('[executor] Failed to reject native bridge run:', error);
     }
     return { itemsCollected: 0, error: message };
   }
@@ -213,46 +182,10 @@ export async function executeRun(
       `[executor] Unhandled ${job.run_type ?? 'unknown'} run ${job.run_id} failure:`,
       message
     );
-    if (job.run_id) {
-      try {
-        if (job.run_type === 'action') {
-          await client.completeAction({
-            run_id: job.run_id,
-            worker_id: client.id,
-            status: 'failed',
-            error_message: message,
-          });
-        } else if (job.run_type === 'auth') {
-          await client.completeAuth({
-            run_id: job.run_id,
-            worker_id: client.id,
-            status: 'failed',
-            error_message: message,
-          });
-        } else if (job.run_type === 'automation') {
-          // Automation runs terminate ONLY via /complete-automation — the sync
-          // /complete endpoint would finalize the run row but skip the
-          // automation-side bookkeeping (schedule advance, failure accounting),
-          // wedging the schedule the way a stuck run would.
-          await client.completeAutomation(job.run_id, {
-            worker_id: client.id,
-            output: '',
-            error: message,
-            duration_ms: 0,
-            exit_reason: 'crash',
-          });
-        } else {
-          await client.complete({
-            run_id: job.run_id,
-            worker_id: client.id,
-            status: 'failed',
-            error_message: message,
-            items_collected: 0,
-          });
-        }
-      } catch (completeErr) {
-        log.info('[executor] Terminal completion after unhandled failure errored:', completeErr);
-      }
+    try {
+      await reportTerminalFailure(client, job, message);
+    } catch (completeErr) {
+      log.info('[executor] Terminal completion after unhandled failure errored:', completeErr);
     }
     return { itemsCollected: 0, error: message };
   }

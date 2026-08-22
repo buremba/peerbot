@@ -15,6 +15,7 @@ import { installWorkerPollLoopSignals, WorkerPollLoop } from './poll-loop.js';
 import { setDebug } from './log.js';
 import { NativeBridgeClient } from './native-bridge/client.js';
 import { executeNativeBridgeRun } from './native-bridge/executor.js';
+import { reportTerminalFailure } from './terminal-failure.js';
 
 export const MAC_DEVICE_DAEMON_PROTOCOL = 'device-daemon/v1';
 export const MAC_DEVICE_PLATFORM = 'macos';
@@ -202,41 +203,9 @@ export function validateMacDeviceDaemonOptions(
   };
 }
 
-function rejectUnsupportedRun(client: WorkerClient, job: PollResponse): Promise<void> {
+async function rejectUnsupportedRun(client: WorkerClient, job: PollResponse): Promise<void> {
   const message = `macOS device daemon does not execute run_type '${job.run_type ?? 'unknown'}'; no native connector capabilities are advertised`;
-  if (job.run_id == null) return Promise.resolve();
-  if (job.run_type === 'action') {
-    return client.completeAction({
-      run_id: job.run_id,
-      worker_id: client.id,
-      status: 'failed',
-      error_message: message,
-    });
-  }
-  if (job.run_type === 'auth') {
-    return client.completeAuth({
-      run_id: job.run_id,
-      worker_id: client.id,
-      status: 'failed',
-      error_message: message,
-    });
-  }
-  if (job.run_type === 'automation') {
-    return client.completeAutomation(job.run_id, {
-      worker_id: client.id,
-      output: '',
-      error: message,
-      duration_ms: 0,
-      exit_reason: 'error_message',
-    }).then(() => undefined);
-  }
-  return client.complete({
-    run_id: job.run_id,
-    worker_id: client.id,
-    status: 'failed',
-    error_message: message,
-    items_collected: 0,
-  });
+  await reportTerminalFailure(client, job, message, 'error_message');
 }
 
 export function createMacDeviceDaemon(

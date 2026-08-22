@@ -58,11 +58,12 @@ async function vectorRowsFor(eventId: number) {
   `) as Array<{ embedding_model: string; chunk_index: number }>;
 }
 
-// Both embedding writers take the same liveness lock (SELECT ... superseded_by
-// IS NULL ... FOR SHARE) before touching event_embeddings, so either that
-// SELECT or — if the lock were dropped — the DELETE behind it must be waiting
-// on `blockingPid`. Accept both so a regression reaches the row assertion
-// instead of dying here with a misleading timeout.
+// Both embedding writers lock liveness before touching event_embeddings:
+// completion uses FOR SHARE, while insertEvent uses FOR NO KEY UPDATE because
+// it may later update volatile event state. Either SELECT or — if the lock were
+// dropped — the DELETE behind it must be waiting on `blockingPid`. Accept all
+// three forms so a regression reaches the row assertion instead of dying here
+// with a misleading timeout.
 async function waitForBlockedEmbeddingWriter(
   sql: ReturnType<typeof getTestDb>,
   blockingPid: number,
@@ -85,7 +86,10 @@ async function waitForBlockedEmbeddingWriter(
           OR (
             query ILIKE '%FROM events%'
             AND query ILIKE '%superseded_by IS NULL%'
-            AND query ILIKE '%FOR SHARE%'
+            AND (
+              query ILIKE '%FOR SHARE%'
+              OR query ILIKE '%FOR NO KEY UPDATE%'
+            )
           )
         )
         AND ${blockingPid} = ANY(pg_blocking_pids(pid))
@@ -448,6 +452,109 @@ describe('supersede reclaims event_embeddings (issue #3066)', () => {
     await Promise.all([superseding, refreshing]);
 
     expect(await vectorRowsFor(first.id)).toEqual([]);
+  });
+
+  it('does not deadlock a volatile refresh with embedding completion', async () => {
+    const sql = getTestDb();
+    const originId = `reclaim-writer-deadlock-${Date.now()}`;
+    const occurredAt = new Date();
+    const firstParams = {
+      entityIds: [entityId],
+      organizationId: orgId,
+      originId,
+      title: 'writer deadlock',
+      content: 'unchanged content with volatile state',
+      occurredAt,
+      semanticType: 'content' as const,
+      originType: 'content',
+      connectorKey: 'vector-reclaim-connector',
+      connectionId,
+      embedding: unitVec(13),
+      embeddingModel: MODEL,
+    };
+    const first = await insertEvent(firstParams, { onConflictUpdate: true });
+
+    let blockerReady!: () => void;
+    const blockerHasVectorLock = new Promise<void>((resolve) => {
+      blockerReady = resolve;
+    });
+    let releaseBlocker!: () => void;
+    const blockerMayCommit = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let blockerPid = 0;
+    const blocking = sql.begin(async (tx) => {
+      const [backend] = await tx<{ pid: number | string }>`SELECT pg_backend_pid()::int AS pid`;
+      blockerPid = Number(backend!.pid);
+      await tx`
+        SELECT event_id
+        FROM event_embeddings
+        WHERE event_id = ${first.id}
+          AND embedding_model = ${MODEL}
+        FOR UPDATE
+      `;
+      blockerReady();
+      await blockerMayCommit;
+    });
+    await blockerHasVectorLock;
+
+    // Queue the refresh first. It holds the event liveness lock while waiting
+    // for the vector row, then updates volatile event state after replacing the
+    // vector. Completion queues second and must not retain a compatible event
+    // lock that turns the refresh's later UPDATE into a lock cycle.
+    const refreshing = insertEvent(
+      { ...firstParams, score: 1, embedding: unitVec(14) },
+      { onConflictUpdate: true }
+    );
+    let refreshSettled = false;
+    void refreshing.then(
+      () => {
+        refreshSettled = true;
+      },
+      () => {
+        refreshSettled = true;
+      }
+    );
+    await waitForBlockedEmbeddingWriter(sql, blockerPid, 'refresh', () => refreshSettled);
+
+    const completing = completeEmbeddings(
+      mockEmbeddingsCtx({
+        run_id: -1,
+        worker_id: 'test-worker',
+        embeddings: [
+          { event_id: first.id, chunk_index: 0, embedding: unitVec(15), embedding_model: MODEL },
+        ],
+      })
+    );
+    let completionSettled = false;
+    void completing.then(
+      () => {
+        completionSettled = true;
+      },
+      () => {
+        completionSettled = true;
+      }
+    );
+    try {
+      await waitForBlockedEmbeddingWriter(
+        sql,
+        blockerPid,
+        'completion',
+        () => completionSettled
+      );
+    } finally {
+      releaseBlocker();
+      await Promise.allSettled([blocking, refreshing, completing]);
+    }
+
+    const [refreshed, completion] = await Promise.all([refreshing, completing]);
+    expect(refreshed.change).toBe('state_updated');
+    expect(
+      (completion as unknown as { b: { success: boolean; updated: number; failed: number } }).b
+    ).toMatchObject({ success: true, updated: 1, failed: 0 });
+    expect(await vectorRowsFor(first.id)).toEqual([
+      { embedding_model: MODEL, chunk_index: 0 },
+    ]);
   });
 
   it('leaves an ordinary insert with no predecessor alone', async () => {

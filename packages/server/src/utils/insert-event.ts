@@ -465,13 +465,16 @@ async function upsertEmbedding(
     // Serialize every runtime embedding writer with the supersede UPDATE. A
     // refresh of semantically unchanged content can otherwise block behind the
     // predecessor deletion, then recreate that dead row after the supersede
-    // commits. Keep the lock order events -> event_embeddings everywhere.
+    // commits. This path can later update volatile event state, so take the
+    // stronger lock before touching event_embeddings; upgrading FOR SHARE after
+    // a completion writer takes its own SHARE lock creates a lock cycle. Keep
+    // the lock order events -> event_embeddings everywhere.
     const liveEvent = await activeSql`
       SELECT id
       FROM events
       WHERE id = ${eventId}
         AND superseded_by IS NULL
-      FOR SHARE
+      FOR NO KEY UPDATE
     `;
     // Replace this (event, model)'s chunk set with a single chunk-0 row, scoped
     // to the model so old/new models can coexist during a zero-downtime swap

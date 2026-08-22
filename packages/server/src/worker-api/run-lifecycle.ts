@@ -728,12 +728,12 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		// double-applies (consecutive_failures, items_collected, next_run_at,
 		// auth_data). The failed path also stamps exit diagnostics.
 		//
-		// The checkpoint write is CASE-guarded on `dry_run` in SQL (rather than
-		// read-then-branch in JS) so the guard rides the same atomic UPDATE as the
-		// terminal transition: a dry run's row never records the connector's final
-		// checkpoint, matching the streamContent guard on the mid-run write.
+		// The checkpoint write is CASE-guarded on `dry_run` and failure in SQL
+		// (rather than read-then-branch in JS) so the guard rides the same atomic
+		// UPDATE as the terminal transition: a dry run or failed stream never
+		// records a new connector checkpoint.
 		const dryGuardedCheckpoint = sql`
-          checkpoint = CASE WHEN dry_run THEN checkpoint
+          checkpoint = CASE WHEN dry_run OR ${req.status === "failed"} THEN checkpoint
                        ELSE COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint) END`;
 		const updatedRuns = (await finalizeRun(sql, {
 			runId: req.run_id,

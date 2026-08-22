@@ -67,6 +67,7 @@ export function connectorClaimLaneSql(
       WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
         AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
         AND auth_item->>'manifestHash' = ${refs.runManifestHash}
+        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
     )
   `;
   const legacyHashlessManifestAuthorization = sql`

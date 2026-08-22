@@ -247,6 +247,51 @@ describe('completeWorkerJob status guard (late-completion-after-timeout)', () =>
     expect(after[0].last_sync_at).not.toBeNull();
   });
 
+  it('does not commit a new checkpoint when a running stream later fails', async () => {
+    const org = await createTestOrganization();
+    const connId = await insertConnection(org.id);
+    const feedId = await insertFeed(org.id, connId);
+    const sql = getTestDb();
+    const previousCheckpoint = { cursor: 'previous' };
+    await sql`
+      UPDATE feeds SET checkpoint = ${sql.json(previousCheckpoint)} WHERE id = ${feedId}
+    `;
+    const runRows = (await sql`
+      INSERT INTO runs
+        (organization_id, run_type, feed_id, connection_id, connector_key,
+         connector_version, status, claimed_by, claimed_at, checkpoint, created_at)
+      VALUES
+        (${org.id}, 'sync', ${feedId}, ${connId}, 'chrome', '0.2.0',
+         'running', ${WORKER_ID}, NOW(), ${sql.json(previousCheckpoint)}, NOW())
+      RETURNING id
+    `) as Array<{ id: number }>;
+    const runId = runRows[0].id;
+
+    const { ctx, result } = mockWorkerCtx({
+      run_id: runId,
+      worker_id: WORKER_ID,
+      status: 'failed',
+      items_collected: 1,
+      checkpoint: { cursor: 'failed-stream' },
+      error_message: 'stream delivery failed',
+    });
+    await completeWorkerJob(ctx);
+
+    expect(result().body).toEqual({ success: true });
+    const after = (await sql`
+      SELECT r.status, r.checkpoint AS run_checkpoint, f.checkpoint AS feed_checkpoint
+      FROM runs r JOIN feeds f ON f.id = r.feed_id
+      WHERE r.id = ${runId}
+    `) as Array<{
+      status: string;
+      run_checkpoint: unknown;
+      feed_checkpoint: unknown;
+    }>;
+    expect(after[0].status).toBe('failed');
+    expect(after[0].run_checkpoint).toEqual(previousCheckpoint);
+    expect(after[0].feed_checkpoint).toEqual(previousCheckpoint);
+  });
+
   it('rejects a late completion from a DIFFERENT worker than the claimant', async () => {
     const org = await createTestOrganization();
     const connId = await insertConnection(org.id);

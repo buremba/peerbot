@@ -339,6 +339,33 @@ describe('device connector manifests', () => {
     expect(versionRows[0]?.source_path).toBe(`device-manifest://macos/${CONNECTOR_KEY}@0.1.0`);
   });
 
+  it('marks only the exact authorized bridge artifact in the poll response', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const bridgeManifest = manifest({
+      runtime: { platforms: ['macos'], execution: 'bridge' },
+    });
+
+    const body = await pollClaimingDueFeed(workerId, [bridgeManifest]);
+
+    expect(body.execution_backend).toBe('native_bridge');
+    expect(body.connector_version).toBe('0.1.0');
+    expect(body.connector_manifest_hash).toBe(
+      deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
+    );
+    expect(body.compiled_code).toBeUndefined();
+
+    const sql = getTestDb();
+    const [run] = (await sql`
+      SELECT status, claimed_by FROM runs
+      WHERE organization_id = ${orgId}
+        AND connector_key = ${CONNECTOR_KEY}
+      ORDER BY id DESC
+      LIMIT 1
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(run.status).toBe('running');
+    expect(run.claimed_by).toBe(workerId);
+  });
+
   it('reconciles a same-version compiled artifact back to manifest-only poll payload', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();

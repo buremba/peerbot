@@ -130,7 +130,7 @@ export class WorkerPollLoop {
 
 export function createWorkerPollLoopShutdownHandler(
   loop: WorkerPollLoop,
-  onShutdown: () => void = () => loop.stop(),
+  onShutdown: () => void | Promise<void> = () => loop.stop(),
   exit: WorkerPollLoopExit = process.exit
 ): (signal: string) => Promise<void> {
   let shuttingDown = false;
@@ -142,16 +142,22 @@ export function createWorkerPollLoopShutdownHandler(
     }
     shuttingDown = true;
     log.info(`\n[daemon] Received ${signal}, shutting down...`);
-    onShutdown();
+    let shutdownHookSucceeded = true;
+    try {
+      await onShutdown();
+    } catch (error) {
+      shutdownHookSucceeded = false;
+      log.info('[daemon] Shutdown hook failed:', error);
+    }
     const allDone = await loop.waitForActiveJobs();
     if (!allDone) log.info('[daemon] Forcing exit with active jobs still running');
-    exit(allDone ? 0 : 1);
+    exit(allDone && shutdownHookSucceeded ? 0 : 1);
   };
 }
 
 export function installWorkerPollLoopSignals(
   loop: WorkerPollLoop,
-  onShutdown: () => void = () => loop.stop(),
+  onShutdown: () => void | Promise<void> = () => loop.stop(),
   options: WorkerPollLoopSignalOptions = { stdinEof: false }
 ): void {
   const gracefulShutdown = createWorkerPollLoopShutdownHandler(loop, onShutdown);

@@ -22,6 +22,9 @@ describe("Mac device-daemon package graph guard", () => {
         "packages/connector-worker/src/daemon/automation.ts": {},
         "packages/connector-worker/src/daemon/client.ts": {},
         "packages/connector-worker/src/executor/redact.ts": {},
+        "packages/connector-worker/src/daemon/native-bridge/protocol.ts": {},
+        "packages/connector-worker/src/daemon/native-bridge/client.ts": {},
+        "packages/connector-worker/src/daemon/native-bridge/executor.ts": {},
       })
     ).toEqual([]);
   });

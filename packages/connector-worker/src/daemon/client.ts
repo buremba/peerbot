@@ -109,6 +109,63 @@ import { resolveRunnableAgentKinds } from "./agent-binaries.js";
 /** Capability strings the worker advertises, keyed by name (e.g. `browser.debugger`). */
 export type WorkerCapabilities = Record<string, boolean>;
 
+export interface WorkerAdvertisementSnapshot {
+  capabilities: WorkerCapabilities;
+  manifests: unknown[];
+  generation: number;
+}
+
+export interface WorkerAdvertisementProvider {
+  snapshot(): WorkerAdvertisementSnapshot;
+}
+
+export class MutableWorkerAdvertisementProvider implements WorkerAdvertisementProvider {
+  private current: WorkerAdvertisementSnapshot;
+
+  constructor(snapshot: Omit<WorkerAdvertisementSnapshot, 'generation'> & { generation?: number }) {
+    this.current = {
+      capabilities: { ...snapshot.capabilities },
+      manifests: [...snapshot.manifests],
+      generation: snapshot.generation ?? 0,
+    };
+  }
+
+  snapshot(): WorkerAdvertisementSnapshot {
+    return {
+      capabilities: { ...this.current.capabilities },
+      manifests: [...this.current.manifests],
+      generation: this.current.generation,
+    };
+  }
+
+  update(snapshot: Omit<WorkerAdvertisementSnapshot, 'generation'> & { generation: number }): void {
+    if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < this.current.generation) {
+      throw new Error('worker advertisement generation must be a monotonic safe integer');
+    }
+    const next = {
+      capabilities: { ...snapshot.capabilities },
+      manifests: [...snapshot.manifests],
+      generation: snapshot.generation,
+    };
+    if (snapshot.generation === this.current.generation) {
+      if (snapshotFingerprint(next) !== snapshotFingerprint(this.current)) {
+        throw new Error('worker advertisement generation must increase for a changed snapshot');
+      }
+      return;
+    }
+    this.current = next;
+  }
+}
+
+function snapshotFingerprint(snapshot: WorkerAdvertisementSnapshot): string {
+  return JSON.stringify(snapshot, (_key, value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)),
+    );
+  });
+}
+
 /** HTTP error carrying the status code for retry and terminal-conflict policy. */
 export class WorkerHttpError extends Error {
   constructor(
@@ -149,6 +206,7 @@ export class WorkerClient implements ExecutorClient {
   private manifests: unknown[] = [];
   private binaryOverrides?: Partial<Record<AgentKind, string>>;
   private fixedAgentKinds?: AgentKind[];
+  private advertisementProvider?: WorkerAdvertisementProvider;
   private agentKindsCache: { kinds: AgentKind[]; at: number } | null = null;
 
   constructor(config: {
@@ -167,6 +225,8 @@ export class WorkerClient implements ExecutorClient {
     binaryOverrides?: Partial<Record<AgentKind, string>>;
     /** Exact session workers advertise only the one CLI they can receive. */
     agentKinds?: AgentKind[];
+    /** Mutable device capability/manifest snapshot, updated by the native bridge. */
+    advertisementProvider?: WorkerAdvertisementProvider;
   }) {
     this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
@@ -178,6 +238,7 @@ export class WorkerClient implements ExecutorClient {
     this.manifests = config.manifests ?? [];
     this.binaryOverrides = config.binaryOverrides;
     this.fixedAgentKinds = config.agentKinds;
+    this.advertisementProvider = config.advertisementProvider;
   }
 
   /**
@@ -244,9 +305,12 @@ export class WorkerClient implements ExecutorClient {
    * Poll for available runs
    */
   async poll(capacityAvailable?: number): Promise<PollResponse> {
+    const advertisement = this.advertisementProvider?.snapshot();
+    const capabilities = advertisement?.capabilities ?? this.advertisedCapabilities();
+    const manifests = advertisement?.manifests ?? this.manifests;
     return this.requestJson<PollResponse>('/api/workers/poll', {
       worker_id: this.workerId,
-      capabilities: this.advertisedCapabilities(),
+      capabilities,
       version: this.version,
       ...(capacityAvailable === undefined
         ? {}
@@ -262,7 +326,9 @@ export class WorkerClient implements ExecutorClient {
           }
         : {}),
       ...(this.label ? { label: this.label } : {}),
-      ...(this.manifests.length > 0 ? { connector_manifests: this.manifests } : {}),
+      ...(this.advertisementProvider || manifests.length > 0
+        ? { connector_manifests: manifests }
+        : {}),
     });
   }
 

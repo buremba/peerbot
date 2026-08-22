@@ -94,15 +94,36 @@ describe('Mac device daemon options', () => {
     expect(shouldHandleWorkerPollLoopStdinEof({ stdinEof: true })).toBe(true);
   });
 
-  test('aborts Automation execution before stopping the poll loop', () => {
+  test('aborts Automation execution before stopping the poll loop', async () => {
     const events: string[] = [];
     const controller = new AbortController();
     controller.signal.addEventListener('abort', () => events.push('abort'));
     const loop = { stop: () => events.push('stop') } as never;
 
-    createMacDeviceDaemonShutdown(controller, loop)();
+    await createMacDeviceDaemonShutdown(controller, loop)();
 
     expect(events).toEqual(['abort', 'stop']);
+  });
+
+  test('awaits native bridge cancellation, terminal reporting, and shutdown in order', async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const loop = {
+      stop: () => events.push('stop'),
+      waitForActiveJobs: async () => {
+        events.push('wait');
+        return true;
+      },
+    } as unknown as WorkerPollLoop;
+    const bridge = {
+      cancelActiveRuns: async () => events.push('cancel'),
+      shutdown: async () => events.push('shutdown'),
+      close: () => events.push('close'),
+    } as never;
+
+    await createMacDeviceDaemonShutdown(controller, loop, bridge)();
+
+    expect(events).toEqual(['stop', 'cancel', 'wait', 'shutdown', 'close']);
   });
 });
 

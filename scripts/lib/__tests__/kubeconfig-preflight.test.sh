@@ -74,16 +74,20 @@ assert_cleanup_refuses() {
   grep -q "$sentinel" "$config"
 }
 
+assert_kubectl_log_is_read_only() {
+  if grep -Ev '^(config|get|auth can-i)( |$)' "$KUBECTL_LOG" | grep -q .; then
+    echo 'preflight attempted a Kubernetes mutation after validation failed' >&2
+    exit 1
+  fi
+}
+
 assert_fails_without_mutation() {
   mode=$1
   if run_setup "$mode" >"$TMP/stdout" 2>"$TMP/stderr"; then
     echo "expected $mode to fail the kubeconfig preflight" >&2
     exit 1
   fi
-  if grep -Eq 'apply|create|delete|patch|set env' "$KUBECTL_LOG"; then
-    echo 'preflight attempted a Kubernetes mutation after validation failed' >&2
-    exit 1
-  fi
+  assert_kubectl_log_is_read_only
   if grep -Eq 'apiVersion|clusters:|users:|BEGIN |token|certificate|kubeconfig-secret-sentinel' \
     "$TMP/stdout" "$TMP/stderr"; then
     echo 'preflight leaked kubeconfig material after validation failed' >&2
@@ -119,12 +123,10 @@ if grep -q 'not base64' "$TMP/stdout" "$TMP/stderr"; then
   echo 'preflight leaked malformed credential input' >&2
   exit 1
 fi
-if grep -Eq 'apply|create|delete|patch|set env' "$KUBECTL_LOG"; then
-  echo 'preflight attempted a Kubernetes mutation for malformed credentials' >&2
-  exit 1
-fi
+assert_kubectl_log_is_read_only
 [ -z "$(find "$TMP/runner-malformed" -type f -name 'lobu-kubeconfig.*' -print)" ]
 
+: >"$KUBECTL_LOG"
 mkdir -p "$TMP/runner-empty"
 if env \
   RUNNER_TEMP="$TMP/runner-empty" \
@@ -140,6 +142,7 @@ if env \
 fi
 grep -q 'credential secret is empty' "$TMP/stderr"
 grep -q 'refusing Kubernetes mutation' "$TMP/stderr"
+[ ! -s "$KUBECTL_LOG" ]
 [ -z "$(find "$TMP/runner-empty" -type f -name 'lobu-kubeconfig.*' -print)" ]
 
 : >"$KUBECTL_LOG"

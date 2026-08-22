@@ -807,6 +807,9 @@ describe('device connector manifests', () => {
   it('cuts an existing WhatsApp connection over to its sole Chrome advertiser without replacing rows', async () => {
     const { userId, orgId, workerId: macWorkerId } = await seedDeviceOwner('macos');
     const sql = getTestDb();
+    const chromeManifest = whatsappManifest('chrome-extension', {
+      runtime: { platforms: ['macos', 'chrome-extension'] },
+    });
 
     expect(
       (await poll(macWorkerId, [whatsappManifest('macos')], 'macos', { whatsapp_local: true }))
@@ -861,7 +864,7 @@ describe('device connector manifests', () => {
     });
     expect(
       (
-        await poll(advertiserWorkerId, [whatsappManifest('chrome-extension')], 'chrome-extension', {
+        await poll(advertiserWorkerId, [chromeManifest], 'chrome-extension', {
           'browser.scripting': true,
         })
       ).status
@@ -897,7 +900,17 @@ describe('device connector manifests', () => {
     expect(definition?.name).toBe('WhatsApp Personal');
     expect(definition?.version).toBe('2.0.0');
     expect(definition?.required_capability).toBe('browser.scripting');
-    expect(definition?.runtime).toEqual({ platforms: ['chrome-extension'] });
+    expect(definition?.runtime).toEqual({ platforms: ['macos', 'chrome-extension'] });
+    const [artifact] = (await sql`
+      SELECT source_path
+      FROM connector_versions
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = '2.0.0'
+    `) as unknown as Array<{ source_path: string | null }>;
+    expect(artifact.source_path).toBe(
+      'device-manifest://chrome-extension/whatsapp.local@2.0.0'
+    );
 
     const messagesFeed = after.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();
@@ -924,7 +937,7 @@ describe('device connector manifests', () => {
 
     const advertiserPoll = await poll(
       advertiserWorkerId,
-      [whatsappManifest('chrome-extension')],
+      [chromeManifest],
       'chrome-extension',
       { 'browser.scripting': true }
     );

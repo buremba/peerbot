@@ -176,13 +176,23 @@ export async function getDeviceManifestSourcesForUser(params: {
   userId: string;
 }): Promise<DeviceConnectorSource[]> {
   const rows = (await params.sql`
-    SELECT id, capabilities, connector_manifests
+    SELECT id, platform, capabilities, connector_manifests
     FROM device_workers
     WHERE user_id = ${params.userId}
       AND last_seen_at > now() - '7 days'::interval
-  `) as unknown as Array<{ id: string; capabilities: unknown; connector_manifests: unknown }>;
+  `) as unknown as Array<{
+    id: string;
+    platform: string | null;
+    capabilities: unknown;
+    connector_manifests: unknown;
+  }>;
 
-  const candidates: Array<{ stored: StoredDeviceManifest; deviceId: string }> = [];
+  type ManifestCandidate = {
+    stored: StoredDeviceManifest;
+    deviceId: string;
+    platform: string | null;
+  };
+  const candidates: ManifestCandidate[] = [];
   const liveCapabilities = new Map<string, Set<string>>();
   const winners = new Map<string, StoredDeviceManifest>();
   for (const row of rows) {
@@ -194,7 +204,7 @@ export async function getDeviceManifestSourcesForUser(params: {
     for (const value of Object.values(map)) {
       const stored = parseStoredManifest(value);
       if (!stored) continue;
-      candidates.push({ stored, deviceId: row.id });
+      candidates.push({ stored, deviceId: row.id, platform: row.platform });
       const existing = winners.get(stored.manifest.key);
       if (!existing || compareManifestWinner(stored, existing) > 0) {
         winners.set(stored.manifest.key, stored);
@@ -202,24 +212,56 @@ export async function getDeviceManifestSourcesForUser(params: {
     }
   }
 
-  return [...winners.values()].map((stored) => ({
-    key: stored.manifest.key,
-    requiredCapability: stored.manifest.required_capability,
-    advertiserDeviceIds: candidates
+  return [...winners.values()].flatMap((stored) => {
+    const exactCandidates = candidates.filter(
+      (candidate) =>
+        candidate.stored.manifest.key === stored.manifest.key &&
+        candidate.stored.manifest.version === stored.manifest.version &&
+        candidate.stored.manifest_hash === stored.manifest_hash
+    );
+    const advertiserCandidates = exactCandidates.filter(
+      (candidate) =>
+        liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
+    );
+    // Provenance must describe the platform that actually validated and
+    // advertised this manifest. `runtime.platforms` is a compatibility set, not
+    // an ordered ownership declaration; using element zero can misroute a valid
+    // Chrome manifest whose Chrome entry appears later in the array. Prefer a
+    // currently capable advertiser, then fall back to an exact stored advertiser
+    // so inventory remains stable while a permission is temporarily revoked.
+    const sourceCandidate = (
+      advertiserCandidates.length > 0 ? advertiserCandidates : exactCandidates
+    )
       .filter(
-        (candidate) =>
-          candidate.stored.manifest.key === stored.manifest.key &&
-          candidate.stored.manifest.version === stored.manifest.version &&
-          candidate.stored.manifest_hash === stored.manifest_hash &&
-          liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
+        (candidate): candidate is ManifestCandidate & { platform: string } =>
+          typeof candidate.platform === 'string' &&
+          stored.manifest.runtime.platforms.includes(candidate.platform)
       )
-      .map((candidate) => candidate.deviceId)
-      .sort(),
-    feedKeys: manifestFeedKeys(stored.manifest),
-    metadata: deviceManifestToConnectorMetadata(stored.manifest),
-    sourcePath: `device-manifest://${stored.manifest.runtime.platforms[0]}/${stored.manifest.key}@${stored.manifest.version}`,
-    manifestHash: stored.manifest_hash,
-  }));
+      .sort(
+        (a, b) => a.platform.localeCompare(b.platform) || a.deviceId.localeCompare(b.deviceId)
+      )[0];
+    if (!sourceCandidate) {
+      logger.warn(
+        { connectorKey: stored.manifest.key, connectorVersion: stored.manifest.version },
+        '[device-manifests] exact manifest has no valid advertising platform'
+      );
+      return [];
+    }
+
+    return [
+      {
+        key: stored.manifest.key,
+        requiredCapability: stored.manifest.required_capability,
+        advertiserDeviceIds: advertiserCandidates
+          .map((candidate) => candidate.deviceId)
+          .sort(),
+        feedKeys: manifestFeedKeys(stored.manifest),
+        metadata: deviceManifestToConnectorMetadata(stored.manifest),
+        sourcePath: `device-manifest://${sourceCandidate.platform}/${stored.manifest.key}@${stored.manifest.version}`,
+        manifestHash: stored.manifest_hash,
+      },
+    ];
+  });
 }
 
 export function storedManifestMap(valid: StoredDeviceManifest[]): Record<string, StoredDeviceManifest> {

@@ -17,6 +17,11 @@ export function materializeConnectorAutomationSignal(args: {
 	deliveryId: string;
 }): ConnectorTriggerSignal | null {
 	if (args.connectionId == null) return null;
+	// `state_updated` is the in-place counter reconciliation that replaced a
+	// volatile-only supersede. It maps exactly where `superseded` used to, so a
+	// declared draft keeps firing on `updated_event_type` and no more: routing it
+	// through the `unchanged` arm would fall back to `event_type` and start
+	// firing for connectors that never declared an updated kind.
 	const eventType =
 		args.change === "inserted"
 			? args.draft.event_type

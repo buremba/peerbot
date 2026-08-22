@@ -157,6 +157,18 @@ interface InsertEventParams {
   clientId?: string | null;
 }
 
+/**
+ * How an insertEvent call settled.
+ *
+ * `state_updated` means durable content matched an existing head and only
+ * volatile source state (engagement counters, `updated_at`) was reconciled onto
+ * that row in place — no new stored version, no new vector. Consumers that
+ * treat `superseded` as "the source item changed" should treat this the same
+ * way; consumers that commit per-version side effects (artifacts, workspace
+ * event activations) should treat it as `unchanged`.
+ */
+export type EventChangeKind = 'inserted' | 'superseded' | 'unchanged' | 'state_updated';
+
 export interface InsertedEvent {
   id: number;
   entity_ids: number[] | null;
@@ -165,7 +177,7 @@ export interface InsertedEvent {
   semantic_type: string;
   created_at: string;
   /** Whether this call landed a new immutable row or reused identical state. */
-  change: 'inserted' | 'superseded' | 'unchanged';
+  change: EventChangeKind;
 }
 
 /** Key-order-independent JSON serialization for semantic equality checks. */
@@ -227,6 +239,63 @@ function semanticAttachmentState(attachments: unknown[] | undefined): string {
       return durable;
     })
   );
+}
+
+/**
+ * Metadata keys whose value is a point-in-time observation of source state, not
+ * something anyone authored.
+ *
+ * Measured on the 200,000 most recent supersede pairs in prod: 164,915 (82.5%)
+ * differed ONLY in `score`/`metadata` with title, payload_text and attachments
+ * byte-identical. Comparing metadata raw therefore minted a whole new stored
+ * version — a duplicate row, a duplicate 768-dim vector and a permanent ivfflat
+ * entry — every time an upvote landed.
+ *
+ * Same reasoning as DURABLE_ATTACHMENT_KEYS above, which already fixed this
+ * exact class for attachments (they now differ in 7 of 200,000 pairs). These
+ * keys are excluded from the durable comparison and written in place instead.
+ */
+const VOLATILE_METADATA_KEYS = new Set([
+  'score',
+  'upvote_ratio',
+  'reply_count',
+  'comments',
+  'num_comments',
+  'view_count',
+  'like_count',
+  'retweet_count',
+  'quote_count',
+  'bookmark_count',
+  'rank',
+  'updated_at',
+]);
+
+/**
+ * Dedup view of `events.metadata`: everything a human or connector authored,
+ * with the volatile observations stripped. Two payloads equal under this
+ * projection describe the same content even if the counters moved.
+ */
+function durableMetadataState(metadata: Record<string, unknown> | null | undefined): string {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return stableJson(metadata ?? {});
+  }
+  const durable: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!VOLATILE_METADATA_KEYS.has(key)) durable[key] = value;
+  }
+  return stableJson(durable);
+}
+
+/** The volatile subset actually present on an incoming payload. */
+function volatileMetadataPatch(
+  metadata: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return patch;
+  for (const [key, value] of Object.entries(metadata)) {
+    if (VOLATILE_METADATA_KEYS.has(key)) patch[key] = value;
+  }
+  return patch;
 }
 
 function normalizedTimestamp(value?: Date | string | null): string | null {
@@ -308,8 +377,10 @@ function isSemanticallyEqual(
         normalizedTimestamp(params.occurredAt)) &&
     existing.semantic_type === params.semanticType &&
     (existing.origin_type ?? null) === (params.originType ?? null) &&
-    stableJson(existing.metadata ?? {}) === stableJson(params.metadata ?? {}) &&
-    Number(existing.score ?? 0) === Number(params.score ?? 0) &&
+    // Volatile observations (counters, `updated_at`) are deliberately absent
+    // from this comparison and from `score` below — they are reconciled in
+    // place by applyVolatileState instead of minting a new stored version.
+    durableMetadataState(existing.metadata) === durableMetadataState(params.metadata) &&
     // Compare the value a supersede would WRITE: a null parentOriginId copies
     // the predecessor's parent (loadEventLineage), so only a caller-supplied
     // parent can differ. Comparing the raw param would re-supersede a
@@ -326,6 +397,50 @@ function isSemanticallyEqual(
       stableJson(params.interactionOutput ?? null) &&
     (existing.interaction_error ?? null) === (params.interactionError ?? null)
   );
+}
+
+/**
+ * Reconcile volatile source state on the CURRENT row instead of superseding it.
+ *
+ * `events` is append-only by convention, but the DB-enforced invariant is
+ * narrower: the only trigger on the table is `trg_events_append_only`, and it
+ * is BEFORE DELETE. The ledger's job is to preserve what was authored; an
+ * upvote count observed at read time is not an utterance, so it is reconciled
+ * rather than versioned. The counter time-series is deliberately not retained —
+ * it previously existed only as ~1.8M duplicate rows that nothing queried.
+ *
+ * `metadata || patch` merges just the volatile keys, so identity keys behind the
+ * expression indexes on this table (`metadata->>'email'`, `->>'phone'`, …) are
+ * left untouched. A volatile key REMOVED upstream is not unset — merging is
+ * intentional, since a connector omitting a counter on one sync should not drop
+ * the last known value.
+ *
+ * Returns true when a write actually happened.
+ */
+async function applyVolatileState(
+  eventId: number,
+  existing: { metadata: Record<string, unknown> | null; score: number | null },
+  params: InsertEventParams,
+  sql: DbClient
+): Promise<boolean> {
+  const patch = volatileMetadataPatch(params.metadata);
+  const existingVolatile = volatileMetadataPatch(existing.metadata);
+  const scoreChanged = Number(existing.score ?? 0) !== Number(params.score ?? 0);
+  // The dirty check mirrors the merge below: an omitted counter is preserved,
+  // not unset, so it must not count as a change either — comparing the raw
+  // volatile sets instead would report `state_updated` (and fire a declared
+  // updated_event_type) on every sync once a connector omits a key it once sent.
+  const metadataChanged =
+    stableJson({ ...existingVolatile, ...patch }) !== stableJson(existingVolatile);
+  if (!scoreChanged && !metadataChanged) return false;
+
+  await sql`
+    UPDATE events
+       SET score = ${params.score ?? null},
+           metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json(patch)}::jsonb
+     WHERE id = ${eventId}
+  `;
+  return true;
 }
 
 async function upsertEmbedding(
@@ -503,9 +618,22 @@ export async function insertEvent(
               params.embeddingModel,
               activeSql
             );
-            const unchanged = { ...existingRow, change: 'unchanged' as const };
-            await options?.afterPersist?.(unchanged, activeSql);
-            return unchanged;
+            // Durable content matched, so no new version is warranted. Volatile
+            // observations may still have moved; reconcile them on this row.
+            const stateWritten = await applyVolatileState(
+              existingRow.id,
+              { metadata: existing.metadata ?? null, score: existing.score ?? null },
+              params,
+              activeSql
+            );
+            const settled = {
+              ...existingRow,
+              change: (stateWritten ? 'state_updated' : 'unchanged') as
+                | 'state_updated'
+                | 'unchanged',
+            };
+            await options?.afterPersist?.(settled, activeSql);
+            return settled;
           }
           // Race: the existing row was deleted/tombstoned between the
           // findCurrentEventByOrigin lookup above and the SELECT here. Fall

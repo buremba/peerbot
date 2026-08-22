@@ -433,6 +433,37 @@ describe('native bridge handshake', () => {
     output.destroy();
   });
 
+  test('abandons a timed-out run so ignored late frames cannot retain its owner', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    const outputDecoder = new NativeBridgeFrameDecoder();
+    input.write(helloFrame());
+    await bridge.handshake();
+    outputDecoder.append(output.read() as Buffer);
+
+    const runPromise = bridge.run({ operation: 'action', requestId: 'run-timeout', job: { run_id: 46 } });
+    await Bun.sleep(5);
+    outputDecoder.append(output.read() as Buffer);
+    expect(bridge.activeRunCount).toBe(1);
+
+    const timeoutError = new Error('native bridge run timed out');
+    await bridge.cancelAndAbandon('run-timeout', 46, timeoutError);
+    expect(bridge.activeRunCount).toBe(0);
+    await expect(runPromise).rejects.toThrow(timeoutError.message);
+    input.write(frame({
+      kind: 'complete',
+      request_id: 'run-timeout',
+      run_id: 46,
+      payload: { action_output: { ok: true } },
+    }));
+    await Bun.sleep(5);
+    expect(bridge.activeRunCount).toBe(0);
+    input.destroy();
+    output.destroy();
+  });
+
   test('rejects a run when the dequeued frame fails during output drain', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

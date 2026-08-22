@@ -26,7 +26,6 @@ export async function executeNativeBridgeRun(
 
   const completeSync = async (result: NativeBridgeRunResult, errorMessage?: string) => {
     if (terminalAttempted) return;
-    terminalAttempted = true;
     await client.complete({
       run_id: runId,
       worker_id: client.id,
@@ -36,10 +35,10 @@ export async function executeNativeBridgeRun(
       ...(result.auth_update ? { auth_update: result.auth_update } : {}),
       ...(errorMessage ? { error_message: errorMessage } : {}),
     });
+    terminalAttempted = true;
   };
   const completeAction = async (result: NativeBridgeRunResult, errorMessage?: string) => {
     if (terminalAttempted) return;
-    terminalAttempted = true;
     const output = result.action_output ?? {};
     await client.completeAction({
       run_id: runId,
@@ -47,10 +46,10 @@ export async function executeNativeBridgeRun(
       status: errorMessage ? 'failed' : 'success',
       ...(errorMessage ? { error_message: errorMessage } : { action_output: output }),
     });
+    terminalAttempted = true;
   };
   const completeAuth = async (result: NativeBridgeRunResult, errorMessage?: string) => {
     if (terminalAttempted) return;
-    terminalAttempted = true;
     await client.completeAuth({
       run_id: runId,
       worker_id: client.id,
@@ -59,6 +58,7 @@ export async function executeNativeBridgeRun(
       ...(result.metadata ? { metadata: result.metadata } : {}),
       ...(errorMessage ? { error_message: errorMessage } : {}),
     });
+    terminalAttempted = true;
   };
 
   try {
@@ -144,8 +144,9 @@ async function runWithTimeout(
       run,
       new Promise<NativeBridgeRunResult>((_, reject) => {
         timer = setTimeout(() => {
-          void bridge.cancel(requestId, runId).catch(() => undefined);
-          reject(new Error(`native bridge run timed out after ${timeoutMs}ms`));
+          const timeoutError = new Error(`native bridge run timed out after ${timeoutMs}ms`);
+          void bridge.cancelAndAbandon(requestId, runId, timeoutError).catch(() => undefined);
+          reject(timeoutError);
         }, timeoutMs);
       }),
     ]);

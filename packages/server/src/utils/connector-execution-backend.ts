@@ -153,7 +153,9 @@ function definitionToManifest(
     favicon_domain: definition.faviconDomain,
     required_capability: definition.requiredCapability ?? '',
     runtime: runtime as DeviceConnectorManifest['runtime'],
-    auth_schema: (definition.authSchema ?? { methods: [{ type: 'none' }] }) as Record<string, unknown>,
+    ...(definition.authSchema == null
+      ? {}
+      : { auth_schema: definition.authSchema as Record<string, unknown> }),
     feeds_schema: asRecord(definition.feeds) ?? {},
     actions_schema: asRecord(definition.actions),
     options_schema: asRecord(definition.optionsSchema),

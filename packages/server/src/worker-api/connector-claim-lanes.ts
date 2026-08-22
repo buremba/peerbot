@@ -77,6 +77,7 @@ export function connectorClaimLaneSql(
     AND ${refs.runRequiredCapability} = ANY(
       ${pgTextArray(context.authorizedCapabilities)}::text[]
     )
+    AND NOT COALESCE(${refs.runManifestBacked}, false)
     AND ${context.workerPlatform ?? ''}::text <> 'chrome-extension'
     AND COALESCE(
       ${refs.runRuntime}->'platforms' ? ${context.workerPlatform ?? ''}::text,

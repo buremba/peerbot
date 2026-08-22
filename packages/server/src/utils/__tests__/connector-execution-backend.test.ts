@@ -125,4 +125,31 @@ describe('selected connector execution backend', () => {
     );
     expect(classify({ expectedPlatform: 'chrome-extension' }).backend).toBeUndefined();
   });
+
+  test('accepts a canonical bridge definition whose manifest omits auth_schema', () => {
+    const omittedAuthManifest = { ...manifest, auth_schema: undefined };
+    const omittedAuthHash = deviceManifestHash(omittedAuthManifest);
+    const omittedSourcePath = `device-manifest://macos/${manifest.key}@${manifest.version}`;
+    expect(classify({
+      artifact: {
+        sourcePath: omittedSourcePath,
+        manifestHash: omittedAuthHash,
+        compiledCode: null,
+        compileConfigHash: null,
+        hasSourceCode: false,
+      },
+      definition: { ...definition, authSchema: undefined },
+      authorizations: [{
+        connectorKey: manifest.key,
+        connectorVersion: manifest.version,
+        manifestHash: omittedAuthHash,
+        sourcePath: omittedSourcePath,
+        runtimeExecution: 'bridge',
+      }],
+    })).toEqual({
+      manifestBacked: true,
+      backend: 'native_bridge',
+      manifestHash: omittedAuthHash,
+    });
+  });
 });

@@ -158,6 +158,23 @@ export class NativeBridgeClient {
     }, { requestId, runKey: requestId + ':' + runId });
   }
 
+  async cancelAndAbandon(requestId: string, runId: number, error: Error): Promise<void> {
+    const pending = this.pending.get(requestId);
+    if (!pending || pending.runId !== runId || pending.terminal) return;
+    pending.cancelSent = true;
+    try {
+      await this.send({
+        version: NATIVE_BRIDGE_PROTOCOL_VERSION,
+        kind: 'cancel',
+        request_id: requestId,
+        run_id: runId,
+        payload: { reason: 'native_bridge_timeout' },
+      }, { requestId, runKey: requestId + ':' + runId });
+    } finally {
+      this.rejectPending(requestId, error, true);
+    }
+  }
+
   async cancelActiveRuns(): Promise<void> {
     const cancellations = [...this.pending.values()].map((pending) =>
       this.cancel(pending.requestId, pending.runId),

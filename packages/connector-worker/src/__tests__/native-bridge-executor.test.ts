@@ -86,6 +86,33 @@ describe('native bridge run forwarding', () => {
     ]);
   });
 
+  test('retries terminal delivery after the first completion request fails', async () => {
+    const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
+    let completionAttempts = 0;
+    client.completeAction = async (value: unknown) => {
+      completionAttempts += 1;
+      client.calls.completeAction.push(value);
+      if (completionAttempts === 1) throw new Error('terminal delivery failed');
+    };
+    const bridge = {
+      run: async () => ({}),
+    } as never;
+
+    const result = await executeNativeBridgeRun(client as never, bridge, {
+      run_id: 10,
+      run_type: 'action',
+      action_key: 'open',
+      action_input: {},
+    } as never);
+
+    expect(result.error).toBe('terminal delivery failed');
+    expect(completionAttempts).toBe(2);
+    expect(client.calls.completeAction).toHaveLength(2);
+    expect(client.calls.completeAction[1]).toEqual(
+      expect.objectContaining({ run_id: 10, status: 'failed', error_message: 'terminal delivery failed' }),
+    );
+  });
+
   test('does not advance or commit a checkpoint from a failed stream', async () => {
     const client = fakeClient() as {
       calls: Record<string, unknown[]>;
@@ -208,6 +235,9 @@ describe('native bridge run forwarding', () => {
     const bridge = {
       run: async () => new Promise<never>(() => undefined),
       cancel: async (requestId: string, runId: number) => {
+        cancellations.push([requestId, runId]);
+      },
+      cancelAndAbandon: async (requestId: string, runId: number) => {
         cancellations.push([requestId, runId]);
       },
     } as never;

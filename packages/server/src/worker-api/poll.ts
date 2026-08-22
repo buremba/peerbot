@@ -6,7 +6,11 @@
  */
 
 import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
-import type { PollRequest } from '@lobu/core/contracts/worker/protocol';
+import { Value } from '@sinclair/typebox/value';
+import {
+  PollRequestSchema,
+  type PollRequest,
+} from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
 import {
   automationTriggerSignals,
@@ -180,7 +184,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // can run nothing.
   let agentKinds: string[] | null = null;
   try {
-    const body = await c.req.json<PollRequest>();
+    const rawBody = await c.req.json<unknown>();
+    if (!Value.Check(PollRequestSchema, rawBody)) {
+      const first = Value.Errors(PollRequestSchema, rawBody).First();
+      return c.json(
+        {
+          error: first
+            ? `${first.path || '(root)'} ${first.message}`.trim()
+            : 'Invalid request body',
+        },
+        400
+      );
+    }
+    const body = rawBody as PollRequest;
     worker_id = body.worker_id;
     capabilities = body.capabilities ?? {};
     platform = body.platform ?? null;

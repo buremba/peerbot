@@ -957,6 +957,107 @@ describe('device connector manifests', () => {
     expect(afterRun).toEqual(beforePoll[0]);
   });
 
+  it('rejects invalid poll bodies before changing worker or run state', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const manifestPayload = manifest();
+
+    expect(
+      (
+        await poll(
+          workerId,
+          [manifestPayload],
+          'macos',
+          { screentime: true },
+          { capacityAvailable: 0 },
+        )
+      ).status,
+    ).toBe(200);
+    await settleRunsAndFeeds(orgId);
+
+    const [connectionFeed] = (await sql`
+      SELECT c.id AS connection_id, f.id AS feed_id
+      FROM connections c
+      JOIN feeds f ON f.connection_id = c.id
+      WHERE c.organization_id = ${orgId}
+        AND c.connector_key = ${CONNECTOR_KEY}
+        AND f.feed_key = 'snapshots'
+      LIMIT 1
+    `) as unknown as Array<{ connection_id: number; feed_id: number }>;
+    const [run] = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, feed_id, connection_id, connector_key,
+        connector_version, approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'sync', ${connectionFeed.feed_id}, ${connectionFeed.connection_id},
+        ${CONNECTOR_KEY}, '0.1.0', 'auto', 'pending', NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const validBody = {
+      worker_id: workerId,
+      platform: 'macos',
+      app_version: '9.9.0',
+      label: 'Test Device',
+      capabilities: { screentime: true },
+      connector_manifests: [manifestPayload],
+    };
+    const invalidBodies: unknown[] = [-1, 1.5, 1025, '1', null, {}].map(
+      (capacity_available) => ({ ...validBody, capacity_available }),
+    );
+    invalidBodies.push([], null);
+
+    const [beforeDevice] = (await sql`
+      SELECT app_version, capabilities, label, agent_kinds, connector_manifests,
+             last_seen_at::text AS last_seen_at
+      FROM device_workers
+      WHERE worker_id = ${workerId}
+    `) as unknown as Array<Record<string, unknown>>;
+    const beforeFeeds = await sql`
+      SELECT id, status, next_run_at::text AS next_run_at
+      FROM feeds
+      WHERE organization_id = ${orgId}
+      ORDER BY id
+    `;
+    const [beforeRun] = (await sql`
+      SELECT status, claimed_by, claimed_at, last_heartbeat_at
+      FROM runs
+      WHERE id = ${run.id}
+    `) as unknown as Array<Record<string, unknown>>;
+
+    for (const body of invalidBodies) {
+      const response =
+        body === null
+          ? await post('/api/workers/poll')
+          : await post('/api/workers/poll', { body });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.any(String) });
+    }
+
+    const [afterDevice] = (await sql`
+      SELECT app_version, capabilities, label, agent_kinds, connector_manifests,
+             last_seen_at::text AS last_seen_at
+      FROM device_workers
+      WHERE worker_id = ${workerId}
+    `) as unknown as Array<Record<string, unknown>>;
+    const afterFeeds = await sql`
+      SELECT id, status, next_run_at::text AS next_run_at
+      FROM feeds
+      WHERE organization_id = ${orgId}
+      ORDER BY id
+    `;
+    const [afterRun] = (await sql`
+      SELECT status, claimed_by, claimed_at, last_heartbeat_at
+      FROM runs
+      WHERE id = ${run.id}
+    `) as unknown as Array<Record<string, unknown>>;
+
+    expect(afterDevice).toEqual(beforeDevice);
+    expect(afterFeeds).toEqual(beforeFeeds);
+    expect(afterRun).toEqual(beforeRun);
+  });
+
   it('keeps manifest inventory separate from live permission state so revoked capabilities pause feeds', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const connectorManifest = manifest();

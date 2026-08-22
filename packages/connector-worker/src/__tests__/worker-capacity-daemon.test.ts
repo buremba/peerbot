@@ -47,4 +47,35 @@ describe("worker daemon capacity polling", () => {
 
     expect(calls).toEqual([2]);
   });
+
+  test("releases one slot when the executor rejects asynchronously", async () => {
+    const capacities: number[] = [];
+    let firstPoll = true;
+    const client = {
+      poll: async (capacity?: number) => {
+        capacities.push(capacity ?? -1);
+        if (firstPoll) {
+          firstPoll = false;
+          return { run_id: 42, run_type: "sync" };
+        }
+        return { next_poll_seconds: 1 };
+      },
+    } as never;
+    const loop = new WorkerPollLoop({
+      client,
+      maxConcurrentJobs: 1,
+      execute: async () => {
+        throw new Error("asynchronous executor failure");
+      },
+    });
+    const pollAndExecute = (loop as unknown as {
+      pollAndExecute: () => Promise<number | undefined>;
+    }).pollAndExecute.bind(loop);
+
+    await pollAndExecute();
+    expect(await loop.waitForActiveJobs(1000, 1)).toBe(true);
+    await pollAndExecute();
+
+    expect(capacities).toEqual([1, 1]);
+  });
 });

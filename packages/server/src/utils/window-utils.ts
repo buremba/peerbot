@@ -37,17 +37,6 @@ interface MonthlyLinkedRow {
   linked: number | string;
 }
 
-/** Normalize legacy inclusive period ends without changing genuine partial spans. */
-export function normalizeAutomationWindowEnd(
-  value: Date,
-  granularity: AutomationTimeGranularity
-): Date {
-  const aligned = alignToAutomationWindowStart(value, granularity);
-  if (value.getTime() === aligned.getTime()) return aligned;
-  const next = addAutomationPeriod(aligned, granularity);
-  return next.getTime() - value.getTime() <= 1 ? next : value;
-}
-
 /**
  * Fold two month-bucketed aggregates — total events per month vs. events linked
  * to an automation's windows per month — into the `UnprocessedRange[]` histogram.

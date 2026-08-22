@@ -1023,6 +1023,49 @@ export const ManageAutomationsPromotedEntitySchema = Type.Object({
   stable_key: Type.Union([Type.String(), Type.Null()]),
 });
 
+export const AutomationClaimNextWindowContextSchema = Type.Object({
+  content: Type.Array(Type.Unknown()),
+  page: Type.Object({
+    limit: Type.Integer(),
+    offset: Type.Integer(),
+    has_more: Type.Boolean(),
+    next_cursor: Type.Optional(
+      Type.Object({ occurred_at: Type.String(), id: Type.Integer() })
+    ),
+  }),
+  window_token: Type.String(),
+  window_start: Type.String(),
+  window_end: Type.String(),
+  sources: Type.Optional(
+    Type.Record(Type.String(), Type.Array(Type.Unknown()))
+  ),
+  sources_page: Type.Optional(
+    Type.Record(
+      Type.String(),
+      Type.Object({
+        returned: Type.Integer(),
+        limit: Type.Integer(),
+        has_more: Type.Boolean(),
+      })
+    )
+  ),
+  extraction_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+});
+export type AutomationClaimNextWindowContext = Static<
+  typeof AutomationClaimNextWindowContextSchema
+>;
+
+export const AutomationClaimNextWindowResultSchema = Type.Object({
+  action: Type.Literal("claim_next_window"),
+  automation_id: Type.String(),
+  run_id: Type.Integer(),
+  lease_expires_at: Type.String(),
+  context: AutomationClaimNextWindowContextSchema,
+});
+export type AutomationClaimNextWindowResult = Static<
+  typeof AutomationClaimNextWindowResultSchema
+>;
+
 export const ManageAutomationsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("list"),
@@ -1056,13 +1099,7 @@ export const ManageAutomationsResultSchema = Type.Union([
     window_end: Type.String(),
     content_linked: Type.Integer(),
   }),
-  Type.Object({
-    action: Type.Literal("claim_next_window"),
-    automation_id: Type.String(),
-    run_id: Type.Integer(),
-    lease_expires_at: Type.String(),
-    context: Type.Record(Type.String(), Type.Unknown()),
-  }),
+  AutomationClaimNextWindowResultSchema,
   Type.Object({
     action: Type.Literal("trigger"),
     automation_id: Type.String(),

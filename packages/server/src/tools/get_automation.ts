@@ -1008,9 +1008,20 @@ async function getAutomationImpl(
       now,
       timeGranularity
     );
+    const completedPeriodRows = await sql<{ window_start: string | Date }>`
+      SELECT approved_input->>'window_start' AS window_start
+      FROM runs
+      WHERE automation_id = ${Number(args.automation_id)}
+        AND run_type = 'automation'
+        AND status = 'completed'
+        AND action_output IS NOT NULL
+        AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
+        AND approved_input->>'window_start' IS NOT NULL
+        AND (approved_input->>'window_start')::timestamptz >= ${windowStart.toISOString()}::timestamptz
+        AND (approved_input->>'window_start')::timestamptz < ${closedBoundary.toISOString()}::timestamptz
+    `;
     const completedStarts = new Set<string>();
-    for (const window of formattedWindows) {
-      if (window.granularity !== timeGranularity) continue;
+    for (const window of completedPeriodRows) {
       const completedStart = alignToAutomationWindowStart(
         new Date(window.window_start),
         timeGranularity
@@ -1064,6 +1075,7 @@ async function getAutomationImpl(
 
     pendingAnalysis = {
       unprocessed_count: pendingWindowCount,
+      pending_period_count: pendingWindowCount,
       unprocessed_content_count: unprocessedContentCount,
       next_window: nextWindow,
       next_action: nextAction,

@@ -616,7 +616,7 @@ export default async (_ctx, client) => {
 			"Atomically lease the oldest completed Automation period and return bounded source context plus a fenced window_token. Pass run_id and context.page.next_cursor to continue a multi-page claim.",
 		access: "write",
 		signature:
-			"automations.claimNextWindow(input: { automation_id: string; lease_seconds?: number; limit?: number; run_id?: number; before_occurred_at?: string; before_id?: number }): Promise<unknown>",
+			"automations.claimNextWindow(input: { automation_id: string; lease_seconds?: number; limit?: number; run_id?: number; before_occurred_at?: string; before_id?: number }): Promise<AutomationClaimNextWindowResult>",
 		example:
 			"const claim = await client.automations.claimNextWindow({ automation_id: '42' });",
 	},

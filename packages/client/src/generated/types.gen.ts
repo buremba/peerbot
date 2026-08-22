@@ -4690,7 +4690,32 @@ export type ManageAutomationsResponses = {
         run_id: number;
         lease_expires_at: string;
         context: {
-          [key: string]: unknown;
+          content: Array<unknown>;
+          page: {
+            limit: number;
+            offset: number;
+            has_more: boolean;
+            next_cursor?: {
+              occurred_at: string;
+              id: number;
+            };
+          };
+          window_token: string;
+          window_start: string;
+          window_end: string;
+          sources?: {
+            [key: string]: Array<unknown>;
+          };
+          sources_page?: {
+            [key: string]: {
+              returned: number;
+              limit: number;
+              has_more: boolean;
+            };
+          };
+          extraction_schema?: {
+            [key: string]: unknown;
+          };
         };
       }
     | {
@@ -5081,7 +5106,8 @@ export type GetAutomationResponses = {
     };
     pending_analysis?: {
       unprocessed_count: number;
-      unprocessed_content_count?: number;
+      pending_period_count: number;
+      unprocessed_content_count: number;
       next_window: {
         start: string;
         end: string;

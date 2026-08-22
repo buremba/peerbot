@@ -413,8 +413,6 @@ describe("automation contract", () => {
 			windowEnd: page1.window_end,
 			dispatchSource: "manual",
 		});
-		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${run.runId}`;
-
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
 			run_id: run.runId,
@@ -471,8 +469,6 @@ describe("automation contract", () => {
 			windowEnd,
 			dispatchSource: "manual",
 		});
-		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${run.runId}`;
-
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
 			run_id: run.runId,

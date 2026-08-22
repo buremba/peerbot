@@ -662,7 +662,10 @@ export async function handleAutomationMode(
         : {}),
       page_has_more: contentPage?.has_more ?? false,
       truncated_source_names: Object.entries(sourcesPage)
-        .filter(([sourceName, page]) => sourceName !== 'content' && page.has_more)
+        .filter(
+          ([sourceName, page]) =>
+            page.has_more && (sourceName !== 'content' || !contentPage)
+        )
         .map(([sourceName]) => sourceName),
     },
     env

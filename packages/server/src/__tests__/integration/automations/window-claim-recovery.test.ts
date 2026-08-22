@@ -1,8 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { DbClient } from '../../../db/client';
+import { closeDbSingleton, type DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
 import { manageAutomations } from '../../../tools/admin/manage_automations';
+import { handleClaimNextWindow } from '../../../tools/admin/manage_automations/claim-next-window';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -16,11 +17,10 @@ import { TestApiClient } from '../../setup/test-mcp-client';
 
 const ENV = { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env;
 const DAY_MS = 86_400_000;
+let referenceNow = new Date();
 
 function dayStart(daysAgo: number): Date {
-  const date = new Date(Date.now() - daysAgo * DAY_MS);
-  date.setUTCHours(0, 0, 0, 0);
-  return date;
+  return new Date(referenceNow.getTime() - daysAgo * DAY_MS);
 }
 
 type ClaimContext = {
@@ -58,6 +58,8 @@ describe('Automation window claim and recovery', () => {
   });
 
   beforeEach(async () => {
+    referenceNow = new Date();
+    referenceNow.setUTCHours(0, 0, 0, 0);
     await cleanupTestDatabase();
     const seeded = await seedOwnerContext();
     sql = getTestDb() as unknown as DbClient;
@@ -192,6 +194,62 @@ describe('Automation window claim and recovery', () => {
     expect(active).toHaveLength(1);
   });
 
+  it('fences continuations to the full identified caller and rejects unidentified claimants', async () => {
+    const first = await handleClaimNextWindow(
+      { action: 'claim_next_window', automation_id: String(automationId) },
+      ENV,
+      { ...ctx, mcpSessionId: 'session-a' }
+    );
+
+    await expect(
+      handleClaimNextWindow(
+        {
+          action: 'claim_next_window',
+          automation_id: String(automationId),
+          run_id: first.run_id,
+        },
+        ENV,
+        { ...ctx, mcpSessionId: 'session-b' }
+      )
+    ).rejects.toThrow('Automation window continuation does not own an active lease.');
+
+    await expect(
+      handleClaimNextWindow(
+        { action: 'claim_next_window', automation_id: String(automationId) },
+        ENV,
+        {
+          ...ctx,
+          userId: null,
+          agentId: null,
+          clientId: null,
+          mcpSessionId: null,
+        }
+      )
+    ).rejects.toThrow('claim_next_window requires an identified caller');
+  });
+
+  it('loads claimed source context with a one-connection database pool', async () => {
+    const previousPoolMax = process.env.DB_POOL_MAX;
+    await closeDbSingleton();
+    process.env.DB_POOL_MAX = '1';
+    try {
+      const claimed = (await manageAutomations(
+        {
+          action: 'claim_next_window',
+          automation_id: String(automationId),
+          limit: 2,
+        },
+        ENV,
+        ctx
+      )) as ClaimResult;
+      expect(claimed.context.window_start).toBe(dayStart(1).toISOString());
+    } finally {
+      await closeDbSingleton();
+      if (previousPoolMax === undefined) delete process.env.DB_POOL_MAX;
+      else process.env.DB_POOL_MAX = previousPoolMax;
+    }
+  });
+
   it('reclaims an expired lease, fences the stale run, and replays a committed completion', async () => {
     const stale = await claim();
     await sql`UPDATE runs SET expires_at = NOW() - INTERVAL '1 second' WHERE id = ${stale.run_id}`;
@@ -205,7 +263,7 @@ describe('Automation window claim and recovery', () => {
         window_token: stale.context.window_token,
         extracted_data: { signals: [] },
       })
-    ).rejects.toThrow(/run|lease|terminal|fenced/i);
+    ).rejects.toThrow('window_token does not own the current Automation lease.');
 
     const input = {
       automation_id: String(automationId),
@@ -269,12 +327,30 @@ describe('Automation window claim and recovery', () => {
     });
     expect(second.run_id).toBe(first.run_id);
     expect(second.context.page.has_more).toBe(false);
+    expect(second.lease_expires_at).not.toBe(first.lease_expires_at);
+
+    const refreshedSecond = await claim({
+      run_id: first.run_id,
+      limit: 2,
+      before_occurred_at: cursor?.occurred_at,
+      before_id: cursor?.id,
+    });
+    expect(refreshedSecond.lease_expires_at).not.toBe(second.lease_expires_at);
 
     await expect(
       api.automations.completeWindow({
         automation_id: String(automationId),
         run_id: first.run_id,
         window_tokens: [first.context.window_token, second.context.window_token],
+        extracted_data: { signals: [] },
+      })
+    ).rejects.toThrow('window_token does not own the current Automation lease.');
+
+    await expect(
+      api.automations.completeWindow({
+        automation_id: String(automationId),
+        run_id: first.run_id,
+        window_tokens: [first.context.window_token, refreshedSecond.context.window_token],
         extracted_data: { signals: [] },
       })
     ).resolves.toMatchObject({ completed_now: true, content_linked: 3 });
@@ -340,6 +416,51 @@ describe('Automation window claim and recovery', () => {
     expect(afterRejectedCompletion.status).toBe('running');
   });
 
+  it('fails closed when a truncated non-event source is named content', async () => {
+    for (let index = 0; index < 3; index++) {
+      await createTestEntity({
+        name: `Named content context ${index}`,
+        organization_id: orgId,
+        created_by: userId,
+      });
+    }
+    const created = (await api.automations.create({
+      entity_id: entityId,
+      slug: 'named-content-context-source',
+      name: 'Named content context source',
+      prompt: 'Extract durable signals from {{primary}} using {{content}}.',
+      sources: [
+        {
+          name: 'primary',
+          query:
+            "SELECT id, occurred_at, payload_text FROM events WHERE semantic_type = 'content' ORDER BY occurred_at DESC, id DESC",
+        },
+        {
+          name: 'content',
+          query: 'SELECT id, name FROM entities WHERE deleted_at IS NULL ORDER BY id',
+          context: true,
+        },
+      ],
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      outputs: { signals: { event: 'observation' } },
+      agent_id: agentId,
+    })) as { automation_id: string };
+
+    const truncated = (await api.automations.claimNextWindow({
+      automation_id: created.automation_id,
+      limit: 2,
+    })) as ClaimResult;
+    expect(truncated.context.sources_page?.content?.has_more).toBe(true);
+    await expect(
+      api.automations.completeWindow({
+        automation_id: created.automation_id,
+        run_id: truncated.run_id,
+        window_token: truncated.context.window_token,
+        extracted_data: { signals: [] },
+      })
+    ).rejects.toThrow(/content.*cannot be completed safely/);
+  });
+
   it('recovers a legacy hole before a later out-of-order completion on every claim surface', async () => {
     const completedStart = dayStart(5);
     const completedEnd = dayStart(4);
@@ -378,16 +499,20 @@ describe('Automation window claim and recovery', () => {
     const pending = await computePendingWindow(sql, automationId, 'daily');
     expect(pending.windowStart.toISOString()).toBe(completedEnd.toISOString());
 
-    const detail = (await api.automations.get({
-      automation_id: String(automationId),
-    })) as {
+    type PendingDetail = {
       pending_analysis?: {
         unprocessed_count: number;
+        pending_period_count: number;
+        unprocessed_content_count: number;
         next_window: { start: string } | null;
       };
       gaps?: Array<{ start: string; end: string }>;
     };
+    const detail = (await api.automations.get({
+      automation_id: String(automationId),
+    })) as PendingDetail;
     expect(detail.pending_analysis?.unprocessed_count).toBe(3);
+    expect(detail.pending_analysis?.pending_period_count).toBe(3);
     expect(detail.pending_analysis?.next_window?.start).toBe(completedEnd.toISOString());
     expect(detail.gaps).toContainEqual({
       start: completedEnd.toISOString(),
@@ -401,6 +526,34 @@ describe('Automation window claim and recovery', () => {
       start: new Date(completedEnd.getTime() - 1).toISOString(),
       end: completedEnd.toISOString(),
     });
+
+    const expectedGlobalDiagnostics = {
+      unprocessed_count: detail.pending_analysis?.unprocessed_count,
+      pending_period_count: detail.pending_analysis?.pending_period_count,
+      next_window: detail.pending_analysis?.next_window,
+      gaps: detail.gaps,
+    };
+    for (const presentationFilters of [
+      { page: 2, page_size: 1 },
+      { page_size: 1 },
+      { content_since: dayStart(2).toISOString() },
+      { content_until: dayStart(3).toISOString() },
+      {
+        content_since: dayStart(3).toISOString(),
+        content_until: dayStart(1).toISOString(),
+      },
+    ]) {
+      const filtered = (await api.automations.get({
+        automation_id: String(automationId),
+        ...presentationFilters,
+      })) as PendingDetail;
+      expect({
+        unprocessed_count: filtered.pending_analysis?.unprocessed_count,
+        pending_period_count: filtered.pending_analysis?.pending_period_count,
+        next_window: filtered.pending_analysis?.next_window,
+        gaps: filtered.gaps,
+      }).toEqual(expectedGlobalDiagnostics);
+    }
 
     const claimed = await claim();
     expect(claimed.context.window_start).toBe(completedEnd.toISOString());
@@ -456,6 +609,7 @@ describe('Automation window claim and recovery', () => {
       WHERE source_run_id = ${empty.run_id}
     `;
     expect(Number(outputCountAfterFirst[0].count)).toBe(1);
+    expect(Number(reactionCountAfterFirst[0].count)).toBe(1);
     expect(outputCountAfterReplay).toEqual(outputCountAfterFirst);
     expect(reactionCountAfterReplay).toEqual(reactionCountAfterFirst);
   });

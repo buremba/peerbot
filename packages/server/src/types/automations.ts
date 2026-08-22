@@ -197,8 +197,11 @@ export const UnprocessedRangeSchema = Type.Object({
 export type UnprocessedRange = Static<typeof UnprocessedRangeSchema>;
 
 export const PendingAnalysisSchema = Type.Object({
+  /** Missing completed logical periods. Retained under unprocessed_count for existing clients. */
   unprocessed_count: Type.Integer(),
-  unprocessed_content_count: Type.Optional(Type.Integer()),
+  pending_period_count: Type.Integer(),
+  /** Source items not yet linked to any completed Automation run. */
+  unprocessed_content_count: Type.Integer(),
   next_window: Type.Union([
     Type.Object({
       start: Type.String(),

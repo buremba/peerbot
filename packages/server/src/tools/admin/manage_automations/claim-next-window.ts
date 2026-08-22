@@ -3,6 +3,7 @@ import {
   alignToAutomationWindowStart,
   inferAutomationGranularityFromSchedule,
 } from '@lobu/connector-sdk';
+import type { AutomationClaimNextWindowResult } from '@lobu/core/contracts/tools/manage-automations';
 import type { DbClient } from '../../../db/client';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
@@ -19,20 +20,26 @@ const MIN_LEASE_SECONDS = 30;
 const MAX_LEASE_SECONDS = 3600;
 
 function claimOwner(ctx: ToolContext): string {
-  return `external:${ctx.clientId ?? ctx.agentId ?? ctx.userId ?? ctx.mcpSessionId ?? 'member'}`;
+  const identity = {
+    user_id: ctx.userId ?? null,
+    agent_id: ctx.agentId ?? null,
+    client_id: ctx.clientId ?? null,
+    mcp_session_id: ctx.mcpSessionId ?? null,
+  };
+  if (Object.values(identity).every((value) => value == null)) {
+    throw new ToolUserError(
+      'claim_next_window requires an identified caller to own the window lease.',
+      403
+    );
+  }
+  return `external:${JSON.stringify(identity)}`;
 }
 
 export async function handleClaimNextWindow(
   args: ManageAutomationsArgs,
   env: Env,
   ctx: ToolContext
-): Promise<{
-  action: 'claim_next_window';
-  automation_id: string;
-  run_id: number;
-  lease_expires_at: string;
-  context: Record<string, unknown>;
-}> {
+): Promise<AutomationClaimNextWindowResult> {
   const automationId = Number(args.automation_id);
   if (!Number.isSafeInteger(automationId) || automationId < 1) {
     throw new ToolUserError('automation_id is required for claim_next_window.', 400);
@@ -46,7 +53,8 @@ export async function handleClaimNextWindow(
   }
 
   const sql = getDb();
-  return sql.begin(async (tx) => {
+  const owner = claimOwner(ctx);
+  const claimedWindow = await sql.begin(async (tx) => {
     const [automation] = await tx<{
       organization_id: string;
       schedule: string | null;
@@ -90,7 +98,7 @@ export async function handleClaimNextWindow(
       `;
       if (
         !continuation ||
-        continuation.claimed_by !== claimOwner(ctx) ||
+        continuation.claimed_by !== owner ||
         !continuation.expires_at ||
         new Date(continuation.expires_at).getTime() <= now.getTime()
       ) {
@@ -99,7 +107,13 @@ export async function handleClaimNextWindow(
       runId = Number(continuation.id);
       windowStart = new Date(continuation.window_start);
       windowEnd = new Date(continuation.window_end);
-      leaseExpiresAt = new Date(continuation.expires_at);
+      leaseExpiresAt = new Date(now.getTime() + leaseSeconds * 1000);
+      await tx`
+        UPDATE runs
+        SET expires_at = ${leaseExpiresAt.toISOString()}::timestamptz,
+            last_heartbeat_at = current_timestamp
+        WHERE id = ${runId}
+      `;
     } else {
       windowStart = await ensureExpectedAutomationWindowStart(
         tx,
@@ -168,7 +182,7 @@ export async function handleClaimNextWindow(
       const claimed = await claimPendingAutomationRun(tx, {
         runId,
         automationId,
-        claimedBy: claimOwner(ctx),
+        claimedBy: owner,
         status: 'running',
         expiresAt: leaseExpiresAt,
       });
@@ -177,6 +191,10 @@ export async function handleClaimNextWindow(
       }
     }
 
+    return { runId, windowStart, windowEnd, leaseExpiresAt };
+  });
+
+  try {
     const context = await handleAutomationMode(
       {
         automation_id: automationId,
@@ -191,22 +209,46 @@ export async function handleClaimNextWindow(
         userId: ctx.userId,
         excludeWorkspaceAudit: ctx.memberRole !== 'owner' && ctx.memberRole !== 'admin',
         claimedWindow: {
-          runId,
-          windowStart: windowStart.toISOString(),
-          windowEnd: windowEnd.toISOString(),
-          leaseExpiresAt: leaseExpiresAt.toISOString(),
+          runId: claimedWindow.runId,
+          windowStart: claimedWindow.windowStart.toISOString(),
+          windowEnd: claimedWindow.windowEnd.toISOString(),
+          leaseExpiresAt: claimedWindow.leaseExpiresAt.toISOString(),
         },
         throwOnSourceError: true,
       }
     );
+    if (!context.window_token || !context.window_start || !context.window_end) {
+      throw new Error('Claimed Automation context is missing its signed window bounds.');
+    }
+    const claimContext: AutomationClaimNextWindowResult['context'] = {
+      ...context,
+      window_token: context.window_token,
+      window_start: context.window_start,
+      window_end: context.window_end,
+    };
     return {
       action: 'claim_next_window',
       automation_id: String(automationId),
-      run_id: runId,
-      lease_expires_at: leaseExpiresAt.toISOString(),
-      context: context as Record<string, unknown>,
+      run_id: claimedWindow.runId,
+      lease_expires_at: claimedWindow.leaseExpiresAt.toISOString(),
+      context: claimContext,
     };
-  });
+  } catch (error) {
+    const sourceError = error instanceof Error ? error.message : String(error);
+    await sql`
+      UPDATE runs
+      SET status = 'failed',
+          outcome = ${classifyRunOutcome({ status: 'failed', errorMessage: sourceError })},
+          completed_at = current_timestamp,
+          error_message = ${`Automation source context failed: ${sourceError}`}
+      WHERE id = ${claimedWindow.runId}
+        AND automation_id = ${automationId}
+        AND status = 'running'
+        AND claimed_by = ${owner}
+        AND expires_at = ${claimedWindow.leaseExpiresAt.toISOString()}::timestamptz
+    `;
+    throw error;
+  }
 }
 
 async function expireExternalClaims(tx: DbClient, automationId: number): Promise<void> {

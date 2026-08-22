@@ -33,6 +33,12 @@ not advance it, so the same period remains visible in `pending_analysis` and can
 be attempted again. Backlog counts and `gaps` therefore include completed periods
 that have not yet materialized as run results.
 
+`pending_analysis.pending_period_count` is the explicit logical-window backlog;
+`unprocessed_count` carries the same missing-period value for existing clients.
+`unprocessed_content_count` separately counts source items not linked to a
+completed Automation run. Presentation pagination and date filters affect only
+the returned completed-window list, never these global backlog diagnostics.
+
 An external processor starts with an atomic claim instead of a separate read and
 run creation:
 

@@ -136,6 +136,14 @@ describe("ClientSDK object signature contract", () => {
 		const classifiers = builders.classifiers(ctx, env);
 		const schedules = builders.schedules(ctx, env);
 		const automations = builders.automations(ctx, env);
+		type ClaimResult = Awaited<ReturnType<typeof automations.claimNextWindow>>;
+		const assertTypedClaim = (claim: ClaimResult) => {
+			const windowToken: string = claim.context.window_token;
+			const nextCursor: { occurred_at: string; id: number } | undefined =
+				claim.context.page.next_cursor;
+			return { windowToken, nextCursor };
+		};
+		void assertTypedClaim;
 		const entitySchema = builders.entitySchema(ctx, env);
 
 		await entities.get({ entity_id: 11 });

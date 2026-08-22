@@ -9,6 +9,7 @@
 
 import type { Env } from "../../index";
 import type {
+	AutomationClaimNextWindowResult,
 	AutomationExecutionConfig,
 	AutomationSource,
 	AutomationTrigger,
@@ -123,7 +124,7 @@ export interface AutomationsNamespace {
 	update(input: AutomationUpdateInput): Promise<unknown>;
 	createVersion(input: AutomationCreateVersionInput): Promise<unknown>;
 	completeWindow(input: AutomationCompleteWindowInput): Promise<unknown>;
-	claimNextWindow(input: AutomationClaimNextWindowInput): Promise<unknown>;
+	claimNextWindow(input: AutomationClaimNextWindowInput): Promise<AutomationClaimNextWindowResult>;
 	trigger(input: { automation_id: AutomationId }): Promise<unknown>;
 	/** Delete one or more Automations. */
 	delete(input: { automation_ids: AutomationId[] }): Promise<unknown>;

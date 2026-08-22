@@ -78,6 +78,8 @@ export function reactionErrorIsNonTransient(error: string | undefined): boolean 
 
 function assertCompleteWindowPageChain(
   tokens: Array<{
+    run_id?: number;
+    lease_expires_at?: string;
     page_before_occurred_at?: string;
     page_before_id?: number;
     page_next_occurred_at?: string;
@@ -85,7 +87,7 @@ function assertCompleteWindowPageChain(
     page_has_more?: boolean;
     truncated_source_names?: string[];
   }>
-): void {
+): (typeof tokens)[number] | undefined {
   const truncated = [
     ...new Set(tokens.flatMap((token) => token.truncated_source_names ?? [])),
   ];
@@ -97,7 +99,7 @@ function assertCompleteWindowPageChain(
     );
   }
   const paged = tokens.filter((token) => token.page_has_more !== undefined);
-  if (paged.length === 0) return;
+  if (paged.length === 0) return undefined;
   const roots = paged.filter(
     (token) => token.page_before_occurred_at == null && token.page_before_id == null
   );
@@ -121,9 +123,12 @@ function assertCompleteWindowPageChain(
         token.page_before_id === current.page_next_id
     );
     if (!next) {
+      const continuationGuidance = tokens.some((token) => token.lease_expires_at != null)
+        ? 'Call automations.claimNextWindow with the same run_id and context.page.next_cursor'
+        : 'Call read_knowledge again with before_occurred_at and before_id from page.next_cursor';
       throw new ToolUserError(
-        'More Automation source pages remain. Call automations.claimNextWindow with the same run_id ' +
-          'and context.page.next_cursor, then pass every returned window_token to completeWindow.',
+        `More Automation source pages remain. ${continuationGuidance}, then pass every returned ` +
+          'window_token to completeWindow.',
         409
       );
     }
@@ -132,6 +137,7 @@ function assertCompleteWindowPageChain(
   if (visited.size !== paged.length) {
     throw new ToolUserError('window_tokens contain disconnected or duplicate source pages.', 409);
   }
+  return current;
 }
 
 // Initialize AJV for JSON Schema validation
@@ -274,15 +280,9 @@ export async function handleCompleteWindow(
     if (token.run_id != null && token.run_id !== runId) {
       throw new ToolUserError('window_tokens are fenced to different run attempts.', 409);
     }
-    if (
-      token.lease_expires_at != null &&
-      claimToken?.lease_expires_at != null &&
-      token.lease_expires_at !== claimToken.lease_expires_at
-    ) {
-      throw new ToolUserError('window_tokens are fenced to different leases.', 409);
-    }
   }
-  assertCompleteWindowPageChain(tokenPayloads);
+  const terminalPageToken = assertCompleteWindowPageChain(tokenPayloads);
+  const leaseFenceToken = terminalPageToken?.run_id != null ? terminalPageToken : claimToken;
 
   const pgSql = createDbClientFromEnv(env);
   await requireAutomationAccess(pgSql, [String(automationId)], ctx, 'write');
@@ -590,8 +590,12 @@ export async function handleCompleteWindow(
     const [lockedRun] = await tx<{
       status: string;
       expires_at: string | Date | null;
+      agent_id: string | null;
+      device_worker_id: string | null;
     }>`
-      SELECT status, expires_at
+      SELECT status, expires_at,
+             approved_input->>'agent_id' AS agent_id,
+             approved_input->>'device_worker_id' AS device_worker_id
       FROM runs
       WHERE id = ${runId}
         AND organization_id = ${automationOrgId}
@@ -613,9 +617,24 @@ export async function handleCompleteWindow(
         completed_now: false,
       };
     }
+    if (lockedRun.status === 'pending') {
+      const isManualOpenRun =
+        claimToken == null &&
+        !lockedRun.agent_id &&
+        !lockedRun.device_worker_id;
+      if (isManualOpenRun) {
+        await tx`
+          UPDATE runs
+          SET status = 'running',
+              claimed_at = COALESCE(claimed_at, current_timestamp)
+          WHERE id = ${runId} AND status = 'pending'
+        `;
+        lockedRun.status = 'running';
+      }
+    }
     if (lockedRun.expires_at != null) {
       const leaseExpiresAt = new Date(lockedRun.expires_at).toISOString();
-      if (!claimToken?.lease_expires_at || claimToken.lease_expires_at !== leaseExpiresAt) {
+      if (!leaseFenceToken?.lease_expires_at || leaseFenceToken.lease_expires_at !== leaseExpiresAt) {
         throw new ToolUserError('window_token does not own the current Automation lease.', 409);
       }
       if (new Date(lockedRun.expires_at).getTime() <= Date.now()) {

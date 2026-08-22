@@ -1,12 +1,16 @@
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
-import { parseJsonRpcResponse } from "../../../mcp-proxy/http-response.js";
+import {
+	McpTransportError,
+	parseJsonRpcResponse,
+} from "../../../mcp-proxy/http-response.js";
 import type { McpProxy } from "./proxy.js";
 import {
 	authenticateRequest,
+	buildSessionKey,
 	computeScopeKey,
+	getRequestBodyAsText,
 	type JsonRpcResponse,
-	MAX_BODY_SIZE,
 	runWithWorkerOrgContext,
 } from "./proxy-shared.js";
 import { ssrfBlockResponse } from "./proxy-upstream.js";
@@ -59,7 +63,7 @@ async function handleListToolsAuthenticated(
 			agentId,
 			auth.tokenData,
 			httpServer.internal === true ? auth.token : undefined,
-			{ surfaceErrors: true },
+			{ surfaceErrors: true, callerSignal: c.req.raw.signal },
 		);
 		return c.json({ tools, instructions });
 	} catch (error) {
@@ -114,14 +118,14 @@ async function handleCallToolAuthenticated(
 	// Parse body early so tool arguments are available for the approval message.
 	let toolArguments: Record<string, unknown> = {};
 	try {
-		const body = await c.req.text();
+		const body = await getRequestBodyAsText(c);
 		if (body) {
-			if (body.length > MAX_BODY_SIZE) {
-				return c.json({ error: "Request body too large" }, 413);
-			}
 			toolArguments = JSON.parse(body);
 		}
-	} catch {
+	} catch (error) {
+		if (error instanceof McpTransportError && error.kind === "oversized_request") {
+			return c.json({ error: "Request body too large" }, 413);
+		}
 		return c.json({ error: "Invalid JSON body" }, 400);
 	}
 
@@ -181,6 +185,18 @@ async function handleCallToolAuthenticated(
 	}
 
 	try {
+		const sessionKey = buildSessionKey(agentId, mcpId, scopeKey);
+		if (!proxy.upstream.getSession(sessionKey)) {
+			await proxy.upstream.reinitializeSession(
+				httpServer,
+				agentId,
+				mcpId,
+				scopeKey,
+				auth.token,
+				c.req.raw.signal,
+			);
+		}
+
 		const jsonRpcBody = JSON.stringify({
 			jsonrpc: "2.0",
 			method: "tools/call",
@@ -207,48 +223,11 @@ async function handleCallToolAuthenticated(
 			scopeKey,
 			auth.token,
 			extraHeaders,
+			c.req.raw.signal,
+			false,
 		);
 
 		let data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
-
-		// Re-initialize session and retry on stale-session errors.
-		//
-		// Primary signal: MCP streamable-HTTP transport mandates HTTP 404 when
-		// the `Mcp-Session-Id` header names a session the server no longer
-		// knows (e.g. upstream restarted while we held the id cached).
-		//
-		// Fallback signal: some MCP servers return 200 with a JSON-RPC error
-		// whose message is "Server not initialized" or "Session not found…".
-		// We match both wordings rather than chase specific upstream phrasing.
-		if (
-			response.status === 404 ||
-			(data?.error &&
-				/not initialized|session not found/i.test(data.error.message || ""))
-		) {
-			logger.info("MCP session expired, re-initializing before retry", {
-				mcpId,
-				toolName,
-			});
-			await proxy.upstream.reinitializeSession(
-				httpServer,
-				agentId,
-				mcpId,
-				scopeKey,
-				auth.token,
-			);
-
-			response = await proxy.upstream.sendUpstreamRequest(
-				httpServer,
-				agentId,
-				mcpId,
-				"POST",
-				jsonRpcBody,
-				scopeKey,
-				auth.token,
-				extraHeaders,
-			);
-			data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
-		}
 
 		if (data?.error) {
 			const errorMsg =
@@ -323,6 +302,7 @@ async function handleListAllToolsAuthenticated(
 				agentId,
 				auth.tokenData,
 				auth.token,
+				{ callerSignal: c.req.raw.signal },
 			);
 			return { mcpId, tools };
 		}),

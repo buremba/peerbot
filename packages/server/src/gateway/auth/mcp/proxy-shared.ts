@@ -8,8 +8,12 @@ import type { Context } from "hono";
 import { getOrgId, orgContext } from "../../../lobu/stores/org-context.js";
 import { getRevokedTokenStore } from "../revoked-token-store.js";
 import type { McpTool } from "./tool-cache.js";
-
-export const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+import {
+	MCP_REQUEST_BODY_LIMIT,
+	assertRequestBodySize,
+	createMcpAbortScope,
+	readBoundedBody,
+} from "../../../mcp-proxy/http-response.js";
 
 // Bound upstream MCP calls so a slow/hung third-party server can't pin a
 // worker turn (and the gateway request serving it) indefinitely. Applies to
@@ -19,12 +23,6 @@ export const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 export const UPSTREAM_FETCH_TIMEOUT_MS = Number(
 	process.env.MCP_PROXY_FETCH_TIMEOUT_MS ?? 120_000,
 );
-
-export function upstreamTimeoutSignal(method: string): AbortSignal | undefined {
-	return method.toUpperCase() === "GET"
-		? undefined
-		: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS);
-}
 
 /** Standard MCP `initialize` request body. */
 export const INITIALIZE_BODY = JSON.stringify({
@@ -198,10 +196,23 @@ export async function getRequestBodyAsText(c: Context): Promise<string> {
 		return "";
 	}
 
+	// Hono may expose a framework-materialized body as a consumed/null stream;
+	// in that case the framework has already paid the buffering cost. We still
+	// enforce the UTF-8 byte cap before JSON parsing at every caller.
+	if (!c.req.raw.body) {
+		const text = await c.req.text();
+		assertRequestBodySize(text, MCP_REQUEST_BODY_LIMIT);
+		return text;
+	}
+	const abortScope = createMcpAbortScope({ callerSignal: c.req.raw.signal });
 	try {
-		return await c.req.text();
-	} catch {
-		return "";
+		const body = await readBoundedBody(c.req.raw.body, MCP_REQUEST_BODY_LIMIT, {
+			signal: abortScope.signal,
+			kind: "request",
+		});
+		return new TextDecoder().decode(body.bytes);
+	} finally {
+		abortScope.cleanup();
 	}
 }
 

@@ -41,6 +41,21 @@ import type { CachedMcpServer, McpTool, McpToolCache } from "./tool-cache.js";
 
 const logger = createLogger("mcp-proxy");
 
+async function waitForMcpRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) throw signal.reason ?? new Error("MCP request caller_abort");
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, delayMs);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason ?? new Error("MCP request caller_abort"));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 export type DirectToolExecutionOptions = {
 	organizationId: string;
 	conversationId?: string;
@@ -221,21 +236,11 @@ export class McpProxy {
 					jsonRpcBody,
 					scopeKey,
 					directAuthToken,
+					undefined,
+					undefined,
+					false,
 				);
 			let response = await sendToolCall();
-			if (response.status === 404) {
-				await response.body?.cancel().catch(() => {
-					/* noop */
-				});
-				await this.upstream.reinitializeSession(
-					httpServer,
-					agentId,
-					mcpId,
-					scopeKey,
-					directAuthToken,
-				);
-				response = await sendToolCall();
-			}
 
 			if (!response.ok) {
 				const text = await response.text();
@@ -259,24 +264,6 @@ export class McpProxy {
 				isError?: boolean;
 				error?: { code?: number; message?: string };
 			};
-			if (json.error && /not initialized|session not found/i.test(json.error.message ?? "")) {
-				await this.upstream.reinitializeSession(
-					httpServer,
-					agentId,
-					mcpId,
-					scopeKey,
-					directAuthToken,
-				);
-				response = await sendToolCall();
-				if (!response.ok) {
-					const text = await response.text();
-					return {
-						content: [{ type: "text", text: `Tool call failed: ${response.status} ${text}` }],
-						isError: true,
-					};
-				}
-				json = (await parseJsonRpcResponse(response)) as typeof json;
-			}
 			if (json.error) {
 				return {
 					content: [{ type: "text", text: json.error.message ?? JSON.stringify(json.error) }],
@@ -321,7 +308,7 @@ export class McpProxy {
 		agentId: string,
 		tokenData: WorkerTokenData,
 		workerToken?: string,
-		options?: { surfaceErrors?: boolean },
+		options?: { surfaceErrors?: boolean; callerSignal?: AbortSignal },
 	): Promise<{ tools: McpTool[]; instructions?: string }> {
 		return runWithOrganizationContext(tokenData.organizationId, () =>
 			this.fetchToolsForMcpScoped(
@@ -339,7 +326,7 @@ export class McpProxy {
 		agentId: string,
 		tokenData: WorkerTokenData,
 		workerToken?: string,
-		options?: { surfaceErrors?: boolean },
+		options?: { surfaceErrors?: boolean; callerSignal?: AbortSignal },
 	): Promise<{ tools: McpTool[]; instructions?: string }> {
 		if (this.toolCache) {
 			const cached = this.toolCache.getServerInfo(mcpId, agentId);
@@ -367,6 +354,7 @@ export class McpProxy {
 				mcpId,
 				scopeKey,
 				workerToken,
+				options?.callerSignal,
 			);
 			if (initResponse.status === 401) {
 				await initResponse.body?.cancel().catch(() => {
@@ -397,6 +385,7 @@ export class McpProxy {
 				mcpId,
 				scopeKey,
 				workerToken,
+				options?.callerSignal,
 			);
 
 			// A server that did not advertise the tools capability is valid and
@@ -419,6 +408,9 @@ export class McpProxy {
 				}),
 				scopeKey,
 				workerToken,
+				undefined,
+				options?.callerSignal,
+				false,
 			);
 			if (response.status === 401) {
 				await response.body?.cancel().catch(() => {
@@ -447,13 +439,14 @@ export class McpProxy {
 			cacheServerInfo(serverInfo);
 			return serverInfo;
 		} catch (error) {
+			if (options?.callerSignal?.aborted) throw error;
 			logger.warn("MCP discovery failed, retrying once", {
 				mcpId,
 				error: getErrorMessage(error),
 			});
 
 			// Retry once after a short delay (upstream may still be starting)
-			await new Promise((r) => setTimeout(r, 2000));
+			await waitForMcpRetry(2000, options?.callerSignal);
 			try {
 				const serverInfo = await discoverOnce();
 				cacheServerInfo(serverInfo);

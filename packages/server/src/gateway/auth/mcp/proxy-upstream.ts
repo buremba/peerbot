@@ -1,5 +1,20 @@
 import { createLogger, MCP_PROTOCOL_VERSION } from "@lobu/core";
-import { parseJsonRpcResponse } from "../../../mcp-proxy/http-response.js";
+import {
+	boundStreamingResponse,
+	createMcpAbortScope,
+	getMcpAbortReason,
+	logMcpTerminalOutcome,
+	MCP_REQUEST_BODY_LIMIT,
+	MCP_RESPONSE_BODY_LIMIT,
+	assertRequestBodySize,
+	isMcpToolCallRequest,
+	inspectMcpJsonRpcBody,
+	newMcpCallId,
+	normalizeMcpAbortError,
+	readResponseBody,
+	McpTransportError,
+	parseJsonRpcResponse,
+} from "../../../mcp-proxy/http-response.js";
 import { isInternalUrl } from "../../proxy/ssrf-guard.js";
 import {
 	buildSessionKey,
@@ -7,10 +22,14 @@ import {
 	type HttpMcpServerConfig,
 	INITIALIZE_BODY,
 	INITIALIZED_NOTIFICATION_BODY,
-	upstreamTimeoutSignal,
+	UPSTREAM_FETCH_TIMEOUT_MS,
 } from "./proxy-shared.js";
 
 const logger = createLogger("mcp-proxy");
+
+type McpTerminalLogger = {
+	info: (message: unknown, ...args: unknown[]) => void;
+};
 
 /**
  * SSRF guard: if the upstream URL resolves to an internal/reserved network
@@ -49,6 +68,11 @@ export async function ssrfBlockResponse(
  * non-streamed JSON-RPC egress to MCP upstreams.
  */
 export class McpUpstreamClient {
+	constructor(
+		private readonly terminalLogger: McpTerminalLogger = logger,
+		private readonly requestTimeoutMs = UPSTREAM_FETCH_TIMEOUT_MS,
+	) {}
+
 	private readonly SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
 	/**
 	 * Per-process MCP upstream session-id cache. The session id is opaque to
@@ -92,9 +116,11 @@ export class McpUpstreamClient {
 	}
 
 	/**
-	 * Single egress point for non-streamed JSON-RPC calls to an MCP upstream.
+	 * Single egress point for JSON-RPC calls to an MCP upstream.
 	 * The internal lobu-memory server accepts the worker JWT directly; runs the
-	 * SSRF guard and tracks the upstream session id.
+	 * SSRF guard and tracks the upstream session id. Successful SSE responses
+	 * stream by default; finite REST/tool callers opt into bounded buffering
+	 * under the POST deadline.
 	 */
 	async sendUpstreamRequest(
 		httpServer: HttpMcpServerConfig,
@@ -105,6 +131,8 @@ export class McpUpstreamClient {
 		scopeKey?: string,
 		directAuthToken?: string,
 		extraHeaders?: Record<string, string>,
+		callerSignal?: AbortSignal,
+		streamResponse = true,
 	): Promise<Response> {
 		const sessionKey = buildSessionKey(agentId, mcpId, scopeKey);
 		const sessionId = this.getSession(sessionKey);
@@ -129,12 +157,66 @@ export class McpUpstreamClient {
 			}
 		}
 
-		const response = await fetch(httpServer.upstreamUrl, {
-			method,
-			headers,
-			body: body || undefined,
-			signal: upstreamTimeoutSignal(method),
+		const callId = newMcpCallId();
+		const requestBytes = body ? new TextEncoder().encode(body).byteLength : 0;
+		const startedAt = Date.now();
+		const abortScope = createMcpAbortScope({
+			timeoutMs: method.toUpperCase() === "GET" ? undefined : this.requestTimeoutMs,
+			callerSignal,
 		});
+		const finish = (
+			status: number | null,
+			responseBytes: number,
+			preview?: string,
+			error?: unknown,
+			jsonRpcStatus: "success" | "error" | "unknown" = "unknown",
+		) => {
+			const transportError =
+				error instanceof McpTransportError
+					? error
+					: abortScope.signal.reason instanceof McpTransportError
+						? abortScope.signal.reason
+						: undefined;
+			const abortReason = getMcpAbortReason(transportError, abortScope.signal);
+			logMcpTerminalOutcome(this.terminalLogger, {
+				call_id: callId,
+				request_bytes: requestBytes,
+				response_bytes: responseBytes,
+				request_limit: MCP_REQUEST_BODY_LIMIT,
+				response_limit: MCP_RESPONSE_BODY_LIMIT,
+				duration_ms: Date.now() - startedAt,
+				http_status: status,
+				jsonrpc_status: jsonRpcStatus,
+				truncated: transportError?.kind === "oversized_response" || transportError?.kind === "oversized_request",
+				aborted: abortReason !== null,
+				abort_reason: abortReason,
+				retryable: false,
+				ambiguous_execution: body ? isMcpToolCallRequest(body) : false,
+				...(preview && (error || status === null || status >= 400) ? { diagnostic_preview: preview } : {}),
+			});
+		};
+
+		let response: Response;
+		try {
+			if (body) assertRequestBodySize(body);
+			response = await fetch(httpServer.upstreamUrl, {
+				method,
+				headers,
+				body: body || undefined,
+				signal: abortScope.signal,
+			});
+		} catch (error) {
+			const normalized = normalizeMcpAbortError(error, abortScope.signal);
+			abortScope.cleanup();
+			finish(null, 0, undefined, normalized);
+			throw normalized;
+		}
+
+		// An unknown-session response makes the cached handle unusable for future
+		// calls. Invalidate it without replaying the request that received the 404.
+		if (response.status === 404 && sessionId) {
+			this.deleteSession(sessionKey);
+		}
 
 		// Track session
 		const newSessionId = response.headers.get("Mcp-Session-Id");
@@ -142,7 +224,53 @@ export class McpUpstreamClient {
 			this.setSession(sessionKey, newSessionId);
 		}
 
-		return response;
+		const isSse = (response.headers.get("content-type") ?? "")
+			.toLowerCase()
+			.includes("text/event-stream");
+		if (method.toUpperCase() === "GET" || (streamResponse && response.ok && isSse)) {
+			// POST SSE is relayed immediately, but the POST/tool-call deadline stays
+			// active through body consumption. GET streams have no deadline.
+			return boundStreamingResponse(response, {
+				signal: abortScope.signal,
+				cleanup: (error, bytes) => {
+					abortScope.cleanup();
+					finish(response.status, bytes ?? 0, undefined, error);
+				},
+				onCancel: () => abortScope.abort("caller_abort"),
+			});
+		}
+		try {
+			const responseHadBody = response.body !== null;
+			const bounded = await readResponseBody(response, { signal: abortScope.signal });
+			const inspection = inspectMcpJsonRpcBody(
+				bounded.bytes,
+				response.headers.get("content-type"),
+			);
+			if (inspection.sessionError) this.deleteSession(sessionKey);
+			finish(
+				response.status,
+				bounded.byteLength,
+				bounded.preview,
+				undefined,
+				inspection.status,
+			);
+			return new Response(responseHadBody ? bounded.bytes : null, {
+				status: response.status,
+				statusText: response.statusText,
+				headers: response.headers,
+			});
+		} catch (error) {
+			const transportError = error instanceof McpTransportError ? error : undefined;
+			finish(
+				response.status,
+				transportError?.bytes ?? 0,
+				transportError?.preview,
+				error,
+			);
+			throw error;
+		} finally {
+			abortScope.cleanup();
+		}
 	}
 
 	/** Send the MCP `initialize` request to an upstream and return the raw response. */
@@ -152,6 +280,7 @@ export class McpUpstreamClient {
 		mcpId: string,
 		scopeKey?: string,
 		directAuthToken?: string,
+		callerSignal?: AbortSignal,
 	): Promise<Response> {
 		const response = await this.sendUpstreamRequest(
 			httpServer,
@@ -161,6 +290,9 @@ export class McpUpstreamClient {
 			INITIALIZE_BODY,
 			scopeKey,
 			directAuthToken,
+			undefined,
+			callerSignal,
+			false,
 		);
 		// Discovery deliberately treats an authentication challenge as an empty
 		// unauthenticated catalog. Preserve the raw response so the caller can
@@ -192,18 +324,25 @@ export class McpUpstreamClient {
 		mcpId: string,
 		scopeKey?: string,
 		directAuthToken?: string,
+		callerSignal?: AbortSignal,
 	): Promise<void> {
-		await this.sendUpstreamRequest(
-			httpServer,
-			agentId,
-			mcpId,
-			"POST",
-			INITIALIZED_NOTIFICATION_BODY,
-			scopeKey,
-			directAuthToken,
-		).catch(() => {
-			/* noop */
-		});
+		try {
+			await this.sendUpstreamRequest(
+				httpServer,
+				agentId,
+				mcpId,
+				"POST",
+				INITIALIZED_NOTIFICATION_BODY,
+				scopeKey,
+				directAuthToken,
+				undefined,
+				callerSignal,
+				false,
+			);
+		} catch (error) {
+			if (callerSignal?.aborted) throw error;
+			// Notification delivery is best-effort.
+		}
 	}
 
 	/**
@@ -216,6 +355,7 @@ export class McpUpstreamClient {
 		mcpId: string,
 		scopeKey?: string,
 		directAuthToken?: string,
+		callerSignal?: AbortSignal,
 	): Promise<void> {
 		// Clear stale session
 		this.deleteSession(buildSessionKey(agentId, mcpId, scopeKey));
@@ -226,6 +366,7 @@ export class McpUpstreamClient {
 			mcpId,
 			scopeKey,
 			directAuthToken,
+			callerSignal,
 		);
 		await initResponse.text(); // consume response (may be JSON or SSE-framed)
 
@@ -235,6 +376,7 @@ export class McpUpstreamClient {
 			mcpId,
 			scopeKey,
 			directAuthToken,
+			callerSignal,
 		);
 
 		logger.info("Re-initialized MCP session", { mcpId, agentId });

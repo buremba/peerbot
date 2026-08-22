@@ -7,18 +7,19 @@ import type { Context } from "hono";
 import type { McpProxy } from "./proxy.js";
 import {
 	buildSessionKey,
-	buildUpstreamHeaders,
 	computeScopeKey,
 	extractSessionToken,
 	getRequestBodyAsText,
 	type HttpMcpServerConfig,
-	MAX_BODY_SIZE,
 	runWithWorkerOrgContext,
 	sendJsonRpcError,
-	UPSTREAM_FETCH_TIMEOUT_MS,
-	upstreamTimeoutSignal,
 } from "./proxy-shared.js";
 import { ssrfBlockResponse } from "./proxy-upstream.js";
+import {
+	isReplaySafeMcpRequest,
+	McpTransportError,
+	utf8ByteLength,
+} from "../../../mcp-proxy/http-response.js";
 
 const logger = createLogger("mcp-proxy");
 
@@ -71,17 +72,28 @@ async function handleProxyRequestAuthenticated(
 		return sendJsonRpcError(c, -32601, `MCP server '${mcpId}' not found`);
 	}
 
+	let requestBodyText = "";
+	if (c.req.method === "POST") {
+		try {
+			requestBodyText = await getRequestBodyAsText(c);
+		} catch (error) {
+			if (error instanceof McpTransportError && error.kind === "oversized_request") {
+				return new Response("Request body too large", { status: 413 });
+			}
+			logger.warn("Failed to read MCP request body", { mcpId, error });
+			return sendJsonRpcError(c, -32700, "Failed to read request body");
+		}
+	}
+
 	// Pre-tool guardrails + tool approval for tools/call JSON-RPC requests.
-	// Clone the request so the body can be read twice (once here, once in
-	// forwardRequest). NOTE: this runs on any POST, NOT gated on grantStore —
+	// The bounded body is read once and shared with forwarding. NOTE: this runs
+	// on any POST, NOT gated on grantStore —
 	// guardrail enforcement must not depend on the approval subsystem being
 	// configured (the approval check below is what's gated on grantStore).
 	if (c.req.method === "POST") {
 		try {
-			const clonedReq = c.req.raw.clone();
-			const bodyText = await clonedReq.text();
-			if (bodyText) {
-				const jsonRpc = JSON.parse(bodyText);
+			if (requestBodyText) {
+				const jsonRpc = JSON.parse(requestBodyText);
 
 				// JSON-RPC 2.0 / the MCP streamable-HTTP transport permit BATCH
 				// requests: a top-level ARRAY of request objects. The single-request
@@ -166,7 +178,7 @@ async function handleProxyRequestAuthenticated(
 	const scopeKey = computeScopeKey(tokenData.userId);
 
 	try {
-		return await forwardRequest(proxy, c, httpServer, agentId, mcpId, scopeKey, {
+		return await forwardRequest(proxy, c, httpServer, agentId, mcpId, scopeKey, requestBodyText, {
 			workerToken: sessionToken,
 		});
 	} catch (error) {
@@ -186,6 +198,7 @@ async function forwardRequest(
 	agentId: string,
 	mcpId: string,
 	scopeKey?: string,
+	bodyText = "",
 	authContext?: {
 		workerToken?: string;
 	},
@@ -202,18 +215,6 @@ async function forwardRequest(
 	const sessionKey = buildSessionKey(agentId, mcpId, scopeKey);
 	let sessionId = proxy.upstream.getSession(sessionKey);
 
-	const bodyText = await getRequestBodyAsText(c);
-
-	// Body size validation
-	if (bodyText.length > MAX_BODY_SIZE) {
-		logger.warn("Request body too large", {
-			mcpId,
-			agentId,
-			size: bodyText.length,
-		});
-		return new Response("Request body too large", { status: 413 });
-	}
-
 	// Internal MCPs (lobu-memory) accept the worker JWT directly.
 	const credentialToken = httpServer.internal
 		? authContext?.workerToken
@@ -228,9 +229,11 @@ async function forwardRequest(
 				mcpId,
 				scopeKey,
 				credentialToken,
+				c.req.raw.signal,
 			);
 			sessionId = proxy.upstream.getSession(sessionKey);
 		} catch (error) {
+			if (c.req.raw.signal.aborted) throw error;
 			logger.warn("Pre-emptive MCP re-initialization failed", {
 				mcpId,
 				error: getErrorMessage(error),
@@ -243,32 +246,30 @@ async function forwardRequest(
 		agentId,
 		method: c.req.method,
 		hasSession: !!sessionId,
-		bodyLength: bodyText.length,
+		bodyLength: utf8ByteLength(bodyText),
 	});
 
-	const headers = buildUpstreamHeaders(
-		sessionId,
+	let response = await proxy.upstream.sendUpstreamRequest(
+		httpServer,
+		agentId,
+		mcpId,
+		c.req.method,
+		bodyText,
+		scopeKey,
 		credentialToken,
-		httpServer.internal === true,
-		proxy.upstream.getProtocolVersion(sessionKey),
+		undefined,
+		c.req.raw.signal,
+		true,
 	);
 
-	let response = await fetch(httpServer.upstreamUrl, {
-		method: c.req.method,
-		headers,
-		body: bodyText || undefined,
-		signal: upstreamTimeoutSignal(c.req.method),
-	});
-
-	// Stale-session recovery: if upstream returns 404 we sent a session id
-	// it no longer recognizes (e.g. server restart). Drop the cached id,
-	// re-init, and retry once with the same payload. Only meaningful for
-	// POST — GET/DELETE on an unknown session should surface the 404 as-is.
+	// Only protocol setup/catalog requests may be replayed after a 404. A
+	// tools/call or any unknown POST may already have executed upstream.
 	if (
 		response.status === 404 &&
 		sessionId &&
 		c.req.method === "POST" &&
-		bodyText
+		bodyText &&
+		isReplaySafeMcpRequest(bodyText)
 	) {
 		logger.info(
 			"Upstream 404 on cached session id — re-initializing and retrying",
@@ -281,22 +282,23 @@ async function forwardRequest(
 				mcpId,
 				scopeKey,
 				credentialToken,
+				c.req.raw.signal,
 			);
 			sessionId = proxy.upstream.getSession(sessionKey);
-			const retryHeaders = buildUpstreamHeaders(
-				sessionId,
+			response = await proxy.upstream.sendUpstreamRequest(
+				httpServer,
+				agentId,
+				mcpId,
+				c.req.method,
+				bodyText,
+				scopeKey,
 				credentialToken,
-				httpServer.internal === true,
-				proxy.upstream.getProtocolVersion(sessionKey),
+				undefined,
+				c.req.raw.signal,
+				true,
 			);
-			response = await fetch(httpServer.upstreamUrl, {
-				method: c.req.method,
-				headers: retryHeaders,
-				body: bodyText,
-				// Retry path is POST-only (guarded above) — always bounded.
-				signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
-			});
 		} catch (error) {
+			if (c.req.raw.signal.aborted) throw error;
 			logger.warn("Stale-session recovery failed on forward", {
 				mcpId,
 				error: getErrorMessage(error),
@@ -323,8 +325,5 @@ async function forwardRequest(
 		responseHeaders.set("Mcp-Session-Id", newSessionId);
 	}
 
-	return new Response(response.body, {
-		status: response.status,
-		headers: responseHeaders,
-	});
+	return new Response(response.body, { status: response.status, headers: responseHeaders });
 }

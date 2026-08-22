@@ -8,7 +8,12 @@ import {
 } from "bun:test";
 import { generateWorkerToken, MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import {
+  MCP_RESPONSE_BODY_LIMIT,
+  MCP_SSE_FRAME_LIMIT,
+} from "../../mcp-proxy/http-response.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
+import { McpUpstreamClient } from "../auth/mcp/proxy-upstream.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
 
@@ -470,62 +475,245 @@ describe("McpProxy", () => {
       const body = await res.json();
       expect(body.error).toContain("Failed to connect");
     });
+
+    test("cancels initialize body reads when the downstream request aborts", async () => {
+      const configSource = createMockConfigSource({
+        "test-mcp": TEST_SERVER,
+      });
+      const proxy = new McpProxy(configSource, {});
+      const app = proxy.getApp();
+      const downstream = new AbortController();
+      let resolveFetchStarted: (() => void) | undefined;
+      const fetchStarted = new Promise<void>((resolve) => {
+        resolveFetchStarted = resolve;
+      });
+      let upstreamSignal: AbortSignal | null = null;
+
+      globalThis.fetch = async (_input, init) => {
+        upstreamSignal = init?.signal ?? null;
+        resolveFetchStarted?.();
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull() {
+              return new Promise(() => undefined);
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      };
+
+      const responsePromise = app.request(
+        new Request("http://localhost/test-mcp/tools", {
+          headers: { Authorization: `Bearer ${validToken}` },
+          signal: downstream.signal,
+        }),
+      );
+      await fetchStarted;
+      downstream.abort();
+
+      const response = await responsePromise;
+      expect(response.status).toBe(502);
+      expect(upstreamSignal?.aborted).toBe(true);
+      expect(upstreamSignal?.reason).toMatchObject({ kind: "caller_abort" });
+    });
+
+    test("cancels oversized upstream bodies and logs observed response bytes", async () => {
+      const outcomes: unknown[] = [];
+      const upstream = new McpUpstreamClient({
+        info: (outcome) => outcomes.push(outcome),
+      });
+      let cancelled = false;
+      let emitted = false;
+      globalThis.fetch = async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!emitted) {
+                emitted = true;
+                controller.enqueue(new Uint8Array(MCP_RESPONSE_BODY_LIMIT + 1));
+              }
+              return new Promise(() => undefined);
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+
+      await expect(
+        orgContext.run({ organizationId: "test-org" }, () =>
+          upstream.sendUpstreamRequest(
+            {
+              id: "bounded-mcp",
+              upstreamUrl: "http://bounded.internal/mcp",
+              internal: true,
+            },
+            "agent1",
+            "bounded-mcp",
+            "POST",
+            JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          ),
+        ),
+      ).rejects.toMatchObject({
+        kind: "oversized_response",
+        bytes: MCP_RESPONSE_BODY_LIMIT + 1,
+      });
+
+      expect(cancelled).toBe(true);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        response_bytes: MCP_RESPONSE_BODY_LIMIT + 1,
+        response_limit: MCP_RESPONSE_BODY_LIMIT,
+        truncated: true,
+        aborted: false,
+        abort_reason: null,
+      });
+    });
+
+    test("rejects oversized POST SSE frames below the response body limit", async () => {
+      const outcomes: unknown[] = [];
+      const upstream = new McpUpstreamClient({
+        info: (outcome) => outcomes.push(outcome),
+      });
+      const body = `data: ${"x".repeat(MCP_SSE_FRAME_LIMIT)}\n\n`;
+      expect(new TextEncoder().encode(body).byteLength).toBeLessThan(
+        MCP_RESPONSE_BODY_LIMIT,
+      );
+      globalThis.fetch = async () =>
+        new Response(body, {
+          headers: { "Content-Type": "text/event-stream" },
+        });
+
+      await expect(
+        orgContext.run({ organizationId: "test-org" }, () =>
+          upstream.sendUpstreamRequest(
+            {
+              id: "bounded-mcp",
+              upstreamUrl: "http://bounded.internal/mcp",
+              internal: true,
+            },
+            "agent1",
+            "bounded-mcp",
+            "POST",
+            JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          ),
+        ),
+      ).rejects.toMatchObject({
+        kind: "oversized_response",
+        limit: MCP_SSE_FRAME_LIMIT,
+      });
+
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        response_bytes: MCP_SSE_FRAME_LIMIT + 1,
+        jsonrpc_status: "unknown",
+        truncated: true,
+      });
+    });
+
+    test("relays POST SSE before EOF and cancels it at the POST deadline", async () => {
+      const outcomes: unknown[] = [];
+      const upstream = new McpUpstreamClient(
+        {
+          info: (outcome) => outcomes.push(outcome),
+        },
+        100,
+      );
+      const frame = new TextEncoder().encode(
+        'data: {"jsonrpc":"2.0","id":1,"result":{}}\n\n',
+      );
+      let cancelled = false;
+      globalThis.fetch = async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(frame);
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+
+      const response = await orgContext.run(
+        { organizationId: "test-org" },
+        () =>
+          upstream.sendUpstreamRequest(
+            {
+              id: "streaming-mcp",
+              upstreamUrl: "http://streaming.internal/mcp",
+              internal: true,
+            },
+            "agent1",
+            "streaming-mcp",
+            "POST",
+            JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+          ),
+      );
+      const reader = response.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+        new TextDecoder().decode(frame),
+      );
+      await expect(reader.read()).rejects.toMatchObject({ kind: "timeout" });
+
+      expect(cancelled).toBe(true);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        response_bytes: frame.byteLength,
+        jsonrpc_status: "unknown",
+        aborted: true,
+        abort_reason: "timeout",
+      });
+    });
   });
 
   // ---------- Session re-init ----------
 
   describe("session re-initialization", () => {
-    test("retries on 'Server not initialized' error", async () => {
+    test("does not replay after a post-dispatch JSON-RPC session error", async () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
       const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
-      let callCount = 0;
+      const methods: string[] = [];
       globalThis.fetch = async (_input, init) => {
-        callCount++;
         const request = init?.body ? JSON.parse(String(init.body)) : {};
-        // The first call is the tool call that triggers the error.
-        // After that, reinitializeSession sends initialize + notifications/initialized (2 calls).
-        // Then the retry tool call is the 4th call.
-        if (callCount === 1) {
-          return new Response(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: 1,
-              error: { code: -32000, message: "Server not initialized" },
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
+        methods.push(request.method);
         if (request.method === "initialize") {
           return new Response(
             JSON.stringify({
               jsonrpc: "2.0",
               id: 0,
-              result: {
-                protocolVersion: MCP_PROTOCOL_VERSION,
-                capabilities: { tools: {} },
-              },
+              result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} } },
             }),
             {
               status: 200,
-              headers: {
-                "Content-Type": "application/json",
-                "Mcp-Session-Id": "reinitialized-session" } }
+              headers: { "Content-Type": "application/json", "Mcp-Session-Id": "initial-session" },
+            },
           );
         }
-        // Re-init calls (initialize + notifications/initialized) and retry
+        if (request.method === "notifications/initialized") return new Response(null, { status: 202 });
         return new Response(
           JSON.stringify({
             jsonrpc: "2.0",
             id: 1,
-            result: {
-              content: [{ type: "text", text: "Success after re-init" }],
-            },
+            error: { code: -32000, message: "Server not initialized" },
           }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
+          { status: 200, headers: { "Content-Type": "application/json" } },
         );
       };
 
@@ -537,11 +725,14 @@ describe("McpProxy", () => {
         },
         body: JSON.stringify({}),
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(502);
       const body = await res.json();
-      expect(body.content[0].text).toBe("Success after re-init");
-      // At least 4 fetch calls: original + initialize + notify + retry
-      expect(callCount).toBeGreaterThanOrEqual(4);
+      expect(body.error).toContain("Server not initialized");
+      expect(methods).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+      ]);
     });
   });
 

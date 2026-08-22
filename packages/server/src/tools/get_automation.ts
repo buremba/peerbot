@@ -7,7 +7,6 @@
 
 import {
   addAutomationPeriod,
-  alignToAutomationWindowStart,
   getFinerAutomationGranularities,
   inferAutomationGranularityFromSchedule,
   type AutomationTimeGranularity,
@@ -55,7 +54,7 @@ import {
   ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
-  nextAutomationWindowStart,
+  readAutomationPendingProjection,
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestAutomationRunJoinSql } from '../automations/automation';
@@ -157,7 +156,17 @@ export const GetAutomationResultSchema = Type.Object({
   windows: Type.Array(AutomationWindowSchema),
   automation: Type.Optional(AutomationMetadataSchema),
   pending_analysis: Type.Optional(PendingAnalysisSchema),
-  gaps: Type.Optional(Type.Array(WindowGapSchema)),
+  gaps: Type.Optional(
+    Type.Array(WindowGapSchema, {
+      description: 'First 50 exact missing scheduled ranges from the durable coverage projection.',
+    })
+  ),
+  gap_count: Type.Optional(
+    Type.Integer({ description: 'Exact number of missing scheduled range components.' })
+  ),
+  gaps_truncated: Type.Optional(
+    Type.Boolean({ description: 'True when gap_count exceeds the returned gaps array.' })
+  ),
   pagination: Type.Object({
     page: Type.Integer(),
     page_size: Type.Integer(),
@@ -250,7 +259,6 @@ interface AutomationQueryRow {
   sel_version_reactions_guidance: string | null;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
-  latest_window_start: string | null;
   // jsonb_agg of identity scopes for primary entity
   entity_scopes: Array<{ namespace: string; identifier: string }> | null;
 }
@@ -582,15 +590,6 @@ async function getAutomationImpl(
         (SELECT MAX((approved_input->>'window_end')::timestamptz) FROM runs
           WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
             AND action_output IS NOT NULL) as latest_window_end,
-        -- Latest window START drives the next_window preview, so it chains off
-        -- exactly what computePendingWindow chains off. Chaining the preview off
-        -- the END instead makes the two disagree by a full period on a legacy
-        -- row stored with an inclusive 23:59:59.999 end.
-        (SELECT (approved_input->>'window_start')::timestamptz FROM runs
-          WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
-            AND action_output IS NOT NULL
-            AND approved_input->>'window_start' IS NOT NULL
-          ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
@@ -868,6 +867,9 @@ async function getAutomationImpl(
   // Generate processing instructions for client-driven Automation generation
 
   let pendingAnalysis: PendingAnalysis | undefined;
+  let projectedWindowGaps: WindowGap[] | undefined;
+  let projectedGapCount: number | undefined;
+  let projectedGapsTruncated: boolean | undefined;
 
   if (args.automation_id && automationRow) {
     const automationEntityIds = parseBigintArray(automationRow.entity_ids);
@@ -883,7 +885,6 @@ async function getAutomationImpl(
       (STANDARD_IDENTITY_NAMESPACES as readonly string[]).includes(s.namespace)
     );
     const latestEnd = automationRow.latest_window_end;
-    const latestStart = automationRow.latest_window_start;
     // Two entity-link fragments: one with `$1 = automation_id` reserved (for
     // queries that join on the automation's windows), one without (for queries
     // that only need the entity scope). Sharing one fragment and passing a
@@ -982,54 +983,31 @@ async function getAutomationImpl(
       [unprocessedCountPromise, histogramPromise]
     );
 
-    const unprocessedCount = Number(unprocessedCountResult[0]?.count ?? 0);
+    const unprocessedContentCount = Number(unprocessedCountResult[0]?.count ?? 0);
 
     // Calculate next window bounds based on granularity using the
     // already-fetched latestEnd (no extra round-trip).
     let nextWindow: PendingAnalysis['next_window'] = null;
 
-    if (unprocessedCount > 0) {
-      const now = new Date();
-      let windowStart: Date;
-      let windowEnd: Date;
+    const projection = await readAutomationPendingProjection(
+      sql,
+      Number(args.automation_id),
+      timeGranularity,
+      new Date()
+    );
+    const pendingWindowCount = projection.pendingPeriodCount;
+    projectedWindowGaps = projection.missingRanges.map((range) => ({
+      start: range.start.toISOString(),
+      end: range.end.toISOString(),
+    }));
+    projectedGapCount = projection.missingRangeCount;
+    projectedGapsTruncated = projection.gapsTruncated;
 
-      if (latestStart) {
-        // The dispatcher's own rule, called — not reimplemented. `get_automation`
-        // only PREVIEWS what `computePendingWindow` will hand the run, so a
-        // second copy here is a second thing to keep in sync, and it already
-        // drifted once (preview chained off window_end, dispatcher off
-        // window_start — a full period apart on legacy rows).
-        windowStart = nextAutomationWindowStart(new Date(latestStart), now, timeGranularity);
-      } else {
-        // No windows yet — find the earliest unprocessed event for this
-        // entity. Unbounded by occurred_at: pi review (#481) flagged that
-        // a 90-day default would silently strip pre-existing backlogs from
-        // the next_window calculation when a user creates an automation on top
-        // of long-since-ingested data.
-        const earliestResult = await sql.unsafe(
-          `SELECT MIN(f.occurred_at) as earliest
-            FROM current_event_records f
-            WHERE ${entityScopeCondition}
-              AND ${notInWindowClause}`,
-          [args.automation_id, ...entityLinkParams]
-        );
-        const earliest = earliestResult[0]?.earliest as string | null;
-        // Aligned too: an arbitrary event timestamp would preview a window
-        // starting mid-period, which is not a period the dispatcher can emit.
-        windowStart = alignToAutomationWindowStart(
-          earliest ? new Date(earliest) : now,
-          timeGranularity
-        );
-      }
-
-      // A full period, never truncated at `now`. Truncating made the preview
-      // disagree with what `computePendingWindow` actually dispatches (it always
-      // emits a whole period), and a partial end is not a window any run can be
-      // given.
-      windowEnd = addAutomationPeriod(windowStart, timeGranularity);
-
+    if (pendingWindowCount > 0) {
+      const oldestMissingStart = projection.missingRanges[0]?.start ?? projection.nextWindowStart;
+      const windowEnd = addAutomationPeriod(oldestMissingStart, timeGranularity);
       nextWindow = {
-        start: windowStart.toISOString(),
+        start: oldestMissingStart.toISOString(),
         end: windowEnd.toISOString(),
         granularity: timeGranularity,
       };
@@ -1046,34 +1024,27 @@ async function getAutomationImpl(
     // Generate structured next_action for MCP clients
     const nextAction = nextWindow
       ? {
-          tool: 'read_knowledge',
+          tool: 'client.automations.claimNextWindow',
           params: {
             automation_id: args.automation_id,
-            since: nextWindow.start.split('T')[0],
-            // `until` is INCLUSIVE — the last day inside the window — while
-            // `next_window.end` is the exclusive boundary. Passing the exclusive
-            // end straight through suggested a call one whole period too wide
-            // (a daily window advertised as `since=06-18&until=06-19`, which
-            // `alignRequestedWindow` reads as two days), so a client following
-            // the server's own suggestion wrote a window shaped like no period
-            // the dispatcher can emit.
-            until: new Date(new Date(nextWindow.end).getTime() - 1).toISOString().split('T')[0],
           },
           description:
-            'Fetch content for analysis. Response includes window_token for complete_window action.',
+            'Atomically claim this completed period and receive bounded context plus window_token.',
         }
       : null;
 
     pendingAnalysis = {
-      unprocessed_count: unprocessedCount,
+      unprocessed_count: pendingWindowCount,
+      pending_period_count: pendingWindowCount,
+      unprocessed_content_count: unprocessedContentCount,
       next_window: nextWindow,
       next_action: nextAction,
       unprocessed_ranges: unprocessedRanges.length > 0 ? unprocessedRanges : undefined,
     };
 
-    if (unprocessedCount > 0) {
+    if (pendingWindowCount > 0) {
       logger.info(
-        `[get_automation] Found ${unprocessedCount} unprocessed content items for Automation ${args.automation_id}`
+        `[get_automation] Found ${pendingWindowCount} missing completed periods for Automation ${args.automation_id}`
       );
     }
   }
@@ -1108,26 +1079,6 @@ async function getAutomationImpl(
     );
   }
 
-  // Detect gaps between consecutive windows (single-automation queries only)
-  let windowGaps: WindowGap[] | undefined;
-  if (args.automation_id && formattedWindows.length > 1) {
-    const sorted = [...formattedWindows].sort(
-      (a, b) => new Date(a.window_start).getTime() - new Date(b.window_start).getTime()
-    );
-    const gaps: WindowGap[] = [];
-    for (let i = 1; i < sorted.length; i++) {
-      const prevEnd = new Date(sorted[i - 1].window_end).getTime();
-      const currStart = new Date(sorted[i].window_start).getTime();
-      if (currStart > prevEnd) {
-        gaps.push({
-          start: new Date(prevEnd).toISOString(),
-          end: new Date(currStart).toISOString(),
-        });
-      }
-    }
-    if (gaps.length > 0) windowGaps = gaps;
-  }
-
   const organizationSlug = automationRow?.organization_id
     ? await getOrganizationSlug(automationRow.organization_id)
     : null;
@@ -1141,7 +1092,9 @@ async function getAutomationImpl(
     windows: formattedWindows,
     ...(automationMetadata && { automation: automationMetadata }),
     ...(pendingAnalysis && { pending_analysis: pendingAnalysis }),
-    ...(windowGaps && { gaps: windowGaps }),
+    ...(projectedWindowGaps?.length ? { gaps: projectedWindowGaps } : {}),
+    ...(projectedGapCount !== undefined ? { gap_count: projectedGapCount } : {}),
+    ...(projectedGapsTruncated ? { gaps_truncated: true } : {}),
     pagination: {
       page,
       page_size: pageSize,

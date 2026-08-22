@@ -86,6 +86,24 @@ describe("AutomationSubscriptionService connection-scoped routing", () => {
 			channelId: CHANNEL,
 		});
 		expect(rows).toHaveLength(2);
+		const projections = await getDb()<{
+			next_window_start: string | Date | null;
+			completed_window_coverage: string;
+			window_projection_granularity: string | null;
+		}>`
+			SELECT next_window_start,
+			       completed_window_coverage::text AS completed_window_coverage,
+			       window_projection_granularity
+			FROM automations
+			WHERE organization_id = ${ORG_A}
+			  AND tags @> ARRAY['system:chat-link']::text[]
+		`;
+		expect(projections).toHaveLength(2);
+		for (const projection of projections) {
+			expect(projection.next_window_start).not.toBeNull();
+			expect(projection.completed_window_coverage).toBe("{}");
+			expect(projection.window_projection_granularity).toBe("weekly");
+		}
 	});
 
 	test("relinks and archives a chat Automation without a bindings table", async () => {

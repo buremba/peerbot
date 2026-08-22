@@ -4,6 +4,7 @@ import {
 } from "../tools/admin/manage_automations/executors";
 import {
 	inferAutomationGranularityFromSchedule,
+	isAutomationTimeGranularity,
 	type AutomationTimeGranularity,
 } from "@lobu/connector-sdk";
 import { generateWorkerToken, getErrorMessage } from "@lobu/core";
@@ -33,7 +34,10 @@ import logger from "../utils/logger";
 import { ToolUserError } from "../utils/errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import { computePendingWindow } from "../utils/window-utils";
+import {
+	advanceExpectedAutomationWindow,
+	computePendingWindow,
+} from "../utils/window-utils";
 import {
 	advanceScheduleAfterTerminalFailure,
 	advanceAutomationSchedule,
@@ -190,6 +194,9 @@ export function parseAutomationRunPayload(
 		window_start: windowStart,
 		window_end: windowEnd,
 		dispatch_source: dispatchSource,
+		granularity: isAutomationTimeGranularity(payload.granularity)
+			? payload.granularity
+			: undefined,
 		version_id: Number.isFinite(versionId as number)
 			? (versionId as number)
 			: null,
@@ -291,25 +298,40 @@ async function enqueueAutomationRunForRecord(
 
 async function completeSkippedAutomationRun(
 	sql: DbClient,
+	automationId: number,
 	runId: number,
+	windowStart: Date,
 	granularity: AutomationTimeGranularity,
 ): Promise<void> {
 	// A server-side skip has no child stdout. Preserve the historical `{}`
 	// action_output for consumers, while output_tail makes the terminal no-op
 	// intentional to humans and run_metadata remains the machine-readable signal.
-	await sql`
-		UPDATE runs
-		SET status = 'completed',
-		    outcome = ${classifyRunOutcome({ status: "completed" })},
-		    action_output = '{}'::jsonb,
-		    output_tail = 'No-op: scheduled source content is unchanged.',
-		    approved_input = COALESCE(approved_input, '{}'::jsonb)
-		      || jsonb_build_object('granularity', ${granularity}::text),
-		    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
-		      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
-		    completed_at = current_timestamp
-		WHERE id = ${runId} AND status = 'pending'
-	`;
+	await sql.begin(async (tx) => {
+		await tx`SELECT id FROM automations WHERE id = ${automationId} FOR UPDATE`;
+		const [completed] = await tx`
+			UPDATE runs
+			SET status = 'completed',
+			    outcome = ${classifyRunOutcome({ status: "completed" })},
+			    action_output = '{}'::jsonb,
+			    output_tail = 'No-op: scheduled source content is unchanged.',
+			    approved_input = COALESCE(approved_input, '{}'::jsonb)
+			      || jsonb_build_object('granularity', ${granularity}::text),
+			    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
+			      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
+			    completed_at = current_timestamp
+			WHERE id = ${runId}
+			  AND automation_id = ${automationId}
+			  AND status = 'pending'
+			RETURNING id
+		`;
+		if (!completed) return;
+		await advanceExpectedAutomationWindow(
+			tx,
+			automationId,
+			windowStart,
+			granularity,
+		);
+	});
 }
 
 export async function enqueueAutomationRunForAutomation(
@@ -806,7 +828,9 @@ export async function materializeDueAutomationRuns(
 					if (skippedRun.created) {
 						await completeSkippedAutomationRun(
 							sql,
+							automation.id,
 							skippedRun.runId,
+							windowStart,
 							granularity,
 						);
 					}

@@ -1,7 +1,12 @@
 /** Scheduled Automation period rollover from completed run timestamps. */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { computePendingWindow, nextAutomationWindowStart } from '../window-utils';
+import {
+  advanceExpectedAutomationWindow,
+  computePendingWindow,
+  nextAutomationWindowStart,
+} from '../window-utils';
+import type { AutomationTimeGranularity } from '@lobu/connector-sdk';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
   createTestAgent,
@@ -15,22 +20,30 @@ async function seedWindow(opts: {
   orgId: string;
   userId: string;
   automationId: number;
-  granularity: string;
+  granularity: AutomationTimeGranularity;
   start: string;
   end: string;
+  dispatchSource?: 'scheduled' | 'event';
 }): Promise<void> {
   const sql = getTestDb();
   const agent = await createTestAgent({
     organizationId: opts.orgId,
     ownerUserId: opts.userId,
   });
+  const initialWindowStart =
+    opts.dispatchSource === 'event'
+      ? nextAutomationWindowStart(null, new Date(), opts.granularity)
+      : new Date(opts.start);
   await sql`
     INSERT INTO automations (
-      id, name, slug, created_by, organization_id, agent_id, automation_group_id
+      id, name, slug, created_by, organization_id, agent_id, automation_group_id,
+      next_window_start, completed_window_coverage, window_projection_granularity
     ) VALUES (
       ${opts.automationId}, ${`Window ${opts.automationId}`},
       ${`window-${opts.automationId}`}, ${opts.userId}, ${opts.orgId},
-      ${agent.agentId}, ${opts.automationId}
+      ${agent.agentId}, ${opts.automationId},
+      ${initialWindowStart.toISOString()}::timestamptz,
+      '{}'::tstzmultirange, ${opts.granularity}
     )
     ON CONFLICT (id) DO NOTHING
   `;
@@ -40,7 +53,7 @@ async function seedWindow(opts: {
     agentId: agent.agentId,
     windowStart: opts.start,
     windowEnd: opts.end,
-    dispatchSource: 'scheduled',
+    dispatchSource: opts.dispatchSource ?? 'scheduled',
   });
   await sql`
     UPDATE runs SET status = 'completed', completed_at = ${opts.end},
@@ -48,6 +61,16 @@ async function seedWindow(opts: {
       approved_input = approved_input || ${sql.json({ granularity: opts.granularity })}::jsonb
     WHERE id = ${run.runId}
   `;
+  if (opts.dispatchSource !== 'event') {
+    await sql.begin((tx) =>
+      advanceExpectedAutomationWindow(
+        tx,
+        opts.automationId,
+        new Date(opts.start),
+        opts.granularity
+      )
+    );
+  }
 }
 
 async function seedOrg() {
@@ -117,6 +140,29 @@ describe('computePendingWindow', () => {
       granularity: 'daily',
       start: previous.toISOString(),
       end: dayStart(1).toISOString(), // exclusive convention
+    });
+
+    const { windowStart, windowEnd } = await computePendingWindow(
+      getTestDb(),
+      automationId,
+      'daily'
+    );
+
+    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
+    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
+  });
+
+  it('does not use event-triggered runs as the scheduled window cursor', async () => {
+    const { orgId, userId } = await seedOrg();
+    const automationId = 9007;
+    await seedWindow({
+      orgId,
+      userId,
+      automationId,
+      granularity: 'daily',
+      start: dayStart(10).toISOString(),
+      end: dayStart(9).toISOString(),
+      dispatchSource: 'event',
     });
 
     const { windowStart, windowEnd } = await computePendingWindow(
@@ -221,11 +267,9 @@ describe('computePendingWindow', () => {
     expect(windowEnd.toISOString()).toBe(tomorrowIso);
   });
 
-  // The contract this branch changed. Walking forward one period per run never
-  // closed a gap — the clock advances a period per period too — so prod Automation 2
-  // sat 50 days behind for weeks. An Automation months behind is now dispatched the
-  // period that just closed, and catches up in a single run.
-  it('jumps to the current period when far behind, not one period per run', async () => {
+  // A stale Automation advances one successful period at a time so every logical
+  // period remains recoverable instead of disappearing behind the clock.
+  it('returns the next missing period when far behind', async () => {
     const { orgId, userId } = await seedOrg();
     const automationId = 9005;
     await seedWindow({
@@ -243,9 +287,8 @@ describe('computePendingWindow', () => {
       'daily'
     );
 
-    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
-    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
-    expect(windowStart.toISOString()).not.toBe('2026-01-11T00:00:00.000Z');
+    expect(windowStart.toISOString()).toBe('2026-01-11T00:00:00.000Z');
+    expect(windowEnd.toISOString()).toBe('2026-01-12T00:00:00.000Z');
   });
 
   it('aligns weekly windows to the week boundary', async () => {
@@ -323,13 +366,11 @@ describe('nextAutomationWindowStart', () => {
     ).toBe('2026-07-31T00:00:00.000Z');
   });
 
-  // The floor. Chaining alone returns 2026-01-11 here and needs one successful run
-  // per missed day to reach the present, so a gap freezes instead of closing —
-  // prod Automation 2 sat 50 days behind on exactly this. Never older than one period.
-  it('jumps to the previous period when far behind, not one period at a time', () => {
+  // Historical backlog remains sequential regardless of how far the clock moved.
+  it('does not skip completed periods when far behind', () => {
     expect(
       nextAutomationWindowStart(new Date('2026-01-10T00:00:00.000Z'), NOW, 'daily').toISOString()
-    ).toBe('2026-07-30T00:00:00.000Z');
+    ).toBe('2026-01-11T00:00:00.000Z');
   });
 
   it('starts one aligned period back when there is no previous window', () => {
@@ -345,11 +386,10 @@ describe('nextAutomationWindowStart', () => {
     expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
   });
 
-  // ...and so does the floor, which is a separate code path and could have landed
-  // mid-week by subtracting seven days from an unaligned instant.
-  it('floors weekly to a Monday too', () => {
+  // Historical weekly backlog also stays aligned while advancing sequentially.
+  it('chains weekly backlog to the next Monday', () => {
     const out = nextAutomationWindowStart(new Date('2026-06-28T23:59:59.999Z'), NOW, 'weekly');
     expect(out.getUTCDay()).toBe(1);
-    expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
+    expect(out.toISOString()).toBe('2026-06-29T00:00:00.000Z');
   });
 });

@@ -85,10 +85,13 @@ describe("scheduled Automation unchanged gate", () => {
 			skipped_unchanged: true,
 		});
 		const [automation] = await sql`
-			SELECT next_run_at > current_timestamp AS advanced
+			SELECT next_run_at > current_timestamp AS advanced, next_window_start
 			FROM automations WHERE id = ${automationId}
 		`;
 		expect(automation?.advanced).toBe(true);
+		expect(new Date(automation.next_window_start as string).toISOString()).toBe(
+			new Date(runs[0].window_end as string).toISOString(),
+		);
 
 		const nextOccurredAt = new Date(
 			new Date(runs[0].window_end as string).getTime() + 30_000,

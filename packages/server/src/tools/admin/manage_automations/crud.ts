@@ -70,6 +70,8 @@ import {
   syncAutomationChannelFeedsBestEffort,
 } from '../../../automations/channel-subscriptions';
 import { assertAutomationDeliveryTarget } from '../../../automations/delivery-target';
+import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
+import { nextAutomationWindowStart } from '../../../utils/window-utils';
 
 /**
  * Drop chat-link style triggers when cloning an Automation onto an entity.
@@ -317,8 +319,15 @@ export async function handleCreate(
       versionId = await getNextNumericId(tx, 'automation_versions');
       const entityIdsArray = entityId ? [entityId] : [];
 
+      const projectionNow = new Date();
+      const projectionGranularity = inferAutomationGranularityFromSchedule(triggerWrite.schedule);
+      const nextWindowStart = nextAutomationWindowStart(
+        null,
+        projectionNow,
+        projectionGranularity
+      );
       const nextRunAtVal = triggerWrite.schedule
-        ? nextRunAt(triggerWrite.schedule, new Date(), triggerWrite.timezone)
+        ? nextRunAt(triggerWrite.schedule, projectionNow, triggerWrite.timezone)
         : null;
 
       // 1. Create automation row
@@ -331,7 +340,8 @@ export async function handleCreate(
         device_worker_id, agent_kind,
         min_cooldown_seconds,
         delivery_target, execution_config,
-        reaction_script, reaction_script_compiled, reaction_input_schema
+        reaction_script, reaction_script_compiled, reaction_input_schema,
+        next_window_start, completed_window_coverage, window_projection_granularity
       ) VALUES (
         ${automationId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -346,7 +356,9 @@ export async function handleCreate(
         ${toJsonParam(tx, deliveryTarget)},
         ${toJsonParam(tx, args.execution_config)},
         ${reactionScript}, ${reactionScriptCompiled},
-        ${reactionInputSchema ? tx.json(reactionInputSchema) : null}
+        ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
+        ${nextWindowStart.toISOString()}::timestamptz,
+        '{}'::tstzmultirange, ${projectionGranularity}
       )
     `;
 
@@ -658,9 +670,14 @@ export async function handleUpdate(
   const touchesCadence = args.triggers !== undefined;
   const effectiveSchedule = touchesCadence ? triggerWrite.schedule : currentRow.schedule;
   const effectiveTimezone = touchesCadence ? triggerWrite.timezone : currentRow.timezone;
+  const projectionNow = new Date();
+  const currentGranularity = inferAutomationGranularityFromSchedule(currentRow.schedule);
+  const effectiveGranularity = inferAutomationGranularityFromSchedule(effectiveSchedule);
+  const resetsWindowProjection = touchesCadence && currentGranularity !== effectiveGranularity;
+  const resetWindowStart = nextAutomationWindowStart(null, projectionNow, effectiveGranularity);
   const nextRunAtVal =
     touchesCadence && effectiveSchedule
-      ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
+      ? nextRunAt(effectiveSchedule, projectionNow, effectiveTimezone)
       : null;
 
   const updatedRows = await sql`
@@ -672,6 +689,9 @@ export async function handleUpdate(
       timezone = CASE WHEN ${touchesCadence} THEN ${triggerWrite.timezone ?? null} ELSE timezone END,
       triggers = CASE WHEN ${has('triggers')} THEN ${toJsonParam(sql, patch.triggers)} ELSE triggers END,
       next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+      next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
+      completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
+      window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,
       agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
@@ -1006,6 +1026,15 @@ export async function handleCreateFromVersion(
         const cloneTags = parsePgTextArray(
           version.tags as string | string[] | null,
         ).filter((tag) => tag !== 'system:chat-link');
+        const projectionNow = new Date();
+        const projectionGranularity = inferAutomationGranularityFromSchedule(
+          (version.schedule as string | null) ?? null
+        );
+        const nextWindowStart = nextAutomationWindowStart(
+          null,
+          projectionNow,
+          projectionGranularity
+        );
 
         await tx`
           INSERT INTO automations (
@@ -1013,7 +1042,8 @@ export async function handleCreateFromVersion(
             schedule, timezone, next_run_at, triggers, agent_id, device_worker_id, agent_kind, model_config, execution_config, sources, version,
             current_version_id, tags, status, created_by, created_at, updated_at,
             automation_group_id, source_automation_id,
-            reaction_script, reaction_script_compiled, reaction_input_schema
+            reaction_script, reaction_script_compiled, reaction_input_schema,
+            next_window_start, completed_window_coverage, window_projection_granularity
           ) VALUES (
             ${automationId}, ${automationName}, ${automationSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
@@ -1027,7 +1057,9 @@ export async function handleCreateFromVersion(
             ${groupId}, ${version.automation_id},
             ${(version.reaction_script as string | null) ?? null},
             ${(version.reaction_script_compiled as string | null) ?? null},
-            ${toJsonParam(tx, version.reaction_input_schema)}
+            ${toJsonParam(tx, version.reaction_input_schema)},
+            ${nextWindowStart.toISOString()}::timestamptz,
+            '{}'::tstzmultirange, ${projectionGranularity}
           )
         `;
 

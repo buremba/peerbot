@@ -23,7 +23,8 @@
  * Classification prefers structure over string-matching:
  *  1. `completed` → scoreable; `timeout` → infra_error (every timeout class —
  *     unclaimed, heartbeat-stale, coarse TTL, SIGKILL time budget — is a
- *     platform condition, not agent evidence).
+ *     platform condition, not agent evidence). A coordination-cancelled run
+ *     superseded by an older recoverable window is infra for the same reason.
  *  2. A known `AgentErrorCode` → infra_error. The catalog (core/errors.ts) is
  *     exclusively provider/worker/config failures today; an agent-fault code
  *     added there must be mapped here explicitly.
@@ -99,6 +100,12 @@ export function classifyRunOutcome(input: {
 			return "scoreable";
 		case "timeout":
 			return "infra_error";
+		case "cancelled":
+			return /superseded by the oldest recoverable automation window/i.test(
+				input.errorMessage ?? "",
+			)
+				? "infra_error"
+				: null;
 		case "failed":
 			break;
 		default:

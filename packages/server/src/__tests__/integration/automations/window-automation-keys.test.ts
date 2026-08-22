@@ -80,6 +80,20 @@ describe("Automation window vocabulary", () => {
 			SET approved_input = approved_input - 'window_start' - 'window_end'
 			WHERE id = ${turnRunId}
 		`;
+		const expectedNextWindow = nextAutomationWindowStart(
+			new Date(windowStart),
+			new Date(),
+			"daily",
+		);
+		// The fixture inserts completed history directly, bypassing the completion
+		// handler. Seed the durable state that migration backfill would derive.
+		await sql`
+			UPDATE automations
+			SET next_window_start = ${expectedNextWindow.toISOString()}::timestamptz,
+				completed_window_coverage = '{}'::tstzmultirange,
+				window_projection_granularity = 'daily'
+			WHERE id = ${automationId}
+		`;
 		await createTestEvent({
 			entity_id: entity.id,
 			content: "Pending after the completed window",
@@ -97,8 +111,6 @@ describe("Automation window vocabulary", () => {
 		expect(String(window.automation_id)).toBe(String(automationId));
 		expect(window.automation_name).toBe("Window vocab");
 		expect(detail.automation?.slug).toBe("window-vocab");
-		expect(detail.pending_analysis?.next_window?.start).toBe(
-			nextAutomationWindowStart(new Date(windowStart), new Date(), "daily").toISOString(),
-		);
+		expect(detail.pending_analysis?.next_window?.start).toBe(expectedNextWindow.toISOString());
 	});
 });

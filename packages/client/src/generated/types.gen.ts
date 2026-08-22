@@ -539,6 +539,14 @@ export type QuerySdkResponses = {
        * Redacted, bounded arguments for the proposed action.
        */
       args: Array<unknown>;
+      /**
+       * Access tier required by the proposed SDK method.
+       */
+      required_access: "read" | "write" | "external" | "admin";
+      /**
+       * Dry-run validates arguments but does not execute live authorization or approval policy.
+       */
+      authorization_status: "not_evaluated";
     }>;
     side_effect_preview_truncated?: {
       dropped_entries: number;
@@ -687,7 +695,7 @@ export type RunSdkData = {
      */
     title?: string;
     /**
-     * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.
+     * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are canonicalized and validated, then skipped and returned in side_effect_preview without executing their handlers.
      */
     dry_run?: boolean;
   };
@@ -775,6 +783,14 @@ export type RunSdkResponses = {
        * Redacted, bounded arguments for the proposed action.
        */
       args: Array<unknown>;
+      /**
+       * Access tier required by the proposed SDK method.
+       */
+      required_access: "read" | "write" | "external" | "admin";
+      /**
+       * Dry-run validates arguments but does not execute live authorization or approval policy.
+       */
+      authorization_status: "not_evaluated";
     }>;
     side_effect_preview_truncated?: {
       dropped_entries: number;
@@ -4222,6 +4238,7 @@ export type ManageAutomationsData = {
       | "update"
       | "create_version"
       | "complete_window"
+      | "claim_next_window"
       | "trigger"
       | "delete"
       | "set_reaction_script"
@@ -4232,6 +4249,18 @@ export type ManageAutomationsData = {
       | "get_feedback"
       | "list_promoted"
       | "create_from_version";
+    /**
+     * [claim_next_window] Lease duration in seconds (default 900).
+     */
+    lease_seconds?: number;
+    /**
+     * [claim_next_window continuation] Cursor timestamp from context.page.next_cursor.
+     */
+    before_occurred_at?: string;
+    /**
+     * [claim_next_window continuation] Cursor id from context.page.next_cursor.
+     */
+    before_id?: number;
     /**
      * [list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Automation ID (numeric string)
      */
@@ -4448,7 +4477,7 @@ export type ManageAutomationsData = {
      */
     order_dir?: "asc" | "desc";
     /**
-     * [list] Filter by each Automation's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Automations with unhandled runs — manual-open pending runs are completable by any client via complete_window.
+     * [list] Filter by each Automation's latest run status (active runs take precedence). External processors should use claim_next_window to atomically lease expected work.
      */
     run_status?: "pending" | "claimed" | "running" | "completed" | "failed";
     /**
@@ -4543,11 +4572,11 @@ export type ManageAutomationsData = {
       [key: string]: unknown;
     };
     /**
-     * [complete_window] JWT from read_knowledge(automation_id, since, until). Pass this or window_tokens.
+     * [complete_window] Signed JWT from claim_next_window or an internal Automation knowledge read. Pass this or window_tokens.
      */
     window_token?: string;
     /**
-     * [complete_window] Multiple page JWTs from read_knowledge for the same Automation window. Content IDs are unioned and linked atomically.
+     * [complete_window] Every signed page token for the same Automation window. Content IDs are unioned and linked atomically; incomplete page chains are rejected.
      */
     window_tokens?: Array<string>;
     /**
@@ -4670,6 +4699,42 @@ export type ManageAutomationsResponses = {
         window_start: string;
         window_end: string;
         content_linked: number;
+      }
+    | {
+        action: "claim_next_window";
+        automation_id: string;
+        run_id: number;
+        lease_expires_at: string;
+        context: {
+          content: Array<unknown>;
+          page: {
+            limit: number;
+            offset: number;
+            has_more: boolean;
+            next_cursor?: {
+              occurred_at: string;
+              id: number;
+            };
+          };
+          window_token: string;
+          window_start: string;
+          window_end: string;
+          sources?: {
+            [key: string]: unknown | Array<unknown>;
+          };
+          sources_page?: {
+            [key: string]:
+              | unknown
+              | {
+                  returned: number;
+                  limit: number;
+                  has_more: boolean;
+                };
+          };
+          extraction_schema?: {
+            [key: string]: unknown;
+          };
+        };
       }
     | {
         action: "trigger";
@@ -5059,6 +5124,8 @@ export type GetAutomationResponses = {
     };
     pending_analysis?: {
       unprocessed_count: number;
+      pending_period_count: number;
+      unprocessed_content_count: number;
       next_window: {
         start: string;
         end: string;
@@ -5081,10 +5148,21 @@ export type GetAutomationResponses = {
         status: "unprocessed" | "partial" | "complete";
       }>;
     };
+    /**
+     * First 50 exact missing scheduled ranges from the durable coverage projection.
+     */
     gaps?: Array<{
       start: string;
       end: string;
     }>;
+    /**
+     * Exact number of missing scheduled range components.
+     */
+    gap_count?: number;
+    /**
+     * True when gap_count exceeds the returned gaps array.
+     */
+    gaps_truncated?: boolean;
     pagination: {
       page: number;
       page_size: number;

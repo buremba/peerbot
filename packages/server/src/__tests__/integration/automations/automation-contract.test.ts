@@ -392,6 +392,20 @@ describe("automation contract", () => {
 			events[3].id,
 		]);
 		expect(page2.page.has_more).toBe(true);
+		const page3 = (await api.knowledge.read({
+			automation_id: automationId,
+			since: "2026-01-02",
+			until: "2026-01-02",
+			limit: 2,
+			before_occurred_at: page2.page.next_cursor!.occurred_at,
+			before_id: page2.page.next_cursor!.id,
+		})) as {
+			content: Array<{ id: number }>;
+			window_token: string;
+			page: { has_more: boolean };
+		};
+		expect(page3.content.map((item) => item.id)).toEqual([events[4].id]);
+		expect(page3.page.has_more).toBe(false);
 		const run = await createAutomationRun({
 			organizationId: workspace.org.id,
 			automationId,
@@ -399,12 +413,11 @@ describe("automation contract", () => {
 			windowEnd: page1.window_end,
 			dispatchSource: "manual",
 		});
-
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
 			run_id: run.runId,
-			window_tokens: [page1.window_token, page2.window_token],
-			extracted_data: { summary: "Summary across two pages" },
+			window_tokens: [page1.window_token, page2.window_token, page3.window_token],
+			extracted_data: { summary: "Summary across all pages" },
 		})) as { action: string; run_id: number; content_linked: number };
 
 		const links = await sql`
@@ -415,11 +428,11 @@ describe("automation contract", () => {
     `;
 
 		expect(completion.action).toBe("complete_window");
-		expect(completion.content_linked).toBe(4);
+		expect(completion.content_linked).toBe(5);
 		expect(
 			links.map((row) => Number(row.event_id)).sort((a, b) => a - b)
 		).toEqual(
-			[events[0].id, events[1].id, events[2].id, events[3].id].sort(
+			[events[0].id, events[1].id, events[2].id, events[3].id, events[4].id].sort(
 				(a, b) => a - b
 			)
 		);
@@ -456,7 +469,6 @@ describe("automation contract", () => {
 			windowEnd,
 			dispatchSource: "manual",
 		});
-
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
 			run_id: run.runId,

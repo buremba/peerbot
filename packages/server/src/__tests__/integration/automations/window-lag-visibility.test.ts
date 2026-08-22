@@ -12,16 +12,8 @@
  * stale, and from inside a run a stale window is indistinguishable from a fresh
  * one.
  *
- * The fix is a floor in the dispatch, not a hint to the run: an Automation is never
- * handed a window older than one period, so the gap closes on the next successful
- * run whatever model is driving it. Telling the run about the skip is what is
- * left over — the one decision that is genuinely its own.
- *
- * So this suite proves, in order:
- *   1. a lagging Automation is dispatched the CURRENT window, not cursor + 1
- *   2. one completion of that window collapses fifty days of backlog
- *   3. the skipped span is named, in JSON and in the markdown a model reads
- *   4. none of it fires on a healthy Automation
+ * Recovery is sequential: every missing logical period remains visible and a
+ * successful completion advances exactly one period.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -137,6 +129,16 @@ describe("Automation window lag is visible and actionable", () => {
 			contentAnalyzed: 40,
 			createdBy: userId,
 		});
+		// This fixture writes completed history directly, bypassing the completion
+		// handler that maintains the durable projection. Seed the state that the
+		// migration would derive from that one sequential completion.
+		await sql`
+			UPDATE automations
+			SET next_window_start = ${new Date(windowStart.getTime() + DAY_MS).toISOString()}::timestamptz,
+				completed_window_coverage = '{}'::tstzmultirange,
+				window_projection_granularity = 'daily'
+			WHERE id = ${automationId}
+		`;
 		return windowStart;
 	};
 
@@ -146,33 +148,23 @@ describe("Automation window lag is visible and actionable", () => {
 			userId,
 		})) as AutomationContent;
 
-	// THE FIX, at the dispatch. The old rule handed this run `staleStart + 1` —
-	// June 18 for an Automation sitting in August — and needed fifty more successful
-	// runs to reach the present. No agent cooperation is involved here.
-	it("dispatches the current window, not cursor + 1, when fifty periods behind", async () => {
+	it("dispatches the oldest missing window when fifty periods behind", async () => {
 		const staleStart = await seedStaleCursor(50);
 		const content = await read();
 
-		expect(content.window_start).toBe(dayStart(1).toISOString());
-		expect(content.window_start).not.toBe(
+		expect(content.window_start).toBe(
 			new Date(staleStart.getTime() + DAY_MS).toISOString(),
 		);
 		expect(content.window_lag).toBeDefined();
-		// The WINDOW is one period old — the healthy resting value. The cursor is
-		// still fifty back until something completes.
-		expect(content.window_lag?.periods_behind).toBe(1);
+		expect(content.window_lag?.periods_behind).toBe(49);
 		expect(content.window_lag?.last_window_start).toBe(staleStart.toISOString());
 		expect(content.window_lag?.granularity).toBe("daily");
-		// June 18 through August 4, in prod's terms: everything between the cursor
-		// and the window now being handed out.
-		expect(content.window_lag?.periods_skipped).toBe(48);
-		expect(content.window_lag?.skipped_from).toBe(dayStart(49).toISOString());
-		expect(content.window_lag?.skipped_to).toBe(dayStart(2).toISOString());
+		expect(content.window_lag?.periods_skipped).toBe(0);
+		expect(content.window_lag?.skipped_from).toBeNull();
+		expect(content.window_lag?.skipped_to).toBeNull();
 	});
 
-	// THE PAYOFF. One ordinary completion of the ordinary dispatched window —
-	// no `since`/`until`, no notice acted on, nothing the model had to work out.
-	it("collapses fifty days of backlog in one ordinary run", async () => {
+	it("advances exactly one period after an ordinary completion", async () => {
 		await seedStaleCursor(50);
 
 		const dispatched = await read();
@@ -183,6 +175,7 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: dispatched.window_end,
 			dispatchSource: "manual",
 		});
+		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${createdRun.runId}`;
 		const completion = await manageAutomations(
 			{
 				action: "complete_window",
@@ -203,27 +196,20 @@ describe("Automation window lag is visible and actionable", () => {
 			ORDER BY (approved_input->>'window_start')::timestamptz DESC LIMIT 1
 		`;
 		expect(new Date(afterCursor[0].window_start as string).toISOString()).toBe(
-			dayStart(1).toISOString(),
+			dayStart(49).toISOString(),
 		);
 
-		// And it stays closed: the next dispatch chains normally instead of
-		// sticking to the floor, and the skip notice goes quiet.
 		const next = await read();
-		expect(next.window_start).toBe(dayStart(0).toISOString());
+		expect(next.window_start).toBe(dayStart(48).toISOString());
 		expect(next.window_lag?.periods_skipped).toBe(0);
 		expect(formatToolResult("read_knowledge", next)).not.toContain("Skipped Periods");
 	});
 
-	it("names the skipped span in the markdown a model actually reads", async () => {
+	it("does not describe sequential backlog as skipped periods", async () => {
 		await seedStaleCursor(50);
 		const md = formatToolResult("read_knowledge", await read());
 
-		expect(md).toContain("Skipped Periods");
-		expect(md).toContain("48 daily period(s)");
-		// The affordance — a run that is not told it may read the span back will
-		// never read it back.
-		expect(md).toContain("since");
-		expect(md).toContain("until");
+		expect(md).not.toContain("Skipped Periods");
 		expect(md).toContain("Automation Window");
 	});
 
@@ -285,6 +271,7 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: dispatched.window_end,
 			dispatchSource: "manual",
 		});
+		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${currentRun.runId}`;
 		await manageAutomations(
 			{
 				action: "complete_window",
@@ -306,6 +293,7 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: backfill.window_end,
 			dispatchSource: "manual",
 		});
+		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${backfillRun.runId}`;
 		await manageAutomations(
 			{
 				action: "complete_window",
@@ -319,14 +307,12 @@ describe("Automation window lag is visible and actionable", () => {
 		);
 
 		const next = await read();
-		expect(next.window_start).toBe(dayStart(0).toISOString());
-		expect(next.window_lag?.last_window_start).toBe(dayStart(1).toISOString());
+		expect(next.window_start).toBe(dayStart(48).toISOString());
 		expect(next.window_lag?.periods_skipped).toBe(0);
 	});
 
-	// The floor moves what is ASKED FOR, never what was DONE. An Automation whose
-	// runs all fail keeps reporting its real cursor, so catching up cannot be
-	// mistaken for an Automation that is actually working.
+	// Reads alone never advance the durable cursor. An Automation whose runs all
+	// fail keeps reporting its oldest missing period.
 	it("does not advance the cursor without a completed run", async () => {
 		const staleStart = await seedStaleCursor(50);
 

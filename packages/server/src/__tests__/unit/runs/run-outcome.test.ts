@@ -24,6 +24,15 @@ describe("classifyRunOutcome", () => {
 		}
 	});
 
+	it("classifies a pending attempt superseded by an older recoverable window as infra", () => {
+		expect(
+			classifyRunOutcome({
+				status: "cancelled",
+				errorMessage: "Superseded by the oldest recoverable Automation window",
+			}),
+		).toBe("infra_error");
+	});
+
 	it("maps every catalogued AgentErrorCode to infra_error", () => {
 		for (const code of Object.values(AgentErrorCode)) {
 			expect(

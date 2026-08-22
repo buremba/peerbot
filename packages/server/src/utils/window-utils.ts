@@ -102,31 +102,20 @@ export function foldUnprocessedRanges(
  * Returns a period-aligned window of exactly one granularity period:
  * `[aligned start, start + 1 period)`. The end is EXCLUSIVE.
  *
- * Chains off the last completed run's `window_start`, never its `window_end`. Using
- * the end assumes it is an exclusive boundary, and it is not reliably one:
- * periods are written by agents through `complete_window`, and historical data
- * holds both conventions (measured 2026-07-31 — daily: 29 rows ending
- * `23:59:59.999` vs 32 ending `00:00:00`; weekly: 28 vs 2). Chaining off an
- * inclusive end starts the next period a day-minus-a-millisecond early, which
- * then collapses to a zero-length period once clamped.
- *
- * Re-aligning the stored start also makes already-misaligned rows self-heal on
- * their next run.
- *
- * The period never runs ahead of the clock: `AUTOMATION_TIME_GRANULARITIES` has
- * no 'hourly', so an hourly cron necessarily gets a DAILY window and every run
- * inside a day must resolve to that same day. Advancing unconditionally would
- * mint tomorrow's window at 00:01 and march
- * into the future. Hence the clamp to the current period rather than a cap on
- * the end — a clamped END is what produced the zero-length windows.
+ * Reads the durable oldest-unfinished cursor. The migration owns legacy history
+ * reconstruction; runtime work is bounded to the Automation-row projection.
  */
 export async function computePendingWindow(
   sql: DbClient,
   automationId: number,
   granularity: AutomationTimeGranularity
 ): Promise<WindowDates> {
-  const cursor = await readWindowCursor(sql, automationId);
-  const windowStart = nextAutomationWindowStart(cursor, new Date(), granularity);
+  const windowStart = await ensureExpectedAutomationWindowStart(
+    sql,
+    automationId,
+    granularity
+  );
+  const cursor = subtractAutomationPeriod(windowStart, granularity);
 
   // Always a full period. `windowStart <= alignedNow` by construction, so this
   // can never exceed the current period's end and never needs clamping — which
@@ -136,36 +125,360 @@ export async function computePendingWindow(
   return { windowStart, windowEnd, cursor };
 }
 
-/**
- * The Automation's cursor: the start of its latest completed result period.
- *
- * Completed Automation runs make this a bounded per-Automation lookup. Ordered
- * by `window_start` because that is
- * the field being chained; ordering by `window_end` would re-introduce the
- * boundary ambiguity documented on `computePendingWindow`. Zero-content windows
- * count as durable cursor progress too, otherwise empty periods get reprocessed
- * forever.
- *
- * Shared by `computePendingWindow` (which advances it) and the lag reported to
- * the agent (which describes it), so the two can never disagree about where the
- * cursor is.
- */
-export async function readWindowCursor(
+/** Read the durable expected period without consulting run history. */
+export async function readExpectedAutomationWindowStart(
   sql: DbClient,
-  automationId: number
-): Promise<Date | null> {
-  const rows = await sql`
-    SELECT (approved_input->>'window_start')::timestamptz AS window_start
-    FROM runs
-    WHERE automation_id = ${automationId}
-      AND run_type = 'automation'
-      AND status = 'completed'
-      AND action_output IS NOT NULL
-      AND approved_input->>'window_start' IS NOT NULL
-    ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST
+  automationId: number,
+  granularity: AutomationTimeGranularity,
+  now: Date = new Date()
+): Promise<Date> {
+  const [automation] = await sql<{
+    next_window_start: string | Date | null;
+    window_projection_granularity: string | null;
+  }>`
+    SELECT next_window_start, window_projection_granularity
+    FROM automations
+    WHERE id = ${automationId}
     LIMIT 1
   `;
-  return rows.length > 0 ? new Date(rows[0].window_start as string) : null;
+  if (
+    automation?.next_window_start &&
+    (automation.window_projection_granularity == null ||
+      automation.window_projection_granularity === granularity)
+  ) {
+    return alignToAutomationWindowStart(new Date(automation.next_window_start), granularity);
+  }
+  return nextAutomationWindowStart(null, now, granularity);
+}
+
+/**
+ * Lock and initialize the compact scheduled-coverage projection.
+ *
+ * Product creation and schedule-edit paths write this state explicitly. The
+ * fallback exists for direct test fixtures and rows created while this branch's
+ * migration is being exercised; it is bounded to the Automation row and never
+ * reconstructs history.
+ */
+export async function ensureExpectedAutomationWindowStart(
+  sql: DbClient,
+  automationId: number,
+  granularity: AutomationTimeGranularity,
+  now: Date = new Date()
+): Promise<Date> {
+  const inTransaction = typeof sql.savepoint === 'function';
+  return inTransaction
+    ? ensureExpectedAutomationWindowStartLocked(sql, automationId, granularity, now)
+    : sql.begin((tx) =>
+        ensureExpectedAutomationWindowStartLocked(tx, automationId, granularity, now)
+      );
+}
+
+async function ensureExpectedAutomationWindowStartLocked(
+  tx: DbClient,
+  automationId: number,
+  granularity: AutomationTimeGranularity,
+  now: Date
+): Promise<Date> {
+  const [automation] = await tx<{
+    next_window_start: string | Date | null;
+    window_projection_granularity: string | null;
+  }>`
+    SELECT next_window_start, window_projection_granularity
+    FROM automations
+    WHERE id = ${automationId}
+    FOR UPDATE
+  `;
+  const initial = nextAutomationWindowStart(null, now, granularity);
+  if (!automation) return initial;
+  if (
+    !automation.next_window_start ||
+    automation.window_projection_granularity !== granularity
+  ) {
+    await tx`
+      UPDATE automations
+      SET next_window_start = ${initial.toISOString()}::timestamptz,
+          completed_window_coverage = '{}'::tstzmultirange,
+          window_projection_granularity = ${granularity}
+      WHERE id = ${automationId}
+    `;
+    return initial;
+  }
+
+  const expected = alignToAutomationWindowStart(
+    new Date(automation.next_window_start),
+    granularity
+  );
+  const closedBoundary = alignToAutomationWindowStart(now, granularity);
+  if (expected >= closedBoundary) return expected;
+
+  const [covered] = await tx<{ covered_until: string | Date | null }>`
+    SELECT upper(component) AS covered_until
+    FROM automations automation
+    CROSS JOIN LATERAL unnest(automation.completed_window_coverage) component
+    WHERE automation.id = ${automationId}
+      AND component @> ${expected.toISOString()}::timestamptz
+    LIMIT 1
+  `;
+  if (!covered?.covered_until) return expected;
+
+  const advanced = new Date(
+    Math.min(new Date(covered.covered_until).getTime(), closedBoundary.getTime())
+  );
+  await tx`
+    UPDATE automations
+    SET next_window_start = ${advanced.toISOString()}::timestamptz,
+        completed_window_coverage = completed_window_coverage
+          * tstzmultirange(tstzrange(${advanced.toISOString()}::timestamptz, NULL, '[)'))
+    WHERE id = ${automationId}
+  `;
+  return advanced;
+}
+
+/** Merge a completed scheduled period, advance across contiguous coverage, and prune behind it. */
+export async function advanceExpectedAutomationWindow(
+  sql: DbClient,
+  automationId: number,
+  completedWindowStart: Date,
+  granularity: AutomationTimeGranularity,
+  now: Date = new Date()
+): Promise<boolean> {
+  const inTransaction = typeof sql.savepoint === 'function';
+  return inTransaction
+    ? advanceExpectedAutomationWindowLocked(
+        sql,
+        automationId,
+        completedWindowStart,
+        granularity,
+        now
+      )
+    : sql.begin((tx) =>
+        advanceExpectedAutomationWindowLocked(
+          tx,
+          automationId,
+          completedWindowStart,
+          granularity,
+          now
+        )
+      );
+}
+
+async function advanceExpectedAutomationWindowLocked(
+  tx: DbClient,
+  automationId: number,
+  completedWindowStart: Date,
+  granularity: AutomationTimeGranularity,
+  now: Date
+): Promise<boolean> {
+  const [storedProjection] = await tx<{
+    next_window_start: string | Date | null;
+    window_projection_granularity: string | null;
+  }>`
+    SELECT next_window_start, window_projection_granularity
+    FROM automations
+    WHERE id = ${automationId}
+    FOR UPDATE
+  `;
+  if (
+    storedProjection?.next_window_start != null &&
+    storedProjection.window_projection_granularity != null &&
+    storedProjection.window_projection_granularity !== granularity
+  ) {
+    return false;
+  }
+
+  const expected = await ensureExpectedAutomationWindowStartLocked(
+    tx,
+    automationId,
+    granularity,
+    now
+  );
+  const completedStart = alignToAutomationWindowStart(completedWindowStart, granularity);
+  const completedEnd = addAutomationPeriod(completedStart, granularity);
+  const closedBoundary = alignToAutomationWindowStart(now, granularity);
+  const [updated] = await tx<{ next_window_start: string | Date }>`
+    WITH projected AS (
+      SELECT
+        next_window_start AS cursor,
+        completed_window_coverage
+          + tstzmultirange(tstzrange(
+              ${completedStart.toISOString()}::timestamptz,
+              ${completedEnd.toISOString()}::timestamptz,
+              '[)'
+            )) AS coverage
+      FROM automations
+      WHERE id = ${automationId}
+    ), resolved AS (
+      SELECT
+        cursor,
+        coverage,
+        CASE
+          WHEN cursor < ${closedBoundary.toISOString()}::timestamptz THEN LEAST(
+            COALESCE((
+              SELECT upper(component)
+              FROM unnest(coverage) component
+              WHERE component @> cursor
+              LIMIT 1
+            ), cursor),
+            ${closedBoundary.toISOString()}::timestamptz
+          )
+          ELSE cursor
+        END AS next_cursor
+      FROM projected
+    )
+    UPDATE automations automation
+    SET next_window_start = resolved.next_cursor,
+        completed_window_coverage = resolved.coverage
+          * tstzmultirange(tstzrange(resolved.next_cursor, NULL, '[)')),
+        window_projection_granularity = ${granularity},
+        updated_at = current_timestamp
+    FROM resolved
+    WHERE automation.id = ${automationId}
+    RETURNING automation.next_window_start
+  `;
+  return Boolean(updated) && new Date(updated.next_window_start).getTime() !== expected.getTime();
+}
+
+export const MAX_AUTOMATION_PENDING_GAPS = 50;
+
+export interface AutomationPendingProjection {
+  nextWindowStart: Date;
+  closedBoundary: Date;
+  pendingPeriodCount: number;
+  missingRanges: Array<{ start: Date; end: Date }>;
+  missingRangeCount: number;
+  gapsTruncated: boolean;
+}
+
+interface PendingProjectionRow {
+  next_window_start: string | Date;
+  projection_granularity: string | null;
+  pending_period_count: string | number;
+  missing_range_count: string | number;
+  gap_start: string | Date | null;
+  gap_end: string | Date | null;
+}
+
+/**
+ * Read exact pending scheduled coverage from one compact Automation row.
+ * Work is proportional to stored multirange components, never elapsed periods
+ * or historical runs, and only the first bounded set of gaps crosses the wire.
+ */
+export async function readAutomationPendingProjection(
+  sql: DbClient,
+  automationId: number,
+  granularity: AutomationTimeGranularity,
+  now: Date = new Date(),
+  gapLimit: number = MAX_AUTOMATION_PENDING_GAPS
+): Promise<AutomationPendingProjection> {
+  const closedBoundary = alignToAutomationWindowStart(now, granularity);
+  const initial = nextAutomationWindowStart(null, now, granularity);
+  const rows = await sql<PendingProjectionRow>`
+    WITH projection AS (
+      SELECT
+        COALESCE(next_window_start, ${initial.toISOString()}::timestamptz) AS next_window_start,
+        window_projection_granularity AS projection_granularity,
+        CASE
+          WHEN window_projection_granularity IS NULL THEN '{}'::tstzmultirange
+          ELSE completed_window_coverage
+        END AS completed_window_coverage
+      FROM automations
+      WHERE id = ${automationId}
+    ), missing_projection AS (
+      SELECT
+        next_window_start,
+        projection_granularity,
+        CASE
+          WHEN next_window_start < ${closedBoundary.toISOString()}::timestamptz THEN
+            tstzmultirange(tstzrange(
+              next_window_start,
+              ${closedBoundary.toISOString()}::timestamptz,
+              '[)'
+            )) - completed_window_coverage
+          ELSE '{}'::tstzmultirange
+        END AS missing
+      FROM projection
+    ), metrics AS (
+      SELECT
+        COALESCE(sum(
+          CASE ${granularity}
+            WHEN 'daily' THEN
+              extract(epoch FROM (upper(gap) - lower(gap))) / 86400
+            WHEN 'weekly' THEN
+              extract(epoch FROM (upper(gap) - lower(gap))) / 604800
+            WHEN 'monthly' THEN
+              (extract(year FROM upper(gap) AT TIME ZONE 'UTC') - extract(year FROM lower(gap) AT TIME ZONE 'UTC')) * 12
+              + extract(month FROM upper(gap) AT TIME ZONE 'UTC') - extract(month FROM lower(gap) AT TIME ZONE 'UTC')
+            ELSE (
+              (extract(year FROM upper(gap) AT TIME ZONE 'UTC') - extract(year FROM lower(gap) AT TIME ZONE 'UTC')) * 12
+              + extract(month FROM upper(gap) AT TIME ZONE 'UTC') - extract(month FROM lower(gap) AT TIME ZONE 'UTC')
+            ) / 3
+          END
+        ), 0)::bigint AS pending_period_count,
+        count(gap)::bigint AS missing_range_count
+      FROM missing_projection
+      CROSS JOIN LATERAL unnest(missing) gap
+    )
+    SELECT
+      projection.next_window_start,
+      projection.projection_granularity,
+      metrics.pending_period_count,
+      metrics.missing_range_count,
+      lower(reported.gap) AS gap_start,
+      upper(reported.gap) AS gap_end
+    FROM missing_projection projection
+    CROSS JOIN metrics
+    LEFT JOIN LATERAL (
+      SELECT gap
+      FROM unnest(projection.missing) WITH ORDINALITY AS gaps(gap, ordinal)
+      ORDER BY ordinal
+      LIMIT ${Math.max(1, Math.trunc(gapLimit))}
+    ) reported ON true
+  `;
+
+  const first = rows[0];
+  if (!first) {
+    return {
+      nextWindowStart: initial,
+      closedBoundary,
+      pendingPeriodCount: 0,
+      missingRanges: [],
+      missingRangeCount: 0,
+      gapsTruncated: false,
+    };
+  }
+  if (
+    first.projection_granularity != null &&
+    first.projection_granularity !== granularity
+  ) {
+    throw new Error(
+      `Automation ${automationId} window projection uses ${first.projection_granularity}, not ${granularity}`
+    );
+  }
+
+  const missingRanges = rows.flatMap((row) =>
+    row.gap_start && row.gap_end
+      ? [{ start: new Date(row.gap_start), end: new Date(row.gap_end) }]
+      : []
+  );
+  const missingRangeCount = Number(first.missing_range_count);
+  return {
+    nextWindowStart: new Date(first.next_window_start),
+    closedBoundary,
+    pendingPeriodCount: Number(first.pending_period_count),
+    missingRanges,
+    missingRangeCount,
+    gapsTruncated: missingRangeCount > missingRanges.length,
+  };
+}
+
+/** The period immediately before the durable oldest-unfinished cursor, for lag display. */
+export async function readWindowCursor(
+  sql: DbClient,
+  automationId: number,
+  granularity: AutomationTimeGranularity
+): Promise<Date | null> {
+  const expected = await readExpectedAutomationWindowStart(sql, automationId, granularity);
+  return subtractAutomationPeriod(expected, granularity);
 }
 
 /**
@@ -267,11 +580,9 @@ export function alignRequestedWindow(
  * that. Prod Automation 79 (`0 4 * * *`) sits exactly there every single day. Any
  * staleness threshold applied to the cursor therefore fires on healthy runs.
  *
- * `periodsSkipped` is the span the floor in `nextAutomationWindowStart` jumped
- * over: the periods between the cursor and the window now being handed out, which
- * no run will ever be dispatched for. Zero on every healthy run, because the
- * window chains directly off the cursor. This is a statement about what the
- * server DID, not a judgment — which is why it needs no threshold.
+ * `periodsSkipped` describes a caller-selected window that starts after the
+ * sequential cursor. Normal dispatch always chains directly and therefore
+ * reports zero; the durable expected cursor is not advanced by a later ad-hoc read.
  *
  * Deliberately still raw facts: no `is_stale` flag. Whether a skipped span is
  * worth draining depends on what the Automation is FOR — a drafting Automation wants
@@ -300,8 +611,8 @@ export function computeWindowLag(
     wholePeriodsBetween(alignedWindow, currentPeriodStart, granularity)
   );
 
-  // The period the window WOULD have covered by chaining. When the floor moved
-  // the window past it, everything from here to the window is skipped.
+  // The period a sequential claim would cover. A later caller-selected window
+  // leaves the intervening range visible here without advancing the cursor.
   const chained = cursor
     ? addAutomationPeriod(alignToAutomationWindowStart(cursor, granularity), granularity)
     : null;
@@ -339,21 +650,8 @@ export function computeWindowLag(
  *
  * So the guidance travels WITH the data, on every surface.
  *
- * What it SAYS changed once the floor landed. It no longer asks a run to rescue a
- * stuck cursor — `nextAutomationWindowStart` now does that deterministically, for
- * every model — it reports the span the server skipped in order to get current,
- * and offers the one decision that is genuinely the run's: whether that span is
- * worth reading.
- *
- * No threshold. It speaks exactly when periods were skipped, which never happens
- * on a healthy run, so there is no number to tune and nothing training a model to
- * ignore a notice it sees every time. The previous `periodsBehind >= 2` rule
- * would have fired on every healthy daily Automation — see `computeWindowLag`.
- *
- * Worded without attributing the skip to anything. A gap between the cursor and
- * the window can be the floor jumping a lagging Automation forward OR the agent
- * asking for a later span itself, and the payload cannot tell the two apart;
- * claiming the server moved the window would be false on the second path.
+ * No threshold. It speaks exactly when a caller explicitly selected a later
+ * span; normal sequential recovery reports no skipped periods.
  */
 export function describeWindowLag(lag: {
   skippedFrom: Date | null;
@@ -364,13 +662,10 @@ export function describeWindowLag(lag: {
   if (lag.periodsSkipped < 1 || !lag.skippedFrom || !lag.skippedTo) return null;
   return (
     `${lag.periodsSkipped} ${lag.granularity} period(s) between this Automation's last completed ` +
-    `window and the one above were skipped — ${lag.skippedFrom.toISOString()} through ` +
-    `${lag.skippedTo.toISOString()} — and no run will be dispatched for them. ` +
-    "If this Automation's purpose needs that span, read it " +
-    'explicitly: call read_knowledge again with `since`/`until` covering it and complete the ' +
-    'token that call returns. Completing an older window records it without moving the cursor ' +
-    'back, so draining the backlog cannot make this Automation stale again. If only recent ' +
-    'periods matter for what this Automation does, ignore this and analyse the window above.'
+    `window and the one above are not included here — ${lag.skippedFrom.toISOString()} through ` +
+    `${lag.skippedTo.toISOString()}. The sequential Automation cursor remains on the oldest ` +
+    'missing period; a normal claim will still return it. Read and complete this explicitly ' +
+    'selected window without treating the intervening periods as processed.'
   );
 }
 
@@ -445,26 +740,12 @@ export function nextAutomationWindowStart(
     granularity
   );
 
-  // THE FLOOR, and the reason this file changed. Chaining advances one period per
-  // COMPLETED window while the clock advances one period per period, so a gap
-  // never closes on its own — it freezes at whatever width the outage left. Prod
-  // Automation 2 sat 50 days behind, drafting replies to month-dead Hacker News
-  // threads one June day at a time, and would have needed 50 more successful runs
-  // to reach the present.
-  //
-  // Refusing to hand out a window older than one period closes any gap in a
-  // single run, for every model, with no agent cooperation. That is the part
-  // guidance cannot buy: prose changes the odds, a floor changes the guarantee.
-  //
-  // Only the window ASKED FOR moves. The cursor still advances solely when a run
-  // completes a window, so an Automation whose runs all fail keeps reporting its full
-  // lag rather than looking current — the floor cannot mask a broken Automation.
-  const floored = chained < previousPeriod ? previousPeriod : chained;
-
+  // Advance exactly one completed period. Missing windows remain recoverable in
+  // order; the clock never causes the cursor to jump over them.
   // Capped at the current period: being "done" with today means today gets
   // re-analysed (and superseded), not that tomorrow starts — granularity has no
   // 'hourly', so a sub-daily cron must keep resolving to the same day.
-  return floored > alignedNow ? alignedNow : floored;
+  return chained > alignedNow ? alignedNow : chained;
 }
 
 /**

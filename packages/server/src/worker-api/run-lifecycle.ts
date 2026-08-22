@@ -61,6 +61,13 @@ import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import {
+	isBrowserConnectorKey,
+	sanitizeBrowserActionOutput,
+	sanitizeBrowserIngestionFields,
+	sanitizeBrowserPayload,
+	sanitizeBrowserText,
+} from "../utils/browser-ingestion-sanitizer";
+import {
 	bumpDeviceFinalizeNudge,
 	resolveFinalizeNudgeBudget,
 } from "../automations/run-completion";
@@ -118,6 +125,13 @@ async function finalizeRun(
       AND claimed_by = ${params.workerId}
     RETURNING ${returning}
   `) as unknown as Array<Record<string, unknown>>;
+}
+
+async function runUsesBrowserConnector(sql: DbClient, runId: number): Promise<boolean> {
+	const rows = (await sql`
+    SELECT connector_key FROM runs WHERE id = ${runId} LIMIT 1
+  `) as unknown as Array<{ connector_key: string | null }>;
+	return isBrowserConnectorKey(rows[0]?.connector_key);
 }
 
 /**
@@ -218,8 +232,10 @@ export async function heartbeat(c: Context<{ Bindings: Env }>) {
  * Worker streams content batch for a sync run.
  */
 export async function streamContent(c: Context<{ Bindings: Env }>) {
+	let browserRun = false;
+	const browserSourceOriginIds = new WeakMap<object, string>();
 	try {
-		const batch = await c.req.json<StreamBatch>();
+		let batch = await c.req.json<StreamBatch>();
 
 		// Connector-supplied checkpoints (LinkedIn takeout cursors, browser
 		// scrapes) can carry stray NUL (0x00), which Postgres rejects when written
@@ -266,6 +282,42 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 
 		const run = runRows[0];
 		const entityIds = parsePgNumberArray(run.entity_ids);
+		browserRun = isBrowserConnectorKey(run.connector_key);
+		if (browserRun) {
+			batch = {
+				...batch,
+				items: batch.items.map((item) => {
+					const sanitized = sanitizeBrowserIngestionFields({
+						originId: item.id,
+						parentOriginId: item.origin_parent_id,
+						title: item.title,
+						content: item.payload_text,
+						sourceUrl: item.source_url,
+						payloadData: item.payload_data,
+						payloadTemplate: item.payload_template,
+						attachments: item.attachments,
+						metadata: item.metadata,
+					});
+					const next = {
+						...item,
+						id: sanitized.originId ?? item.id,
+						origin_parent_id: sanitized.parentOriginId,
+						title: sanitized.title,
+						payload_text: sanitized.content ?? item.payload_text,
+						source_url: sanitized.sourceUrl,
+						payload_data: sanitized.payloadData,
+						payload_template: sanitized.payloadTemplate,
+						attachments: sanitized.attachments,
+						metadata: sanitized.metadata,
+						automation_signals: sanitizeBrowserPayload(item.automation_signals),
+						embedding: undefined,
+					};
+					if (next.id !== item.id) browserSourceOriginIds.set(next, item.id);
+					return next;
+				}),
+				checkpoint: sanitizeBrowserPayload(batch.checkpoint),
+			};
+		}
 
 		// A dry run executes the connector for real — same code, same credentials,
 		// same validation, the same INSERTs — and then throws the writes away by
@@ -351,6 +403,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			}
 
 			for (let item of batch.items) {
+				const sourceOriginId = browserSourceOriginIds.get(item);
 				let publishedArtifactIds: string[] = [];
 				let artifactCommitted = false;
 			try {
@@ -372,7 +425,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						logger.warn(
 							{
 								run_id: batch.run_id,
-								item_id: item.id,
+								item_id: browserRun ? "[browser-item]" : item.id,
 								semantic_type: validationType,
 								errors: kindResult.errors,
 							},
@@ -392,7 +445,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					logger.warn(
 						{
 							run_id: batch.run_id,
-							item_id: item.id,
+							item_id: browserRun ? "[browser-item]" : item.id,
 							connector: run.connector_key,
 						},
 						"[stream] Skipping event with empty payload_text and title"
@@ -450,6 +503,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					},
 					{
 						onConflictUpdate: true,
+						sourceOriginId,
 						// Dry path only: the tx that gets rolled back — the INSERT
 						// genuinely executes, so every constraint, trigger and NOT NULL
 						// is exercised for real. The real path must NOT pass `db` even
@@ -564,7 +618,14 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					}
 				}
 			} catch (err) {
-				console.error("[stream] Insert failed for item", item.id, ":", err);
+				if (browserRun) {
+					console.error(
+						"[stream] Insert failed for browser item:",
+						sanitizeBrowserText(errorMessage(err)),
+					);
+				} else {
+					console.error("[stream] Insert failed for item", item.id, ":", err);
+				}
 				throw err;
 			} finally {
 				if (!artifactCommitted) {
@@ -683,9 +744,12 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			...(rejectedItems.length > 0 && { rejected_items: rejectedItems }),
 		});
 	} catch (err: unknown) {
-		const stack = err instanceof Error ? err.stack : undefined;
-		console.error("[stream] Error:", errorMessage(err), stack);
-		return c.json({ error: errorMessage(err), stack }, 500);
+		const rawMessage = errorMessage(err);
+		const rawStack = err instanceof Error ? err.stack : undefined;
+		const message = browserRun ? sanitizeBrowserText(rawMessage) : rawMessage;
+		const stack = browserRun ? sanitizeBrowserText(rawStack) : rawStack;
+		console.error("[stream] Error:", message, stack);
+		return c.json({ error: message, stack }, 500);
 	}
 }
 
@@ -719,6 +783,12 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
+		const isBrowserRun = await runUsesBrowserConnector(sql, req.run_id);
+		if (isBrowserRun) {
+			req.error_message = sanitizeBrowserText(req.error_message) ?? undefined;
+			req.output_tail = sanitizeBrowserText(req.output_tail) ?? undefined;
+			req.checkpoint = sanitizeBrowserPayload(req.checkpoint);
+		}
 
 		// Atomic terminal-state transition with the shared F2 guard (see
 		// finalizeRun). A no-op (0 rows) means the run was already finalized by
@@ -1876,6 +1946,11 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
+		const isBrowserAuth = await runUsesBrowserConnector(sql, req.run_id);
+		if (isBrowserAuth) {
+			req.error_message = sanitizeBrowserText(req.error_message) ?? undefined;
+			req.output_tail = sanitizeBrowserText(req.output_tail) ?? undefined;
+		}
 
 		// Atomic terminal transition with the shared F2 guard (see finalizeRun), so
 		// a late/reaped completion is a no-op rather than resurrecting the run and
@@ -1996,6 +2071,11 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
+		const isBrowserAction = await runUsesBrowserConnector(sql, req.run_id);
+		if (isBrowserAction) {
+			req.action_output = sanitizeBrowserActionOutput(req.action_output);
+			req.error_message = sanitizeBrowserText(req.error_message) ?? undefined;
+		}
 		const materializedActionOutput = req.action_output
 			? await materializeActionOutputAttachments(req.run_id, req.action_output)
 			: undefined;

@@ -35,6 +35,11 @@ import {
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 import { stripNul, stripNulDeep } from './strip-nul';
+import {
+  isBrowserConnectorKey,
+  sanitizeBrowserIngestionFields,
+  sanitizeBrowserText,
+} from './browser-ingestion-sanitizer';
 
 /**
  * Single bounded retry for the fire-and-forget audit writers below
@@ -486,7 +491,8 @@ function nullableNumber(value: number | string | null): number | null {
 /**
  * Resolve lineage for a new stored version. Connector/feed and identity belong
  * to the chain and are always copied. Producer, run, and parent copy unless
- * the caller supplies a replacement value — null cannot clear them. Identity
+ * the caller supplies a replacement value — null cannot clear them; browser
+ * containment may redact the inherited parent before insertion. Identity
  * cannot first appear on a successor: uniqueness is rooted at
  * supersedes_event_id NULL.
  */
@@ -567,16 +573,73 @@ export async function insertEvent(
   options?: {
     onConflictUpdate?: boolean;
     sql?: DbClient;
+    /** Raw browser identity used only to supersede a pre-containment row. */
+    sourceOriginId?: string;
     /** Transactional hook for durable derived work such as Automation runs. */
     afterPersist?: (event: InsertedEvent, sql: DbClient) => Promise<void>;
   }
 ): Promise<InsertedEvent> {
   // This is the physical write funnel for event content. Connector items,
-  // Automation output, and approval metadata all converge here, so sanitize
-  // the complete input once before any lookup, comparison, or Postgres write.
-  // stripNulDeep preserves Dates and other class instances.
+  // Automation output, and approval metadata all converge here. stripNulDeep
+  // preserves Dates and other class instances.
   params = stripNulDeep(params) as InsertEventParams;
+  const sourceOriginId = stripNul(options?.sourceOriginId ?? params.originId);
   const sql = options?.sql ?? getDb();
+  // Explicit successors inherit connector lineage from their predecessor even
+  // when the caller omits (or disagrees about) connectorKey.
+  const inheritedConnectorRows = params.supersedesEventId != null
+    ? ((await sql`
+        SELECT connector_key FROM events
+        WHERE id = ${params.supersedesEventId}
+          AND organization_id = ${params.organizationId}
+        LIMIT 1
+      `) as Array<{ connector_key: string | null }>)
+    : [];
+  const browserConnector = isBrowserConnectorKey(
+    inheritedConnectorRows[0]?.connector_key ?? params.connectorKey
+  );
+  if (browserConnector) {
+    const sanitized = sanitizeBrowserIngestionFields({
+      originId: params.originId,
+      parentOriginId: params.parentOriginId,
+      title: params.title,
+      content: params.content,
+      sourceUrl: params.sourceUrl,
+      payloadData: params.payloadData,
+      payloadTemplate: params.payloadTemplate,
+      attachments: params.attachments,
+      metadata: params.metadata,
+      interactionInput: params.interactionInput,
+      interactionOutput: params.interactionOutput,
+      interactionError: params.interactionError,
+    });
+    params = {
+      ...params,
+      originId: sanitized.originId ?? params.originId,
+      parentOriginId: sanitized.parentOriginId,
+      title: sanitized.title,
+      content: sanitized.content,
+      sourceUrl: sanitized.sourceUrl,
+      payloadData: sanitized.payloadData,
+      payloadTemplate: sanitized.payloadTemplate,
+      attachments: sanitized.attachments,
+      metadata: sanitized.metadata,
+      interactionInput: sanitized.interactionInput,
+      interactionOutput: sanitized.interactionOutput,
+      interactionError: sanitized.interactionError,
+      // A worker may have embedded the unsanitized payload before it reached
+      // the gateway. Force the normal server backfill from sanitized
+      // payload_text instead of persisting/indexing that vector.
+      embedding: undefined,
+    };
+  }
+  // A pre-containment row may still be keyed by the raw browser URL. Use the
+  // source identity once for lookup so a fresh sanitized version supersedes
+  // it append-only; subsequent retries fall back to the sanitized identity.
+  const hasDistinctSourceOrigin = browserConnector && sourceOriginId !== params.originId;
+  const sourceOriginLookupParams = hasDistinctSourceOrigin
+    ? { ...params, originId: sourceOriginId }
+    : params;
 
   // Reverse-geocode lat/lng → city / admin1 / country once per event,
   // before insert. Silent no-op when the connector hasn't supplied
@@ -602,9 +665,20 @@ export async function insertEvent(
     let supersedesEventId = params.supersedesEventId ?? null;
 
     if (options?.onConflictUpdate) {
-      const existing = await findCurrentEventByOrigin(activeSql, params);
+      let existing = await findCurrentEventByOrigin(activeSql, sourceOriginLookupParams);
+      const existingHasRawBrowserOrigin = existing != null && hasDistinctSourceOrigin;
+      if (!existing && hasDistinctSourceOrigin) {
+        existing = await findCurrentEventByOrigin(activeSql, params);
+      }
       if (existing) {
-        if (isSemanticallyEqual(existing, params)) {
+        const existingHasRawBrowserParent =
+          browserConnector &&
+          sanitizeBrowserText(existing.origin_parent_id) !== existing.origin_parent_id;
+        if (
+          !existingHasRawBrowserOrigin &&
+          !existingHasRawBrowserParent &&
+          isSemanticallyEqual(existing, params)
+        ) {
           // Reread before touching the embedding. If the row got
           // deleted / tombstoned between findCurrentEventByOrigin and
           // here, upsertEmbedding would FK-fail instead of letting us
@@ -646,7 +720,10 @@ export async function insertEvent(
           // through into the INSERT path with `supersedesEventId` unset so we
           // create a fresh row instead of crashing on `undefined.id`.
           logger.warn(
-            { existingId: existing.id, originId: params.originId },
+            {
+              existingId: existing.id,
+              originId: browserConnector ? '[browser-origin]' : params.originId,
+            },
             '[insert-event] existing row vanished between find and reread — proceeding with fresh insert'
           );
         } else {
@@ -662,7 +739,7 @@ export async function insertEvent(
     sql: DbClient,
     supersedesEventId: number | null
   ): Promise<InsertedEvent> => {
-    const lineage: EventLineage =
+    let lineage: EventLineage =
       supersedesEventId != null
         ? await loadEventLineage(sql, supersedesEventId, params)
         : {
@@ -677,6 +754,12 @@ export async function insertEvent(
             identityNs: params.identity?.ns ?? null,
             identityKey: params.identity?.key ?? null,
           };
+    if (browserConnector) {
+      lineage = {
+        ...lineage,
+        parentOriginId: sanitizeBrowserText(lineage.parentOriginId) ?? null,
+      };
+    }
 
     const insertWithClientId = (activeSql: DbClient, clientId: string | null) => activeSql`
     INSERT INTO events (
@@ -781,7 +864,7 @@ export async function insertEvent(
     // diagnostic context so we can root-cause when it next happens.
     logger.error(
       {
-        originId: params.originId,
+        originId: browserConnector ? '[browser-origin]' : params.originId,
         connectionId: params.connectionId,
         organizationId: params.organizationId,
         semanticType: params.semanticType,
@@ -792,7 +875,8 @@ export async function insertEvent(
     );
     throw new Error(
       `insertEvent: INSERT RETURNING came back empty for ` +
-        `origin_id=${params.originId} connection_id=${params.connectionId}. ` +
+        `origin_id=${browserConnector ? '[browser-origin]' : params.originId} ` +
+        `connection_id=${params.connectionId}. ` +
         `Row was not persisted; check server logs for diagnostic context.`
     );
   }

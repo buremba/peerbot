@@ -1808,7 +1808,23 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 			const model = items[0]!.embedding_model!;
 			try {
 				await sql.begin(async (tx) => {
+					// Serialize with insertEvent's supersede UPDATE before replacing the
+					// vectors. FOR SHARE lets different model writers coexist, but makes a
+					// concurrent superseder wait and delete anything written here after it
+					// acquires the row.
+					const liveEvent = await tx`
+						SELECT id
+						FROM events
+						WHERE id = ${eventId}
+						  AND superseded_by IS NULL
+						FOR SHARE
+					`;
 					await tx`DELETE FROM event_embeddings WHERE event_id = ${eventId} AND embedding_model = ${model}`;
+					// Superseded between backfill selection and now: the delete above is the
+					// whole job. It counts toward `updated`, not `failed` — the event is
+					// finished work (discovery already skips superseded rows), so failing
+					// the run over it would re-queue a healthy backfill.
+					if (liveEvent.length === 0) return;
 					for (const item of items) {
 						const vectorStr = `[${item.embedding.join(",")}]`;
 						await tx.unsafe(

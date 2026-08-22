@@ -93,7 +93,8 @@ export class WorkerPollLoop {
     }
 
     this.activeJobs++;
-    this.execute(job)
+    Promise.resolve()
+      .then(() => this.execute(job))
       .catch((err) => {
         log.info(`[daemon] Run ${job.run_id} crashed:`, err);
       })

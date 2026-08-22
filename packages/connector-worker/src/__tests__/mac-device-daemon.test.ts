@@ -116,6 +116,35 @@ describe('WorkerPollLoop', () => {
     await started;
   });
 
+  test('releases the active-job slot when execution throws synchronously', async () => {
+    let polled = false;
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => {
+        if (!polled) {
+          polled = true;
+          return { run_id: 1, run_type: 'automation' } as never;
+        }
+        return { next_poll_seconds: 1 } as never;
+      },
+    } as never;
+    const loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 1,
+      maxConcurrentJobs: 1,
+      execute: () => {
+        throw new Error('synchronous executor failure');
+      },
+    });
+
+    const started = loop.start();
+    await Bun.sleep(10);
+    loop.stop();
+    await started;
+
+    expect(await loop.waitForActiveJobs(10, 1)).toBe(true);
+  });
+
   test('runs the daemon stop callback before draining active jobs', async () => {
     const events: string[] = [];
     const loop = {

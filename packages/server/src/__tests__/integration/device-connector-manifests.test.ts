@@ -1621,6 +1621,26 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'os.shell')).not.toBeNull();
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
 
+    expect(await readDefinition(orgId, 'whatsapp.local')).toBeNull();
+  });
+
+  itWithOwlettoManifests('chrome')('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
+    const manifests = loadOwlettoManifests('chrome');
+
+    const res = await poll(
+      workerId,
+      manifests,
+      'chrome-extension',
+      capabilitiesFor(manifests),
+    );
+    expect(res.status).toBe(200);
+
+    expect(await readDefinition(orgId, 'chrome')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.history')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.bookmarks')).not.toBeNull();
+    expect(await readDefinition(orgId, 'apple.screen_time')).toBeNull();
+
     const whatsapp = await readDefinition(orgId, 'whatsapp.local');
     const feedsSchema = whatsapp?.feeds_schema as
       | {
@@ -1640,23 +1660,5 @@ describe('device connector manifests', () => {
         target: expect.objectContaining({ entityType: 'person' }),
       }),
     ]);
-  });
-
-  itWithOwlettoManifests('chrome')('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
-    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
-    const manifests = loadOwlettoManifests('chrome');
-
-    const res = await poll(
-      workerId,
-      manifests,
-      'chrome-extension',
-      capabilitiesFor(manifests),
-    );
-    expect(res.status).toBe(200);
-
-    expect(await readDefinition(orgId, 'chrome')).not.toBeNull();
-    expect(await readDefinition(orgId, 'chrome.history')).not.toBeNull();
-    expect(await readDefinition(orgId, 'chrome.bookmarks')).not.toBeNull();
-    expect(await readDefinition(orgId, 'apple.screen_time')).toBeNull();
   });
 });

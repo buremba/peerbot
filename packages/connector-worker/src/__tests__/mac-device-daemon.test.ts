@@ -228,7 +228,7 @@ describe('WorkerPollLoop', () => {
     await started;
   });
 
-  test('does not admit a poll result after shutdown begins', async () => {
+  test('drains a poll result claimed while shutdown begins', async () => {
     let releasePoll!: (job: unknown) => void;
     let executions = 0;
     const pollResult = new Promise((resolve) => {
@@ -252,7 +252,8 @@ describe('WorkerPollLoop', () => {
     releasePoll({ run_id: 2, run_type: 'action' });
     await started;
 
-    expect(executions).toBe(0);
+    expect(await loop.waitForActiveJobs(1000, 1)).toBe(true);
+    expect(executions).toBe(1);
   });
 
   test('releases the active-job slot when execution throws synchronously', async () => {

@@ -126,7 +126,7 @@ describe('selected connector execution backend', () => {
     expect(classify({ expectedPlatform: 'chrome-extension' }).backend).toBeUndefined();
   });
 
-  test('accepts a canonical bridge definition whose manifest omits auth_schema', () => {
+  test('accepts a reconciled bridge definition whose wire manifest omitted auth_schema', () => {
     const omittedAuthManifest = { ...manifest, auth_schema: undefined };
     const omittedAuthHash = deviceManifestHash(omittedAuthManifest);
     const omittedSourcePath = `device-manifest://macos/${manifest.key}@${manifest.version}`;
@@ -138,7 +138,7 @@ describe('selected connector execution backend', () => {
         compileConfigHash: null,
         hasSourceCode: false,
       },
-      definition: { ...definition, authSchema: undefined },
+      definition,
       authorizations: [{
         connectorKey: manifest.key,
         connectorVersion: manifest.version,

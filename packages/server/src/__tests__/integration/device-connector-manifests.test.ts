@@ -406,6 +406,21 @@ describe('device connector manifests', () => {
     expect(unauthorizedBody.execution_backend).toBeUndefined();
   });
 
+  it('claims a bridge manifest after reconciliation when auth_schema is omitted', async () => {
+    const { workerId } = await seedDeviceOwner();
+    const bridgeManifest = manifest({
+      runtime: { platforms: ['macos'], execution: 'bridge' },
+      auth_schema: undefined,
+    });
+
+    const body = await pollClaimingDueFeed(workerId, [bridgeManifest]);
+
+    expect(body.execution_backend).toBe('native_bridge');
+    expect(body.connector_manifest_hash).toBe(
+      deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
+    );
+  });
+
   it('reconciles a same-version compiled artifact back to manifest-only poll payload', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();

@@ -123,8 +123,8 @@ export function classifySelectedConnectorExecution(params: {
   // definition retained by the authorization and the same hash check has
   // already happened during manifest reconciliation.
   if (params.definition && definitionBridge) {
-    const manifest = definitionToManifest(params.definition, definitionRuntime!);
-    if (deviceManifestHash(manifest) !== params.artifact.manifestHash) {
+    const hashes = definitionManifestHashes(params.definition, definitionRuntime!);
+    if (!hashes.has(params.artifact.manifestHash)) {
       return { manifestBacked, inconsistency: 'canonical definition does not match the selected manifest hash' };
     }
   }
@@ -139,6 +139,29 @@ export function parseManifestSourcePath(
   const match = /^device-manifest:\/\/([^/]+)\/([^@/]+)@(.+)$/.exec(sourcePath);
   if (!match) return null;
   return { platform: match[1]!, key: match[2]!, version: match[3]! };
+}
+
+function definitionManifestHashes(
+  definition: SelectedConnectorDefinition,
+  runtime: Record<string, unknown>,
+): Set<string> {
+  const manifest = definitionToManifest(definition, runtime);
+  const hashes = new Set([deviceManifestHash(manifest)]);
+  if (isInjectedNoneAuthSchema(manifest.auth_schema)) {
+    const withoutAuth = { ...manifest };
+    delete withoutAuth.auth_schema;
+    hashes.add(deviceManifestHash(withoutAuth));
+  }
+  return hashes;
+}
+
+function isInjectedNoneAuthSchema(value: unknown): boolean {
+  const schema = asRecord(value);
+  if (!schema || Object.keys(schema).length !== 1) return false;
+  const methods = schema.methods;
+  if (!Array.isArray(methods) || methods.length !== 1) return false;
+  const method = asRecord(methods[0]);
+  return method !== null && Object.keys(method).length === 1 && method.type === 'none';
 }
 
 function definitionToManifest(

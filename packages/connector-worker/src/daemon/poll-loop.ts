@@ -100,8 +100,8 @@ export class WorkerPollLoop {
     if (!this.admittingJobs) return undefined;
     const capacityAvailable = Math.max(0, this.maxConcurrentJobs - this.activeJobs);
     const job = await this.client.poll(capacityAvailable);
-    if (!this.admittingJobs) return undefined;
     if (!job.run_id) {
+      if (!this.admittingJobs) return undefined;
       const nextPoll = job.next_poll_seconds ?? 30;
       log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);
       return Number.isFinite(nextPoll) && nextPoll > 0 ? nextPoll * 1000 : 1000;

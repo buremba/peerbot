@@ -40,6 +40,9 @@ export async function executeNativeBridgeRun(
         lastError = error;
       }
     }
+    if (lastError === undefined) {
+      throw new Error('native bridge terminal report attempts exhausted');
+    }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   };
 

@@ -319,20 +319,8 @@ export async function installConnectorFromMcpUrl(params: {
 			sourcePath: null,
 		},
 		versionScope: "organization",
+		replaceVersionArtifact: true,
 	});
-
-	// Clear stale compiled code if overwriting a source-based connector.
-	// Scoped to the shared row + this org's own row: another org's private
-	// row under the same (key, version) must keep its code (#2045 follow-up).
-	if (updated) {
-		await sql`
-      UPDATE connector_versions
-      SET compiled_code = NULL, compiled_code_hash = NULL,
-          compile_config_hash = NULL, source_code = NULL, source_path = NULL
-      WHERE connector_key = ${connectorKey} AND version = ${metadata.version}
-        AND (organization_id IS NULL OR organization_id = ${params.organizationId})
-    `;
-	}
 
 	logger.info(
 		{

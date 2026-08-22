@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
 import type { DbClient } from '../db/client';
 import type { ConnectorMetadata } from '../utils/connector-compiler';
+import {
+  isChromeNamespaceConnectorKey,
+  isLegacyNativeChromeExtensionConnectorKey,
+} from '../utils/connector-execution-placement';
 import logger from '../utils/logger';
 
 const MAX_MANIFESTS_PER_POLL = 32;
@@ -31,9 +35,17 @@ export interface StoredDeviceManifest {
 export interface DeviceConnectorSource {
   key: string;
   requiredCapability: string;
+  /** Fresh, capable devices advertising the exact manifest selected for this key. */
+  advertiserDeviceIds: string[];
   feedKeys: string[];
   metadata: ConnectorMetadata;
   sourcePath: string;
+  manifestHash: string;
+}
+
+export interface ManifestClaimAuthorization {
+  connectorKey: string;
+  connectorVersion: string;
   manifestHash: string;
 }
 
@@ -119,6 +131,15 @@ export function validateDeviceConnectorManifests(params: {
       if (!connectorKeyAllowedForPlatform(platform, manifest.key)) {
         throw new Error(`connector key '${manifest.key}' is not allowed for platform '${platform}'`);
       }
+      if (
+        platform === 'chrome-extension' &&
+        isLegacyNativeChromeExtensionConnectorKey(manifest.key) &&
+        manifest.required_capability !== 'browser.scripting'
+      ) {
+        throw new Error(
+          `chrome-extension connector '${manifest.key}' requires required_capability 'browser.scripting'`
+        );
+      }
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
       }
@@ -153,31 +174,47 @@ export function validateDeviceConnectorManifests(params: {
 export async function getDeviceManifestSourcesForUser(params: {
   sql: DbClient;
   userId: string;
-  liveCapabilities: Map<string, Set<string>>;
 }): Promise<DeviceConnectorSource[]> {
   const rows = (await params.sql`
-    SELECT id, connector_manifests
+    SELECT id, capabilities, connector_manifests
     FROM device_workers
     WHERE user_id = ${params.userId}
       AND last_seen_at > now() - '7 days'::interval
-  `) as unknown as Array<{ id: string; connector_manifests: unknown }>;
+  `) as unknown as Array<{ id: string; capabilities: unknown; connector_manifests: unknown }>;
 
-  const winners = new Map<string, { stored: StoredDeviceManifest; deviceId: string }>();
+  const candidates: Array<{ stored: StoredDeviceManifest; deviceId: string }> = [];
+  const liveCapabilities = new Map<string, Set<string>>();
+  const winners = new Map<string, StoredDeviceManifest>();
   for (const row of rows) {
+    liveCapabilities.set(
+      row.id,
+      new Set(Array.isArray(row.capabilities) ? (row.capabilities as string[]) : [])
+    );
     const map = isRecord(row.connector_manifests) ? row.connector_manifests : {};
     for (const value of Object.values(map)) {
       const stored = parseStoredManifest(value);
       if (!stored) continue;
+      candidates.push({ stored, deviceId: row.id });
       const existing = winners.get(stored.manifest.key);
-      if (!existing || compareManifestWinner(stored, existing.stored) > 0) {
-        winners.set(stored.manifest.key, { stored, deviceId: row.id });
+      if (!existing || compareManifestWinner(stored, existing) > 0) {
+        winners.set(stored.manifest.key, stored);
       }
     }
   }
 
-  return [...winners.values()].map(({ stored }) => ({
+  return [...winners.values()].map((stored) => ({
     key: stored.manifest.key,
     requiredCapability: stored.manifest.required_capability,
+    advertiserDeviceIds: candidates
+      .filter(
+        (candidate) =>
+          candidate.stored.manifest.key === stored.manifest.key &&
+          candidate.stored.manifest.version === stored.manifest.version &&
+          candidate.stored.manifest_hash === stored.manifest_hash &&
+          liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
+      )
+      .map((candidate) => candidate.deviceId)
+      .sort(),
     feedKeys: manifestFeedKeys(stored.manifest),
     metadata: deviceManifestToConnectorMetadata(stored.manifest),
     sourcePath: `device-manifest://${stored.manifest.runtime.platforms[0]}/${stored.manifest.key}@${stored.manifest.version}`,
@@ -300,7 +337,13 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
     );
   }
   if (platform === 'chrome-extension') {
-    return key === 'chrome' || key.startsWith('chrome.');
+    // Compatibility cutover: the extension intentionally keeps the legacy
+    // internal key so the existing connection/feed/event identity survives.
+    // This is the sole non-chrome namespace admitted for Chrome; validation
+    // above additionally binds it to browser.scripting.
+    return (
+      isChromeNamespaceConnectorKey(key) || isLegacyNativeChromeExtensionConnectorKey(key)
+    );
   }
   // Headless devices (servers/VMs/pods, the herdr box) serve the shell
   // connector: bundled `os.shell` executes `bash -lc` and returns structured

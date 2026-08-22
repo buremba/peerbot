@@ -253,6 +253,10 @@ describe("reapStaleRuns — connector lanes", () => {
         'os.shell', current_timestamp, current_timestamp
       )
     `;
+		await sql`
+      INSERT INTO connector_versions (organization_id, connector_key, version)
+      VALUES (${ORG_ID}, 'fake', '1.0.0')
+    `;
 		const devices = (await sql`
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label,
@@ -303,7 +307,9 @@ describe("reapStaleRuns — connector lanes", () => {
 		});
 		await sql`
       UPDATE runs
-      SET connection_id = feed_id, connector_key = 'fake'
+      SET connection_id = feed_id,
+          connector_key = 'fake',
+          connector_version = '1.0.0'
       WHERE id IN (${offlineRunId}, ${ineligibleRunId})
     `;
 

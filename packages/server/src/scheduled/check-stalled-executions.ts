@@ -43,6 +43,10 @@ import { intervals } from '../config/intervals';
 import { type DbClient, getDb } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
+import {
+  delegatedBrowserAffinitySql,
+  selectedConnectorVersionArtifactSql,
+} from '../utils/connector-execution-placement';
 import { classifyRunOutcome } from '../runs/run-outcome';
 import {
   supersedeActionEvent,
@@ -450,19 +454,24 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
             dw.platform,
             EXTRACT(EPOCH FROM (current_timestamp - t.created_at)) AS pending_age_seconds,
             dw.last_seen_at,
-            cd.required_capability,
+            cd.run_required_capability AS required_capability,
             CASE
               WHEN c.device_worker_id IS NULL
                 THEN 'fleet_or_unpinned_no_claim'
               WHEN dw.id IS NULL
                 THEN 'pinned_device_missing'
-              WHEN dw.platform = 'chrome-extension'
-                AND t.connector_key NOT LIKE 'chrome%'
+              WHEN ${delegatedBrowserAffinitySql(reserved, {
+                platform: reserved`dw.platform`,
+                connectorKey: reserved`t.connector_key`,
+                connectorVersion: reserved`t.connector_version`,
+                manifestBacked: reserved`run_cv.manifest_backed`,
+                artifactSourcePath: reserved`run_cv.artifact_source_path`,
+              })}
                 THEN 'fleet_or_browser_affinity_no_claim'
               WHEN dw.last_seen_at < t.created_at
                 THEN 'no_device_poll_during_pending_window'
-              WHEN cd.required_capability IS NOT NULL
-                AND NOT COALESCE(dw.capabilities ? cd.required_capability, false)
+              WHEN cd.run_required_capability IS NOT NULL
+                AND NOT COALESCE(dw.capabilities ? cd.run_required_capability, false)
                 THEN 'device_ineligible_required_capability'
               ELSE 'device_activity_seen_but_unclaimed'
             END AS reason
@@ -470,7 +479,16 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           LEFT JOIN public.connections c ON c.id = t.connection_id
           LEFT JOIN public.device_workers dw ON dw.id = c.device_worker_id
           LEFT JOIN LATERAL (
-            SELECT definitions.required_capability
+            SELECT
+              CASE
+                WHEN definitions.version = t.connector_version
+                  THEN definitions.required_capability
+                ELSE NULL
+              END AS run_required_capability,
+              CASE
+                WHEN definitions.version = t.connector_version THEN definitions.runtime
+                ELSE NULL
+              END AS run_runtime
             FROM public.connector_definitions definitions
             WHERE definitions.key = t.connector_key
               AND definitions.organization_id = t.organization_id
@@ -478,6 +496,13 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
             ORDER BY definitions.updated_at DESC, definitions.id DESC
             LIMIT 1
           ) cd ON true
+          LEFT JOIN LATERAL (
+            ${selectedConnectorVersionArtifactSql(reserved, {
+              connectorKey: reserved`t.connector_key`,
+              version: reserved`t.connector_version`,
+              organizationId: reserved`t.organization_id`,
+            })}
+          ) run_cv ON true
           WHERE t.stale_status = 'pending'
         )
         SELECT

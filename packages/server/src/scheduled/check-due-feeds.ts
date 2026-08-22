@@ -12,6 +12,10 @@ import type { DbClient } from '../db/client';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
+import {
+  delegatedBrowserAffinitySql,
+  selectedConnectorVersionArtifactSql,
+} from '../utils/connector-execution-placement';
 import logger from '../utils/logger';
 import { createSyncRun } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
@@ -73,14 +77,18 @@ export async function materializeDueFeeds(
   const deviceWorkerId = claimContext?.deviceWorkerId ?? null;
   const claimEligibility = claimContext
     ? connectorClaimLaneSql(sql, claimContext, {
-        runType: sql`'sync'`,
         connectorKey: sql`c.connector_key`,
+        connectorVersion: sql`COALESCE(f.pinned_version, cd.version)`,
         organizationId: sql`f.organization_id`,
         activationKind: sql`NULL::text`,
         activatedAt: sql`NULL::timestamptz`,
         connectionDeviceWorkerId: sql`c.device_worker_id`,
         pinPlatform: sql`pin_dw.platform`,
-        requiredCapability: sql`cd.required_capability`,
+        runRequiredCapability: sql`cd.run_required_capability`,
+        runManifestBacked: sql`run_cv.manifest_backed`,
+        runManifestHash: sql`run_cv.artifact_hash`,
+        runArtifactSourcePath: sql`run_cv.artifact_source_path`,
+        runRuntime: sql`cd.run_runtime`,
       })
     : sql`true`;
 
@@ -100,7 +108,18 @@ export async function materializeDueFeeds(
       JOIN connections c ON c.id = f.connection_id
       LEFT JOIN device_workers pin_dw ON pin_dw.id = c.device_worker_id
       LEFT JOIN LATERAL (
-        SELECT cd.required_capability
+        SELECT
+          cd.version,
+          CASE
+            WHEN f.pinned_version IS NULL OR cd.version = f.pinned_version
+              THEN cd.required_capability
+            ELSE NULL
+          END AS run_required_capability,
+          CASE
+            WHEN f.pinned_version IS NULL OR cd.version = f.pinned_version
+              THEN cd.runtime
+            ELSE NULL
+          END AS run_runtime
         FROM connector_definitions cd
         WHERE cd.key = c.connector_key
           AND cd.organization_id = f.organization_id
@@ -108,6 +127,13 @@ export async function materializeDueFeeds(
         ORDER BY cd.updated_at DESC, cd.id DESC
         LIMIT 1
       ) cd ON true
+      LEFT JOIN LATERAL (
+        ${selectedConnectorVersionArtifactSql(sql, {
+          connectorKey: sql`c.connector_key`,
+          version: sql`COALESCE(f.pinned_version, cd.version)`,
+          organizationId: sql`f.organization_id`,
+        })}
+      ) run_cv ON true
       WHERE f.status = 'active'
         AND c.status = 'active'
         AND c.deleted_at IS NULL
@@ -129,11 +155,12 @@ export async function materializeDueFeeds(
         -- Leave the feed past next_run_at instead, so that device's next poll
         -- picks it up.
         --
-        -- A chrome-extension pin on a non-chrome connector is NOT an execution
-        -- pin — it means "scrape with this browser", and poll.ts keeps the
-        -- parent sync on the fleet (lane 1A claims it; the extension's own lane
-        -- explicitly refuses it). Those feeds must keep syncing while the
-        -- browser is closed, so they are never deferred here.
+        -- A chrome-extension pin on a connector that does not execute natively
+        -- in the extension is NOT an execution pin — it means "scrape with
+        -- this browser", and poll.ts keeps the parent sync on the fleet (lane
+        -- 1A claims it; the extension's own lane explicitly refuses it). Those
+        -- feeds must keep syncing while the browser is closed, so they are
+        -- never deferred here.
         AND (
           c.device_worker_id IS NULL
           OR EXISTS (
@@ -153,10 +180,13 @@ export async function materializeDueFeeds(
                   ${isUserScopedWorker}
                   AND dw.id = ${deviceWorkerId}::uuid
                 )
-                OR (
-                  dw.platform = 'chrome-extension'
-                  AND c.connector_key NOT LIKE 'chrome%'
-                )
+                OR (${delegatedBrowserAffinitySql(sql, {
+                  platform: sql`dw.platform`,
+                  connectorKey: sql`c.connector_key`,
+                  connectorVersion: sql`COALESCE(f.pinned_version, cd.version)`,
+                  manifestBacked: sql`run_cv.manifest_backed`,
+                  artifactSourcePath: sql`run_cv.artifact_source_path`,
+                })})
               )
           )
         )

@@ -6,9 +6,15 @@
  */
 
 import { intervals } from '../config/intervals';
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
+import {
+  delegatedBrowserAffinitySql,
+  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS,
+  nativeChromeExtensionConnectorSql,
+  selectedConnectorVersionArtifactSql,
+} from '../utils/connector-execution-placement';
 import logger from '../utils/logger';
 import { EXECUTING_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
@@ -72,9 +78,10 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
     // laptop on" are different questions, answered on different surfaces.
     //
     // Browser affinity stays a fleet lane: a chrome-extension pin on a
-    // non-chrome connector is genuinely overdue. A fresh execution pin also
-    // remains overdue here until its 2-minute liveness proxy ages out, making a
-    // sustained stopped poll loop visible without charging source health.
+    // connector that does not execute natively in the extension is genuinely
+    // overdue. A fresh execution pin also remains overdue here until its
+    // 2-minute liveness proxy ages out, making a sustained stopped poll loop
+    // visible without charging source health.
     const feedStats = await sql`
       WITH scheduling AS (
         SELECT
@@ -86,21 +93,48 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
               AND dw.last_seen_at <= current_timestamp
                 - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
               AND NOT COALESCE(
-                dw.platform = 'chrome-extension'
-                  AND c.connector_key NOT LIKE 'chrome%',
+                ${delegatedBrowserAffinitySql(sql, {
+                  platform: sql`dw.platform`,
+                  connectorKey: sql`c.connector_key`,
+                  connectorVersion: sql`COALESCE(f.pinned_version, cd.version)`,
+                  manifestBacked: sql`run_cv.manifest_backed`,
+                  artifactSourcePath: sql`run_cv.artifact_source_path`,
+                })},
                 false
               )
             )
             OR (
               c.device_worker_id IS NULL
-              AND cd.required_capability IS NOT NULL
+              AND cd.run_required_capability IS NOT NULL
+              AND NOT (
+                c.connector_key = ANY(
+                  ${pgTextArray([...LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS])}::text[]
+                )
+                AND NOT (${nativeChromeExtensionConnectorSql(sql, {
+                  connectorKey: sql`c.connector_key`,
+                  connectorVersion: sql`COALESCE(f.pinned_version, cd.version)`,
+                  manifestBacked: sql`run_cv.manifest_backed`,
+                  artifactSourcePath: sql`run_cv.artifact_source_path`,
+                })})
+              )
             )
           ) AS device_deferred
         FROM feeds f
         LEFT JOIN connections c ON c.id = f.connection_id
         LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
         LEFT JOIN LATERAL (
-          SELECT definitions.required_capability
+          SELECT
+            definitions.version,
+            CASE
+              WHEN f.pinned_version IS NULL OR definitions.version = f.pinned_version
+                THEN definitions.required_capability
+              ELSE NULL
+            END AS run_required_capability,
+            CASE
+              WHEN f.pinned_version IS NULL OR definitions.version = f.pinned_version
+                THEN definitions.runtime
+              ELSE NULL
+            END AS run_runtime
           FROM connector_definitions definitions
           WHERE definitions.key = c.connector_key
             AND definitions.organization_id = f.organization_id
@@ -108,6 +142,13 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
           ORDER BY definitions.updated_at DESC, definitions.id DESC
           LIMIT 1
         ) cd ON true
+        LEFT JOIN LATERAL (
+          ${selectedConnectorVersionArtifactSql(sql, {
+            connectorKey: sql`c.connector_key`,
+            version: sql`COALESCE(f.pinned_version, cd.version)`,
+            organizationId: sql`f.organization_id`,
+          })}
+        ) run_cv ON true
         WHERE f.deleted_at IS NULL
       )
       SELECT

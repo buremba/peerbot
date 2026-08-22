@@ -26,7 +26,12 @@ import { ensureUniqueConnectionSlug, isConnectionSlugUniqueViolation } from '../
 import { clearDevicePinTombstoneIfPinned } from '../utils/device-pin-tombstones';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
-import { getDeviceManifestSourcesForUser, sortJson, type DeviceConnectorSource } from './device-manifests';
+import {
+  getDeviceManifestSourcesForUser,
+  sortJson,
+  type DeviceConnectorSource,
+  type ManifestClaimAuthorization,
+} from './device-manifests';
 
 /**
  * The slice of a manifest `feeds_schema[key]` this module reads. Deliberately
@@ -101,9 +106,9 @@ const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
  * Best-effort: failures are logged but never surface to the poll response.
  *
  * Device pin (`connections.device_worker_id`): when exactly one of the user's
- * fresh devices advertises the capability, the connection is auto-pinned to it
+ * fresh devices advertises the implementation, the connection is auto-pinned to it
  * (a deterministic 1:1 binding the Devices page can show); when several qualify
- * it's left unpinned ("any of my fresh devices that advertise the capability").
+ * it's left unpinned ("any of my fresh devices that advertise the implementation").
  * A pin to a device that's still in the fresh set is treated as deliberate and
  * never overridden; a pin to a device that has dropped out is repaired (to the
  * sole remaining fresh device, or NULL) so the connection keeps running.
@@ -115,15 +120,22 @@ async function ensureDeviceConnectorWired(
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
   requiredCapability: string,
-  source?: { metadata: ConnectorMetadata; sourcePath: string; manifestHash: string }
-): Promise<void> {
+  source?: DeviceConnectorSource,
+  pollingDeviceId?: string | null
+): Promise<ManifestClaimAuthorization | null> {
   const sql = getDb();
 
   // Self-heal the device pin against the user's current fleet. Cheap, idempotent
   // (the WHERE matches nothing when the pin is already a valid fresh device), and
   // runs even on the fast path so a stale pin doesn't silently strand the feeds.
-  const reconcilePin = async (db: typeof sql, connectionId: number) => {
-    let target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+  const reconcilePin = async (
+    db: typeof sql,
+    connectionId: number,
+    currentMatchingDeviceIds = matchingDeviceIds,
+    currentRequiredCapability = requiredCapability,
+    currentSource = source
+  ) => {
+    let target = currentMatchingDeviceIds.length === 1 ? currentMatchingDeviceIds[0] : null;
     // `idx_connections_org_connector_device_live` is UNIQUE on
     // (organization_id, connector_key, device_worker_id) for live rows, and an
     // org legitimately holds one connection PER DEVICE (same shape as
@@ -171,7 +183,7 @@ async function ensureDeviceConnectorWired(
       SET device_worker_id = ${target}::uuid, updated_at = NOW()
       WHERE id = ${connectionId}
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
-        AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
+        AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(currentMatchingDeviceIds)}::text[])))
     `;
     // The statement above repairs only the row we were handed, but an org holds
     // one connection PER DEVICE and the fast path resolves just one of them
@@ -195,7 +207,9 @@ async function ensureDeviceConnectorWired(
     // snapshot and its commit; sweeping from the stale list would unpin a
     // device that is live again. The NOT EXISTS makes the sweep self-verifying:
     // a row is cleared only if its worker is genuinely absent, stale, or no
-    // longer advertising the capability as of this statement.
+    // longer advertising the implementation as of this statement. Manifest
+    // sources require the exact winning hash as well as their capability;
+    // capability-only bundled sources retain their existing matching semantics.
     await db`
       UPDATE connections c
       SET device_worker_id = NULL, updated_at = NOW()
@@ -218,24 +232,77 @@ async function ensureDeviceConnectorWired(
           WHERE dw.id = c.device_worker_id
             AND dw.user_id = ${userId}
             AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-            AND dw.capabilities @> ${db.json([requiredCapability])}
+            AND dw.capabilities @> ${db.json([currentRequiredCapability])}
+            ${currentSource ? db`AND (dw.connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${currentSource.manifestHash}` : db``}
         )
     `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
     // connection is not stuck as active + red "Device was removed".
     await clearDevicePinTombstoneIfPinned(db, {
       connectionId,
-      matchingDeviceIds,
+      matchingDeviceIds: currentMatchingDeviceIds,
     });
   };
-  const manifestStillAdvertised = async (db: typeof sql): Promise<boolean> => {
-    if (!source) return true;
+  const lockedManifestWinner = async (db: typeof sql): Promise<DeviceConnectorSource | null> => {
+    if (!source) return null;
+    const current = (await getDeviceManifestSourcesForUser({ sql: db, userId })).find(
+      (candidate) => candidate.key === connectorKey
+    );
+    if (
+      !current ||
+      current.metadata.version !== source.metadata.version ||
+      current.manifestHash !== source.manifestHash
+    ) {
+      return null;
+    }
+    return current;
+  };
+  const claimAuthorization = (
+    currentSource: DeviceConnectorSource | null
+  ): ManifestClaimAuthorization | null => {
+    if (
+      !currentSource ||
+      !pollingDeviceId ||
+      !currentSource.advertiserDeviceIds.includes(pollingDeviceId)
+    ) {
+      return null;
+    }
+    return {
+      connectorKey: currentSource.key,
+      connectorVersion: currentSource.metadata.version,
+      manifestHash: currentSource.manifestHash,
+    };
+  };
+  const selectedArtifactMatches = async (
+    db: typeof sql,
+    currentSource: DeviceConnectorSource
+  ): Promise<boolean> => {
     const rows = await db`
       SELECT 1
-      FROM device_workers
-      WHERE user_id = ${userId}
-        AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-        AND (connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${source.manifestHash}
+      FROM connector_definitions cd
+      JOIN LATERAL (
+        SELECT
+          cv.source_path,
+          cv.compiled_code,
+          cv.compiled_code_hash,
+          cv.compile_config_hash,
+          cv.source_code
+        FROM connector_versions cv
+        WHERE cv.connector_key = cd.key
+          AND cv.version = cd.version
+          AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+        ORDER BY cv.organization_id NULLS LAST
+        LIMIT 1
+      ) cv ON true
+      WHERE cd.organization_id = ${organizationId}
+        AND cd.key = ${connectorKey}
+        AND cd.status = 'active'
+        AND cd.version = ${currentSource.metadata.version}
+        AND cv.source_path LIKE 'device-manifest://%'
+        AND cv.compiled_code IS NULL
+        AND cv.compiled_code_hash = ${currentSource.manifestHash}
+        AND cv.compile_config_hash IS NULL
+        AND cv.source_code IS NULL
       LIMIT 1
     `;
     return rows.length > 0;
@@ -250,6 +317,11 @@ async function ensureDeviceConnectorWired(
       SELECT
         c.id AS connection_id,
         cv.connector_key AS version_key,
+        cv.source_path AS version_source_path,
+        cv.compiled_code AS version_compiled_code,
+        cv.compiled_code_hash AS version_artifact_hash,
+        cv.compile_config_hash AS version_compile_config_hash,
+        cv.source_code AS version_source_code,
         cd.name AS def_name,
         cd.description AS def_description,
         cd.version AS def_version,
@@ -272,7 +344,13 @@ async function ensureDeviceConnectorWired(
         ) AS active_feed_keys
       FROM connector_definitions cd
       LEFT JOIN LATERAL (
-        SELECT connector_key
+        SELECT
+          connector_key,
+          source_path,
+          compiled_code,
+          compiled_code_hash,
+          compile_config_hash,
+          source_code
         FROM connector_versions
         WHERE connector_key = cd.key AND version = cd.version
           AND (organization_id = cd.organization_id OR organization_id IS NULL)
@@ -297,11 +375,24 @@ async function ensureDeviceConnectorWired(
       WHERE cd.organization_id = ${organizationId}
         AND cd.key = ${connectorKey}
         AND cd.status = 'active'
-      GROUP BY c.id, cv.connector_key, cd.id
+      GROUP BY
+        c.id,
+        cv.connector_key,
+        cv.source_path,
+        cv.compiled_code,
+        cv.compiled_code_hash,
+        cv.compile_config_hash,
+        cv.source_code,
+        cd.id
       LIMIT 1
     `) as unknown as Array<{
       connection_id: number | null;
       version_key: string | null;
+      version_source_path: string | null;
+      version_compiled_code: string | null;
+      version_artifact_hash: string | null;
+      version_compile_config_hash: string | null;
+      version_source_code: string | null;
       def_name: string | null;
       def_description: string | null;
       def_version: string | null;
@@ -334,6 +425,11 @@ async function ensureDeviceConnectorWired(
         row.def_name === m.name &&
         (row.def_description ?? null) === (m.description ?? null) &&
         row.def_version === m.version &&
+        row.version_source_path?.startsWith('device-manifest://') === true &&
+        row.version_compiled_code == null &&
+        row.version_artifact_hash === source.manifestHash &&
+        row.version_compile_config_hash == null &&
+        row.version_source_code == null &&
         (row.def_favicon_domain ?? null) === (m.faviconDomain ?? null) &&
         (row.def_required_capability ?? null) === (m.requiredCapability ?? null) &&
         canon(row.def_auth_schema) === canon(m.authSchema) &&
@@ -377,11 +473,18 @@ async function ensureDeviceConnectorWired(
         declaredFeedKeys.every((feedKey) => activeFeedKeys.has(feedKey)));
     if (ready) {
       if (source) {
-        await sql.begin(async (tx) => {
+        return sql.begin(async (tx) => {
           await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
-          if (await manifestStillAdvertised(tx)) {
-            await reconcilePin(tx, readyConnectionId);
-          }
+          const currentSource = await lockedManifestWinner(tx);
+          if (!currentSource || !(await selectedArtifactMatches(tx, currentSource))) return null;
+          await reconcilePin(
+            tx,
+            readyConnectionId,
+            currentSource.advertiserDeviceIds,
+            currentSource.requiredCapability,
+            currentSource
+          );
+          return claimAuthorization(currentSource);
         });
       } else {
         // Same advisory lock as the `source` branch above: reconcilePin's owner
@@ -395,7 +498,7 @@ async function ensureDeviceConnectorWired(
           await reconcilePin(tx, readyConnectionId);
         });
       }
-      return;
+      return null;
     }
 
     let metadata: ConnectorMetadata;
@@ -409,12 +512,12 @@ async function ensureDeviceConnectorWired(
       const filePath = findBundledConnectorFile(connectorKey);
       if (!filePath) {
         logger.warn({ connectorKey }, '[auto-wire] Bundled connector file not found');
-        return;
+        return null;
       }
       const compiledCode = await compileConnectorFromFile(filePath);
       metadata = await extractConnectorMetadata(compiledCode);
       sourcePath = bundledConnectorSourcePath(filePath);
-      if (!metadata.key || !metadata.name || !metadata.version) return;
+      if (!metadata.key || !metadata.name || !metadata.version) return null;
       const feedsSchema = metadata.feeds as Record<
         string,
         { configSchema?: unknown; userManaged?: boolean }
@@ -429,15 +532,16 @@ async function ensureDeviceConnectorWired(
     }
 
     let connectionId: number | undefined;
-    const wireOnce = () => sql.begin(async (tx) => {
+    const wireOnce = () => sql.begin(async (tx): Promise<ManifestClaimAuthorization | null> => {
       // Serialize per (user, connector): two concurrent polls / two devices
       // both reach here, but only one holds the lock at a time, so the
       // existence-check-then-insert below is atomic.
       await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
-      // A newer poll may have removed this manifest while this reconcile was
-      // waiting for the lock. Re-check the stored fleet inventory so an older
-      // poll cannot resurrect a connector the newer poll just retired.
-      if (source && !(await manifestStillAdvertised(tx))) return;
+      // Winner selection before this lock is only a scheduling hint. Recompute
+      // the deterministic winner while serialized so a stale waiter can never
+      // downgrade metadata or repin after a newer manifest has arrived.
+      const currentSource = source ? await lockedManifestWinner(tx) : null;
+      if (source && !currentSource) return null;
 
       // 2. Ensure the connector definition + version are installed (idempotent).
       await upsertConnectorDefinitionRecords({
@@ -446,7 +550,10 @@ async function ensureDeviceConnectorWired(
         metadata,
         versionRecord: {
           compiledCode: null,
-          compiledCodeHash: null,
+          // Device manifests have no compiled bytes, so compiled_code_hash is
+          // the existing durable artifact-hash slot for their validated
+          // manifest identity. Claim authorization compares this exact value.
+          compiledCodeHash: currentSource?.manifestHash ?? null,
           compileConfigHash: null,
           sourceCode: null,
           sourcePath,
@@ -554,7 +661,7 @@ async function ensureDeviceConnectorWired(
         `) as unknown as Array<{ id: number }>;
         connectionId = inserted[0]?.id;
       }
-      if (!connectionId) return;
+      if (!connectionId) return null;
 
       // 4. Ensure every feed the connector declares exists, is active, and is
       //    due at least once — multi-feed device connectors (e.g. apple.health
@@ -563,9 +670,11 @@ async function ensureDeviceConnectorWired(
       //    pass had paused.
       // `feeds.kind` is IMMUTABLE once a row exists — nothing converts a
       // collected feed to virtual in place, and doing so would strand the
-      // events/checkpoints already collected under it. So the manifest's
-      // `virtual: true` has to be honoured at INSERT time; a connector that
-      // wants both keeps two feed keys (e.g. `messages` + `messages_live`).
+      // events/checkpoints already collected under it. WhatsApp's compatibility
+      // rollout therefore leaves `messages` collected and `messages_live`
+      // virtual. Issue #3020 will make one logical messages feed support both
+      // materialized and source reads; this transport cutover adds no hybrid
+      // kind and performs no feed migration.
       const declaredFeeds = metadata.feeds as Record<string, ManifestFeed> | null;
       const declaredVirtual = (feedKey: string): boolean =>
         declaredFeeds?.[feedKey]?.virtual === true;
@@ -644,11 +753,20 @@ async function ensureDeviceConnectorWired(
 
       // Pin the (possibly just-created) connection to the sole fresh device
       // serving the capability, or leave it unpinned when several do.
-      await reconcilePin(tx, connectionId);
+      await reconcilePin(
+        tx,
+        connectionId,
+        currentSource?.advertiserDeviceIds ?? matchingDeviceIds,
+        currentSource?.requiredCapability ?? requiredCapability,
+        currentSource ?? source
+      );
+      if (currentSource && !(await selectedArtifactMatches(tx, currentSource))) return null;
+      return claimAuthorization(currentSource);
     });
 
+    let authorization: ManifestClaimAuthorization | null;
     try {
-      await wireOnce();
+      authorization = await wireOnce();
     } catch (err) {
       // Retry ONCE, and only for the slug collision described above. The
       // retry recomputes the slug against a tree that now contains the
@@ -665,7 +783,7 @@ async function ensureDeviceConnectorWired(
         { userId, connectorKey, organizationId },
         '[device-connectors] Connection slug raced a concurrent wire; retrying once'
       );
-      await wireOnce();
+      authorization = await wireOnce();
     }
 
     if (connectionId) {
@@ -674,11 +792,13 @@ async function ensureDeviceConnectorWired(
         '[device-connectors] Wired device connector'
       );
     }
+    return authorization;
   } catch (err) {
     logger.error(
       { userId, connectorKey, err: errorMessage(err) },
       '[device-connectors] Failed to wire device connector'
     );
+    return null;
   }
 }
 
@@ -828,14 +948,19 @@ async function archiveVanishedDeviceConnectorDefinitions(
  * actually serve. The set of device connectors comes from the catalog (any
  * bundled connector with a `runtime` block + a `requiredCapability`); the set of
  * served capabilities is the union over the user's devices seen within
- * `DEVICE_WORKER_FRESH_INTERVAL`. For each device connector: if its capability
- * is served, wire / re-activate it; otherwise pause its auto-wired feeds so
- * `materializeDueFeeds` stops creating runs nothing can claim.
+ * `DEVICE_WORKER_FRESH_INTERVAL`. Manifest sources additionally carry the exact
+ * devices advertising the winning version/hash/metadata. For each device
+ * connector: if a matching implementation is served, wire / re-activate it;
+ * otherwise pause its auto-wired feeds so `materializeDueFeeds` stops creating
+ * runs nothing can claim.
  *
  * Best-effort; runs on every user-scoped poll. Nothing connector-specific is
  * hardcoded — adding a new device connector is just a new file in the catalog.
  */
-export async function reconcileDeviceCapabilities(userId: string): Promise<void> {
+export async function reconcileDeviceCapabilities(
+  userId: string,
+  pollingDeviceId?: string | null
+): Promise<ManifestClaimAuthorization[]> {
   const sql = getDb();
 
   let bundledDeviceConnectors: BundledDeviceConnector[];
@@ -868,7 +993,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   if (!personalOrg) {
     // No personal org → nothing to auto-wire. Don't touch team-org connectors
     // a user may have created manually; those survive on their own pins.
-    return;
+    return [];
   }
   const personalOrgId = personalOrg.id;
 
@@ -894,9 +1019,9 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       { userId, err: errorMessage(err) },
       '[device-connectors] Failed to read device capabilities'
     );
-    return;
+    return [];
   }
-  if (deviceCaps.size === 0) return;
+  if (deviceCaps.size === 0) return [];
   const devicesWithCapability = (capability: string): string[] =>
     [...deviceCaps.entries()].
       filter(([, caps]) => caps.has(capability))
@@ -907,7 +1032,6 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
     manifestSources = await getDeviceManifestSourcesForUser({
       sql,
       userId,
-      liveCapabilities: deviceCaps,
     });
   } catch (err) {
     logger.warn(
@@ -934,11 +1058,14 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   if (sourcesReadable) {
     await archiveVanishedDeviceConnectorDefinitions(userId, personalOrgId, [...byKey.keys()]);
   }
-  if (byKey.size === 0) return;
+  if (byKey.size === 0) return [];
 
-  await Promise.allSettled(
+  const reconciliationResults = await Promise.allSettled(
     [...byKey.values()].map((dc) => {
-      const matchingDeviceIds = devicesWithCapability(dc.requiredCapability);
+      const matchingDeviceIds =
+        'source' in dc && dc.source === 'device-manifest'
+          ? dc.advertiserDeviceIds
+          : devicesWithCapability(dc.requiredCapability);
       return matchingDeviceIds.length > 0
         ? ensureDeviceConnectorWired(
             userId,
@@ -948,10 +1075,16 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
             matchingDeviceIds,
             dc.requiredCapability,
             'source' in dc && dc.source === 'device-manifest'
-              ? { metadata: dc.metadata, sourcePath: dc.sourcePath, manifestHash: dc.manifestHash }
-              : undefined
+              ? dc
+              : undefined,
+            pollingDeviceId
           )
         : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key);
     })
+  );
+
+  if (!pollingDeviceId) return [];
+  return reconciliationResults.flatMap((result) =>
+    result.status === 'fulfilled' && result.value ? [result.value] : []
   );
 }

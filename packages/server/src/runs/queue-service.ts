@@ -1097,6 +1097,8 @@ export async function createConnectorOperationRun(params: {
   automationId?: number | null;
   /** Trusted causal parent run. */
   parentRunId?: number | null;
+  /** Internal-only metadata persisted in the existing runs.run_metadata column. */
+  runMetadata?: Record<string, unknown> | null;
   /**
    * Optional transaction handle. When passed, the run INSERT (and its
    * connector-version read) execute on the caller's transaction instead of the
@@ -1177,6 +1179,7 @@ export async function createConnectorOperationRun(params: {
       policy_principal_kind, policy_principal_id, created_by_user_id,
       action_idempotency_key, expires_at,
       activation_kind, activation_target_urls,
+      run_metadata,
       created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
@@ -1192,6 +1195,7 @@ export async function createConnectorOperationRun(params: {
         : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`},
       ${params.activation?.kind ?? null},
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
+      ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
       current_timestamp
     )
     ON CONFLICT (organization_id, action_idempotency_key)
@@ -1215,6 +1219,7 @@ export async function createConnectorOperationRun(params: {
       created_by_user_id: string | null;
       automation_id: number | null;
       parent_run_id: number | null;
+      run_metadata: Record<string, unknown> | null;
       activation_kind: string | null;
       activation_target_urls: string | string[] | null;
       status: string;
@@ -1224,7 +1229,8 @@ export async function createConnectorOperationRun(params: {
     }>`
       SELECT id, connection_id, connector_key, action_key, action_input,
              policy_principal_kind, policy_principal_id, created_by_user_id,
-             automation_id, parent_run_id, activation_kind, activation_target_urls,
+             automation_id, parent_run_id, run_metadata,
+             activation_kind, activation_target_urls,
              status, approval_status, action_output, error_message
       FROM runs
       WHERE organization_id = ${params.organizationId}
@@ -1253,29 +1259,68 @@ export async function createConnectorOperationRun(params: {
       prior.parent_run_id == null ? null : Number(prior.parent_run_id);
     const requestedAutomationId = params.automationId ?? null;
     const requestedParentRunId = params.parentRunId ?? null;
+    const priorBrowserContext =
+      prior.run_metadata && typeof prior.run_metadata === 'object'
+        ? prior.run_metadata.browser_context
+        : null;
+    const requestedBrowserContext = params.runMetadata?.browser_context ?? null;
+    const compatibleBrowserContext =
+      priorBrowserContext == null ||
+      requestedBrowserContext == null ||
+      stableJson(priorBrowserContext) === stableJson(requestedBrowserContext);
     const compatibleProvenance =
       (priorAutomationId == null || priorAutomationId === requestedAutomationId) &&
       (priorParentRunId == null || priorParentRunId === requestedParentRunId);
-    if (!sameRequest || !sameActivation || !compatibleProvenance) {
+    if (!sameRequest || !sameActivation || !compatibleProvenance || !compatibleBrowserContext) {
       throw new ToolUserError(
         `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
         409
       );
     }
-    // Runs created before Automation action provenance was stamped can be safely
-    // hydrated on an exact idempotent replay. Never overwrite a non-null stamp:
-    // a key already bound to another parent remains a conflict above.
+    // Runs missing trusted provenance can be hydrated on an exact idempotent
+    // replay. The UPDATE repeats the compatibility checks atomically: another
+    // replica may stamp the row after the read above, and a conflicting winner
+    // must turn this replay into a 409 instead of being overwritten.
     if (
       (priorAutomationId == null && requestedAutomationId != null) ||
-      (priorParentRunId == null && requestedParentRunId != null)
+      (priorParentRunId == null && requestedParentRunId != null) ||
+      (priorBrowserContext == null && requestedBrowserContext != null)
     ) {
-      await sql`
+      const browserContextGuard =
+        requestedBrowserContext == null
+          ? sql`TRUE`
+          : sql`(
+              run_metadata->'browser_context' IS NULL
+              OR run_metadata->'browser_context' = ${sql.json(requestedBrowserContext)}::jsonb
+            )`;
+      const hydrated = await sql`
         UPDATE runs
         SET automation_id = COALESCE(automation_id, ${requestedAutomationId}),
-            parent_run_id = COALESCE(parent_run_id, ${requestedParentRunId})
+            parent_run_id = COALESCE(parent_run_id, ${requestedParentRunId}),
+            run_metadata = CASE
+              WHEN ${requestedBrowserContext == null}
+                OR run_metadata->'browser_context' IS NOT NULL
+              THEN run_metadata
+              ELSE jsonb_set(
+                COALESCE(run_metadata, '{}'::jsonb),
+                '{browser_context}',
+                ${sql.json(requestedBrowserContext)}::jsonb,
+                true
+              )
+            END
         WHERE id = ${Number(prior.id)}
           AND organization_id = ${params.organizationId}
+          AND (automation_id IS NULL OR automation_id = ${requestedAutomationId})
+          AND (parent_run_id IS NULL OR parent_run_id = ${requestedParentRunId})
+          AND ${browserContextGuard}
+        RETURNING id
       `;
+      if (hydrated.length === 0) {
+        throw new ToolUserError(
+          `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
+          409
+        );
+      }
     }
     return {
       runId: Number(prior.id),

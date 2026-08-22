@@ -515,4 +515,138 @@ describe('createConnectorOperationRun — ephemeral expires_at semantics', () =>
     expect(replay.runId).toBe(first.runId);
     expect(replay.status).toBe('timeout');
   });
+
+  it('hydrates absent browser context on exact replay without replacing conflicts', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const key = `browser-context-replay-${Date.now()}`;
+    const request = {
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device' as const,
+      requireCompiledCode: false,
+      idempotencyKey: key,
+    };
+
+    const first = await createConnectorOperationRun({
+      ...request,
+      runMetadata: { unrelated: { preserved: true } },
+    });
+    const browserContext = {
+      id: 'conversation:abc123def456',
+      title: 'Owletto · Conversation abc123def456',
+      flow_id: 'conversation:abc123def456',
+      kind: 'conversation',
+    };
+    const replay = await createConnectorOperationRun({
+      ...request,
+      runMetadata: { browser_context: browserContext },
+    });
+    expect(replay.created).toBe(false);
+    expect(replay.runId).toBe(first.runId);
+
+    const sql = getTestDb();
+    const [row] = await sql`
+      SELECT run_metadata FROM runs WHERE id = ${first.runId}
+    `;
+    expect(row.run_metadata).toEqual({
+      unrelated: { preserved: true },
+      browser_context: browserContext,
+    });
+
+    await expect(
+      createConnectorOperationRun({
+        ...request,
+        runMetadata: {
+          browser_context: { ...browserContext, id: 'conversation:different' },
+        },
+      })
+    ).rejects.toThrow(/already bound to a different request/);
+  });
+
+  it('rejects a conflicting browser-context hydration race atomically', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const key = `browser-context-race-${Date.now()}`;
+    const request = {
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device' as const,
+      requireCompiledCode: false,
+      idempotencyKey: key,
+    };
+    await createConnectorOperationRun(request);
+
+    const sql = getTestDb();
+    let staleReads = 0;
+    let releaseReads: (() => void) | null = null;
+    const bothReadsComplete = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    const gatedSql = new Proxy(sql, {
+      apply(target, thisArg, args: unknown[]) {
+        const strings = args[0] as TemplateStringsArray;
+        const query = Array.from(strings).join(' ');
+        const result = Reflect.apply(target, thisArg, args);
+        if (
+          query.includes('SELECT id, connection_id, connector_key') &&
+          query.includes('action_idempotency_key')
+        ) {
+          return Promise.resolve(result).then(async (rows) => {
+            staleReads += 1;
+            if (staleReads === 2) releaseReads?.();
+            await bothReadsComplete;
+            return rows;
+          });
+        }
+        return result;
+      },
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as typeof sql;
+
+    const contextA = {
+      id: 'conversation:context-a',
+      title: 'Owletto · Conversation context-a',
+      flow_id: 'conversation:context-a',
+      kind: 'conversation',
+    };
+    const contextB = {
+      id: 'conversation:context-b',
+      title: 'Owletto · Conversation context-b',
+      flow_id: 'conversation:context-b',
+      kind: 'conversation',
+    };
+    const results = await Promise.allSettled([
+      createConnectorOperationRun({
+        ...request,
+        runMetadata: { browser_context: contextA },
+        db: gatedSql,
+      }),
+      createConnectorOperationRun({
+        ...request,
+        runMetadata: { browser_context: contextB },
+        db: gatedSql,
+      }),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const [row] = await sql`
+      SELECT run_metadata FROM runs
+      WHERE organization_id = ${org.id}
+        AND action_idempotency_key = ${key}
+    `;
+    expect([contextA, contextB]).toContainEqual(row.run_metadata.browser_context);
+  });
 });

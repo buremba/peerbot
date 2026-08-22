@@ -39,6 +39,7 @@ import { stripNul, stripNulDeep } from "../../../../utils/strip-nul";
 import { buildResourcePermalink } from "../../../../utils/url-builder";
 import { trackAutomationReaction } from "../../../../utils/automation-reactions";
 import { dispatchChromeActionToExtension } from "../../../../worker-api/dispatch-chrome-action";
+import { deriveBrowserActionContext } from "../../../../worker-api/browser-action-context";
 import { resolveRunInitiator } from "../../../initiator";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
@@ -422,6 +423,10 @@ export async function handleExecute(
 	env: Env,
 ): Promise<ManageOperationsResult> {
 	const sql = getDb();
+	const browserContext = deriveBrowserActionContext(ctx);
+	const runMetadata = browserContext
+		? { browser_context: browserContext }
+		: undefined;
 	if (
 		args.idempotency_key != null &&
 		args.idempotency_key !== args.idempotency_key.trim()
@@ -706,6 +711,7 @@ export async function handleExecute(
 				createdByUserId: ctx.userId,
 				automationId: ctx.actingAutomationId,
 				parentRunId: ctx.actingRunId,
+				runMetadata,
 				idempotencyKey: args.idempotency_key,
 				db: tx,
 			});
@@ -829,6 +835,7 @@ export async function handleExecute(
 		createdByUserId: activation ? visibilityUserId : ctx.userId,
 		automationId: ctx.actingAutomationId,
 		parentRunId: ctx.actingRunId,
+		runMetadata,
 		idempotencyKey: args.idempotency_key,
 		activation,
 	});

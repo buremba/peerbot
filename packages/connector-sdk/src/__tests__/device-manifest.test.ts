@@ -1,0 +1,128 @@
+import { describe, expect, test } from 'bun:test';
+import { defineConnector } from '../define-connector.js';
+import {
+  canonicalDeviceManifestJson,
+  defineDeviceConnector,
+  deviceManifestHash,
+  serializeDeviceConnector,
+} from '../device-manifest.js';
+
+const validSpec = () => ({
+  key: 'apple.test',
+  version: '0.1.0',
+  name: 'Test device connector',
+  requiredCapability: 'calendar',
+  runtime: { execution: 'bridge' as const, platforms: ['macos'] },
+  feeds: {
+    events: {
+      key: 'events',
+      name: 'Events',
+      configSchema: { type: 'object' },
+      eventKinds: { event: { metadataSchema: { type: 'object' } } },
+    },
+  },
+});
+
+describe('defineDeviceConnector', () => {
+  test('serializes the bridge marker and never executable handlers', () => {
+    const definition = defineDeviceConnector(validSpec());
+    const manifest = serializeDeviceConnector(definition);
+
+    expect(manifest.runtime).toEqual({ execution: 'bridge', platforms: ['macos'] });
+    expect(manifest.auth_schema).toEqual({ methods: [{ type: 'none' }] });
+    expect(manifest.feeds_schema.events).toEqual(validSpec().feeds.events);
+    expect(JSON.stringify(manifest)).not.toContain('sync');
+    expect(JSON.stringify(manifest)).not.toContain('execute');
+  });
+
+  test('rejects missing identity, capability, platforms, and non-Mac bridge use', () => {
+    for (const field of ['key', 'version', 'name', 'requiredCapability'] as const) {
+      const spec = validSpec();
+      delete (spec as Record<string, unknown>)[field];
+      expect(() => defineDeviceConnector(spec)).toThrow(`${field} is required`);
+    }
+    expect(() => defineDeviceConnector({ ...validSpec(), runtime: { execution: 'bridge' } })).toThrow(
+      'runtime.platforms is required',
+    );
+    expect(() =>
+      defineDeviceConnector({
+        ...validSpec(),
+        runtime: { execution: 'bridge', platforms: ['linux'] },
+      }),
+    ).toThrow("must include the 'macos' platform");
+  });
+
+  test('rejects executable handlers and malformed feed/action schemas', () => {
+    expect(() =>
+      defineDeviceConnector({
+        ...validSpec(),
+        feeds: { events: { ...validSpec().feeds.events, sync: async () => ({}) } },
+      } as never),
+    ).toThrow('sync handler');
+    expect(() =>
+      defineDeviceConnector({
+        ...validSpec(),
+        actions: {
+          run: {
+            key: 'run',
+            name: 'Run',
+            inputSchema: 'not-a-schema',
+            execute: async () => ({ success: true }),
+          },
+        },
+      } as never),
+    ).toThrow('execute handler');
+    expect(() =>
+      defineDeviceConnector({
+        ...validSpec(),
+        feeds: { events: { ...validSpec().feeds.events, key: 'wrong' } },
+      }),
+    ).toThrow("invalid feed schema 'events'");
+    expect(() =>
+      defineDeviceConnector({
+        ...validSpec(),
+        actions: { run: { key: 'run', name: 'Run', inputSchema: [] } },
+      } as never),
+    ).toThrow("invalid action inputSchema 'run'");
+  });
+
+  test('rejects duplicate keys in a registry batch', () => {
+    expect(() => defineDeviceConnector([validSpec(), validSpec()])).toThrow(
+      "duplicate device connector key 'apple.test'",
+    );
+  });
+
+  test('keeps ordinary Connector SDK definitions backward compatible', () => {
+    const ordinary = defineConnector({
+      key: 'ordinary',
+      version: '1.0.0',
+      name: 'Ordinary',
+      feeds: { items: { name: 'Items', sync: async () => ({ events: [], checkpoint: null }) } },
+    });
+    expect(new ordinary().definition.runtime).toBeUndefined();
+  });
+});
+
+describe('device manifest canonicalization', () => {
+  test('is stable across object insertion order and changes on schema/version changes', () => {
+    const first = serializeDeviceConnector(validSpec());
+    const reordered = {
+      runtime: { platforms: ['macos'], execution: 'bridge' as const },
+      feeds_schema: first.feeds_schema,
+      required_capability: first.required_capability,
+      auth_schema: first.auth_schema,
+      name: first.name,
+      version: first.version,
+      key: first.key,
+    };
+    expect(deviceManifestHash(first)).toBe(deviceManifestHash(reordered));
+    expect(canonicalDeviceManifestJson(first)).toBe(canonicalDeviceManifestJson(reordered));
+    expect(deviceManifestHash({ ...first, version: '0.2.0' })).not.toBe(deviceManifestHash(first));
+    expect(
+      deviceManifestHash({
+        ...first,
+        feeds_schema: { ...first.feeds_schema, events: { ...first.feeds_schema.events, name: 'Changed' } },
+      }),
+    ).not.toBe(deviceManifestHash(first));
+  });
+});

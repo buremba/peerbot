@@ -74,6 +74,7 @@ const layers = [
       packageBuild(name)
     ),
   ],
+  ["device-connectors", [packageBuild("device-connectors")]],
   [
     "plugins",
     ["plugin-memory", "plugin-conversations", "plugin-media", "plugin-mcp"].map(

@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { ContentItem } from '@lobu/connector-sdk';
+import type { AutomationTimeGranularity, ContentItem } from '@lobu/connector-sdk';
 import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { MAX_COALESCED_AUTOMATION_EVENT_INPUTS } from '../../automations/workspace-event-contract';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
@@ -417,6 +417,8 @@ export async function handleAutomationMode(
       windowStart: string;
       windowEnd: string;
       leaseExpiresAt?: string;
+      templateVersionId: number | null;
+      granularity: AutomationTimeGranularity;
     };
     throwOnSourceError?: boolean;
   }
@@ -430,7 +432,8 @@ export async function handleAutomationMode(
   // queued for, even if the group has been edited since. The version row
   // is owned by the group root (automation_id = i.automation_group_id), and we
   // require it to live in the same group to prevent cross-automation pinning.
-  const pinnedVersionId = args.template_version_id ?? null;
+  const pinnedVersionId =
+    context.claimedWindow?.templateVersionId ?? args.template_version_id ?? null;
   const automationResult = await sql`
     SELECT
       i.id,
@@ -461,7 +464,9 @@ export async function handleAutomationMode(
   const versionSources = parseJson(automation.version_sources) || [];
   const automationSources =
     versionSources.length > 0 ? versionSources : parseJson(automation.sources) || [];
-  const timeGranularity = inferAutomationGranularityFromSchedule(automation.schedule as string | null);
+  const timeGranularity =
+    context.claimedWindow?.granularity ??
+    inferAutomationGranularityFromSchedule(automation.schedule as string | null);
   // The extraction contract is composed from versioned outputs and the
   // optional reaction input contract.
   const templateExtractionSchema = await deriveAutomationExtractionSchema(

@@ -269,6 +269,23 @@ async function advanceExpectedAutomationWindowLocked(
   granularity: AutomationTimeGranularity,
   now: Date
 ): Promise<boolean> {
+  const [storedProjection] = await tx<{
+    next_window_start: string | Date | null;
+    window_projection_granularity: string | null;
+  }>`
+    SELECT next_window_start, window_projection_granularity
+    FROM automations
+    WHERE id = ${automationId}
+    FOR UPDATE
+  `;
+  if (
+    storedProjection?.next_window_start != null &&
+    storedProjection.window_projection_granularity != null &&
+    storedProjection.window_projection_granularity !== granularity
+  ) {
+    return false;
+  }
+
   const expected = await ensureExpectedAutomationWindowStartLocked(
     tx,
     automationId,

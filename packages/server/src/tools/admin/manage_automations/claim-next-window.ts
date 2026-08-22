@@ -2,6 +2,8 @@ import {
   addAutomationPeriod,
   alignToAutomationWindowStart,
   inferAutomationGranularityFromSchedule,
+  isAutomationTimeGranularity,
+  type AutomationTimeGranularity,
 } from '@lobu/connector-sdk';
 import type { AutomationClaimNextWindowResult } from '@lobu/core/contracts/tools/manage-automations';
 import type { DbClient } from '../../../db/client';
@@ -48,6 +50,20 @@ export async function handleClaimNextWindow(
   if (leaseSeconds < MIN_LEASE_SECONDS || leaseSeconds > MAX_LEASE_SECONDS) {
     throw new ToolUserError(
       `lease_seconds must be between ${MIN_LEASE_SECONDS} and ${MAX_LEASE_SECONDS}.`,
+      400
+    );
+  }
+  const hasBeforeOccurredAt = args.before_occurred_at != null;
+  const hasBeforeId = args.before_id != null;
+  if (hasBeforeOccurredAt !== hasBeforeId) {
+    throw new ToolUserError(
+      'before_occurred_at and before_id must be provided together.',
+      400
+    );
+  }
+  if (hasBeforeOccurredAt && args.run_id == null) {
+    throw new ToolUserError(
+      'Automation source-page cursors require run_id from the active window claim.',
       400
     );
   }
@@ -191,13 +207,43 @@ export async function handleClaimNextWindow(
       }
     }
 
-    return { runId, windowStart, windowEnd, leaseExpiresAt };
+    const [snapshot] = await tx<{
+      version_id: number | string | null;
+      granularity: string | null;
+    }>`
+      SELECT CASE
+               WHEN approved_input->>'version_id' ~ '^\\d+$'
+                 THEN (approved_input->>'version_id')::bigint
+               ELSE NULL
+             END AS version_id,
+             approved_input->>'granularity' AS granularity
+      FROM runs
+      WHERE id = ${runId}
+        AND automation_id = ${automationId}
+      LIMIT 1
+    `;
+    const claimedGranularity: AutomationTimeGranularity = isAutomationTimeGranularity(
+      snapshot?.granularity
+    )
+      ? snapshot.granularity
+      : granularity;
+
+    return {
+      runId,
+      windowStart,
+      windowEnd,
+      leaseExpiresAt,
+      templateVersionId:
+        snapshot?.version_id == null ? null : Number(snapshot.version_id),
+      granularity: claimedGranularity,
+    };
   });
 
   try {
     const context = await handleAutomationMode(
       {
         automation_id: automationId,
+        template_version_id: claimedWindow.templateVersionId ?? undefined,
         limit: args.limit,
         before_occurred_at: args.before_occurred_at,
         before_id: args.before_id,
@@ -213,6 +259,8 @@ export async function handleClaimNextWindow(
           windowStart: claimedWindow.windowStart.toISOString(),
           windowEnd: claimedWindow.windowEnd.toISOString(),
           leaseExpiresAt: claimedWindow.leaseExpiresAt.toISOString(),
+          templateVersionId: claimedWindow.templateVersionId,
+          granularity: claimedWindow.granularity,
         },
         throwOnSourceError: true,
       }

@@ -23,6 +23,7 @@ DECLARE
   automation_schedule text;
   cron_parts text[];
   projection_granularity text;
+  schedule_granularity text;
   stored_granularity text;
   trunc_unit text;
   period_interval interval;
@@ -42,21 +43,26 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF NEW.approved_input->>'granularity' IN ('daily', 'weekly', 'monthly', 'quarterly') THEN
-    projection_granularity := NEW.approved_input->>'granularity';
-  ELSE
-    cron_parts := regexp_split_to_array(trim(COALESCE(automation_schedule, '')), E'\\s+');
-    projection_granularity := CASE
-      WHEN automation_schedule IS NULL OR cardinality(cron_parts) < 5 THEN 'weekly'
-      WHEN cron_parts[4] <> '*' AND cron_parts[3] <> '*' THEN 'quarterly'
-      WHEN cron_parts[3] <> '*' AND cron_parts[4] = '*' THEN 'monthly'
-      WHEN cron_parts[5] <> '*' AND cron_parts[3] = '*' THEN 'weekly'
-      WHEN cron_parts[2] <> '*' AND cron_parts[3] = '*' THEN 'daily'
-      WHEN cron_parts[2] = '*'
-        OR position('/' in cron_parts[2]) > 0
-        OR position(',' in cron_parts[2]) > 0 THEN 'daily'
-      ELSE 'weekly'
-    END;
+  cron_parts := regexp_split_to_array(trim(COALESCE(automation_schedule, '')), E'\\s+');
+  schedule_granularity := CASE
+    WHEN automation_schedule IS NULL OR cardinality(cron_parts) < 5 THEN 'weekly'
+    WHEN cron_parts[4] <> '*' AND cron_parts[3] <> '*' THEN 'quarterly'
+    WHEN cron_parts[3] <> '*' AND cron_parts[4] = '*' THEN 'monthly'
+    WHEN cron_parts[5] <> '*' AND cron_parts[3] = '*' THEN 'weekly'
+    WHEN cron_parts[2] <> '*' AND cron_parts[3] = '*' THEN 'daily'
+    WHEN cron_parts[2] = '*'
+      OR position('/' in cron_parts[2]) > 0
+      OR position(',' in cron_parts[2]) > 0 THEN 'daily'
+    ELSE 'weekly'
+  END;
+  projection_granularity := CASE
+    WHEN NEW.approved_input->>'granularity' IN ('daily', 'weekly', 'monthly', 'quarterly')
+      THEN NEW.approved_input->>'granularity'
+    ELSE schedule_granularity
+  END;
+
+  IF projection_granularity <> schedule_granularity THEN
+    RETURN NEW;
   END IF;
 
   trunc_unit := CASE projection_granularity
@@ -79,7 +85,16 @@ BEGIN
   closed_boundary := date_trunc(trunc_unit, current_timestamp AT TIME ZONE 'UTC')
     AT TIME ZONE 'UTC';
 
-  IF stored_cursor IS NULL OR stored_granularity IS DISTINCT FROM projection_granularity THEN
+  -- A run keeps the cadence it was created under. If a human changed the
+  -- Automation schedule while that run was in flight, its later completion
+  -- must not reinterpret or replace the freshly reset projection.
+  IF stored_cursor IS NOT NULL
+     AND stored_granularity IS NOT NULL
+     AND stored_granularity IS DISTINCT FROM projection_granularity THEN
+    RETURN NEW;
+  END IF;
+
+  IF stored_cursor IS NULL OR stored_granularity IS NULL THEN
     -- An old replica can create an Automation without projection state after
     -- this migration has run. Rebuild that one Automation once, including the
     -- completion visible in this transaction, then use the O(1) branch below.

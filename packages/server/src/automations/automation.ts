@@ -4,6 +4,7 @@ import {
 } from "../tools/admin/manage_automations/executors";
 import {
 	inferAutomationGranularityFromSchedule,
+	isAutomationTimeGranularity,
 	type AutomationTimeGranularity,
 } from "@lobu/connector-sdk";
 import { generateWorkerToken, getErrorMessage } from "@lobu/core";
@@ -193,6 +194,9 @@ export function parseAutomationRunPayload(
 		window_start: windowStart,
 		window_end: windowEnd,
 		dispatch_source: dispatchSource,
+		granularity: isAutomationTimeGranularity(payload.granularity)
+			? payload.granularity
+			: undefined,
 		version_id: Number.isFinite(versionId as number)
 			? (versionId as number)
 			: null,

@@ -7,7 +7,10 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
-import type { AutomationTimeGranularity } from '@lobu/connector-sdk';
+import {
+  inferAutomationGranularityFromSchedule,
+  type AutomationTimeGranularity,
+} from '@lobu/connector-sdk';
 import {
   enqueueWorkspaceEventActivations,
   findSubscribedWorkspaceEventTypes,
@@ -581,8 +584,8 @@ export async function handleCompleteWindow(
   // the window commits.
   let deferredApprovals: DeferredMutation[] = [];
   const result = await sql.begin(async (tx) => {
-    const [lockedAutomation] = await tx`
-      SELECT id FROM automations
+    const [lockedAutomation] = await tx<{ schedule: string | null }>`
+      SELECT schedule FROM automations
       WHERE id = ${automationId} AND organization_id = ${automationOrgId}
       FOR UPDATE
     `;
@@ -856,12 +859,14 @@ export async function handleCompleteWindow(
     // replays (no window created, no run transitioned) must not push
     // next_run_at forward, or each retry would shift the schedule.
     if (completedRun.dispatch_source !== 'event') {
-      await advanceExpectedAutomationWindow(
-        tx,
-        automationId,
-        new Date(window_start),
-        timeGranularity
-      );
+      if (inferAutomationGranularityFromSchedule(lockedAutomation.schedule) === timeGranularity) {
+        await advanceExpectedAutomationWindow(
+          tx,
+          automationId,
+          new Date(window_start),
+          timeGranularity
+        );
+      }
       await advanceAutomationSchedule(tx, automationId);
     }
 

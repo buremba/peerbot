@@ -6,7 +6,12 @@
  * Omit `query` to list all content with filters.
  */
 
-import type { ContentItem } from '@lobu/connector-sdk';
+import {
+  inferAutomationGranularityFromSchedule,
+  isAutomationTimeGranularity,
+  type AutomationTimeGranularity,
+  type ContentItem,
+} from '@lobu/connector-sdk';
 import {
   evaluateEntityMutation,
   resolveActingPrincipal,
@@ -61,22 +66,40 @@ async function loadClaimedAutomationWindow(
   runId: number,
   automationId: number
 ): Promise<
-  | { runId: number; windowStart: string; windowEnd: string; leaseExpiresAt?: string }
+  | {
+      runId: number;
+      windowStart: string;
+      windowEnd: string;
+      leaseExpiresAt?: string;
+      templateVersionId: number | null;
+      granularity: AutomationTimeGranularity;
+    }
   | undefined
 > {
   const [run] = await sql<{
     window_start: string | null;
     window_end: string | null;
     expires_at: string | null;
+    version_id: number | string | null;
+    granularity: string | null;
+    schedule: string | null;
   }>`
     SELECT approved_input->>'window_start' AS window_start,
            approved_input->>'window_end' AS window_end,
-           expires_at
+           CASE
+             WHEN approved_input->>'version_id' ~ '^\\d+$'
+               THEN (approved_input->>'version_id')::bigint
+             ELSE NULL
+           END AS version_id,
+           approved_input->>'granularity' AS granularity,
+           runs.expires_at,
+           automations.schedule
     FROM runs
-    WHERE id = ${runId}
-      AND automation_id = ${automationId}
-      AND run_type IN ('automation', 'automation_eval')
-      AND status IN ('claimed', 'running')
+    JOIN automations ON automations.id = runs.automation_id
+    WHERE runs.id = ${runId}
+      AND runs.automation_id = ${automationId}
+      AND runs.run_type IN ('automation', 'automation_eval')
+      AND runs.status IN ('claimed', 'running')
     LIMIT 1
   `;
   if (!run?.window_start || !run.window_end) return undefined;
@@ -84,6 +107,10 @@ async function loadClaimedAutomationWindow(
     runId,
     windowStart: new Date(run.window_start).toISOString(),
     windowEnd: new Date(run.window_end).toISOString(),
+    templateVersionId: run.version_id == null ? null : Number(run.version_id),
+    granularity: isAutomationTimeGranularity(run.granularity)
+      ? run.granularity
+      : inferAutomationGranularityFromSchedule(run.schedule),
     ...(run.expires_at ? { leaseExpiresAt: new Date(run.expires_at).toISOString() } : {}),
   };
 }

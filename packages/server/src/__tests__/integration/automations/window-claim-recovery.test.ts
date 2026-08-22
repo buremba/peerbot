@@ -25,10 +25,14 @@ function dayStart(daysAgo: number): Date {
 
 type ClaimContext = {
   content: Array<{ id: number }>;
+  extraction_schema?: {
+    properties?: Record<string, unknown>;
+  };
   sources_page?: Record<string, { returned: number; limit: number; has_more: boolean }>;
   window_start: string;
   window_end: string;
   window_token: string;
+  window_lag?: { granularity: string };
   page: {
     has_more: boolean;
     next_cursor?: { occurred_at: string; id: number };
@@ -247,6 +251,31 @@ describe('Automation window claim and recovery', () => {
     expect(active).toHaveLength(1);
   });
 
+  it('rejects source-page cursors without their active run continuation', async () => {
+    await expect(
+      api.automations.claimNextWindow({
+        automation_id: String(automationId),
+        before_occurred_at: dayStart(1).toISOString(),
+        before_id: 1,
+      })
+    ).rejects.toThrow('source-page cursors require run_id');
+    await expect(
+      api.automations.claimNextWindow({
+        automation_id: String(automationId),
+        run_id: 1,
+        before_occurred_at: dayStart(1).toISOString(),
+      })
+    ).rejects.toThrow('before_occurred_at and before_id must be provided together');
+
+    const active = await sql`
+      SELECT id FROM runs
+      WHERE automation_id = ${automationId}
+        AND run_type = 'automation'
+        AND status IN ('claimed', 'running')
+    `;
+    expect(active).toHaveLength(0);
+  });
+
   it('fences continuations to the full identified caller and rejects unidentified claimants', async () => {
     const first = await handleClaimNextWindow(
       { action: 'claim_next_window', automation_id: String(automationId) },
@@ -301,6 +330,93 @@ describe('Automation window claim and recovery', () => {
       if (previousPoolMax === undefined) delete process.env.DB_POOL_MAX;
       else process.env.DB_POOL_MAX = previousPoolMax;
     }
+  });
+
+  it('uses the pending run version and granularity snapshot after an Automation edit', async () => {
+    const pending = await createAutomationRun({
+      organizationId: orgId,
+      automationId,
+      agentId,
+      windowStart: dayStart(1).toISOString(),
+      windowEnd: dayStart(0).toISOString(),
+      dispatchSource: 'scheduled',
+    });
+    const [snapshot] = await sql<{
+      version_id: number | string;
+      granularity: string;
+    }>`
+      SELECT (approved_input->>'version_id')::bigint AS version_id,
+             approved_input->>'granularity' AS granularity
+      FROM runs WHERE id = ${pending.runId}
+    `;
+
+    await api.automations.createVersion({
+      automation_id: String(automationId),
+      prompt: 'Extract a different contract from future periods.',
+      outputs: { findings: { event: 'observation' } },
+      change_notes: 'change schema after the pending run was created',
+    });
+    const [edited] = await sql<{ current_version_id: number | string }>`
+      SELECT current_version_id FROM automations WHERE id = ${automationId}
+    `;
+    expect(Number(edited.current_version_id)).not.toBe(Number(snapshot.version_id));
+
+    const claimed = await claim();
+    expect(claimed.run_id).toBe(pending.runId);
+    expect(snapshot.granularity).toBe('daily');
+    expect(claimed.context.window_lag?.granularity).toBe('daily');
+    expect(claimed.context.extraction_schema?.properties).toHaveProperty('signals');
+    expect(claimed.context.extraction_schema?.properties).not.toHaveProperty('findings');
+    await expect(
+      api.automations.completeWindow({
+        automation_id: String(automationId),
+        run_id: claimed.run_id,
+        window_token: claimed.context.window_token,
+        extracted_data: { signals: [] },
+      })
+    ).resolves.toMatchObject({ completed_now: true });
+  });
+
+  it('does not let an old-cadence completion replace a reset projection', async () => {
+    const claimed = await claim();
+    expect(claimed.context.window_lag?.granularity).toBe('daily');
+
+    await api.automations.update({
+      automation_id: String(automationId),
+      triggers: [{ kind: 'schedule', cron: '0 9 * * 1' }],
+    });
+    const [resetProjection] = await sql<{
+      next_window_start: string | Date;
+      completed_window_coverage: string;
+      window_projection_granularity: string;
+    }>`
+      SELECT next_window_start,
+             completed_window_coverage::text AS completed_window_coverage,
+             window_projection_granularity
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(resetProjection.window_projection_granularity).toBe('weekly');
+
+    await expect(
+      api.automations.completeWindow({
+        automation_id: String(automationId),
+        run_id: claimed.run_id,
+        window_token: claimed.context.window_token,
+        extracted_data: { signals: [] },
+      })
+    ).resolves.toMatchObject({ completed_now: true });
+
+    const [afterCompletion] = await sql<{
+      next_window_start: string | Date;
+      completed_window_coverage: string;
+      window_projection_granularity: string;
+    }>`
+      SELECT next_window_start,
+             completed_window_coverage::text AS completed_window_coverage,
+             window_projection_granularity
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(afterCompletion).toEqual(resetProjection);
   });
 
   it('reclaims an expired lease, fences the stale run, and replays a committed completion', async () => {

@@ -163,6 +163,8 @@ export interface ConnectorAgentToolingEnv {
 export interface ConnectorRuntimeInfo {
   /** Platforms this connector can run on. */
   platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'chrome-extension'>;
+  /** Native bridge-owned execution. Absent means the normal worker runtime. */
+  execution?: 'bridge';
   /**
    * Permission/auth scopes forwarded verbatim to the native platform adapter.
    * Optional — omit when the platform adapter needs no fine-grained scope list.

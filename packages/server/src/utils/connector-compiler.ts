@@ -31,6 +31,7 @@ export interface ConnectorMetadata {
   requiredCapability?: string | null;
   runtime?: {
     platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'chrome-extension'>;
+    execution?: 'bridge';
     scopes?: string[];
   } | null;
   /**

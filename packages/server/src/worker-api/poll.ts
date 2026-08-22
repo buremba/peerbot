@@ -175,6 +175,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let platform: string | null = null;
   let app_version: string | null = null;
   let label: string | null = null;
+  let capacityAvailable: number | null = null;
   let connectorManifestsProvided = false;
   let connectorManifestsRaw: unknown;
   // Agent CLIs this device can spawn. `null` is NOT the same as `[]`: null means
@@ -190,6 +191,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     platform = body.platform ?? null;
     app_version = body.app_version ?? null;
     label = body.label ?? null;
+    capacityAvailable = body.capacity_available ?? null;
     connectorManifestsProvided = Object.hasOwn(body, 'connector_manifests');
     connectorManifestsRaw = body.connector_manifests;
     agentKinds = normalizeAgentKinds(body.agent_kinds);
@@ -540,6 +542,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     worker_kind: workerKind,
     platform: platformLabel,
   });
+  if (capacityAvailable === 0) {
+    return c.json({
+      next_poll_seconds: 10,
+      ...(effectivePlatform === 'chrome-extension' ? { page_activations: [] } : {}),
+    });
+  }
   if (hasEmptyUserOrgScope) {
     // No org in scope — nothing this worker can ever claim. The rejection is
     // deferred to here (rather than returning at the check above) so the poll
@@ -1008,7 +1016,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     }
     let devicePrompt = automationInstructions;
     let agentSession: { conversation_id: string; mcp_url: string; token: string; expires_at: number } | undefined;
-    if (effectivePlatform !== 'macos' && row.automation_id != null) {
+    const requiresRunScopedAgentSession =
+      effectivePlatform === 'macos' && authorizedCapabilities.includes('automations.execute');
+    if (
+      row.automation_id != null &&
+      (effectivePlatform !== 'macos' || requiresRunScopedAgentSession)
+    ) {
       const runPayload = parseAutomationRunPayload(approved);
       const agentId =
         typeof approved['agent_id'] === 'string' && approved['agent_id'].trim()
@@ -1039,7 +1052,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         // Minting encrypts, so it can throw (missing/short ENCRYPTION_KEY). The
         // run is ALREADY claimed by this point, so letting that escape would 500
         // the poll and strand it `running` — the exact wedge the claim gate
-        // exists to prevent. Degrade to the pre-session dispatch instead.
+        // exists to prevent. Legacy workers retain the pre-session dispatch;
+        // the new standalone Mac capability fails closed instead.
         try {
           if (!row.organization_slug) {
             throw new Error(
@@ -1059,6 +1073,24 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             expires_at: access.expiresAt,
           };
         } catch (err) {
+          if (requiresRunScopedAgentSession) {
+            const message = 'failed to mint the required Automation run session';
+            await failClaimedWorkerRun({
+              runId: row.run_id,
+              workerId: worker_id,
+              errorMessage: message,
+            });
+            logger.error(
+              { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId, err },
+              '[poll] failed to mint the required macOS Automation run session'
+            );
+            return c.json({
+              next_poll_seconds: 1,
+              skipped_run_id: row.run_id,
+              error: message,
+              ...pollMetadata,
+            });
+          }
           devicePrompt = automationInstructions;
           logger.error(
             { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId, err },
@@ -1066,6 +1098,20 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           );
         }
       } else {
+        if (requiresRunScopedAgentSession) {
+          const message = 'macOS Automation run has no assigned agent for its required run session';
+          await failClaimedWorkerRun({
+            runId: row.run_id,
+            workerId: worker_id,
+            errorMessage: message,
+          });
+          return c.json({
+            next_poll_seconds: 1,
+            skipped_run_id: row.run_id,
+            error: message,
+            ...pollMetadata,
+          });
+        }
         // No assigned agent (or no parseable run payload): dispatch the
         // pre-session shape — instructions prompt + exit-report completion on
         // the daemon's own wiring — rather than failing a run that used to

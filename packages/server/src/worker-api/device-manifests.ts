@@ -1,5 +1,9 @@
-import { createHash } from 'node:crypto';
 import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
+import {
+  deviceManifestHash,
+  sortDeviceManifestJson,
+  type DeviceConnectorManifest,
+} from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
 import type { ConnectorMetadata } from '../utils/connector-compiler';
 import {
@@ -11,20 +15,8 @@ import logger from '../utils/logger';
 const MAX_MANIFESTS_PER_POLL = 32;
 const MAX_MANIFEST_BYTES = 256 * 1024;
 
-export interface DeviceConnectorManifest {
-  key: string;
-  version: string;
-  name: string;
-  description?: string | null;
-  favicon_domain?: string | null;
-  required_capability: string;
-  runtime: { platforms: string[]; scopes?: string[]; nix?: { packages?: string[] } | null };
-  auth_schema?: Record<string, unknown> | null;
-  feeds_schema?: Record<string, unknown> | null;
-  actions_schema?: Record<string, unknown> | null;
-  options_schema?: Record<string, unknown> | null;
-  manifest_hash?: string | null;
-}
+export type { DeviceConnectorManifest } from '@lobu/connector-sdk';
+export { deviceManifestHash };
 
 export interface StoredDeviceManifest {
   manifest_hash: string;
@@ -57,20 +49,6 @@ export interface DeviceManifestClaimAuthorization extends ManifestClaimAuthoriza
 interface DeviceManifestValidationResult {
   manifests: StoredDeviceManifest[];
   accepted: boolean;
-}
-
-export function deviceManifestHash(manifest: DeviceConnectorManifest): string {
-  const { manifest_hash: _ignored, ...payload } = manifest;
-  for (const key of [
-    'description',
-    'favicon_domain',
-    'auth_schema',
-    'actions_schema',
-    'options_schema',
-  ] as const) {
-    if (payload[key] == null) delete payload[key];
-  }
-  return createHash('sha256').update(JSON.stringify(sortJson(payload))).digest('hex');
 }
 
 export function deviceManifestToConnectorMetadata(manifest: DeviceConnectorManifest): ConnectorMetadata {
@@ -499,16 +477,7 @@ function isNoneAuthSchema(value: Record<string, unknown>): boolean {
 
 // Exported for callers needing the same canonical form the manifest hash uses
 // (device-reconcile compares stored vs incoming definition metadata with it).
-export function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => [k, sortJson(v)])
-  );
-}
+export const sortJson = sortDeviceManifestJson;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { ChildProcess } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { DEVICE_AGENT_SPECS_BY_KIND } from '@lobu/core/contracts/worker/device-automation';
 import type {
   CompleteAutomationResponse,
@@ -9,6 +12,7 @@ import {
   buildArguments,
   deliverExitReport,
   dispatchAutomationResumeLoop,
+  runCli,
   type ExecutorResult,
 } from '../daemon/automation.js';
 import {
@@ -35,6 +39,46 @@ function okResult(): ExecutorResult {
 }
 
 describe('POSIX process-group ownership', () => {
+  test('shutdown abort terminates the supervised CLI and reports cancellation', async () => {
+    if (process.platform === 'win32') return;
+    const dir = mkdtempSync(path.join(tmpdir(), 'lobu-shutdown-cli-'));
+    const terminated = path.join(dir, 'terminated');
+    const fake = path.join(dir, 'pi');
+    writeFileSync(
+      fake,
+      `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(path.join(dir, 'started'))}, 'started');
+process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(terminated)}, 'terminated'); process.exit(0); });
+setInterval(() => {}, 1000);
+`
+    );
+    chmodSync(fake, 0o755);
+    const controller = new AbortController();
+    try {
+      const running = runCli(
+        DEVICE_AGENT_SPECS_BY_KIND.get('pi')!,
+        'run',
+        undefined,
+        { wiring: undefined, env: {} },
+        10_000,
+        fake,
+        controller.signal,
+        controller.signal
+      );
+      for (let attempt = 0; attempt < 80 && !existsSync(path.join(dir, 'started')); attempt += 1) {
+        await Bun.sleep(25);
+      }
+      expect(existsSync(path.join(dir, 'started'))).toBe(true);
+      controller.abort();
+      const result = await running;
+      expect(result.exitReason).toBe('cancelled');
+      expect(readFileSync(terminated, 'utf8')).toBe('terminated');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   test('an exited supervisor never signals a numerically reused process group', () => {
     if (process.platform === 'win32') return;
     const signals: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];

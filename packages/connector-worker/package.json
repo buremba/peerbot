@@ -51,6 +51,8 @@
     "dev": "tsx watch --tsconfig tsconfig.json src/bin.ts",
     "start": "node dist/bin.js",
     "daemon": "tsx --tsconfig tsconfig.json src/bin.ts daemon",
+    "build:mac-device-daemon": "bash ../../scripts/build-mac-device-daemon.sh",
+    "test:mac-device-daemon": "bash ../../scripts/test-mac-device-daemon-package.sh",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

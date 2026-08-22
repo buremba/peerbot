@@ -68,6 +68,7 @@ export const RunTypeSchema = Type.Union([
 /** Categorized subprocess exit reason on the failed-run path. */
 export const WorkerExitReasonSchema = Type.Union([
   Type.Literal("ok"),
+  Type.Literal("cancelled"),
   Type.Literal("error_message"),
   Type.Literal("timeout"),
   Type.Literal("oom"),
@@ -101,6 +102,10 @@ export const OAuthCredentialsSchema = Type.Object({
 export const PollRequestSchema = Type.Object({
   worker_id: Type.String(),
   capabilities: Type.Optional(Type.Record(Type.String(), Type.Boolean())),
+  /** Number of additional runs the worker can accept at this instant. */
+  capacity_available: Type.Optional(
+    Type.Integer({ minimum: 0, maximum: 1024 })
+  ),
   platform: Type.Optional(Type.String()),
   app_version: Type.Optional(Type.String()),
   /**
@@ -173,7 +178,8 @@ export const AutomationPollContextSchema = Type.Object({
   user: Type.Object({
     user_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   }),
-  // Non-macOS device execution only: the per-run lobu-memory MCP session.
+  // Device execution: the per-run lobu-memory MCP session when the worker
+  // advertises automations.execute. Legacy Mac bridge workers omit it.
   // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
   // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
   // PAT is bound to the user's personal org and can't authenticate to a
@@ -181,9 +187,9 @@ export const AutomationPollContextSchema = Type.Object({
   // (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own session.
   // The daemon hands both to the spawned CLI as its MCP wiring and as
   // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
-  // agent for this run. Absent when the run has no usable assigned agent, or
-  // when minting failed — the daemon then falls back to its own wiring. macOS
-  // is exempt: Owletto's bridge dispatches with its own credential machinery.
+  // agent for this run. Absent when the run has no usable assigned agent or
+  // when the legacy worker did not advertise automations.execute. A capable
+  // standalone daemon fails closed instead of falling back to its device PAT.
   agent_session: Type.Optional(
     Type.Object({
       conversation_id: Type.String(),

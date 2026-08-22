@@ -26,7 +26,7 @@ import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
 import { resolvePublicOrigin } from '../../../utils/public-origin';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
-import { post } from '../../setup/test-helpers';
+import { mcpToolsCall, post } from '../../setup/test-helpers';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 async function createWorkerBoundPat(
@@ -268,6 +268,170 @@ describe('headless Automation claim gate (automations.execute)', () => {
       SELECT status FROM runs WHERE id = ${job.run_id}
     `;
     expect(String(run.status)).toBe('running');
+  });
+
+  it('capable macOS daemon receives team-org session and can complete the window over MCP', async () => {
+    const ctx = await setupDevicePinnedAutomation({
+      workerId: 'mac-capable',
+      platform: 'macos',
+      capabilities: { 'automations.execute': true },
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-capable'
+    );
+
+    const trig = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+    const pollRes = await post('/api/workers/poll', {
+      token,
+      body: {
+        worker_id: 'mac-capable',
+        platform: 'macos',
+        capabilities: { 'automations.execute': true },
+        agent_kinds: ['opencode'],
+      },
+    });
+    expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as {
+      run_id: number;
+      payload?: {
+        context?: {
+          agent_session?: { token: string; mcp_url: string; conversation_id: string };
+        };
+      };
+    };
+    const session = job.payload?.context?.agent_session;
+    expect(session?.mcp_url).toContain(`/mcp/${ctx.workspace.org.slug}`);
+    expect(session?.conversation_id).toBe(
+      `claim-gate-agent_automation_${ctx.automationId}_run_${job.run_id}`
+    );
+
+    const completion = await mcpToolsCall(
+      'run_sdk',
+      {
+        script: `export default async (_c, client) => {
+          const window = await client.knowledge.read({ automation_id: '${ctx.automationId}' });
+          return client.automations.completeWindow({
+            automation_id: '${ctx.automationId}',
+            run_id: ${job.run_id},
+            window_token: window.window_token,
+            extracted_data: { summary: 'completed by the Mac daemon session' },
+            model: 'device-cli:opencode',
+          });
+        }`,
+      },
+      { token: session!.token, orgSlug: ctx.workspace.org.slug }
+    );
+    expect(completion.success).toBe(true);
+
+    const [run] = await ctx.sql`
+      SELECT status FROM runs WHERE id = ${job.run_id}
+    `;
+    expect(String(run.status)).toBe('completed');
+  });
+
+  it('capable macOS daemon fails closed when no assigned agent can mint a session', async () => {
+    const ctx = await setupDevicePinnedAutomation({
+      workerId: 'mac-agentless',
+      platform: 'macos',
+      capabilities: { 'automations.execute': true },
+    });
+    await ctx.sql`UPDATE automations SET agent_id = NULL WHERE id = ${ctx.automationId}`;
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-agentless'
+    );
+    const trig = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+
+    const pollRes = await post('/api/workers/poll', {
+      token,
+      body: {
+        worker_id: 'mac-agentless',
+        platform: 'macos',
+        capabilities: { 'automations.execute': true },
+        agent_kinds: ['opencode'],
+      },
+    });
+    expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as { skipped_run_id?: number; error?: string };
+    expect(job.skipped_run_id).toBeGreaterThan(0);
+    expect(job.error).toContain('no assigned agent');
+    const [run] = await ctx.sql`SELECT status FROM runs WHERE id = ${job.skipped_run_id}`;
+    expect(String(run.status)).toBe('failed');
+  });
+
+  it('macOS daemon cancellation is terminal and idempotent', async () => {
+    const ctx = await setupDevicePinnedAutomation({
+      workerId: 'mac-cancelled',
+      platform: 'macos',
+      capabilities: { 'automations.execute': true },
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-cancelled'
+    );
+
+    const trig = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+    const pollRes = await post('/api/workers/poll', {
+      token,
+      body: {
+        worker_id: 'mac-cancelled',
+        platform: 'macos',
+        capabilities: { 'automations.execute': true },
+        agent_kinds: ['opencode'],
+      },
+    });
+    expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as { run_id?: number };
+    expect(job.run_id).toBeGreaterThan(0);
+
+    const report = {
+      worker_id: 'mac-cancelled',
+      output: 'daemon stopped by supervisor',
+      exit_code: 143,
+      exit_signal: 'SIGTERM',
+      exit_reason: 'cancelled' as const,
+    };
+    const response = await post(
+      `/api/workers/me/runs/${job.run_id}/complete-automation`,
+      { token, body: report }
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: 'cancelled',
+      reason_code: 'device_daemon_shutdown',
+      run_id: job.run_id,
+    });
+
+    const [run] = await ctx.sql`
+      SELECT status, completed_at, output_tail, exit_code, exit_signal, exit_reason
+      FROM runs
+      WHERE id = ${job.run_id}
+    `;
+    expect(String(run.status)).toBe('cancelled');
+    expect(run.completed_at).not.toBeNull();
+    expect(String(run.output_tail)).toContain('daemon stopped by supervisor');
+    expect(Number(run.exit_code)).toBe(143);
+    expect(String(run.exit_signal)).toBe('SIGTERM');
+    expect(String(run.exit_reason)).toBe('cancelled');
+
+    const duplicate = await post(
+      `/api/workers/me/runs/${job.run_id}/complete-automation`,
+      { token, body: { ...report, output: 'duplicate report' } }
+    );
+    expect(duplicate.status).toBe(200);
+    await expect(duplicate.json()).resolves.toEqual({
+      ok: true,
+      status: 'cancelled',
+      idempotent: true,
+    });
   });
 
   it('macOS device with capabilities:{} still claims (pre-capability exemption)', async () => {

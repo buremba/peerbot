@@ -39,6 +39,7 @@
       "!**/packages/connectors/**",
       "!**/packages/embeddings/**",
       "!**/packages/owletto/**",
+      "!**/packages/device-connectors/generated/**",
       "!**/apps/**",
       "!**/scripts/lobu/**",
       "!**/benchmarks/**",

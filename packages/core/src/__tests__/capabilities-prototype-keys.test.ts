@@ -46,6 +46,9 @@ describe("platform allowlist lookups ignore inherited keys", () => {
     expect(authorizeCapabilities("macos", ["os.files"]).authorized).toContain(
       "os.files"
     );
+    expect(
+      authorizeCapabilities("macos", ["automations.execute"]).authorized
+    ).toContain("automations.execute");
   });
 
   test("headless devices authorize shell+files+automation execution but nothing browser-ish", () => {

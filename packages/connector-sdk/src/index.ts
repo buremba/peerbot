@@ -20,6 +20,22 @@ export {
   IntegrationConnector,
 } from './connector-runtime.js';
 export { defineConnector } from './define-connector.js';
+export {
+  canonicalDeviceManifestJson,
+  defineDeviceConnector,
+  deviceManifestHash,
+  serializeDeviceConnector,
+  sortDeviceManifestJson,
+} from './device-manifest.js';
+export type {
+  DeviceActionDefinition,
+  DeviceConnectorDefinition,
+  DeviceConnectorManifest,
+  DeviceConnectorRuntimeInfo,
+  DeviceConnectorSpec,
+  DeviceFeedDefinition,
+  DeviceManifestSchema,
+} from './device-manifest.js';
 import { validateEntityMetrics } from './metrics.js';
 export { validateEntityMetrics };
 // Entity-bound metric layer contract (shared by CLI authoring + server

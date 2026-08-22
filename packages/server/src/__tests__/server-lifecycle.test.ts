@@ -18,6 +18,8 @@
  */
 
 import { readFileSync } from "node:fs";
+import http from "node:http";
+import net from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -25,6 +27,32 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@sentry/node", () => ({
 	captureException: vi.fn(),
 	captureMessage: vi.fn(),
+}));
+
+// --- heavy collaborators of createServerLifecycle, replaced so the spine
+// --- boots in-process against a real ephemeral HTTP server.
+vi.mock("../db/client", () => ({ closeDbSingleton: vi.fn(async () => {}) }));
+vi.mock("../dev-vite", () => ({ mountViteDev: vi.fn(async () => null) }));
+vi.mock("../workspace", () => ({
+	initWorkspaceProvider: vi.fn(async () => undefined),
+}));
+// initLobuGateway must return the SAME app instance the test wires routes
+// onto — Hono's `.route()` copies the sub-app's routes at mount time, so a
+// late-built app would silently 404.
+const gwAppSlot = vi.hoisted(() => ({ app: null as unknown }));
+vi.mock("../lobu/gateway", () => ({
+	initLobuGateway: vi.fn(async () => gwAppSlot.app),
+	stopLobuGateway: vi.fn(async () => {}),
+	getLobuCoreServices: vi.fn(() => ({})),
+}));
+vi.mock("../scheduled/check-stalled-executions", () => ({
+	startStaleRunReaper: vi.fn(() => vi.fn()),
+}));
+vi.mock("../scheduled/jobs", () => ({
+	bootTaskScheduler: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+}));
+vi.mock("../scheduled/embedded-connector-worker", () => ({
+	startEmbeddedConnectorWorker: vi.fn(() => null),
 }));
 
 vi.mock("../utils/logger", () => {
@@ -381,8 +409,8 @@ describe("buildWrapperApp", () => {
 describe("createServerLifecycle (source-level contract)", () => {
 	// These assertions read the source file. They exist so a code reviewer
 	// (human or pi) can't silently reorder shutdown or drop a step without
-	// updating the test in the same change. Functional ordering is also
-	// exercised by an explicit grep-and-position check below.
+	// updating the test in the same change. Relative ordering is enforced by
+	// explicit source-position checks below.
 
 	function indexOf(needle: string): number {
 		const idx = LIFECYCLE_SOURCE.indexOf(needle);
@@ -430,6 +458,11 @@ describe("createServerLifecycle (source-level contract)", () => {
 		// Each step is wrapped in `safe("<step>", …)` so a failing teardown
 		// can't block the rest. Order-check by the step label which is stable
 		// across refactors of the wrapper.
+		//
+		// The embedded worker must get its bounded drain window while its local
+		// HTTP API is still reachable. The listener then gives accepted requests
+		// their close budget before gateway and database teardown.
+		const close = indexOf('safe("httpServer.close"');
 		const worker = indexOf('safe("embeddedWorker.stop"');
 		const vite = indexOf('safe("vite.close"');
 		const reaper = indexOf('safe("stopReaper"');
@@ -437,17 +470,14 @@ describe("createServerLifecycle (source-level contract)", () => {
 		const gateway = indexOf('safe("stopLobuGateway"');
 		const db = indexOf('safe("closeDbSingleton"');
 		const extra = indexOf("safe(`extraTeardown[");
-		// #1191 wrapped the close in the same safe() step pattern as the rest of
-		// teardown; match the stable step label, not the raw call.
-		const close = indexOf('safe("httpServer.close"');
 
-		expect(worker).toBeLessThan(vite);
+		expect(worker).toBeLessThan(close);
+		expect(close).toBeLessThan(vite);
 		expect(vite).toBeLessThan(reaper);
 		expect(reaper).toBeLessThan(scheduler);
 		expect(scheduler).toBeLessThan(gateway);
 		expect(gateway).toBeLessThan(db);
 		expect(db).toBeLessThan(extra);
-		expect(extra).toBeLessThan(close);
 	});
 
 	it("wraps every shutdown step in a safe() helper (one failing step does not skip the rest)", () => {
@@ -473,4 +503,181 @@ describe("createServerLifecycle (source-level contract)", () => {
 		expect(/process\.on\(['"]SIGTERM['"]/.test(LIFECYCLE_SOURCE)).toBe(true);
 		expect(/process\.on\(['"]SIGINT['"]/.test(LIFECYCLE_SOURCE)).toBe(true);
 	});
+});
+
+describe("shutdown ordering (live drain)", () => {
+	it(
+		"refuses new work and drains the in-flight request before gateway/db teardown",
+		async () => {
+			const events: string[] = [];
+			const { closeDbSingleton } = await import("../db/client");
+			const { stopLobuGateway } = await import("../lobu/gateway");
+			vi.mocked(closeDbSingleton).mockImplementation(async () => {
+				events.push("db-closed");
+			});
+			vi.mocked(stopLobuGateway).mockImplementation(async () => {
+				events.push("gateway-stopped");
+			});
+
+			const exited = new Promise<number | undefined>((resolveExit) => {
+				vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+					events.push("exit");
+					resolveExit(code);
+					return undefined as never;
+				}) as never);
+			});
+
+			const sigListenersBefore = {
+				SIGTERM: process.listeners("SIGTERM"),
+				SIGINT: process.listeners("SIGINT"),
+			};
+
+			const { Hono } = await import("hono");
+			const lobuApp = new Hono();
+			gwAppSlot.app = lobuApp;
+			const slowHandler = (c: {
+				json: (body: Record<string, string>) => unknown;
+			}) => {
+				events.push("inflight-start");
+				return new Promise<{ ok: string }>((resolve) =>
+					setTimeout(() => resolve({ ok: "slow" }), 700),
+				).then((body) => {
+					events.push("inflight-done");
+					return c.json(body);
+				});
+			};
+			lobuApp.get("/slow", slowHandler);
+			lobuApp.post("/slow", slowHandler);
+
+			const { createServerLifecycle } = await import("../server-lifecycle");
+			// Claim a free loopback port first: the spine logs its configured
+			// port, not the bound one, so port 0 can't be discovered afterwards.
+			const freePort = await new Promise<number>((resolve, reject) => {
+				const scout = net.createServer();
+				scout.unref();
+				scout.on("error", reject);
+				scout.listen(0, "127.0.0.1", () => {
+					const { port } = scout.address() as net.AddressInfo;
+					scout.close(() => resolve(port));
+				});
+			});
+			const lifecycle = createServerLifecycle({
+				mode: "postgres",
+				env: {} as never,
+				host: "127.0.0.1",
+				port: freePort,
+				databaseReadiness: async () => {},
+				extraTeardown: [
+					async () => {
+						events.push("extra-teardown");
+					},
+				],
+			});
+			await lifecycle.start();
+			const port = freePort;
+
+			let inflightError: unknown = null;
+			const inflight = new Promise<{ status: number }>((resolveInflight) => {
+				const req = http.request(
+					{ host: "127.0.0.1", port, path: "/lobu/slow", method: "GET" },
+					(res) => {
+						res.resume();
+						res.on("end", () => resolveInflight({ status: res.statusCode ?? 0 }));
+					},
+				);
+				req.on("error", (err: NodeJS.ErrnoException) => {
+					inflightError = err;
+					resolveInflight({ status: 599 });
+				});
+				req.end();
+			});
+			// Wait until THIS request is being handled before signalling — no
+			// other traffic has run, so "inflight-start" can only be ours.
+			await vi.waitFor(
+				() => expect(events).toContain("inflight-start"),
+				{ timeout: 3_000 },
+			);
+
+			process.emit("SIGTERM");
+
+			// A brand-new connection must be refused once the listener closed —
+			// and crucially BEFORE db teardown severs the dependency it would
+			// have needed (the drain-phase CONNECTION_ENDED 500 regression).
+			const probeOnce = (): Promise<string> =>
+				new Promise((resolve) => {
+					const socket = net.connect({ port, host: "127.0.0.1" });
+					const timer = setTimeout(() => {
+						socket.destroy();
+						resolve("timeout");
+					}, 250);
+					socket.on("connect", () => {
+						clearTimeout(timer);
+						socket.destroy();
+						resolve("connected");
+					});
+					socket.on("error", (err: NodeJS.ErrnoException) => {
+						clearTimeout(timer);
+						resolve(err.code ?? "error");
+					});
+				});
+			let refusal = "still-accepting";
+			for (let i = 0; i < 200 && !events.includes("exit"); i++) {
+				refusal = await probeOnce();
+				if (refusal !== "connected") break;
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			events.push(`new-conn:${refusal}`);
+			expect(refusal).not.toBe("connected");
+
+			const inflightRes = await inflight;
+			expect(
+				inflightRes.status,
+				JSON.stringify({
+					events,
+					err: inflightError
+						? {
+								msg: (inflightError as Error).message,
+								code: (inflightError as NodeJS.ErrnoException).code,
+							}
+						: null,
+				}),
+			).toBe(200);
+			await exited;
+
+			for (const signal of ["SIGTERM", "SIGINT"] as const) {
+				for (const listener of process.listeners(signal)) {
+					if (!sigListenersBefore[signal].includes(listener)) {
+						process.removeListener(signal, listener);
+					}
+				}
+			}
+
+			const indexOfEvent = (name: string): number => {
+				const idx = events.findIndex(
+					(event) => event === name || event.startsWith(`${name}:`),
+				);
+				expect(idx >= 0, `missing ${name} in ${JSON.stringify(events)}`).toBe(
+					true,
+				);
+				return idx;
+			};
+			// The in-flight request finished on its own terms, then — and only
+			// then — the dependency teardown ran; nothing was served after the
+			// dependencies were gone.
+			expect(indexOfEvent("inflight-done")).toBeLessThan(
+				indexOfEvent("gateway-stopped"),
+			);
+			expect(indexOfEvent("new-conn")).toBeLessThan(
+				indexOfEvent("db-closed"),
+			);
+			expect(indexOfEvent("gateway-stopped")).toBeLessThan(
+				indexOfEvent("db-closed"),
+			);
+			expect(indexOfEvent("db-closed")).toBeLessThan(
+				indexOfEvent("extra-teardown"),
+			);
+			expect(events[events.length - 1]).toBe("exit");
+		},
+		20_000,
+	);
 });

@@ -2,7 +2,10 @@ import { Buffer } from 'node:buffer';
 
 export const NATIVE_BRIDGE_PROTOCOL_VERSION = 1;
 export const NATIVE_BRIDGE_PROTOCOL = 'device-daemon/v1';
-export const NATIVE_BRIDGE_MAX_FRAME_BYTES = 1024 * 1024;
+// Action results may carry bounded, user-requested screenshot data. Keep the
+// frame bounded while allowing ordinary Retina PNG payloads to cross the
+// supervised bridge without tearing down the owning run.
+export const NATIVE_BRIDGE_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const NATIVE_BRIDGE_MAX_INBOUND_FRAMES = 128;
 export const NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES = 128;
 export const NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES_PER_RUN = 32;

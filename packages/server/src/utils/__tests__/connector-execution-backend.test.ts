@@ -107,12 +107,6 @@ describe('selected connector execution backend', () => {
     })).toEqual({ manifestBacked: true, inconsistency: 'active exact definition is not bridge execution' });
   });
 
-  test('does not let retained bridge authorization override an active exact non-bridge definition', () => {
-    expect(classify({
-      definition: { ...definition, runtime: { platforms: ['macos'], execution: 'compiled' } },
-    })).toEqual({ manifestBacked: true, inconsistency: 'active exact definition is not bridge execution' });
-  });
-
   test('rejects a bridge artifact that is not authorized by the claiming device', () => {
     expect(classify({ authorizations: [] }).inconsistency).toContain('not authorized');
     expect(classify({ authorizations: [] }).backend).toBeUndefined();

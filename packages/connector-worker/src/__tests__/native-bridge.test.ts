@@ -72,6 +72,19 @@ describe('native bridge framing', () => {
     const bounded = new NativeBridgeFrameDecoder();
     expect(() => bounded.append(Buffer.concat(Array.from({ length: 129 }, (_, index) => frame({ request_id: `r-${index}` }))))).toThrow('queue');
   });
+
+  test('accepts a bounded large action result frame', () => {
+    const image = 'x'.repeat(1_100_000);
+    const encoded = frame({
+      kind: 'complete',
+      run_id: 1,
+      payload: { action_output: { image_base64: image } },
+    });
+    expect(encoded.byteLength).toBeGreaterThan(1_000_000);
+    expect(new NativeBridgeFrameDecoder().append(encoded)[0]?.payload).toMatchObject({
+      action_output: { image_base64: image },
+    });
+  });
 });
 
 function helloFrame(workerId = 'mac:test', generation: number | undefined = 4) {

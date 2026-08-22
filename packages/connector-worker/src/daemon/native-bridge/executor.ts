@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ContentItem, PollResponse, StreamBatch } from '../client.js';
 import type { WorkerClient } from '../client.js';
 import { log } from '../log.js';
@@ -5,15 +6,18 @@ import { NativeBridgeClient, type NativeBridgeRunResult } from './client.js';
 
 const VIRTUAL_FEED_ACTION = '__lobu_virtual_feed_read';
 const NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
+export const NATIVE_BRIDGE_EXECUTION_TIMEOUT_MS = 600_000;
 
 export async function executeNativeBridgeRun(
   client: WorkerClient,
   bridge: NativeBridgeClient,
   job: PollResponse,
+  timeoutMs = NATIVE_BRIDGE_EXECUTION_TIMEOUT_MS,
 ): Promise<{ itemsCollected: number; error?: string }> {
   if (!job.run_id) throw new Error('native bridge run is missing run_id');
 
   const runId = job.run_id;
+  const requestId = randomUUID();
   let operation: ReturnType<typeof nativeOperation> | undefined;
   let itemsCollected = 0;
   let checkpoint = asRecord(job.checkpoint);
@@ -65,30 +69,37 @@ export async function executeNativeBridgeRun(
         log.debug(`[native-bridge] Heartbeat for run ${runId} failed:`, error);
       });
     }, NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS);
-    const result = await bridge.run({
-      operation: currentOperation,
-      job: bridgeJob(job),
-      onStream:
-        currentOperation === 'sync'
-          ? async (payload) => {
-              const items = readItems(payload.items);
-              const nextCheckpoint = asRecord(payload.checkpoint);
-              if (items.length === 0 && !nextCheckpoint) return;
-              const batch: StreamBatch = {
-                type: 'batch',
-                run_id: runId,
-                worker_id: client.id,
-                items,
-                ...(nextCheckpoint ?? checkpoint
-                  ? { checkpoint: nextCheckpoint ?? checkpoint }
-                  : {}),
-              };
-              await client.stream(batch);
-              if (nextCheckpoint) checkpoint = nextCheckpoint;
-              itemsCollected += items.length;
-            }
-          : undefined,
-    });
+    const result = await runWithTimeout(
+      bridge,
+      requestId,
+      runId,
+      timeoutMs,
+      bridge.run({
+        requestId,
+        operation: currentOperation,
+        job: bridgeJob(job),
+        onStream:
+          currentOperation === 'sync'
+            ? async (payload) => {
+                const items = readItems(payload.items);
+                const nextCheckpoint = asRecord(payload.checkpoint);
+                if (items.length === 0 && !nextCheckpoint) return;
+                const batch: StreamBatch = {
+                  type: 'batch',
+                  run_id: runId,
+                  worker_id: client.id,
+                  items,
+                  ...(nextCheckpoint ?? checkpoint
+                    ? { checkpoint: nextCheckpoint ?? checkpoint }
+                    : {}),
+                };
+                await client.stream(batch);
+                if (nextCheckpoint) checkpoint = nextCheckpoint;
+                itemsCollected += items.length;
+              }
+            : undefined,
+      }),
+    );
 
     if (result.checkpoint) checkpoint = result.checkpoint;
     if (currentOperation === 'sync') await completeSync(result);
@@ -117,6 +128,29 @@ export async function executeNativeBridgeRun(
     return { itemsCollected, error: message };
   } finally {
     if (heartbeatInterval) clearInterval(heartbeatInterval);
+  }
+}
+
+async function runWithTimeout(
+  bridge: NativeBridgeClient,
+  requestId: string,
+  runId: number,
+  timeoutMs: number,
+  run: Promise<NativeBridgeRunResult>,
+): Promise<NativeBridgeRunResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run,
+      new Promise<NativeBridgeRunResult>((_, reject) => {
+        timer = setTimeout(() => {
+          void bridge.cancel(requestId, runId).catch(() => undefined);
+          reject(new Error(`native bridge run timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

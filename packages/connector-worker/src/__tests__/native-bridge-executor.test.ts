@@ -202,6 +202,29 @@ describe('native bridge run forwarding', () => {
     ]);
   });
 
+  test('times out a hung native run, cancels its owner, and reports failure', async () => {
+    const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
+    const cancellations: Array<[string, number]> = [];
+    const bridge = {
+      run: async () => new Promise<never>(() => undefined),
+      cancel: async (requestId: string, runId: number) => {
+        cancellations.push([requestId, runId]);
+      },
+    } as never;
+
+    const result = await executeNativeBridgeRun(client as never, bridge, {
+      run_id: 19,
+      run_type: 'action',
+      action_key: 'hang',
+    } as never, 5);
+
+    expect(result.error).toBe('native bridge run timed out after 5ms');
+    expect(cancellations).toEqual([[expect.any(String), 19]]);
+    expect(client.calls.completeAction).toEqual([
+      expect.objectContaining({ run_id: 19, status: 'failed', error_message: result.error }),
+    ]);
+  });
+
   test('heartbeats a long native run and clears the heartbeat after terminal completion', async () => {
     const scheduled: Array<() => Promise<void> | void> = [];
     const cleared: unknown[] = [];

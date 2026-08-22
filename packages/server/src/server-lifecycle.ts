@@ -64,9 +64,10 @@ interface ServerLifecycleConfig {
 	 */
 	postListenHooks?: Array<() => void>;
 	/**
-	 * Runs during shutdown AFTER `stopLobuGateway` + `closeDbSingleton`, in
-	 * declared order, before `httpServer.close()`. The embedded backend uses
-	 * this to kill the embeddings child and stop the embedded Postgres.
+	 * Runs during shutdown after the HTTP listener stops accepting work and
+	 * after Lobu gateway and database-pool teardown, in declared order. The
+	 * embedded backend uses this to kill the embeddings child and stop the
+	 * embedded Postgres.
 	 */
 	extraTeardown?: Array<() => Promise<void> | void>;
 }
@@ -422,7 +423,9 @@ export function createServerLifecycle(
 				}
 			};
 			// Order matters:
-			//   a. Stop accepting new work from the embedded connector worker.
+			//   a. Stop the embedded connector worker from polling and give its active
+			//      job up to 15s to finish while the local HTTP API it uses for progress
+			//      and completion reports is still reachable.
 			if (embeddedWorker) {
 				const worker = embeddedWorker;
 				await safe("embeddedWorker.stop", async () => {
@@ -430,37 +433,17 @@ export function createServerLifecycle(
 					await worker.wait(15_000);
 				});
 			}
-			//   b. Close Vite (HMR sockets) before tearing down the http server
-			//      so dev-mode listeners detach cleanly.
-			await safe("vite.close", async () => {
-				await vite?.close();
-			});
-			//   c. Stop the reaper poll loop.
-			await safe("stopReaper", () => stopReaper());
-			//   d. Stop the task scheduler dispatch loop.
-			await safe("taskScheduler.stop", () => taskScheduler.stop());
-			//   e. Drain MCP sessions / DB listeners / secret-proxy. Gateway
-			//      holds postgres.js connections that must be released before
-			//      mode-specific db teardown runs.
-			await safe("stopLobuGateway", () => stopLobuGateway());
-			//   f. Close the postgres.js singleton pool.
-			await safe("closeDbSingleton", () => closeDbSingleton());
-			//   g. Mode-specific teardown (embedded kills embeddings child, stops
-			//      socket server, closes the in-process db).
-			for (let i = 0; i < extraTeardown.length; i++) {
-				await safe(`extraTeardown[${i}]`, extraTeardown[i]);
-			}
-			//   h. Finally, stop accepting new connections and wait for in-flight
-			//      requests to finish, instead of the historical fire-and-forget
-			//      close + immediate process.exit that severed open responses.
-			//      `close()` alone never completes while idle keep-alive sockets
-			//      (75s timeout above) are open, so close those proactively —
-			//      genuinely active requests/streams are not idle and get the
-			//      drain window. Bounded by HTTP_CLOSE_TIMEOUT_MS (default 10s)
-			//      so a long-lived SSE stream can't hold the exit past the pod's
-			//      termination grace period. SIGINT is the interactive path
-			//      (Ctrl-C in dev, Mac app quit) where there's no LB to drain —
-			//      cap it at 1s so local shutdown stays snappy.
+			//   b. Stop accepting new HTTP work after the readiness drain above has
+			//      let the LB drop this pod's endpoint.
+			//      `close()` refuses new connections while letting in-flight
+			//      requests finish. Await it before gateway and database teardown so
+			//      accepted requests retain those dependencies while draining.
+			//      `close()` alone never completes while non-idle sockets
+			//      such as SSE streams are open, so it is bounded by
+			//      HTTP_CLOSE_TIMEOUT_MS (default 10s). Requests still active after
+			//      that budget may be interrupted by the remaining teardown. SIGINT
+			//      is the interactive path (Ctrl-C in dev, Mac app quit), capped at
+			//      1s so local shutdown stays snappy.
 			await safe("httpServer.close", async () => {
 				const configuredMs = Number(env.HTTP_CLOSE_TIMEOUT_MS ?? 10_000);
 				const closeTimeoutMs =
@@ -477,6 +460,26 @@ export function createServerLifecycle(
 					setTimeout(done, closeTimeoutMs).unref?.();
 				});
 			});
+			//   c. Close Vite after the listener stops accepting new connections so
+			//      dev-mode HMR sockets detach cleanly.
+			await safe("vite.close", async () => {
+				await vite?.close();
+			});
+			//   d. Stop the reaper poll loop.
+			await safe("stopReaper", () => stopReaper());
+			//   e. Stop the task scheduler dispatch loop.
+			await safe("taskScheduler.stop", () => taskScheduler.stop());
+			//   f. Drain MCP sessions / DB listeners / secret-proxy. Gateway
+			//      holds postgres.js connections that must be released before
+			//      mode-specific db teardown runs.
+			await safe("stopLobuGateway", () => stopLobuGateway());
+			//   g. Close the postgres.js singleton pool.
+			await safe("closeDbSingleton", () => closeDbSingleton());
+			//   h. Mode-specific teardown (embedded kills embeddings child, stops
+			//      socket server, closes the in-process db).
+			for (let i = 0; i < extraTeardown.length; i++) {
+				await safe(`extraTeardown[${i}]`, extraTeardown[i]);
+			}
 			process.exit(0);
 		};
 		// Single-flight guard: SIGTERM+SIGINT or a double-tap on either must

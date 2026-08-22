@@ -381,8 +381,8 @@ describe("buildWrapperApp", () => {
 describe("createServerLifecycle (source-level contract)", () => {
 	// These assertions read the source file. They exist so a code reviewer
 	// (human or pi) can't silently reorder shutdown or drop a step without
-	// updating the test in the same change. Functional ordering is also
-	// exercised by an explicit grep-and-position check below.
+	// updating the test in the same change. Relative ordering is enforced by
+	// explicit source-position checks below.
 
 	function indexOf(needle: string): number {
 		const idx = LIFECYCLE_SOURCE.indexOf(needle);
@@ -430,6 +430,11 @@ describe("createServerLifecycle (source-level contract)", () => {
 		// Each step is wrapped in `safe("<step>", …)` so a failing teardown
 		// can't block the rest. Order-check by the step label which is stable
 		// across refactors of the wrapper.
+		//
+		// The embedded worker must get its bounded drain window while its local
+		// HTTP API is still reachable. The listener then gives accepted requests
+		// their close budget before gateway and database teardown.
+		const close = indexOf('safe("httpServer.close"');
 		const worker = indexOf('safe("embeddedWorker.stop"');
 		const vite = indexOf('safe("vite.close"');
 		const reaper = indexOf('safe("stopReaper"');
@@ -437,17 +442,14 @@ describe("createServerLifecycle (source-level contract)", () => {
 		const gateway = indexOf('safe("stopLobuGateway"');
 		const db = indexOf('safe("closeDbSingleton"');
 		const extra = indexOf("safe(`extraTeardown[");
-		// #1191 wrapped the close in the same safe() step pattern as the rest of
-		// teardown; match the stable step label, not the raw call.
-		const close = indexOf('safe("httpServer.close"');
 
-		expect(worker).toBeLessThan(vite);
+		expect(worker).toBeLessThan(close);
+		expect(close).toBeLessThan(vite);
 		expect(vite).toBeLessThan(reaper);
 		expect(reaper).toBeLessThan(scheduler);
 		expect(scheduler).toBeLessThan(gateway);
 		expect(gateway).toBeLessThan(db);
 		expect(db).toBeLessThan(extra);
-		expect(extra).toBeLessThan(close);
 	});
 
 	it("wraps every shutdown step in a safe() helper (one failing step does not skip the rest)", () => {

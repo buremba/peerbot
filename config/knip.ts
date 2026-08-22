@@ -59,6 +59,9 @@ const config: KnipConfig = {
         "@types/tar",
       ],
     },
+    "packages/device-connectors": {
+      entry: ["src/index.ts", "src/**/*.test.ts"],
+    },
     "packages/client": {
       // Generated openapi-ts client (ignored above) is the only consumer.
       ignoreDependencies: ["@hey-api/client-fetch"],

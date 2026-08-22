@@ -1,0 +1,25 @@
+{
+  "name": "@lobu/device-connectors",
+  "version": "15.8.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc && bun run check-generated",
+    "typecheck": "tsc --noEmit",
+    "generate": "bun src/generate.ts",
+    "check-generated": "bun src/generate.ts --check"
+  },
+  "dependencies": {
+    "@lobu/connector-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "BUSL-1.1"
+}

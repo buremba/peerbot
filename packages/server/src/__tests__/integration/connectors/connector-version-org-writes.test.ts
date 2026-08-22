@@ -161,6 +161,33 @@ describe('connector_versions org-scoped writes', () => {
     expect(marker[0]?.source_code).toBeNull();
   });
 
+  it('atomically shadows a shared artifact for an explicit metadata-only replacement', async () => {
+    const key = 'zz.metadata-replacement';
+    const sql = getTestDb();
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgA,
+      metadata: metadataFor(key, '1.0.0'),
+      versionRecord: { ...EMPTY_RECORD, sourcePath: 'bundled/metadata-replacement.ts' },
+      versionScope: 'shared',
+    });
+
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgA,
+      metadata: metadataFor(key, '1.0.0'),
+      versionRecord: EMPTY_RECORD,
+      versionScope: 'organization',
+      replaceVersionArtifact: true,
+    });
+
+    const rows = await rowsFor(key);
+    expect(rows.map((row) => [row.organization_id, row.source_path])).toEqual([
+      [null, 'bundled/metadata-replacement.ts'],
+      [orgA, null],
+    ]);
+  });
+
   it("keeps each org's bytes on its own row when two orgs collide on (key, version)", async () => {
     const key = 'zz.collide';
     await upsertConnectorDefinitionRecords({

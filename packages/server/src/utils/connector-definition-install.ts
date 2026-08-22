@@ -309,14 +309,14 @@ export async function upsertConnectorDefinitionRecords(params: {
    *   source_code / mcp_url) land ONLY on the caller org's own
    *   (organization_id, connector_key, version) row — never the shared
    *   namespace (#2045: a shared row of custom code is a cross-org
-   *   read/activate surface). Content-empty records (rollback and mcp_url
-   *   upserts pass all-NULL and rely on COALESCE keeping stored code) never
-   *   overwrite anything; they create a marker org row only when NO row
-   *   exists for the pair at all (first mcp_url install) — a rollback target
-   *   always exists, and an empty org row must never shadow a code-bearing
-   *   shared row.
+   *   read/activate surface). Content-empty rollback records preserve the
+   *   retained artifact and create a marker only when no visible row exists.
+   *   A caller explicitly replacing the artifact (mcp_url) instead writes an
+   *   org marker atomically, shadowing but never mutating a shared artifact.
    */
   versionScope: 'shared' | 'organization';
+  /** Replace every version artifact/provenance field, including with NULL. */
+  replaceVersionArtifact?: boolean;
 }): Promise<{ updated: boolean }> {
   const { sql } = params;
   const { metadata } = params;
@@ -454,6 +454,13 @@ export async function upsertConnectorDefinitionRecords(params: {
   // EXTERNAL_RUNTIME_DEPS / the compile pipeline invalidates them
   // (resolveConnectorCode recompiles instead of executing a stale bundle).
   const record = params.versionRecord;
+  // A version row represents exactly one artifact family. Same-family writes
+  // retain the existing patch semantics, but crossing the manifest boundary
+  // replaces every source/provenance field atomically so a manifest hash can
+  // never attest stale compiled bytes (or a compiled artifact retain a stale
+  // device-manifest:// identity).
+  const incomingIsDeviceManifest = record.sourcePath?.startsWith('device-manifest://') === true;
+  const replaceVersionArtifact = incomingIsDeviceManifest || params.replaceVersionArtifact === true;
   if (params.versionScope === 'shared') {
     // Bundled catalog pointer: identical for every org, deduped on the one
     // shared organization_id-IS-NULL row.
@@ -467,21 +474,41 @@ export async function upsertConnectorDefinitionRecords(params: {
         ${record.sourceCode}, ${record.sourcePath}
       )
       ON CONFLICT (connector_key, version) WHERE organization_id IS NULL DO UPDATE
-      SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
-          compiled_code_hash = COALESCE(
-            EXCLUDED.compiled_code_hash,
-            connector_versions.compiled_code_hash
-          ),
+      SET compiled_code = CASE
+            WHEN ${replaceVersionArtifact} THEN EXCLUDED.compiled_code
+            WHEN connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.compiled_code
+            ELSE COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code)
+          END,
+          compiled_code_hash = CASE
+            WHEN ${replaceVersionArtifact}
+              OR connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.compiled_code_hash
+            ELSE COALESCE(EXCLUDED.compiled_code_hash, connector_versions.compiled_code_hash)
+          END,
           -- The fingerprint rides with the artifact, never independently: when a
           -- reinstall REPLACES compiled_code, take the incoming fingerprint even
           -- when it is NULL (a pre-compiled upload replacing a pipeline-compiled
           -- artifact must not inherit the old row's "current" attestation).
           compile_config_hash = CASE
+            WHEN ${replaceVersionArtifact} THEN EXCLUDED.compile_config_hash
+            WHEN connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.compile_config_hash
             WHEN EXCLUDED.compiled_code IS NOT NULL THEN EXCLUDED.compile_config_hash
             ELSE connector_versions.compile_config_hash
           END,
-          source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
-          source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+          source_code = CASE
+            WHEN ${replaceVersionArtifact} THEN EXCLUDED.source_code
+            WHEN connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.source_code
+            ELSE COALESCE(EXCLUDED.source_code, connector_versions.source_code)
+          END,
+          source_path = CASE
+            WHEN ${replaceVersionArtifact}
+              OR connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.source_path
+            ELSE COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+          END
     `;
     return { updated: wasActive };
   }
@@ -489,7 +516,10 @@ export async function upsertConnectorDefinitionRecords(params: {
   // Org-supplied bytes land ONLY on the caller org's own row (#2045: a shared
   // row of custom code is a cross-org read/activate surface).
   const hasContent =
-    record.compiledCode !== null || record.sourceCode !== null || record.sourcePath !== null;
+    replaceVersionArtifact ||
+    record.compiledCode !== null ||
+    record.sourceCode !== null ||
+    record.sourcePath !== null;
   if (hasContent) {
     await sql`
       INSERT INTO connector_versions (
@@ -502,22 +532,42 @@ export async function upsertConnectorDefinitionRecords(params: {
       )
       ON CONFLICT (organization_id, connector_key, version) WHERE organization_id IS NOT NULL
       DO UPDATE
-      SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
-          compiled_code_hash = COALESCE(
-            EXCLUDED.compiled_code_hash,
-            connector_versions.compiled_code_hash
-          ),
+      SET compiled_code = CASE
+            WHEN ${replaceVersionArtifact} THEN EXCLUDED.compiled_code
+            WHEN connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.compiled_code
+            ELSE COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code)
+          END,
+          compiled_code_hash = CASE
+            WHEN ${replaceVersionArtifact}
+              OR connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.compiled_code_hash
+            ELSE COALESCE(EXCLUDED.compiled_code_hash, connector_versions.compiled_code_hash)
+          END,
           compile_config_hash = CASE
+            WHEN ${replaceVersionArtifact} THEN EXCLUDED.compile_config_hash
+            WHEN connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.compile_config_hash
             WHEN EXCLUDED.compiled_code IS NOT NULL THEN EXCLUDED.compile_config_hash
             ELSE connector_versions.compile_config_hash
           END,
-          source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
-          source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+          source_code = CASE
+            WHEN ${replaceVersionArtifact} THEN EXCLUDED.source_code
+            WHEN connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.source_code
+            ELSE COALESCE(EXCLUDED.source_code, connector_versions.source_code)
+          END,
+          source_path = CASE
+            WHEN ${replaceVersionArtifact}
+              OR connector_versions.source_path LIKE 'device-manifest://%'
+              THEN EXCLUDED.source_path
+            ELSE COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+          END
     `;
   } else {
-    // Content-empty record (rollback / mcp_url shapes). A rollback target
-    // always exists (validated by the caller), so this only creates the
-    // marker row a first mcp_url install needs — and never when ANY row
+    // Content-empty preserve record (rollback shape). A rollback target always
+    // exists (validated by the caller), so this only creates the marker row a
+    // first metadata-only install needs — and never when ANY visible row
     // (this org's or shared) already holds the pair, so an empty org row
     // can never shadow a code-bearing row.
     await sql`

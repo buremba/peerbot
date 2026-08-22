@@ -30,6 +30,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | Browser automation hitting a login wall | Browser & connectors |
 | A connector action exists live but not under `packages/connectors` | Browser & connectors |
 | A device manifest edit never reaches `connector_definitions` | Browser & connectors |
+| A Chrome device cannot claim a `whatsapp.local` run it advertises | Browser & connectors |
 | Changed unpacked-extension code is not active | Browser & connectors |
 | A completed browser action opened on the wrong machine | Browser & connectors |
 | `check-drift` failing on a submodule pointer | Submodule & cross-repo |
@@ -129,6 +130,8 @@ PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').c
 **A connector capability can be DB-backed with no file under `packages/connectors`.** Check the active `connector_definitions` row and `operations.listAvailable({ connection_id })` before declaring an action absent. Organization-scoped code in `connector_versions` wins over the shared artifact for the active version. Catalog refresh skips keys with no bundled source, but re-syncs keys that do have bundled source and can reset their active definition to bundled metadata; inspect the active version after deploy. Connector source in `examples/` still requires `lobu apply` to update the organization copy.
 
 **One invalid device manifest preserves the whole previous inventory.** `validateDeviceConnectorManifests` marks the entire poll payload unaccepted when any entry fails validation (including `manifest_hash mismatch`), and `poll.ts` then retains the prior `connector_manifests`. The rejection is only an app-pod warning; a definition with stale `updated_at` is the DB symptom. `manifest_hash` is optional input and is computed over the normalized manifest by the server—when editing checked-in Chrome manifests, keep the JSON and emitted `connector-manifests.js` payload aligned and validate the exact object the extension sends.
+
+**WhatsApp Browser keeps the internal key `whatsapp.local` during the transport cutover.** The Chrome extension may advertise that exact legacy key only with `browser.scripting`; preserving it reuses the existing connection, `messages` feed, and `origin_id` dedupe history. This is transport compatibility only: `messages` remains collected and `messages_live` remains virtual. Issue #3020 will later make one logical messages feed support both materialized and source reads; do not add a hybrid feed kind or rewrite either row during the compatibility rollout. A manifest-backed connector is claimable only by a device advertising the exact winning manifest, not by every device sharing its capability.
 
 **Do not use a process restart as deployment proof for changed unpacked-extension code.** Chrome's unpacked-extension workflow requires an explicit extension reload for manifest, service-worker, and content-script changes. Reload it from `chrome://extensions`, then verify the poll payload/action semantics rather than reasoning from checked-out files.
 

@@ -9,6 +9,7 @@ type InlineExecutionResult =
 type ConnectionRow = {
 	id: number;
 	connector_key: string;
+	connector_version: string;
 	status: string;
 	auth_profile_id: number | null;
 	app_auth_profile_id: number | null;
@@ -17,6 +18,7 @@ type ConnectionRow = {
 	device_worker_id: string | null;
 	device_platform: string | null;
 	connector_runtime: Record<string, unknown> | null;
+	connector_artifact_source_path: string | null;
 	name: string;
 };
 

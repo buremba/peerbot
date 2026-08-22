@@ -1,11 +1,14 @@
 /**
  * Browser-affinity claim rules (PR #1826):
  *
- * When a non-chrome* connection (LinkedIn/X/…) is pinned to a chrome-extension
- * device, that pin means "scrape with this browser", NOT "run the parent sync
- * on the extension". Fleet claims parent sync; the extension must not.
+ * When a connector outside the `chrome` / `chrome.*` native namespace is
+ * pinned to a chrome-extension device, that pin means "scrape with this
+ * browser", NOT "run the parent sync on the extension". Fleet claims parent
+ * sync; the extension must not.
  *
- * chrome* connectors still execute on the extension when pinned.
+ * Native Chrome connectors execute on the extension when pinned. The narrow
+ * legacy-key exception additionally requires the selected run artifact to
+ * be the validated Chrome device manifest; the key alone is not placement.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -82,15 +85,16 @@ async function seedPendingSync(opts: {
   orgId: string;
   connectionId: number;
   connectorKey: string;
+  connectorVersion?: string | null;
 }): Promise<number> {
   const sql = getTestDb();
   const [row] = (await sql`
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key,
-      approval_status, status, created_at
+      connector_version, approval_status, status, created_at
     ) VALUES (
       ${opts.orgId}, 'sync', ${opts.connectionId}, ${opts.connectorKey},
-      'auto', 'pending', current_timestamp
+      ${opts.connectorVersion ?? null}, 'auto', 'pending', current_timestamp
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;
@@ -145,9 +149,12 @@ async function pollExtension(workerId: string) {
   });
 }
 
-async function pollFleet(workerId = 'fleet-affinity-worker') {
+async function pollFleet(
+  workerId = 'fleet-affinity-worker',
+  capabilities: Record<string, boolean> = {}
+) {
   return post('/api/workers/poll', {
-    body: { worker_id: workerId, capabilities: {} },
+    body: { worker_id: workerId, capabilities },
     token: 'test-fleet-token',
     env: { WORKER_API_TOKEN: 'test-fleet-token' },
   });
@@ -259,6 +266,257 @@ describe('browser-affinity poll claim', () => {
       SELECT claimed_by FROM runs WHERE id = ${runId}
     `) as unknown as Array<{ claimed_by: string | null }>;
     expect(row.claimed_by).toBe(workerId);
+  });
+
+  it('treats a chrome-prefix lookalike as delegated affinity, not native execution', async () => {
+    const { userId, orgId } = await seedOrg();
+    const { deviceWorkerId, workerId } = await seedExtWorker(userId, orgId);
+    const connId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'chromecast.demo',
+      deviceWorkerId,
+    });
+    const runId = await seedPendingSync({
+      orgId,
+      connectionId: connId,
+      connectorKey: 'chromecast.demo',
+    });
+
+    const extensionResponse = await pollExtension(workerId);
+    expect(extensionResponse.status).toBe(200);
+    expect(((await extensionResponse.json()) as { run_id?: number }).run_id).toBeUndefined();
+
+    const fleetResponse = await pollFleet('fleet-chrome-prefix-affinity');
+    expect(fleetResponse.status).toBe(200);
+    const fleetBody = (await fleetResponse.json()) as {
+      run_id?: number;
+      skipped_run_id?: number;
+    };
+    expect(Number(fleetBody.run_id ?? fleetBody.skipped_run_id)).toBe(runId);
+
+    const sql = getTestDb();
+    const [row] = (await sql`
+      SELECT claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ claimed_by: string | null }>;
+    expect(row.claimed_by).toBe('fleet-chrome-prefix-affinity');
+  });
+
+  it('keeps a compiled whatsapp.local artifact with stale manifest provenance on the fleet lane', async () => {
+    const { userId, orgId } = await seedOrg();
+    const { deviceWorkerId, workerId } = await seedExtWorker(userId, orgId);
+    const sql = getTestDb();
+    const connectorVersion = `compiled-${generateSecureToken(4)}`;
+    await createTestConnectorDefinition({
+      key: 'whatsapp.local',
+      name: 'WhatsApp compiled override',
+      version: connectorVersion,
+      organization_id: orgId,
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET required_capability = 'browser.scripting',
+          runtime = ${sql.json({ platforms: ['chrome-extension'] })}
+      WHERE organization_id = ${orgId}
+        AND key = 'whatsapp.local'
+        AND status = 'active'
+    `;
+    await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code,
+        compiled_code_hash, compile_config_hash, source_path, created_at
+      ) VALUES (
+        ${orgId}, 'whatsapp.local', ${connectorVersion},
+        'module.exports = { sync: async () => ({ items: [] }) }',
+        'org-compiled-whatsapp-hash', ${COMPILE_CONFIG_HASH},
+        ${`device-manifest://chrome-extension/whatsapp.local@${connectorVersion}`}, NOW()
+      )
+    `;
+    const connectionId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'whatsapp.local',
+      deviceWorkerId,
+    });
+    const runId = await seedPendingSync({
+      orgId,
+      connectionId,
+      connectorKey: 'whatsapp.local',
+      connectorVersion,
+    });
+
+    const extensionResponse = await pollExtension(workerId);
+    expect(extensionResponse.status).toBe(200);
+    const extensionBody = (await extensionResponse.json()) as {
+      run_id?: number;
+      skipped_run_id?: number;
+    };
+    expect(extensionBody.run_id).toBeUndefined();
+    expect(extensionBody.skipped_run_id).toBeUndefined();
+
+    const fleetResponse = await pollFleet('fleet-whatsapp-compiled-override');
+    expect(fleetResponse.status).toBe(200);
+    const fleetBody = (await fleetResponse.json()) as {
+      run_id?: number;
+      skipped_run_id?: number;
+    };
+    expect(Number(fleetBody.run_id ?? fleetBody.skipped_run_id)).toBe(runId);
+    const [run] = (await sql`
+      SELECT claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ claimed_by: string | null }>;
+    expect(run.claimed_by).toBe('fleet-whatsapp-compiled-override');
+
+    await sql`
+      UPDATE runs SET status = 'completed', completed_at = NOW() WHERE id = ${runId}
+    `;
+    await sql`
+      UPDATE connections SET device_worker_id = NULL WHERE id = ${connectionId}
+    `;
+    const unpinnedRunId = await seedPendingSync({
+      orgId,
+      connectionId,
+      connectorKey: 'whatsapp.local',
+      connectorVersion,
+    });
+    const unpinnedExtensionResponse = await pollExtension(workerId);
+    expect(unpinnedExtensionResponse.status).toBe(200);
+    expect(
+      ((await unpinnedExtensionResponse.json()) as { run_id?: number }).run_id
+    ).toBeUndefined();
+    const unpinnedFleetResponse = await pollFleet('fleet-whatsapp-unpinned-compiled');
+    expect(unpinnedFleetResponse.status).toBe(200);
+    const unpinnedFleetBody = (await unpinnedFleetResponse.json()) as {
+      run_id?: number;
+      skipped_run_id?: number;
+    };
+    expect(Number(unpinnedFleetBody.run_id ?? unpinnedFleetBody.skipped_run_id)).toBe(
+      unpinnedRunId
+    );
+  });
+
+  it('does not let Chrome capability-claim a hashless manifest artifact without connector_manifests', async () => {
+    const { userId, orgId } = await seedOrg();
+    const { workerId } = await seedExtWorker(userId, orgId);
+    const sql = getTestDb();
+    const connectorKey = `test.hashless-chrome-${generateSecureToken(4)}`;
+    const connectorVersion = '1.0.0';
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: 'Hashless Chrome manifest',
+      version: connectorVersion,
+      organization_id: orgId,
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET required_capability = 'browser.scripting',
+          runtime = ${sql.json({ platforms: ['chrome-extension'] })}
+      WHERE organization_id = ${orgId}
+        AND key = ${connectorKey}
+        AND status = 'active'
+    `;
+    await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code, compile_config_hash, created_at
+      ) VALUES (
+        ${orgId}, ${connectorKey}, ${connectorVersion},
+        'module.exports = { sync: async () => ({ items: [] }) }',
+        ${COMPILE_CONFIG_HASH}, NOW()
+      )
+      ON CONFLICT DO NOTHING
+    `;
+    await sql`
+      UPDATE connector_versions
+      SET compiled_code = NULL,
+          compiled_code_hash = NULL,
+          compile_config_hash = NULL,
+          source_code = NULL,
+          source_path = ${`device-manifest://chrome-extension/${connectorKey}@${connectorVersion}`}
+      WHERE connector_key = ${connectorKey}
+        AND version = ${connectorVersion}
+        AND organization_id = ${orgId}
+    `;
+    const connectionId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey,
+      deviceWorkerId: null,
+    });
+    const runId = await seedPendingSync({
+      orgId,
+      connectionId,
+      connectorKey,
+      connectorVersion,
+    });
+
+    // This poll intentionally omits connector_manifests. A legacy capability
+    // fallback must never authorize Chrome, even when the selected artifact
+    // is hashless and declares the Chrome runtime.
+    const response = await pollExtension(workerId);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };
+    expect(body.run_id).toBeUndefined();
+    expect(body.skipped_run_id).toBeUndefined();
+
+    const [run] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(run).toEqual({ status: 'pending', claimed_by: null });
+  });
+
+  it('does not let the fleet claim an artifact-less whatsapp.local run', async () => {
+    const { userId, orgId } = await seedOrg();
+    const sql = getTestDb();
+    const connectorVersion = `artifactless-${generateSecureToken(4)}`;
+    await createTestConnectorDefinition({
+      key: 'whatsapp.local',
+      name: 'Artifact-less WhatsApp',
+      version: connectorVersion,
+      organization_id: orgId,
+    });
+    await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code, compile_config_hash, created_at
+      ) VALUES (
+        ${orgId}, 'whatsapp.local', ${connectorVersion},
+        'module.exports = { sync: async () => ({ items: [] }) }',
+        ${COMPILE_CONFIG_HASH}, NOW()
+      )
+      ON CONFLICT DO NOTHING
+    `;
+    await sql`
+      UPDATE connector_versions
+      SET compiled_code = NULL,
+          compiled_code_hash = NULL,
+          compile_config_hash = NULL,
+          source_code = NULL,
+          source_path = NULL
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = ${connectorVersion}
+    `;
+    const connectionId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'whatsapp.local',
+      deviceWorkerId: null,
+    });
+    const runId = await seedPendingSync({
+      orgId,
+      connectionId,
+      connectorKey: 'whatsapp.local',
+      connectorVersion,
+    });
+
+    const response = await pollFleet('fleet-whatsapp-artifactless');
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };
+    expect(body.run_id).toBeUndefined();
+    expect(body.skipped_run_id).toBeUndefined();
+
+    const [run] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(run).toEqual({ status: 'pending', claimed_by: null });
   });
 
   it('fleet does NOT claim a macos-pinned non-browser-affinity sync (no regression)', async () => {

@@ -23,7 +23,7 @@ import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
-import { incrementCounter } from '../gateway/metrics/prometheus';
+import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
 import { claimPendingAutomationRun } from '../runs/queue-service';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
@@ -42,10 +42,15 @@ import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-c
 import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execution-config';
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
+import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
-import { storedManifestMap, validateDeviceConnectorManifests } from './device-manifests';
+import {
+  storedManifestMap,
+  validateDeviceConnectorManifests,
+  type ManifestClaimAuthorization,
+} from './device-manifests';
 import type { RunOutcome } from '../runs/run-outcome';
 import {
   type ConnectorClaimContext,
@@ -339,6 +344,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const registrationOrgId = effectiveTokenOrgId;
 
   let deviceWorkerId: string | null = null;
+  let manifestClaimAuthorizations: ManifestClaimAuthorization[] = [];
   if (registrationUserId) {
     try {
       const incomingCaps = authorizedCapabilities;
@@ -419,7 +425,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       // are present (cheap fast path, also heals partially-wired state), pause
       // the ones that have gone away. The just-upserted row above is already
       // visible to this query, so the polling device's capabilities count.
-      await reconcileDeviceCapabilities(registrationUserId);
+      const reconciliationStartedAt = performance.now();
+      try {
+        manifestClaimAuthorizations = await reconcileDeviceCapabilities(
+          registrationUserId,
+          deviceWorkerId
+        );
+      } finally {
+        setGauge(
+          'lobu_device_manifest_reconciliation_duration_ms',
+          performance.now() - reconciliationStartedAt
+        );
+      }
     } catch (err) {
       logger.error(
         { worker_id, err: errorMessage(err) },
@@ -498,8 +515,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const connectorClaimContext: ConnectorClaimContext = {
     isUserScopedWorker,
     deviceWorkerId,
+    workerPlatform: effectivePlatform,
     authorizedCapabilities,
     capabilityMatchSet,
+    manifestClaimAuthorizations,
+    allowLegacyManifestCapabilityClaims:
+      isUserScopedWorker && !connectorManifestsProvided && effectivePlatform !== 'chrome-extension',
     orgScopeIds,
     baseOrgScopeIds,
     workerHardensDbEgress,
@@ -567,7 +588,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         -- the extension". See dispatch-chrome-action preferredBrowserWorkerForConnection.
         LEFT JOIN device_workers pin_dw ON pin_dw.id = con.device_worker_id
         LEFT JOIN LATERAL (
-          SELECT cd.required_capability
+          SELECT
+            CASE
+              WHEN r.connector_version IS NULL OR cd.version = r.connector_version
+                THEN cd.required_capability
+              ELSE NULL
+            END AS run_required_capability,
+            CASE
+              WHEN r.connector_version IS NULL OR cd.version = r.connector_version
+                THEN cd.runtime
+              ELSE NULL
+            END AS run_runtime
           FROM connector_definitions cd
           WHERE cd.key = r.connector_key
             AND cd.organization_id = r.organization_id
@@ -575,6 +606,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           ORDER BY cd.updated_at DESC, cd.id DESC
           LIMIT 1
         ) cd ON true
+        LEFT JOIN LATERAL (
+          ${selectedConnectorVersionArtifactSql(tx, {
+            connectorKey: tx`r.connector_key`,
+            version: tx`r.connector_version`,
+            organizationId: tx`r.organization_id`,
+          })}
+        ) run_cv ON true
         WHERE r.status = 'pending'
           AND (r.activation_kind IS NULL OR r.activated_at IS NOT NULL)
           AND (
@@ -588,14 +626,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             (
               r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
               AND ${connectorClaimLaneSql(tx, connectorClaimContext, {
-                runType: tx`r.run_type`,
                 connectorKey: tx`r.connector_key`,
+                connectorVersion: tx`r.connector_version`,
                 organizationId: tx`r.organization_id`,
                 activationKind: tx`r.activation_kind`,
                 activatedAt: tx`r.activated_at`,
                 connectionDeviceWorkerId: tx`con.device_worker_id`,
                 pinPlatform: tx`pin_dw.platform`,
-                requiredCapability: tx`cd.required_capability`,
+                runRequiredCapability: tx`cd.run_required_capability`,
+                runManifestBacked: tx`run_cv.manifest_backed`,
+                runManifestHash: tx`run_cv.artifact_hash`,
+                runArtifactSourcePath: tx`run_cv.artifact_source_path`,
+                runArtifactCompiledCode: tx`run_cv.artifact_compiled_code`,
+                runRuntime: tx`cd.run_runtime`,
               })}
             )
             -- (2) Automation lane: an automation run with approved_input.device_worker_id
@@ -738,11 +781,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.app_auth_profile_id,
         conn.config AS connection_config,
         conn.device_worker_id AS connection_device_worker_id,
-        cv.id AS connector_version_row_id,
-        cv.compiled_code,
-        cv.compile_config_hash,
-        cd.runtime AS connector_runtime,
-        cd.required_capability AS connector_required_capability,
+        cv.artifact_row_id AS connector_version_row_id,
+        cv.artifact_compiled_code AS compiled_code,
+        cv.artifact_compile_config_hash AS compile_config_hash,
+        COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
+        CASE WHEN cd.version = r.connector_version THEN cd.runtime ELSE NULL END
+          AS connector_runtime,
+        CASE WHEN cd.version = r.connector_version THEN cd.required_capability ELSE NULL END
+          AS connector_required_capability,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS automation_name,
         w.agent_id AS automation_agent_id,
@@ -757,13 +803,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
       LEFT JOIN LATERAL (
-        SELECT id, compiled_code, compile_config_hash
-        FROM connector_versions
-        WHERE connector_key = r.connector_key
-          AND version = r.connector_version
-          AND (organization_id = r.organization_id OR organization_id IS NULL)
-        ORDER BY organization_id NULLS LAST
-        LIMIT 1
+        ${selectedConnectorVersionArtifactSql(tx, {
+          connectorKey: tx`r.connector_key`,
+          version: tx`r.connector_version`,
+          organizationId: tx`r.organization_id`,
+        })}
       ) cv ON TRUE
       LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
         AND cd.organization_id = r.organization_id
@@ -881,6 +925,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connector_version_row_id: number | null;
     compiled_code: string | null;
     compile_config_hash: string | null;
+    connector_manifest_backed: boolean;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
     run_created_at: string | Date | null;
@@ -1156,8 +1201,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const deviceWillExecuteNativeConnector =
     isUserScopedWorker &&
     !hasStoredCompiledCode &&
-    row.connector_required_capability != null &&
-    authorizedCapabilities.includes(row.connector_required_capability);
+    (row.connector_manifest_backed ||
+      (row.connector_required_capability != null &&
+        authorizedCapabilities.includes(row.connector_required_capability)));
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
@@ -1241,7 +1287,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
 
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
   // The worker provisions these on PATH via nix-shell before executing.
-  const nixPackages = (row.connector_runtime?.nix?.packages ?? []).filter(
+  const nixPackages = (
+    row.connector_manifest_backed ? [] : (row.connector_runtime?.nix?.packages ?? [])
+  ).filter(
     (p): p is string => typeof p === 'string'
   );
   const selectedActionInput = row.approved_input ?? row.action_input ?? undefined;

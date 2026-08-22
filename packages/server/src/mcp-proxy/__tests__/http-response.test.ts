@@ -6,6 +6,7 @@ import {
 	getMcpAbortReason,
 	inspectMcpJsonRpcBody,
 	logMcpTerminalOutcome,
+	MCP_DIAGNOSTIC_PREVIEW_LIMIT,
 	MCP_REQUEST_BODY_LIMIT,
 	MCP_SSE_FRAME_LIMIT,
 	McpTransportError,
@@ -58,6 +59,44 @@ test("does not parse an oversized or malformed JSON response", async () => {
 
 	const malformed = new Response("{\"jsonrpc\":", { headers: { "content-type": "application/json" } });
 	await expect(parseJsonRpcResponse(malformed)).rejects.toMatchObject({ kind: "malformed_json" });
+});
+
+test("caps diagnostic allocations for oversized and interrupted bodies", async () => {
+	const chunk = new TextEncoder().encode("x".repeat(MCP_DIAGNOSTIC_PREVIEW_LIMIT));
+	let pulls = 0;
+	const interrupted = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			pulls++;
+			if (pulls <= 2) controller.enqueue(chunk);
+			else controller.error(new Error("upstream closed"));
+		},
+	});
+	const oversized = streamFrom([chunk, chunk]);
+	const nativeUint8Array = globalThis.Uint8Array;
+	const allocations: number[] = [];
+	globalThis.Uint8Array = new Proxy(nativeUint8Array, {
+		construct(target, args, newTarget) {
+			if (typeof args[0] === "number") allocations.push(args[0]);
+			return Reflect.construct(target, args, newTarget);
+		},
+	}) as Uint8ArrayConstructor;
+
+	try {
+		await expect(
+			readBoundedBody(interrupted, MCP_DIAGNOSTIC_PREVIEW_LIMIT * 3, {
+				kind: "response",
+			}),
+		).rejects.toMatchObject({ kind: "upstream_abort" });
+		await expect(
+			readBoundedBody(oversized, MCP_DIAGNOSTIC_PREVIEW_LIMIT * 2 - 1, {
+				kind: "response",
+			}),
+		).rejects.toMatchObject({ kind: "oversized_response" });
+	} finally {
+		globalThis.Uint8Array = nativeUint8Array;
+	}
+
+	expect(Math.max(...allocations)).toBe(MCP_DIAGNOSTIC_PREVIEW_LIMIT);
 });
 
 test("bounds SSE frames and cancels the upstream stream on downstream disconnect", async () => {

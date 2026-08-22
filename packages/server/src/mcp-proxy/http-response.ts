@@ -169,7 +169,13 @@ export async function readBoundedBody(
 				throw new McpTransportError(
 					options.kind === "request" ? "oversized_request" : "oversized_response",
 					`MCP ${options.kind ?? "response"} body exceeds ${limit} bytes`,
-					{ bytes: total + value.byteLength, limit, preview: previewText(concat([...chunks, value], limit)) },
+					{
+						bytes: total + value.byteLength,
+						limit,
+						preview: previewText(
+							concat([...chunks, value], MCP_DIAGNOSTIC_PREVIEW_LIMIT),
+						),
+					},
 				);
 			}
 			chunks.push(value);
@@ -178,7 +184,7 @@ export async function readBoundedBody(
 	} catch (error) {
 		const progress = {
 			bytes: total,
-			preview: previewText(concat(chunks, total)),
+			preview: previewText(concat(chunks, MCP_DIAGNOSTIC_PREVIEW_LIMIT)),
 		};
 		if (options.signal?.aborted) {
 			const normalized = abortError(options.signal, error);

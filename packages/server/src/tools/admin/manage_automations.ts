@@ -355,11 +355,11 @@ function automationWriteAction(
  * ignore it). The guard requires all of them to be the actor itself. Returns `[]`
  * when there's nothing to check.
  *
- *  - `create`: the supplied `args.agent_id` (handleCreate requires it).
+ *  - `create`: the supplied `args.agent_id`, including an explicit null.
  *  - `create_from_version`: IGNORES args.agent_id — the clone inherits the SOURCE
  *    version's automation.agent_id.
- *  - `update`: DOES apply args.agent_id → the target's new owner is
- *    `args.agent_id ?? current owner`.
+ *  - `update`: an explicit args.agent_id (including null) becomes the new owner;
+ *    omission preserves the current owner.
  *  - `create_version` / `set_reaction_script`: IGNORE args.agent_id and write
  *    GROUP-WIDE (WHERE automation_group_id = …) → EVERY owner in the target's group is
  *    affected; a mixed-owner group means A editing its assignment also rewrites B's
@@ -374,7 +374,10 @@ async function resolveEffectiveAutomationOwners(
   const sql = getDb();
   switch (args.action) {
     case 'create':
-      return args.agent_id != null ? [args.agent_id] : [];
+      // Explicitly preserve the ownerless state. Humans bypass this guard, but
+      // a non-human principal must not be able to shed its policy ancestry by
+      // creating an Automation with agent_id: null.
+      return [args.agent_id ?? null];
     case 'create_from_version': {
       if (!args.version_id) return [];
       const rows = await sql<{ agent_id: string | null }>`
@@ -386,7 +389,10 @@ async function resolveEffectiveAutomationOwners(
       return rows.length > 0 ? [rows[0].agent_id ?? null] : [];
     }
     case 'update': {
-      if (args.agent_id != null) return [args.agent_id];
+      // `undefined` means ownership is unchanged; `null` is an explicit clear
+      // and must be checked as the effective owner rather than treated as
+      // omission. Otherwise an agent could drop its own policy ancestor.
+      if (args.agent_id !== undefined) return [args.agent_id];
       if (args.automation_id == null) return [];
       const rows = await sql<{ agent_id: string | null }>`
         SELECT agent_id FROM automations

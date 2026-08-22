@@ -94,6 +94,55 @@ describe("manage_automations owner-escalation guard", () => {
 		);
 	});
 
+	it("blocks agent A from creating an agentless Automation", async () => {
+		await expect(
+			executeTool(
+				"manage_automations",
+				{
+					action: "create",
+					slug: "agentless-escalation-attempt",
+					name: "agentless-escalation-attempt",
+					prompt: "Track things.",
+					agent_id: null,
+				},
+				TEST_ENV,
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
+			)
+		).rejects.toThrow(
+			/cannot install an Automation owned by another agent/i
+		);
+	});
+
+	it("blocks agent A from explicitly clearing its own Automation owner", async () => {
+		const owned = (await workspace.owner.automations.create({
+			slug: "agent-a-owned-before-clear",
+			name: "agent-a-owned-before-clear",
+			prompt: "Track things.",
+			agent_id: agentA,
+		})) as { automation_id: string };
+
+		await expect(
+			executeTool(
+				"manage_automations",
+				{
+					action: "update",
+					automation_id: owned.automation_id,
+					agent_id: null,
+				},
+				TEST_ENV,
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
+			)
+		).rejects.toThrow(
+			/cannot install an Automation owned by another agent/i
+		);
+
+		const [row] = await getTestDb()<{ agent_id: string | null }>`
+			SELECT agent_id FROM automations
+			WHERE id = ${Number(owned.automation_id)}
+		`;
+		expect(row.agent_id).toBe(agentA);
+	});
+
 	it("a HUMAN may assign an automation to any agent (ungoverned)", async () => {
 		const created = (await workspace.owner.automations.create({
 			slug: "human-assigns-b",

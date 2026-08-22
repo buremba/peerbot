@@ -21,7 +21,6 @@ import type LinkedInConnector from "./linkedin.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 import type NetWorthReaction from "./net-worth.reaction.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
-import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
 import type SpotifyConnector from "./spotify.connector.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
@@ -1166,15 +1165,13 @@ const voiceProfile = defineEntityType({
   },
 });
 
-// Deprecated compatibility declaration. The radar now writes threaded events
-// with event persistence, but prune must retain this type while historical
-// social-signal entity rows still exist. Remove it only through an explicit
-// data migration; it is not part of the active output path.
+// Historical social-signal entity rows still exist. Prune must retain their
+// type until an explicit data migration removes them.
 const socialSignal = defineEntityType({
   key: "social-signal",
   name: "Social Signal",
   description:
-    "Deprecated historical entity rows from the former Social Interest Radar output path.",
+    "Historical entity rows from the former Social Interest Radar output path.",
   metadata: { icon: "radar" },
   properties: {
     platform: {
@@ -1214,73 +1211,6 @@ const socialSignal = defineEntityType({
 });
 
 // ── Automations (must be declared under prune or apply deletes them) ─
-
-const voiceProfileSynthesis = defineAutomation({
-  agent: personalAgent,
-  slug: "voice-profile-synth-v2",
-  name: "Voice profile synthesis",
-  tags: ["voice", "identity", "social"],
-  triggers: [every("40 6 * * 1", { skip_if_unchanged: false })],
-  minCooldownSeconds: 3600,
-  agentKind: "opencode",
-  deviceWorkerId: "e7806c72-9485-4a8c-a619-7e6bdcb14eaf",
-  model: "opencode-go/deepseek-v4-flash",
-  outputs: {
-    profiles: {
-      entity: voiceProfile,
-      key: ["channel", "mode"],
-    },
-  },
-  sources: {
-    authored_recent:
-      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'bu7emba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message') OR (connector_key = 'hackernews' AND origin_type = 'comment' AND lower(coalesce(author_name,'')) = 'buremba')) ORDER BY occurred_at DESC LIMIT 200",
-    engaged_recent:
-      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 300) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 20 AND occurred_at > now() - interval '21 days' AND ((connector_key IN ('x','twitter.takeout') AND origin_type IN ('liked_tweet','bookmark')) OR (connector_key = 'instagram.takeout' AND origin_type IN ('like','saved','comment'))) ORDER BY occurred_at DESC LIMIT 200",
-    existing_profiles: context(
-      "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type = 'voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20"
-    ),
-  },
-  prompt:
-    'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
-  reactionsGuidance:
-    "ALWAYS re-emit every existing_profiles row (same channel/mode). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
-});
-
-const socialInterestRadar = defineAutomation({
-  agent: personalAgent,
-  slug: "social-interest-radar-v2",
-  name: "Social interest radar",
-  tags: ["social", "x", "linkedin", "notifications"],
-  triggers: [every("25 * * * *", { skip_if_unchanged: false })],
-  minCooldownSeconds: 1800,
-  agentKind: "opencode",
-  deviceWorkerId: "e7806c72-9485-4a8c-a619-7e6bdcb14eaf",
-  model: "opencode-go/deepseek-v4-flash",
-  sources: {
-    recent_social:
-      "SELECT id, origin_id, connection_id, occurred_at, title, author_name, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin','hackernews') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post') OR (connector_key='hackernews' AND origin_type IN ('story','ask_hn','show_hn'))) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
-    already_emitted: context(
-      "SELECT id, origin_parent_id AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'automation_output' = 'signals' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400"
-    ),
-    voice_profiles: context(
-      "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type='voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20"
-    ),
-    known_people: context(
-      "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40"
-    ),
-  },
-  outputs: {
-    signals: { event: "observation" },
-    drafts: { event: "draft_reply" },
-  },
-  prompt:
-    'Rank at most 8 new, high-signal X, LinkedIn, or Hacker News posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `author` to the post author\'s display name (never "unknown"), `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put only `{ platform, why, priority, source_event_id, source_connection_id }` in metadata, copying the source id and connection_id exactly. `platform` is one of "x", "linkedin", or "hackernews". Never restate the author, the source origin_id, the post excerpt, or a kind in metadata: `author`, `parent_event_id`, and `content` already carry them on the event itself, and the platform stamps the automation and output names. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy author, source_url, and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ platform, why, priority, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
-  reactionsGuidance:
-    "Declared outputs own event persistence and source-level deduplication. Only draft-ready notifications are delivered: the reaction schedules at most one saved draft for the first signed-in Chrome device that visits the exact post, and a signal-only run is silent. It never publishes.",
-  reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
-    "./social-interest-radar.reaction.ts"
-  ),
-});
 
 const midasNetWorth = defineAutomation({
   agent: personalAgent,
@@ -1430,8 +1360,6 @@ export default defineConfig({
   automations: [
     hourlyTaskCollaborator,
     duplicateEntityResolution,
-    voiceProfileSynthesis,
-    socialInterestRadar,
     midasNetWorth,
   ],
   authProfiles: [gmailAccountAuth, gmailAppAuth],

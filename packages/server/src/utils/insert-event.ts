@@ -461,14 +461,43 @@ async function upsertEmbedding(
   // stamped one.
   if (!embeddingModel) return;
   const vectorLiteral = `[${embedding.join(',')}]`;
-  // Replace this (event, model)'s chunk set with a single chunk-0 row:
-  // delete-then-insert scoped to the model so old/new models can coexist
-  // during a zero-downtime swap (PK is event_id + embedding_model + chunk_index).
-  await sql`DELETE FROM event_embeddings WHERE event_id = ${eventId} AND embedding_model = ${embeddingModel}`;
-  await sql`
-    INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
-    VALUES (${eventId}, 0, ${vectorLiteral}::vector, ${embeddingModel})
-  `;
+  const replaceIfLive = async (activeSql: DbClient): Promise<void> => {
+    // Serialize every runtime embedding writer with the supersede UPDATE. A
+    // refresh of semantically unchanged content can otherwise block behind the
+    // predecessor deletion, then recreate that dead row after the supersede
+    // commits. This path can later update volatile event state, so take the
+    // stronger lock before touching event_embeddings; upgrading FOR SHARE after
+    // a completion writer takes its own SHARE lock creates a lock cycle. Keep
+    // the lock order events -> event_embeddings everywhere.
+    const liveEvent = await activeSql`
+      SELECT id
+      FROM events
+      WHERE id = ${eventId}
+        AND superseded_by IS NULL
+      FOR NO KEY UPDATE
+    `;
+    // Replace this (event, model)'s chunk set with a single chunk-0 row, scoped
+    // to the model so old/new models can coexist during a zero-downtime swap
+    // (PK is event_id + embedding_model + chunk_index). Delete first even when
+    // the event is already dead, so this path also heals a stale row left by an
+    // older writer; the liveness lock keeps a writer that saw the event live
+    // from racing a superseder past the INSERT below.
+    await activeSql`DELETE FROM event_embeddings WHERE event_id = ${eventId} AND embedding_model = ${embeddingModel}`;
+    if (liveEvent.length === 0) return;
+    await activeSql`
+      INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
+      VALUES (${eventId}, 0, ${vectorLiteral}::vector, ${embeddingModel})
+    `;
+  };
+
+  // Existing insertEvent supersede/dedup callers already pass a transaction
+  // handle. Plain inserts use the pool, so open a short transaction here to
+  // keep the liveness lock through delete + insert.
+  if (typeof sql.savepoint === 'function') {
+    await replaceIfLive(sql);
+  } else {
+    await sql.begin(async (tx) => replaceIfLive(tx));
+  }
 }
 
 type EventLineage = {
@@ -905,6 +934,14 @@ export async function insertEvent(
         WHERE id = ${supersedesEventId}
           AND superseded_by IS NULL
       `;
+      // Vector readers exclude superseded events, but the unfiltered ivfflat
+      // index still carries their vectors. That is a recall loss, not only
+      // wasted storage: `ivfflat.probes` is 1 with `iterative_scan` off, so a
+      // probe list spent on rows the live-row join then discards simply yields
+      // fewer live candidates. Reclaim every model and chunk in the same
+      // transaction as the supersede stamp; event_embeddings is derived data,
+      // not the append-only events ledger.
+      await sql`DELETE FROM event_embeddings WHERE event_id = ${supersedesEventId}`;
     }
 
     await upsertEmbedding(inserted.id, params.embedding, params.embeddingModel, sql);

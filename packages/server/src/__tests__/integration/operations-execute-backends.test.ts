@@ -443,10 +443,19 @@ describe("operations.execute backend lifecycle", () => {
 		expect(replay.run_id).toBe(result.run_id);
 		const sql = getTestDb();
 		const [run] = await sql`
-			SELECT automation_id, parent_run_id FROM runs WHERE id = ${result.run_id}
+			SELECT automation_id, parent_run_id, run_metadata
+			FROM runs WHERE id = ${result.run_id}
 		`;
 		expect(Number(run.automation_id)).toBe(automationId);
 		expect(Number(run.parent_run_id)).toBe(sourceRunId);
+		expect(run.run_metadata).toEqual({
+			browser_context: {
+				id: `automation:${sourceRunId}`,
+				title: `Owletto · Automation ${automationId} · Run ${sourceRunId}`,
+				flow_id: String(sourceRunId),
+				kind: "automation",
+			},
+		});
 		const reactions = await sql`
 			SELECT run_id FROM automation_reactions
 			WHERE automation_id = ${automationId}

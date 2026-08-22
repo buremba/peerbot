@@ -9,8 +9,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { generateSecureToken } from '../../auth/oauth/utils';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
+import { createTestConnectorDefinition } from '../setup/test-fixtures';
 import { post } from '../setup/test-helpers';
 
 const DEBUGGER_CAPS = ['browser.tabs', 'browser.scripting', 'browser.debugger'];
@@ -99,16 +101,25 @@ async function seedPendingAction(opts: {
   orgId: string;
   connectionId: number;
   connectorKey: string;
+  connectorVersion?: string | null;
   expiresAtAgoSeconds?: number | null;
+  actionInput?: Record<string, unknown>;
+  approvedInput?: Record<string, unknown> | null;
+  runMetadata?: Record<string, unknown> | null;
 }): Promise<number> {
   const sql = getTestDb();
   const [row] = (await sql`
     INSERT INTO runs (
-      organization_id, run_type, connection_id, connector_key,
-      action_key, action_input, approval_status, status, created_at, expires_at
+      organization_id, run_type, connection_id, connector_key, connector_version,
+      action_key, action_input, approved_input, run_metadata,
+      approval_status, status, created_at, expires_at
     ) VALUES (
       ${opts.orgId}, 'action', ${opts.connectionId}, ${opts.connectorKey},
-      'open_tab', ${sql.json({})}, 'auto', 'pending', current_timestamp,
+      ${opts.connectorVersion ?? null},
+      'open_tab', ${sql.json(opts.actionInput ?? {})},
+      ${opts.approvedInput == null ? null : sql.json(opts.approvedInput)},
+      ${opts.runMetadata == null ? null : sql.json(opts.runMetadata)},
+      'auto', 'pending', current_timestamp,
       ${opts.expiresAtAgoSeconds == null
         ? null
         : sql`current_timestamp - make_interval(secs => ${opts.expiresAtAgoSeconds})`}
@@ -351,5 +362,79 @@ describe('browser-affinity poll claim', () => {
       SELECT status FROM runs WHERE id = ${runId}
     `) as unknown as Array<{ status: string }>;
     expect(row.status).not.toBe('pending');
+  });
+
+  it('injects trusted Chrome grouping after selecting approved input', async () => {
+    const { userId, orgId } = await seedOrg();
+    await createTestConnectorDefinition({
+      key: 'chrome',
+      name: 'Chrome',
+      organization_id: orgId,
+    });
+    const sql = getTestDb();
+    await sql`
+      UPDATE connector_versions
+      SET compiled_code = 'export class ConnectorRuntime {}',
+          compile_config_hash = ${COMPILE_CONFIG_HASH}
+      WHERE connector_key = 'chrome'
+    `;
+    const { deviceWorkerId, workerId } = await seedExtWorker(userId, orgId);
+    const connId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'chrome',
+      deviceWorkerId,
+    });
+    const runId = await seedPendingAction({
+      orgId,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      connectorVersion: '1.0.0',
+      actionInput: {
+        url: 'https://forged.example/input',
+        browser_context_id: 'forged-context-input',
+        browser_context_title: 'forged-title-input',
+        browser_flow_id: 'forged-flow-input',
+        holder_run_id: 111,
+        parent_run_id: 222,
+      },
+      approvedInput: {
+        url: 'https://approved.example/path',
+        normal: 'preserved',
+        browser_context_id: 'forged-context-approved',
+        browser_context_title: 'forged-title-approved',
+        browser_flow_id: 'forged-flow-approved',
+        holder_run_id: 333,
+        parent_run_id: 444,
+      },
+      runMetadata: {
+        unrelated: { keep: true },
+        browser_context: {
+          id: 'conversation:abc123def456',
+          title: 'Owletto · Conversation abc123def456',
+          flow_id: 'conversation:abc123def456',
+          kind: 'conversation',
+        },
+      },
+      expiresAtAgoSeconds: -60,
+    });
+
+    const res = await pollExtension(workerId);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      run_id?: number;
+      action_input?: Record<string, unknown>;
+      run_metadata?: unknown;
+    };
+    expect(body.run_id).toBe(runId);
+    expect(body.action_input).toEqual({
+      url: 'https://approved.example/path',
+      normal: 'preserved',
+      browser_context_id: 'conversation:abc123def456',
+      browser_context_title: 'Owletto · Conversation abc123def456',
+      browser_flow_id: 'conversation:abc123def456',
+      holder_run_id: 'conversation:abc123def456',
+    });
+    expect(body).not.toHaveProperty('run_metadata');
   });
 });

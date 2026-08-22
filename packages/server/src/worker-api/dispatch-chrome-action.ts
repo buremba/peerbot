@@ -33,6 +33,11 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { createConnectorOperationRun } from '../runs/queue-service';
 import { normalizePageActivationUrl } from '../runs/page-activation';
+import {
+  browserActionContextFromMetadata,
+  browserContextWithFlow,
+  runScopedBrowserActionContext,
+} from './browser-action-context';
 
 /** Live unique index: one chrome connection per (org, device_worker) pin. */
 const CHROME_DEVICE_PIN_UNIQUE = 'idx_connections_org_connector_device_live';
@@ -636,11 +641,12 @@ export async function dispatchChromeActionToExtension(params: {
   let activatedDeviceWorkerId: string | null = null;
   let activationTabId: number | null = null;
   let activationTargetUrls: string[] = [];
+  let browserContext: ReturnType<typeof runScopedBrowserActionContext> | null = null;
   if (parentRunId != null) {
     const parentRows = (await sql`
       SELECT created_by_user_id, automation_id,
              activated_by_device_worker_id, activation_tab_id,
-             activation_target_urls
+             activation_target_urls, run_metadata
       FROM runs
       WHERE id = ${parentRunId}
         AND organization_id = ${organizationId}
@@ -651,6 +657,7 @@ export async function dispatchChromeActionToExtension(params: {
       activated_by_device_worker_id: string | null;
       activation_tab_id: number | null;
       activation_target_urls: string | string[] | null;
+      run_metadata: Record<string, unknown> | null;
     }>;
     if (parentRows.length === 0) {
       return {
@@ -668,6 +675,11 @@ export async function dispatchChromeActionToExtension(params: {
         : Number(parentRows[0].activation_tab_id);
     activationTargetUrls = parsePgTextArray(
       parentRows[0].activation_target_urls
+    );
+    browserContext = browserContextWithFlow(
+      browserActionContextFromMetadata(parentRows[0].run_metadata) ??
+        runScopedBrowserActionContext(parentRunId),
+      parentRunId
     );
   }
 
@@ -756,19 +768,15 @@ export async function dispatchChromeActionToExtension(params: {
     };
   }
 
-  // Stamp holder_run_id on every chrome action so the extension can scope
-  // scratch-tab ownership/cleanup to the parent connector run.
   const operationInput: Record<string, unknown> = { ...(actionInput ?? {}) };
   // Routing directive, not an extension argument — the extension must never see it.
   delete operationInput[TARGET_BROWSER_CONNECTION_INPUT_KEY];
   delete operationInput.require_page_activation;
-  if (
-    parentRunId != null &&
-    operationInput.holder_run_id == null &&
-    operationInput.parent_run_id == null
-  ) {
-    operationInput.holder_run_id = parentRunId;
-  }
+  delete operationInput.browser_context_id;
+  delete operationInput.browser_context_title;
+  delete operationInput.browser_flow_id;
+  delete operationInput.holder_run_id;
+  delete operationInput.parent_run_id;
 
   let runId: number;
   try {
@@ -783,6 +791,7 @@ export async function dispatchChromeActionToExtension(params: {
       createdByUserId,
       automationId,
       parentRunId,
+      runMetadata: browserContext ? { browser_context: browserContext } : undefined,
     });
     runId = claim.runId;
   } catch (err) {

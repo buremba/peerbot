@@ -51,6 +51,11 @@ import {
   type ConnectorClaimContext,
   connectorClaimLaneSql,
 } from './connector-claim-lanes';
+import {
+  browserActionContextFromMetadata,
+  runScopedBrowserActionContext,
+  trustedChromeActionInput,
+} from './browser-action-context';
 
 // A failure at the DISPATCH stage means the agent never ran: the run is not
 // evidence about the agent regardless of the message, so no message
@@ -718,6 +723,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         r.action_key,
         r.action_input,
         r.approved_input,
+        r.parent_run_id,
+        r.run_metadata,
         r.automation_id,
         r.organization_id,
         org.slug AS organization_slug,
@@ -861,6 +868,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     action_key: string | null;
     action_input: Record<string, unknown> | null;
     approved_input: Record<string, unknown> | null;
+    parent_run_id: number | null;
+    run_metadata: Record<string, unknown> | null;
     feed_key: string | null;
     feed_config: Record<string, unknown> | null;
     checkpoint: Record<string, unknown> | null;
@@ -1235,6 +1244,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const nixPackages = (row.connector_runtime?.nix?.packages ?? []).filter(
     (p): p is string => typeof p === 'string'
   );
+  const selectedActionInput = row.approved_input ?? row.action_input ?? undefined;
+  const isChromeAction =
+    row.run_type === 'action' &&
+    (row.connector_key === 'chrome' || row.connector_key.startsWith('chrome.'));
+  const actionInput = isChromeAction
+    ? trustedChromeActionInput(
+        selectedActionInput ?? {},
+        browserActionContextFromMetadata(row.run_metadata) ??
+          runScopedBrowserActionContext(row.parent_run_id ?? row.run_id)
+      )
+    : selectedActionInput;
 
   return c.json({
     ...pollMetadata,
@@ -1269,7 +1289,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     action_key: row.action_key ?? undefined,
     // Mac/iOS bridge decodes `operation_key`; chrome uses `action_key` directly.
     operation_key: row.action_key ?? undefined,
-    action_input: (row as any).approved_input ?? row.action_input ?? undefined,
+    action_input: actionInput,
     auth_profile_id: deliverConnectionAuth ? (row.run_auth_profile_id ?? undefined) : undefined,
     previous_credentials: previousCredentials,
   });

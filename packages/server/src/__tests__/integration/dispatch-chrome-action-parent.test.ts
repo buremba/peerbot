@@ -4,6 +4,7 @@ import type { Env } from '../../index';
 import { createAutomationRun } from '../../runs/queue-service';
 import {
   dispatchChromeAction,
+  dispatchChromeActionToExtension,
   TARGET_BROWSER_CONNECTION_INPUT_KEY,
 } from '../../worker-api/dispatch-chrome-action';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
@@ -50,6 +51,126 @@ describe('dispatchChromeAction parent run authorization', () => {
       status: 'failed',
       error_message: expect.stringContaining('No online paired Owletto'),
     });
+  });
+
+  it('returns the existing not-found result for an invalid parent id', async () => {
+    const org = await createTestOrganization({ name: 'Invalid Chrome parent' });
+
+    await expect(
+      dispatchChromeActionToExtension({
+        organizationId: org.id,
+        actionKey: 'navigate',
+        actionInput: { url: 'https://example.com/' },
+        parentRunId: -1,
+      })
+    ).resolves.toEqual({
+      status: 'failed',
+      error_message: 'Parent run -1 was not found in this organization.',
+    });
+  });
+
+  it('inherits trusted context and changes Chrome flow ownership to the parent run', async () => {
+    const org = await createTestOrganization({ name: 'Chrome context parent' });
+    const user = await createTestUser({ email: 'chrome-context-parent@test.com' });
+    await addUserToOrganization(user.id, org.id);
+    await createTestConnectorDefinition({
+      key: 'chrome',
+      name: 'Chrome',
+      organization_id: org.id,
+    });
+    const [worker] = await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
+      ) VALUES (
+        ${user.id}, 'ext-context-parent', 'chrome-extension',
+        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Context Browser',
+        ${org.id}, NOW()
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'chrome', 'chrome-context-parent', 'Chrome', 'active',
+        ${user.id}, 'org', ${worker.id}::uuid, NOW(), NOW()
+      )
+    `;
+    const [parent] = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, action_key, action_input, status,
+        claimed_by, claimed_at, created_by_user_id, run_metadata
+      ) VALUES (
+        ${org.id}, 'action', 'prepare_comment', '{}'::jsonb, 'running',
+        'connector-worker-context', NOW(), ${user.id},
+        ${sql.json({
+          unrelated: 'preserved',
+          browser_context: {
+            id: 'automation:700',
+            title: 'Owletto · Automation 700',
+            flow_id: 'run:700',
+            kind: 'automation',
+          },
+        })}
+      )
+      RETURNING id
+    `;
+    const parentRunId = Number(parent.id);
+
+    const responsePromise = app.request('/dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        parent_run_id: parentRunId,
+        worker_id: 'connector-worker-context',
+        action_key: 'navigate',
+        action_input: {
+          url: 'https://example.com/',
+          normal: 'kept',
+          browser_context_id: 'forged-context',
+          browser_context_title: 'forged title',
+          browser_flow_id: 'forged-flow',
+          holder_run_id: 123,
+          parent_run_id: 456,
+        },
+      }),
+    });
+
+    await vi.waitFor(async () => {
+      const children = await sql`
+        SELECT id, action_input, run_metadata
+        FROM runs
+        WHERE organization_id = ${org.id}
+          AND connector_key = 'chrome'
+          AND parent_run_id = ${parentRunId}
+        ORDER BY id DESC
+        LIMIT 1
+      `;
+      expect(children).toHaveLength(1);
+      const child = children[0];
+      expect(child.action_input).toEqual({
+        url: 'https://example.com/',
+        normal: 'kept',
+      });
+      expect(child.run_metadata).toEqual({
+        browser_context: {
+          id: 'automation:700',
+          title: 'Owletto · Automation 700',
+          flow_id: String(parentRunId),
+          kind: 'automation',
+        },
+      });
+      await sql`
+        UPDATE runs
+        SET status = 'completed', action_output = '{}'::jsonb, completed_at = NOW()
+        WHERE id = ${child.id}
+      `;
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ status: 'completed' });
   });
 });
 

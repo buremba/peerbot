@@ -49,6 +49,9 @@ jobs:
       WILDCARD_TLS_SECRET: wildcard-lobu-ai-tls
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      # Deploy identity, checked before the first cluster write. KUBE_SERVER
+      # and KUBE_CLUSTER_UID have no default: until an operator sets both repo
+      # variables this job stops at the preflight (see the script's header).
       KUBE_EXPECTED_CONTEXT: ${{ vars.KUBE_CONTEXT || 'lobu-prod' }}
       KUBE_EXPECTED_SERVER: ${{ vars.KUBE_SERVER }}
       KUBE_EXPECTED_CLUSTER_UID: ${{ vars.KUBE_CLUSTER_UID }}

@@ -1,10 +1,18 @@
 #!/bin/sh
 set -eu
+# Never trace: the decoded credential would otherwise land in the step log.
+set +x
 
 # Securely install and validate the kubeconfig used by mutating workflows.
 # Secret material is accepted only through KUBECONFIG_B64 and is never placed
 # in an argument, log line, GitHub output, or GitHub environment value.
-set +x
+#
+# KUBE_EXPECTED_SERVER and KUBE_EXPECTED_CLUSTER_UID pin which cluster the
+# credential is allowed to write to, and have no default - a workflow whose
+# repo variables are unset stops here instead of deploying blind. Read the
+# expected values off the intended cluster once:
+#   kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+#   kubectl get namespace kube-system -o jsonpath='{.metadata.uid}'
 
 usage() {
   echo "usage: $0 setup|cleanup" >&2
@@ -29,8 +37,8 @@ setup() {
 
   [ -n "${KUBECONFIG_B64:-}" ] || fail "credential secret is empty"
   [ -n "${KUBE_EXPECTED_CONTEXT:-}" ] || fail "expected context is not configured"
-  [ -n "${KUBE_EXPECTED_SERVER:-}" ] || fail "expected API server is not configured"
-  [ -n "${KUBE_EXPECTED_CLUSTER_UID:-}" ] || fail "expected cluster fingerprint is not configured"
+  [ -n "${KUBE_EXPECTED_SERVER:-}" ] || fail "repo variable KUBE_SERVER is not set"
+  [ -n "${KUBE_EXPECTED_CLUSTER_UID:-}" ] || fail "repo variable KUBE_CLUSTER_UID is not set"
   [ -n "${KUBE_REQUIRED_CAPABILITIES:-}" ] || fail "required RBAC capabilities are not configured"
   [ -n "${GITHUB_ENV:-}" ] || fail "GITHUB_ENV is not available"
 
@@ -65,7 +73,7 @@ setup() {
     fail "credential secret decoded to an empty kubeconfig"
   }
 
-  export KUBECONFIG=$config_path
+  export KUBECONFIG="$config_path"
 
   kubectl config view >/dev/null 2>&1 || {
     fail "decoded credential is not a valid kubeconfig"
@@ -107,7 +115,7 @@ setup() {
     if [ "$all_namespaces" -eq 1 ]; then
       kubectl auth can-i "$verb" "$resource" --all-namespaces --quiet >/dev/null 2>&1 ||
         fail "required Kubernetes access is not granted"
-    elif [ -n "${namespace:-}" ]; then
+    elif [ -n "$namespace" ]; then
       kubectl auth can-i "$verb" "$resource" -n "$namespace" --quiet >/dev/null 2>&1 ||
         fail "required Kubernetes access is not granted"
     else
@@ -128,8 +136,11 @@ cleanup() {
   config_path=${KUBECONFIG:-}
   if [ -n "$config_path" ] && [ -f "$config_path" ]; then
     temp_root=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
-    case "$config_path" in
-      "$temp_root"/lobu-kubeconfig.*) ;;
+    config_dir=${config_path%/*}
+    config_name=${config_path##*/}
+    [ "$config_dir" = "$temp_root" ] || fail "refusing to remove a non-temporary kubeconfig path"
+    case "$config_name" in
+      lobu-kubeconfig.*) ;;
       *) fail "refusing to remove a non-temporary kubeconfig path" ;;
     esac
     rm -f "$config_path"

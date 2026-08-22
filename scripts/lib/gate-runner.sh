@@ -190,6 +190,7 @@ gate_format_lint() {
   bash scripts/lib/__tests__/review-upstream-guard.test.sh || return 1
   bash scripts/lib/__tests__/review-skip.test.sh || return 1
   bash scripts/lib/__tests__/review-cache.test.sh || return 1
+  sh scripts/lib/__tests__/kubeconfig-preflight.test.sh || return 1
   cmp -s .github/actions/setup-submodule/action.yml .depot/actions/setup-submodule/action.yml || return 1
   bash scripts/lib/__tests__/remote-ci.test.sh || return 1
   bash scripts/lib/__tests__/submodule-drift.test.sh || return 1

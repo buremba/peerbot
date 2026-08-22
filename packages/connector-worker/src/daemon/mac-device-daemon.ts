@@ -94,7 +94,8 @@ export function selectMacDeviceDaemonAgentKind(
 export function createMacDeviceDaemonShutdown(
   controller: AbortController,
   loop: WorkerPollLoop,
-  bridge?: NativeBridgeClient
+  bridge?: NativeBridgeClient,
+  shutdownTimeoutMs = NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS
 ): () => Promise<void> {
   return async () => {
     controller.abort();
@@ -103,11 +104,13 @@ export function createMacDeviceDaemonShutdown(
 
     let shutdownError: unknown;
     try {
-      await withTimeout(
-        bridge.cancelActiveRuns(),
-        NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS,
-        'native bridge cancellation',
+      const shutdownResults = await withTimeout(
+        Promise.allSettled([bridge.cancelActiveRuns(), bridge.shutdown()]),
+        shutdownTimeoutMs,
+        'native bridge cancellation and shutdown',
       );
+      const rejected = shutdownResults.find((result) => result.status === 'rejected');
+      if (rejected?.status === 'rejected') shutdownError = rejected.reason;
     } catch (error) {
       shutdownError = error;
     }
@@ -119,17 +122,10 @@ export function createMacDeviceDaemonShutdown(
     } catch (error) {
       shutdownError ??= error;
     }
-    try {
-      await withTimeout(
-        bridge.shutdown(),
-        NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS,
-        'native bridge shutdown',
-      );
-    } catch (error) {
-      shutdownError ??= error;
-    } finally {
-      bridge.close(new Error('native bridge daemon shutdown'));
-    }
+    // The app may close the transport as soon as it has acknowledged the
+    // shutdown frame, so keep the writer alive until active jobs observe
+    // their terminal failures.
+    bridge.close(new Error('native bridge daemon shutdown'));
     if (shutdownError) throw shutdownError;
   };
 }

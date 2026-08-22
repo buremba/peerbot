@@ -93,4 +93,10 @@ describe('selected connector execution backend', () => {
       authorizations: [],
     })).toEqual({ manifestBacked: true });
   });
+
+  test('does not let retained bridge authorization override an active exact non-bridge definition', () => {
+    expect(classify({
+      definition: { ...definition, runtime: { platforms: ['macos'], execution: 'compiled' } },
+    })).toEqual({ manifestBacked: true });
+  });
 });

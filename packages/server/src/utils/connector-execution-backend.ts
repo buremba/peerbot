@@ -65,7 +65,9 @@ export function classifySelectedConnectorExecution(params: {
       entry.sourcePath === params.artifact.sourcePath,
   );
   const authorizedBridge = authorization?.runtimeExecution === 'bridge';
-  const bridgeCandidate = definitionBridge || authorizedBridge;
+  // An active exact definition is authoritative. Retained authorization may
+  // only select a historical pinned version when no exact definition exists.
+  const bridgeCandidate = params.definition ? definitionBridge : authorizedBridge;
 
   if (!bridgeCandidate) return { manifestBacked };
   if (!params.definition && !authorization) {

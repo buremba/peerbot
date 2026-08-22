@@ -4,6 +4,7 @@ import { log } from '../log.js';
 import { NativeBridgeClient, type NativeBridgeRunResult } from './client.js';
 
 const VIRTUAL_FEED_ACTION = '__lobu_virtual_feed_read';
+const NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
 
 export async function executeNativeBridgeRun(
   client: WorkerClient,
@@ -17,6 +18,11 @@ export async function executeNativeBridgeRun(
   let itemsCollected = 0;
   let checkpoint = asRecord(job.checkpoint);
   let terminalAttempted = false;
+  const heartbeatInterval = setInterval(() => {
+    void client.heartbeat(runId).catch((error) => {
+      log.debug(`[native-bridge] Heartbeat for run ${runId} failed:`, error);
+    });
+  }, NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS);
 
   const completeSync = async (result: NativeBridgeRunResult, errorMessage?: string) => {
     if (terminalAttempted) return;
@@ -57,7 +63,7 @@ export async function executeNativeBridgeRun(
 
   try {
     const result = await bridge.run({
-      operation: operation === 'query' || operation === 'search' ? operation : 'run',
+      operation,
       job: bridgeJob(job),
       onStream:
         operation === 'sync'
@@ -97,6 +103,8 @@ export async function executeNativeBridgeRun(
       log.info(`[native-bridge] Terminal report for run ${runId} failed:`, completionError);
     }
     return { itemsCollected, error: message };
+  } finally {
+    clearInterval(heartbeatInterval);
   }
 }
 

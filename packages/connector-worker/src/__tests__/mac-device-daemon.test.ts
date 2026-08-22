@@ -123,7 +123,29 @@ describe('Mac device daemon options', () => {
 
     await createMacDeviceDaemonShutdown(controller, loop, bridge)();
 
-    expect(events).toEqual(['stop', 'cancel', 'wait', 'shutdown', 'close']);
+    expect(events).toEqual(['stop', 'cancel', 'shutdown', 'wait', 'close']);
+  });
+
+  test('bounds native cancellation and shutdown before waiting for jobs', async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const loop = {
+      stop: () => events.push('stop'),
+      waitForActiveJobs: async () => {
+        events.push('wait');
+        return true;
+      },
+    } as unknown as WorkerPollLoop;
+    const bridge = {
+      cancelActiveRuns: () => new Promise<void>(() => undefined),
+      shutdown: async () => events.push('shutdown'),
+      close: () => events.push('close'),
+    } as never;
+
+    await expect(createMacDeviceDaemonShutdown(controller, loop, bridge, 1)()).rejects.toThrow(
+      'timed out',
+    );
+    expect(events).toEqual(['stop', 'shutdown', 'wait', 'close']);
   });
 });
 

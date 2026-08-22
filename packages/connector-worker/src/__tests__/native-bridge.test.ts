@@ -114,7 +114,7 @@ describe('native bridge handshake', () => {
     const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
     const outputDecoder = new NativeBridgeFrameDecoder();
     const runPromise = bridge.run({
-      operation: 'run',
+      operation: 'action',
       job: { run_id: 42, connector_key: 'apple.files' },
       requestId: 'run-1',
     });
@@ -136,6 +136,7 @@ describe('native bridge handshake', () => {
     });
     const runFrame = handshakeFrames[1]!;
     expect(runFrame).toMatchObject({ kind: 'run', request_id: 'run-1', run_id: 42 });
+    expect(runFrame.payload).toMatchObject({ operation: 'action' });
 
     input.write(encodeNativeBridgeFrame({
       version: 1,
@@ -262,6 +263,61 @@ describe('native bridge handshake', () => {
     );
     input.destroy();
     output.destroy();
+  });
+
+  test('rejects a pending run when the output reaches a terminal stream state', async () => {
+    for (const event of ['close', 'finish', 'end'] as const) {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+      const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+      input.write(helloFrame());
+      await bridge.handshake();
+      output.read();
+      const runPromise = bridge.run({ operation: 'action', requestId: `run-${event}`, job: { run_id: 48 } });
+      output.emit(event);
+      await expect(runPromise).rejects.toThrow(event === 'close' ? 'closed' : event === 'finish' ? 'finished' : 'EOF');
+      input.destroy();
+      output.destroy();
+    }
+  });
+
+  test('rejects and cleans drain listeners when the output closes while draining', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const originalWrite = output.write.bind(output);
+    let writes = 0;
+    output.write = ((chunk: Uint8Array) => {
+      writes += 1;
+      if (writes === 2) {
+        queueMicrotask(() => output.emit('close'));
+        return false;
+      }
+      return originalWrite(chunk);
+    }) as typeof output.write;
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    input.write(helloFrame());
+    await bridge.handshake();
+    const runPromise = bridge.run({ operation: 'action', requestId: 'run-drain-close', job: { run_id: 50 } });
+    await expect(runPromise).rejects.toThrow('closed');
+    expect(output.listenerCount('drain')).toBe(0);
+    expect(output.listenerCount('error')).toBe(1);
+    expect(output.listenerCount('close')).toBe(1);
+    expect(output.listenerCount('finish')).toBe(1);
+    expect(output.listenerCount('end')).toBe(1);
+    input.destroy();
+    output.destroy();
+  });
+
+  test('rejects a bridge created from an already closed output', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.destroy();
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    await expect(bridge.run({ operation: 'action', job: { run_id: 49 } })).rejects.toThrow('closed');
+    input.destroy();
   });
 
   test('times out a missing hello and never starts a poll-capable run', async () => {

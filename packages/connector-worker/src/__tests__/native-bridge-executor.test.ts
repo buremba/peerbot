@@ -8,10 +8,11 @@ const item = (id: string) => ({
 });
 
 function fakeClient() {
-  const calls: Record<string, unknown[]> = { stream: [], complete: [], completeAction: [], completeAuth: [] };
+  const calls: Record<string, unknown[]> = { stream: [], complete: [], completeAction: [], completeAuth: [], heartbeat: [] };
   return {
     id: 'mac:test',
     calls,
+    heartbeat: async (runId: number) => calls.heartbeat.push(runId),
     stream: async (value: unknown) => calls.stream.push(value),
     complete: async (value: unknown) => calls.complete.push(value),
     completeAction: async (value: unknown) => calls.completeAction.push(value),
@@ -27,7 +28,8 @@ describe('native bridge run forwarding', () => {
       stream: (value: unknown) => Promise<void>;
     };
     const bridge = {
-      run: async (options: { onStream?: (payload: Record<string, unknown>, sequence: number) => Promise<void> }) => {
+      run: async (options: { operation: string; onStream?: (payload: Record<string, unknown>, sequence: number) => Promise<void> }) => {
+        expect(options.operation).toBe('sync');
         await options.onStream?.({ items: [item('a')] }, 1);
         await options.onStream?.({ items: [item('b')], checkpoint: { cursor: '2' } }, 2);
         return { checkpoint: { cursor: '2' } };
@@ -55,7 +57,8 @@ describe('native bridge run forwarding', () => {
     const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
     let runCalls = 0;
     const bridge = {
-      run: async () => {
+      run: async (options: { operation: string }) => {
+        expect(options.operation).toBe('action');
         runCalls++;
         throw new Error('app EOF');
       },
@@ -82,7 +85,8 @@ describe('native bridge run forwarding', () => {
       stream: (value: unknown) => Promise<void>;
     };
     const bridge = {
-      run: async (options: { onStream?: (payload: Record<string, unknown>, sequence: number) => Promise<void> }) => {
+      run: async (options: { operation: string; onStream?: (payload: Record<string, unknown>, sequence: number) => Promise<void> }) => {
+        expect(options.operation).toBe('sync');
         await options.onStream?.({ items: [item('a')], checkpoint: { cursor: '1' } }, 1);
         await options.onStream?.({ items: [item('b')], checkpoint: { cursor: '2' } }, 2);
         return { checkpoint: { cursor: '2' } };
@@ -111,10 +115,13 @@ describe('native bridge run forwarding', () => {
   test('completes auth exactly once with bridge credentials and metadata', async () => {
     const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
     const bridge = {
-      run: async () => ({
-        credentials: { access_token: 'scoped-result' },
-        metadata: { profile: 'device' },
-      }),
+      run: async (options: { operation: string }) => {
+        expect(options.operation).toBe('auth');
+        return {
+          credentials: { access_token: 'scoped-result' },
+          metadata: { profile: 'device' },
+        };
+      },
     } as never;
 
     await expect(
@@ -132,5 +139,66 @@ describe('native bridge run forwarding', () => {
         metadata: { profile: 'device' },
       }),
     ]);
+  });
+
+  test('uses explicit query and search operations for virtual feed reads', async () => {
+    const operations: string[] = [];
+    const client = fakeClient();
+    const bridge = {
+      run: async (options: { operation: string }) => {
+        operations.push(options.operation);
+        return {};
+      },
+    } as never;
+
+    for (const actionInput of [{}, { terms: ['ada'] }]) {
+      await executeNativeBridgeRun(client as never, bridge, {
+        run_id: actionInput.terms ? 14 : 13,
+        run_type: 'action',
+        action_key: '__lobu_virtual_feed_read',
+        action_input: actionInput,
+      } as never);
+    }
+
+    expect(operations).toEqual(['query', 'search']);
+  });
+
+  test('heartbeats a long native run and clears the heartbeat after terminal completion', async () => {
+    const scheduled: Array<() => Promise<void> | void> = [];
+    const cleared: unknown[] = [];
+    const intervals: unknown[] = [];
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((callback: () => Promise<void> | void) => {
+      scheduled.push(callback);
+      intervals.push(30_000);
+      return scheduled.length as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval;
+    globalThis.clearInterval = ((id: unknown) => {
+      cleared.push(id);
+    }) as typeof clearInterval;
+
+    try {
+      const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
+      const bridge = {
+        run: async () => {
+          await scheduled[0]?.();
+          await scheduled[0]?.();
+          return {};
+        },
+      } as never;
+
+      await expect(executeNativeBridgeRun(client as never, bridge, {
+        run_id: 15,
+        run_type: 'action',
+        action_key: 'long_operation',
+      } as never)).resolves.toEqual({ itemsCollected: 0 });
+      expect(client.calls.heartbeat).toEqual([15, 15]);
+      expect(intervals).toEqual([30_000]);
+      expect(cleared).toEqual([1]);
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
   });
 });

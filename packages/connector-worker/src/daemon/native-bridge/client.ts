@@ -23,8 +23,7 @@ export interface NativeBridgeRunResult {
 
 export interface NativeBridgeRunOptions {
   requestId?: string;
-  /** `run` covers sync/action/auth; live reads use their explicit operation. */
-  operation: 'run' | 'query' | 'search';
+  operation: 'sync' | 'action' | 'auth' | 'query' | 'search';
   job: Record<string, unknown>;
   onStream?: (payload: Record<string, unknown>, sequence: number) => Promise<void>;
 }
@@ -66,7 +65,11 @@ export class NativeBridgeClient {
     private readonly daemonBuild: string,
     private readonly handshakeTimeoutMs = NATIVE_BRIDGE_HELLO_TIMEOUT_MS,
   ) {
-    this.writer = new NativeBridgeFrameWriter(output);
+    this.writer = new NativeBridgeFrameWriter(output, (error) => {
+      // Defer notification so the writer is fully assigned before a stream
+      // that was already closed reports its terminal state.
+      queueMicrotask(() => this.failBridge(error));
+    });
   }
 
   async handshake(): Promise<void> {
@@ -344,14 +347,38 @@ class NativeBridgeFrameWriter {
   private failed?: Error;
   private active?: QueuedFrame;
 
-  constructor(private readonly output: NodeJS.WritableStream) {
+  constructor(
+    private readonly output: NodeJS.WritableStream,
+    private readonly onFailure: (error: Error) => void,
+  ) {
     output.on('error', (error) => {
       this.fail(asError(error));
     });
+    output.on('close', () => {
+      this.fail(new NativeBridgeProtocolError('native bridge output closed'));
+    });
+    output.on('finish', () => {
+      this.fail(new NativeBridgeProtocolError('native bridge output finished'));
+    });
+    output.on('end', () => {
+      this.fail(new NativeBridgeProtocolError('native bridge output reached EOF'));
+    });
+    const state = output as NodeJS.WritableStream & {
+      closed?: boolean;
+      destroyed?: boolean;
+      writableEnded?: boolean;
+      writableFinished?: boolean;
+    };
+    if (state.closed || state.destroyed || state.writableEnded || state.writableFinished) {
+      this.fail(new NativeBridgeProtocolError('native bridge output is already closed'));
+    }
   }
 
   fail(error: Error): void {
-    if (!this.failed) this.failed = error;
+    if (!this.failed) {
+      this.failed = error;
+      this.onFailure(error);
+    }
     this.active?.reject(this.failed);
     this.active = undefined;
     for (const queued of this.queue.splice(0)) queued.reject(this.failed);
@@ -407,12 +434,25 @@ class NativeBridgeFrameWriter {
         cleanup();
         reject(asError(error));
       };
+      const onTerminal = (message: string) => {
+        cleanup();
+        reject(new NativeBridgeProtocolError(message));
+      };
       const cleanup = () => {
         this.output.off('drain', onDrain);
         this.output.off('error', onError);
+        this.output.off('close', onClose);
+        this.output.off('finish', onFinish);
+        this.output.off('end', onEnd);
       };
+      const onClose = () => onTerminal('native bridge output closed while draining');
+      const onFinish = () => onTerminal('native bridge output finished while draining');
+      const onEnd = () => onTerminal('native bridge output reached EOF while draining');
       this.output.once('drain', onDrain);
       this.output.once('error', onError);
+      this.output.once('close', onClose);
+      this.output.once('finish', onFinish);
+      this.output.once('end', onEnd);
     });
   }
 }

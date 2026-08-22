@@ -7,6 +7,7 @@ import {
   type NativeBridgeFrame,
   NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES,
   NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES_PER_RUN,
+  NATIVE_BRIDGE_MAX_RETAINED_RUN_KEYS,
   NATIVE_BRIDGE_PROTOCOL,
   NATIVE_BRIDGE_PROTOCOL_VERSION,
 } from './protocol.js';
@@ -347,7 +348,7 @@ export class NativeBridgeClient {
     pending.terminal = true;
     this.pending.delete(frame.request_id);
     this.terminalRuns.add(`${frame.request_id}:${pending.runId}`);
-    if (this.terminalRuns.size > NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES) {
+    if (this.terminalRuns.size > NATIVE_BRIDGE_MAX_RETAINED_RUN_KEYS) {
       const oldest = this.terminalRuns.values().next().value;
       if (oldest) this.terminalRuns.delete(oldest);
     }
@@ -379,7 +380,7 @@ export class NativeBridgeClient {
     if (ignoreFutureFrames) {
       const runKey = `${requestId}:${pending.runId}`;
       this.ignoredRuns.add(runKey);
-      if (this.ignoredRuns.size > NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES) {
+      if (this.ignoredRuns.size > NATIVE_BRIDGE_MAX_RETAINED_RUN_KEYS) {
         const oldest = this.ignoredRuns.values().next().value;
         if (oldest) this.ignoredRuns.delete(oldest);
       }

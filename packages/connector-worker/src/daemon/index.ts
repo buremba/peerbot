@@ -15,13 +15,9 @@ export type {
 } from './client.js';
 export { MutableWorkerAdvertisementProvider, WorkerClient } from './client.js';
 export {
-  NATIVE_BRIDGE_KINDS,
-  NATIVE_BRIDGE_MAX_FRAME_BYTES,
   NATIVE_BRIDGE_PROTOCOL,
   NATIVE_BRIDGE_PROTOCOL_VERSION,
-  NativeBridgeFrameDecoder,
   NativeBridgeProtocolError,
-  encodeNativeBridgeFrame,
 } from './native-bridge/protocol.js';
 export { NativeBridgeClient } from './native-bridge/client.js';
 export type { ExecutorConfig } from './executor.js';

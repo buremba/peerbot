@@ -512,7 +512,10 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 				// `unchanged` reuses the pre-existing row, which still points at the
 				// artifacts published by an earlier sync — the ones we just published
 				// were never referenced by any row, so the finally block reclaims them.
-				if (inserted.change !== "unchanged") {
+				// `state_updated` reconciles counters on the existing row and leaves
+				// `attachments` untouched, so it reuses the earlier sync's artifacts
+				// exactly as `unchanged` does — the ones just published are unreferenced.
+				if (inserted.change !== "unchanged" && inserted.change !== "state_updated") {
 					artifactCommitted = true;
 					pendingTranscriptions.push(...itemPendingTranscriptions);
 				}

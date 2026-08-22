@@ -634,6 +634,7 @@ export async function handleCompleteWindow(
         for (const event of persistedEvents) {
           if (
             event.change === 'unchanged' ||
+            event.change === 'state_updated' ||
             !subscribedWorkspaceEventTypes.has(output.event)
           ) {
             continue;

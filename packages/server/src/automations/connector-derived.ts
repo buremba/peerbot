@@ -1,3 +1,4 @@
+import type { EventChangeKind } from "../utils/insert-event";
 import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
 import { type DbClient, getDb } from "../db/client";
 
@@ -131,7 +132,7 @@ export async function loadConnectorDeriveFeedContext(
 export function deriveConnectorActivationSignals(
 	ctx: ConnectorDeriveFeedContext,
 	event: ConnectorDeriveEventInput,
-	change: "inserted" | "superseded" | "unchanged",
+	change: EventChangeKind,
 	eventId: number,
 ): ConnectorTriggerSignal[] {
 	if (change !== "inserted") return [];

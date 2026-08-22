@@ -233,13 +233,14 @@ describe('native bridge run forwarding', () => {
   test('times out a hung native run, cancels its owner, and reports failure', async () => {
     const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
     const cancellations: Array<[string, number]> = [];
+    const abandonments: Array<[string, number]> = [];
     const bridge = {
       run: async () => new Promise<never>(() => undefined),
       cancel: async (requestId: string, runId: number) => {
         cancellations.push([requestId, runId]);
       },
       cancelAndAbandon: async (requestId: string, runId: number) => {
-        cancellations.push([requestId, runId]);
+        abandonments.push([requestId, runId]);
       },
     } as never;
 
@@ -250,7 +251,8 @@ describe('native bridge run forwarding', () => {
     } as never, 5);
 
     expect(result.error).toBe('native bridge run timed out after 5ms');
-    expect(cancellations).toEqual([[expect.any(String), 19]]);
+    expect(cancellations).toEqual([]);
+    expect(abandonments).toEqual([[expect.any(String), 19]]);
     expect(client.calls.completeAction).toEqual([
       expect.objectContaining({ run_id: 19, status: 'failed', error_message: result.error }),
     ]);

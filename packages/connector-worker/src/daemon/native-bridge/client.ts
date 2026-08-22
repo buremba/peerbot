@@ -162,6 +162,11 @@ export class NativeBridgeClient {
     const pending = this.pending.get(requestId);
     if (!pending || pending.runId !== runId || pending.terminal) return;
     pending.cancelSent = true;
+    // Reject and mark the owner ignored before attempting the cancel write.
+    // The write can fail because the bounded outbound queue or transport is
+    // already unavailable; late terminal frames must still be harmless in
+    // that case, and the timeout error remains the owning run's result.
+    this.rejectPending(requestId, error, true);
     try {
       await this.send({
         version: NATIVE_BRIDGE_PROTOCOL_VERSION,
@@ -170,8 +175,9 @@ export class NativeBridgeClient {
         run_id: runId,
         payload: { reason: 'native_bridge_timeout' },
       }, { requestId, runKey: requestId + ':' + runId });
-    } finally {
-      this.rejectPending(requestId, error, true);
+    } catch {
+      // The timeout has already terminalized the owning run. A failed cancel
+      // write is transport cleanup, not a replacement error for that run.
     }
   }
 

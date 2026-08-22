@@ -442,6 +442,10 @@ describe('native bridge handshake', () => {
     input.write(helloFrame());
     await bridge.handshake();
     outputDecoder.append(output.read() as Buffer);
+    const transportFailures: Error[] = [];
+    const removeTransportFailureHandler = bridge.onTransportFailure((error) => {
+      transportFailures.push(error);
+    });
 
     const runPromise = bridge.run({ operation: 'action', requestId: 'run-timeout', job: { run_id: 46 } });
     await Bun.sleep(5);
@@ -460,6 +464,8 @@ describe('native bridge handshake', () => {
     }));
     await Bun.sleep(5);
     expect(bridge.activeRunCount).toBe(0);
+    expect(transportFailures).toEqual([]);
+    removeTransportFailureHandler();
     input.destroy();
     output.destroy();
   });

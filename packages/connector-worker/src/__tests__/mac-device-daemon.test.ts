@@ -9,6 +9,7 @@ import {
 import { executeAutomationRun } from '../daemon/automation';
 import {
   createWorkerPollLoopShutdownHandler,
+  shouldHandleWorkerPollLoopStdinEof,
   WorkerPollLoop,
 } from '../daemon/poll-loop';
 
@@ -85,6 +86,12 @@ describe('Mac device daemon options', () => {
     expect(validateMacDeviceDaemonOptions({ ...base, supervisedStdio: true }).supervisedStdio).toBe(
       true
     );
+  });
+
+  test('treats stdin EOF as opt-in for the signal installer', () => {
+    expect(shouldHandleWorkerPollLoopStdinEof()).toBe(false);
+    expect(shouldHandleWorkerPollLoopStdinEof({ stdinEof: false })).toBe(false);
+    expect(shouldHandleWorkerPollLoopStdinEof({ stdinEof: true })).toBe(true);
   });
 
   test('aborts Automation execution before stopping the poll loop', () => {

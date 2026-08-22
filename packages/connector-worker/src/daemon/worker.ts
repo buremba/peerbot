@@ -97,7 +97,7 @@ export class WorkerDaemon {
   }
 
   installShutdownSignals(): void {
-    installWorkerPollLoopSignals(this.pollLoop, () => this.stop());
+    installWorkerPollLoopSignals(this.pollLoop, () => this.stop(), { stdinEof: false });
   }
 
   /**

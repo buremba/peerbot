@@ -23,6 +23,12 @@ export interface WorkerPollLoopSignalOptions {
   stdinEof?: boolean;
 }
 
+export function shouldHandleWorkerPollLoopStdinEof(
+  options: WorkerPollLoopSignalOptions = {}
+): boolean {
+  return options.stdinEof === true;
+}
+
 export class WorkerPollLoop {
   private readonly client: WorkerClient;
   private readonly pollIntervalMs: number;
@@ -137,12 +143,12 @@ export function createWorkerPollLoopShutdownHandler(
 export function installWorkerPollLoopSignals(
   loop: WorkerPollLoop,
   onShutdown: () => void = () => loop.stop(),
-  options: WorkerPollLoopSignalOptions = { stdinEof: true }
+  options: WorkerPollLoopSignalOptions = { stdinEof: false }
 ): void {
   const gracefulShutdown = createWorkerPollLoopShutdownHandler(loop, onShutdown);
   process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
   process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
-  if (options.stdinEof === true) {
+  if (shouldHandleWorkerPollLoopStdinEof(options)) {
     process.stdin.once('end', () => void gracefulShutdown('EOF'));
     process.stdin.resume();
   }

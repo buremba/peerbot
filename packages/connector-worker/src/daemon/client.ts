@@ -22,7 +22,7 @@ function trimTrailingSlashes(value: string): string {
  */
 export interface ExecutorClient {
   readonly id: string;
-  poll(): Promise<PollResponse>;
+  poll(capacityAvailable?: number): Promise<PollResponse>;
   heartbeat(
     runId: number,
     progress?: {
@@ -243,11 +243,14 @@ export class WorkerClient implements ExecutorClient {
   /**
    * Poll for available runs
    */
-  async poll(): Promise<PollResponse> {
+  async poll(capacityAvailable?: number): Promise<PollResponse> {
     return this.requestJson<PollResponse>('/api/workers/poll', {
       worker_id: this.workerId,
       capabilities: this.advertisedCapabilities(),
       version: this.version,
+      ...(capacityAvailable === undefined
+        ? {}
+        : { capacity_available: capacityAvailable }),
       // app_version belongs to the device registration fields, so omit both for
       // fleet workers rather than sending empty values. A device worker also
       // advertises the agent kinds its automation arm can run.

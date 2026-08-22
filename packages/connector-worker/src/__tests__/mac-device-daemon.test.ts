@@ -171,7 +171,7 @@ describe('WorkerPollLoop', () => {
     } as never;
     const loop = new WorkerPollLoop({
       client,
-      pollIntervalMs: 1,
+      pollIntervalMs: 1000,
       maxConcurrentJobs: 1,
       execute: async () => jobFinished,
     });

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
+import { parsePgTextArray } from '../../db/client';
 import {
   deviceManifestHash,
   type DeviceConnectorManifest,
@@ -181,16 +182,22 @@ async function poll(
   connectorManifests: unknown[],
   platform = 'macos',
   capabilities: Record<string, boolean> = { screentime: true },
+  options: { capacityAvailable?: number; agentKinds?: string[] } = {},
 ) {
+  const body: Record<string, unknown> = {
+    worker_id: workerId,
+    platform,
+    app_version: '9.9.0',
+    label: 'Test Device',
+    capabilities,
+    connector_manifests: connectorManifests,
+  };
+  if (options.capacityAvailable !== undefined) {
+    body.capacity_available = options.capacityAvailable;
+  }
+  if (options.agentKinds !== undefined) body.agent_kinds = options.agentKinds;
   return post('/api/workers/poll', {
-    body: {
-      worker_id: workerId,
-      platform,
-      app_version: '9.9.0',
-      label: 'Test Device',
-      capabilities,
-      connector_manifests: connectorManifests,
-    },
+    body,
   });
 }
 
@@ -202,8 +209,12 @@ async function pollFleet(workerId: string) {
   });
 }
 
-async function pollClaimingDueFeed(workerId: string, connectorManifests: unknown[]) {
-  const response = await poll(workerId, connectorManifests);
+async function pollClaimingDueFeed(
+  workerId: string,
+  connectorManifests: unknown[],
+  options: { capacityAvailable?: number; agentKinds?: string[] } = {},
+) {
+  const response = await poll(workerId, connectorManifests, 'macos', { screentime: true }, options);
   expect(response.status).toBe(200);
   return response.json();
 }
@@ -308,7 +319,7 @@ describe('device connector manifests', () => {
   it('installs a metadata-only device connector from poll and claims its feed run without compiled_code', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
 
-    const body = await pollClaimingDueFeed(workerId, [manifest()]);
+    const body = await pollClaimingDueFeed(workerId, [manifest()], { capacityAvailable: 1 });
 
     const def = await readDefinition(orgId);
     expect(def?.key).toBe(CONNECTOR_KEY);
@@ -806,7 +817,22 @@ describe('device connector manifests', () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const sql = getTestDb();
 
-    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    expect(
+      (
+        await poll(
+          workerId,
+          [manifest()],
+          'macos',
+          { screentime: true },
+          { capacityAvailable: 0 },
+        )
+      ).status,
+    ).toBe(200);
+    const before = (await sql`
+      SELECT connector_manifests
+      FROM device_workers
+      WHERE worker_id = ${workerId}
+    `) as unknown as Array<{ connector_manifests: unknown }>;
     const invalidManifest = manifest({
       feeds_schema: {
         snapshots: {
@@ -819,7 +845,17 @@ describe('device connector manifests', () => {
       },
     });
 
-    expect((await poll(workerId, [invalidManifest])).status).toBe(200);
+    expect(
+      (
+        await poll(
+          workerId,
+          [invalidManifest],
+          'macos',
+          { screentime: true },
+          { capacityAvailable: 0 },
+        )
+      ).status,
+    ).toBe(200);
 
     const definitions = (await sql`
       SELECT status FROM connector_definitions
@@ -832,6 +868,93 @@ describe('device connector manifests', () => {
       WHERE worker_id = ${workerId}
     `) as unknown as Array<{ connector_manifests: Record<string, unknown> }>;
     expect(Object.keys(devices[0]?.connector_manifests ?? {})).toEqual([CONNECTOR_KEY]);
+    expect(devices[0]?.connector_manifests).toEqual(before[0]?.connector_manifests);
+  });
+
+  it('registers and reconciles a zero-capacity poll without claiming an eligible run', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const manifestPayload = manifest();
+
+    const first = await poll(
+      workerId,
+      [manifestPayload],
+      'macos',
+      { screentime: true },
+      { capacityAvailable: 0, agentKinds: ['claude-code'] },
+    );
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as Record<string, unknown>;
+    expect(firstBody.run_id).toBeUndefined();
+
+    const [connectionFeed] = (await sql`
+      SELECT c.id AS connection_id, f.id AS feed_id
+      FROM connections c
+      JOIN feeds f ON f.connection_id = c.id
+      WHERE c.organization_id = ${orgId}
+        AND c.connector_key = ${CONNECTOR_KEY}
+        AND f.feed_key = 'snapshots'
+      LIMIT 1
+    `) as unknown as Array<{ connection_id: number; feed_id: number }>;
+    const [run] = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, feed_id, connection_id, connector_key,
+        connector_version, approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'sync', ${connectionFeed.feed_id}, ${connectionFeed.connection_id},
+        ${CONNECTOR_KEY}, '0.1.0', 'auto', 'pending', NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const runId = Number(run.id);
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = current_timestamp - INTERVAL '1 hour'
+      WHERE worker_id = ${workerId}
+    `;
+    const beforePoll = (await sql`
+      SELECT status, claimed_by, claimed_at, last_heartbeat_at
+      FROM runs WHERE id = ${runId}
+    `) as unknown as Array<Record<string, unknown>>;
+
+    const second = await poll(
+      workerId,
+      [manifestPayload],
+      'macos',
+      { screentime: true },
+      { capacityAvailable: 0, agentKinds: ['pi'] },
+    );
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as Record<string, unknown>).run_id).toBeUndefined();
+
+    const [device] = (await sql`
+      SELECT last_seen_at, capabilities, app_version, label, agent_kinds, connector_manifests
+      FROM device_workers
+      WHERE worker_id = ${workerId}
+    `) as unknown as Array<{
+      last_seen_at: string | Date;
+      capabilities: unknown;
+      app_version: string;
+      label: string;
+      agent_kinds: string | string[] | null;
+      connector_manifests: unknown;
+    }>;
+    expect(new Date(String(device.last_seen_at)).getTime()).toBeGreaterThan(
+      Date.now() - 60_000,
+    );
+    expect(device.capabilities).toEqual(['screentime']);
+    expect(device.app_version).toBe('9.9.0');
+    expect(device.label).toBe('Test Device');
+    expect(parsePgTextArray(device.agent_kinds)).toEqual(['pi']);
+    expect(device.connector_manifests).toEqual(
+      expect.objectContaining({ [CONNECTOR_KEY]: expect.anything() }),
+    );
+
+    const [afterRun] = (await sql`
+      SELECT status, claimed_by, claimed_at, last_heartbeat_at
+      FROM runs WHERE id = ${runId}
+    `) as unknown as Array<Record<string, unknown>>;
+    expect(afterRun).toEqual(beforePoll[0]);
   });
 
   it('keeps manifest inventory separate from live permission state so revoked capabilities pause feeds', async () => {

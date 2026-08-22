@@ -100,6 +100,23 @@ describe("device worker poll body", () => {
     expect(calls[0].body).toMatchObject({ label: "Buraks-MacBook-Pro" });
   });
 
+  test("omits capacity for legacy callers and sends zero or positive capacity when supplied", async () => {
+    const { calls } = capturePoll();
+    const client = new WorkerClient({
+      apiUrl: "https://app.example.com",
+      workerId: "w-capacity",
+      capabilities: {},
+    });
+
+    await client.poll();
+    await client.poll(0);
+    await client.poll(3);
+
+    expect(calls[0].body).not.toHaveProperty("capacity_available");
+    expect(calls[1].body.capacity_available).toBe(0);
+    expect(calls[2].body.capacity_available).toBe(3);
+  });
+
   test("a headless device advertises automations.execute without being told to", async () => {
     // The gateway's Automation claim lane matches this exact string, so the
     // build — not the operator's --capabilities flag — is what opts a headless

@@ -406,6 +406,16 @@ describe('browser-affinity poll claim', () => {
         AND status = 'active'
     `;
     await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code, compile_config_hash, created_at
+      ) VALUES (
+        ${orgId}, ${connectorKey}, ${connectorVersion},
+        'module.exports = { sync: async () => ({ items: [] }) }',
+        ${COMPILE_CONFIG_HASH}, NOW()
+      )
+      ON CONFLICT DO NOTHING
+    `;
+    await sql`
       UPDATE connector_versions
       SET compiled_code = NULL,
           compiled_code_hash = NULL,
@@ -414,7 +424,7 @@ describe('browser-affinity poll claim', () => {
           source_path = ${`device-manifest://chrome-extension/${connectorKey}@${connectorVersion}`}
       WHERE connector_key = ${connectorKey}
         AND version = ${connectorVersion}
-        AND organization_id IS NULL
+        AND organization_id = ${orgId}
     `;
     const connectionId = await seedConnection({
       orgId,
@@ -433,6 +443,62 @@ describe('browser-affinity poll claim', () => {
     // fallback must never authorize Chrome, even when the selected artifact
     // is hashless and declares the Chrome runtime.
     const response = await pollExtension(workerId);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };
+    expect(body.run_id).toBeUndefined();
+    expect(body.skipped_run_id).toBeUndefined();
+
+    const [run] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(run).toEqual({ status: 'pending', claimed_by: null });
+  });
+
+  it('does not let the fleet claim an artifact-less whatsapp.local run', async () => {
+    const { userId, orgId } = await seedOrg();
+    const sql = getTestDb();
+    const connectorVersion = `artifactless-${generateSecureToken(4)}`;
+    await createTestConnectorDefinition({
+      key: 'whatsapp.local',
+      name: 'Artifact-less WhatsApp',
+      version: connectorVersion,
+      organization_id: orgId,
+    });
+    await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code, compile_config_hash, created_at
+      ) VALUES (
+        ${orgId}, 'whatsapp.local', ${connectorVersion},
+        'module.exports = { sync: async () => ({ items: [] }) }',
+        ${COMPILE_CONFIG_HASH}, NOW()
+      )
+      ON CONFLICT DO NOTHING
+    `;
+    await sql`
+      UPDATE connector_versions
+      SET compiled_code = NULL,
+          compiled_code_hash = NULL,
+          compile_config_hash = NULL,
+          source_code = NULL,
+          source_path = NULL
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = ${connectorVersion}
+    `;
+    const connectionId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'whatsapp.local',
+      deviceWorkerId: null,
+    });
+    const runId = await seedPendingSync({
+      orgId,
+      connectionId,
+      connectorKey: 'whatsapp.local',
+      connectorVersion,
+    });
+
+    const response = await pollFleet('fleet-whatsapp-artifactless');
     expect(response.status).toBe(200);
     const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };
     expect(body.run_id).toBeUndefined();

@@ -88,6 +88,7 @@ export async function materializeDueFeeds(
         runManifestBacked: sql`run_cv.manifest_backed`,
         runManifestHash: sql`run_cv.artifact_hash`,
         runArtifactSourcePath: sql`run_cv.artifact_source_path`,
+        runArtifactCompiledCode: sql`run_cv.artifact_compiled_code`,
         runRuntime: sql`cd.run_runtime`,
       })
     : sql`true`;

@@ -49,6 +49,11 @@ export interface ManifestClaimAuthorization {
   manifestHash: string;
 }
 
+export interface DeviceManifestClaimAuthorization extends ManifestClaimAuthorization {
+  /** The platform recorded on the device that actually advertised this manifest. */
+  sourcePath: string;
+}
+
 interface DeviceManifestValidationResult {
   manifests: StoredDeviceManifest[];
   accepted: boolean;
@@ -174,12 +179,17 @@ export function validateDeviceConnectorManifests(params: {
 export async function getDeviceManifestSourcesForUser(params: {
   sql: DbClient;
   userId: string;
+  connectorKey?: string;
 }): Promise<DeviceConnectorSource[]> {
   const rows = (await params.sql`
     SELECT id, platform, capabilities, connector_manifests
     FROM device_workers
     WHERE user_id = ${params.userId}
       AND last_seen_at > now() - '7 days'::interval
+      AND (
+        ${params.connectorKey == null}
+        OR connector_manifests ? ${params.connectorKey ?? ''}
+      )
   `) as unknown as Array<{
     id: string;
     platform: string | null;
@@ -262,6 +272,92 @@ export async function getDeviceManifestSourcesForUser(params: {
       },
     ];
   });
+}
+
+/**
+ * Return every validated manifest identity advertised by one exact device.
+ * This deliberately does not apply winner selection: a device may retain a
+ * historical version while another device advertises the current winner.
+ */
+export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
+  sql: DbClient;
+  userId: string;
+  deviceId: string;
+}): Promise<DeviceManifestClaimAuthorization[]> {
+  const rows = (await params.sql`
+    SELECT platform, capabilities, connector_manifests
+    FROM device_workers
+    WHERE id = ${params.deviceId}::uuid
+      AND user_id = ${params.userId}
+      AND last_seen_at > now() - '7 days'::interval
+    LIMIT 1
+  `) as unknown as Array<{
+    platform: string | null;
+    capabilities: unknown;
+    connector_manifests: unknown;
+  }>;
+  const row = rows[0];
+  if (!row || !row.platform || !isKnownPlatform(row.platform)) return [];
+
+  const capabilities = Array.isArray(row.capabilities) ? (row.capabilities as string[]) : [];
+  const map = isRecord(row.connector_manifests) ? row.connector_manifests : {};
+  const authorizations = new Map<string, DeviceManifestClaimAuthorization>();
+  for (const value of Object.values(map)) {
+    const stored = parseStoredManifest(value);
+    if (!stored || !capabilities.includes(stored.manifest.required_capability)) continue;
+
+    // Revalidate the persisted payload before using it as claim authority. The
+    // row may predate manifest hashes, and connector_manifests is durable input
+    // rather than an authorization primitive by itself.
+    const validation = validateDeviceConnectorManifests({
+      platform: row.platform,
+      capabilities,
+      manifests: [stored.manifest],
+    });
+    const validated = validation.manifests[0];
+    if (!validation.accepted || !validated || validated.manifest_hash !== stored.manifest_hash) {
+      continue;
+    }
+
+    const authorization: DeviceManifestClaimAuthorization = {
+      connectorKey: validated.manifest.key,
+      connectorVersion: validated.manifest.version,
+      manifestHash: validated.manifest_hash,
+      sourcePath: `device-manifest://${row.platform}/${validated.manifest.key}@${validated.manifest.version}`,
+    };
+    authorizations.set(
+      `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,
+      authorization
+    );
+  }
+  return [...authorizations.values()];
+}
+
+/**
+ * Lazily attest pre-hash manifest artifacts only from a validated manifest
+ * currently advertised by the authorized device. Shared hashless artifacts
+ * are intentionally not mutated: an org-scoped exact row must exist before a
+ * retained artifact can become claimable.
+ */
+export async function attestDeviceManifestArtifacts(params: {
+  sql: DbClient;
+  organizationId: string;
+  authorizations: DeviceManifestClaimAuthorization[];
+}): Promise<void> {
+  for (const authorization of params.authorizations) {
+    await params.sql`
+      UPDATE connector_versions
+      SET compiled_code_hash = ${authorization.manifestHash}
+      WHERE organization_id = ${params.organizationId}
+        AND connector_key = ${authorization.connectorKey}
+        AND version = ${authorization.connectorVersion}
+        AND compiled_code_hash IS NULL
+        AND compiled_code IS NULL
+        AND compile_config_hash IS NULL
+        AND source_code IS NULL
+        AND source_path = ${authorization.sourcePath}
+    `;
+  }
 }
 
 export function storedManifestMap(valid: StoredDeviceManifest[]): Record<string, StoredDeviceManifest> {

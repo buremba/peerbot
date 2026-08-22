@@ -111,6 +111,7 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
               AND NOT (${legacyNonManifestConnectorSql(sql, {
                 connectorKey: sql`c.connector_key`,
                 manifestBacked: sql`run_cv.manifest_backed`,
+                artifactCompiledCode: sql`run_cv.artifact_compiled_code`,
               })})
             )
           ) AS device_deferred

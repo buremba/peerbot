@@ -527,6 +527,13 @@ describe("connection-to-device operation routing lifecycle", () => {
 		expect(manifestWhatsappResult).toMatchObject({
 			status: "timeout",
 		});
+		const [manifestWhatsappRun] = (await sql`
+			SELECT status, claimed_by
+			FROM runs
+			WHERE connection_id = ${compiledWhatsappConnection.id}
+			  AND action_idempotency_key = ${manifestWhatsappKey}
+		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
+		expect(manifestWhatsappRun).toEqual({ status: "timeout", claimed_by: null });
 
 		// Intrinsic connector runtime remains authoritative even without a pin.
 		await sql`

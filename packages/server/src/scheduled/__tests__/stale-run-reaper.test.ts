@@ -256,6 +256,7 @@ describe("reapStaleRuns — connector lanes", () => {
 		await sql`
       INSERT INTO connector_versions (organization_id, connector_key, version)
       VALUES (${ORG_ID}, 'fake', '1.0.0')
+      ON CONFLICT DO NOTHING
     `;
 		const devices = (await sql`
       INSERT INTO device_workers (

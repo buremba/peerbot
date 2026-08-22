@@ -27,6 +27,8 @@ import { clearDevicePinTombstoneIfPinned } from '../utils/device-pin-tombstones'
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import {
+  attestDeviceManifestArtifacts,
+  getDeviceManifestClaimAuthorizationsForDevice,
   getDeviceManifestSourcesForUser,
   sortJson,
   type DeviceConnectorSource,
@@ -245,9 +247,9 @@ async function ensureDeviceConnectorWired(
   };
   const lockedManifestWinner = async (db: typeof sql): Promise<DeviceConnectorSource | null> => {
     if (!source) return null;
-    const current = (await getDeviceManifestSourcesForUser({ sql: db, userId })).find(
-      (candidate) => candidate.key === connectorKey
-    );
+    const current = (
+      await getDeviceManifestSourcesForUser({ sql: db, userId, connectorKey })
+    ).find((candidate) => candidate.key === connectorKey);
     if (
       !current ||
       current.metadata.version !== source.metadata.version ||
@@ -1027,6 +1029,34 @@ export async function reconcileDeviceCapabilities(
       filter(([, caps]) => caps.has(capability))
       .map(([id]) => id);
 
+  let pollingDeviceAuthorizations: Awaited<
+    ReturnType<typeof getDeviceManifestClaimAuthorizationsForDevice>
+  > = [];
+  let pollingManifestClaimsReadable = true;
+  if (pollingDeviceId) {
+    try {
+      // Attest retained hashless rows before reconciliation's selected-artifact
+      // check. The attestation is still bounded to this validated device's
+      // exact manifest identity and org-scoped artifact row.
+      pollingDeviceAuthorizations = await getDeviceManifestClaimAuthorizationsForDevice({
+        sql,
+        userId,
+        deviceId: pollingDeviceId,
+      });
+      await attestDeviceManifestArtifacts({
+        sql,
+        organizationId: personalOrgId,
+        authorizations: pollingDeviceAuthorizations,
+      });
+    } catch (err) {
+      pollingManifestClaimsReadable = false;
+      logger.warn(
+        { userId, pollingDeviceId, err: errorMessage(err) },
+        '[device-connectors] Failed to read polling device manifest claims'
+      );
+    }
+  }
+
   let manifestSources: DeviceConnectorSource[] = [];
   try {
     manifestSources = await getDeviceManifestSourcesForUser({
@@ -1083,8 +1113,34 @@ export async function reconcileDeviceCapabilities(
     })
   );
 
-  if (!pollingDeviceId) return [];
-  return reconciliationResults.flatMap((result) =>
+  const reconciledAuthorizations = reconciliationResults.flatMap((result) =>
     result.status === 'fulfilled' && result.value ? [result.value] : []
   );
+  if (!pollingDeviceId) return reconciledAuthorizations;
+  if (!pollingManifestClaimsReadable || !sourcesReadable) return [];
+
+  // If the polling device is the current winner for a manifest key, a failed
+  // wire/reconciliation must fail closed for that key. Historical claims are
+  // allowed only for keys where this device advertises a retained version and
+  // winner reconciliation belongs to another device.
+  const currentWinnerKeysForPoller = new Set(
+    manifestSources
+      .filter((source) => source.advertiserDeviceIds.includes(pollingDeviceId))
+      .map((source) => source.key)
+  );
+  if (
+    [...currentWinnerKeysForPoller].some(
+      (key) => !reconciledAuthorizations.some((authorization) => authorization.connectorKey === key)
+    )
+  ) {
+    return [];
+  }
+
+  const all = [...reconciledAuthorizations, ...pollingDeviceAuthorizations];
+  return [...new Map(
+    all.map((authorization) => [
+      `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,
+      authorization,
+    ])
+  ).values()];
 }

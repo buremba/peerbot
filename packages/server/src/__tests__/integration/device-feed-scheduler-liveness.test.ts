@@ -144,6 +144,17 @@ describe('scheduled feed device liveness', () => {
       WHERE organization_id = ${org.id} AND key = 'whatsapp.local'
     `;
     await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code,
+        compiled_code_hash, compile_config_hash, source_code, source_path, created_at
+      ) VALUES (
+        ${org.id}, 'whatsapp.local', '1.0.0', NULL,
+        'mac-whatsapp-manifest-hash', NULL, NULL,
+        'device-manifest://macos/whatsapp.local@1.0.0', NOW()
+      )
+      ON CONFLICT DO NOTHING
+    `;
+    await sql`
       UPDATE connector_versions
       SET compiled_code = NULL,
           compiled_code_hash = 'mac-whatsapp-manifest-hash',
@@ -151,6 +162,7 @@ describe('scheduled feed device liveness', () => {
           source_code = NULL,
           source_path = 'device-manifest://macos/whatsapp.local@1.0.0'
       WHERE connector_key = 'whatsapp.local' AND version = '1.0.0'
+        AND organization_id = ${org.id}
     `;
     await sql`
       UPDATE feeds

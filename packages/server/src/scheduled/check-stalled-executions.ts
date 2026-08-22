@@ -480,8 +480,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           LEFT JOIN public.device_workers dw ON dw.id = c.device_worker_id
           LEFT JOIN LATERAL (
             SELECT
-              definitions.required_capability AS run_required_capability,
-              definitions.runtime AS run_runtime
+              definitions.required_capability AS run_required_capability
             FROM public.connector_definitions definitions
             WHERE definitions.key = t.connector_key
               AND definitions.organization_id = t.organization_id

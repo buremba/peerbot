@@ -1038,6 +1038,104 @@ describe('device connector manifests', () => {
     expect((await readWhatsAppRows(orgId)).connections[0].device_worker_id).toBeNull();
   });
 
+  it('authorizes a retained v1 manifest only from its advertiser after v2 wins, including hashless attestation', async () => {
+    const { userId, orgId, workerId: v1WorkerId } = await seedDeviceOwner('chrome-extension');
+    const sql = getTestDb();
+    const v1Manifest = whatsappManifest('chrome-extension', {
+      version: '1.0.0',
+      name: 'WhatsApp Chrome v1',
+    });
+    expect(
+      (await poll(v1WorkerId, [v1Manifest], 'chrome-extension', { 'browser.scripting': true }))
+        .status
+    ).toBe(200);
+    await settleRunsAndFeeds(orgId);
+
+    const v2WorkerId = `chrome-wa-v2-${generateSecureToken(4)}`;
+    await seedAdditionalDevice({
+      userId,
+      orgId,
+      workerId: v2WorkerId,
+      platform: 'chrome-extension',
+    });
+    const v2Manifest = whatsappManifest('chrome-extension', {
+      version: '2.0.0',
+      name: 'WhatsApp Chrome v2',
+    });
+    expect(
+      (await poll(v2WorkerId, [v2Manifest], 'chrome-extension', { 'browser.scripting': true }))
+        .status
+    ).toBe(200);
+    await settleRunsAndFeeds(orgId);
+
+    const v2SecondWorkerId = `chrome-wa-v2-second-${generateSecureToken(4)}`;
+    await seedAdditionalDevice({
+      userId,
+      orgId,
+      workerId: v2SecondWorkerId,
+      platform: 'chrome-extension',
+    });
+    expect(
+      (
+        await poll(v2SecondWorkerId, [v2Manifest], 'chrome-extension', {
+          'browser.scripting': true,
+        })
+      ).status
+    ).toBe(200);
+    await settleRunsAndFeeds(orgId);
+
+    const rows = await readWhatsAppRows(orgId);
+    const connectionId = Number(rows.connections[0].id);
+    const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
+    expect(messagesFeed).toBeDefined();
+    await sql`
+      UPDATE connections
+      SET device_worker_id = NULL
+      WHERE id = ${connectionId}
+    `;
+    await sql`
+      UPDATE connector_versions
+      SET compiled_code_hash = NULL
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = '1.0.0'
+    `;
+    const [run] = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, feed_id, connection_id, connector_key,
+        connector_version, approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, 'whatsapp.local',
+        '1.0.0', 'auto', 'pending', NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const v2Poll = await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
+      'browser.scripting': true,
+    });
+    expect(v2Poll.status).toBe(200);
+    expect(((await v2Poll.json()) as { run_id?: number }).run_id).toBeUndefined();
+    const [stillPending] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${run.id}
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(stillPending).toEqual({ status: 'pending', claimed_by: null });
+
+    const v1Poll = await poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
+      'browser.scripting': true,
+    });
+    expect(v1Poll.status).toBe(200);
+    expect(((await v1Poll.json()) as { run_id?: number }).run_id).toBe(Number(run.id));
+    const [attested] = (await sql`
+      SELECT compiled_code_hash
+      FROM connector_versions
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'whatsapp.local'
+        AND version = '1.0.0'
+    `) as unknown as Array<{ compiled_code_hash: string | null }>;
+    expect(attested.compiled_code_hash).toBe(deviceManifestHash(v1Manifest));
+  });
+
   it('does not authorize a Chrome v2 advertiser for an old v1 run or v1-pinned feed', async () => {
     const { userId, orgId, workerId: macWorkerId } = await seedDeviceOwner('macos');
     const sql = getTestDb();
@@ -1358,8 +1456,8 @@ describe('device connector manifests', () => {
       platform: 'chrome-extension',
     });
 
-    let v1PollPromise: ReturnType<typeof poll> | undefined;
-    let v2PollPromise: ReturnType<typeof poll> | undefined;
+    let v1PollPromise: Promise<Awaited<ReturnType<typeof poll>>> | undefined;
+    let v2PollPromise: Promise<Awaited<ReturnType<typeof poll>>> | undefined;
     await sql.begin(async (tx) => {
       await tx`
         SELECT pg_advisory_xact_lock(
@@ -1369,10 +1467,12 @@ describe('device connector manifests', () => {
       v1PollPromise = poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
         'browser.scripting': true,
       });
+      v1PollPromise.catch(() => undefined);
       await waitForAutowireWaiters(userId, 'whatsapp.local', 1);
       v2PollPromise = poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
         'browser.scripting': true,
       });
+      v2PollPromise.catch(() => undefined);
       await waitForAutowireWaiters(userId, 'whatsapp.local', 2);
     });
 
@@ -1426,8 +1526,11 @@ describe('device connector manifests', () => {
       WHERE organization_id = ${orgId} AND key = 'whatsapp.local' AND status = 'active'
     `;
 
+    const triggerSuffix = generateSecureToken(6).replace(/[^a-zA-Z0-9]/g, '');
+    const triggerFunction = `test_fail_whatsapp_manifest_reconcile_${triggerSuffix}`;
+    const triggerName = `${triggerFunction}_trigger`;
     await sql.unsafe(`
-      CREATE OR REPLACE FUNCTION test_fail_whatsapp_manifest_reconcile()
+      CREATE OR REPLACE FUNCTION ${triggerFunction}()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.key = 'whatsapp.local' THEN
@@ -1438,9 +1541,9 @@ describe('device connector manifests', () => {
       $$
     `);
     await sql.unsafe(`
-      CREATE TRIGGER test_fail_whatsapp_manifest_reconcile_trigger
+      CREATE TRIGGER ${triggerName}
       BEFORE UPDATE ON connector_definitions
-      FOR EACH ROW EXECUTE FUNCTION test_fail_whatsapp_manifest_reconcile()
+      FOR EACH ROW EXECUTE FUNCTION ${triggerFunction}()
     `);
     try {
       const response = await poll(workerId, [chromeManifest], 'chrome-extension', {
@@ -1456,9 +1559,9 @@ describe('device connector manifests', () => {
       expect(run).toEqual({ status: 'pending', claimed_by: null });
     } finally {
       await sql.unsafe(
-        'DROP TRIGGER IF EXISTS test_fail_whatsapp_manifest_reconcile_trigger ON connector_definitions'
+        `DROP TRIGGER IF EXISTS ${triggerName} ON connector_definitions`
       );
-      await sql.unsafe('DROP FUNCTION IF EXISTS test_fail_whatsapp_manifest_reconcile()');
+      await sql.unsafe(`DROP FUNCTION IF EXISTS ${triggerFunction}()`);
     }
   });
 

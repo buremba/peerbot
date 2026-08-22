@@ -37,6 +37,7 @@ interface ConnectorClaimLaneRefs {
   runManifestBacked: SqlFragment;
   runManifestHash: SqlFragment;
   runArtifactSourcePath: SqlFragment;
+  runArtifactCompiledCode: SqlFragment;
   runRuntime: SqlFragment;
 }
 
@@ -99,6 +100,7 @@ export function connectorClaimLaneSql(
   const legacyFleetArtifact = legacyNonManifestConnectorSql(sql, {
     connectorKey: refs.connectorKey,
     manifestBacked: refs.runManifestBacked,
+    artifactCompiledCode: refs.runArtifactCompiledCode,
   });
 
   return sql`
@@ -111,6 +113,15 @@ export function connectorClaimLaneSql(
           COALESCE(${refs.runRequiredCapability}, '') = ANY(
             ${pgTextArray(context.capabilityMatchSet)}::text[]
           )
+          OR (${legacyFleetArtifact})
+        )
+        -- The empty capability match is the anonymous fleet lane. A legacy
+        -- whatsapp.local row must still have a runnable selected artifact;
+        -- otherwise it would be claimed and fail only after becoming running.
+        AND (
+          NOT (${refs.connectorKey} = ANY(
+            ${pgTextArray(['whatsapp.local'])}::text[]
+          ))
           OR (${legacyFleetArtifact})
         )
         AND NOT COALESCE(${refs.runManifestBacked}, false)

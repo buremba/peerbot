@@ -723,9 +723,8 @@ export async function handleAutomationMode(
 
   // How the window being handed out sits against the clock, and whether an
   // explicit range omitted periods. Measured against the WINDOW, not the
-  // cursor: at the moment a run reads, the cursor is the period the PREVIOUS run
-  // completed, so a healthy daily Automation is two periods behind by that measure
-  // and one by this one.
+  // latest completed period: at the moment a run reads, the pending window is
+  // ordinarily one period after it for a healthy sequential Automation.
   const windowLag = computeWindowLag(windowCursor, windowStart, new Date(), timeGranularity);
   const windowLagNote = describeWindowLag({
     skippedFrom: windowLag.skippedFrom,

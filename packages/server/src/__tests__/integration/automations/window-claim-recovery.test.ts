@@ -225,10 +225,11 @@ describe('Automation window claim and recovery', () => {
       next_window_start: string | Date;
       covers_later: boolean;
       window_projection_granularity: string;
+      last_completed_window_start: string | Date | null;
     }>`
       SELECT next_window_start,
              completed_window_coverage @> ${new Date(laterStart.getTime() + 3_600_000).toISOString()}::timestamptz AS covers_later,
-             window_projection_granularity
+             window_projection_granularity, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(new Date(projection.next_window_start).toISOString()).toBe(
@@ -236,6 +237,9 @@ describe('Automation window claim and recovery', () => {
     );
     expect(projection.covers_later).toBe(true);
     expect(projection.window_projection_granularity).toBe('daily');
+    expect(new Date(projection.last_completed_window_start as string | Date).toISOString()).toBe(
+      laterStart.toISOString()
+    );
   });
 
   it('allows only one PostgreSQL-mediated claimant for a logical window', async () => {
@@ -389,10 +393,11 @@ describe('Automation window claim and recovery', () => {
       next_window_start: string | Date;
       completed_window_coverage: string;
       window_projection_granularity: string;
+      last_completed_window_start: string | Date | null;
     }>`
       SELECT next_window_start,
              completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity
+             window_projection_granularity, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(resetProjection.window_projection_granularity).toBe('weekly');
@@ -410,10 +415,11 @@ describe('Automation window claim and recovery', () => {
       next_window_start: string | Date;
       completed_window_coverage: string;
       window_projection_granularity: string;
+      last_completed_window_start: string | Date | null;
     }>`
       SELECT next_window_start,
              completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity
+             window_projection_granularity, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(afterCompletion).toEqual(resetProjection);

@@ -341,7 +341,8 @@ export async function handleCreate(
         min_cooldown_seconds,
         delivery_target, execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema,
-        next_window_start, completed_window_coverage, window_projection_granularity
+        next_window_start, completed_window_coverage, window_projection_granularity,
+        last_completed_window_start
       ) VALUES (
         ${automationId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -358,7 +359,7 @@ export async function handleCreate(
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
         ${nextWindowStart.toISOString()}::timestamptz,
-        '{}'::tstzmultirange, ${projectionGranularity}
+        '{}'::tstzmultirange, ${projectionGranularity}, NULL
       )
     `;
 
@@ -692,6 +693,7 @@ export async function handleUpdate(
       next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
       completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
       window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,
+      last_completed_window_start = CASE WHEN ${resetsWindowProjection} THEN NULL ELSE last_completed_window_start END,
       agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
@@ -1043,7 +1045,8 @@ export async function handleCreateFromVersion(
             current_version_id, tags, status, created_by, created_at, updated_at,
             automation_group_id, source_automation_id,
             reaction_script, reaction_script_compiled, reaction_input_schema,
-            next_window_start, completed_window_coverage, window_projection_granularity
+            next_window_start, completed_window_coverage, window_projection_granularity,
+            last_completed_window_start
           ) VALUES (
             ${automationId}, ${automationName}, ${automationSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
@@ -1059,7 +1062,7 @@ export async function handleCreateFromVersion(
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)},
             ${nextWindowStart.toISOString()}::timestamptz,
-            '{}'::tstzmultirange, ${projectionGranularity}
+            '{}'::tstzmultirange, ${projectionGranularity}, NULL
           )
         `;
 

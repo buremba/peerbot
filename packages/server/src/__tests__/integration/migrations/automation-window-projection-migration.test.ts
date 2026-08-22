@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import {
   executeMigrationSection,
@@ -42,11 +42,22 @@ describe('Automation scheduled-coverage projection migration', () => {
 
   beforeEach(async () => {
     await cleanupTestDatabase();
+    // Seed genuine pre-migration history. Replaying the migration recreates and
+    // enables the compatibility trigger before running the backfill.
+    await getDb().unsafe(
+      'ALTER TABLE public.runs DISABLE TRIGGER advance_automation_window_projection_from_run'
+    );
     const organization = await createTestOrganization();
     const user = await createTestUser();
     await addUserToOrganization(user.id, organization.id, 'owner');
     organizationId = organization.id;
     userId = user.id;
+  });
+
+  afterEach(async () => {
+    await getDb().unsafe(
+      'ALTER TABLE public.runs ENABLE TRIGGER advance_automation_window_projection_from_run'
+    );
   });
 
   async function seedAutomation(id: number, schedule = '0 9 * * *'): Promise<void> {

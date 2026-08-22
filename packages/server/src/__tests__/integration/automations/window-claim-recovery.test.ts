@@ -188,6 +188,52 @@ describe('Automation window claim and recovery', () => {
     });
   });
 
+  it('projects an old-replica completion without skipping an earlier failed period', async () => {
+    const failedStart = dayStart(4);
+    await sql`
+      UPDATE automations
+      SET next_window_start = NULL,
+          completed_window_coverage = '{}'::tstzmultirange,
+          window_projection_granularity = NULL
+      WHERE id = ${automationId}
+    `;
+    await failRun(failedStart);
+    const laterStart = dayStart(2);
+    const laterRun = await createAutomationRun({
+      organizationId: orgId,
+      automationId,
+      agentId,
+      windowStart: laterStart.toISOString(),
+      windowEnd: dayStart(1).toISOString(),
+      dispatchSource: 'scheduled',
+    });
+
+    // A previous server build only completes the run row. The database trigger
+    // must maintain the new projection until every replica has rolled forward.
+    await sql`
+      UPDATE runs
+      SET status = 'completed', outcome = 'scoreable', action_output = '{}'::jsonb,
+          completed_at = current_timestamp
+      WHERE id = ${laterRun.runId}
+    `;
+
+    const [projection] = await sql<{
+      next_window_start: string | Date;
+      covers_later: boolean;
+      window_projection_granularity: string;
+    }>`
+      SELECT next_window_start,
+             completed_window_coverage @> ${new Date(laterStart.getTime() + 3_600_000).toISOString()}::timestamptz AS covers_later,
+             window_projection_granularity
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(new Date(projection.next_window_start).toISOString()).toBe(
+      failedStart.toISOString()
+    );
+    expect(projection.covers_later).toBe(true);
+    expect(projection.window_projection_granularity).toBe('daily');
+  });
+
   it('allows only one PostgreSQL-mediated claimant for a logical window', async () => {
     const settled = await Promise.allSettled([claim(), claim()]);
     expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);

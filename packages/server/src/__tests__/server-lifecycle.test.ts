@@ -505,7 +505,7 @@ describe("createServerLifecycle (source-level contract)", () => {
 	});
 });
 
-describe("shutdown ordering (behavioral)", () => {
+describe("shutdown ordering (live drain)", () => {
 	it(
 		"refuses new work and drains the in-flight request before gateway/db teardown",
 		async () => {

@@ -74,7 +74,7 @@ describe('native bridge framing', () => {
   });
 });
 
-function helloFrame(workerId = 'mac:test') {
+function helloFrame(workerId = 'mac:test', generation: number | undefined = 4) {
   return encodeNativeBridgeFrame({
     version: 1,
     kind: 'hello',
@@ -88,12 +88,27 @@ function helloFrame(workerId = 'mac:test') {
       nonce: 'nonce-1',
       capabilities: { 'os.files': true },
       connector_manifests: [{ key: 'apple.files', version: '1.0.0' }],
-      generation: 4,
+      ...(generation === undefined ? {} : { generation }),
     },
   });
 }
 
 describe('native bridge handshake', () => {
+  test('accepts an omitted generation with the supervised daemon seed', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const provider = new MutableWorkerAdvertisementProvider({
+      capabilities: {},
+      manifests: [],
+      generation: 0,
+    });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    input.write(helloFrame('mac:test', undefined));
+    await expect(bridge.handshake()).resolves.toBeUndefined();
+    input.destroy();
+    output.destroy();
+  });
+
   test('rejects a forged worker ownership marker', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

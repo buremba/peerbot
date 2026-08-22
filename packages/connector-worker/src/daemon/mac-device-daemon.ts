@@ -279,7 +279,7 @@ export async function runMacDeviceDaemon(options: MacDeviceDaemonOptions): Promi
   if (validated.noPoll) return;
   if (validated.supervisedStdio) {
     const advertisementProvider = new MutableWorkerAdvertisementProvider({
-      capabilities: { 'automations.execute': true },
+      capabilities: {},
       manifests: [],
       generation: 0,
     });

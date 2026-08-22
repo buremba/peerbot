@@ -80,7 +80,7 @@ export function buildOperationsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): OperationsNamespace {
-	const { manage, action } = createActionCaller(
+	const { manage, method } = createActionCaller(
 		manageOperations,
 		env,
 		ctx,
@@ -89,16 +89,16 @@ export function buildOperationsNamespace(
 
 	return {
 		manage,
-		listAvailable: (input) => action("list_available", input, "listAvailable"),
-		execute: (input) => action("execute", input, "execute"),
-		listRuns: (input) => action("list_runs", input, "listRuns"),
-		getRun: (run_id) =>
-			action(
-				"get_run",
-				{ run_id: idArg("operations.getRun", "run_id", run_id, "number") },
-				"getRun",
-			),
-		approve: (input) => action("approve", input, "approve"),
-		reject: (input) => action("reject", input, "reject"),
+		listAvailable: method("list_available", { publicMethod: "listAvailable" }),
+		execute: method("execute"),
+		listRuns: method("list_runs", { publicMethod: "listRuns" }),
+		getRun: method("get_run", {
+			publicMethod: "getRun",
+			mapArgs: (run_id) => ({
+				run_id: idArg("operations.getRun", "run_id", run_id, "number"),
+			}),
+		}),
+		approve: method("approve"),
+		reject: method("reject"),
 	};
 }

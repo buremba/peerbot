@@ -365,6 +365,18 @@ export function validateToolResult(schema: TSchema, result: unknown): unknown | 
 }
 
 const VALIDATED_BRAND = Symbol.for('lobu.validated-tool-handler');
+// Vitest's resetModules() and bundled tool graphs can instantiate this module
+// more than once in one process. The validator metadata must survive that
+// module boundary; the SDK preflight marker itself remains module-private.
+const VALIDATE_ARGS = Symbol.for('lobu.validated-tool-args');
+
+export type ArgsValidator = (args: unknown) => unknown;
+
+export function getArgsValidator(handler: unknown): ArgsValidator | undefined {
+  return typeof handler === 'function'
+    ? (handler as unknown as Record<symbol, ArgsValidator | undefined>)[VALIDATE_ARGS]
+    : undefined;
+}
 
 interface BrandedHandler {
   [VALIDATED_BRAND]?: string;
@@ -392,6 +404,10 @@ export function withValidatedArgs<A, R extends unknown[], T>(
   // them.
   const wrapped = async (args: A, ...rest: R): Promise<T> =>
     handler(validateToolArgs(toolName, schema, args) as A, ...rest);
+  Object.defineProperty(wrapped, VALIDATE_ARGS, {
+    value: (args: unknown) => validateToolArgs(toolName, schema, args),
+    enumerable: false,
+  });
   (wrapped as BrandedHandler)[VALIDATED_BRAND] = toolName;
   return wrapped;
 }

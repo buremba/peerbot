@@ -84,72 +84,60 @@ export function buildEntitySchemaNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): EntitySchemaNamespace {
-	const { manage, action } = createActionCaller(
+	const { manage, method } = createActionCaller(
 		manageEntitySchema,
 		env,
 		ctx,
 		"entitySchema",
 	);
-	// Keep both handler discriminators independent of caller input.
-	const callEntity = <T>(
+	const entityMethod = (
 		actionName: string,
-		payload: object | undefined,
 		publicMethod: string,
-	): Promise<T> =>
-		action(
-			actionName,
-			{ ...payload, schema_type: "entity_type" },
+		mapArgs: (...args: any[]) => object = (input) => input ?? {},
+	) =>
+		method(actionName, {
 			publicMethod,
-		);
-	const callRel = <T>(
+			mapArgs: (...args) => ({
+				...mapArgs(...args),
+				schema_type: "entity_type",
+			}),
+		});
+	const relationshipMethod = (
 		actionName: string,
-		payload: object | undefined,
 		publicMethod: string,
-	): Promise<T> =>
-		action(
-			actionName,
-			{ ...payload, schema_type: "relationship_type" },
+		mapArgs: (...args: any[]) => object = (input) => input ?? {},
+	) =>
+		method(actionName, {
 			publicMethod,
-		);
+			mapArgs: (...args) => ({
+				...mapArgs(...args),
+				schema_type: "relationship_type",
+			}),
+		});
 
 	return {
 		manage,
-		listTypes: (input) => callEntity("list", input, "listTypes"),
-		getType: (slug) =>
-			callEntity(
-				"get",
-				{
-					slug: idArg("entitySchema.getType", "slug", slug, "string"),
-				},
-				"getType",
-			),
-		createType: (input) => callEntity("create", input, "createType"),
-		updateType: (input) => callEntity("update", input, "updateType"),
-		deleteType: (input) => callEntity("delete", input, "deleteType"),
-		auditType: (slug) =>
-			callEntity(
-				"audit",
-				{
-					slug: idArg("entitySchema.auditType", "slug", slug, "string"),
-				},
-				"auditType",
-			),
+		listTypes: entityMethod("list", "listTypes"),
+		getType: entityMethod("get", "getType", (slug) => ({
+			slug: idArg("entitySchema.getType", "slug", slug, "string"),
+		})),
+		createType: entityMethod("create", "createType"),
+		updateType: entityMethod("update", "updateType"),
+		deleteType: entityMethod("delete", "deleteType"),
+		auditType: entityMethod("audit", "auditType", (slug) => ({
+			slug: idArg("entitySchema.auditType", "slug", slug, "string"),
+		})),
 
-		listRelTypes: (input) => callRel("list", input, "listRelTypes"),
-		getRelType: (slug) =>
-			callRel(
-				"get",
-				{
-					slug: idArg("entitySchema.getRelType", "slug", slug, "string"),
-				},
-				"getRelType",
-			),
-		createRelType: (input) => callRel("create", input, "createRelType"),
-		updateRelType: (input) => callRel("update", input, "updateRelType"),
-		deleteRelType: (input) => callRel("delete", input, "deleteRelType"),
+		listRelTypes: relationshipMethod("list", "listRelTypes"),
+		getRelType: relationshipMethod("get", "getRelType", (slug) => ({
+			slug: idArg("entitySchema.getRelType", "slug", slug, "string"),
+		})),
+		createRelType: relationshipMethod("create", "createRelType"),
+		updateRelType: relationshipMethod("update", "updateRelType"),
+		deleteRelType: relationshipMethod("delete", "deleteRelType"),
 
-		addRule: (input) => callRel("add_rule", input, "addRule"),
-		removeRule: (input) => callRel("remove_rule", input, "removeRule"),
-		listRules: (input) => callRel("list_rules", input, "listRules"),
+		addRule: relationshipMethod("add_rule", "addRule"),
+		removeRule: relationshipMethod("remove_rule", "removeRule"),
+		listRules: relationshipMethod("list_rules", "listRules"),
 	};
 }

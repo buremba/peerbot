@@ -49,6 +49,100 @@ describe("ClientSDK business failure boundary", () => {
 		expect(result.error?.message).not.toContain('{"');
 	});
 
+	it.each([
+		["feeds.delete", "client.feeds.delete({ id: 589 })", "feed_id"],
+		[
+			"connections.delete",
+			"client.connections.delete({ id: 546 })",
+			"connection_id",
+		],
+	])(
+		"validates malformed skipped %s calls before previewing them",
+		async (publicMethod, call, field) => {
+			const result = await runScript({
+				source: `export default async (_ctx, client) => ${call};`,
+				sdk: workspace.owner,
+				sdkMode: "full",
+				dryRun: true,
+				maxAccessLevel: "admin",
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error?.message).toContain(publicMethod);
+			expect(result.error?.message).toContain(field);
+			expect(result.sideEffectPreview).toEqual([]);
+			expect(result.skippedCalls).toBe(0);
+		},
+	);
+
+	it("previews canonical args across access classes without executing handlers", async () => {
+		const result = await runScript({
+			source: `export default async (_ctx, client) => Promise.all([
+				client.feeds.delete({ feed_id: 589 }),
+				client.connections.delete(546),
+				client.connections.update({ connection_id: 547, status: "error" }),
+				client.operations.execute({ connection_id: 549, operation_key: "dry_run_probe" }),
+			]);`,
+			sdk: workspace.owner,
+			sdkMode: "full",
+			dryRun: true,
+			maxAccessLevel: "admin",
+		});
+
+		expect(result.error).toBeUndefined();
+		expect(result.success).toBe(true);
+		expect(result.skippedCalls).toBe(4);
+		expect(result.sideEffectPreview).toMatchObject([
+			{
+				path: "feeds.delete",
+				args: [{ feed_id: 589 }],
+				required_access: "admin",
+				authorization_status: "not_evaluated",
+			},
+			{
+				path: "connections.delete",
+				args: [{ connection_id: 546 }],
+				required_access: "admin",
+				authorization_status: "not_evaluated",
+			},
+			{
+				path: "connections.update",
+				args: [{ connection_id: 547, status: "error" }],
+				required_access: "write",
+				authorization_status: "not_evaluated",
+			},
+			{
+				path: "operations.execute",
+				args: [{ connection_id: 549, operation_key: "dry_run_probe" }],
+				required_access: "external",
+				authorization_status: "not_evaluated",
+			},
+		]);
+		expect(result.returnValue).toEqual([
+			{ dry_run: true, skipped_call: "feeds.delete", access: "admin" },
+			{ dry_run: true, skipped_call: "connections.delete", access: "admin" },
+			{ dry_run: true, skipped_call: "connections.update", access: "write" },
+			{ dry_run: true, skipped_call: "operations.execute", access: "external" },
+		]);
+	});
+
+	it("keeps reads live during dry-run", async () => {
+		const result = await runScript({
+			source: `export default async (_ctx, client) => client.connections.list({ limit: 1 });`,
+			sdk: workspace.owner,
+			sdkMode: "full",
+			dryRun: true,
+			maxAccessLevel: "admin",
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.skippedCalls).toBe(0);
+		expect(result.sideEffectPreview).toEqual([]);
+		expect(result.sdkCallTrace).toMatchObject([
+			{ path: "connections.list", skipped: false },
+		]);
+	});
+
 	it("redacts secrets and bounds structured error details", () => {
 		expect(
 			safeErrorDetails({

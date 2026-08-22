@@ -42,7 +42,7 @@ export const RunSchema = Type.Object({
   dry_run: Type.Optional(
     Type.Boolean({
       description:
-        "Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.",
+        "Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are canonicalized and validated, then skipped and returned in side_effect_preview without executing their handlers.",
     }),
   ),
 });
@@ -63,6 +63,19 @@ const PublicSideEffectPreviewEntrySchema = Type.Object({
   ),
   args: Type.Array(Type.Unknown(), {
     description: "Redacted, bounded arguments for the proposed action.",
+  }),
+  required_access: Type.Union(
+    [
+      Type.Literal("read"),
+      Type.Literal("write"),
+      Type.Literal("external"),
+      Type.Literal("admin"),
+    ],
+    { description: "Access tier required by the proposed SDK method." },
+  ),
+  authorization_status: Type.Literal("not_evaluated", {
+    description:
+      "Dry-run validates arguments but does not execute live authorization or approval policy.",
   }),
 });
 
@@ -167,7 +180,23 @@ function asPublicPreviewEntry(value: unknown): PublicSideEffectPreviewEntry | nu
     row.access === "unknown"
       ? row.access
       : "unknown";
-  return { path: row.path, access, args: row.args };
+  const requiredAccess =
+    row.required_access === "read" ||
+    row.required_access === "write" ||
+    row.required_access === "external" ||
+    row.required_access === "admin"
+      ? row.required_access
+      : null;
+  if (!requiredAccess || row.authorization_status !== "not_evaluated") {
+    return null;
+  }
+  return {
+    path: row.path,
+    access,
+    args: row.args,
+    required_access: requiredAccess,
+    authorization_status: row.authorization_status,
+  };
 }
 
 type StartedSideEffect = Static<typeof StartedSideEffectSchema>;

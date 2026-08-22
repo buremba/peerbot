@@ -178,6 +178,8 @@ describe("guest-side proxy traps", () => {
           },
         ],
         skipped: true,
+        required_access: "write",
+        authorization_status: "not_evaluated",
       },
     ]);
   });

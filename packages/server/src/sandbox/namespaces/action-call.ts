@@ -1,9 +1,18 @@
 import type { Env } from "../../index";
 import type { ToolContext } from "../../tools/registry";
+import { getArgsValidator } from "../../tools/validate-args";
 import { ToolUserError } from "../../utils/errors";
 import { applyFieldAliases } from "../sdk-aliases";
+import { METHOD_METADATA } from "../method-metadata";
+import { createValidatedSdkMethod } from "../sdk-preflight";
 
 type AdminHandler = (args: any, env: Env, ctx: ToolContext) => Promise<unknown>;
+
+interface ActionMethodOptions {
+	publicMethod?: string;
+	mapArgs?: (...args: any[]) => object | undefined;
+	checkFailure?: boolean;
+}
 
 /**
  * Consistent failure raised by named ClientSDK namespace methods when a legacy
@@ -130,16 +139,16 @@ function snakeToCamel(name: string): string {
  * method the caller actually invoked. An arg-validation failure raised deep in
  * an admin handler reads `Invalid arguments for manage_feeds: …`, but a fresh
  * agent only ever called `client.feeds.get` — `manage_feeds` is internal
- * plumbing it cannot search or recover against. When the namespace is known,
- * swap `manage_<x>` for `client.<namespace>.<method>` and keep the field-level
- * detail (`/feed_id: Expected required property`) intact.
+ * plumbing it cannot search or recover against. Swap `manage_<x>` for
+ * `client.<namespace>.<method>` and keep the field-level detail
+ * (`/feed_id: Expected required property`) intact.
  */
 function rewriteInternalToolName(
 	err: unknown,
-	sdkNamespace: string | undefined,
+	sdkNamespace: string,
 	publicMethod: string,
 ): unknown {
-	if (!sdkNamespace || !(err instanceof ToolUserError)) return err;
+	if (!(err instanceof ToolUserError)) return err;
 	const internalValidatorPrefix = /Invalid arguments for manage_[a-z_]+/;
 	if (!internalValidatorPrefix.test(err.message)) return err;
 	const rewritten = err.message
@@ -171,55 +180,72 @@ export function createActionCaller(
 	handler: AdminHandler,
 	env: Env,
 	ctx: ToolContext,
-	/**
-	 * Public ClientSDK namespace (e.g. `"feeds"`) this caller belongs to. When
-	 * set, arg-validation errors that leak the internal `manage_*` tool name are
-	 * rewritten to `client.<namespace>.<method>`. Omit for callers with no public
-	 * SDK surface (errors then pass through unchanged).
-	 */
-	sdkNamespace?: string,
+	/** Public ClientSDK namespace (for example, `"feeds"`). */
+	sdkNamespace: string,
 ) {
-	const manage = <T>(payload: object): Promise<T> =>
-		handler(payload as never, env, ctx) as Promise<T>;
-
-	const action = async <T>(
+	if (!getArgsValidator(handler)) {
+		throw new Error(
+			`SDK namespace '${sdkNamespace}' requires a withValidatedArgs handler`,
+		);
+	}
+	const prepareActionPayload = (
 		actionName: string,
-		input: object = {},
-		/**
-		 * Public SDK method name. Defaults to the CAMEL-CASE of the internal
-		 * action (`generate_embeddings` → `generateEmbeddings`), which is the
-		 * actual method on most namespaces — a bare snake_case default would
-		 * render a nonexistent path like `client.classifiers.generate_embeddings`.
-		 * Namespaces whose public name diverges from the action (e.g. feeds
-		 * `read_feed` → `get`) pass it explicitly.
-		 */
-		publicMethod: string = snakeToCamel(actionName),
-	): Promise<T> => {
+		input: object | undefined,
+		publicMethod: string,
+	): Record<string, unknown> => {
 		// Spread caller input FIRST, then force `action` so a caller-supplied
-		// `action` key (e.g. from a read-only query_sdk script) can never override
-		// the discriminator and reach a write/delete handler.
-		const { action: _ignored, ...rest } = input as Record<string, unknown>;
-		// Rewrite accepted field aliases (sdk-aliases.ts) to their canonical
-		// names — the same registry search_sdk renders, so discovery == runtime.
-		const canonical = sdkNamespace
-			? applyFieldAliases(`${sdkNamespace}.${publicMethod}`, rest)
-			: rest;
-		let result: T;
-		try {
-			result = await manage<T>({ ...canonical, action: actionName });
-		} catch (err) {
-			throw rewriteInternalToolName(err, sdkNamespace, publicMethod);
-		}
-		const failure = failureMessage(actionName, result);
-		if (failure) {
-			throw new ClientSdkActionError(
-				actionName,
-				failure.message,
-				failure.result,
-			);
-		}
-		return result;
+		// discriminator can never select a different handler branch.
+		const { action: _ignored, ...rest } = (input ?? {}) as Record<
+			string,
+			unknown
+		>;
+		const canonical = applyFieldAliases(`${sdkNamespace}.${publicMethod}`, rest);
+		return { ...canonical, action: actionName };
+	};
+	const managePath = `${sdkNamespace}.manage`;
+	const manage =
+		METHOD_METADATA[managePath]
+			? createValidatedSdkMethod(handler, [env, ctx], {
+					path: managePath,
+					prepareArgs: (payload) => payload,
+				})
+			: (<T>(payload: object): Promise<T> =>
+					handler(payload as never, env, ctx) as Promise<T>);
+	const method = (
+		actionName: string,
+		options: ActionMethodOptions = {},
+	): ((...args: any[]) => Promise<any>) => {
+		const publicMethod = options.publicMethod ?? snakeToCamel(actionName);
+		const mapArgs = options.mapArgs ?? ((input?: object) => input ?? {});
+		return createValidatedSdkMethod(handler, [env, ctx], {
+			path: `${sdkNamespace}.${publicMethod}`,
+			prepareArgs: (...args) =>
+				prepareActionPayload(actionName, mapArgs(...args), publicMethod),
+			projectArgs: (validated) => {
+				const { action: _action, ...publicArgs } = validated as Record<
+					string,
+					unknown
+				>;
+				return [publicArgs];
+			},
+			rewriteError: (error) =>
+				rewriteInternalToolName(error, sdkNamespace, publicMethod),
+			transformResult: (result) => {
+				const failure =
+					options.checkFailure === false
+						? null
+						: failureMessage(actionName, result);
+				if (failure) {
+					throw new ClientSdkActionError(
+						actionName,
+						failure.message,
+						failure.result,
+					);
+				}
+				return result;
+			},
+		});
 	};
 
-	return { manage, action };
+	return { manage, method };
 }

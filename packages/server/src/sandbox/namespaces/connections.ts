@@ -78,7 +78,7 @@ export function buildConnectionsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): ConnectionsNamespace {
-	const { manage, action } = createActionCaller(
+	const { manage, method } = createActionCaller(
 		manageConnections,
 		env,
 		ctx,
@@ -87,9 +87,9 @@ export function buildConnectionsNamespace(
 
 	return {
 		manage,
-		list: (input) => action("list", input),
-		get: async (connection_id) =>
-			action("get", {
+		list: method("list"),
+		get: method("get", {
+			mapArgs: (connection_id) => ({
 				connection_id: idArg(
 					"connections.get",
 					"connection_id",
@@ -97,13 +97,15 @@ export function buildConnectionsNamespace(
 					"number",
 				),
 			}),
-		create: (input) => action("create", input),
-		connect: (input) => action("connect", input),
-		connectManaged: (input) =>
-			action("connect_managed", input, "connectManaged"),
-		update: (input) => action("update", input),
-		delete: async (connection_id) =>
-			action("delete", {
+		}),
+		create: method("create"),
+		connect: method("connect"),
+		connectManaged: method("connect_managed", {
+			publicMethod: "connectManaged",
+		}),
+		update: method("update"),
+		delete: method("delete", {
+			mapArgs: (connection_id) => ({
 				connection_id: idArg(
 					"connections.delete",
 					"connection_id",
@@ -111,8 +113,9 @@ export function buildConnectionsNamespace(
 					"number",
 				),
 			}),
-		reauthenticate: async (connection_id) =>
-			action("reauthenticate", {
+		}),
+		reauthenticate: method("reauthenticate", {
+			mapArgs: (connection_id) => ({
 				connection_id: idArg(
 					"connections.reauthenticate",
 					"connection_id",
@@ -120,8 +123,9 @@ export function buildConnectionsNamespace(
 					"number",
 				),
 			}),
-		test: async (connection_id) =>
-			action("test", {
+		}),
+		test: method("test", {
+			mapArgs: (connection_id) => ({
 				connection_id: idArg(
 					"connections.test",
 					"connection_id",
@@ -129,23 +133,34 @@ export function buildConnectionsNamespace(
 					"number",
 				),
 			}),
-		installConnector: (input) =>
-			action("install_connector", input, "installConnector"),
-		uninstallConnector: (connector_key) =>
-			action("uninstall_connector", { connector_key }, "uninstallConnector"),
-		getConnectorSource: (input) =>
-			action("get_connector_source", input, "getConnectorSource"),
-		validateConnectorSource: (input) =>
-			action("validate_connector_source", input, "validateConnectorSource"),
-		updateConnectorSource: (input) =>
-			action("update_connector_source", input, "updateConnectorSource"),
-		rollbackConnectorVersion: (input) =>
-			action("rollback_connector_version", input, "rollbackConnectorVersion"),
-		toggleConnectorLogin: (input) =>
-			action("toggle_connector_login", input, "toggleConnectorLogin"),
-		updateConnectorAuth: (input) =>
-			action("update_connector_auth", input, "updateConnectorAuth"),
-		updateConnectorDefaultConfig: (input) =>
-			action("update_connector_default_config", input, "updateConnectorDefaultConfig"),
+		}),
+		installConnector: method("install_connector", {
+			publicMethod: "installConnector",
+		}),
+		uninstallConnector: method("uninstall_connector", {
+			publicMethod: "uninstallConnector",
+			mapArgs: (connector_key) => ({ connector_key }),
+		}),
+		getConnectorSource: method("get_connector_source", {
+			publicMethod: "getConnectorSource",
+		}),
+		validateConnectorSource: method("validate_connector_source", {
+			publicMethod: "validateConnectorSource",
+		}),
+		updateConnectorSource: method("update_connector_source", {
+			publicMethod: "updateConnectorSource",
+		}),
+		rollbackConnectorVersion: method("rollback_connector_version", {
+			publicMethod: "rollbackConnectorVersion",
+		}),
+		toggleConnectorLogin: method("toggle_connector_login", {
+			publicMethod: "toggleConnectorLogin",
+		}),
+		updateConnectorAuth: method("update_connector_auth", {
+			publicMethod: "updateConnectorAuth",
+		}),
+		updateConnectorDefaultConfig: method("update_connector_default_config", {
+			publicMethod: "updateConnectorDefaultConfig",
+		}),
 	};
 }

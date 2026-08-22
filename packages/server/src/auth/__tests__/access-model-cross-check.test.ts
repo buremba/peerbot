@@ -22,6 +22,7 @@
  */
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { Type } from "@sinclair/typebox";
 import {
 	MEMBER_WRITE_ACTIONS,
 	OWNER_ADMIN_ACTIONS,
@@ -30,6 +31,7 @@ import {
 } from "../tool-access";
 import { METHOD_METADATA } from "../../sandbox/method-metadata";
 import { AGENTS_SDK_ACTION } from "../../tools/sdk_search";
+import { withValidatedArgs } from "../../tools/validate-args";
 
 /**
  * The `manage_*` tool the SDK namespace delegates to, per namespace prefix.
@@ -105,8 +107,14 @@ async function captureActionMap(): Promise<void> {
 		}
 		return {};
 	};
-	for (const [, , mod, exportName] of TIERED_NAMESPACES) {
-		vi.doMock(mod, () => ({ [exportName]: stub }));
+	for (const [, tool, mod, exportName] of TIERED_NAMESPACES) {
+		vi.doMock(mod, () => ({
+			[exportName]: withValidatedArgs(
+				tool,
+				Type.Object({}, { additionalProperties: true }),
+				stub,
+			),
+		}));
 	}
 
 	const ctx = { organizationId: "o", userId: "u" } as never;

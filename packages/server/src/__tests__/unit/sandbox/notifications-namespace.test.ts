@@ -6,8 +6,10 @@
  */
 
 import { beforeAll, describe, expect, it, mock } from "bun:test";
+import { Type } from "@sinclair/typebox";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
+import { withValidatedArgs } from "../../../tools/validate-args";
 
 const listCalls: Array<Record<string, unknown>> = [];
 const markCalls: Array<{ organizationId: string; userId: string; id: number }> =
@@ -39,19 +41,23 @@ mock.module("../../../notifications/service", () => ({
 }));
 
 mock.module("../../../tools/admin/notify", () => ({
-	notify: async (
-		args: Record<string, unknown>,
-		notifyEnv: Env,
-		notifyCtx: ToolContext,
-	) => {
-		notifyCalls.push({ args, env: notifyEnv, ctx: notifyCtx });
-		return {
-			notified_count: 1,
-			event_id: 41,
-			url: "/atlas/activity?event=41",
-			run_id: 42,
-		};
-	},
+	notify: withValidatedArgs(
+		"notify",
+		Type.Object({}, { additionalProperties: true }),
+		async (
+			args: Record<string, unknown>,
+			notifyEnv: Env,
+			notifyCtx: ToolContext,
+		) => {
+			notifyCalls.push({ args, env: notifyEnv, ctx: notifyCtx });
+			return {
+				notified_count: 1,
+				event_id: 41,
+				url: "/atlas/activity?event=41",
+				run_id: 42,
+			};
+		}
+	),
 }));
 
 const env = { ENVIRONMENT: "test" } as Env;

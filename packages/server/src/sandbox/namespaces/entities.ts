@@ -97,18 +97,14 @@ export function buildEntitiesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): EntitiesNamespace {
-	const { manage, action } = createActionCaller(manageEntity, env, ctx, "entities");
+	const { manage, method } = createActionCaller(manageEntity, env, ctx, "entities");
 
 	return {
 		manage,
-		list(filter) {
-			return action("list", filter);
-		},
-		get(input) {
-			return action("get", input);
-		},
-		create(input) {
-			return action("create", {
+		list: method("list"),
+		get: method("get"),
+		create: method("create", {
+			mapArgs: (input) => ({
 				entity_type: input.type,
 				name: input.name,
 				slug: input.slug,
@@ -116,26 +112,14 @@ export function buildEntitiesNamespace(
 				parent_id: input.parent_id,
 				metadata: input.metadata,
 				enabled_classifiers: input.enabled_classifiers,
-			});
-		},
-		update(input) {
-			return action("update", input);
-		},
-		delete(input) {
-			return action("delete", input);
-		},
-		link(input) {
-			return action("link", input);
-		},
-		unlink(input) {
-			return action("unlink", input);
-		},
-		updateLink(input) {
-			return action("update_link", input);
-		},
-		listLinks(input) {
-			return action("list_links", input);
-		},
+			}),
+		}),
+		update: method("update"),
+		delete: method("delete"),
+		link: method("link"),
+		unlink: method("unlink"),
+		updateLink: method("update_link"),
+		listLinks: method("list_links"),
 		search(query, options) {
 			return search(
 				{ query, limit: options?.limit } as never,

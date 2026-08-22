@@ -46,14 +46,14 @@ export function buildSchedulesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): SchedulesNamespace {
-	const { manage, action } = createActionCaller(manageSchedules, env, ctx, "schedules");
+	const { manage, method } = createActionCaller(manageSchedules, env, ctx, "schedules");
 
 	return {
 		manage,
-		list: (input) => action("list", input ?? {}),
-		create: (input) => action("create", input),
-		update: (input) => action("update", input),
-		pause: (input) => action("pause", input),
-		cancel: (input) => action("cancel", input),
+		list: method("list"),
+		create: method("create"),
+		update: method("update"),
+		pause: method("pause"),
+		cancel: method("cancel"),
 	};
 }

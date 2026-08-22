@@ -34,20 +34,22 @@ export function buildAgentsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): AgentsNamespace {
-	const { manage, action } = createActionCaller(manageAgents, env, ctx, "agents");
+	const { manage, method } = createActionCaller(manageAgents, env, ctx, "agents");
 
 	return {
 		manage,
-		list: () => action("list", {}),
-		get: (agent_id) =>
-			action("get", {
+		list: method("list"),
+		get: method("get", {
+			mapArgs: (agent_id) => ({
 				agent_id: idArg("agents.get", "agent_id", agent_id, "string"),
 			}),
-		create: (input) => action("create", input),
-		update: (input) => action("update", input),
-		delete: (agent_id) =>
-			action("delete", {
+		}),
+		create: method("create"),
+		update: method("update"),
+		delete: method("delete", {
+			mapArgs: (agent_id) => ({
 				agent_id: idArg("agents.delete", "agent_id", agent_id, "string"),
 			}),
+		}),
 	};
 }

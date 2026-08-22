@@ -6,11 +6,16 @@
  * turn against one; the reply reads back on the same conversation id.
  */
 
+import { Type } from "@sinclair/typebox";
 import type { Env } from "../../index";
 import { setCurrentMcpConversationTitle } from "../../lobu/stores/mcp-client-conversations";
 import { manageConversations } from "../../tools/admin/manage_conversations";
 import type { ToolContext } from "../../tools/registry";
+import { withValidatedArgs } from "../../tools/validate-args";
+import { createValidatedSdkMethod } from "../sdk-preflight";
 import { createActionCaller } from "./action-call";
+
+const SetTitleSchema = Type.Object({ title: Type.String() });
 
 export interface ConversationsListInput {
   agent_id: string;
@@ -51,24 +56,31 @@ export function buildConversationsNamespace(
   ctx: ToolContext,
   env: Env,
 ): ConversationsNamespace {
-  const { manage, action } = createActionCaller(
+  const { manage, method } = createActionCaller(
     manageConversations,
     env,
     ctx,
     "conversations",
   );
+  const setTitle = withValidatedArgs(
+    "client.conversations.setTitle",
+    SetTitleSchema,
+    async (input: { title: string }) =>
+      setCurrentMcpConversationTitle(ctx, input.title),
+  );
 
   return {
-    setTitle: (input) => setCurrentMcpConversationTitle(ctx, input.title),
+    setTitle: createValidatedSdkMethod(setTitle, [], {
+      path: "conversations.setTitle",
+      prepareArgs: (input) => input,
+    }),
     manage,
-    list: (input) => action("list", input),
-    get: (input) => action("get", input),
+    list: method("list"),
+    get: method("get"),
     // `send` returns a discriminated result whose `status` is part of the
     // contract — "error" and "timeout" are NON-throwing outcomes the caller
-    // must branch on. Route it through `manage` (the raw handler) rather than
-    // `action`, whose failureMessage() turns status:"error"/"timeout" into a
-    // thrown ClientSdkActionError. A genuine fault (bad input, agent-not-found)
-    // still throws — the handler raises ToolUserError for those.
-    send: (input) => manage({ ...input, action: "send" }),
+    // must branch on. Disable the named-method failure conversion for this one
+    // method; genuine handler faults still throw.
+    send: method("send", { checkFailure: false }),
   };
 }

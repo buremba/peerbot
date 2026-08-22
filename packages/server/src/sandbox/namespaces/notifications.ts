@@ -9,6 +9,7 @@
  */
 
 import type { CardElement } from "chat";
+import { type Static, Type } from "@sinclair/typebox";
 import type {
 	NotificationsSendInput as ReactionNotificationsSendInput,
 	NotificationsSendResult,
@@ -17,8 +18,13 @@ import type { Env } from "../../index";
 import { listNotifications, markAsRead } from "../../notifications/service";
 import { notify } from "../../tools/admin/notify";
 import type { ToolContext } from "../../tools/registry";
+import { withValidatedArgs } from "../../tools/validate-args";
 import { ToolUserError } from "../../utils/errors";
+import { createValidatedSdkMethod } from "../sdk-preflight";
 import { createActionCaller, idArg } from "./action-call";
+
+const MarkReadSchema = Type.Object({ notification_id: Type.Number() });
+type MarkReadArgs = Static<typeof MarkReadSchema>;
 
 export type NotificationsSendInput = Omit<
 	ReactionNotificationsSendInput,
@@ -68,10 +74,36 @@ export function buildNotificationsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): NotificationsNamespace {
-	const { action } = createActionCaller(notify, env, ctx, "notifications");
+	const { method } = createActionCaller(notify, env, ctx, "notifications");
+	const prepareMarkRead = (
+		notificationId: number | { notification_id: number },
+	): MarkReadArgs => ({
+		notification_id: idArg(
+			"notifications.markRead",
+			"notification_id",
+			notificationId,
+			"number",
+		) as number,
+	});
+	const markRead = withValidatedArgs(
+		"client.notifications.markRead",
+		MarkReadSchema,
+		async ({ notification_id }: MarkReadArgs) => {
+			const userId = requireUserId(ctx);
+			const updated = await markAsRead(
+				ctx.organizationId,
+				userId,
+				notification_id,
+			);
+			if (!updated) {
+				throw new ToolUserError("Not found or already read", 404);
+			}
+			return { success: true as const };
+		},
+	);
 
 	return {
-		send: (input) => action("send", input),
+		send: method("send"),
 		async list(input) {
 			const userId = requireUserId(ctx);
 			return listNotifications({
@@ -82,19 +114,13 @@ export function buildNotificationsNamespace(
 				unreadOnly: input?.unread_only ?? false,
 			});
 		},
-		async markRead(notificationId) {
-			const userId = requireUserId(ctx);
-			const id = idArg(
-				"notifications.markRead",
-				"notification_id",
-				notificationId,
-				"number",
-			) as number;
-			const updated = await markAsRead(ctx.organizationId, userId, id);
-			if (!updated) {
-				throw new ToolUserError("Not found or already read", 404);
-			}
-			return { success: true as const };
-		},
+		markRead: createValidatedSdkMethod(
+			markRead,
+			[],
+			{
+				path: "notifications.markRead",
+				prepareArgs: prepareMarkRead,
+			},
+		),
 	};
 }

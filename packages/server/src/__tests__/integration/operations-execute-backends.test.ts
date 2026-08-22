@@ -128,6 +128,12 @@ describe("operations.execute backend lifecycle", () => {
 				class ConnectorRuntime {
 					async sync() { return { items: [] }; }
 					async execute(ctx) {
+						if (ctx.input.value === 'nul-output') {
+							return { success: true, output: { backend: 'local_action', tail: 'before\\u0000after' } };
+						}
+						if (ctx.input.value === 'nul-error') {
+							throw new Error('local\\u0000boom');
+						}
 						if (ctx.actionKey === 'stage_browser') {
 							await ctx.sessionState.chrome_dispatcher.dispatch('navigate', {
 								url: 'https://example.test/',
@@ -248,6 +254,15 @@ describe("operations.execute backend lifecycle", () => {
 				}
 				if (url === "https://api.example.test/items") {
 					const body = JSON.parse(String(init?.body)) as { value?: string };
+					if (body.value === "nul-success") {
+						return new Response('{"nul\\u0000key":"value\\u0000with-nul"}', {
+							status: 200,
+							headers: { "content-type": "application/json" },
+						});
+					}
+					if (body.value === "nul-failure") {
+						return new Response("upstream\u0000failed", { status: 500 });
+					}
 					if (
 						body.value === "wait-for-abort" ||
 						body.value === "wait-for-timeout"
@@ -317,6 +332,19 @@ describe("operations.execute backend lifecycle", () => {
 						});
 					}
 					if (request.method === "tools/call") {
+						if (
+							(request.params?.arguments as Record<string, unknown> | undefined)
+								?.value === "nul-output"
+						) {
+							return jsonResponse({
+								jsonrpc: "2.0",
+								id: request.id,
+								result: {
+									content: [{ type: "text", text: "remote\u0000echo" }],
+									isError: false,
+								},
+							});
+						}
 						if (
 							(request.params?.arguments as Record<string, unknown> | undefined)
 								?.fail_transport === true
@@ -935,6 +963,129 @@ describe("operations.execute backend lifecycle", () => {
 			output: {
 				body: { created: true, body: { value: "http-ok" } },
 			},
+		});
+	});
+
+	it("strips NUL from local action output", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "echo",
+				input: { value: "nul-output" },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "completed",
+			output: { backend: "local_action", tail: "beforeafter" },
+		});
+		const [run] = await getTestDb()`
+			SELECT action_output FROM runs
+			WHERE id = ${(result as { run_id: number }).run_id}
+		`;
+		expect(run.action_output).toEqual({
+			backend: "local_action",
+			tail: "beforeafter",
+		});
+	});
+
+	it("strips NUL from a local action failure message", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "echo",
+				input: { value: "nul-error" },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "failed",
+			error_message: "localboom",
+		});
+		const [run] = await getTestDb()`
+			SELECT error_message FROM runs
+			WHERE id = ${(result as { run_id: number }).run_id}
+		`;
+		expect(run.error_message).toBe("localboom");
+	});
+
+	it("strips NUL from upstream MCP tool output", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: mcpConnectionId,
+				operation_key: "remote_echo",
+				input: { value: "nul-output" },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "completed",
+			output: { content: [{ type: "text", text: "remoteecho" }] },
+		});
+		const [run] = await getTestDb()`
+			SELECT action_output FROM runs
+			WHERE id = ${(result as { run_id: number }).run_id}
+		`;
+		expect(run.action_output).toEqual({
+			content: [{ type: "text", text: "remoteecho" }],
+		});
+	});
+
+	it("strips NUL from successful HTTP operation output", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: httpConnectionId,
+				operation_key: "create_item",
+				input: { body: { value: "nul-success" } },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "completed",
+			output: { body: { nulkey: "valuewith-nul" } },
+		});
+		const [run] = await getTestDb()`
+			SELECT action_output FROM runs
+			WHERE id = ${(result as { run_id: number }).run_id}
+		`;
+		expect(run.action_output).toEqual({ body: { nulkey: "valuewith-nul" } });
+	});
+
+	it("strips NUL from failed HTTP operation output and error", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: httpConnectionId,
+				operation_key: "create_item",
+				input: { body: { value: "nul-failure" } },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "failed",
+			error_message: "upstreamfailed",
+		});
+		const [run] = await getTestDb()`
+			SELECT action_output, error_message FROM runs
+			WHERE id = ${(result as { run_id: number }).run_id}
+		`;
+		expect(run).toMatchObject({
+			action_output: { body: "upstreamfailed" },
+			error_message: "upstreamfailed",
 		});
 	});
 

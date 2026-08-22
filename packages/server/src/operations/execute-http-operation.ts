@@ -1,6 +1,7 @@
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../db/client";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
+import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import type { OperationDescriptor } from "./types";
 
 const DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS = 120_000;
@@ -74,10 +75,13 @@ async function failRun(
 	errorMessage: string,
 	deferTerminalWrite = false,
 ): Promise<HttpOperationExecutionResult> {
+	// Upstream response text reaches here through getErrorMessage, so the
+	// message can carry NUL (0x00) that Postgres rejects (see streamContent).
+	const message = stripNul(errorMessage);
 	if (!deferTerminalWrite) {
-		await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId}`;
 	}
-	return { status: "failed", error_message: errorMessage };
+	return { status: "failed", error_message: message };
 }
 
 function requestAbortSignal(parent?: AbortSignal): {
@@ -201,7 +205,7 @@ export async function executeHttpOperation(
 				redirect: "manual",
 				signal: requestAbort.signal,
 			});
-			text = await response.text();
+			text = stripNul(await response.text());
 		} finally {
 			requestAbort.cleanup();
 		}
@@ -212,6 +216,7 @@ export async function executeHttpOperation(
 		} catch {
 			// Keep non-JSON responses as text.
 		}
+		parsedBody = stripNulDeep(parsedBody);
 		const output = { body: parsedBody } as Record<string, unknown>;
 		const metadata: Record<string, unknown> = {
 			http_status: response.status,

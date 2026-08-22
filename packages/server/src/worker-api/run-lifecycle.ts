@@ -59,7 +59,7 @@ import {
 } from "../utils/inline-attachments";
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
-import { stripNulDeep } from "../utils/strip-nul";
+import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import {
 	bumpDeviceFinalizeNudge,
 	resolveFinalizeNudgeBudget,
@@ -698,9 +698,11 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 	try {
 		const req = await c.req.json<CompleteRequest>();
 
-		// Strip NUL (0x00) from connector-supplied jsonb payloads before they hit
-		// Postgres (see streamContent). The final checkpoint and refreshed browser
-		// auth_update are written via raw sql.json below.
+		// Strip NUL (0x00) from connector- and worker-supplied payloads before they
+		// hit Postgres (see streamContent). The final checkpoint and refreshed
+		// browser auth_update are written via raw sql.json below; output_tail is
+		// the raw subprocess stdout tail and error_message its failure text, so
+		// both carry whatever bytes the OS shell emitted.
 		if (req.checkpoint) {
 			req.checkpoint = stripNulDeep(req.checkpoint) as Record<string, unknown>;
 		}
@@ -710,6 +712,8 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				unknown
 			>;
 		}
+		if (req.error_message) req.error_message = stripNul(req.error_message);
+		if (req.output_tail) req.output_tail = stripNul(req.output_tail);
 
 		const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
 		if (denied) return denied;
@@ -1215,8 +1219,13 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		}
 	}
 
+	// The device CLI's stdout/stderr reach us verbatim, so both can carry NUL
+	// (0x00) that Postgres rejects (see streamContent). Strip once here: these
+	// two feed every downstream write — output_tail, the resume nudge's tail,
+	// error_message, and the completion lifecycle event.
+	if (typeof body.error === "string") body.error = stripNul(body.error);
 	const hasError = typeof body.error === "string" && body.error.trim() !== "";
-	const output = typeof body.output === "string" ? body.output : "";
+	const output = typeof body.output === "string" ? stripNul(body.output) : "";
 	const durationMs =
 		typeof body.duration_ms === "number" && Number.isFinite(body.duration_ms)
 			? Math.max(0, Math.floor(body.duration_ms))
@@ -1653,7 +1662,9 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 			if (req.error_message) {
 				// Guarded terminal transition (the status='running' AND claimed_by guard
 				// inside finalizeRun won't resurrect a reaped run). Ownership is already
-				// enforced by authorizeRunForWorker above.
+				// enforced by authorizeRunForWorker above. The message is worker-
+				// reported text, so strip NUL first (see streamContent).
+				req.error_message = stripNul(req.error_message);
 				await finalizeRun(sql, {
 					runId: req.run_id,
 					workerId: req.worker_id,
@@ -1816,6 +1827,12 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 	try {
 		const req = await c.req.json<CompleteAuthRequest>();
 
+		// Strip NUL (0x00) from the worker-reported exit diagnostics before they
+		// hit Postgres (see streamContent): output_tail is the raw subprocess
+		// stdout tail and error_message its failure text.
+		if (req.error_message) req.error_message = stripNul(req.error_message);
+		if (req.output_tail) req.output_tail = stripNul(req.output_tail);
+
 		// Ownership gate — a worker can only finalize runs it claimed. Mirrors the
 		// other /complete handlers. Without it a leaked worker token could finalize
 		// an arbitrary auth run and inject credentials into the linked auth_profiles
@@ -1925,6 +1942,18 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 	let publishedActionArtifactIds: string[] = [];
 	try {
 		const req = await c.req.json<CompleteActionRequest>();
+
+		// Strip NUL (0x00) from worker-reported output before it reaches Postgres
+		// (see streamContent). An action's output and error text carry raw
+		// subprocess bytes, so both the jsonb action_output and the text
+		// error_message can arrive with a NUL an OS shell emitted.
+		if (req.action_output) {
+			req.action_output = stripNulDeep(req.action_output) as Record<
+				string,
+				unknown
+			>;
+		}
+		if (req.error_message) req.error_message = stripNul(req.error_message);
 
 		// Same ownership check as the other /complete endpoints — a worker
 		// can only finalize runs it claimed. Without this, a leaked worker

@@ -287,4 +287,49 @@ describe('completeWorkerJob status guard (late-completion-after-timeout)', () =>
     expect(Number(after[0].items_collected)).toBe(10); // not bumped
     expect(after[0].last_sync_at).toBeNull();
   });
+
+  it('strips NUL bytes from the subprocess output tail and error message', async () => {
+    const org = await createTestOrganization();
+    const connId = await insertConnection(org.id);
+    const feedId = await insertFeed(org.id, connId);
+
+    const sql = getTestDb();
+    const runRows = (await sql`
+      INSERT INTO runs
+        (organization_id, run_type, feed_id, connection_id, connector_key,
+         connector_version, status, claimed_by, claimed_at, created_at)
+      VALUES
+        (${org.id}, 'sync', ${feedId}, ${connId}, 'chrome', '0.2.0',
+         'running', ${WORKER_ID}, NOW(), NOW())
+      RETURNING id
+    `) as Array<{ id: number }>;
+    const runId = runRows[0].id;
+
+    // Pre-fix, Postgres rejects the NUL in either text column with
+    // "invalid byte sequence for encoding UTF8: 0x00" and the handler 500s.
+    const { ctx, result } = mockWorkerCtx({
+      run_id: runId,
+      worker_id: WORKER_ID,
+      status: 'failed',
+      items_collected: 0,
+      error_message: 'spawn\u0000 ENOENT',
+      output_tail: 'line one\u0000line two',
+      exit_code: 1,
+      exit_reason: 'crash',
+    });
+    await completeWorkerJob(ctx);
+
+    expect(result().body).toEqual({ success: true });
+
+    const runAfter = (await sql`
+      SELECT status, error_message, output_tail FROM runs WHERE id = ${runId}
+    `) as Array<{
+      status: string;
+      error_message: string | null;
+      output_tail: string | null;
+    }>;
+    expect(runAfter[0].status).toBe('failed');
+    expect(runAfter[0].error_message).toBe('spawn ENOENT');
+    expect(runAfter[0].output_tail).toBe('line oneline two');
+  });
 });

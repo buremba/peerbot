@@ -1681,7 +1681,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/connector-worker/|packages/core/|scripts/(build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/connector-worker/|packages/core/|scripts/(build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph|verify-mac-device-daemon|with-owletto-mac-daemon)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "mac=true" >> "$GITHUB_OUTPUT"
           else
             echo "mac=false" >> "$GITHUB_OUTPUT"
@@ -1702,10 +1702,13 @@ jobs:
   # notarize) is enough to prove the Xcode project + submodule layout still
   # compose.
   #
-  # Runner cost is bounded by the filter job above — the macOS runner is
-  # only allocated when the submodule pointer, the release workflow, this
-  # workflow, the submodule setup action, or `.gitmodules` changes. This
-  # workflow is in the filter so a PR editing this job can't skip it.
+  # Runner cost is bounded by the filter job above — the macOS runner is only
+  # allocated when something the Mac build actually consumes changes: the
+  # submodule pointer, the device-daemon sources (`packages/connector-worker/`,
+  # `packages/core/`) or its build/verify scripts, the workspace manifest or
+  # lockfile, the release workflow, this workflow, the submodule setup action,
+  # or `.gitmodules`. This workflow is in the filter so a PR editing this job
+  # can't skip it.
   mac-build-smoke:
     needs: optional-smoke-filter
     if: needs.optional-smoke-filter.outputs.mac == 'true'
@@ -1758,13 +1761,22 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: packages/owletto/apps/mac/Tests/run-tests.sh
 
+      # The wrapper compiles the device daemon into the submodule's resource
+      # directory for the duration of the build, then removes it. The verify
+      # afterwards is a different assertion from the wrapper's own: it proves
+      # Xcode's resource copy landed the daemon inside the built bundle still
+      # executable and still arm64, which is what the app resolves at launch.
       - name: Build (unsigned, no archive)
         if: steps.submodule.outputs.stubbed != 'true'
         run: |
-          xcodebuild \
+          DERIVED_DATA="$RUNNER_TEMP/owletto-derived"
+          scripts/with-owletto-mac-daemon.sh xcodebuild \
             -project packages/owletto/apps/mac/Owletto.xcodeproj \
             -scheme Owletto -configuration Release build \
+            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
+          scripts/verify-mac-device-daemon.sh \
+            "$DERIVED_DATA/Build/Products/Release/Owletto.app/Contents/Resources/lobu-device-daemon/lobu-device-daemon"
 
   # Connector-runtime parity smoke gate. Guards against the packaging/parity
   # drift that broke prod: the worker image shipped missing `COPY packages/core`,

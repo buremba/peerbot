@@ -17,7 +17,6 @@ OUTPUT="$ARTIFACT" "$ROOT/scripts/build-mac-device-daemon.sh" >"$WORK/build.log"
 cp "$ARTIFACT" "$CLEAN/lobu-device-daemon"
 chmod 0755 "$CLEAN/lobu-device-daemon"
 
-file "$CLEAN/lobu-device-daemon" | grep -q 'Mach-O 64-bit executable arm64'
 [[ "$(find "$CLEAN" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" == 1 ]]
 
 SAFE_ENV=(env -i PATH=/usr/bin:/bin HOME="$WORK/home" TMPDIR="$WORK/tmp")
@@ -33,11 +32,12 @@ run_clean_with_token() (
   "${SAFE_ENV[@]}" WORKER_API_TOKEN=not-a-pat ./lobu-device-daemon "$@"
 )
 
+# Shared packaging assertion (arm64 Mach-O + `--version` metadata), run against
+# the copied artifact so the release workflows and this smoke agree on what a
+# publishable daemon looks like.
+run_clean "$ROOT/scripts/verify-mac-device-daemon.sh" ./lobu-device-daemon >/dev/null
+
 VERSION_JSON="$(run_clean ./lobu-device-daemon --version)"
-case "$VERSION_JSON" in
-  *'"name":"lobu-device-daemon"'*'"protocol":"device-daemon/v1"'*'"platform":"macos"'*) ;;
-  *) echo "error: --version did not emit expected metadata: $VERSION_JSON" >&2; exit 1 ;;
-esac
 
 run_clean ./lobu-device-daemon --help | grep -q 'Usage:'
 

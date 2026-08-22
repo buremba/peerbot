@@ -1737,7 +1737,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: steps.submodule.outputs.stubbed != 'true'
         with:
-          bun-version: 1.3.5
+          # Bun 1.3.5 silently ignores --metafile; the packaging graph guard
+          # requires the measured Bun 1.3.14 toolchain.
+          bun-version: 1.3.14
 
       - name: Install workspace dependencies for Mac daemon smoke
         if: steps.submodule.outputs.stubbed != 'true'

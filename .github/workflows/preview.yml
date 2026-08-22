@@ -23,7 +23,6 @@ permissions:
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-  KUBECONFIG: /tmp/kubeconfig
 
 jobs:
   # Previews are opt-in: deploy only when the PR carries the `preview` label
@@ -42,6 +41,32 @@ jobs:
       PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      KUBE_EXPECTED_CONTEXT: ${{ vars.KUBE_CONTEXT || 'lobu-prod' }}
+      KUBE_EXPECTED_SERVER: ${{ vars.KUBE_SERVER }}
+      KUBE_EXPECTED_CLUSTER_UID: ${{ vars.KUBE_CLUSTER_UID }}
+      KUBE_REQUIRED_CAPABILITIES: |
+        get|namespaces|
+        create|namespaces|
+        patch|namespaces|
+        delete|namespaces|
+        get|priorityclasses.scheduling.k8s.io|
+        create|priorityclasses.scheduling.k8s.io|
+        patch|priorityclasses.scheduling.k8s.io|
+        get|resourcequotas|@PREVIEW_NS
+        create|resourcequotas|@PREVIEW_NS
+        patch|resourcequotas|@PREVIEW_NS
+        get|secrets|@PREVIEW_NS
+        create|secrets|@PREVIEW_NS
+        get|deployments.apps|@PREVIEW_NS
+        create|deployments.apps|@PREVIEW_NS
+        patch|deployments.apps|@PREVIEW_NS
+        delete|deployments.apps|@PREVIEW_NS
+        watch|deployments.apps|@PREVIEW_NS
+        create|services|@PREVIEW_NS
+        delete|services|@PREVIEW_NS
+        get|ingresses.networking.k8s.io|@PREVIEW_NS
+        create|ingresses.networking.k8s.io|@PREVIEW_NS
+        patch|ingresses.networking.k8s.io|@PREVIEW_NS
     steps:
       - uses: actions/checkout@v7
 
@@ -49,6 +74,13 @@ jobs:
         uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - name: Setup and preflight kubeconfig
+        id: kube-preflight
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+        run: |
+          ./scripts/lib/kubeconfig-preflight.sh setup
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -72,12 +104,6 @@ jobs:
           tags: ${{ env.PREVIEW_IMAGE }}:pr-${{ env.PR_NUMBER }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Setup kubeconfig
-        env:
-          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
-        run: |
-          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
 
       - name: Create preview namespace
         run: |
@@ -267,7 +293,7 @@ jobs:
       # about to delete in this same run.
       - name: Tear down if the PR closed or lost the preview label mid-deploy
         id: preview-wanted
-        if: always() && github.event_name == 'pull_request'
+        if: always() && steps.kube-preflight.outcome == 'success' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -346,6 +372,10 @@ jobs:
               });
             }
 
+      - name: Remove kubeconfig
+        if: always()
+        run: ./scripts/lib/kubeconfig-preflight.sh cleanup
+
   cleanup:
     runs-on: ubuntu-24.04
     if: (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview')) && github.event.pull_request.head.repo.full_name == github.repository
@@ -357,12 +387,20 @@ jobs:
     env:
       PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
+      KUBE_EXPECTED_CONTEXT: ${{ vars.KUBE_CONTEXT || 'lobu-prod' }}
+      KUBE_EXPECTED_SERVER: ${{ vars.KUBE_SERVER }}
+      KUBE_EXPECTED_CLUSTER_UID: ${{ vars.KUBE_CLUSTER_UID }}
+      KUBE_REQUIRED_CAPABILITIES: |
+        get|namespaces|
+        delete|namespaces|
     steps:
-      - name: Setup kubeconfig
+      - uses: actions/checkout@v7
+
+      - name: Setup and preflight kubeconfig
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
+          ./scripts/lib/kubeconfig-preflight.sh setup
 
       - name: Delete preview namespace
         run: |
@@ -384,6 +422,10 @@ jobs:
           else
             echo "no preview image tag pr-$PR_NUM to delete"
           fi
+
+      - name: Remove kubeconfig
+        if: always()
+        run: ./scripts/lib/kubeconfig-preflight.sh cleanup
 
       - name: Comment on PR
         uses: actions/github-script@v7

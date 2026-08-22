@@ -137,7 +137,7 @@ export class NativeBridgeClient {
         request_id: requestId,
         run_id: runId,
         payload,
-      }, `${requestId}:${runId}`);
+      }, { requestId, runKey: requestId + ':' + runId });
     } catch (error) {
       this.rejectPending(requestId, asError(error));
     }
@@ -293,9 +293,19 @@ export class NativeBridgeClient {
     }
     if (frame.kind === 'stream') {
       if (frame.sequence == null) {
-        throw new NativeBridgeProtocolError('native bridge stream sequence is not monotonic');
+        throw new NativeBridgeProtocolError('native bridge stream frame is missing sequence');
       }
-      await pending.onStream?.(frame.payload, frame.sequence);
+      try {
+        await pending.onStream?.(frame.payload, frame.sequence);
+      } catch (error) {
+        const failure = asError(error);
+        try {
+          await this.cancel(frame.request_id, pending.runId);
+        } catch {
+          // Best-effort cancellation; the owning run still fails locally.
+        }
+        this.rejectPending(frame.request_id, failure);
+      }
       return;
     }
     if (frame.kind === 'cancel') return;
@@ -317,12 +327,15 @@ export class NativeBridgeClient {
     }
   }
 
-  private async send(frame: NativeBridgeFrame, runKey?: string): Promise<void> {
+  private async send(
+    frame: NativeBridgeFrame,
+    owner?: { requestId: string; runKey: string },
+  ): Promise<void> {
     if (this.failure) throw this.failure;
     try {
-      await this.writer.enqueue(frame, runKey);
+      await this.writer.enqueue(frame, owner?.runKey);
     } catch (error) {
-      if (runKey) this.rejectPending(runKey.slice(0, runKey.indexOf(':')), asError(error));
+      if (owner) this.rejectPending(owner.requestId, asError(error));
       throw error;
     }
   }
@@ -506,7 +519,7 @@ function parseHello(payload: Record<string, unknown>): {
 }
 
 function sanitizeNativeJob(job: Record<string, unknown>): Record<string, unknown> {
-  const forbidden = /(?:credential|password|secret|token|pat|access[_-]?key|auth[_-]?profile)/i;
+  const forbidden = /(?:credential|password|secret|token|access[_-]?key|auth[_-]?profile|(?:^|[_-])pat(?:$|[_-]))/i;
   const sanitize = (value: unknown, key?: string): unknown => {
     if (key && (forbidden.test(key) || key === 'compiled_code')) return undefined;
     if (Array.isArray(value)) return value.map((entry) => sanitize(entry));

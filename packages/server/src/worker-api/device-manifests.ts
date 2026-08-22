@@ -42,7 +42,7 @@ export interface ManifestClaimAuthorization {
   /** Exact artifact provenance; present for manifest-backed claims. */
   sourcePath?: string;
   /** Canonical runtime marker from the validated manifest. */
-  runtimeExecution?: string;
+  runtimeExecution?: DeviceConnectorManifest['runtime']['execution'];
 }
 
 export interface DeviceManifestClaimAuthorization extends ManifestClaimAuthorization {

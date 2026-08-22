@@ -44,7 +44,7 @@ describe('native bridge framing', () => {
 
     const oversized = Buffer.alloc(4);
     oversized.writeUInt32LE(NATIVE_BRIDGE_MAX_FRAME_BYTES + 1, 0);
-    expect(() => decoder.append(oversized)).toThrow('exceeds');
+    expect(() => new NativeBridgeFrameDecoder().append(oversized)).toThrow('exceeds');
     expect(() => decodeNativeBridgeBody(Buffer.from(JSON.stringify({
       version: 1,
       kind: 'unknown',

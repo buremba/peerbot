@@ -123,7 +123,7 @@ describe('Mac device daemon options', () => {
 
     await createMacDeviceDaemonShutdown(controller, loop, bridge)();
 
-    expect(events).toEqual(['stop', 'cancel', 'shutdown', 'wait', 'close']);
+    expect(events).toEqual(['stop', 'cancel', 'shutdown', 'close']);
   });
 
   test('bounds native cancellation and shutdown before waiting for jobs', async () => {
@@ -145,7 +145,7 @@ describe('Mac device daemon options', () => {
     await expect(createMacDeviceDaemonShutdown(controller, loop, bridge, 1)()).rejects.toThrow(
       'timed out',
     );
-    expect(events).toEqual(['stop', 'shutdown', 'wait', 'close']);
+    expect(events).toEqual(['stop', 'shutdown', 'close']);
   });
 });
 

@@ -306,7 +306,9 @@ export class WorkerClient implements ExecutorClient {
    */
   async poll(capacityAvailable?: number): Promise<PollResponse> {
     const advertisement = this.advertisementProvider?.snapshot();
-    const capabilities = advertisement?.capabilities ?? this.advertisedCapabilities();
+    const capabilities = advertisement
+      ? { ...this.advertisedCapabilities(), ...advertisement.capabilities }
+      : this.advertisedCapabilities();
     const manifests = advertisement?.manifests ?? this.manifests;
     return this.requestJson<PollResponse>('/api/workers/poll', {
       worker_id: this.workerId,

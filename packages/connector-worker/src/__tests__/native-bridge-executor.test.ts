@@ -169,9 +169,9 @@ describe('native bridge run forwarding', () => {
     const intervals: unknown[] = [];
     const originalSetInterval = globalThis.setInterval;
     const originalClearInterval = globalThis.clearInterval;
-    globalThis.setInterval = ((callback: () => Promise<void> | void) => {
+    globalThis.setInterval = ((callback: () => Promise<void> | void, delayMs?: number) => {
       scheduled.push(callback);
-      intervals.push(30_000);
+      intervals.push(delayMs);
       return scheduled.length as unknown as ReturnType<typeof setInterval>;
     }) as typeof setInterval;
     globalThis.clearInterval = ((id: unknown) => {

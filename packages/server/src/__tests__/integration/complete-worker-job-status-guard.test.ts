@@ -259,10 +259,10 @@ describe('completeWorkerJob status guard (late-completion-after-timeout)', () =>
     const runRows = (await sql`
       INSERT INTO runs
         (organization_id, run_type, feed_id, connection_id, connector_key,
-         connector_version, status, claimed_by, claimed_at, checkpoint, created_at)
+         connector_version, status, claimed_by, claimed_at, checkpoint, dry_run, created_at)
       VALUES
         (${org.id}, 'sync', ${feedId}, ${connId}, 'chrome', '0.2.0',
-         'running', ${WORKER_ID}, NOW(), ${sql.json(previousCheckpoint)}, NOW())
+         'running', ${WORKER_ID}, NOW(), ${sql.json(previousCheckpoint)}, false, NOW())
       RETURNING id
     `) as Array<{ id: number }>;
     const runId = runRows[0].id;

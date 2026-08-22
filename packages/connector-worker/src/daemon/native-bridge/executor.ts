@@ -109,6 +109,9 @@ export async function executeNativeBridgeRun(
 }
 
 function nativeOperation(job: PollResponse): 'sync' | 'action' | 'query' | 'search' | 'auth' {
+  if (job.run_type === 'automation' || job.run_type === 'embed_backfill') {
+    throw new Error('native bridge does not execute run_type ' + String(job.run_type));
+  }
   if (job.run_type === 'sync') return 'sync';
   if (job.run_type === 'auth') return 'auth';
   if (job.action_key === VIRTUAL_FEED_ACTION) {

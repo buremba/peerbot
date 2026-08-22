@@ -81,7 +81,7 @@ export class NativeBridgeFrameDecoder {
   private buffered = Buffer.alloc(0);
 
   append(chunk: Buffer): NativeBridgeFrame[] {
-    if (chunk.byteLength === 0) throw new NativeBridgeProtocolError('native bridge EOF');
+    if (chunk.byteLength === 0) return [];
     const frames: NativeBridgeFrame[] = [];
     let offset = 0;
     while (offset < chunk.byteLength || this.buffered.byteLength > 0) {
@@ -186,6 +186,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function sortJsonKeys(_key: string, value: unknown): unknown {
   if (!isRecord(value)) return value;
   return Object.fromEntries(
-    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
+    Object.entries(value).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
   );
 }

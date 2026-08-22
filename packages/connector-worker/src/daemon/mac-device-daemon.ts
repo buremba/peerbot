@@ -122,16 +122,6 @@ export function createMacDeviceDaemonShutdown(
     } catch (error) {
       shutdownError ??= error;
     }
-    try {
-      const allJobsFinished = await loop.waitForActiveJobs(
-        Math.max(1, deadline - Date.now()),
-      );
-      if (!allJobsFinished && !shutdownError) {
-        shutdownError = new Error('native bridge active jobs did not finish before shutdown');
-      }
-    } catch (error) {
-      shutdownError ??= error;
-    }
     // The app may close the transport as soon as it has acknowledged the
     // shutdown frame, so keep the writer alive until active jobs observe
     // their terminal failures.
@@ -320,7 +310,7 @@ export async function runMacDeviceDaemon(options: MacDeviceDaemonOptions): Promi
   if (validated.noPoll) return;
   if (validated.supervisedStdio) {
     const advertisementProvider = new MutableWorkerAdvertisementProvider({
-      capabilities: {},
+      capabilities: { 'automations.execute': true },
       manifests: [],
       generation: 0,
     });

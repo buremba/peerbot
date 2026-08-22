@@ -9,7 +9,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import type { CardElement } from 'chat';
-import { getDb, pgTextArray } from '../../db/client';
+import { getDb, parsePgTextArray, pgTextArray } from '../../db/client';
 import { emit } from '../../events/emitter';
 import { currentMcpActivityAttribution } from '../../lobu/stores/mcp-client-conversations';
 import { resolveActionOrigin } from '../../notifications/action-origin';
@@ -26,6 +26,7 @@ import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { trackAutomationReaction } from '../../utils/automation-reactions';
 import { loadConfiguredAutomationDeliveryTarget } from '../../automations/delivery-target';
+import { normalizePageActivationUrl } from '../../runs/page-activation';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 
@@ -58,6 +59,13 @@ const SendAction = Type.Object({
     Type.String({
       format: 'uri',
       description: 'HTTP(S) page for an explicit browser-side "Open" action in the current user tab.',
+    })
+  ),
+  browser_handoff_run_id: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      description:
+        'Page-activated operation run that will populate browser_url when its owner visits the page. The run must belong to the same workspace, target the same normalized URL, and be owned by one of the resolved recipients; delivery then narrows to that owner, since nobody else can activate it.',
     })
   ),
   idempotency_key: Type.Optional(
@@ -149,6 +157,12 @@ async function handleSend(
       throw new ToolUserError('notify: `browser_url` must be a valid HTTP(S) URL.', 422);
     }
   }
+  if (args.browser_handoff_run_id != null && !args.browser_url) {
+    throw new ToolUserError(
+      'notify: `browser_handoff_run_id` requires `browser_url`.',
+      422
+    );
+  }
 
   // Validate the request even when recipient resolution later produces no rows.
   if (kind) {
@@ -194,6 +208,54 @@ async function handleSend(
 
   if (userIds.length === 0) {
     return { notified_count: 0, event_id: null, url: null };
+  }
+
+  if (args.browser_handoff_run_id != null && args.browser_url) {
+    const handoffRows = await sql<{
+      id: number;
+      created_by_user_id: string | null;
+      activation_target_urls: string | string[] | null;
+    }>`
+      SELECT id, created_by_user_id, activation_target_urls
+      FROM runs
+      WHERE id = ${args.browser_handoff_run_id}
+        AND organization_id = ${ctx.organizationId}
+        AND run_type = 'action'
+        AND approval_status = 'auto'
+        AND activation_kind = 'page_visit'
+      LIMIT 1
+    `;
+    const handoffRun = handoffRows[0];
+    if (!handoffRun) {
+      throw new ToolUserError(
+        'notify: `browser_handoff_run_id` must reference a page-activated action in this workspace.',
+        422
+      );
+    }
+    const normalizedBrowserUrl = normalizePageActivationUrl(args.browser_url);
+    if (
+      !parsePgTextArray(handoffRun.activation_target_urls).includes(
+        normalizedBrowserUrl
+      )
+    ) {
+      throw new ToolUserError(
+        'notify: `browser_url` must match the linked page-activation run.',
+        422
+      );
+    }
+    if (
+      handoffRun.created_by_user_id == null ||
+      !userIds.includes(handoffRun.created_by_user_id)
+    ) {
+      throw new ToolUserError(
+        'notify: the page-activation run owner must be one of the notification recipients.',
+        422
+      );
+    }
+    // Only the run owner can activate this draft. A broader informational
+    // audience would receive dead cards, so materialize the handoff solely in
+    // the actionable owner's inbox even when recipients was "admins"/"all".
+    userIds = [handoffRun.created_by_user_id];
   }
 
   // Kind data renders separately; legacy untyped data remains appended to body.
@@ -344,6 +406,7 @@ async function handleSend(
     resourceId: ask ? String(ask.interactionEventId) : null,
     resourceUrl: args.resource_url ?? askReviewUrl ?? null,
     browserUrl: args.browser_url ?? null,
+    browserRunId: args.browser_handoff_run_id ?? null,
     idempotencyKey: args.idempotency_key ?? null,
     connectionId: args.connection_id ?? null,
     // An ask builds its chat card from the SAME schema the web row reads, via

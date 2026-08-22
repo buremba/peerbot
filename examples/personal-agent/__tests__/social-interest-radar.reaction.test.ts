@@ -171,9 +171,11 @@ describe("social interest radar reaction", () => {
     expect(f.notifications).toHaveLength(1);
     expect(f.notifications[0]).toMatchObject({
       title: "Draft ready for Ada on LinkedIn",
+      recipients: "all",
       idempotency_key: "social-radar:draft-ready:601",
       resource_url: "/buremba/memory?content_ids=101,601",
       browser_url: "https://www.linkedin.com/feed/update/urn:li:activity:123",
+      browser_handoff_run_id: 900,
     });
     expect(f.notifications[0]).not.toHaveProperty("input_schema");
     expect(String(f.notifications[0]?.body)).toContain(

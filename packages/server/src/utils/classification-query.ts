@@ -218,6 +218,23 @@ async function fetchTargetContent(
   const repEmbeddingJoins = `LEFT JOIN event_embeddings fe ON fe.event_id = f.id AND fe.chunk_index = 0 AND fe.embedding_model = ${embModel}
        LEFT JOIN event_embeddings pe ON pe.event_id = parent.id AND pe.chunk_index = 0 AND pe.embedding_model = ${embModel}`;
 
+  // Tenancy scoping for the parent join. `origin_id` is the connector's own
+  // identifier and is NOT unique across tenants — a GitHub node id or Hacker
+  // News item id is the same string in every org that syncs it — so joining on
+  // it alone resolved another tenant's row and blended that row's vector into
+  // this org's classification at PARENT_EMBEDDING_WEIGHT. Prod carried 1,118
+  // live cross-org matches and 25,099 same-org cross-connection ones.
+  //
+  // `IS NOT DISTINCT FROM` rather than `=` on connection_id: 17% of
+  // parent-referencing rows have a NULL connection, and plain equality would
+  // silently strand all of them without parent context. Org equality is what
+  // makes NULL-matches-NULL safe. Mirrors the thread-chain join in
+  // content-search/ctes.ts, which scopes by connection for the same reason.
+  const parentJoin = `LEFT JOIN current_event_records parent
+         ON parent.organization_id = f.organization_id
+        AND parent.origin_id = f.origin_parent_id
+        AND parent.connection_id IS NOT DISTINCT FROM f.connection_id`;
+
   if (mode === 'content_ids') {
     const contentIds = options.content_ids!;
     const contentPlaceholders = contentIds.map((_, i) => `$${i + 2}`).join(', ');
@@ -232,7 +249,7 @@ async function fetchTargetContent(
          fe.embedding,
          pe.embedding as parent_embedding
        FROM current_event_records f
-       LEFT JOIN current_event_records parent ON parent.origin_id = f.origin_parent_id
+       ${parentJoin}
        ${repEmbeddingJoins}
        WHERE f.organization_id = $1
          AND f.id IN (${contentPlaceholders})
@@ -265,7 +282,7 @@ async function fetchTargetContent(
          fe.embedding,
          pe.embedding as parent_embedding
        FROM current_event_records f
-       LEFT JOIN current_event_records parent ON parent.origin_id = f.origin_parent_id
+       ${parentJoin}
        ${repEmbeddingJoins}
        WHERE (
            ${entityLinkMatchSql('$1::bigint')}

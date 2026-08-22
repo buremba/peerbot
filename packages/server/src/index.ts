@@ -87,6 +87,7 @@ import {
 	restListNotifications,
 	restMarkAllAsRead,
 	restMarkAsRead,
+	restRecreateBrowserHandoff,
 } from "./notifications/routes";
 import { createPreviewClaim } from "./preview/slack";
 import {
@@ -1148,6 +1149,11 @@ app.get(
 	restGetUnreadCount,
 );
 app.patch("/api/:orgSlug/notifications/:id/read", mcpAuth, restMarkAsRead);
+app.post(
+	"/api/:orgSlug/notifications/:id/browser-handoff/recreate",
+	mcpAuth,
+	restRecreateBrowserHandoff,
+);
 app.post(
 	"/api/:orgSlug/notifications/mark-all-read",
 	mcpAuth,

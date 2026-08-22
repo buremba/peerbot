@@ -2,6 +2,7 @@ import { type Static, Type } from "@sinclair/typebox";
 import { classifyToolError, isRetryable } from "@lobu/core";
 import { resolveSdkMaxAccessLevel } from "../auth/tool-access";
 import { buildMcpBearerChallenge } from "../auth/oauth/resource-indicator";
+import { DISCOVERY_SCOPES } from "../auth/oauth/scopes";
 import { isAdminOrOwnerRole } from "./access-control";
 import type { Env } from "../index";
 import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
@@ -402,13 +403,25 @@ async function runSandbox(
     (ctx.tokenType === "oauth" || ctx.tokenType === "pat") &&
     challengeRequestUrl
   ) {
+    // Scope on a progressive OAuth challenge is the complete replacement
+    // grant the client should request, not merely the missing delta. Sending
+    // only `mcp:admin` can discard read/write on clients that replace rather
+    // than merge grants. Restrict the carried-forward set to public auth-code
+    // scopes so first-party device/PAT grants never leak into a third-party
+    // authorization request.
+    const upgradeScopes = Array.from(
+      new Set([
+        ...(ctx.scopes ?? []).filter((scope) => DISCOVERY_SCOPES.includes(scope)),
+        "mcp:admin",
+      ]),
+    );
     return attachMcpResultMeta(mcpOutput, {
       "mcp/www_authenticate": [
         buildMcpBearerChallenge(challengeRequestUrl, {
           error: "insufficient_scope",
           errorDescription:
             result.error?.message ?? "The token lacks the required MCP admin scope.",
-          scope: "mcp:admin",
+          scope: upgradeScopes.join(" "),
         }),
       ],
     });

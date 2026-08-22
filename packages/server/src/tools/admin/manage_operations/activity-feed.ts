@@ -55,6 +55,12 @@ export type ActivityCard = {
 	unread?: boolean;
 	notification_id?: number;
 	browser_url?: string;
+	browser_handoff?: {
+		run_id: number | null;
+		state: "ready" | "expired" | "completed";
+		expires_at: string | null;
+		error_message: string | null;
+	};
 	run_id?: number;
 	/**
 	 * Kind of pending interaction behind this notification (events
@@ -168,6 +174,33 @@ function buildNotificationCard(
 			: null;
 	const interactionInline =
 		familyAllowsInline && affordance != null && affordance.kind !== "form";
+	const rawBrowserHandoff =
+		n.browser_handoff && typeof n.browser_handoff === "object"
+			? (n.browser_handoff as Record<string, unknown>)
+			: null;
+	let browserHandoff: ActivityCard["browser_handoff"];
+	if (
+		rawBrowserHandoff &&
+		(rawBrowserHandoff.state === "ready" ||
+			rawBrowserHandoff.state === "expired" ||
+			rawBrowserHandoff.state === "completed")
+	) {
+		browserHandoff = {
+			run_id:
+				typeof rawBrowserHandoff.run_id === "number"
+					? rawBrowserHandoff.run_id
+					: null,
+			state: rawBrowserHandoff.state,
+			expires_at:
+				typeof rawBrowserHandoff.expires_at === "string"
+					? rawBrowserHandoff.expires_at
+					: null,
+			error_message:
+				typeof rawBrowserHandoff.error_message === "string"
+					? rawBrowserHandoff.error_message
+					: null,
+		};
+	}
 	return {
 		id: `n:${id}`,
 		kind: "notification",
@@ -182,6 +215,7 @@ function buildNotificationCard(
 		notification_id: id,
 		browser_url:
 			typeof n.browser_url === "string" ? n.browser_url : undefined,
+		browser_handoff: browserHandoff,
 		platform: typeof n.platform === "string" ? n.platform : undefined,
 		connection_id:
 			typeof n.connection_id === "number" ? n.connection_id : undefined,

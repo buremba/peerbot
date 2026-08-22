@@ -147,13 +147,13 @@ function buildContentQuery(opts: {
  * shows the whole pending→executing→completed history, not just the head.
  *
  * Reads from `events` (not the masked view) because superseded rows are the
- * whole point. Two arms, UNIONed:
- *  - run arm: operation/approval chains all share one `run_id`, so a single
- *    indexed lookup returns pending + executing + completed together.
- *  - walk arm: seeds with `run_id IS NULL` (e.g. an edited note) have no run to
- *    key on, so we walk the `superseded_by` / `supersedes_event_id` linked list
- *    out from the seed in both directions. Bounded (chains are 2–3 hops; the
- *    forward edge is uniquely indexed), so the recursion terminates cheaply.
+ * whole point. Walk the `superseded_by` / `supersedes_event_id` linked list out
+ * from every seed in both directions. `run_id` is deliberately not a lineage
+ * key: a connector feed sync writes many unrelated source items under one run,
+ * so expanding by run would make a permalink for one item return the whole
+ * batch. Operation lifecycle rows already carry explicit supersede edges.
+ * Chains are bounded (normally 2–3 hops; the forward edge is uniquely indexed),
+ * so the recursion terminates cheaply.
  *
  * `$1` must be a bigint[] bind param of the requested ids. Emits a CTE named
  * `resolved_ids(id, chain_key)` — `id` is an event id in a resolved chain and
@@ -164,25 +164,17 @@ function buildContentQuery(opts: {
  */
 const RESOLVED_IDS_CTE = `
   resolved_ids AS (
-    -- run arm: every row of the seed's run (the common approval/operation case).
-    -- Chain key is the run id, text-prefixed so it can't collide with the walk
-    -- arm's event-id keys.
-    SELECT run_ev.id, 'run:' || seed.run_id AS chain_key
-    FROM events seed
-    JOIN events run_ev ON run_ev.run_id = seed.run_id
-    WHERE seed.id = ANY($1::bigint[]) AND seed.run_id IS NOT NULL
-    UNION
-    -- walk arm: run_id-less chains, transitive closure both directions. Chain
-    -- key is the lineage root (oldest ancestor), which every row in the chain
-    -- shares regardless of which id the caller entered from.
+    -- Transitive closure of each explicit supersede lineage in both directions.
+    -- Chain key is the lineage root (oldest ancestor), which every row in the
+    -- chain shares regardless of which id the caller entered from.
     SELECT walked.id, 'ev:' || walked.root AS chain_key
     FROM (
       WITH RECURSIVE lineage(id, root) AS (
-        -- Seed each run_id-less requested id with its own oldest ancestor as
-        -- the provisional root; MIN() over the component finalizes it below.
+        -- Seed each requested id with itself as the provisional root; MIN()
+        -- over the connected component finalizes the oldest ancestor below.
         SELECT s.id, s.id AS root
         FROM events s
-        WHERE s.id = ANY($1::bigint[]) AND s.run_id IS NULL
+        WHERE s.id = ANY($1::bigint[])
         UNION
         SELECT nxt.id, LEAST(l.root, nxt.id)
         FROM lineage l

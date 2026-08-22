@@ -109,12 +109,11 @@ const AUDIT_REQUEST_KEYS = ['request', 'request_bytes'] as const;
  * is the only thing re-read here; a failed re-read rejects rather than serving
  * a half-gated page.
  *
- * The strip index maps an id to a LIST of entries, not one: an exact-id read
- * expands the requested ids through `resolved_ids`, whose run arm and
- * supersede-walk arm can each claim the same event under a different (and
- * deliberately non-colliding) chain key, so the join emits that event twice and
- * `buildContentItems` parses a SEPARATE payload object for each row. Keying one
- * entry per id would restore only the last copy and leave the rest stripped.
+ * The strip index maps an id to a LIST of entries, not one. Exact reads normally
+ * collapse an explicitly linked supersede lineage to one copy of each row, but
+ * hydration is a security boundary and must restore every parsed copy if a
+ * caller supplies duplicates. Keying one entry per id would restore only the
+ * last copy and leave the rest stripped.
  */
 export async function hydrateToolInvocationRequests(opts: {
   sql: DbClient;

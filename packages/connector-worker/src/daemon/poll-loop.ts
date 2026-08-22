@@ -94,13 +94,22 @@ export class WorkerPollLoop {
   }
 
   private async pollAndExecute(): Promise<number | undefined> {
-    if (this.activeJobs >= this.maxConcurrentJobs) return undefined;
-
-    const job = await this.client.poll();
+    const capacityAvailable = Math.max(0, this.maxConcurrentJobs - this.activeJobs);
+    const job = await this.client.poll(capacityAvailable);
     if (!job.run_id) {
       const nextPoll = job.next_poll_seconds ?? 30;
       log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);
       return Number.isFinite(nextPoll) && nextPoll > 0 ? nextPoll * 1000 : 1000;
+    }
+
+    // A zero-capacity response should be impossible: the server must not enter
+    // a claim lane when the worker truthfully reports no free slot. Do not
+    // execute a job if a server bug violates that contract.
+    if (capacityAvailable === 0) {
+      log.info(
+        `[daemon] Server returned run ${job.run_id} while worker is at capacity; leaving it untouched`
+      );
+      return undefined;
     }
 
     this.activeJobs++;

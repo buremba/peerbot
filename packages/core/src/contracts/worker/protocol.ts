@@ -102,6 +102,10 @@ export const OAuthCredentialsSchema = Type.Object({
 export const PollRequestSchema = Type.Object({
   worker_id: Type.String(),
   capabilities: Type.Optional(Type.Record(Type.String(), Type.Boolean())),
+  /** Number of additional runs the worker can accept at this instant. */
+  capacity_available: Type.Optional(
+    Type.Integer({ minimum: 0, maximum: 1024 })
+  ),
   platform: Type.Optional(Type.String()),
   app_version: Type.Optional(Type.String()),
   /**

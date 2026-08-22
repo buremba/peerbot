@@ -142,10 +142,13 @@ async function pollExtension(workerId: string) {
 
 async function pollFleet(
   workerId = 'fleet-affinity-worker',
-  capabilities: Record<string, boolean> = {}
+  capabilities: Record<string, boolean> = {},
+  capacityAvailable?: number,
 ) {
+  const body: Record<string, unknown> = { worker_id: workerId, capabilities };
+  if (capacityAvailable !== undefined) body.capacity_available = capacityAvailable;
   return post('/api/workers/poll', {
-    body: { worker_id: workerId, capabilities },
+    body,
     token: 'test-fleet-token',
     env: { WORKER_API_TOKEN: 'test-fleet-token' },
   });
@@ -178,7 +181,7 @@ describe('browser-affinity poll claim', () => {
       connectorKey: 'linkedin',
     });
 
-    const res = await pollFleet();
+    const res = await pollFleet('fleet-affinity-worker', {}, 1);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       run_id?: number;

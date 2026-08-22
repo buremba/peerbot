@@ -38,6 +38,9 @@ that have not yet materialized as run results.
 `unprocessed_content_count` separately counts source items not linked to a
 completed Automation run. Presentation pagination and date filters affect only
 the returned completed-window list, never these global backlog diagnostics.
+Missing scheduled ranges come from the same durable compact coverage projection.
+`gap_count` is exact; `gaps` returns at most the first 50 components and
+`gaps_truncated` is true when more components exist.
 
 An external processor starts with an atomic claim instead of a separate read and
 run creation:

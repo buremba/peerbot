@@ -7,7 +7,6 @@
 
 import {
   addAutomationPeriod,
-  alignToAutomationWindowStart,
   getFinerAutomationGranularities,
   inferAutomationGranularityFromSchedule,
   type AutomationTimeGranularity,
@@ -55,8 +54,7 @@ import {
   ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
-  countExpectedCompletedAutomationWindows,
-  readExpectedAutomationWindowStart,
+  readAutomationPendingProjection,
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestAutomationRunJoinSql } from '../automations/automation';
@@ -158,7 +156,17 @@ export const GetAutomationResultSchema = Type.Object({
   windows: Type.Array(AutomationWindowSchema),
   automation: Type.Optional(AutomationMetadataSchema),
   pending_analysis: Type.Optional(PendingAnalysisSchema),
-  gaps: Type.Optional(Type.Array(WindowGapSchema)),
+  gaps: Type.Optional(
+    Type.Array(WindowGapSchema, {
+      description: 'First 50 exact missing scheduled ranges from the durable coverage projection.',
+    })
+  ),
+  gap_count: Type.Optional(
+    Type.Integer({ description: 'Exact number of missing scheduled range components.' })
+  ),
+  gaps_truncated: Type.Optional(
+    Type.Boolean({ description: 'True when gap_count exceeds the returned gaps array.' })
+  ),
   pagination: Type.Object({
     page: Type.Integer(),
     page_size: Type.Integer(),
@@ -251,7 +259,6 @@ interface AutomationQueryRow {
   sel_version_reactions_guidance: string | null;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
-  latest_window_start: string | null;
   // jsonb_agg of identity scopes for primary entity
   entity_scopes: Array<{ namespace: string; identifier: string }> | null;
 }
@@ -583,16 +590,6 @@ async function getAutomationImpl(
         (SELECT MAX((approved_input->>'window_end')::timestamptz) FROM runs
           WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
             AND action_output IS NOT NULL) as latest_window_end,
-        -- Latest window START drives the next_window preview, so it chains off
-        -- exactly what computePendingWindow chains off. Chaining the preview off
-        -- the END instead makes the two disagree by a full period on a legacy
-        -- row stored with an inclusive 23:59:59.999 end.
-        (SELECT (approved_input->>'window_start')::timestamptz FROM runs
-          WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
-            AND action_output IS NOT NULL
-            AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
-            AND approved_input->>'window_start' IS NOT NULL
-          ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
@@ -870,10 +867,9 @@ async function getAutomationImpl(
   // Generate processing instructions for client-driven Automation generation
 
   let pendingAnalysis: PendingAnalysis | undefined;
-  let logicalNextWindowStart: Date | null = null;
-  let logicalWindowGranularity: AutomationTimeGranularity | null = null;
-  let logicalClosedBoundary: Date | null = null;
-  let completedClosedWindowStarts: Set<string> | null = null;
+  let projectedWindowGaps: WindowGap[] | undefined;
+  let projectedGapCount: number | undefined;
+  let projectedGapsTruncated: boolean | undefined;
 
   if (args.automation_id && automationRow) {
     const automationEntityIds = parseBigintArray(automationRow.entity_ids);
@@ -889,7 +885,6 @@ async function getAutomationImpl(
       (STANDARD_IDENTITY_NAMESPACES as readonly string[]).includes(s.namespace)
     );
     const latestEnd = automationRow.latest_window_end;
-    const latestStart = automationRow.latest_window_start;
     // Two entity-link fragments: one with `$1 = automation_id` reserved (for
     // queries that join on the automation's windows), one without (for queries
     // that only need the entity scope). Sharing one fragment and passing a
@@ -994,57 +989,22 @@ async function getAutomationImpl(
     // already-fetched latestEnd (no extra round-trip).
     let nextWindow: PendingAnalysis['next_window'] = null;
 
-    const now = new Date();
-    const windowStart = await readExpectedAutomationWindowStart(
+    const projection = await readAutomationPendingProjection(
       sql,
       Number(args.automation_id),
       timeGranularity,
-      now,
-      latestStart ? new Date(latestStart) : null
+      new Date()
     );
-    const closedBoundary = alignToAutomationWindowStart(now, timeGranularity);
-    const closedWindowSpan = countExpectedCompletedAutomationWindows(
-      windowStart,
-      now,
-      timeGranularity
-    );
-    const completedPeriodRows = await sql<{ window_start: string | Date }>`
-      SELECT approved_input->>'window_start' AS window_start
-      FROM runs
-      WHERE automation_id = ${Number(args.automation_id)}
-        AND run_type = 'automation'
-        AND status = 'completed'
-        AND action_output IS NOT NULL
-        AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
-        AND approved_input->>'window_start' IS NOT NULL
-        AND (approved_input->>'window_start')::timestamptz >= ${windowStart.toISOString()}::timestamptz
-        AND (approved_input->>'window_start')::timestamptz < ${closedBoundary.toISOString()}::timestamptz
-    `;
-    const completedStarts = new Set<string>();
-    for (const window of completedPeriodRows) {
-      const completedStart = alignToAutomationWindowStart(
-        new Date(window.window_start),
-        timeGranularity
-      );
-      if (completedStart >= windowStart && completedStart < closedBoundary) {
-        completedStarts.add(completedStart.toISOString());
-      }
-    }
-    const pendingWindowCount = Math.max(0, closedWindowSpan - completedStarts.size);
-
-    logicalNextWindowStart = windowStart;
-    logicalWindowGranularity = timeGranularity;
-    logicalClosedBoundary = closedBoundary;
-    completedClosedWindowStarts = completedStarts;
+    const pendingWindowCount = projection.pendingPeriodCount;
+    projectedWindowGaps = projection.missingRanges.map((range) => ({
+      start: range.start.toISOString(),
+      end: range.end.toISOString(),
+    }));
+    projectedGapCount = projection.missingRangeCount;
+    projectedGapsTruncated = projection.gapsTruncated;
 
     if (pendingWindowCount > 0) {
-      let oldestMissingStart = windowStart;
-      while (
-        oldestMissingStart < closedBoundary &&
-        completedStarts.has(oldestMissingStart.toISOString())
-      ) {
-        oldestMissingStart = addAutomationPeriod(oldestMissingStart, timeGranularity);
-      }
+      const oldestMissingStart = projection.missingRanges[0]?.start ?? projection.nextWindowStart;
       const windowEnd = addAutomationPeriod(oldestMissingStart, timeGranularity);
       nextWindow = {
         start: oldestMissingStart.toISOString(),
@@ -1119,35 +1079,6 @@ async function getAutomationImpl(
     );
   }
 
-  // Detect gaps between consecutive windows (single-automation queries only)
-  let windowGaps: WindowGap[] | undefined;
-  if (
-    args.automation_id &&
-    logicalNextWindowStart &&
-    logicalWindowGranularity &&
-    logicalClosedBoundary &&
-    completedClosedWindowStarts
-  ) {
-    const gaps: WindowGap[] = [];
-    let gapStart: Date | null = null;
-    let periodStart = logicalNextWindowStart;
-    while (periodStart < logicalClosedBoundary) {
-      if (completedClosedWindowStarts.has(periodStart.toISOString())) {
-        if (gapStart) {
-          gaps.push({ start: gapStart.toISOString(), end: periodStart.toISOString() });
-          gapStart = null;
-        }
-      } else if (!gapStart) {
-        gapStart = periodStart;
-      }
-      periodStart = addAutomationPeriod(periodStart, logicalWindowGranularity);
-    }
-    if (gapStart) {
-      gaps.push({ start: gapStart.toISOString(), end: logicalClosedBoundary.toISOString() });
-    }
-    if (gaps.length > 0) windowGaps = gaps;
-  }
-
   const organizationSlug = automationRow?.organization_id
     ? await getOrganizationSlug(automationRow.organization_id)
     : null;
@@ -1161,7 +1092,9 @@ async function getAutomationImpl(
     windows: formattedWindows,
     ...(automationMetadata && { automation: automationMetadata }),
     ...(pendingAnalysis && { pending_analysis: pendingAnalysis }),
-    ...(windowGaps && { gaps: windowGaps }),
+    ...(projectedWindowGaps?.length ? { gaps: projectedWindowGaps } : {}),
+    ...(projectedGapCount !== undefined ? { gap_count: projectedGapCount } : {}),
+    ...(projectedGapsTruncated ? { gaps_truncated: true } : {}),
     pagination: {
       page,
       page_size: pageSize,

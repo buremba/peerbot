@@ -1,7 +1,12 @@
 /** Scheduled Automation period rollover from completed run timestamps. */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { computePendingWindow, nextAutomationWindowStart } from '../window-utils';
+import {
+  advanceExpectedAutomationWindow,
+  computePendingWindow,
+  nextAutomationWindowStart,
+} from '../window-utils';
+import type { AutomationTimeGranularity } from '@lobu/connector-sdk';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
   createTestAgent,
@@ -15,7 +20,7 @@ async function seedWindow(opts: {
   orgId: string;
   userId: string;
   automationId: number;
-  granularity: string;
+  granularity: AutomationTimeGranularity;
   start: string;
   end: string;
   dispatchSource?: 'scheduled' | 'event';
@@ -25,13 +30,20 @@ async function seedWindow(opts: {
     organizationId: opts.orgId,
     ownerUserId: opts.userId,
   });
+  const initialWindowStart =
+    opts.dispatchSource === 'event'
+      ? nextAutomationWindowStart(null, new Date(), opts.granularity)
+      : new Date(opts.start);
   await sql`
     INSERT INTO automations (
-      id, name, slug, created_by, organization_id, agent_id, automation_group_id
+      id, name, slug, created_by, organization_id, agent_id, automation_group_id,
+      next_window_start, completed_window_coverage, window_projection_granularity
     ) VALUES (
       ${opts.automationId}, ${`Window ${opts.automationId}`},
       ${`window-${opts.automationId}`}, ${opts.userId}, ${opts.orgId},
-      ${agent.agentId}, ${opts.automationId}
+      ${agent.agentId}, ${opts.automationId},
+      ${initialWindowStart.toISOString()}::timestamptz,
+      '{}'::tstzmultirange, ${opts.granularity}
     )
     ON CONFLICT (id) DO NOTHING
   `;
@@ -49,6 +61,16 @@ async function seedWindow(opts: {
       approved_input = approved_input || ${sql.json({ granularity: opts.granularity })}::jsonb
     WHERE id = ${run.runId}
   `;
+  if (opts.dispatchSource !== 'event') {
+    await sql.begin((tx) =>
+      advanceExpectedAutomationWindow(
+        tx,
+        opts.automationId,
+        new Date(opts.start),
+        opts.granularity
+      )
+    );
+  }
 }
 
 async function seedOrg() {

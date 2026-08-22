@@ -139,6 +139,13 @@ describe('Automation window claim and recovery', () => {
       windowEnd: dayStart(1).toISOString(),
       dispatchSource: 'scheduled',
     });
+    await sql`
+      UPDATE automations
+      SET next_window_start = ${failedStart.toISOString()}::timestamptz,
+          completed_window_coverage = '{}'::tstzmultirange,
+          window_projection_granularity = 'daily'
+      WHERE id = ${automationId}
+    `;
     const event = await createTestEvent({
       entity_id: entityId,
       organization_id: orgId,
@@ -494,6 +501,18 @@ describe('Automation window claim and recovery', () => {
         ${sql.json({ signals: [] })}, ${sql.json({ content_analyzed: 0 })},
         ${dayStart(1)}, ${dayStart(1)}
       )
+    `;
+
+    await sql`
+      UPDATE automations
+      SET next_window_start = ${completedEnd.toISOString()}::timestamptz,
+          completed_window_coverage = tstzmultirange(tstzrange(
+            ${dayStart(2).toISOString()}::timestamptz,
+            ${dayStart(1).toISOString()}::timestamptz,
+            '[)'
+          )),
+          window_projection_granularity = 'daily'
+      WHERE id = ${automationId}
     `;
 
     const pending = await computePendingWindow(sql, automationId, 'daily');

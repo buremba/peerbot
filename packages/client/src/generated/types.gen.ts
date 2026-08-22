@@ -539,6 +539,14 @@ export type QuerySdkResponses = {
        * Redacted, bounded arguments for the proposed action.
        */
       args: Array<unknown>;
+      /**
+       * Access tier required by the proposed SDK method.
+       */
+      required_access: "read" | "write" | "external" | "admin";
+      /**
+       * Dry-run validates arguments but does not execute live authorization or approval policy.
+       */
+      authorization_status: "not_evaluated";
     }>;
     side_effect_preview_truncated?: {
       dropped_entries: number;
@@ -687,7 +695,7 @@ export type RunSdkData = {
      */
     title?: string;
     /**
-     * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.
+     * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are canonicalized and validated, then skipped and returned in side_effect_preview without executing their handlers.
      */
     dry_run?: boolean;
   };
@@ -775,6 +783,14 @@ export type RunSdkResponses = {
        * Redacted, bounded arguments for the proposed action.
        */
       args: Array<unknown>;
+      /**
+       * Access tier required by the proposed SDK method.
+       */
+      required_access: "read" | "write" | "external" | "admin";
+      /**
+       * Dry-run validates arguments but does not execute live authorization or approval policy.
+       */
+      authorization_status: "not_evaluated";
     }>;
     side_effect_preview_truncated?: {
       dropped_entries: number;
@@ -4704,14 +4720,16 @@ export type ManageAutomationsResponses = {
           window_start: string;
           window_end: string;
           sources?: {
-            [key: string]: Array<unknown>;
+            [key: string]: unknown | Array<unknown>;
           };
           sources_page?: {
-            [key: string]: {
-              returned: number;
-              limit: number;
-              has_more: boolean;
-            };
+            [key: string]:
+              | unknown
+              | {
+                  returned: number;
+                  limit: number;
+                  has_more: boolean;
+                };
           };
           extraction_schema?: {
             [key: string]: unknown;
@@ -5130,10 +5148,21 @@ export type GetAutomationResponses = {
         status: "unprocessed" | "partial" | "complete";
       }>;
     };
+    /**
+     * First 50 exact missing scheduled ranges from the durable coverage projection.
+     */
     gaps?: Array<{
       start: string;
       end: string;
     }>;
+    /**
+     * Exact number of missing scheduled range components.
+     */
+    gap_count?: number;
+    /**
+     * True when gap_count exceeds the returned gaps array.
+     */
+    gaps_truncated?: boolean;
     pagination: {
       page: number;
       page_size: number;

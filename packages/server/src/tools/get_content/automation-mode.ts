@@ -544,7 +544,7 @@ export async function handleAutomationMode(
   if (context.claimedWindow) {
     windowStart = new Date(context.claimedWindow.windowStart);
     windowEnd = new Date(context.claimedWindow.windowEnd);
-    windowCursor = await readWindowCursor(sql, automationId);
+    windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
   } else if (args.since && args.until) {
     // An agent-chosen range, aligned to the granularity so an agent-written
     // window is indistinguishable in shape from a server-computed one.
@@ -553,7 +553,7 @@ export async function handleAutomationMode(
       parseAutomationWindowDate(args.until),
       timeGranularity
     ));
-    windowCursor = await readWindowCursor(sql, automationId);
+    windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
   } else {
     ({ windowStart, windowEnd, cursor: windowCursor } = await computePendingWindow(
       sql,

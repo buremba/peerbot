@@ -129,6 +129,16 @@ describe("Automation window lag is visible and actionable", () => {
 			contentAnalyzed: 40,
 			createdBy: userId,
 		});
+		// This fixture writes completed history directly, bypassing the completion
+		// handler that maintains the durable projection. Seed the state that the
+		// migration would derive from that one sequential completion.
+		await sql`
+			UPDATE automations
+			SET next_window_start = ${new Date(windowStart.getTime() + DAY_MS).toISOString()}::timestamptz,
+				completed_window_coverage = '{}'::tstzmultirange,
+				window_projection_granularity = 'daily'
+			WHERE id = ${automationId}
+		`;
 		return windowStart;
 	};
 

@@ -12,7 +12,7 @@ import {
   attachedInteractiveSession,
   attachInteractiveSession,
 } from './interactive-session.js';
-import { log } from './log.js';
+import { installWorkerPollLoopSignals, WorkerPollLoop } from './poll-loop.js';
 
 export interface DaemonConfig {
   apiUrl: string;
@@ -44,13 +44,8 @@ const DEFAULT_EXECUTOR_TIMEOUT_MS = 600000;
 export class WorkerDaemon {
   private client: WorkerClient;
   private env: Env;
-  private config: {
-    pollIntervalMs: number;
-    maxConcurrentJobs: number;
-    executor: Partial<ExecutorConfig>;
-  };
-  private running = false;
-  private activeJobs = 0;
+  private config: { executor: Partial<ExecutorConfig> };
+  private pollLoop: WorkerPollLoop;
   private shutdownController?: AbortController;
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
@@ -84,51 +79,32 @@ export class WorkerDaemon {
     };
     if (interactiveSession) attachInteractiveSession(executor, interactiveSession);
     this.config = {
-      pollIntervalMs: daemonConfig.pollIntervalMs ?? 10000,
-      maxConcurrentJobs: daemonConfig.maxConcurrentJobs ?? 1,
       executor,
     };
+    this.pollLoop = new WorkerPollLoop({
+      client: this.client,
+      pollIntervalMs: daemonConfig.pollIntervalMs,
+      maxConcurrentJobs: daemonConfig.maxConcurrentJobs,
+      execute: (job) => executeRun(this.client, job, this.env, this.config.executor),
+    });
   }
 
   /**
    * Start the daemon
    */
   async start(): Promise<void> {
-    if (this.running) {
-      log.info('[daemon] Already running');
-      return;
-    }
+    await this.pollLoop.start();
+  }
 
-    // Health check
-    const healthy = await this.client.healthCheck();
-    if (!healthy) {
-      throw new Error('Backend health check failed');
-    }
-
-    log.info('[daemon] Starting worker daemon...');
-    this.running = true;
-
-    // Main poll loop
-    while (this.running) {
-      try {
-        await this.pollAndExecute();
-      } catch (err) {
-        log.info('[daemon] Poll error:', err);
-      }
-
-      // Wait before next poll
-      await this.sleep(this.config.pollIntervalMs);
-    }
-
-    log.info('[daemon] Stopped');
+  installShutdownSignals(): void {
+    installWorkerPollLoopSignals(this.pollLoop);
   }
 
   /**
    * Stop the daemon
    */
   stop(): void {
-    log.info('[daemon] Stopping...');
-    this.running = false;
+    this.pollLoop.stop();
     this.shutdownController?.abort();
   }
 
@@ -137,58 +113,7 @@ export class WorkerDaemon {
    * Returns true if all jobs completed, false if timed out.
    */
   async waitForActiveJobs(timeoutMs = 30000, pollMs = 500): Promise<boolean> {
-    if (this.activeJobs === 0) return true;
-
-    log.debug(`[daemon] Waiting for ${this.activeJobs} active job(s) to finish...`);
-    const deadline = Date.now() + timeoutMs;
-
-    while (this.activeJobs > 0 && Date.now() < deadline) {
-      await this.sleep(pollMs);
-    }
-
-    if (this.activeJobs > 0) {
-      log.info(
-        `[daemon] Timed out after ${timeoutMs}ms waiting for ${this.activeJobs} active job(s)`
-      );
-      return false;
-    }
-
-    log.debug('[daemon] All active jobs completed');
-    return true;
-  }
-
-  /**
-   * Poll for a job and execute it
-   */
-  private async pollAndExecute(): Promise<void> {
-    // Skip if at max capacity
-    if (this.activeJobs >= this.config.maxConcurrentJobs) {
-      return;
-    }
-
-    // Poll for job
-    const job = await this.client.poll();
-
-    // No run available
-    if (!job.run_id) {
-      const nextPoll = job.next_poll_seconds ?? 30;
-      log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);
-      return;
-    }
-
-    // Execute run (fire-and-forget so the poll loop can claim more jobs in parallel)
-    this.activeJobs++;
-    executeRun(this.client, job, this.env, this.config.executor)
-      .catch((err) => {
-        log.info(`[daemon] Run ${job.run_id} crashed:`, err);
-      })
-      .finally(() => {
-        this.activeJobs--;
-      });
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return this.pollLoop.waitForActiveJobs(timeoutMs, pollMs);
   }
 }
 
@@ -197,32 +122,7 @@ export class WorkerDaemon {
  */
 export async function startDaemon(config: DaemonConfig, env: Env): Promise<WorkerDaemon> {
   const daemon = new WorkerDaemon(config, env);
-
-  let shuttingDown = false;
-  const gracefulShutdown = async (signal: string) => {
-    if (shuttingDown) {
-      // Second signal — operator wants out now. Hard exit.
-      console.error(`[daemon] Received ${signal} during shutdown, forcing exit`);
-      process.exit(130);
-    }
-    shuttingDown = true;
-    log.info(`\n[daemon] Received ${signal}, shutting down...`);
-    daemon.stop();
-    const allDone = await daemon.waitForActiveJobs();
-    if (!allDone) {
-      log.info('[daemon] Forcing exit with active jobs still running');
-    }
-    process.exit(allDone ? 0 : 1);
-  };
-
-  // Handle shutdown signals
-  process.on('SIGINT', () => {
-    void gracefulShutdown('SIGINT');
-  });
-  process.on('SIGTERM', () => {
-    void gracefulShutdown('SIGTERM');
-  });
-
+  daemon.installShutdownSignals();
   await daemon.start();
   return daemon;
 }

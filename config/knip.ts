@@ -26,6 +26,9 @@ const config: KnipConfig = {
       // back to source — list the real source entries here.
       entry: [
         "src/bin.ts",
+        // Standalone arm64 Mach-O entrypoint invoked by the root Mac packaging
+        // script; it is not part of the published connector-worker bin.
+        "src/mac-device-daemon.ts",
         "src/daemon/index.ts",
         "src/compile-connector.ts",
         // child-runner is fork()ed by absolute path, not imported.

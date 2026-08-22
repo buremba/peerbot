@@ -679,7 +679,6 @@ export async function getOperationForConnection(
 		connector_runtime: Record<string, unknown> | null;
 		connector_manifest_backed: boolean;
 		connector_artifact_source_path: string | null;
-		connector_required_capability: string | null;
 		name: string;
 	};
 	operation: OperationDescriptor;
@@ -702,7 +701,6 @@ export async function getOperationForConnection(
       cd.mcp_config,
       cd.openapi_config,
       cd.runtime AS connector_runtime,
-      cd.required_capability AS connector_required_capability,
       COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
       cv.artifact_source_path AS connector_artifact_source_path
     FROM connections c
@@ -740,7 +738,6 @@ export async function getOperationForConnection(
 		connector_runtime: Record<string, unknown> | null;
 		connector_manifest_backed: boolean;
 		connector_artifact_source_path: string | null;
-		connector_required_capability: string | null;
 	};
 	const operations = await buildConnectorOperations(
 		{
@@ -772,7 +769,6 @@ export async function getOperationForConnection(
 			connector_runtime: row.connector_runtime,
 			connector_manifest_backed: row.connector_manifest_backed,
 			connector_artifact_source_path: row.connector_artifact_source_path,
-			connector_required_capability: row.connector_required_capability,
 			name: row.name,
 		},
 		operation,

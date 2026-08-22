@@ -480,18 +480,12 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           LEFT JOIN public.device_workers dw ON dw.id = c.device_worker_id
           LEFT JOIN LATERAL (
             SELECT
-              CASE
-                WHEN definitions.version = t.connector_version
-                  THEN definitions.required_capability
-                ELSE NULL
-              END AS run_required_capability,
-              CASE
-                WHEN definitions.version = t.connector_version THEN definitions.runtime
-                ELSE NULL
-              END AS run_runtime
+              definitions.required_capability AS run_required_capability,
+              definitions.runtime AS run_runtime
             FROM public.connector_definitions definitions
             WHERE definitions.key = t.connector_key
               AND definitions.organization_id = t.organization_id
+              AND definitions.version = t.connector_version
               AND definitions.status = 'active'
             ORDER BY definitions.updated_at DESC, definitions.id DESC
             LIMIT 1

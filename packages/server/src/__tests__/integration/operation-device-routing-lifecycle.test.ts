@@ -489,6 +489,45 @@ describe("connection-to-device operation routing lifecycle", () => {
 			output: { inline: true, value: "compiled-whatsapp-unpinned" },
 		});
 
+		// The same legacy key remains device-native when the selected artifact is
+		// metadata-only. With no physical pin, its runtime still queues the action
+		// for any device advertising the exact manifest rather than attempting to
+		// resolve nonexistent connector code inline.
+		await sql`
+			UPDATE connector_versions
+			SET compiled_code = NULL,
+				compiled_code_hash = 'mac-whatsapp-manifest-hash',
+				compile_config_hash = NULL,
+				source_code = NULL,
+				source_path = ${`device-manifest://macos/whatsapp.local@${compiledWhatsappVersion}`}
+			WHERE organization_id = ${org.id}
+			  AND connector_key = 'whatsapp.local'
+			  AND version = ${compiledWhatsappVersion}
+		`;
+		await sql`
+			UPDATE connector_definitions
+			SET required_capability = 'whatsapp_local',
+				runtime = ${sql.json({ platforms: ["macos"] })}
+			WHERE key = 'whatsapp.local' AND organization_id = ${org.id}
+		`;
+		const manifestWhatsappKey = "device-routing:manifest-whatsapp-unpinned";
+		const aborted = new AbortController();
+		aborted.abort();
+		const manifestWhatsappResult = await manageOperations(
+			{
+				action: "execute",
+				connection_id: compiledWhatsappConnection.id,
+				operation_key: ACTION_KEY,
+				input: { value: "manifest-whatsapp-unpinned" },
+				idempotency_key: manifestWhatsappKey,
+			},
+			{} as Env,
+			{ ...ctx, abortSignal: aborted.signal },
+		);
+		expect(manifestWhatsappResult).toMatchObject({
+			status: "timeout",
+		});
+
 		// Intrinsic connector runtime remains authoritative even without a pin.
 		await sql`
 			UPDATE connector_definitions

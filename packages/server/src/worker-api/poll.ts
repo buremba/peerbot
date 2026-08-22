@@ -23,7 +23,7 @@ import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
-import { incrementCounter } from '../gateway/metrics/prometheus';
+import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
 import { claimPendingAutomationRun } from '../runs/queue-service';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
@@ -420,10 +420,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       // are present (cheap fast path, also heals partially-wired state), pause
       // the ones that have gone away. The just-upserted row above is already
       // visible to this query, so the polling device's capabilities count.
-      manifestClaimAuthorizations = await reconcileDeviceCapabilities(
-        registrationUserId,
-        deviceWorkerId
-      );
+      const reconciliationStartedAt = performance.now();
+      try {
+        manifestClaimAuthorizations = await reconcileDeviceCapabilities(
+          registrationUserId,
+          deviceWorkerId
+        );
+      } finally {
+        setGauge(
+          'lobu_device_manifest_reconciliation_duration_ms',
+          performance.now() - reconciliationStartedAt
+        );
+      }
     } catch (err) {
       logger.error(
         { worker_id, err: errorMessage(err) },

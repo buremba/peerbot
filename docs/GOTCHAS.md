@@ -30,6 +30,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | Browser automation hitting a login wall | Browser & connectors |
 | A connector action exists live but not under `packages/connectors` | Browser & connectors |
 | A device manifest edit never reaches `connector_definitions` | Browser & connectors |
+| A Chrome device cannot claim a `whatsapp.local` run it advertises | Browser & connectors |
 | Changed unpacked-extension code is not active | Browser & connectors |
 | A completed browser action opened on the wrong machine | Browser & connectors |
 | `check-drift` failing on a submodule pointer | Submodule & cross-repo |

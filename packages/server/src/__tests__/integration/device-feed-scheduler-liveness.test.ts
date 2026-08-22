@@ -136,14 +136,42 @@ describe('scheduled feed device liveness', () => {
     );
     expect(staleDeferred.last_sync_status).toBeNull();
 
+    const manifestFeedId = await createDueFeed('whatsapp.local');
+    await sql`
+      UPDATE connector_definitions
+      SET required_capability = 'whatsapp_local',
+          runtime = ${sql.json({ platforms: ['macos'] })}
+      WHERE organization_id = ${org.id} AND key = 'whatsapp.local'
+    `;
+    await sql`
+      UPDATE connector_versions
+      SET compiled_code = NULL,
+          compiled_code_hash = 'mac-whatsapp-manifest-hash',
+          compile_config_hash = NULL,
+          source_code = NULL,
+          source_path = 'device-manifest://macos/whatsapp.local@1.0.0'
+      WHERE connector_key = 'whatsapp.local' AND version = '1.0.0'
+    `;
+    await sql`
+      UPDATE feeds
+      SET pinned_version = '1.0.0'
+      WHERE id = ${manifestFeedId}
+    `;
+    await sql`
+      UPDATE connector_definitions
+      SET version = '2.0.0'
+      WHERE organization_id = ${org.id} AND key = 'whatsapp.local'
+    `;
+
     // A deferred feed sits past next_run_at for as long as its device is away,
-    // so /health/scheduler must not read that as a stalled scheduler. Keep an
-    // online-pinned feed equally overdue to prove the filter does not hide
-    // genuine scheduler lag along with intentional device deferrals.
+    // so /health/scheduler must not read that as a stalled scheduler. The
+    // manifest feed is pinned to its historical artifact while the active
+    // definition has moved on; its device-only placement must still be
+    // deferred from source-health counts.
     await sql`
       UPDATE feeds
       SET next_run_at = current_timestamp - INTERVAL '2 hours'
-      WHERE id IN (${staleFeedId}, ${onlineFeedId})
+      WHERE id IN (${staleFeedId}, ${onlineFeedId}, ${manifestFeedId})
     `;
     const health = await getSchedulerHealth({} as Env);
     expect(health.metrics.overdueFeeds).toBe(1);
@@ -155,7 +183,7 @@ describe('scheduled feed device liveness', () => {
     await sql`
       UPDATE feeds
       SET next_run_at = current_timestamp + INTERVAL '1 hour'
-      WHERE id = ${onlineFeedId}
+      WHERE id IN (${onlineFeedId}, ${manifestFeedId})
     `;
 
     await sql`

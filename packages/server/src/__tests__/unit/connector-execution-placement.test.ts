@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isDelegatedBrowserAffinityConnector,
   isChromeNamespaceConnectorKey,
+  isLegacyNonManifestConnector,
   isLegacyNativeChromeExtensionConnectorKey,
   isNativeChromeExtensionConnector,
   LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS,
@@ -19,6 +20,18 @@ describe('Chrome-extension connector execution placement', () => {
     expect(isChromeNamespaceConnectorKey('chrome.history')).toBe(true);
     expect(isChromeNamespaceConnectorKey('chromecast.demo')).toBe(false);
     expect(isChromeNamespaceConnectorKey('whatsapp.local')).toBe(false);
+  });
+
+  it('distinguishes legacy non-manifest artifacts from device manifests', () => {
+    expect(
+      isLegacyNonManifestConnector({ connectorKey: 'whatsapp.local', manifestBacked: false })
+    ).toBe(true);
+    expect(
+      isLegacyNonManifestConnector({ connectorKey: 'whatsapp.local', manifestBacked: true })
+    ).toBe(false);
+    expect(
+      isLegacyNonManifestConnector({ connectorKey: 'linkedin', manifestBacked: false })
+    ).toBe(false);
   });
 
   it('requires the exact Chrome manifest source facts for the legacy key', () => {

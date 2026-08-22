@@ -4,7 +4,7 @@ import { isCloudMode } from '../utils/cloud-mode';
 import { DB_EGRESS_HARDENED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import {
   delegatedBrowserAffinitySql,
-  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS,
+  legacyNonManifestConnectorSql,
 } from '../utils/connector-execution-placement';
 import type { ManifestClaimAuthorization } from './device-manifests';
 
@@ -92,12 +92,14 @@ export function connectorClaimLaneSql(
     manifestBacked: refs.runManifestBacked,
     artifactSourcePath: refs.runArtifactSourcePath,
   });
-  const legacyChromeManifestOnly = sql`
-    ${context.workerPlatform ?? ''}::text = 'chrome-extension'
-    AND ${refs.connectorKey} = ANY(
-      ${pgTextArray([...LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS])}::text[]
-    )
-  `;
+  // During a manifest-to-compiled cutover the active definition can still
+  // advertise its former device capability. The selected artifact is the
+  // execution truth: fleet workers do not advertise browser/OS capabilities,
+  // so a non-manifest legacy artifact must not inherit that stale gate.
+  const legacyFleetArtifact = legacyNonManifestConnectorSql(sql, {
+    connectorKey: refs.connectorKey,
+    manifestBacked: refs.runManifestBacked,
+  });
 
   return sql`
     (
@@ -105,8 +107,11 @@ export function connectorClaimLaneSql(
       -- their exact device; browser-affinity parent runs stay on fleet.
       (
         ${!context.isUserScopedWorker}
-        AND COALESCE(${refs.runRequiredCapability}, '') = ANY(
-          ${pgTextArray(context.capabilityMatchSet)}::text[]
+        AND (
+          COALESCE(${refs.runRequiredCapability}, '') = ANY(
+            ${pgTextArray(context.capabilityMatchSet)}::text[]
+          )
+          OR (${legacyFleetArtifact})
         )
         AND NOT COALESCE(${refs.runManifestBacked}, false)
         AND (
@@ -134,7 +139,7 @@ export function connectorClaimLaneSql(
           )
           OR (
             NOT COALESCE(${refs.runManifestBacked}, false)
-            AND NOT (${legacyChromeManifestOnly})
+            AND NOT (${legacyFleetArtifact})
             AND ${refs.runRequiredCapability} IS NOT NULL
             AND ${refs.runRequiredCapability} = ANY(
               ${pgTextArray(context.authorizedCapabilities)}::text[]

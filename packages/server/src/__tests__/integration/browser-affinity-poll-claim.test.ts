@@ -345,9 +345,7 @@ describe('browser-affinity poll claim', () => {
     expect(extensionBody.run_id).toBeUndefined();
     expect(extensionBody.skipped_run_id).toBeUndefined();
 
-    const fleetResponse = await pollFleet('fleet-whatsapp-compiled-override', {
-      'browser.scripting': true,
-    });
+    const fleetResponse = await pollFleet('fleet-whatsapp-compiled-override');
     expect(fleetResponse.status).toBe(200);
     const fleetBody = (await fleetResponse.json()) as {
       run_id?: number;
@@ -376,9 +374,7 @@ describe('browser-affinity poll claim', () => {
     expect(
       ((await unpinnedExtensionResponse.json()) as { run_id?: number }).run_id
     ).toBeUndefined();
-    const unpinnedFleetResponse = await pollFleet('fleet-whatsapp-unpinned-compiled', {
-      'browser.scripting': true,
-    });
+    const unpinnedFleetResponse = await pollFleet('fleet-whatsapp-unpinned-compiled');
     expect(unpinnedFleetResponse.status).toBe(200);
     const unpinnedFleetBody = (await unpinnedFleetResponse.json()) as {
       run_id?: number;

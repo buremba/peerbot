@@ -11,8 +11,7 @@ import { getDb } from "../../../../db/client";
 import type { Env } from "../../../../index";
 import {
 	isDelegatedBrowserAffinityConnector,
-	isLegacyNativeChromeExtensionConnectorKey,
-	isNativeChromeExtensionConnector,
+	isLegacyNonManifestConnector,
 } from "../../../../utils/connector-execution-placement";
 import { currentMcpActivityAttribution, currentMcpActivityEventMetadata } from "../../../../lobu/stores/mcp-client-conversations";
 import { callTool as callProxyTool } from "../../../../mcp-proxy/client";
@@ -615,13 +614,13 @@ export async function handleExecute(
 		connection.device_platform,
 		executionSourceFacts,
 	);
-	const isLegacyFleetArtifact =
-		isLegacyNativeChromeExtensionConnectorKey(connection.connector_key) &&
-		!isNativeChromeExtensionConnector(executionSourceFacts);
+	const isLegacyNonManifestArtifact = isLegacyNonManifestConnector(
+		executionSourceFacts,
+	);
 	const executesOnDevice =
 		!isChromeScrapeAffinity &&
 		(connection.device_worker_id != null ||
-			(connection.connector_runtime != null && !isLegacyFleetArtifact));
+			(connection.connector_runtime != null && !isLegacyNonManifestArtifact));
 	if (activation && (operation.backend !== "local_action" || executesOnDevice)) {
 		throw new ToolUserError(
 			"Page activation requires a server-executed local connector operation.",

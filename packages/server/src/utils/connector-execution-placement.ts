@@ -24,6 +24,15 @@ export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {
   return connectorKey === 'chrome' || connectorKey.startsWith('chrome.');
 }
 
+export function isLegacyNonManifestConnector(facts: {
+  connectorKey: string;
+  manifestBacked: boolean;
+}): boolean {
+  return (
+    isLegacyNativeChromeExtensionConnectorKey(facts.connectorKey) && !facts.manifestBacked
+  );
+}
+
 export interface ConnectorExecutionSourceFacts {
   connectorKey: string;
   connectorVersion: string;
@@ -95,6 +104,18 @@ export function delegatedBrowserAffinitySql<TFragment>(
   return sql`
     ${refs.platform} = 'chrome-extension'
     AND NOT (${nativeChromeExtensionConnectorSql(sql, refs)})
+  `;
+}
+
+export function legacyNonManifestConnectorSql<TFragment>(
+  sql: SqlTag<TFragment>,
+  refs: { connectorKey: TFragment; manifestBacked: TFragment }
+): TFragment {
+  return sql`
+    ${refs.connectorKey} = ANY(
+      ${pgTextArray([...LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS])}::text[]
+    )
+    AND NOT COALESCE(${refs.manifestBacked}, false)
   `;
 }
 

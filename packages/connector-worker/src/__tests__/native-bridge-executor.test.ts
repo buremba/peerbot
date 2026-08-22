@@ -8,7 +8,14 @@ const item = (id: string) => ({
 });
 
 function fakeClient() {
-  const calls: Record<string, unknown[]> = { stream: [], complete: [], completeAction: [], completeAuth: [], heartbeat: [] };
+  const calls: Record<string, unknown[]> = {
+    stream: [],
+    complete: [],
+    completeAction: [],
+    completeAuth: [],
+    completeAutomation: [],
+    heartbeat: [],
+  };
   return {
     id: 'mac:test',
     calls,
@@ -17,6 +24,7 @@ function fakeClient() {
     complete: async (value: unknown) => calls.complete.push(value),
     completeAction: async (value: unknown) => calls.completeAction.push(value),
     completeAuth: async (value: unknown) => calls.completeAuth.push(value),
+    completeAutomation: async (runId: number, value: unknown) => calls.completeAutomation.push({ runId, value }),
   } as never;
 }
 
@@ -161,6 +169,37 @@ describe('native bridge run forwarding', () => {
     }
 
     expect(operations).toEqual(['query', 'search']);
+  });
+
+  test('rejects automation and embed_backfill runs without using completeAction', async () => {
+    const client = fakeClient() as {
+      calls: Record<string, unknown[]>;
+      id: string;
+    };
+    const bridge = {
+      run: async () => {
+        throw new Error('must not execute');
+      },
+    } as never;
+
+    const automation = await executeNativeBridgeRun(client as never, bridge, {
+      run_id: 17,
+      run_type: 'automation',
+    } as never);
+    const embedBackfill = await executeNativeBridgeRun(client as never, bridge, {
+      run_id: 18,
+      run_type: 'embed_backfill',
+    } as never);
+
+    expect(automation.error).toContain('native bridge does not execute run_type automation');
+    expect(embedBackfill.error).toContain('native bridge does not execute run_type embed_backfill');
+    expect(client.calls.completeAction).toEqual([]);
+    expect(client.calls.completeAutomation).toEqual([
+      expect.objectContaining({ runId: 17, value: expect.objectContaining({ error: automation.error }) }),
+    ]);
+    expect(client.calls.complete).toEqual([
+      expect.objectContaining({ run_id: 18, status: 'failed', error_message: embedBackfill.error }),
+    ]);
   });
 
   test('heartbeats a long native run and clears the heartbeat after terminal completion', async () => {

@@ -228,6 +228,33 @@ describe('WorkerPollLoop', () => {
     await started;
   });
 
+  test('does not admit a poll result after shutdown begins', async () => {
+    let releasePoll!: (job: unknown) => void;
+    let executions = 0;
+    const pollResult = new Promise((resolve) => {
+      releasePoll = resolve;
+    });
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => pollResult,
+    } as never;
+    const loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 1,
+      execute: async () => {
+        executions++;
+      },
+    });
+
+    const started = loop.start();
+    await Bun.sleep(5);
+    loop.stop();
+    releasePoll({ run_id: 2, run_type: 'action' });
+    await started;
+
+    expect(executions).toBe(0);
+  });
+
   test('releases the active-job slot when execution throws synchronously', async () => {
     let polled = false;
     const client = {

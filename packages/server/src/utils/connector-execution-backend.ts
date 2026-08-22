@@ -7,7 +7,7 @@ export interface SelectedConnectorArtifact {
   manifestHash: string | null | undefined;
   compiledCode: string | null | undefined;
   compileConfigHash: string | null | undefined;
-  sourceCode: string | null | undefined;
+  hasSourceCode: boolean;
 }
 
 export interface SelectedConnectorDefinition {
@@ -29,7 +29,7 @@ export interface AuthorizedManifestIdentity {
   connectorVersion: string;
   manifestHash: string;
   sourcePath?: string;
-  runtimeExecution?: unknown;
+  runtimeExecution?: DeviceConnectorManifest['runtime']['execution'];
 }
 
 export interface SelectedConnectorExecution {
@@ -89,7 +89,7 @@ export function classifySelectedConnectorExecution(params: {
   if (!manifestBacked) {
     return { manifestBacked, inconsistency: 'bridge-marked definition selected a non-manifest artifact' };
   }
-  if (params.artifact.compiledCode || params.artifact.compileConfigHash || params.artifact.sourceCode) {
+  if (params.artifact.compiledCode || params.artifact.compileConfigHash || params.artifact.hasSourceCode) {
     return { manifestBacked, inconsistency: 'bridge-marked artifact contains compiled or source code' };
   }
   if (!authorization) {
@@ -165,7 +165,7 @@ function isManifestArtifact(artifact: SelectedConnectorArtifact): boolean {
     parseManifestSourcePath(artifact.sourcePath) !== null &&
     !artifact.compiledCode &&
     !artifact.compileConfigHash &&
-    !artifact.sourceCode
+    !artifact.hasSourceCode
   );
 }
 

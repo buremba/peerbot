@@ -805,7 +805,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         cv.artifact_compile_config_hash AS compile_config_hash,
         cv.artifact_hash AS connector_manifest_hash,
         cv.artifact_source_path AS artifact_source_path,
-        cv.artifact_source_code AS artifact_source_code,
+        cv.artifact_has_source_code AS artifact_has_source_code,
         COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
         CASE WHEN cd.version = r.connector_version THEN cd.runtime ELSE NULL END
           AS connector_runtime,
@@ -961,7 +961,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     compile_config_hash: string | null;
     connector_manifest_hash: string | null;
     artifact_source_path: string | null;
-    artifact_source_code: string | null;
+    artifact_has_source_code: boolean;
     connector_manifest_backed: boolean;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
@@ -998,7 +998,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             manifestHash: row.connector_manifest_hash,
             compiledCode: row.compiled_code,
             compileConfigHash: row.compile_config_hash,
-            sourceCode: row.artifact_source_code,
+            hasSourceCode: row.artifact_has_source_code,
           },
           definition:
             row.connector_name && row.connector_runtime

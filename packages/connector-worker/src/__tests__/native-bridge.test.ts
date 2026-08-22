@@ -30,6 +30,7 @@ describe('native bridge framing', () => {
     const decoder = new NativeBridgeFrameDecoder();
 
     expect(decoder.append(first.subarray(0, 2))).toEqual([]);
+    expect(decoder.append(Buffer.alloc(0))).toEqual([]);
     expect(decoder.append(Buffer.concat([first.subarray(2), second]))).toMatchObject([
       { request_id: 'request-1' },
       { request_id: 'request-2' },
@@ -152,6 +153,168 @@ describe('native bridge handshake', () => {
     output.destroy();
   });
 
+  test('keeps other runs alive when one stream callback fails', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    const transportFailures: Error[] = [];
+    bridge.onTransportFailure((error) => transportFailures.push(error));
+    input.write(helloFrame());
+    await bridge.handshake();
+    output.read();
+
+    const failedRun = bridge.run({
+      operation: 'action',
+      requestId: 'stream-failure:one',
+      job: { run_id: 51 },
+      onStream: async () => {
+        throw new Error('owning stream failed');
+      },
+    });
+    const healthyRun = bridge.run({
+      operation: 'action',
+      requestId: 'healthy-run',
+      job: { run_id: 52 },
+    });
+    await Bun.sleep(5);
+    output.read();
+
+    input.write(Buffer.concat([
+      encodeNativeBridgeFrame({
+        version: 1,
+        kind: 'stream',
+        request_id: 'stream-failure:one',
+        run_id: 51,
+        sequence: 0,
+        payload: {},
+      }),
+      encodeNativeBridgeFrame({
+        version: 1,
+        kind: 'complete',
+        request_id: 'healthy-run',
+        run_id: 52,
+        payload: { action_output: { ok: true } },
+      }),
+    ]));
+
+    await expect(failedRun).rejects.toThrow('owning stream failed');
+    await expect(healthyRun).resolves.toMatchObject({ action_output: { ok: true } });
+    expect(transportFailures).toEqual([]);
+    input.destroy();
+    output.destroy();
+  });
+
+  test('rejects non-monotonic stream sequences', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    input.write(helloFrame());
+    await bridge.handshake();
+    output.read();
+    const runPromise = bridge.run({
+      operation: 'action',
+      requestId: 'sequence-run',
+      job: { run_id: 53 },
+      onStream: async () => undefined,
+    });
+    await Bun.sleep(5);
+    output.read();
+    input.write(encodeNativeBridgeFrame({
+      version: 1,
+      kind: 'stream',
+      request_id: 'sequence-run',
+      run_id: 53,
+      sequence: 1,
+      payload: {},
+    }));
+    input.write(encodeNativeBridgeFrame({
+      version: 1,
+      kind: 'stream',
+      request_id: 'sequence-run',
+      run_id: 53,
+      sequence: 0,
+      payload: {},
+    }));
+    await expect(runPromise).rejects.toThrow('not monotonic');
+    input.destroy();
+    output.destroy();
+  });
+
+  test('rejects a second terminal frame for the same run', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    const failures: Error[] = [];
+    bridge.onTransportFailure((error) => failures.push(error));
+    input.write(helloFrame());
+    await bridge.handshake();
+    output.read();
+    const runPromise = bridge.run({ operation: 'action', requestId: 'terminal-run', job: { run_id: 54 } });
+    await Bun.sleep(5);
+    output.read();
+    const terminal = encodeNativeBridgeFrame({
+      version: 1,
+      kind: 'complete',
+      request_id: 'terminal-run',
+      run_id: 54,
+      payload: {},
+    });
+    input.write(Buffer.concat([terminal, terminal]));
+    await expect(runPromise).resolves.toEqual({});
+    await Bun.sleep(5);
+    expect(failures[0]?.message).toContain('more than one terminal frame');
+    input.destroy();
+    output.destroy();
+  });
+
+  test('preserves ordinary path-like and pat-containing job keys while redacting PAT fields', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const provider = new MutableWorkerAdvertisementProvider({ capabilities: {}, manifests: [], generation: 0 });
+    const bridge = new NativeBridgeClient(input, output, provider, 'mac:test', 'daemon-build-1');
+    input.write(helloFrame());
+    await bridge.handshake();
+    const decoder = new NativeBridgeFrameDecoder();
+    decoder.append(output.read() as Buffer);
+    const runPromise = bridge.run({
+      operation: 'action',
+      requestId: 'sanitize-run',
+      job: {
+        run_id: 55,
+        config: {
+          path: '/tmp/docs',
+          patterns: ['*.md'],
+          dispatch: 'refresh',
+          compatibility: true,
+          pat: 'secret-pat',
+          auth_profile: 'secret-profile',
+        },
+      },
+    });
+    await Bun.sleep(5);
+    const runBytes = output.read();
+    expect(runBytes).not.toBeNull();
+    const frames = decoder.append(runBytes as Buffer);
+    expect(frames[0]?.payload).toMatchObject({
+      job: { config: { path: '/tmp/docs', patterns: ['*.md'], dispatch: 'refresh', compatibility: true } },
+    });
+    expect((frames[0]?.payload as { job: { config: Record<string, unknown> } }).job.config.pat).toBeUndefined();
+    expect((frames[0]?.payload as { job: { config: Record<string, unknown> } }).job.config.auth_profile).toBeUndefined();
+    input.write(encodeNativeBridgeFrame({
+      version: 1,
+      kind: 'complete',
+      request_id: 'sanitize-run',
+      run_id: 55,
+      payload: {},
+    }));
+    await expect(runPromise).resolves.toEqual({});
+    input.destroy();
+    output.destroy();
+  });
+
   test('refreshes the worker advertisement used by subsequent polls', async () => {
     const calls: Record<string, unknown>[] = [];
     const realFetch = globalThis.fetch;
@@ -168,14 +331,15 @@ describe('native bridge handshake', () => {
       const client = new WorkerClient({
         apiUrl: 'https://example.test',
         workerId: 'mac:test',
+        capabilities: { daemon: true, shared: false },
         advertisementProvider: provider,
       });
       await client.poll();
       provider.update({ capabilities: { fresh: true }, manifests: [{ key: 'fresh' }], generation: 2 });
       await client.poll();
       expect(calls.map((call) => [call.capabilities, call.connector_manifests])).toEqual([
-        [{ old: true }, [{ key: 'old' }]],
-        [{ fresh: true }, [{ key: 'fresh' }]],
+        [{ daemon: true, shared: false, old: true }, [{ key: 'old' }]],
+        [{ daemon: true, shared: false, fresh: true }, [{ key: 'fresh' }]],
       ]);
     } finally {
       globalThis.fetch = realFetch;

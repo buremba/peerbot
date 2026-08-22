@@ -35,6 +35,7 @@ export class WorkerPollLoop {
   private readonly maxConcurrentJobs: number;
   private readonly execute: (job: PollResponse) => Promise<unknown>;
   private running = false;
+  private admittingJobs = true;
   private activeJobs = 0;
 
   constructor(options: WorkerPollLoopOptions) {
@@ -53,6 +54,7 @@ export class WorkerPollLoop {
     if (!(await this.client.healthCheck())) {
       throw new Error('Backend health check failed');
     }
+    if (!this.admittingJobs) return;
 
     log.info('[daemon] Starting worker daemon...');
     this.running = true;
@@ -63,7 +65,7 @@ export class WorkerPollLoop {
       } catch (err) {
         log.info('[daemon] Poll error:', err);
       }
-      await this.sleep(nextDelayMs ?? this.pollIntervalMs);
+      if (this.running) await this.sleep(nextDelayMs ?? this.pollIntervalMs);
     }
     log.info('[daemon] Stopped');
   }
@@ -71,6 +73,7 @@ export class WorkerPollLoop {
   stop(): void {
     log.info('[daemon] Stopping...');
     this.running = false;
+    this.admittingJobs = false;
   }
 
   async waitForActiveJobs(timeoutMs = 30000, pollMs = 500): Promise<boolean> {
@@ -94,8 +97,10 @@ export class WorkerPollLoop {
   }
 
   private async pollAndExecute(): Promise<number | undefined> {
+    if (!this.admittingJobs) return undefined;
     const capacityAvailable = Math.max(0, this.maxConcurrentJobs - this.activeJobs);
     const job = await this.client.poll(capacityAvailable);
+    if (!this.admittingJobs) return undefined;
     if (!job.run_id) {
       const nextPoll = job.next_poll_seconds ?? 30;
       log.debug(`[daemon] No runs available, next poll in ${nextPoll}s`);

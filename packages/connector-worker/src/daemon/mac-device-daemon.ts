@@ -123,8 +123,8 @@ export function createMacDeviceDaemonShutdown(
       shutdownError ??= error;
     }
     // The app may close the transport as soon as it has acknowledged the
-    // shutdown frame, so keep the writer alive until active jobs observe
-    // their terminal failures.
+    // shutdown frame, so keep the writer alive until the shared poll-loop
+    // shutdown handler observes terminal failures from active jobs.
     bridge.close(new Error('native bridge daemon shutdown'));
     if (shutdownError) throw shutdownError;
   };

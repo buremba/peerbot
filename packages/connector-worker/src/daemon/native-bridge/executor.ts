@@ -14,15 +14,11 @@ export async function executeNativeBridgeRun(
   if (!job.run_id) throw new Error('native bridge run is missing run_id');
 
   const runId = job.run_id;
-  const operation = nativeOperation(job);
+  let operation: ReturnType<typeof nativeOperation> | undefined;
   let itemsCollected = 0;
   let checkpoint = asRecord(job.checkpoint);
   let terminalAttempted = false;
-  const heartbeatInterval = setInterval(() => {
-    void client.heartbeat(runId).catch((error) => {
-      log.debug(`[native-bridge] Heartbeat for run ${runId} failed:`, error);
-    });
-  }, NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS);
+  let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
 
   const completeSync = async (result: NativeBridgeRunResult, errorMessage?: string) => {
     if (terminalAttempted) return;
@@ -62,11 +58,18 @@ export async function executeNativeBridgeRun(
   };
 
   try {
+    const currentOperation = nativeOperation(job);
+    operation = currentOperation;
+    heartbeatInterval = setInterval(() => {
+      void client.heartbeat(runId).catch((error) => {
+        log.debug(`[native-bridge] Heartbeat for run ${runId} failed:`, error);
+      });
+    }, NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS);
     const result = await bridge.run({
-      operation,
+      operation: currentOperation,
       job: bridgeJob(job),
       onStream:
-        operation === 'sync'
+        currentOperation === 'sync'
           ? async (payload) => {
               const items = readItems(payload.items);
               const nextCheckpoint = asRecord(payload.checkpoint);
@@ -88,8 +91,8 @@ export async function executeNativeBridgeRun(
     });
 
     if (result.checkpoint) checkpoint = result.checkpoint;
-    if (operation === 'sync') await completeSync(result);
-    else if (operation === 'auth') await completeAuth(result);
+    if (currentOperation === 'sync') await completeSync(result);
+    else if (currentOperation === 'auth') await completeAuth(result);
     else await completeAction(result);
     return { itemsCollected };
   } catch (error) {
@@ -98,13 +101,22 @@ export async function executeNativeBridgeRun(
     try {
       if (operation === 'sync') await completeSync({}, message);
       else if (operation === 'auth') await completeAuth({}, message);
+      else if (job.run_type === 'automation') {
+        await client.completeAutomation(runId, {
+          worker_id: client.id,
+          output: '',
+          error: message,
+          duration_ms: 0,
+          exit_reason: 'error_message',
+        });
+      } else if (job.run_type === 'embed_backfill') await completeSync({}, message);
       else await completeAction({}, message);
     } catch (completionError) {
       log.info(`[native-bridge] Terminal report for run ${runId} failed:`, completionError);
     }
     return { itemsCollected, error: message };
   } finally {
-    clearInterval(heartbeatInterval);
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
   }
 }
 

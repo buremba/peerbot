@@ -52,6 +52,7 @@ export class NativeBridgeClient {
   private readonly writer: NativeBridgeFrameWriter;
   private readonly pending = new Map<string, PendingRun>();
   private readonly terminalRuns = new Set<string>();
+  private readonly ignoredRuns = new Set<string>();
   private reading = false;
   private handshakeComplete = false;
   private handshakePromise?: Promise<void>;
@@ -279,7 +280,14 @@ export class NativeBridgeClient {
 
     const pending = this.pending.get(frame.request_id);
     if (!pending) {
-      if (frame.kind === 'cancel' && this.terminalRuns.has(`${frame.request_id}:${frame.run_id ?? ''}`)) return;
+      const runKey = `${frame.request_id}:${frame.run_id ?? ''}`;
+      if (this.ignoredRuns.has(runKey)) return;
+      if (this.terminalRuns.has(runKey)) {
+        if (frame.kind === 'complete' || frame.kind === 'failed') {
+          throw new NativeBridgeProtocolError('native bridge emitted more than one terminal frame');
+        }
+        if (frame.kind === 'cancel') return;
+      }
       throw new NativeBridgeProtocolError(`native bridge frame has no active owner '${frame.request_id}'`);
     }
     if (frame.run_id !== pending.runId) {
@@ -304,7 +312,7 @@ export class NativeBridgeClient {
         } catch {
           // Best-effort cancellation; the owning run still fails locally.
         }
-        this.rejectPending(frame.request_id, failure);
+        this.rejectPending(frame.request_id, failure, true);
       }
       return;
     }
@@ -340,11 +348,19 @@ export class NativeBridgeClient {
     }
   }
 
-  private rejectPending(requestId: string, error: Error): void {
+  private rejectPending(requestId: string, error: Error, ignoreFutureFrames = false): void {
     const pending = this.pending.get(requestId);
     if (!pending) return;
     pending.terminal = true;
     this.pending.delete(requestId);
+    if (ignoreFutureFrames) {
+      const runKey = `${requestId}:${pending.runId}`;
+      this.ignoredRuns.add(runKey);
+      if (this.ignoredRuns.size > NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES) {
+        const oldest = this.ignoredRuns.values().next().value;
+        if (oldest) this.ignoredRuns.delete(oldest);
+      }
+    }
     pending.reject(error);
   }
 

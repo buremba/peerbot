@@ -38,7 +38,7 @@ function classify(overrides: Record<string, unknown> = {}) {
       manifestHash: hash,
       compiledCode: null,
       compileConfigHash: null,
-      sourceCode: null,
+      hasSourceCode: false,
     },
     definition,
     connectorKey: manifest.key,
@@ -79,11 +79,11 @@ describe('selected connector execution backend', () => {
         manifestHash: hash,
         compiledCode: 'compiled override',
         compileConfigHash: null,
-        sourceCode: null,
+        hasSourceCode: false,
       },
     }).inconsistency).toContain('non-manifest');
     expect(classify({
-      artifact: { sourcePath: sourcePath.replace('apple.files', 'forged'), manifestHash: hash, compiledCode: null, compileConfigHash: null, sourceCode: null },
+      artifact: { sourcePath: sourcePath.replace('apple.files', 'forged'), manifestHash: hash, compiledCode: null, compileConfigHash: null, hasSourceCode: false },
     }).backend).toBeUndefined();
   });
 
@@ -94,7 +94,7 @@ describe('selected connector execution backend', () => {
         manifestHash: null,
         compiledCode: 'compiled connector',
         compileConfigHash: null,
-        sourceCode: null,
+        hasSourceCode: false,
       },
       definition: { ...definition, runtime: { platforms: ['macos'] } },
       authorizations: [],
@@ -111,5 +111,24 @@ describe('selected connector execution backend', () => {
     expect(classify({
       definition: { ...definition, runtime: { platforms: ['macos'], execution: 'compiled' } },
     })).toEqual({ manifestBacked: true, inconsistency: 'active exact definition is not bridge execution' });
+  });
+
+  test('rejects a bridge artifact that is not authorized by the claiming device', () => {
+    expect(classify({ authorizations: [] }).inconsistency).toContain('not authorized');
+    expect(classify({ authorizations: [] }).backend).toBeUndefined();
+  });
+
+  test('rejects a canonical definition whose hash differs from the artifact', () => {
+    expect(classify({ definition: { ...definition, name: 'Tampered Name' } }).inconsistency).toContain(
+      'canonical definition',
+    );
+    expect(classify({ definition: { ...definition, name: 'Tampered Name' } }).backend).toBeUndefined();
+  });
+
+  test('rejects a manifest artifact from another platform', () => {
+    expect(classify({ expectedPlatform: 'chrome-extension' }).inconsistency).toContain(
+      'does not match worker platform',
+    );
+    expect(classify({ expectedPlatform: 'chrome-extension' }).backend).toBeUndefined();
   });
 });

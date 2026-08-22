@@ -364,6 +364,76 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(String(run.status)).toBe('failed');
   });
 
+  it('macOS daemon cancellation is terminal and idempotent', async () => {
+    const ctx = await setupDevicePinnedAutomation({
+      workerId: 'mac-cancelled',
+      platform: 'macos',
+      capabilities: { 'automations.execute': true },
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-cancelled'
+    );
+
+    const trig = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+    const pollRes = await post('/api/workers/poll', {
+      token,
+      body: {
+        worker_id: 'mac-cancelled',
+        platform: 'macos',
+        capabilities: { 'automations.execute': true },
+        agent_kinds: ['opencode'],
+      },
+    });
+    expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as { run_id?: number };
+    expect(job.run_id).toBeGreaterThan(0);
+
+    const report = {
+      worker_id: 'mac-cancelled',
+      output: 'daemon stopped by supervisor',
+      exit_code: 143,
+      exit_signal: 'SIGTERM',
+      exit_reason: 'cancelled' as const,
+    };
+    const response = await post(
+      `/api/workers/me/runs/${job.run_id}/complete-automation`,
+      { token, body: report }
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: 'cancelled',
+      reason_code: 'device_daemon_shutdown',
+      run_id: job.run_id,
+    });
+
+    const [run] = await ctx.sql`
+      SELECT status, completed_at, output_tail, exit_code, exit_signal, exit_reason
+      FROM runs
+      WHERE id = ${job.run_id}
+    `;
+    expect(String(run.status)).toBe('cancelled');
+    expect(run.completed_at).not.toBeNull();
+    expect(String(run.output_tail)).toContain('daemon stopped by supervisor');
+    expect(Number(run.exit_code)).toBe(143);
+    expect(String(run.exit_signal)).toBe('SIGTERM');
+    expect(String(run.exit_reason)).toBe('cancelled');
+
+    const duplicate = await post(
+      `/api/workers/me/runs/${job.run_id}/complete-automation`,
+      { token, body: { ...report, output: 'duplicate report' } }
+    );
+    expect(duplicate.status).toBe(200);
+    await expect(duplicate.json()).resolves.toEqual({
+      ok: true,
+      status: 'cancelled',
+      idempotent: true,
+    });
+  });
+
   it('macOS device with capabilities:{} still claims (pre-capability exemption)', async () => {
     const ctx = await setupDevicePinnedAutomation({
       workerId: 'mac-exempt',

@@ -161,6 +161,7 @@ describe("method-metadata", () => {
 			"classifiers.delete",
 			"schedules.cancel",
 			"automations.get",
+			"automations.claimNextWindow",
 			"automations.trigger",
 			"automations.delete",
 			"entitySchema.deleteType",

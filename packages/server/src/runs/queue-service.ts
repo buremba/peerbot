@@ -132,6 +132,7 @@ export async function claimPendingAutomationRun(
     automationId: number;
     claimedBy: string;
     status: 'claimed' | 'running';
+    expiresAt?: Date | null;
   }
 ): Promise<boolean> {
   const automation = await tx`
@@ -152,7 +153,8 @@ export async function claimPendingAutomationRun(
               WHEN ${params.status}::text = 'running' THEN current_timestamp
               ELSE r.last_heartbeat_at
             END,
-            claimed_by = ${params.claimedBy}
+            claimed_by = ${params.claimedBy},
+            expires_at = ${params.expiresAt?.toISOString() ?? null}::timestamptz
         WHERE r.id = ${params.runId}
           AND r.automation_id = ${params.automationId}
           AND r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])

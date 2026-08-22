@@ -270,8 +270,10 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // which stopped writing it and replaced it with agent_kind on the read path.
     // Prod has it NULL on every row. Schema exposure is removed ahead of the
     // two-phase column drop, so the physical column outlives its
-    // QUERYABLE_SCHEMA entry until the phase-2 migration.
-    automations: new Set(['scheduler_client_id']),
+    // QUERYABLE_SCHEMA entry until the phase-2 migration. next_window_start is
+    // internal scheduler coordination state, exposed through the Automation
+    // contract as pending_analysis.next_window rather than raw query_sql.
+    automations: new Set(['scheduler_client_id', 'next_window_start']),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
 

@@ -69,15 +69,16 @@ export const GetContentResultSchema = Type.Object({
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),
   /**
-   * How the window above sits against the clock, and what was skipped to get it.
+   * How the window above sits against the clock, including any gap caused by an
+   * explicitly requested later range.
    *
    * `window_start` alone cannot tell a run whether it is current: a stale window
    * and a fresh one look identical from inside the run. Prod Automation 2 drafted
    * replies to month-dead Hacker News threads for weeks because nothing said so.
    *
-   * Raw facts, deliberately — no staleness flag. A run that decides a skipped
-   * span is worth draining can read it by passing `since`/`until`, and the window
-   * it completes is whatever span it read.
+   * Raw facts, deliberately — no staleness flag. Sequential dispatch advances
+   * one logical period at a time; `periods_skipped` is only non-zero for an
+   * explicit range that starts later than the next logical period.
    */
   window_lag: Type.Optional(
     Type.Object({
@@ -92,20 +93,18 @@ export const GetContentResultSchema = Type.Object({
       periods_behind: Type.Integer(),
       granularity: Type.String(),
       /**
-       * Periods between `last_window_start` and the window above that no run will
-       * ever be dispatched for, because the server moved the window forward to
-       * bring a lagging Automation current. Zero on every healthy run.
+       * Periods omitted by an explicit range that starts after the next logical
+       * period. Sequential dispatch always reports zero.
        */
       periods_skipped: Type.Integer(),
       skipped_from: Type.Union([Type.String(), Type.Null()]),
       /** Inclusive — the last period actually skipped. */
       skipped_to: Type.Union([Type.String(), Type.Null()]),
       /**
-       * The skip in words, present only when `periods_skipped` is non-zero. A
-       * Automation run reads this response as JSON through `run_sdk`, so the
-       * affordance — that it may re-read a skipped span with `since`/`until`, and
-       * that doing so cannot drag the cursor back — has to travel in the payload.
-       * Reporting only numbers was measured NOT to change what a run did.
+       * The explicit range gap in words, present only when `periods_skipped` is
+       * non-zero. Automation runs read this response as JSON through `run_sdk`,
+       * so the affordance to recover the next logical period has to travel in
+       * the payload.
        */
       guidance: Type.Optional(Type.String()),
     })

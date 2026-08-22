@@ -72,6 +72,16 @@ export interface AutomationCompleteWindowInput {
 	template_version_id?: number;
 }
 
+export interface AutomationClaimNextWindowInput {
+	automation_id: AutomationId;
+	lease_seconds?: number;
+	limit?: number;
+	/** Existing lease run id when fetching the next source page. */
+	run_id?: number;
+	before_occurred_at?: string;
+	before_id?: number;
+}
+
 export interface AutomationCreateVersionInput extends AutomationActionInput {
 	automation_id: AutomationId;
 }
@@ -113,6 +123,7 @@ export interface AutomationsNamespace {
 	update(input: AutomationUpdateInput): Promise<unknown>;
 	createVersion(input: AutomationCreateVersionInput): Promise<unknown>;
 	completeWindow(input: AutomationCompleteWindowInput): Promise<unknown>;
+	claimNextWindow(input: AutomationClaimNextWindowInput): Promise<unknown>;
 	trigger(input: { automation_id: AutomationId }): Promise<unknown>;
 	/** Delete one or more Automations. */
 	delete(input: { automation_ids: AutomationId[] }): Promise<unknown>;
@@ -160,6 +171,7 @@ export function buildAutomationsNamespace(
 		update: (input) => action("update", input),
 		createVersion: (input) => action("create_version", input),
 		completeWindow: (input) => action("complete_window", input),
+		claimNextWindow: (input) => action("claim_next_window", input),
 		trigger: (input) => action("trigger", input),
 		delete: (input) => action("delete", input),
 		setReactionScript: (input) => action("set_reaction_script", input),

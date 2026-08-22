@@ -55,7 +55,8 @@ import {
   ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
-  nextAutomationWindowStart,
+  countExpectedCompletedAutomationWindows,
+  readExpectedAutomationWindowStart,
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestAutomationRunJoinSql } from '../automations/automation';
@@ -589,6 +590,7 @@ async function getAutomationImpl(
         (SELECT (approved_input->>'window_start')::timestamptz FROM runs
           WHERE automation_id = i.id AND run_type = 'automation' AND status = 'completed'
             AND action_output IS NOT NULL
+            AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
             AND approved_input->>'window_start' IS NOT NULL
           ORDER BY (approved_input->>'window_start')::timestamptz DESC NULLS LAST LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
@@ -868,6 +870,10 @@ async function getAutomationImpl(
   // Generate processing instructions for client-driven Automation generation
 
   let pendingAnalysis: PendingAnalysis | undefined;
+  let logicalNextWindowStart: Date | null = null;
+  let logicalWindowGranularity: AutomationTimeGranularity | null = null;
+  let logicalClosedBoundary: Date | null = null;
+  let completedClosedWindowStarts: Set<string> | null = null;
 
   if (args.automation_id && automationRow) {
     const automationEntityIds = parseBigintArray(automationRow.entity_ids);
@@ -982,54 +988,55 @@ async function getAutomationImpl(
       [unprocessedCountPromise, histogramPromise]
     );
 
-    const unprocessedCount = Number(unprocessedCountResult[0]?.count ?? 0);
+    const unprocessedContentCount = Number(unprocessedCountResult[0]?.count ?? 0);
 
     // Calculate next window bounds based on granularity using the
     // already-fetched latestEnd (no extra round-trip).
     let nextWindow: PendingAnalysis['next_window'] = null;
 
-    if (unprocessedCount > 0) {
-      const now = new Date();
-      let windowStart: Date;
-      let windowEnd: Date;
-
-      if (latestStart) {
-        // The dispatcher's own rule, called — not reimplemented. `get_automation`
-        // only PREVIEWS what `computePendingWindow` will hand the run, so a
-        // second copy here is a second thing to keep in sync, and it already
-        // drifted once (preview chained off window_end, dispatcher off
-        // window_start — a full period apart on legacy rows).
-        windowStart = nextAutomationWindowStart(new Date(latestStart), now, timeGranularity);
-      } else {
-        // No windows yet — find the earliest unprocessed event for this
-        // entity. Unbounded by occurred_at: pi review (#481) flagged that
-        // a 90-day default would silently strip pre-existing backlogs from
-        // the next_window calculation when a user creates an automation on top
-        // of long-since-ingested data.
-        const earliestResult = await sql.unsafe(
-          `SELECT MIN(f.occurred_at) as earliest
-            FROM current_event_records f
-            WHERE ${entityScopeCondition}
-              AND ${notInWindowClause}`,
-          [args.automation_id, ...entityLinkParams]
-        );
-        const earliest = earliestResult[0]?.earliest as string | null;
-        // Aligned too: an arbitrary event timestamp would preview a window
-        // starting mid-period, which is not a period the dispatcher can emit.
-        windowStart = alignToAutomationWindowStart(
-          earliest ? new Date(earliest) : now,
-          timeGranularity
-        );
+    const now = new Date();
+    const windowStart = await readExpectedAutomationWindowStart(
+      sql,
+      Number(args.automation_id),
+      timeGranularity,
+      now,
+      latestStart ? new Date(latestStart) : null
+    );
+    const closedBoundary = alignToAutomationWindowStart(now, timeGranularity);
+    const closedWindowSpan = countExpectedCompletedAutomationWindows(
+      windowStart,
+      now,
+      timeGranularity
+    );
+    const completedStarts = new Set<string>();
+    for (const window of formattedWindows) {
+      if (window.granularity !== timeGranularity) continue;
+      const completedStart = alignToAutomationWindowStart(
+        new Date(window.window_start),
+        timeGranularity
+      );
+      if (completedStart >= windowStart && completedStart < closedBoundary) {
+        completedStarts.add(completedStart.toISOString());
       }
+    }
+    const pendingWindowCount = Math.max(0, closedWindowSpan - completedStarts.size);
 
-      // A full period, never truncated at `now`. Truncating made the preview
-      // disagree with what `computePendingWindow` actually dispatches (it always
-      // emits a whole period), and a partial end is not a window any run can be
-      // given.
-      windowEnd = addAutomationPeriod(windowStart, timeGranularity);
+    logicalNextWindowStart = windowStart;
+    logicalWindowGranularity = timeGranularity;
+    logicalClosedBoundary = closedBoundary;
+    completedClosedWindowStarts = completedStarts;
 
+    if (pendingWindowCount > 0) {
+      let oldestMissingStart = windowStart;
+      while (
+        oldestMissingStart < closedBoundary &&
+        completedStarts.has(oldestMissingStart.toISOString())
+      ) {
+        oldestMissingStart = addAutomationPeriod(oldestMissingStart, timeGranularity);
+      }
+      const windowEnd = addAutomationPeriod(oldestMissingStart, timeGranularity);
       nextWindow = {
-        start: windowStart.toISOString(),
+        start: oldestMissingStart.toISOString(),
         end: windowEnd.toISOString(),
         granularity: timeGranularity,
       };
@@ -1046,34 +1053,26 @@ async function getAutomationImpl(
     // Generate structured next_action for MCP clients
     const nextAction = nextWindow
       ? {
-          tool: 'read_knowledge',
+          tool: 'client.automations.claimNextWindow',
           params: {
             automation_id: args.automation_id,
-            since: nextWindow.start.split('T')[0],
-            // `until` is INCLUSIVE — the last day inside the window — while
-            // `next_window.end` is the exclusive boundary. Passing the exclusive
-            // end straight through suggested a call one whole period too wide
-            // (a daily window advertised as `since=06-18&until=06-19`, which
-            // `alignRequestedWindow` reads as two days), so a client following
-            // the server's own suggestion wrote a window shaped like no period
-            // the dispatcher can emit.
-            until: new Date(new Date(nextWindow.end).getTime() - 1).toISOString().split('T')[0],
           },
           description:
-            'Fetch content for analysis. Response includes window_token for complete_window action.',
+            'Atomically claim this completed period and receive bounded context plus window_token.',
         }
       : null;
 
     pendingAnalysis = {
-      unprocessed_count: unprocessedCount,
+      unprocessed_count: pendingWindowCount,
+      unprocessed_content_count: unprocessedContentCount,
       next_window: nextWindow,
       next_action: nextAction,
       unprocessed_ranges: unprocessedRanges.length > 0 ? unprocessedRanges : undefined,
     };
 
-    if (unprocessedCount > 0) {
+    if (pendingWindowCount > 0) {
       logger.info(
-        `[get_automation] Found ${unprocessedCount} unprocessed content items for Automation ${args.automation_id}`
+        `[get_automation] Found ${pendingWindowCount} missing completed periods for Automation ${args.automation_id}`
       );
     }
   }
@@ -1110,20 +1109,29 @@ async function getAutomationImpl(
 
   // Detect gaps between consecutive windows (single-automation queries only)
   let windowGaps: WindowGap[] | undefined;
-  if (args.automation_id && formattedWindows.length > 1) {
-    const sorted = [...formattedWindows].sort(
-      (a, b) => new Date(a.window_start).getTime() - new Date(b.window_start).getTime()
-    );
+  if (
+    args.automation_id &&
+    logicalNextWindowStart &&
+    logicalWindowGranularity &&
+    logicalClosedBoundary &&
+    completedClosedWindowStarts
+  ) {
     const gaps: WindowGap[] = [];
-    for (let i = 1; i < sorted.length; i++) {
-      const prevEnd = new Date(sorted[i - 1].window_end).getTime();
-      const currStart = new Date(sorted[i].window_start).getTime();
-      if (currStart > prevEnd) {
-        gaps.push({
-          start: new Date(prevEnd).toISOString(),
-          end: new Date(currStart).toISOString(),
-        });
+    let gapStart: Date | null = null;
+    let periodStart = logicalNextWindowStart;
+    while (periodStart < logicalClosedBoundary) {
+      if (completedClosedWindowStarts.has(periodStart.toISOString())) {
+        if (gapStart) {
+          gaps.push({ start: gapStart.toISOString(), end: periodStart.toISOString() });
+          gapStart = null;
+        }
+      } else if (!gapStart) {
+        gapStart = periodStart;
       }
+      periodStart = addAutomationPeriod(periodStart, logicalWindowGranularity);
+    }
+    if (gapStart) {
+      gaps.push({ start: gapStart.toISOString(), end: logicalClosedBoundary.toISOString() });
     }
     if (gaps.length > 0) windowGaps = gaps;
   }

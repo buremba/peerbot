@@ -140,6 +140,7 @@ describe("ClientSDK object signature contract", () => {
 		await classifiers.delete({ classifier_id: 31 });
 		await schedules.cancel({ id: "schedule-41" });
 		await automations.get({ automation_id: "51" });
+		await automations.claimNextWindow({ automation_id: "51", lease_seconds: 300 });
 		await automations.trigger({ automation_id: "52" });
 		await automations.delete({ automation_ids: ["53", "54"] });
 		await entitySchema.deleteType({ slug: "company" });
@@ -161,6 +162,10 @@ describe("ClientSDK object signature contract", () => {
 			{ action: "delete_feed", input: { feed_id: 23 } },
 			{ action: "delete", input: { classifier_id: 31 } },
 			{ action: "cancel", input: { id: "schedule-41" } },
+			{
+				action: "claim_next_window",
+				input: { automation_id: "51", lease_seconds: 300 },
+			},
 			{ action: "trigger", input: { automation_id: "52" } },
 			{ action: "delete", input: { automation_ids: ["53", "54"] } },
 			{

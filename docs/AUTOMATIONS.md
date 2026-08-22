@@ -24,6 +24,55 @@ escape hatch by declaring SQL. Persisted changes go through declared outputs,
 the ClientSDK, reactions, connector actions, and their existing ACL or approval
 rails.
 
+## Window recovery and external processors
+
+Scheduled windows have a durable expected-period cursor. It advances by exactly
+one period only after that logical window completes, including a legitimate
+zero-source result. Failed, timed-out, abandoned, and lease-expired attempts do
+not advance it, so the same period remains visible in `pending_analysis` and can
+be attempted again. Backlog counts and `gaps` therefore include completed periods
+that have not yet materialized as run results.
+
+An external processor starts with an atomic claim instead of a separate read and
+run creation:
+
+```ts
+const claim = await client.automations.claimNextWindow({
+  automation_id: "42",
+  lease_seconds: 900,
+  limit: 100,
+});
+
+const tokens = [claim.context.window_token];
+let page = claim.context.page;
+while (page.has_more) {
+  const continuation = await client.automations.claimNextWindow({
+    automation_id: "42",
+    run_id: claim.run_id,
+    limit: 100,
+    before_occurred_at: page.next_cursor.occurred_at,
+    before_id: page.next_cursor.id,
+  });
+  tokens.push(continuation.context.window_token);
+  page = continuation.context.page;
+}
+
+await client.automations.completeWindow({
+  automation_id: "42",
+  run_id: claim.run_id,
+  window_tokens: tokens,
+  extracted_data,
+});
+```
+
+The database serializes claims per Automation. The signed tokens bind the exact
+window, run attempt, lease, source IDs, and page chain. A stale attempt cannot
+complete after a newer claim, while retrying an already committed completion is
+idempotent even after its lease expires. If a non-pageable source exceeds its
+bound, completion fails closed and the Automation source or granularity must be
+narrowed. An assigned `agent_id` does not exclude external claiming; ordinary
+internal dispatch through that agent continues to use the same run lifecycle.
+
 ## Activation types
 
 The `triggers` array is an OR: any matching trigger may start the Automation. If

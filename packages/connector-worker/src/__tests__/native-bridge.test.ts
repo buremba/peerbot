@@ -79,6 +79,7 @@ function helloFrame(workerId = 'mac:test') {
     kind: 'hello',
     request_id: 'hello-1',
     payload: {
+      protocol: 'device-daemon/v1',
       protocol_version: 1,
       app_build: 'app-build-1',
       daemon_build: 'daemon-build-1',
@@ -129,6 +130,7 @@ describe('native bridge handshake', () => {
       kind: 'hello_ack',
       request_id: 'hello-1',
       payload: {
+        protocol: 'device-daemon/v1',
         daemon_build: 'daemon-build-1',
         nonce: 'nonce-1',
         worker_id: 'mac:test',

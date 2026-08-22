@@ -102,7 +102,7 @@ describe('Mac device daemon options', () => {
 
     await createMacDeviceDaemonShutdown(controller, loop)();
 
-    expect(events).toEqual(['abort', 'stop']);
+    expect(events).toEqual(['stop', 'abort']);
   });
 
   test('awaits native bridge cancellation, terminal reporting, and shutdown in order', async () => {

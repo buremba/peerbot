@@ -57,6 +57,8 @@ export function classifySelectedConnectorExecution(params: {
   const manifestBacked = isManifestArtifact(params.artifact);
   const definitionRuntime = asRecord(params.definition?.runtime);
   const definitionBridge = definitionRuntime?.execution === 'bridge';
+  const definitionExecutionDeclared =
+    definitionRuntime !== null && Object.hasOwn(definitionRuntime, 'execution');
   const authorization = params.authorizations.find(
     (entry) =>
       entry.connectorKey === params.connectorKey &&
@@ -67,7 +69,18 @@ export function classifySelectedConnectorExecution(params: {
   const authorizedBridge = authorization?.runtimeExecution === 'bridge';
   // An active exact definition is authoritative. Retained authorization may
   // only select a historical pinned version when no exact definition exists.
-  const bridgeCandidate = params.definition ? definitionBridge : authorizedBridge;
+  // Legacy metadata-only definitions remain ordinary manifest-backed device
+  // work; an explicit non-bridge execution value is a contradictory artifact
+  // selection and must terminalize the already-claimed run.
+  if (params.definition && !definitionBridge) {
+    return manifestBacked && definitionExecutionDeclared
+      ? {
+          manifestBacked,
+          inconsistency: 'active exact definition is not bridge execution',
+        }
+      : { manifestBacked };
+  }
+  const bridgeCandidate = definitionBridge || authorizedBridge;
 
   if (!bridgeCandidate) return { manifestBacked };
   if (!params.definition && !authorization) {

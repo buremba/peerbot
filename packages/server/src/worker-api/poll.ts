@@ -623,6 +623,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           WHERE cd.key = r.connector_key
             AND cd.organization_id = r.organization_id
             AND cd.status = 'active'
+            AND (r.connector_version IS NULL OR cd.version = r.connector_version)
           ORDER BY cd.updated_at DESC, cd.id DESC
           LIMIT 1
         ) cd ON true
@@ -837,9 +838,16 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           organizationId: tx`r.organization_id`,
         })}
       ) cv ON TRUE
-      LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
-        AND cd.organization_id = r.organization_id
-        AND cd.status = 'active'
+      LEFT JOIN LATERAL (
+        SELECT cd.*
+        FROM connector_definitions cd
+        WHERE cd.key = r.connector_key
+          AND cd.organization_id = r.organization_id
+          AND cd.status = 'active'
+          AND (r.connector_version IS NULL OR cd.version = r.connector_version)
+        ORDER BY cd.updated_at DESC, cd.id DESC
+        LIMIT 1
+      ) cd ON TRUE
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
       LEFT JOIN automations w ON w.id = r.automation_id
       LEFT JOIN automation_versions wv

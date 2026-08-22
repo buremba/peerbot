@@ -98,24 +98,34 @@ export function createMacDeviceDaemonShutdown(
   shutdownTimeoutMs = NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS
 ): () => Promise<void> {
   return async () => {
-    controller.abort();
     loop.stop();
+    controller.abort();
     if (!bridge) return;
 
     let shutdownError: unknown;
+    const deadline = Date.now() + shutdownTimeoutMs;
     try {
-      const shutdownResults = await withTimeout(
-        Promise.allSettled([bridge.cancelActiveRuns(), bridge.shutdown()]),
-        shutdownTimeoutMs,
-        'native bridge cancellation and shutdown',
+      await withTimeout(
+        bridge.cancelActiveRuns(),
+        Math.max(1, deadline - Date.now()),
+        'native bridge cancellation',
       );
-      const rejected = shutdownResults.find((result) => result.status === 'rejected');
-      if (rejected?.status === 'rejected') shutdownError = rejected.reason;
     } catch (error) {
       shutdownError = error;
     }
     try {
-      const allJobsFinished = await loop.waitForActiveJobs();
+      await withTimeout(
+        bridge.shutdown(),
+        Math.max(1, deadline - Date.now()),
+        'native bridge shutdown',
+      );
+    } catch (error) {
+      shutdownError ??= error;
+    }
+    try {
+      const allJobsFinished = await loop.waitForActiveJobs(
+        Math.max(1, deadline - Date.now()),
+      );
       if (!allJobsFinished && !shutdownError) {
         shutdownError = new Error('native bridge active jobs did not finish before shutdown');
       }
@@ -244,6 +254,7 @@ export function createMacDeviceDaemon(
   dependencies: {
     advertisementProvider?: MutableWorkerAdvertisementProvider;
     bridge?: NativeBridgeClient;
+    shutdownController?: AbortController;
   } = {}
 ): WorkerPollLoop {
   const validated = validateMacDeviceDaemonOptions(options);
@@ -254,7 +265,7 @@ export function createMacDeviceDaemon(
     runnableAgentKinds,
     validated.defaultAgentKind
   );
-  const shutdownController = new AbortController();
+  const shutdownController = dependencies.shutdownController ?? new AbortController();
   const nativeBridge = dependencies.bridge;
 
   const client = new WorkerClient({
@@ -324,7 +335,16 @@ export async function runMacDeviceDaemon(options: MacDeviceDaemonOptions): Promi
     // connector generation. No health check or poll happens until this
     // handshake has validated both sides and echoed the nonce.
     await bridge.handshake();
-    const loop = createMacDeviceDaemon(validated, { advertisementProvider, bridge });
+    const shutdownController = new AbortController();
+    const loop = createMacDeviceDaemon(validated, {
+      advertisementProvider,
+      bridge,
+      shutdownController,
+    });
+    bridge.onTransportFailure(() => {
+      shutdownController.abort();
+      loop.stop();
+    });
     // createMacDeviceDaemon installs the signal handlers. The bridge's
     // pending native requests are cancelled by the loop's normal shutdown
     // path before its bounded active-job wait.

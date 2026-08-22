@@ -201,4 +201,40 @@ describe('native bridge run forwarding', () => {
       globalThis.clearInterval = originalClearInterval;
     }
   });
+
+  test('heartbeats a long sync run and stops after terminal completion', async () => {
+    const scheduled: Array<() => Promise<void> | void> = [];
+    const cleared: unknown[] = [];
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((callback: () => Promise<void> | void) => {
+      scheduled.push(callback);
+      return scheduled.length as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval;
+    globalThis.clearInterval = ((id: unknown) => {
+      cleared.push(id);
+    }) as typeof clearInterval;
+
+    try {
+      const client = fakeClient() as { calls: Record<string, unknown[]>; id: string };
+      const bridge = {
+        run: async (options: { operation: string }) => {
+          expect(options.operation).toBe('sync');
+          await scheduled[0]?.();
+          return { checkpoint: { cursor: 'done' } };
+        },
+      } as never;
+
+      await expect(executeNativeBridgeRun(client as never, bridge, {
+        run_id: 16,
+        run_type: 'sync',
+        connector_key: 'apple.files',
+      } as never)).resolves.toEqual({ itemsCollected: 0 });
+      expect(client.calls.heartbeat).toEqual([16]);
+      expect(cleared).toEqual([1]);
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
+  });
 });

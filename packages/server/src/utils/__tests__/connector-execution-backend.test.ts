@@ -89,9 +89,22 @@ describe('selected connector execution backend', () => {
 
   test('does not infer bridge execution from a connector key alone', () => {
     expect(classify({
+      artifact: {
+        sourcePath: 'connectors/apple-files.ts',
+        manifestHash: null,
+        compiledCode: 'compiled connector',
+        compileConfigHash: null,
+        sourceCode: null,
+      },
       definition: { ...definition, runtime: { platforms: ['macos'] } },
       authorizations: [],
-    })).toEqual({ manifestBacked: true });
+    })).toEqual({ manifestBacked: false });
+  });
+
+  test('active exact non-bridge definition wins over retained bridge authorization', () => {
+    expect(classify({
+      definition: { ...definition, runtime: { platforms: ['macos'], execution: 'compiled' } },
+    })).toEqual({ manifestBacked: true, inconsistency: 'active exact definition is not bridge execution' });
   });
 
   test('does not let retained bridge authorization override an active exact non-bridge definition', () => {

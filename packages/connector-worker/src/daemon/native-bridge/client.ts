@@ -7,6 +7,7 @@ import {
   type NativeBridgeFrame,
   NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES,
   NATIVE_BRIDGE_MAX_OUTBOUND_FRAMES_PER_RUN,
+  NATIVE_BRIDGE_PROTOCOL,
   NATIVE_BRIDGE_PROTOCOL_VERSION,
 } from './protocol.js';
 
@@ -56,6 +57,7 @@ export class NativeBridgeClient {
   private handshakePromise?: Promise<void>;
   private handshakeReject?: (error: Error) => void;
   private failure?: Error;
+  private readonly transportFailureHandlers = new Set<(error: Error) => void>();
 
   constructor(
     private readonly input: NodeJS.ReadableStream,
@@ -176,6 +178,15 @@ export class NativeBridgeClient {
     this.failBridge(error);
   }
 
+  onTransportFailure(handler: (error: Error) => void): () => void {
+    if (this.failure) {
+      handler(this.failure);
+      return () => undefined;
+    }
+    this.transportFailureHandlers.add(handler);
+    return () => this.transportFailureHandlers.delete(handler);
+  }
+
   get activeRunCount(): number {
     return this.pending.size;
   }
@@ -226,6 +237,7 @@ export class NativeBridgeClient {
           kind: 'hello_ack',
           request_id: frame.request_id,
           payload: {
+            protocol: NATIVE_BRIDGE_PROTOCOL,
             protocol_version: NATIVE_BRIDGE_PROTOCOL_VERSION,
             daemon_build: this.daemonBuild,
             app_build: hello.app_build,
@@ -326,7 +338,7 @@ export class NativeBridgeClient {
   private failAll(error: Error): void {
     for (const [requestId, pending] of this.pending) {
       pending.terminal = true;
-      pending.reject(new Error(`native bridge run ${pending.runId} failed: ${error.message}`));
+      pending.reject(error);
       this.pending.delete(requestId);
     }
   }
@@ -337,6 +349,8 @@ export class NativeBridgeClient {
     this.writer.fail(error);
     this.failAll(error);
     this.handshakeReject?.(error);
+    for (const handler of this.transportFailureHandlers) handler(error);
+    this.transportFailureHandlers.clear();
   }
 }
 
@@ -473,6 +487,9 @@ function parseHello(payload: Record<string, unknown>): {
   const protocolVersion = readNonNegativeInteger(payload.protocol_version);
   if (protocolVersion !== NATIVE_BRIDGE_PROTOCOL_VERSION) {
     throw new NativeBridgeProtocolError('hello protocol_version does not match the frame version');
+  }
+  if (payload.protocol !== NATIVE_BRIDGE_PROTOCOL) {
+    throw new NativeBridgeProtocolError('hello protocol does not match the native bridge protocol');
   }
   return {
     app_build: appBuild,

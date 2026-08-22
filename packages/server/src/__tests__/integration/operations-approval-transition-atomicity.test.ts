@@ -742,6 +742,54 @@ describe("worker completeActionRun card atomicity", () => {
 		expect(run.action_output).toEqual({ ok: true });
 	});
 
+	it("strips NUL bytes from worker action output before persisting it", async () => {
+		const runId = await seedClaimedRun({
+			approvalStatus: "auto",
+			withCard: false,
+		});
+		const { ctx, result } = mockWorkerCtx({
+			run_id: runId,
+			worker_id: "worker-complete-test",
+			status: "success",
+			action_output: {
+				["std\u0000out"]: "before\u0000after",
+				nested: ["x\u0000y"],
+			},
+		});
+		await completeActionRun(ctx);
+		expect((result().body as { success?: boolean }).success).toBe(true);
+
+		const [run] = await getTestDb()`
+			SELECT status, action_output FROM runs WHERE id = ${runId}
+		`;
+		expect(run.status).toBe("completed");
+		expect(run.action_output).toEqual({
+			stdout: "beforeafter",
+			nested: ["xy"],
+		});
+	});
+
+	it("strips NUL bytes from worker action errors before persisting them", async () => {
+		const runId = await seedClaimedRun({
+			approvalStatus: "auto",
+			withCard: false,
+		});
+		const { ctx, result } = mockWorkerCtx({
+			run_id: runId,
+			worker_id: "worker-complete-test",
+			status: "failed",
+			error_message: "Bad\u0000 file descriptor",
+		});
+		await completeActionRun(ctx);
+		expect((result().body as { success?: boolean }).success).toBe(true);
+
+		const [run] = await getTestDb()`
+			SELECT status, error_message FROM runs WHERE id = ${runId}
+		`;
+		expect(run.status).toBe("failed");
+		expect(run.error_message).toBe("Bad file descriptor");
+	});
+
 	it("approval run terminal card write failure rolls the terminal state back", async () => {
 		const runId = await seedClaimedRun({
 			approvalStatus: "approved",

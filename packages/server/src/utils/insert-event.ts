@@ -34,6 +34,7 @@ import {
 } from './geo-enrichment';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
+import { stripNul, stripNulDeep } from './strip-nul';
 
 /**
  * Single bounded retry for the fire-and-forget audit writers below
@@ -570,6 +571,11 @@ export async function insertEvent(
     afterPersist?: (event: InsertedEvent, sql: DbClient) => Promise<void>;
   }
 ): Promise<InsertedEvent> {
+  // This is the physical write funnel for event content. Connector items,
+  // Automation output, and approval metadata all converge here, so sanitize
+  // the complete input once before any lookup, comparison, or Postgres write.
+  // stripNulDeep preserves Dates and other class instances.
+  params = stripNulDeep(params) as InsertEventParams;
   const sql = options?.sql ?? getDb();
 
   // Reverse-geocode lat/lng → city / admin1 / country once per event,
@@ -1033,7 +1039,10 @@ export async function insertConnectionlessAuditEvent(
   eventType: AuditEventType,
   options?: ConnectionlessAuditInsertOptions
 ): Promise<InsertedEvent> {
-  const idempotencyKey = `audit:${params.originId}`;
+  // insertEvent strips NUL from originId, so derive the key from the stripped
+  // value: the unique index and the reconciliation SELECT below both read the
+  // persisted `_lobu_idempotency_key`, which is the stripped form.
+  const idempotencyKey = `audit:${stripNul(params.originId)}`;
   const formattedEventType = formatAuditEventType(eventType);
   const metadata: Record<string, unknown> = {
     ...(params.metadata ?? {}),

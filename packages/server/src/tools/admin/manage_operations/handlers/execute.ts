@@ -31,6 +31,7 @@ import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
 import { insertEvent } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
+import { stripNul, stripNulDeep } from "../../../../utils/strip-nul";
 import { buildResourcePermalink } from "../../../../utils/url-builder";
 import { trackAutomationReaction } from "../../../../utils/automation-reactions";
 import { dispatchChromeActionToExtension } from "../../../../worker-api/dispatch-chrome-action";
@@ -53,11 +54,16 @@ async function failRunInline(
 	errorMsg: string,
 	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
+	// Connector code, scraped pages and upstream MCP servers all reach here as
+	// raw text, so the message can carry NUL (0x00) that Postgres rejects (see
+	// streamContent). Strip it at the terminal write the local_action and
+	// mcp_tool backends share; executeHttpOperation sanitizes its own response.
+	const message = stripNul(errorMsg);
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMsg} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId}`;
 	}
-	return { status: "failed", error_message: errorMsg };
+	return { status: "failed", error_message: message };
 }
 
 // Update the run to completed status and return the output in one call.
@@ -67,11 +73,15 @@ async function completeRunInline(
 	output: Record<string, unknown>,
 	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
+	// Same NUL strip as failRunInline — `output` is connector- or upstream-MCP-
+	// produced and lands in the jsonb `action_output` column. Sanitize before
+	// returning too: approve's deferred phase 2 persists this value itself.
+	const sanitized = stripNulDeep(output) as Record<string, unknown>;
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
 	}
-	return { status: "completed", output };
+	return { status: "completed", output: sanitized };
 }
 
 /**

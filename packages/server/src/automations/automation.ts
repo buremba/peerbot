@@ -1022,14 +1022,6 @@ export function buildDispatchMessage(params: {
 		].join("\n");
 	}
 
-	const readKnowledgeSince = new Date(params.payload.window_start)
-		.toISOString()
-		.split("T")[0];
-	const readKnowledgeUntil = new Date(
-		new Date(params.payload.window_end).getTime() - 1
-	)
-		.toISOString()
-		.split("T")[0];
 	const workspaceContentIds = workspaceSignals.map((signal) => signal.event_id);
 
 	return [
@@ -1051,9 +1043,9 @@ export function buildDispatchMessage(params: {
 			"Analyze the window's content and extract findings per the extraction schema.",
 		"",
 		"Required steps:",
-		`1. Call query_sdk with a script that runs client.knowledge.read({ automation_id: ${params.automationId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}", limit: 25${workspaceContentIds.length > 0 ? `, content_ids: [${workspaceContentIds.join(", ")}]` : ""}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Keep the returned window_token from every page you actually analyze.`,
-		`2. Follow the Automation instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id. Collect that page's window_token too; do this for every additional page you actually analyze.`,
-		`3. Call run_sdk with a script that runs client.automations.completeWindow({ window_tokens: [all window_token values from pages you actually analyzed], extracted_data, run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Pass exactly one token per page you actually analyzed, including the first page.`,
+		`1. Call query_sdk with a script that runs client.knowledge.read({ automation_id: ${params.automationId}, run_id: ${params.runId}, limit: 25 }). The run ID binds the queued version, window, and trigger inputs. Keep the returned window_token from every page you actually analyze.`,
+		`2. Follow the Automation instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with the same automation_id and run_id plus page.next_cursor as before_occurred_at/before_id. Collect that page's window_token too; do this for every additional page you actually analyze.`,
+		`3. Call run_sdk with a script that runs client.automations.completeWindow({ window_tokens: [all window_token values from pages you actually analyzed], extracted_data, run_id: ${params.runId} }). Pass exactly one token per page you actually analyzed, including the first page.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
 			{

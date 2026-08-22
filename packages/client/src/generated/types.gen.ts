@@ -4474,9 +4474,9 @@ export type ManageAutomationsData = {
         }
     >;
     /**
-     * [create/update] Agent ID that owns/executes this Automation. [list] Optional owner filter.
+     * [create/update] Optional managed agent for this Automation. Null clears the assignment; agentless manual Automations may be completed by an external MCP client. [list] Optional owner filter.
      */
-    agent_id?: string;
+    agent_id?: string | null;
     /**
      * [list] Optional status filter. Omit to include active Automations only.
      */

@@ -63,7 +63,7 @@ describe("automation dispatch message", () => {
 			},
 		});
 
-		expect(message).toContain("content_ids: [40]");
+		expect(message).toContain("client.knowledge.read({ automation_id: 21, run_id: 89, limit: 25 })");
 		expect(message).toContain("signs its exact id into the window_token");
 		expect(message).toContain("Analyze each trigger input exactly once");
 	});
@@ -90,10 +90,10 @@ describe("automation dispatch message", () => {
 			"Treat the Automation as having no data only when `content` and every array in `sources` are empty.",
 		);
 		expect(message).toContain(
-			'client.knowledge.read({ automation_id: 13, since: "2026-07-15", until: "2026-07-15", limit: 25 })',
+			'client.knowledge.read({ automation_id: 13, run_id: 647146, limit: 25 })',
 		);
 		expect(message).toContain(
-			"If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id.",
+			"If page.has_more is true and you need more evidence, call knowledge.read again with the same automation_id and run_id plus page.next_cursor as before_occurred_at/before_id.",
 		);
 		expect(message).toContain(
 			"Keep the returned window_token from every page you actually analyze.",

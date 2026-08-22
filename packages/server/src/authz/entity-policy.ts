@@ -307,42 +307,44 @@ export function automationIdFromPrincipalId(
 }
 
 /**
- * The agent that owns an automation (`automations.agent_id`, NOT NULL in schema). Every
- * automation write is governed by its owning agent's envelope — an automation is that
- * agent's autonomous mode — so the resolver folds the agent's rows in via
- * `ownerAgentId`. Shared by every automation write surface (entity promotion, reaction
- * scripts, automation CRUD) so the linkage is resolved ONE way.
+ * Resolve the optional managed agent attached to an Automation.
  *
- * Returns `{ ownerAgentId, resolved }`. `resolved` is false when the automation row is
- * GONE (hard-deleted mid-reaction, or a bad id) OR its owning AGENT no longer exists
- * (deleted out from under an in-flight automation — there is no automation→agent FK, so the
- * agent_id can dangle) — both are the same security-relevant state: the acting
- * automation's agent envelope can't be folded, so proceeding as an unowned automation would
- * let the reaction slip its owning agent's deny/approval rules and fall back to the
- * (looser) org default. Callers acting on a TRUSTED automation must FAIL CLOSED on
- * `resolved === false` (see the gate resolvers).
+ * The Automation itself is always the write principal (`automation:<id>`). When
+ * `agent_id` is present, its agent policy is folded in as a restrictive ancestor.
+ * Agentless manual Automations are still valid principals and resolve with no
+ * ancestor. Only a missing Automation row, or a non-empty `agent_id` whose agent
+ * row no longer exists, is unresolved and must fail closed.
  *
- * `organizationId` scopes both the automation AND the owning-agent existence check so a
- * caller can't resolve against another org's rows.
+ * Empty strings are tolerated as a legacy representation of NULL so existing
+ * manual-open rows remain safe while callers migrate to the nullable contract.
  */
 export async function resolveAutomationOwner(
 	sql: DbClient,
 	automationId: number,
 	organizationId: string,
 ): Promise<{ ownerAgentId: string | null; resolved: boolean }> {
-	// INNER JOIN agents: the row resolves ONLY when the owning agent still exists in
-	// this org. A dangling agent_id (agent deleted mid-flight) yields zero rows →
-	// resolved:false → gates deny, closing the fail-open where a deleted agent's
-	// automation would fall back to the looser org default.
-	const rows = await sql<{ agent_id: string }>`
-    SELECT w.agent_id
+	const rows = await sql<{ agent_id: string | null; owner_resolved: boolean }>`
+    SELECT
+      NULLIF(BTRIM(w.agent_id), '') AS agent_id,
+      CASE
+        WHEN NULLIF(BTRIM(w.agent_id), '') IS NULL THEN true
+        ELSE EXISTS (
+          SELECT 1
+          FROM agents a
+          WHERE a.id = w.agent_id
+            AND a.organization_id = w.organization_id
+        )
+      END AS owner_resolved
     FROM automations w
-    JOIN agents a ON a.id = w.agent_id AND a.organization_id = ${organizationId}
-    WHERE w.id = ${automationId} AND w.organization_id = ${organizationId}
+    WHERE w.id = ${automationId}
+      AND w.organization_id = ${organizationId}
     LIMIT 1
   `;
 	if (rows.length === 0) return { ownerAgentId: null, resolved: false };
-	return { ownerAgentId: rows[0].agent_id, resolved: true };
+	return {
+		ownerAgentId: rows[0].agent_id ?? null,
+		resolved: rows[0].owner_resolved === true,
+	};
 }
 
 /** The fully-resolved acting principal for one write, ready to hand to the gate. */
@@ -350,14 +352,13 @@ export interface ActingPrincipal {
 	kind: EntityPolicyPrincipalKind;
 	/** `automation:<id>` / agent id / null ("any of this kind"). */
 	id: string | null;
-	/** The automation's owning agent, folded max-restrictive; null unless an automation. */
+	/** Optional attached agent, folded max-restrictive for an Automation. */
 	ownerAgentId: string | null;
 	/**
-	 * False ONLY when this is an automation whose owning-agent lookup FAILED (the automation
-	 * row is gone). The gate must FAIL CLOSED (deny) rather than run the write as an
-	 * unowned automation against the looser org default — otherwise a reaction whose
-	 * automation was hard-deleted mid-flight escapes its agent's envelope. True for every
-	 * agent/user turn and every automation whose owner resolved (incl. legitimately null).
+	 * False only when an Automation row is missing, its non-empty attached agent no longer
+	 * exists, or an authenticated agent session points at a deleted agent. The gate must
+	 * fail closed in those cases. An existing agentless Automation is resolved and carries
+	 * no agent ancestor.
 	 */
 	ownerResolved: boolean;
 }
@@ -375,8 +376,9 @@ export interface ActingPrincipal {
  * loosen, its agent), so there's no way to "spoof an automation tag" to escape agent
  * policy.
  *
- * When an automation acts, this looks up its owning agent (folded max-restrictive).
- * This is THE seam every write surface (manage_entity/agents/operations/automations,
+ * When an Automation acts, this resolves its optional attached agent and folds that
+ * agent's policy max-restrictively. This is THE seam every write surface
+ * (manage_entity/agents/operations/automations,
  * promotion) resolves identity through.
  */
 /** An automation acting principal, folding its (already-resolved) owner agent. */

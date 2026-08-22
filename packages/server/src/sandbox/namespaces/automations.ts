@@ -55,7 +55,7 @@ export interface AutomationCreateInput {
 	classifiers?: Record<string, unknown>;
 	reactions_guidance?: string;
 	reaction_script?: string;
-	agent_id?: string;
+	agent_id?: string | null;
 	device_worker_id?: string;
 	agent_kind?: AgentKind;
 	model_config?: Record<string, unknown>;
@@ -76,9 +76,9 @@ export interface AutomationUpdateInput {
 
 export interface AutomationCompleteWindowInput {
 	automation_id: AutomationId;
-	/** JWT obtained from read_knowledge(automation_id, since, until). */
+	/** JWT obtained from knowledge.read for this Automation run/window. */
 	window_token?: string;
-	/** Multiple page JWTs obtained from read_knowledge for the same Automation window. */
+	/** Multiple page JWTs obtained from knowledge.read for the same Automation run/window. */
 	window_tokens?: string[];
 	extracted_data: Record<string, unknown>;
 	client_id?: string;

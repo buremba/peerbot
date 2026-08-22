@@ -24,6 +24,8 @@ export function deriveJwtSecret(encryptionKey: string): string {
 
 interface WindowTokenPayload {
   automation_id: number;
+  /** Durable Automation run this read was bound to. Omitted on legacy/preview reads. */
+  run_id?: number;
   window_start: string;
   window_end: string;
   granularity: string; // Required for window creation

@@ -674,9 +674,9 @@ export const ManageAutomationsSchema = Type.Object(
       })
     ),
     agent_id: Type.Optional(
-      Type.String({
+      Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
         description:
-          "[create/update] Agent ID that owns/executes this Automation. [list] Optional owner filter.",
+          "[create/update] Optional managed agent for this Automation. Null clears the assignment; agentless manual Automations may be completed by an external MCP client. [list] Optional owner filter.",
       })
     ),
     status: Type.Optional(

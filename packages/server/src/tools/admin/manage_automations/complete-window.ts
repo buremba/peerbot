@@ -47,6 +47,7 @@ import type { ManageAutomationsArgs } from '../manage_automations';
 import { normalizeExtractedData, parseJson, requireAutomationAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
+import { claimPendingAutomationRun } from '../../../runs/queue-service';
 import { AUTOMATION_EVAL_RUN_TYPE, AUTOMATION_RUN_TYPE } from "../../../runs/run-types.js";
 import {
   advanceExpectedAutomationWindow,
@@ -262,6 +263,7 @@ export async function handleCompleteWindow(
   const firstToken = tokenPayloads[0];
   const { automation_id: automationId, window_start, window_end, granularity } = firstToken;
   const claimToken = tokenPayloads.find((token) => token.run_id != null);
+  const tokenRunId = claimToken?.run_id ?? null;
   if (claimToken?.run_id !== undefined && claimToken.run_id !== runId) {
     throw new ToolUserError(
       `window_token is fenced to Automation run ${claimToken.run_id}, not ${runId}.`,
@@ -276,7 +278,7 @@ export async function handleCompleteWindow(
       token.window_end !== window_end ||
       token.granularity !== granularity
     ) {
-      throw new ToolUserError('All window_tokens must belong to the same Automation window.', 400);
+      throw new ToolUserError('All window_tokens must belong to the same Automation run/window.', 400);
     }
   }
   for (const token of tokenPayloads) {
@@ -335,10 +337,24 @@ export async function handleCompleteWindow(
     );
   }
 
+  const approvedInput = runRows[0].approved_input;
+  const approvedInputRecord =
+    approvedInput && typeof approvedInput === 'object' && !Array.isArray(approvedInput)
+      ? (approvedInput as Record<string, unknown>)
+      : {};
+  const assignedAgentId =
+    typeof approvedInputRecord.agent_id === 'string'
+      ? approvedInputRecord.agent_id.trim()
+      : '';
+  const assignedDeviceWorkerId =
+    typeof approvedInputRecord.device_worker_id === 'string'
+      ? approvedInputRecord.device_worker_id.trim()
+      : '';
+  const manualOpenRun = !assignedAgentId && !assignedDeviceWorkerId;
+
   if (snapshotVersionId == null && runRows[0].version_id != null) {
     snapshotVersionId = Number(runRows[0].version_id);
   }
-  const approvedInput = runRows[0].approved_input;
   if (approvedInput && typeof approvedInput === 'object') {
     const input = approvedInput as {
       trigger_signal?: unknown;
@@ -572,6 +588,82 @@ export async function handleCompleteWindow(
     };
   }
 
+  // Manual-open runs pend for an external MCP client. Only claim after every
+  // payload/token/schema validation above succeeds, so recoverable bad output
+  // cannot strand the durable run in running state.
+  let externalClaimedBy: string | null = null;
+  if (manualOpenRun) {
+    const claimedBy = ctx.clientId
+      ? `mcp:${ctx.clientId}`
+      : ctx.userId
+        ? `user:${ctx.userId}`
+        : null;
+    if (!claimedBy) {
+      throw new ToolUserError(
+        `Automation run ${runId} requires an authenticated MCP client or user to claim it.`,
+        401
+      );
+    }
+    externalClaimedBy = claimedBy;
+
+    // Only a run-bound token may perform pending -> running. Unbound legacy
+    // tokens remain usable solely for already-running in-process rows.
+    const claimed =
+      tokenRunId != null
+        ? await sql.begin(async (tx) =>
+            claimPendingAutomationRun(tx, {
+              runId,
+              automationId,
+              claimedBy,
+              status: 'running',
+            })
+          )
+        : false;
+    if (!claimed) {
+      // Before durable external claimant attribution existed, complete_window
+      // transitioned manual-open runs to running with claimed_by left NULL. A
+      // retry of one of those rows must remain completable, but only one caller
+      // may adopt it. The conditional UPDATE is the claim.
+      await sql`
+        UPDATE runs
+        SET claimed_by = ${claimedBy},
+            claimed_at = COALESCE(claimed_at, current_timestamp),
+            last_heartbeat_at = COALESCE(last_heartbeat_at, current_timestamp)
+        WHERE id = ${runId}
+          AND automation_id = ${automationId}
+          AND run_type = ${callerRunType}
+          AND status IN ('claimed', 'running')
+          AND claimed_by IS NULL
+      `;
+      const [state] = await sql<{ status: string; claimed_by: string | null }>`
+        SELECT status, claimed_by
+        FROM runs
+        WHERE id = ${runId}
+          AND automation_id = ${automationId}
+          AND run_type = ${callerRunType}
+        LIMIT 1
+      `;
+      if (state?.status === 'pending' && tokenRunId == null) {
+        throw new ToolUserError(
+          `Automation run ${runId} requires a run-bound window_token. Read it with knowledge.read({ automation_id: ${automationId}, run_id: ${runId} }).`,
+          409
+        );
+      }
+      const retryingOwnClaim =
+        (state?.status === 'claimed' || state?.status === 'running') &&
+        state.claimed_by === claimedBy;
+      const alreadyCompleted = state?.status === 'completed';
+      if (!retryingOwnClaim && !alreadyCompleted) {
+        throw new ToolUserError(
+          state?.claimed_by
+            ? `Automation run ${runId} is already claimed by another executor.`
+            : `Automation run ${runId} could not be claimed; retry after the active run clears.`,
+          409
+        );
+      }
+    }
+  }
+
   // ============================================
   // STEP 6: Wrap all DB operations in a transaction
   // If classification processing fails (e.g., embeddings service unavailable),
@@ -593,12 +685,9 @@ export async function handleCompleteWindow(
     const [lockedRun] = await tx<{
       status: string;
       expires_at: string | Date | null;
-      agent_id: string | null;
-      device_worker_id: string | null;
+      claimed_by: string | null;
     }>`
-      SELECT status, expires_at,
-             approved_input->>'agent_id' AS agent_id,
-             approved_input->>'device_worker_id' AS device_worker_id
+      SELECT status, expires_at, claimed_by
       FROM runs
       WHERE id = ${runId}
         AND organization_id = ${automationOrgId}
@@ -620,21 +709,6 @@ export async function handleCompleteWindow(
         completed_now: false,
       };
     }
-    if (lockedRun.status === 'pending') {
-      const isManualOpenRun =
-        claimToken == null &&
-        !lockedRun.agent_id &&
-        !lockedRun.device_worker_id;
-      if (isManualOpenRun) {
-        await tx`
-          UPDATE runs
-          SET status = 'running',
-              claimed_at = COALESCE(claimed_at, current_timestamp)
-          WHERE id = ${runId} AND status = 'pending'
-        `;
-        lockedRun.status = 'running';
-      }
-    }
     if (lockedRun.expires_at != null) {
       const leaseExpiresAt = new Date(lockedRun.expires_at).toISOString();
       if (!leaseFenceToken?.lease_expires_at || leaseFenceToken.lease_expires_at !== leaseExpiresAt) {
@@ -646,6 +720,12 @@ export async function handleCompleteWindow(
     }
     if (lockedRun.status !== 'running' && lockedRun.status !== 'claimed') {
       throw new ToolUserError(`Automation run ${runId} is no longer completable.`, 409);
+    }
+    if (externalClaimedBy !== null && lockedRun.claimed_by !== externalClaimedBy) {
+      throw new ToolUserError(
+        `Automation run ${runId} is already claimed by another executor.`,
+        409
+      );
     }
 
     // ============================================
@@ -849,6 +929,10 @@ export async function handleCompleteWindow(
         AND automation_id = ${automationId}
         AND run_type = ${AUTOMATION_RUN_TYPE}
         AND status IN ('running', 'claimed')
+        AND (
+          ${externalClaimedBy}::text IS NULL
+          OR claimed_by = ${externalClaimedBy}
+        )
       RETURNING approved_input->>'dispatch_source' AS dispatch_source
     `;
     if (!completedRun) {

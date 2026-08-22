@@ -2,6 +2,7 @@ import { getDb } from "../db/client";
 import { discoverTools } from "../mcp-proxy/client";
 import type { DiscoveredTool, McpProxyConfig } from "../mcp-proxy/types";
 import { errorMessage } from "../utils/errors";
+import { selectedConnectorVersionArtifactSql } from "../utils/connector-execution-placement";
 import logger from "../utils/logger";
 import { filterOperationsByActionModes } from "./action-modes";
 import type {
@@ -667,6 +668,7 @@ export async function getOperationForConnection(
 	connection: {
 		id: number;
 		connector_key: string;
+		connector_version: string;
 		status: string;
 		auth_profile_id: number | null;
 		app_auth_profile_id: number | null;
@@ -675,6 +677,8 @@ export async function getOperationForConnection(
 		device_worker_id: string | null;
 		device_platform: string | null;
 		connector_runtime: Record<string, unknown> | null;
+		connector_manifest_backed: boolean;
+		connector_artifact_source_path: string | null;
 		name: string;
 	};
 	operation: OperationDescriptor;
@@ -684,6 +688,7 @@ export async function getOperationForConnection(
     SELECT
       c.id,
       c.connector_key,
+      cd.version AS connector_version,
       c.status,
       c.auth_profile_id,
       c.app_auth_profile_id,
@@ -695,13 +700,22 @@ export async function getOperationForConnection(
       cd.actions_schema,
       cd.mcp_config,
       cd.openapi_config,
-      cd.runtime AS connector_runtime
+      cd.runtime AS connector_runtime,
+      COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
+      cv.artifact_source_path AS connector_artifact_source_path
     FROM connections c
     JOIN connector_definitions cd
       ON cd.key = c.connector_key
      AND cd.status = 'active'
      AND cd.organization_id = ${organizationId}
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
+    LEFT JOIN LATERAL (
+      ${selectedConnectorVersionArtifactSql(sql, {
+        connectorKey: sql`cd.key`,
+        version: sql`cd.version`,
+        organizationId: sql`cd.organization_id`,
+      })}
+    ) cv ON true
     WHERE c.id = ${connectionId}
       AND c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
@@ -713,6 +727,7 @@ export async function getOperationForConnection(
 	const row = rows[0] as unknown as ConnectorRow & {
 		id: number;
 		connector_key: string;
+		connector_version: string;
 		status: string;
 		auth_profile_id: number | null;
 		app_auth_profile_id: number | null;
@@ -721,6 +736,8 @@ export async function getOperationForConnection(
 		device_worker_id: string | null;
 		device_platform: string | null;
 		connector_runtime: Record<string, unknown> | null;
+		connector_manifest_backed: boolean;
+		connector_artifact_source_path: string | null;
 	};
 	const operations = await buildConnectorOperations(
 		{
@@ -741,6 +758,7 @@ export async function getOperationForConnection(
 		connection: {
 			id: row.id,
 			connector_key: row.connector_key,
+			connector_version: row.connector_version,
 			status: row.status,
 			auth_profile_id: row.auth_profile_id,
 			app_auth_profile_id: row.app_auth_profile_id,
@@ -749,6 +767,8 @@ export async function getOperationForConnection(
 			device_worker_id: row.device_worker_id,
 			device_platform: row.device_platform,
 			connector_runtime: row.connector_runtime,
+			connector_manifest_backed: row.connector_manifest_backed,
+			connector_artifact_source_path: row.connector_artifact_source_path,
 			name: row.name,
 		},
 		operation,

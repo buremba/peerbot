@@ -72,6 +72,54 @@ describe('device virtual feed — reserved action key', () => {
   });
 });
 
+describe('WhatsApp Browser manifest compatibility', () => {
+  const chromeManifest = {
+    key: 'whatsapp.local',
+    version: '2.0.0',
+    name: 'WhatsApp Personal',
+    required_capability: 'browser.scripting',
+    runtime: { platforms: ['chrome-extension'] },
+    feeds_schema: {
+      messages: { key: 'messages', name: 'Messages' },
+      messages_live: { key: 'messages_live', name: 'Messages (live)', virtual: true },
+    },
+  };
+
+  it('accepts the legacy whatsapp.local key from Chrome with browser.scripting', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.scripting'],
+      manifests: [chromeManifest],
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.manifests).toHaveLength(1);
+    expect(result.manifests[0]?.manifest.key).toBe('whatsapp.local');
+  });
+
+  it('rejects a Chrome whatsapp.local manifest with another allowed browser capability', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.history'],
+      manifests: [{ ...chromeManifest, required_capability: 'browser.history' }],
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.manifests).toHaveLength(0);
+  });
+
+  it('rejects a Chrome whatsapp.local manifest that does not include the Chrome runtime', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.scripting'],
+      manifests: [{ ...chromeManifest, runtime: { platforms: ['macos'] } }],
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.manifests).toHaveLength(0);
+  });
+});
+
 describe('device virtual feed — outcome mapping', () => {
   const params = {
     organizationId: 'org-1',

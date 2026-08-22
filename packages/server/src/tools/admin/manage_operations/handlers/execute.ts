@@ -9,6 +9,10 @@ import { resolveActingPrincipal, resolveWritePolicyDecision } from "../../../../
 import { authzScopeFromToolContext } from "../../../../authz/scope";
 import { getDb } from "../../../../db/client";
 import type { Env } from "../../../../index";
+import {
+	isDelegatedBrowserAffinityConnector,
+	isLegacyNonManifestConnector,
+} from "../../../../utils/connector-execution-placement";
 import { currentMcpActivityAttribution, currentMcpActivityEventMetadata } from "../../../../lobu/stores/mcp-client-conversations";
 import { callTool as callProxyTool } from "../../../../mcp-proxy/client";
 import { resolveActionOrigin } from "../../../../notifications/action-origin";
@@ -594,18 +598,29 @@ export async function handleExecute(
 
 	// Intrinsically device-only connectors always execute on their connector
 	// runtime. Otherwise, a physical connection pin is exact operation
-	// placement. The sole exception is a non-Chrome connector pinned to a
-	// chrome-extension: that pin selects delegated scrape affinity for inline
-	// connector work; it does not move the parent operation onto the extension.
-	// "Chrome connector" matches the device-manifest allowlist for the
-	// chrome-extension platform: `chrome` or `chrome.*`.
-	const isChromeScrapeAffinity =
-		connection.device_platform === "chrome-extension" &&
-		connection.connector_key !== "chrome" &&
-		!connection.connector_key.startsWith("chrome.");
+	// placement. The sole exception is a connector that does not execute natively
+	// in the extension but is pinned to one: that pin selects delegated scrape
+	// affinity for inline connector work; it does not move the parent operation
+	// onto the extension.
+	// Native extension execution and delegated browser affinity share the same
+	// narrow classification as worker polling and scheduled sync admission.
+	const executionSourceFacts = {
+		connectorKey: connection.connector_key,
+		connectorVersion: connection.connector_version,
+		manifestBacked: connection.connector_manifest_backed,
+		artifactSourcePath: connection.connector_artifact_source_path,
+	};
+	const isChromeScrapeAffinity = isDelegatedBrowserAffinityConnector(
+		connection.device_platform,
+		executionSourceFacts,
+	);
+	const isLegacyNonManifestArtifact = isLegacyNonManifestConnector(
+		executionSourceFacts,
+	);
 	const executesOnDevice =
-		connection.connector_runtime != null ||
-		(connection.device_worker_id != null && !isChromeScrapeAffinity);
+		!isChromeScrapeAffinity &&
+		(connection.device_worker_id != null ||
+			(connection.connector_runtime != null && !isLegacyNonManifestArtifact));
 	if (activation && (operation.backend !== "local_action" || executesOnDevice)) {
 		throw new ToolUserError(
 			"Page activation requires a server-executed local connector operation.",

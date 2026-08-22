@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
 import type { DbClient } from '../db/client';
 import type { ConnectorMetadata } from '../utils/connector-compiler';
+import {
+  isChromeNamespaceConnectorKey,
+  isLegacyNativeChromeExtensionConnectorKey,
+} from '../utils/connector-execution-placement';
 import logger from '../utils/logger';
 
 const MAX_MANIFESTS_PER_POLL = 32;
@@ -31,10 +35,23 @@ export interface StoredDeviceManifest {
 export interface DeviceConnectorSource {
   key: string;
   requiredCapability: string;
+  /** Fresh, capable devices advertising the exact manifest selected for this key. */
+  advertiserDeviceIds: string[];
   feedKeys: string[];
   metadata: ConnectorMetadata;
   sourcePath: string;
   manifestHash: string;
+}
+
+export interface ManifestClaimAuthorization {
+  connectorKey: string;
+  connectorVersion: string;
+  manifestHash: string;
+}
+
+export interface DeviceManifestClaimAuthorization extends ManifestClaimAuthorization {
+  /** The platform recorded on the device that actually advertised this manifest. */
+  sourcePath: string;
 }
 
 interface DeviceManifestValidationResult {
@@ -119,6 +136,15 @@ export function validateDeviceConnectorManifests(params: {
       if (!connectorKeyAllowedForPlatform(platform, manifest.key)) {
         throw new Error(`connector key '${manifest.key}' is not allowed for platform '${platform}'`);
       }
+      if (
+        platform === 'chrome-extension' &&
+        isLegacyNativeChromeExtensionConnectorKey(manifest.key) &&
+        manifest.required_capability !== 'browser.scripting'
+      ) {
+        throw new Error(
+          `chrome-extension connector '${manifest.key}' requires required_capability 'browser.scripting'`
+        );
+      }
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
       }
@@ -153,36 +179,185 @@ export function validateDeviceConnectorManifests(params: {
 export async function getDeviceManifestSourcesForUser(params: {
   sql: DbClient;
   userId: string;
-  liveCapabilities: Map<string, Set<string>>;
+  connectorKey?: string;
 }): Promise<DeviceConnectorSource[]> {
   const rows = (await params.sql`
-    SELECT id, connector_manifests
+    SELECT id, platform, capabilities, connector_manifests
     FROM device_workers
     WHERE user_id = ${params.userId}
       AND last_seen_at > now() - '7 days'::interval
-  `) as unknown as Array<{ id: string; connector_manifests: unknown }>;
+      AND (
+        ${params.connectorKey == null}
+        OR connector_manifests ? ${params.connectorKey ?? ''}
+      )
+  `) as unknown as Array<{
+    id: string;
+    platform: string | null;
+    capabilities: unknown;
+    connector_manifests: unknown;
+  }>;
 
-  const winners = new Map<string, { stored: StoredDeviceManifest; deviceId: string }>();
+  type ManifestCandidate = {
+    stored: StoredDeviceManifest;
+    deviceId: string;
+    platform: string | null;
+  };
+  const candidates: ManifestCandidate[] = [];
+  const liveCapabilities = new Map<string, Set<string>>();
+  const winners = new Map<string, StoredDeviceManifest>();
   for (const row of rows) {
+    liveCapabilities.set(
+      row.id,
+      new Set(Array.isArray(row.capabilities) ? (row.capabilities as string[]) : [])
+    );
     const map = isRecord(row.connector_manifests) ? row.connector_manifests : {};
     for (const value of Object.values(map)) {
       const stored = parseStoredManifest(value);
       if (!stored) continue;
+      candidates.push({ stored, deviceId: row.id, platform: row.platform });
       const existing = winners.get(stored.manifest.key);
-      if (!existing || compareManifestWinner(stored, existing.stored) > 0) {
-        winners.set(stored.manifest.key, { stored, deviceId: row.id });
+      if (!existing || compareManifestWinner(stored, existing) > 0) {
+        winners.set(stored.manifest.key, stored);
       }
     }
   }
 
-  return [...winners.values()].map(({ stored }) => ({
-    key: stored.manifest.key,
-    requiredCapability: stored.manifest.required_capability,
-    feedKeys: manifestFeedKeys(stored.manifest),
-    metadata: deviceManifestToConnectorMetadata(stored.manifest),
-    sourcePath: `device-manifest://${stored.manifest.runtime.platforms[0]}/${stored.manifest.key}@${stored.manifest.version}`,
-    manifestHash: stored.manifest_hash,
-  }));
+  return [...winners.values()].flatMap((stored) => {
+    const exactCandidates = candidates.filter(
+      (candidate) =>
+        candidate.stored.manifest.key === stored.manifest.key &&
+        candidate.stored.manifest.version === stored.manifest.version &&
+        candidate.stored.manifest_hash === stored.manifest_hash
+    );
+    const advertiserCandidates = exactCandidates.filter(
+      (candidate) =>
+        liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
+    );
+    // Provenance must describe the platform that actually validated and
+    // advertised this manifest. `runtime.platforms` is a compatibility set, not
+    // an ordered ownership declaration; using element zero can misroute a valid
+    // Chrome manifest whose Chrome entry appears later in the array. Prefer a
+    // currently capable advertiser, then fall back to an exact stored advertiser
+    // so inventory remains stable while a permission is temporarily revoked.
+    const sourceCandidate = (
+      advertiserCandidates.length > 0 ? advertiserCandidates : exactCandidates
+    )
+      .filter(
+        (candidate): candidate is ManifestCandidate & { platform: string } =>
+          typeof candidate.platform === 'string' &&
+          stored.manifest.runtime.platforms.includes(candidate.platform)
+      )
+      .sort(
+        (a, b) => a.platform.localeCompare(b.platform) || a.deviceId.localeCompare(b.deviceId)
+      )[0];
+    if (!sourceCandidate) {
+      logger.warn(
+        { connectorKey: stored.manifest.key, connectorVersion: stored.manifest.version },
+        '[device-manifests] exact manifest has no valid advertising platform'
+      );
+      return [];
+    }
+
+    return [
+      {
+        key: stored.manifest.key,
+        requiredCapability: stored.manifest.required_capability,
+        advertiserDeviceIds: advertiserCandidates
+          .map((candidate) => candidate.deviceId)
+          .sort(),
+        feedKeys: manifestFeedKeys(stored.manifest),
+        metadata: deviceManifestToConnectorMetadata(stored.manifest),
+        sourcePath: `device-manifest://${sourceCandidate.platform}/${stored.manifest.key}@${stored.manifest.version}`,
+        manifestHash: stored.manifest_hash,
+      },
+    ];
+  });
+}
+
+/**
+ * Return every validated manifest identity advertised by one exact device.
+ * This deliberately does not apply winner selection: a device may retain a
+ * historical version while another device advertises the current winner.
+ */
+export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
+  sql: DbClient;
+  userId: string;
+  deviceId: string;
+}): Promise<DeviceManifestClaimAuthorization[]> {
+  const rows = (await params.sql`
+    SELECT platform, capabilities, connector_manifests
+    FROM device_workers
+    WHERE id = ${params.deviceId}::uuid
+      AND user_id = ${params.userId}
+      AND last_seen_at > now() - '7 days'::interval
+    LIMIT 1
+  `) as unknown as Array<{
+    platform: string | null;
+    capabilities: unknown;
+    connector_manifests: unknown;
+  }>;
+  const row = rows[0];
+  if (!row || !row.platform || !isKnownPlatform(row.platform)) return [];
+
+  const capabilities = Array.isArray(row.capabilities) ? (row.capabilities as string[]) : [];
+  const map = isRecord(row.connector_manifests) ? row.connector_manifests : {};
+  const authorizations = new Map<string, DeviceManifestClaimAuthorization>();
+  for (const value of Object.values(map)) {
+    const stored = parseStoredManifest(value);
+    if (!stored || !capabilities.includes(stored.manifest.required_capability)) continue;
+
+    // Revalidate the persisted payload before using it as claim authority. The
+    // row may predate manifest hashes, and connector_manifests is durable input
+    // rather than an authorization primitive by itself.
+    const validation = validateDeviceConnectorManifests({
+      platform: row.platform,
+      capabilities,
+      manifests: [stored.manifest],
+    });
+    const validated = validation.manifests[0];
+    if (!validation.accepted || !validated || validated.manifest_hash !== stored.manifest_hash) {
+      continue;
+    }
+
+    const authorization: DeviceManifestClaimAuthorization = {
+      connectorKey: validated.manifest.key,
+      connectorVersion: validated.manifest.version,
+      manifestHash: validated.manifest_hash,
+      sourcePath: `device-manifest://${row.platform}/${validated.manifest.key}@${validated.manifest.version}`,
+    };
+    authorizations.set(
+      `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,
+      authorization
+    );
+  }
+  return [...authorizations.values()];
+}
+
+/**
+ * Lazily attest pre-hash manifest artifacts only from a validated manifest
+ * currently advertised by the authorized device. Shared hashless artifacts
+ * are intentionally not mutated: an org-scoped exact row must exist before a
+ * retained artifact can become claimable.
+ */
+export async function attestDeviceManifestArtifacts(params: {
+  sql: DbClient;
+  organizationId: string;
+  authorizations: DeviceManifestClaimAuthorization[];
+}): Promise<void> {
+  for (const authorization of params.authorizations) {
+    await params.sql`
+      UPDATE connector_versions
+      SET compiled_code_hash = ${authorization.manifestHash}
+      WHERE organization_id = ${params.organizationId}
+        AND connector_key = ${authorization.connectorKey}
+        AND version = ${authorization.connectorVersion}
+        AND compiled_code_hash IS NULL
+        AND compiled_code IS NULL
+        AND compile_config_hash IS NULL
+        AND source_code IS NULL
+        AND source_path = ${authorization.sourcePath}
+    `;
+  }
 }
 
 export function storedManifestMap(valid: StoredDeviceManifest[]): Record<string, StoredDeviceManifest> {
@@ -300,7 +475,13 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
     );
   }
   if (platform === 'chrome-extension') {
-    return key === 'chrome' || key.startsWith('chrome.');
+    // Compatibility cutover: the extension intentionally keeps the legacy
+    // internal key so the existing connection/feed/event identity survives.
+    // This is the sole non-chrome namespace admitted for Chrome; validation
+    // above additionally binds it to browser.scripting.
+    return (
+      isChromeNamespaceConnectorKey(key) || isLegacyNativeChromeExtensionConnectorKey(key)
+    );
   }
   // Headless devices (servers/VMs/pods, the herdr box) serve the shell
   // connector: bundled `os.shell` executes `bash -lc` and returns structured

@@ -116,4 +116,146 @@ describe('upsertConnectorDefinitionRecords', () => {
       },
     ]);
   });
+
+  it('replaces compiled provenance atomically with a device-manifest artifact', async () => {
+    const sql = getTestDb();
+    const version = '2.0.0';
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: metadataFor(version),
+      versionRecord: versionRecordFor(version),
+      versionScope: 'organization',
+    });
+
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: metadataFor(version),
+      versionRecord: {
+        compiledCode: null,
+        compiledCodeHash: 'manifest-hash-2.0.0',
+        compileConfigHash: null,
+        sourceCode: null,
+        sourcePath: 'device-manifest://chrome-extension/upsert-probe@2.0.0',
+      },
+      versionScope: 'organization',
+    });
+
+    const [artifact] = (await sql`
+      SELECT compiled_code, compiled_code_hash, compile_config_hash, source_code, source_path
+      FROM connector_versions
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'upsert-probe'
+        AND version = ${version}
+    `) as unknown as Array<{
+      compiled_code: string | null;
+      compiled_code_hash: string | null;
+      compile_config_hash: string | null;
+      source_code: string | null;
+      source_path: string | null;
+    }>;
+    expect(artifact).toEqual({
+      compiled_code: null,
+      compiled_code_hash: 'manifest-hash-2.0.0',
+      compile_config_hash: null,
+      source_code: null,
+      source_path: 'device-manifest://chrome-extension/upsert-probe@2.0.0',
+    });
+  });
+
+  it('replaces device-manifest provenance atomically with compiled source', async () => {
+    const sql = getTestDb();
+    const version = '3.0.0';
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: metadataFor(version),
+      versionRecord: {
+        compiledCode: null,
+        compiledCodeHash: 'manifest-hash-3.0.0',
+        compileConfigHash: null,
+        sourceCode: null,
+        sourcePath: 'device-manifest://chrome-extension/upsert-probe@3.0.0',
+      },
+      versionScope: 'organization',
+    });
+
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: metadataFor(version),
+      versionRecord: versionRecordFor(version),
+      versionScope: 'organization',
+    });
+
+    const [artifact] = (await sql`
+      SELECT compiled_code, compiled_code_hash, compile_config_hash, source_code, source_path
+      FROM connector_versions
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'upsert-probe'
+        AND version = ${version}
+    `) as unknown as Array<{
+      compiled_code: string | null;
+      compiled_code_hash: string | null;
+      compile_config_hash: string | null;
+      source_code: string | null;
+      source_path: string | null;
+    }>;
+    expect(artifact).toEqual({
+      compiled_code: `// compiled ${version}`,
+      compiled_code_hash: `hash-${version}`,
+      compile_config_hash: COMPILE_CONFIG_HASH,
+      source_code: `// source ${version}`,
+      source_path: `upsert-probe@${version}.ts`,
+    });
+  });
+
+  it('replaces device-manifest provenance atomically with a metadata-only artifact', async () => {
+    const sql = getTestDb();
+    const version = '4.0.0';
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: metadataFor(version),
+      versionRecord: {
+        compiledCode: null,
+        compiledCodeHash: 'manifest-hash-4.0.0',
+        compileConfigHash: null,
+        sourceCode: null,
+        sourcePath: 'device-manifest://chrome-extension/upsert-probe@4.0.0',
+      },
+      versionScope: 'organization',
+    });
+
+    await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: metadataFor(version),
+      versionRecord: {
+        compiledCode: null,
+        compiledCodeHash: null,
+        compileConfigHash: null,
+        sourceCode: null,
+        sourcePath: null,
+      },
+      versionScope: 'organization',
+      replaceVersionArtifact: true,
+    });
+
+    const [artifact] = (await sql`
+      SELECT compiled_code, compiled_code_hash, compile_config_hash, source_code, source_path
+      FROM connector_versions
+      WHERE organization_id = ${orgId}
+        AND connector_key = 'upsert-probe'
+        AND version = ${version}
+    `) as unknown as Array<Record<string, string | null>>;
+    expect(artifact).toEqual({
+      compiled_code: null,
+      compiled_code_hash: null,
+      compile_config_hash: null,
+      source_code: null,
+      source_path: null,
+    });
+  });
 });

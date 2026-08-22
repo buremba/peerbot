@@ -108,6 +108,11 @@ function initializeMetrics() {
     "counter"
   );
   registerMetric(
+    "lobu_device_manifest_reconciliation_duration_ms",
+    "Duration of the latest device manifest reconciliation on the worker poll path, in milliseconds",
+    "gauge"
+  );
+  registerMetric(
     "lobu_process_start_time_seconds",
     "Start time of the process since unix epoch in seconds",
     "gauge"

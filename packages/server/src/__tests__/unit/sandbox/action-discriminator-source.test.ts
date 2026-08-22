@@ -12,8 +12,9 @@ import { describe, expect, it } from "bun:test";
  *   callEntity({ action: "list", ...input }, "listTypes")
  *   // -> action(payload.action as string, …)   // caller picks the handler
  *
- * `action()` strips a caller-supplied `action` key for exactly this reason,
- * which only holds if the name it is handed is a literal from the call site.
+ * The named-method adapter strips a caller-supplied `action` key for exactly
+ * this reason, which only holds if its action name is a literal from the call
+ * site.
  */
 
 const NAMESPACE_DIR = join(__dirname, "../../../sandbox/namespaces");

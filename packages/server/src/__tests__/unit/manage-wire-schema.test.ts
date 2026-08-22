@@ -210,8 +210,20 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 			},
 			skipped_calls: 2,
 			side_effect_preview: [
-				{ path: "entities.create", access: "write", args: [{}] },
-				{ path: "connections.connect", access: "admin", args: [{}] },
+				{
+					path: "entities.create",
+					access: "write",
+					args: [{}],
+					required_access: "write",
+					authorization_status: "not_evaluated",
+				},
+				{
+					path: "connections.connect",
+					access: "admin",
+					args: [{}],
+					required_access: "admin",
+					authorization_status: "not_evaluated",
+				},
 			],
 			side_effect_preview_truncated: { dropped_entries: 3 },
 			dry_run: true,

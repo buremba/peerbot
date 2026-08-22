@@ -65,7 +65,7 @@ export function buildAuthProfilesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): AuthProfilesNamespace {
-	const { manage, action } = createActionCaller(
+	const { manage, method } = createActionCaller(
 		manageAuthProfiles,
 		env,
 		ctx,
@@ -74,48 +74,42 @@ export function buildAuthProfilesNamespace(
 
 	return {
 		manage,
-		list: (input) => action("list_auth_profiles", input, "list"),
-		get: async (auth_profile_slug) =>
-			action(
-				"get_auth_profile",
-				{
-					auth_profile_slug: idArg(
-						"authProfiles.get",
-						"auth_profile_slug",
-						auth_profile_slug,
-						"string",
-					),
-				},
-				"get",
-			),
-		test: async (auth_profile_slug) =>
-			action(
-				"test_auth_profile",
-				{
-					auth_profile_slug: idArg(
-						"authProfiles.test",
-						"auth_profile_slug",
-						auth_profile_slug,
-						"string",
-					),
-				},
-				"test",
-			),
-		create: (input) => action("create_auth_profile", input, "create"),
-		update: (input) => action("update_auth_profile", input, "update"),
-		delete: async (auth_profile_slug, options) =>
-			action(
-				"delete_auth_profile",
-				{
-					auth_profile_slug: idArg(
-						"authProfiles.delete",
-						"auth_profile_slug",
-						auth_profile_slug,
-						"string",
-					),
-					...options,
-				},
-				"delete",
-			),
+		list: method("list_auth_profiles", { publicMethod: "list" }),
+		get: method("get_auth_profile", {
+			publicMethod: "get",
+			mapArgs: (auth_profile_slug) => ({
+				auth_profile_slug: idArg(
+					"authProfiles.get",
+					"auth_profile_slug",
+					auth_profile_slug,
+					"string",
+				),
+			}),
+		}),
+		test: method("test_auth_profile", {
+			publicMethod: "test",
+			mapArgs: (auth_profile_slug) => ({
+				auth_profile_slug: idArg(
+					"authProfiles.test",
+					"auth_profile_slug",
+					auth_profile_slug,
+					"string",
+				),
+			}),
+		}),
+		create: method("create_auth_profile", { publicMethod: "create" }),
+		update: method("update_auth_profile", { publicMethod: "update" }),
+		delete: method("delete_auth_profile", {
+			publicMethod: "delete",
+			mapArgs: (auth_profile_slug, options) => ({
+				auth_profile_slug: idArg(
+					"authProfiles.delete",
+					"auth_profile_slug",
+					auth_profile_slug,
+					"string",
+				),
+				...options,
+			}),
+		}),
 	};
 }

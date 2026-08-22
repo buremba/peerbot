@@ -21,6 +21,7 @@ import { METHOD_METADATA, type MethodAccess } from "./method-metadata";
 import type { ToolAccessLevel } from "../auth/tool-access";
 import { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 import { McpScopeRequiredError } from "../tools/access-control";
+import { getSdkPreflight } from "./sdk-preflight";
 
 export interface RunLimits {
 	memoryMb?: number;
@@ -122,6 +123,8 @@ interface SdkCallTraceEntry {
 	access: MethodAccess | "unknown";
 	args: unknown[];
 	skipped: boolean;
+	required_access?: MethodAccess;
+	authorization_status?: "not_evaluated";
 }
 
 interface RunScriptResult {
@@ -1087,8 +1090,17 @@ export async function runScript(
 					// Skipped (dry-run) calls live only in `side_effect_preview`;
 					// dispatched calls only in `sdk_call_trace` — no double shipping.
 					if (trace.skipped) {
+						const preflight = getSdkPreflight(namespace[method]);
+						if (!preflight) throw new Error(`Missing SDK preflight adapter: '${path}'`);
+						const result = await preflight(...args);
+						const preview = {
+							...trace,
+							args: traceArgs(result.args),
+							required_access: result.required_access,
+							authorization_status: result.authorization_status,
+						};
 						skippedCalls++;
-						appendPreview.append(sideEffectPreview, trace);
+						appendPreview.append(sideEffectPreview, preview);
 						return { dry_run: true, skipped_call: path, access };
 					}
 					// Count change-capable dispatches separately from the trace. The

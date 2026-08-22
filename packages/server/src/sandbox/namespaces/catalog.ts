@@ -16,11 +16,10 @@ export function buildCatalogNamespace(
 	ctx: ToolContext,
 	env: Env
 ): CatalogNamespace {
-	const { action } = createActionCaller(manageCatalog, env, ctx, "catalog");
+	const { method } = createActionCaller(manageCatalog, env, ctx, "catalog");
 
 	return {
-		listCatalog: (input) => action("list_catalog", input ?? {}, "listCatalog"),
-		listInstalled: (input) =>
-			action("list_installed", input ?? {}, "listInstalled"),
+		listCatalog: method("list_catalog", { publicMethod: "listCatalog" }),
+		listInstalled: method("list_installed", { publicMethod: "listInstalled" }),
 	};
 }

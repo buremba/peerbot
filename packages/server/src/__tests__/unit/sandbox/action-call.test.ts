@@ -1,9 +1,26 @@
 import { describe, expect, it } from "bun:test";
+import { Type } from "@sinclair/typebox";
 import {
 	ClientSdkActionError,
 	createActionCaller,
 } from "../../../sandbox/namespaces/action-call";
+import { getSdkPreflight } from "../../../sandbox/sdk-preflight";
 import { ToolUserError } from "../../../utils/errors";
+import { withValidatedArgs } from "../../../tools/validate-args";
+
+const PassthroughSchema = Type.Object({}, { additionalProperties: true });
+
+function createTestCaller(
+	handler: (payload: never) => Promise<unknown>,
+	namespace: string,
+) {
+	return createActionCaller(
+		withValidatedArgs(`manage_${namespace}`, PassthroughSchema, handler),
+		{} as never,
+		{} as never,
+		namespace,
+	);
+}
 
 describe("createActionCaller", () => {
 	it("forces the action discriminator, ignoring a caller-supplied `action` key", async () => {
@@ -12,14 +29,10 @@ describe("createActionCaller", () => {
 			calls.push(payload);
 			return payload;
 		};
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-		);
+		const { method } = createTestCaller(handler as never, "entities");
 
 		// A read-only caller tries to smuggle `action: "delete"` into a "list" call.
-		await action("list", { action: "delete", entity_id: 42 });
+		await method("list")({ action: "delete", entity_id: 42 });
 
 		expect(calls).toHaveLength(1);
 		expect((calls[0] as Record<string, unknown>).action).toBe("list");
@@ -32,12 +45,8 @@ describe("createActionCaller", () => {
 			calls.push(payload);
 			return payload;
 		};
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-		);
-		await action("get", { entity_id: 7 });
+		const { method } = createTestCaller(handler as never, "entities");
+		await method("get")({ entity_id: 7 });
 		expect(calls[0]).toEqual({ entity_id: 7, action: "get" });
 	});
 
@@ -47,13 +56,9 @@ describe("createActionCaller", () => {
 			setup_url: "/connections",
 		};
 		const handler = async () => failure;
-		const { manage, action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-		);
+		const { manage, method } = createTestCaller(handler as never, "connections");
 
-		const thrown = await action("connect", {
+		const thrown = await method("connect")({
 			connector_key: "missing",
 		}).catch((error: unknown) => error);
 		expect(thrown).toBeInstanceOf(ClientSdkActionError);
@@ -77,13 +82,9 @@ describe("createActionCaller", () => {
 			message: "Automation not found: 404",
 			data: { automation_id: 404 },
 		});
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-		);
+		const { method } = createTestCaller(handler as never, "classifiers");
 
-		const thrown = await action("create", {
+		const thrown = await method("create")({
 			automation_id: 404,
 		}).catch((error: unknown) => error);
 		expect(thrown).toBeInstanceOf(ClientSdkActionError);
@@ -103,13 +104,9 @@ describe("createActionCaller", () => {
 				error_message: `Operation ended with status ${status}`,
 			};
 			const handler = async () => failure;
-			const { action } = createActionCaller(
-				handler as never,
-				{} as never,
-				{} as never,
-			);
+			const { method } = createTestCaller(handler as never, "operations");
 
-			await expect(action("execute", {})).rejects.toMatchObject({
+			await expect(method("execute")({})).rejects.toMatchObject({
 				name: "ClientSdkActionError",
 				action: "execute",
 				message: failure.error_message,
@@ -124,13 +121,9 @@ describe("createActionCaller", () => {
 			error_message: "Device action run timed out",
 		};
 		const handler = async () => failure;
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-		);
+		const { method } = createTestCaller(handler as never, "operations");
 
-		await expect(action("execute", {})).rejects.toMatchObject({
+		await expect(method("execute")({})).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "execute",
 			message: failure.error_message,
@@ -151,13 +144,9 @@ describe("createActionCaller", () => {
 			summary: { total: 1, successful: 0, failed: 1 },
 		};
 		const handler = async () => failure;
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-		);
+		const { method } = createTestCaller(handler as never, "automations");
 
-		await expect(action("delete", {})).rejects.toMatchObject({
+		await expect(method("delete")({})).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "delete",
 			message: failure.results[0].message,
@@ -174,15 +163,10 @@ describe("createActionCaller", () => {
 				"Invalid arguments for manage_feeds: unknown argument(s): limit — valid arguments for action 'read_feed' are: action, feed_id, connection_id",
 			);
 		};
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-			"feeds",
-		);
-		const thrown = (await action("read_feed", { id: 1 }, "get").catch(
-			(e: unknown) => e,
-		)) as ToolUserError;
+		const { method } = createTestCaller(handler as never, "feeds");
+		const thrown = (await method("read_feed", { publicMethod: "get" })({
+			id: 1,
+		}).catch((e: unknown) => e)) as ToolUserError;
 		expect(thrown).toBeInstanceOf(ToolUserError);
 		expect(thrown.message).not.toMatch(/manage_feeds/);
 		expect(thrown.message).toMatch(/client\.feeds\.get/);
@@ -200,28 +184,13 @@ describe("createActionCaller", () => {
 				"Invalid arguments for manage_classifiers: /entity_type: Expected required property",
 			);
 		};
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-			"classifiers",
-		);
-		const thrown = (await action("generate_embeddings", {}).catch(
+		const { method } = createTestCaller(handler as never, "classifiers");
+		const thrown = (await method("generate_embeddings")({}).catch(
 			(e: unknown) => e,
 		)) as ToolUserError;
 		expect(thrown.message).not.toMatch(/manage_classifiers/);
 		expect(thrown.message).not.toMatch(/generate_embeddings/);
 		expect(thrown.message).toMatch(/client\.classifiers\.generateEmbeddings/);
-	});
-
-	it("leaves errors from callers with no declared namespace untouched", async () => {
-		const handler = async () => {
-			throw new ToolUserError("Invalid arguments for manage_feeds: boom");
-		};
-		const { action } = createActionCaller(handler as never, {} as never, {} as never);
-		const thrown = (await action("read_feed", {}).catch((e: unknown) => e)) as ToolUserError;
-		// No namespace → nothing to rewrite to; message passes through.
-		expect(thrown.message).toBe("Invalid arguments for manage_feeds: boom");
 	});
 
 	it("leaves non-validator errors from namespaced callers untouched", async () => {
@@ -230,13 +199,10 @@ describe("createActionCaller", () => {
 		const handler = async () => {
 			throw new ToolUserError(message);
 		};
-		const { action } = createActionCaller(
-			handler as never,
-			{} as never,
-			{} as never,
-			"feeds",
-		);
-		const thrown = (await action("trigger_feed", {}).catch(
+		const { method } = createTestCaller(handler as never, "feeds");
+		const thrown = (await method("trigger_feed", {
+			publicMethod: "trigger",
+		})({}).catch(
 			(e: unknown) => e,
 		)) as ToolUserError;
 		expect(thrown.message).toBe(message);
@@ -250,12 +216,45 @@ describe("createActionCaller", () => {
 			approval_run_id: 42,
 		};
 		const handler = async () => queued;
-		const { action } = createActionCaller(
+		const { method } = createTestCaller(handler as never, "entities");
+
+		await expect(method("delete")({ entity_id: 7 })).resolves.toEqual(queued);
+	});
+
+	it("preflights through the handler schema without entering the handler or inspecting its result", async () => {
+		let executed = false;
+		const handler = withValidatedArgs(
+			"manage_connections",
+			Type.Object({
+				action: Type.Literal("update"),
+				connection_id: Type.Number(),
+				status: Type.Optional(Type.String()),
+			}),
+			async () => {
+				executed = true;
+				return { status: "error" };
+			},
+		);
+		const { method } = createActionCaller(
 			handler as never,
 			{} as never,
 			{} as never,
+			"connections",
 		);
+		const update = method("update");
+		const preflight = getSdkPreflight(update);
 
-		await expect(action("delete", { entity_id: 7 })).resolves.toEqual(queued);
+		expect(preflight).toBeDefined();
+		expect(preflight?.({ connection_id: "9", status: "error" })).toEqual({
+			args: [{ connection_id: 9, status: "error" }],
+			required_access: "write",
+			authorization_status: "not_evaluated",
+		});
+		expect(executed).toBe(false);
+
+		await expect(update({ connection_id: "not-a-number" })).rejects.toThrow(
+			/client\.connections\.update/,
+		);
+		expect(executed).toBe(false);
 	});
 });

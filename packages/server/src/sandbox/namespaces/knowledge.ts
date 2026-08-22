@@ -12,6 +12,7 @@ import { getContent } from "../../tools/get_content";
 import type { ToolContext } from "../../tools/registry";
 import { saveContent } from "../../tools/save_content";
 import { search } from "../../tools/search";
+import { createValidatedSdkMethod } from "../sdk-preflight";
 import type {} from "./knowledge.typecheck";
 
 export interface KnowledgeSearchInput {
@@ -88,20 +89,30 @@ export function buildKnowledgeNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): KnowledgeNamespace {
+	const prepareDelete = (input: KnowledgeDeleteInput) =>
+		typeof input === "number" ? { content_id: input } : (input ?? {});
 	return {
 		search(input) {
 			return search(input as never, env, ctx) as Promise<unknown>;
 		},
-		save(input) {
-			return saveContent(input as never, env, ctx) as Promise<unknown>;
-		},
+		save: createValidatedSdkMethod(
+			saveContent,
+			[env, ctx],
+			{
+				path: "knowledge.save",
+				prepareArgs: (input) => input,
+			},
+		),
 		read(input) {
 			return getContent(input as never, env, ctx) as Promise<unknown>;
 		},
-		delete(input) {
-			const args =
-				typeof input === "number" ? { content_id: input } : (input ?? {});
-			return deleteContent(args as never, env, ctx) as Promise<unknown>;
-		},
+		delete: createValidatedSdkMethod(
+			deleteContent,
+			[env, ctx],
+			{
+				path: "knowledge.delete",
+				prepareArgs: prepareDelete,
+			},
+		),
 	};
 }

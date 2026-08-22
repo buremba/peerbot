@@ -50,13 +50,18 @@ export function buildViewTemplatesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): ViewTemplatesNamespace {
-	const { manage, action } = createActionCaller(manageViewTemplates, env, ctx, "viewTemplates");
+	const { manage, method } = createActionCaller(
+		manageViewTemplates,
+		env,
+		ctx,
+		"viewTemplates",
+	);
 
 	return {
 		manage,
-		get: (input) => action("get", input),
-		set: (input) => action("set", input),
-		rollback: (input) => action("rollback", input),
-		removeTab: (input) => action("remove_tab", input),
+		get: method("get"),
+		set: method("set"),
+		rollback: method("rollback"),
+		removeTab: method("remove_tab"),
 	};
 }

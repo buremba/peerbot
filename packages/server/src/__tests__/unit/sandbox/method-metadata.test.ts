@@ -6,6 +6,7 @@ import {
 } from "../../../sandbox/method-metadata";
 import { SDK_FIELD_ALIASES } from "../../../sandbox/sdk-aliases";
 import { buildClientSDK } from "../../../sandbox/client-sdk";
+import { getSdkPreflight } from "../../../sandbox/sdk-preflight";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
 
@@ -79,6 +80,23 @@ describe("method-metadata", () => {
 			}
 			void path;
 		}
+	});
+
+	it("gives every non-read namespace method a schema-backed dry-run preflight", () => {
+		const sdk = buildClientSDK(testCtx, testEnv) as unknown as Record<
+			string,
+			Record<string, unknown>
+		>;
+		const missing = Object.entries(METHOD_METADATA)
+			.filter(([, metadata]) => metadata.access !== "read")
+			.filter(([path]) => path.includes("."))
+			.filter(([path]) => {
+				const [namespace, method] = path.split(".");
+				return !getSdkPreflight(sdk[namespace]?.[method]);
+			})
+			.map(([path]) => path);
+
+		expect(missing).toEqual([]);
 	});
 
 	it("uses dotted path keys", () => {

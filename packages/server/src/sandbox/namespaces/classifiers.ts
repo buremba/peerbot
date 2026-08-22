@@ -87,15 +87,15 @@ export function buildClassifiersNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): ClassifiersNamespace {
-	const { manage, action } = createActionCaller(manageClassifiers, env, ctx, "classifiers");
+	const { manage, method } = createActionCaller(manageClassifiers, env, ctx, "classifiers");
 
 	return {
 		manage,
-		list: (input) => action("list", input),
-		create: (input) => action("create", input),
-		generateEmbeddings: (input) => action("generate_embeddings", input),
-		delete: (input) => action("delete", input),
-		classify: (input) => action("classify", input),
-		apply: (input) => action("apply", input),
+		list: method("list"),
+		create: method("create"),
+		generateEmbeddings: method("generate_embeddings"),
+		delete: method("delete"),
+		classify: method("classify"),
+		apply: method("apply"),
 	};
 }

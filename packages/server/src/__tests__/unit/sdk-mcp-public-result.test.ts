@@ -38,6 +38,8 @@ describe("SDK MCP public result", () => {
 					access: "write",
 					args: [{ name: "A" }],
 					skipped: true,
+					required_access: "write",
+					authorization_status: "not_evaluated",
 				},
 			],
 			dry_run: true,
@@ -52,7 +54,13 @@ describe("SDK MCP public result", () => {
 		expect(publicResult.skipped_calls).toBe(1);
 		expect(publicResult.return_value).toEqual({ answer: 42 });
 		expect(publicResult.side_effect_preview).toEqual([
-			{ path: "entities.create", access: "write", args: [{ name: "A" }] },
+			{
+				path: "entities.create",
+				access: "write",
+				args: [{ name: "A" }],
+				required_access: "write",
+				authorization_status: "not_evaluated",
+			},
 		]);
 		expect(publicResult.error).toEqual({
 			name: "TypeError",
@@ -95,7 +103,13 @@ describe("SDK MCP public result", () => {
 			success: true,
 			skipped_calls: 3,
 			side_effect_preview: [
-				{ path: "entities.create", access: "mystery", args: [] },
+				{
+					path: "entities.create",
+					access: "mystery",
+					args: [],
+					required_access: "write",
+					authorization_status: "not_evaluated",
+				},
 				{ path: 42, args: [] },
 			],
 			return_value_preview: "head",
@@ -105,7 +119,13 @@ describe("SDK MCP public result", () => {
 
 		expect(validateToolResult(SdkScriptResultSchema, publicResult)).not.toBeNull();
 		expect(publicResult.side_effect_preview).toEqual([
-			{ path: "entities.create", access: "unknown", args: [] },
+			{
+				path: "entities.create",
+				access: "unknown",
+				args: [],
+				required_access: "write",
+				authorization_status: "not_evaluated",
+			},
 		]);
 		expect(publicResult.side_effect_preview_truncated).toEqual({ dropped_entries: 2 });
 		expect(publicResult.return_value_preview).toBe("head");

@@ -144,11 +144,11 @@ export function buildAutomationsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): AutomationsNamespace {
-	const { manage, action } = createActionCaller(manageAutomations, env, ctx, "automations");
+	const { manage, method } = createActionCaller(manageAutomations, env, ctx, "automations");
 
 	return {
-		manage: (input) => manage(input as Record<string, unknown>),
-		list: (filter) => action("list", filter ?? {}),
+		manage,
+		list: method("list"),
 		get(input) {
 			return getAutomation(
 				input as never,
@@ -156,15 +156,15 @@ export function buildAutomationsNamespace(
 				ctx,
 			) as Promise<unknown>;
 		},
-		create: (input) => action("create", input),
-		update: (input) => action("update", input),
-		createVersion: (input) => action("create_version", input),
-		completeWindow: (input) => action("complete_window", input),
-		trigger: (input) => action("trigger", input),
-		delete: (input) => action("delete", input),
-		setReactionScript: (input) => action("set_reaction_script", input),
-		getVersions: (automation_id) =>
-			action("get_versions", {
+		create: method("create"),
+		update: method("update"),
+		createVersion: method("create_version"),
+		completeWindow: method("complete_window"),
+		trigger: method("trigger"),
+		delete: method("delete"),
+		setReactionScript: method("set_reaction_script"),
+		getVersions: method("get_versions", {
+			mapArgs: (automation_id) => ({
 				automation_id: idArg(
 					"automations.getVersions",
 					"automation_id",
@@ -172,11 +172,13 @@ export function buildAutomationsNamespace(
 					"string",
 				),
 			}),
-		getVersionDetails: (input) =>
-			action("get_version_details", normalizeVersionDetailsInput(input)),
-		getComponentReference: () => action("get_component_reference"),
-		submitFeedback: (input) => action("submit_feedback", input),
-		getFeedback: (input) => action("get_feedback", input),
-		createFromVersion: (input) => action("create_from_version", input),
+		}),
+		getVersionDetails: method("get_version_details", {
+			mapArgs: normalizeVersionDetailsInput,
+		}),
+		getComponentReference: method("get_component_reference"),
+		submitFeedback: method("submit_feedback"),
+		getFeedback: method("get_feedback"),
+		createFromVersion: method("create_from_version"),
 	};
 }

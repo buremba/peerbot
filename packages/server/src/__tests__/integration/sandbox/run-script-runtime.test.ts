@@ -17,8 +17,31 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { Type } from "@sinclair/typebox";
 import type { ClientSDK } from "../../../sandbox/client-sdk";
+import { METHOD_METADATA } from "../../../sandbox/method-metadata";
 import { runScript } from "../../../sandbox/run-script";
+import { createValidatedSdkMethod } from "../../../sandbox/sdk-preflight";
+import { withValidatedArgs } from "../../../tools/validate-args";
+
+const StubArgsSchema = Type.Object({ args: Type.Array(Type.Unknown()) });
+
+function createTestSdkMethod(
+  path: string,
+  method: (...args: unknown[]) => unknown,
+): (...args: unknown[]) => Promise<unknown> {
+  const handler = withValidatedArgs(
+    `test.${path}`,
+    StubArgsSchema,
+    async ({ args }) => method(...args),
+  );
+  return createValidatedSdkMethod(handler, [], {
+    path,
+    prepareArgs: (...args) => ({ args }),
+    projectArgs: (validated) =>
+      (validated as { args: unknown[] }).args,
+  });
+}
 
 // Counts compiles so the memo is asserted by call count rather than by
 // wall-clock timing, which is unassertable at the ~3ms scale a warm run costs.
@@ -315,6 +338,19 @@ describe("compiled-source memo", () => {
 });
 
 function stubSDK(partial: Partial<ClientSDK> = {}): ClientSDK {
+  for (const [namespaceName, namespace] of Object.entries(partial)) {
+    if (!namespace || typeof namespace !== "object") continue;
+    for (const [methodName, method] of Object.entries(namespace)) {
+      const metadata = METHOD_METADATA[`${namespaceName}.${methodName}`];
+      if (!metadata || metadata.access === "read" || typeof method !== "function") {
+        continue;
+      }
+      (namespace as Record<string, unknown>)[methodName] = createTestSdkMethod(
+        `${namespaceName}.${methodName}`,
+        method as (...args: unknown[]) => unknown,
+      );
+    }
+  }
   return { log: () => undefined, ...partial } as ClientSDK;
 }
 

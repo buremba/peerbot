@@ -6,17 +6,23 @@ import {
 	it,
 	mock,
 } from "bun:test";
+import { Type } from "@sinclair/typebox";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
+import { withValidatedArgs } from "../../../tools/validate-args";
 
 const calls: Array<{ action: string; input?: Record<string, unknown> }> = [];
 const automationGets: Array<Record<string, unknown>> = [];
 
-const captureAction = async (input: Record<string, unknown>) => {
-	const { action, ...rest } = input;
-	calls.push({ action: String(action), input: rest });
-	return input;
-};
+const captureAction = withValidatedArgs(
+	"capture_action",
+	Type.Object({}, { additionalProperties: true }),
+	async (input: Record<string, unknown>) => {
+		const { action, ...rest } = input;
+		calls.push({ action: String(action), input: rest });
+		return input;
+	},
+);
 
 mock.module("../../../tools/admin/manage_entity", () => ({
 	manageEntity: captureAction,

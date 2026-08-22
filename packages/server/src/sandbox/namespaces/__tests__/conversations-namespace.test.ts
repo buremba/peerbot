@@ -3,11 +3,11 @@
  *
  * `send` returns a discriminated result whose `status` may be "error" or
  * "timeout" — NON-throwing outcomes the caller must branch on. The generic
- * `action()` wrapper (createActionCaller) runs failureMessage(), which turns a
- * result with `status:"error"` / `status:"timeout"` (or an `error` field) into a
- * thrown ClientSdkActionError. So `send` must route through `manage()` (raw),
- * NOT `action()`. This test pins that: a mocked handler returning each status
- * comes back as a VALUE, and a genuine handler throw still propagates.
+ * named-method wrapper runs failureMessage(), which turns a result with
+ * `status:"error"` / `status:"timeout"` (or an `error` field) into a thrown
+ * ClientSdkActionError. `send` disables that conversion. This test pins that:
+ * a mocked handler returning each status comes back as a VALUE, and a genuine
+ * handler throw still propagates.
  *
  * Uses vi.doMock + vi.resetModules + dynamic import (NOT hoisted vi.mock): the
  * integration suite shares a module registry across files, where a hoisted
@@ -18,8 +18,10 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Type } from "@sinclair/typebox";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
+import { withValidatedArgs } from "../../../tools/validate-args";
 
 const env = { ENVIRONMENT: "test" } as Env;
 const ctx = { organizationId: "o", userId: "u" } as ToolContext;
@@ -28,7 +30,11 @@ const ctx = { organizationId: "o", userId: "u" } as ToolContext;
 async function loadNamespaceWith(handler: () => Promise<unknown>) {
 	vi.resetModules();
 	vi.doMock("../../../tools/admin/manage_conversations", () => ({
-		manageConversations: handler,
+		manageConversations: withValidatedArgs(
+			"manage_conversations",
+			Type.Object({}, { additionalProperties: true }),
+			handler,
+		),
 	}));
 	const { buildConversationsNamespace } = await import("../conversations.js");
 	return buildConversationsNamespace(ctx, env);

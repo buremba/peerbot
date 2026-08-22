@@ -18,6 +18,17 @@ BUILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lobu-device-daemon-build.XXXXXX")"
 ARTIFACT_TMP="$OUTPUT.tmp.$$"
 trap 'rm -rf "$BUILD_TMP" "$ARTIFACT_TMP"' EXIT
 META="$BUILD_TMP/metafile.json"
+GRAPH_BUNDLE="$BUILD_TMP/graph.js"
+
+(
+  cd "$BUILD_TMP"
+  bun build "$ENTRY" \
+    --target=bun \
+    --metafile="$META" \
+    --outfile="$GRAPH_BUNDLE"
+)
+
+bun "$ROOT/scripts/check-mac-device-daemon-graph.mjs" "$META"
 
 (
   cd "$BUILD_TMP"
@@ -27,11 +38,9 @@ META="$BUILD_TMP/metafile.json"
     --no-compile-autoload-dotenv \
     --no-compile-autoload-bunfig \
     --no-compile-autoload-package-json \
-    --metafile="$META" \
     --outfile="$ARTIFACT_TMP"
 )
 
-bun "$ROOT/scripts/check-mac-device-daemon-graph.mjs" "$META"
 chmod 0755 "$ARTIFACT_TMP"
 mv -f "$ARTIFACT_TMP" "$OUTPUT"
 file "$OUTPUT"

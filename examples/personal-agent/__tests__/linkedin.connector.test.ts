@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { JSDOM } from "jsdom";
 import { connectorSdkMock } from "./connector-sdk.mock";
 
 // Stub @lobu/connector-sdk (it pulls in playwright) so the connector imports
@@ -9,9 +10,11 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
 let LinkedInConnector: any;
+let personalAgentConfig: any;
 let buildHomeFeedEvents: any;
 let homeFeedObjectAllSupported: any;
 let parseHomeFeedAuthor: any;
+let parseHomeFeedEngagement: any;
 let isHomeFeedNoise: any;
 let filterPostsSinceCheckpoint: any;
 let parseCompanyUpdates: any;
@@ -33,13 +36,18 @@ let normalizeCommentMatchText: any;
 let commentBodiesMatch: any;
 let buildScrapeCommentsExpression: any;
 let verifyLinkedInStagedComment: any;
+let genericScrape: (
+  config: Record<string, unknown>
+) => Promise<Record<string, unknown>>;
 
 beforeAll(async () => {
   const mod = await import("../linkedin.connector");
+  personalAgentConfig = (await import("../lobu.config")).default;
   LinkedInConnector = mod.default;
   buildHomeFeedEvents = mod.buildHomeFeedEvents;
   homeFeedObjectAllSupported = mod.homeFeedObjectAllSupported;
   parseHomeFeedAuthor = mod.parseHomeFeedAuthor;
+  parseHomeFeedEngagement = mod.parseHomeFeedEngagement;
   isHomeFeedNoise = mod.isHomeFeedNoise;
   filterPostsSinceCheckpoint = mod.filterPostsSinceCheckpoint;
   parseCompanyUpdates = mod.parseCompanyUpdates;
@@ -58,6 +66,9 @@ beforeAll(async () => {
   commentBodiesMatch = mod.commentBodiesMatch;
   buildScrapeCommentsExpression = mod.buildScrapeCommentsExpression;
   verifyLinkedInStagedComment = mod.verifyLinkedInStagedComment;
+  genericScrape = (
+    await import("../../../packages/owletto/apps/chrome/tools.js")
+  ).genericScrape;
   const identityMod = await import("../linkedin-identity");
   normalizeLinkedInSlug = identityMod.normalizeLinkedInSlug;
   normalizeLinkedInMemberId = identityMod.normalizeLinkedInMemberId;
@@ -230,6 +241,153 @@ describe("buildHomeFeedEvents", () => {
     expect(ev.source_url).toBeUndefined();
     expect(ev.occurred_at).toBe(occurredAt);
     expect(ev.metadata).toEqual({ author: "Jane Doe" });
+  });
+
+  test("emits a native visible comment with its parent, people, and media", () => {
+    const occurredAt = new Date("2026-08-23T10:00:00.000Z");
+    const events = buildHomeFeedEvents(
+      [
+        {
+          id: "parent_token",
+          body: "Feed post Lorenzo Mangani • 1st CEO at QXIP 9h • A post with enough text to keep",
+          author_control_label: "Open control menu for post by Lorenzo Mangani",
+          post_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621697",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/lmangani/",
+              name: "View Lorenzo Mangani’s profile",
+            },
+          ],
+        },
+        {
+          id: "commentsSectionContainerparent_token",
+          body: "Nico Ritschel Verified Profile 1st Nico Ritschel • 1st Director of Engineering 9h 👀 0 See 1 more comment",
+          author: "Nico Ritschel",
+          comment_body:
+            "Nico Ritschel Verified Profile 1st Nico Ritschel • 1st Director of Engineering 9h 👀 0",
+          comment_identity:
+            "replaceableComment_urn:li:comment:(urn:li:activity:7496969365150621697,7496970800831295488)",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/nicoritschel/",
+              name: "View Nico Ritschel’s profile",
+            },
+          ],
+          comment_media: [
+            {
+              url: "https://media.licdn.com/dms/image/sync/v2/comment-image",
+              alt_text: "A diagram in the comment",
+            },
+          ],
+        },
+      ],
+      occurredAt
+    );
+
+    expect(events).toHaveLength(2);
+    const comment = events[1];
+    expect(comment).toMatchObject({
+      origin_id: "li_comment_7496970800831295488",
+      origin_parent_id: "li_home_parent_token",
+      origin_type: "comment",
+      author_name: "Nico Ritschel",
+      source_url:
+        "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621697",
+      score: 0,
+      attachments: [
+        {
+          kind: "image",
+          url: "https://media.licdn.com/dms/image/sync/v2/comment-image",
+          alt_text: "A diagram in the comment",
+        },
+      ],
+    });
+    expect(comment.metadata).toMatchObject({
+      author: "Nico Ritschel",
+      author_linkedin_slug: "nicoritschel",
+      parent_post_origin_id: "li_home_parent_token",
+      parent_author: "Lorenzo Mangani",
+      parent_author_linkedin_slug: "lmangani",
+      comment_id: "7496970800831295488",
+      parent_activity_id: "7496969365150621697",
+      parent_activity_namespace: "activity",
+    });
+  });
+
+  test("keeps content media while rejecting avatars, duplicates, and unsafe URLs", () => {
+    const [event] = buildHomeFeedEvents(
+      [
+        {
+          id: "media_post",
+          body: "Feed post Ada Lovelace • 1st A post with a useful architecture image attached",
+          author: "Ada Lovelace",
+          post_media: [
+            {
+              url: "https://media.licdn.com/dms/image/sync/v2/architecture",
+              alt_text: "Architecture diagram",
+            },
+            {
+              url: "https://media.licdn.com/dms/image/sync/v2/architecture",
+            },
+            {
+              url: "https://media.licdn.com/dms/image/v2/profile-displayphoto-shrink_100_100/avatar",
+            },
+            { url: "javascript:alert(1)" },
+          ],
+        },
+      ],
+      new Date()
+    );
+
+    expect(event.attachments).toEqual([
+      {
+        kind: "image",
+        url: "https://media.licdn.com/dms/image/sync/v2/architecture",
+        alt_text: "Architecture diagram",
+      },
+    ]);
+  });
+
+  test("parses engagement counts and scores every post", () => {
+    const body =
+      "Feed post Ada Lovelace • 1st Build log Deb and 1,616 others reacted 65 comments • 49 reposts";
+    const counters = {
+      reaction_count_label: "Deb and 1,616 others reacted",
+      comment_count_text: "65 comments",
+      repost_count_label: "49 reposts",
+    };
+    expect(parseHomeFeedEngagement(counters)).toEqual({
+      reactions: 1616,
+      comments: 65,
+      reposts: 49,
+    });
+    const [event] = buildHomeFeedEvents(
+      [{ id: "scored", body, author: "Ada Lovelace", ...counters }],
+      new Date()
+    );
+    expect(event.score).toBe(100);
+    expect(event.metadata).toMatchObject({
+      reactions: 1616,
+      comments: 65,
+      reposts: 49,
+    });
+  });
+
+  test("does not infer engagement from numbers in post prose", () => {
+    const body =
+      "Feed post Ada Lovelace • 1st This launch got 1,000 likes in our internal user study";
+    expect(parseHomeFeedEngagement({ body })).toEqual({
+      reactions: undefined,
+      comments: undefined,
+      reposts: undefined,
+    });
+    const [event] = buildHomeFeedEvents(
+      [{ id: "prose-only", body, author: "Ada Lovelace" }],
+      new Date()
+    );
+    expect(event.score).toBe(0);
+    expect(event.metadata).toEqual({ author: "Ada Lovelace" });
   });
 
   test("defaults author to empty string when no author and no parseable body", () => {
@@ -953,7 +1111,13 @@ describe("buildHomeFeedEvents", () => {
       "this body is definitely longer than thirty characters for the test";
     const events = buildHomeFeedEvents(
       [
-        { id: "a", body: longBody },
+        {
+          id: "a",
+          body: longBody,
+          author: "First Author",
+          post_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621000",
+        },
         {
           id: "",
           body: "no id but long enough body to pass the noise filter check",
@@ -962,6 +1126,9 @@ describe("buildHomeFeedEvents", () => {
         {
           id: "a",
           body: "dup id with a sufficiently long body to pass the noise filter",
+          author: "Duplicate Author",
+          post_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621999",
         },
       ],
       new Date()
@@ -969,6 +1136,13 @@ describe("buildHomeFeedEvents", () => {
     expect(events.map((e: { origin_id: string }) => e.origin_id)).toEqual([
       "li_home_a",
     ]);
+    expect(events[0]).toMatchObject({
+      payload_text: longBody,
+      author_name: "First Author",
+      source_url:
+        "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621000",
+      metadata: { author: "First Author" },
+    });
   });
 
   test("drops promoted, suggested, and too-short noise rows end-to-end", () => {
@@ -1240,8 +1414,8 @@ describe("LinkedInConnector home_feed", () => {
     const authoredBy = attributions.find(
       (rule: { role: string }) => rule.role === "authored_by"
     );
-    const mentions = attributions.find(
-      (rule: { role: string }) => rule.role === "mentions"
+    const performedBy = attributions.find(
+      (rule: { role: string }) => rule.role === "performed_by"
     );
 
     expect(authoredBy).toBeDefined();
@@ -1254,41 +1428,114 @@ describe("LinkedInConnector home_feed", () => {
       },
     ]);
 
-    expect(mentions).toBeDefined();
-    expect(mentions.autoCreate).toBe(true);
-    expect(mentions.target.entityType).toBe("person");
-    expect(mentions.target.titlePath).toBe("metadata.social_actor");
-    expect(mentions.target.identities).toEqual([
+    expect(authoredBy.name).toBe("author");
+    expect(performedBy).toBeDefined();
+    expect(performedBy.name).toBe("engager");
+    expect(performedBy.autoCreate).toBe(true);
+    expect(performedBy.target.entityType).toBe("person");
+    expect(performedBy.target.titlePath).toBe("metadata.social_actor");
+    expect(performedBy.target.identities).toEqual([
       {
         namespace: LINKEDIN_IDENTITY.SLUG,
         eventPath: "metadata.social_actor_slug",
       },
     ]);
+    expect(def.feeds.home_feed.eventKinds.post.relationships).toEqual([
+      { type: "engaged_with", from: "engager", to: "author" },
+    ]);
+  });
+
+  test("declares visible comments with commenter-to-post-author relationships", () => {
+    const comment = new LinkedInConnector().definition.feeds.home_feed
+      .eventKinds.comment;
+    expect(comment).toBeDefined();
+    expect(
+      comment.attributions.map((rule: { name: string }) => rule.name)
+    ).toEqual(["commenter", "post_author"]);
+    expect(comment.relationships).toEqual([
+      { type: "engaged_with", from: "commenter", to: "post_author" },
+    ]);
+  });
+
+  test("configures the relationship type required by home-feed events", () => {
+    const engagedWith = personalAgentConfig.relationships.find(
+      (relationship: { key: string }) => relationship.key === "engaged_with"
+    );
+    expect(engagedWith).toMatchObject({
+      name: "Engaged With",
+      rules: [{ source: { key: "person" }, target: { key: "person" } }],
+    });
   });
 
   test("syncHomeFeed dispatches cs_scrape and maps rows to events", async () => {
     const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+    const dom = new JSDOM(
+      `<!doctype html><body>
+      <div componentkey="expandedparent_tokenFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Lorenzo Mangani"></button>
+        <a href="https://www.linkedin.com/in/lmangani/">
+          <span aria-hidden="true">Lorenzo Mangani</span>
+          <span aria-label="View Lorenzo Mangani’s profile"></span>
+        </a>
+        <p>A home-feed post with enough useful text to pass the noise filter</p>
+        <div class="social-details-social-counts">
+          <span class="social-details-social-counts__reactions-count">12</span>
+          <button aria-label="3 comments"></button>
+          <button aria-label="2 reposts"></button>
+        </div>
+        <div componentkey="commentsSectionContainerparent_token">
+          <a href="https://www.linkedin.com/in/nicoritschel/">
+            <span aria-hidden="true">Nico Ritschel</span>
+            <span aria-label="View Nico Ritschel’s profile"></span>
+          </a>
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:7496969365150621697,7496970800831295488)">
+            Nico Ritschel • This visible comment is long enough to pass the noise filter
+          </div>
+          <img src="https://media.licdn.com/dms/image/sync/v2/comment-image" alt="Comment diagram" />
+        </div>
+      </div>
+    </body>`,
+      { url: "https://www.linkedin.com/feed/" }
+    );
+    Object.defineProperty(dom.window.HTMLElement.prototype, "innerText", {
+      configurable: true,
+      get() {
+        return this.textContent ?? "";
+      },
+    });
+    dom.window.scrollTo = () => undefined;
+    dom.window.document.documentElement.scrollTo = () => undefined;
+    const savedGlobals = new Map(
+      ["document", "window", "location"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name),
+      ])
+    );
+    Object.defineProperties(globalThis, {
+      document: {
+        configurable: true,
+        value: dom.window.document,
+        writable: true,
+      },
+      window: { configurable: true, value: dom.window, writable: true },
+      location: {
+        configurable: true,
+        value: dom.window.location,
+        writable: true,
+      },
+    });
     const dispatcher = {
       dispatch: async (action: string, input: Record<string, unknown>) => {
         calls.push({ action, input });
+        const config = input.scrape_config as Record<string, unknown>;
+        const scraped = await genericScrape({
+          ...config,
+          scroll: { max: 0, stall: 0, waitMs: 0 },
+        });
         return {
           tab_id: 1,
           cs_scrape: true,
-          result: {
-            loggedIn: true,
-            rows: [
-              {
-                id: "tok1",
-                body: "post one with a body long enough to pass the noise filter",
-                author: "Alice",
-              },
-              {
-                id: "tok2",
-                body: "post two with a body long enough to pass the noise filter",
-                author: "Bob",
-              },
-            ],
-          },
+          result: scraped,
         };
       },
     };
@@ -1300,7 +1547,17 @@ describe("LinkedInConnector home_feed", () => {
       checkpoint: {},
       sessionState: { chrome_dispatcher: dispatcher },
     };
-    const res = await connector.sync(ctx);
+    const res = await (async () => {
+      try {
+        return await connector.sync(ctx);
+      } finally {
+        dom.window.close();
+        for (const [name, descriptor] of savedGlobals) {
+          if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+          else delete (globalThis as Record<string, unknown>)[name];
+        }
+      }
+    })();
 
     // Dispatched a cs_scrape navigate against /feed/ with the home-feed config.
     expect(calls).toHaveLength(1);
@@ -1313,6 +1570,8 @@ describe("LinkedInConnector home_feed", () => {
       (calls[0].input.scrape_config as { scroll: { max: number } }).scroll.max
     ).toBe(4);
     const cfg = calls[0].input.scrape_config as {
+      rowSelector: string;
+      id: { regex: string; group: number };
       fields: {
         links: {
           selector: string;
@@ -1326,8 +1585,26 @@ describe("LinkedInConnector home_feed", () => {
           actionSelector: string;
           actionText: string;
         };
+        comment_identity: { selector: string; attr: string };
+        comment_body: { selector: string; take: string };
+        post_media: { selector: string; take: string };
+        comment_media: { selector: string; take: string };
+        reaction_count_text: { selector: string; take: string };
+        comment_count_label: { selector: string; attr: string };
+        repost_count_label: { selector: string; attr: string };
       };
     };
+    expect(cfg.rowSelector).toContain("commentsSectionContainer");
+    expect(
+      "expandedparent_tokenFeedType_MAIN_FEED_RELEVANCE".match(
+        new RegExp(cfg.id.regex)
+      )?.[cfg.id.group]
+    ).toBe("parent_token");
+    expect(
+      "commentsSectionContainerparent_token".match(new RegExp(cfg.id.regex))?.[
+        cfg.id.group
+      ]
+    ).toBe("commentsSectionContainerparent_token");
     // objectAll captures each anchor with its href + accessible name, so the
     // author/engager are matched by NAME rather than DOM position.
     expect(cfg.fields.links.take).toBe("objectAll");
@@ -1342,10 +1619,37 @@ describe("LinkedInConnector home_feed", () => {
       actionSelector: '[role="menuitem"]',
       actionTextRegex: "^Copy link(?: to post)?$",
     });
+    expect(cfg.fields.comment_identity.selector).toContain(
+      "replaceableComment_urn:li:comment"
+    );
+    expect(cfg.fields.comment_body.take).toBe("text");
+    expect(cfg.fields.post_media.take).toBe("objectAll");
+    expect(cfg.fields.post_media.selector).toContain("profile-displayphoto");
+    expect(cfg.fields.comment_media.take).toBe("objectAll");
+    expect(cfg.fields.reaction_count_text.selector).toContain(
+      "social-details-social-counts"
+    );
+    expect(cfg.fields.comment_count_label.attr).toBe("aria-label");
+    expect(cfg.fields.repost_count_label.attr).toBe("aria-label");
 
     expect(res.events).toHaveLength(2);
-    expect(res.events[0].origin_id).toBe("li_home_tok1");
-    expect(res.events[1].origin_id).toBe("li_home_tok2");
+    expect(res.events[0]).toMatchObject({
+      origin_id: "li_home_parent_token",
+      score: 24,
+      metadata: { reactions: 12, comments: 3, reposts: 2 },
+    });
+    expect(res.events[1]).toMatchObject({
+      origin_id: "li_comment_7496970800831295488",
+      origin_parent_id: "li_home_parent_token",
+      origin_type: "comment",
+      attachments: [
+        {
+          kind: "image",
+          url: "https://media.licdn.com/dms/image/sync/v2/comment-image",
+          alt_text: "Comment diagram",
+        },
+      ],
+    });
     expect(res.metadata.backend).toBe("extension-cs-scrape");
     // These mock rows carry no links field, so support is assumed.
     expect(res.metadata.object_all_supported).toBe(true);
@@ -1854,7 +2158,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.9.0");
+    expect(c.definition.version).toBe("3.10.0");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

@@ -263,6 +263,7 @@ const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
  */
 const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
   {
+    name: "author",
     role: "authored_by",
     autoCreate: true,
     target: {
@@ -283,7 +284,8 @@ const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
     },
   },
   {
-    role: "mentions",
+    name: "engager",
+    role: "performed_by",
     autoCreate: true,
     target: {
       entityType: "person",
@@ -298,6 +300,52 @@ const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       linkedin_url: {
         eventPath: "metadata.social_actor_profile_url",
+        mergeStrategy: "prefer_non_empty",
+      },
+    },
+  },
+];
+
+/** A visible comment links its author to the author of the parent post. */
+const LINKEDIN_HOME_COMMENT_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    name: "commenter",
+    role: "authored_by",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "author_name",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.author_linkedin_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.author_profile_url",
+        mergeStrategy: "prefer_non_empty",
+      },
+    },
+  },
+  {
+    name: "post_author",
+    role: "about",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "metadata.parent_author",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.parent_author_linkedin_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.parent_author_profile_url",
         mergeStrategy: "prefer_non_empty",
       },
     },
@@ -326,6 +374,12 @@ interface HomeFeedLink {
   name?: string;
 }
 
+/** One media URL scraped from a feed card. */
+interface HomeFeedMedia {
+  url?: string;
+  alt_text?: string;
+}
+
 /** A row produced by the extension's cs_scrape from HOME_FEED_SCRAPE_CONFIG. */
 interface HomeFeedRow {
   /** The componentkey token (base64url-ish, NOT a numeric activity id). */
@@ -344,8 +398,23 @@ interface HomeFeedRow {
   post_url?: string;
   /** Rendered identifier containing LinkedIn's stable shareId / ugcPostId. */
   post_identity?: string;
+  /** Rendered identifier containing the native comment and parent-post ids. */
+  comment_identity?: string;
+  /** The visible comment container, without the sibling "See more" control. */
+  comment_body?: string;
   /** Every profile/company anchor in the card, each with its accessible name. */
   links?: HomeFeedLink[];
+  /** Media that belongs to a top-level post (nested comment media excluded). */
+  post_media?: HomeFeedMedia[];
+  /** Media that belongs to a visible comment row. */
+  comment_media?: HomeFeedMedia[];
+  /** Dedicated engagement-summary values, never inferred from post prose. */
+  reaction_count_text?: string;
+  reaction_count_label?: string;
+  comment_count_text?: string;
+  comment_count_label?: string;
+  repost_count_text?: string;
+  repost_count_label?: string;
 }
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
@@ -361,11 +430,15 @@ const HOME_FEED_SCRAPE_CONFIG = {
   loggedOutWhen: {
     pathRegex: "/(login|authwall|uas/login|checkpoint|signup)\\b",
   },
-  rowSelector: 'div[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
+  rowSelector:
+    'div[componentkey*="FeedType_MAIN_FEED_RELEVANCE"], div[componentkey^="commentsSectionContainer"]',
   id: {
     source: "attr",
     name: "componentkey",
-    regex: "^(?:expanded)?(.+?)FeedType_",
+    // Post rows keep only the token before FeedType_. Comment rows have no
+    // FeedType_ suffix, so the end-of-string alternative preserves their full
+    // commentsSectionContainer<parent-token> identity.
+    regex: "^(?:expanded)?(.+?)(?=FeedType_|$)",
     group: 1,
   },
   requireFields: ["body"],
@@ -409,6 +482,15 @@ const HOME_FEED_SCRAPE_CONFIG = {
       take: "attr",
       attr: "id",
     },
+    comment_identity: {
+      selector: '[id^="replaceableComment_urn:li:comment:"]',
+      take: "attr",
+      attr: "id",
+    },
+    comment_body: {
+      selector: '[id^="replaceableComment_urn:li:comment:"]',
+      take: "text",
+    },
     links: {
       // Every profile/company anchor with its accessible name, so
       // buildHomeFeedEvents can match the author/engager by NAME rather than by
@@ -422,6 +504,62 @@ const HOME_FEED_SCRAPE_CONFIG = {
         name: { take: "aria" },
         nameAlt: { take: "alt" },
       },
+    },
+    post_media: {
+      // Profile photos and company logos are identities, not post attachments.
+      // The final :not keeps media inside a nested visible comment off the post.
+      selector:
+        ':scope:not([componentkey^="commentsSectionContainer"]) img[src*="media.licdn.com/dms/image/"]:not([src*="profile-displayphoto"]):not([src*="company-logo"]):not(div[componentkey^="commentsSectionContainer"] img)',
+      take: "objectAll",
+      parts: {
+        url: { take: "attr", attr: "src" },
+        alt_text: { take: "attr", attr: "alt" },
+      },
+    },
+    comment_media: {
+      selector:
+        ':scope[componentkey^="commentsSectionContainer"] img[src*="media.licdn.com/dms/image/"]:not([src*="profile-displayphoto"]):not([src*="company-logo"])',
+      take: "objectAll",
+      parts: {
+        url: { take: "attr", attr: "src" },
+        alt_text: { take: "attr", attr: "alt" },
+      },
+    },
+    // Engagement comes only from LinkedIn's dedicated social-count controls.
+    // Keep both visible text and accessible-label variants because the current
+    // feed uses both shapes across post types and experiments.
+    reaction_count_text: {
+      selector:
+        ".social-details-social-counts__reactions-count, .social-details-social-counts__reactions",
+      take: "text",
+    },
+    reaction_count_label: {
+      selector:
+        '.social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i], [aria-label$=" reactions" i]',
+      take: "attr",
+      attr: "aria-label",
+    },
+    comment_count_text: {
+      selector:
+        ".social-details-social-counts__comments, .social-details-social-counts__comments-count",
+      take: "text",
+    },
+    comment_count_label: {
+      selector:
+        '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comments" i]',
+      take: "attr",
+      attr: "aria-label",
+    },
+    repost_count_text: {
+      selector:
+        ".social-details-social-counts__reposts, .social-details-social-counts__reposts-count",
+      take: "text",
+    },
+    repost_count_label: {
+      selector:
+        '.social-details-social-counts [aria-label*="repost" i], [aria-label$=" repost" i], [aria-label$=" reposts" i]',
+      take: "attr",
+      attr: "aria-label",
     },
   },
 } as const;
@@ -662,6 +800,220 @@ export function isHomeFeedNoise(body: string): boolean {
   return false;
 }
 
+interface HomeFeedEngagement {
+  reactions?: number;
+  comments?: number;
+  reposts?: number;
+}
+
+interface HomeFeedCommentIdentity {
+  urn: string;
+  parentNamespace: "activity" | "share" | "ugcPost";
+  parentId: string;
+  commentId: string;
+}
+
+interface HomeFeedRowContext {
+  author: string;
+  authorSlug?: string;
+  postUrl?: string;
+  metadata: Record<string, unknown>;
+}
+
+const HOME_FEED_COMMENT_ROW_PREFIX = "commentsSectionContainer";
+
+function homeFeedCommentParentToken(id: string): string | undefined {
+  return id.startsWith(HOME_FEED_COMMENT_ROW_PREFIX)
+    ? id.slice(HOME_FEED_COMMENT_ROW_PREFIX.length) || undefined
+    : undefined;
+}
+
+function parseHomeFeedCommentIdentity(
+  raw: string | undefined
+): HomeFeedCommentIdentity | undefined {
+  if (!raw) return undefined;
+  const match = raw.match(
+    /(urn:li:comment:\(urn:li:(activity|share|ugcPost):(\d+),(\d+)\))/i
+  );
+  if (!match) return undefined;
+  return {
+    urn: match[1],
+    parentNamespace: linkedInUrnNamespace(match[2]) as
+      | "activity"
+      | "share"
+      | "ugcPost",
+    parentId: match[3],
+    commentId: match[4],
+  };
+}
+
+function parseLinkedInCompactCount(raw: string): number {
+  const match = raw.trim().match(/^(\d[\d,.]*)(?:\s*([kmb]))?$/i);
+  if (!match) return 0;
+  const base = Number(match[1].replace(/,/g, ""));
+  if (!Number.isFinite(base)) return 0;
+  const multiplier =
+    match[2]?.toLowerCase() === "b"
+      ? 1_000_000_000
+      : match[2]?.toLowerCase() === "m"
+        ? 1_000_000
+        : match[2]?.toLowerCase() === "k"
+          ? 1_000
+          : 1;
+  return Math.round(base * multiplier);
+}
+
+function maxHomeFeedCounter(
+  ...values: Array<string | undefined>
+): number | undefined {
+  let max = 0;
+  for (const value of values) {
+    if (!value) continue;
+    for (const match of value.matchAll(/\b(\d[\d,.]*(?:\s*[kmb])?)\b/gi)) {
+      max = Math.max(max, parseLinkedInCompactCount(match[1]));
+    }
+  }
+  return max > 0 ? max : undefined;
+}
+
+export function parseHomeFeedEngagement(row: HomeFeedRow): HomeFeedEngagement {
+  return {
+    reactions: maxHomeFeedCounter(
+      row.reaction_count_text,
+      row.reaction_count_label
+    ),
+    comments: maxHomeFeedCounter(
+      row.comment_count_text,
+      row.comment_count_label
+    ),
+    reposts: maxHomeFeedCounter(row.repost_count_text, row.repost_count_label),
+  };
+}
+
+function homeFeedEngagementMetadata(
+  counts: HomeFeedEngagement
+): Record<string, number> {
+  return {
+    ...(counts.reactions ? { reactions: counts.reactions } : {}),
+    ...(counts.comments ? { comments: counts.comments } : {}),
+    ...(counts.reposts ? { reposts: counts.reposts } : {}),
+  };
+}
+
+function homeFeedEngagementScore(counts: HomeFeedEngagement): number {
+  return Math.min(
+    (counts.reactions ?? 0) +
+      (counts.comments ?? 0) * 2 +
+      (counts.reposts ?? 0) * 3,
+    100
+  );
+}
+
+function normalizeHomeFeedMedia(raw: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const attachments: Array<Record<string, unknown>> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as HomeFeedMedia;
+    if (!candidate.url) continue;
+    let url: URL;
+    try {
+      url = new URL(candidate.url, "https://www.linkedin.com");
+    } catch {
+      continue;
+    }
+    if (
+      url.protocol !== "https:" ||
+      !(
+        url.hostname === "media.licdn.com" ||
+        url.hostname.endsWith(".licdn.com")
+      ) ||
+      /(?:profile-displayphoto|company-logo)/i.test(url.pathname) ||
+      seen.has(url.href)
+    ) {
+      continue;
+    }
+    seen.add(url.href);
+    const altText = candidate.alt_text?.trim();
+    attachments.push({
+      kind: "image",
+      url: url.href,
+      ...(altText ? { alt_text: altText } : {}),
+    });
+  }
+  return attachments;
+}
+
+function buildHomeFeedRowContext(row: HomeFeedRow): HomeFeedRowContext {
+  const parsedAuthor = parseHomeFeedAuthorDetails(row.body ?? "");
+  const domAuthor = cleanHomeFeedDisplayName(
+    (row.author ?? "").trim().split(" • ")[0] ?? ""
+  );
+  const actorBanner =
+    parsedAuthor.banner?.kind === "actor" ? parsedAuthor.banner : null;
+  const controlAuthor = parseAuthorControlLabel(row.author_control_label);
+  let banner = parsedAuthor.banner;
+  if (actorBanner && controlAuthor) {
+    if (nameKey(parsedAuthor.author) !== nameKey(controlAuthor)) banner = null;
+  } else if (
+    actorBanner &&
+    domAuthor &&
+    actorBanner.actor.localeCompare(domAuthor, undefined, {
+      sensitivity: "accent",
+    }) !== 0
+  ) {
+    banner = null;
+  }
+  const author =
+    controlAuthor ||
+    (banner ? parsedAuthor.author : "") ||
+    domAuthor ||
+    parsedAuthor.author;
+  const links = normalizeHomeFeedLinks(row.links);
+  const engagement = banner?.kind === "actor" ? banner : null;
+  const authorSlug = resolveMemberSlug(links, author);
+  const engagerSlug = engagement
+    ? resolveMemberSlug(links, engagement.actor)
+    : undefined;
+  const profileUrlFor = (slug: string) => `https://www.linkedin.com/in/${slug}`;
+  const counts = parseHomeFeedEngagement(row);
+  const metadata: Record<string, unknown> = {
+    author,
+    ...homeFeedEngagementMetadata(counts),
+  };
+  if (engagement) {
+    metadata.social_actor = engagement.actor;
+    metadata.social_action = engagement.action;
+    if (engagerSlug) {
+      metadata.social_actor_slug = engagerSlug;
+      metadata.social_actor_profile_url = profileUrlFor(engagerSlug);
+    }
+  }
+  if (authorSlug) {
+    metadata.author_linkedin_slug = authorSlug;
+    metadata.author_profile_url = profileUrlFor(authorSlug);
+  }
+
+  const embeddedUrn = row.post_identity?.match(
+    /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
+  );
+  const embeddedId = embeddedUrn?.[3];
+  const embeddedNamespace = linkedInUrnNamespace(
+    embeddedUrn?.[1] ?? embeddedUrn?.[2] ?? ""
+  );
+  const postUrl = normalizeLinkedInPostUrl(
+    row.post_url ??
+      (embeddedId ? `urn:li:${embeddedNamespace}:${embeddedId}` : "")
+  );
+  return {
+    author,
+    authorSlug,
+    postUrl: postUrl || undefined,
+    metadata,
+  };
+}
+
 /**
  * Map cs_scrape home-feed rows to event envelopes. Prefer the permalink
  * recovered from LinkedIn's Copy-link action or a stable activity id embedded
@@ -678,98 +1030,94 @@ export function buildHomeFeedEvents(
 ): EventEnvelope[] {
   const seen = new Set<string>();
   const events: EventEnvelope[] = [];
+  const contexts = new Map<string, HomeFeedRowContext>();
+  for (const row of rows) {
+    if (
+      row?.id &&
+      row.body &&
+      !isHomeFeedNoise(row.body) &&
+      !contexts.has(row.id)
+    ) {
+      contexts.set(row.id, buildHomeFeedRowContext(row));
+    }
+  }
   for (const row of rows) {
     if (!row?.id || !row.body || seen.has(row.id)) continue;
     if (isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
-    const parsedAuthor = parseHomeFeedAuthorDetails(row.body);
-    // Clean DOM author the same way as banner actors so emoji-prefixed names
-    // still match (e.g. DOM "🦔 Deb" vs banner actor "Deb").
-    const domAuthor = cleanHomeFeedDisplayName(
-      (row.author ?? "").trim().split(" • ")[0] ?? ""
-    );
-    const actorBanner =
-      parsedAuthor.banner?.kind === "actor" ? parsedAuthor.banner : null;
-    const controlAuthor = parseAuthorControlLabel(row.author_control_label);
-    // A phrase such as "We Love This Company" can resemble an engagement
-    // banner. When available, the control-menu author disambiguates it without
-    // depending on which profile link appears first. Older results fall back to
-    // comparing the banner actor with the first visible profile name.
-    let banner = parsedAuthor.banner;
-    if (actorBanner && controlAuthor) {
-      if (nameKey(parsedAuthor.author) !== nameKey(controlAuthor))
-        banner = null;
-    } else if (
-      actorBanner &&
-      domAuthor &&
-      actorBanner.actor.localeCompare(domAuthor, undefined, {
-        sensitivity: "accent",
-      }) !== 0
-    ) {
-      banner = null;
-    }
-    // The control-menu label names the post author independently of link order
-    // and body parsing. Older extension results lack it, so retain the existing
-    // body/DOM fallback.
-    const author =
-      controlAuthor ||
-      (banner ? parsedAuthor.author : "") ||
-      domAuthor ||
-      parsedAuthor.author;
-
-    // Resolve slugs by matching a NAME to the anchor's accessible name, never by
-    // link order. The control-menu label names the true author on observed card
-    // shapes; the banner names the engager. Each maps to at most one /in/ slug
-    // — a company author or an unlinked member simply resolves to none.
-    const links = normalizeHomeFeedLinks(row.links);
-    const profileUrlFor = (s: string) => `https://www.linkedin.com/in/${s}`;
-    const engagement = banner?.kind === "actor" ? banner : null;
-    const authorSlug = resolveMemberSlug(links, author);
-    const engagerSlug = engagement
-      ? resolveMemberSlug(links, engagement.actor)
-      : undefined;
-    const metadata: Record<string, unknown> = { author };
-    if (engagement) {
-      metadata.social_actor = engagement.actor;
-      metadata.social_action = engagement.action;
-      if (engagerSlug) {
-        metadata.social_actor_slug = engagerSlug;
-        metadata.social_actor_profile_url = profileUrlFor(engagerSlug);
+    const context = contexts.get(row.id)!;
+    const parentToken = homeFeedCommentParentToken(row.id);
+    if (parentToken) {
+      const parent = contexts.get(parentToken);
+      const nativeIdentity = parseHomeFeedCommentIdentity(row.comment_identity);
+      const payloadText = row.comment_body?.trim() || row.body;
+      const originId = nativeIdentity
+        ? `li_comment_${nativeIdentity.commentId}`
+        : stableId("li_home_comment", [
+            parentToken,
+            context.authorSlug ?? context.author,
+            payloadText,
+          ]);
+      const sourceUrl =
+        parent?.postUrl ??
+        (nativeIdentity
+          ? normalizeLinkedInPostUrl(
+              `urn:li:${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
+            )
+          : "");
+      const counts = parseHomeFeedEngagement(row);
+      const commentMetadata: Record<string, unknown> = {
+        ...context.metadata,
+        ...homeFeedEngagementMetadata(counts),
+        parent_post_origin_id: `li_home_${parentToken}`,
+        ...(nativeIdentity
+          ? {
+              comment_urn: nativeIdentity.urn,
+              comment_id: nativeIdentity.commentId,
+              parent_activity_id: nativeIdentity.parentId,
+              parent_activity_namespace: nativeIdentity.parentNamespace,
+            }
+          : {}),
+      };
+      if (parent) {
+        commentMetadata.parent_author = parent.author;
+        if (parent.authorSlug) {
+          commentMetadata.parent_author_linkedin_slug = parent.authorSlug;
+          commentMetadata.parent_author_profile_url = `https://www.linkedin.com/in/${parent.authorSlug}`;
+        }
       }
-    }
-    if (authorSlug) {
-      metadata.author_linkedin_slug = authorSlug;
-      metadata.author_profile_url = profileUrlFor(authorSlug);
+      events.push({
+        origin_id: originId,
+        origin_parent_id: `li_home_${parentToken}`,
+        payload_text: payloadText,
+        attachments: normalizeHomeFeedMedia(row.comment_media),
+        author_name: context.author,
+        occurred_at: occurredAt,
+        origin_type: "comment",
+        ...(sourceUrl ? { source_url: sourceUrl } : {}),
+        score: homeFeedEngagementScore(counts),
+        metadata: commentMetadata,
+      });
+      continue;
     }
 
-    // Keep the identifier in its own URN namespace. share/ugcPost ids are not
-    // activity ids, so relabelling a bare `shareId=` digit string as
-    // `urn:li:activity:` can build a permalink to an unrelated post.
-    const embeddedUrn = row.post_identity?.match(
-      /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
-    );
-    const embeddedId = embeddedUrn?.[3];
-    const embeddedNamespace = linkedInUrnNamespace(
-      embeddedUrn?.[1] ?? embeddedUrn?.[2] ?? ""
-    );
-    const postUrl = normalizeLinkedInPostUrl(
-      row.post_url ??
-        (embeddedId ? `urn:li:${embeddedNamespace}:${embeddedId}` : "")
-    );
+    const counts = parseHomeFeedEngagement(row);
 
     events.push({
       origin_id: `li_home_${row.id}`,
       payload_text: row.body,
-      author_name: author,
+      attachments: normalizeHomeFeedMedia(row.post_media),
+      author_name: context.author,
       // Feed posts expose no reliable timestamp; use the sync time.
       occurred_at: occurredAt,
       origin_type: "post",
+      score: homeFeedEngagementScore(counts),
       // Omitted when no durable identity was recoverable — a missing
       // source_url is the explicit "this event has no canonical post URL"
       // signal, not a bug. source_url is the durable identifier; action
       // callers (prepare_comment) resolve it directly.
-      ...(postUrl ? { source_url: postUrl } : {}),
-      metadata,
+      ...(context.postUrl ? { source_url: context.postUrl } : {}),
+      metadata: context.metadata,
     });
   }
   return events;
@@ -2150,7 +2498,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.9.0",
+    version: "3.10.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2180,6 +2528,9 @@ export default class LinkedInConnector extends ConnectorRuntime<
           post: {
             description: "A post from your personalized LinkedIn home feed",
             attributions: LINKEDIN_HOME_FEED_ATTRIBUTIONS,
+            relationships: [
+              { type: "engaged_with", from: "engager", to: "author" },
+            ],
             metadataSchema: {
               type: "object",
               properties: {
@@ -2198,6 +2549,35 @@ export default class LinkedInConnector extends ConnectorRuntime<
                 },
                 social_actor_slug: { type: "string" },
                 social_actor_profile_url: { type: "string" },
+                reactions: { type: "number" },
+                comments: { type: "number" },
+                reposts: { type: "number" },
+              },
+            },
+          },
+          comment: {
+            description: "A visible comment on a personalized feed post",
+            attributions: LINKEDIN_HOME_COMMENT_ATTRIBUTIONS,
+            relationships: [
+              { type: "engaged_with", from: "commenter", to: "post_author" },
+            ],
+            metadataSchema: {
+              type: "object",
+              properties: {
+                author: { type: "string" },
+                author_linkedin_slug: { type: "string" },
+                author_profile_url: { type: "string" },
+                parent_post_origin_id: { type: "string" },
+                parent_author: { type: "string" },
+                parent_author_linkedin_slug: { type: "string" },
+                parent_author_profile_url: { type: "string" },
+                comment_urn: { type: "string" },
+                comment_id: { type: "string" },
+                parent_activity_id: { type: "string" },
+                parent_activity_namespace: { type: "string" },
+                reactions: { type: "number" },
+                comments: { type: "number" },
+                reposts: { type: "number" },
               },
             },
           },

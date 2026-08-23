@@ -1104,6 +1104,14 @@ const mentions = defineRelationshipType({
   description: "Auto-discovered content reference",
 });
 
+const engagedWith = defineRelationshipType({
+  key: "engaged_with",
+  name: "Engaged With",
+  description:
+    "A person reacted to, commented on, or reposted another person's content.",
+  rules: [{ source: person, target: person }],
+});
+
 // Graph edges created in the org (and populated with live relationships) that
 // the config must declare — otherwise prune flags them "removed from config"
 // and the apply aborts: the server refuses to delete a relationship type that
@@ -1353,6 +1361,7 @@ export default defineConfig({
     worksAt,
     memberOf,
     mentions,
+    engagedWith,
     connectedWith,
     founderOf,
     sameAs,

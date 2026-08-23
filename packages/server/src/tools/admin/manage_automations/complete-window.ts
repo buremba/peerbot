@@ -946,7 +946,7 @@ export async function handleCompleteWindow(
       await advanceAutomationScheduleAfterSuccessfulWindow(
         tx,
         automationId,
-        Boolean(lockedRun.device_worker_id),
+        Boolean(assignedDeviceWorkerId),
         timeGranularity
       );
     }

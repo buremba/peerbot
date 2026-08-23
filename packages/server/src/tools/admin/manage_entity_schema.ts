@@ -11,14 +11,17 @@
 import {
   ManageEntitySchemaResultSchema,
   ManageEntitySchemaSchema,
+  ManageEntitySchemaProposalSchema,
   type AuditEntry,
   type EntityTypeRow,
   type ManageEntitySchemaArgs,
+  type ManageEntitySchemaProposal,
   type ManageEntitySchemaResult,
   type RelationshipTypeRow,
   type RelationshipTypeRuleRow,
   type ViewTemplateTab,
 } from '@lobu/core/contracts/tools/manage-entity-schema';
+import { Value } from '@sinclair/typebox/value';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
 import {
   isPlatformEventType,
@@ -26,7 +29,13 @@ import {
 } from '../../automations/platform-event-catalog';
 import { compileEntityRule } from '../../authz/entity-rule-executor';
 import { type DbClient, getDb } from '../../db/client';
+import {
+  currentMcpActivityAttribution,
+  currentMcpActivityEventMetadata,
+} from '../../lobu/stores/mcp-client-conversations';
 import { validateMetricReadModes } from '../../metrics/read-mode';
+import { resolveActionOrigin } from '../../notifications/action-origin';
+import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { recordToolConfigChange } from './helpers/config-audit';
 import {
   type DataSourceContext,
@@ -41,6 +50,7 @@ import {
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
+import { insertEvent } from '../../utils/insert-event';
 import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import {
   countEntitiesOfType,
@@ -55,11 +65,21 @@ import {
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { ToolUserError } from '../../utils/errors';
 import { isUniqueViolation } from '../../utils/pg-errors';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import type { ToolContext } from '../registry';
+import { enforceRoleScopeAccess } from '../access-control';
+import { resolveRunInitiator } from '../initiator';
 import { withValidatedArgs } from '../validate-args';
+import { getOrgUrlContext } from '../view-urls';
+import { resolveApprovalChatOrigin } from './approval-delivery';
 import { defineFlatActionTool, flatAction } from './action-tool';
 
 export { ManageEntitySchemaResultSchema, ManageEntitySchemaSchema };
+
+/** `runs.action_key` for an MCP-authored entity-type create held for approval. */
+export const MANAGE_ENTITY_SCHEMA_ACTION_KEY = 'manage_entity_schema';
+
+export type { ManageEntitySchemaProposal };
 
 // ============================================
 // Main Function (Action Router)
@@ -112,9 +132,172 @@ async function manageEntitySchemaImpl(
 		);
 	}
   if (args.schema_type === 'entity_type') {
+    // MCP clients propose entity-type creation; they never apply it inline.
+    // Direct browser/CLI calls carry no MCP transport identity and retain the
+    // existing owner/admin route below.
+    if (args.action === 'create' && ctx.mcpSessionId) {
+      return queueEntityTypeCreateForApproval(args, ctx);
+    }
     return runEntityTypeActions(args, env, ctx);
   }
   return runRelationshipTypeActions(args, env, ctx);
+}
+
+/** Validate the durable proposal shape before the approval registry claims it. */
+export function isManageEntitySchemaProposal(
+  value: unknown
+): value is ManageEntitySchemaProposal {
+  if (!Value.Check(ManageEntitySchemaProposalSchema, value)) return false;
+  const proposal = value as ManageEntitySchemaProposal;
+  return (
+    proposal.schema_type === 'entity_type' &&
+    proposal.action === 'create' &&
+    Value.Check(ManageEntitySchemaSchema, proposal.args) &&
+    proposal.args.schema_type === 'entity_type' &&
+    proposal.args.action === 'create'
+  );
+}
+
+/**
+ * Apply a held MCP entity-type proposal after manage_operations has verified a
+ * human owner/admin. The original proposer remains the row/audit author.
+ */
+export async function applyManageEntitySchemaProposal(
+  proposal: ManageEntitySchemaProposal,
+  ctx: ToolContext,
+  _env: Env,
+  requesterUserId: string | null
+): Promise<ManageEntitySchemaResult> {
+  if (!isManageEntitySchemaProposal(proposal)) {
+    throw new ToolUserError('Invalid manage_entity_schema approval proposal', 400);
+  }
+  return etHandleCreate(proposal.args as ManageEntitySchemaArgs, {
+    ...ctx,
+    userId: requesterUserId,
+  });
+}
+
+async function queueEntityTypeCreateForApproval(
+  args: ManageEntitySchemaArgs,
+  ctx: ToolContext
+): Promise<ManageEntitySchemaResult> {
+  if (!ctx.userId) {
+    throw new ToolUserError(
+      'Entity type proposals require an authenticated workspace member',
+      401
+    );
+  }
+  enforceRoleScopeAccess('write', ctx.memberRole, ctx.scopes, {
+    adminRole: 'Entity type proposals require workspace membership.',
+    writeRole: 'Entity type proposals require workspace membership with write access.',
+    readScope: 'Entity type proposals require an MCP session with read access.',
+    writeScope: 'Entity type proposals require an MCP session with write access.',
+    adminScope: 'Entity type proposals require an MCP session with admin access.',
+  });
+
+  // Reject malformed, reserved, duplicate, or uncompilable proposals before a
+  // durable card is created. Approval repeats the same validation against the
+  // then-current database state.
+  const prepared = await prepareEntityTypeCreate(args, ctx);
+  const proposal: ManageEntitySchemaProposal = {
+    schema_type: 'entity_type',
+    action: 'create',
+    args: { ...args, slug: prepared.slug },
+  };
+  const initiator = resolveRunInitiator(ctx);
+  const label = `create entity type ${prepared.slug}`;
+  const sql = getDb();
+  const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+
+  const { runId, eventId } = await sql.begin(async (tx) => {
+    const inserted = await tx`
+      INSERT INTO runs (
+        organization_id, run_type, action_key, action_input,
+        created_by_user_id, initiator_kind, initiator_ref,
+        approval_status, status, created_at
+      ) VALUES (
+        ${ctx.organizationId}, 'internal', ${MANAGE_ENTITY_SCHEMA_ACTION_KEY},
+        ${tx.json(proposal as unknown as Record<string, unknown>)},
+        ${initiator.createdByUserId},
+        ${initiator.initiatorKind},
+        ${tx.json(initiator.initiatorRef)},
+        'pending', 'pending', current_timestamp
+      )
+      RETURNING id
+    `;
+    const runId = Number((inserted[0] as { id: unknown }).id);
+    const event = await insertEvent(
+      {
+        entityIds: [],
+        organizationId: ctx.organizationId,
+        originId: `run_${runId}_pending`,
+        title: `${label} — pending approval`,
+        content: `MCP client requested: ${label}`,
+        semanticType: 'operation',
+        runId,
+        interactionType: 'approval',
+        interactionStatus: 'pending',
+        interactionInput: proposal as unknown as Record<string, unknown>,
+        metadata: {
+          tool: 'manage_entity_schema',
+          action_key: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
+          schema_type: 'entity_type',
+          action: 'create',
+          slug: prepared.slug,
+          proposal,
+          current: null,
+          initiator: {
+            kind: initiator.initiatorKind,
+            ...initiator.initiatorRef,
+          },
+          status: 'pending_approval',
+          ...currentMcpActivityEventMetadata(ctx),
+        },
+        authorName: ctx.clientId ?? 'MCP client',
+        clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
+      },
+      { sql: tx }
+    );
+    return { runId, eventId: Number(event.id) };
+  });
+
+  const approvalUrl = buildResourcePermalink(
+    ownerSlug,
+    { kind: 'run', runId },
+    baseUrl
+  );
+  const chatOrigin = await resolveApprovalChatOrigin(ctx);
+  const actionOrigin = await resolveActionOrigin(ctx);
+  notifyActionApprovalNeeded({
+    orgId: ctx.organizationId,
+    runId,
+    actionKey: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
+    connectionName: label,
+    eventId,
+    approvalUrl,
+    connectionId: chatOrigin.connectionId,
+    channelId: chatOrigin.channelId,
+    teamId: chatOrigin.teamId,
+    requesterUserId: ctx.userId,
+    mcpActivity: currentMcpActivityAttribution(ctx),
+    actionOrigin,
+  }).catch((error) =>
+    logger.error(error, 'Failed to send entity type approval notification')
+  );
+
+  return {
+    schema_type: 'entity_type',
+    action: 'create',
+    status: 'pending_approval',
+    run_id: runId,
+    event_id: eventId,
+    ...(approvalUrl ? { approval_url: approvalUrl } : {}),
+    message: approvalUrl
+      ? `Entity type '${prepared.slug}' is queued for human approval. Call get_approval with run_id ${runId} to show the embedded confirmation, or give the user approval_url.`
+      : `Entity type '${prepared.slug}' is queued for human approval. Call get_approval with run_id ${runId} to show the embedded confirmation.`,
+    proposal,
+    current: null,
+  };
 }
 
 // ============================================
@@ -505,10 +688,16 @@ async function etHandleGet(
   return { schema_type: 'entity_type', action: 'get', entity_type: mapped };
 }
 
-async function etHandleCreate(
+interface PreparedEntityTypeCreate {
+  slug: string;
+  rulesCompiled: string | null;
+}
+
+/** Validate an entity-type create without mutating durable state. */
+async function prepareEntityTypeCreate(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
-): Promise<ManageEntitySchemaResult> {
+): Promise<PreparedEntityTypeCreate> {
   if (!args.slug) throw new ToolUserError('slug is required for create action', 400);
   if (!args.name) throw new ToolUserError('name is required for create action', 400);
   if (!ctx.userId) throw new ToolUserError('Authentication required to create entity types', 401);
@@ -546,13 +735,21 @@ async function etHandleCreate(
   // a derived type are classified ON READ (see etHandleGet), never persisted.
   assertValidMetricsConfig(args.metrics_config);
   assertEventKindsAvoidPlatformVocabulary(args.event_kinds);
+  // Compile during validation so malformed rules never become approval cards;
+  // apply-time validation repeats the check against the current proposal.
+  const rulesCompiled = await compileRulesOrThrow(args.rules_source ?? null);
+  return { slug, rulesCompiled };
+}
+
+async function etHandleCreate(
+  args: ManageEntitySchemaArgs,
+  ctx: ToolContext
+): Promise<ManageEntitySchemaResult> {
+  const { slug, rulesCompiled } = await prepareEntityTypeCreate(args, ctx);
+  const sql = getDb();
   const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
   const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
-  // Compile here, at apply time, so the WRITE path never invokes esbuild. A rule
-  // that does not compile is rejected now rather than failing closed on every
-  // write later, when the author is nowhere near the error.
-  const rulesCompiled = await compileRulesOrThrow(args.rules_source ?? null);
 
   let inserted: unknown[];
   try {

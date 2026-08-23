@@ -1683,6 +1683,23 @@ export type ManageEntitySchemaResponses = {
       }
     | {
         schema_type: "entity_type";
+        action: "create";
+        status: "pending_approval";
+        run_id: number;
+        event_id: number;
+        approval_url?: string;
+        message: string;
+        proposal: {
+          schema_type: "entity_type";
+          action: "create";
+          args: {
+            [key: string]: unknown;
+          };
+        };
+        current: null;
+      }
+    | {
+        schema_type: "entity_type";
         action: "update";
         entity_type: {
           id: number;

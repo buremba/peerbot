@@ -24,6 +24,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
 import {
+	getRequiredAccessLevel,
 	MEMBER_WRITE_ACTIONS,
 	OWNER_ADMIN_ACTIONS,
 	PUBLIC_READ_ACTIONS,
@@ -82,7 +83,7 @@ const NO_TOOL_ACTION = new Set([
  * namespace builder against a stub handler and recording the action payload it
  * receives.
  */
-const observed = new Map<string, string>();
+const observed = new Map<string, Record<string, unknown>>();
 
 /**
  * Build every tiered namespace against a stub handler and invoke each method so
@@ -101,9 +102,9 @@ const observed = new Map<string, string>();
 async function captureActionMap(): Promise<void> {
 	vi.resetModules();
 	let activePath: string | null = null;
-	const stub = async (payload: { action?: unknown }) => {
+	const stub = async (payload: Record<string, unknown>) => {
 		if (activePath && typeof payload.action === "string") {
-			observed.set(activePath, payload.action);
+			observed.set(activePath, payload);
 		}
 		return {};
 	};
@@ -169,12 +170,19 @@ beforeAll(captureActionMap);
  */
 function declaredRuntimeTier(
 	tool: string,
-	action: string,
+	payload: Record<string, unknown>,
 ): ToolAccessLevel | null {
-	if (OWNER_ADMIN_ACTIONS[tool]?.has(action)) return "admin";
-	if (MEMBER_WRITE_ACTIONS[tool]?.has(action)) return "write";
-	if (PUBLIC_READ_ACTIONS[tool]?.has(action)) return "read";
-	return null;
+	const action = payload.action;
+	if (typeof action !== "string") return null;
+	const isExplicitlyDeclared =
+		OWNER_ADMIN_ACTIONS[tool]?.has(action) ||
+		MEMBER_WRITE_ACTIONS[tool]?.has(action) ||
+		PUBLIC_READ_ACTIONS[tool]?.has(action);
+	if (!isExplicitlyDeclared) return null;
+	// Evaluate the real payload because a shared internal action can have a
+	// discriminator-specific tier (entity-type create proposes at write tier,
+	// while relationship-type create still mutates at admin tier).
+	return getRequiredAccessLevel(tool, payload, false);
 }
 
 describe("access-model cross-check", () => {
@@ -232,14 +240,15 @@ describe("access-model cross-check", () => {
 			// which the old camel→snake guess turned into `manage_feeds.list` — a
 			// key present in no tier map, so the method was skipped instead of
 			// checked.
-			const action = observed.get(path);
-			if (!action) {
+			const payload = observed.get(path);
+			if (!payload || typeof payload.action !== "string") {
 				mismatches.push(
 					`${path}: no action recorded — the SDK method is gone, renamed, or no longer routes through createActionCaller. Fix the wiring or add it to NO_TOOL_ACTION with a reason.`,
 				);
 				continue;
 			}
-			const runtimeTier = declaredRuntimeTier(tool, action);
+			const action = payload.action;
+			const runtimeTier = declaredRuntimeTier(tool, payload);
 			if (runtimeTier === null) {
 				mismatches.push(
 					`${path}: ${tool}.${action} is in no tier map and implicitly falls through to read; declare it explicitly in tool-access.ts`,
@@ -313,9 +322,9 @@ describe("access-model cross-check", () => {
 
 			const method = path.split(".")[1];
 			if (method === "manage") continue;
-			const action = observed.get(path);
+			const action = observed.get(path)?.action;
 			expect(action, `${path} dispatched no recorded action`).toBeDefined();
-			if (!action) continue;
+			if (typeof action !== "string") continue;
 			if (isRead) {
 				expect(
 					readAgentActions?.has(action),

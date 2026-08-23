@@ -52,6 +52,12 @@ import {
 	MANAGE_AUTOMATIONS_ACTION_KEY,
 	type ManageAutomationsProposal,
 } from "../../manage_automations";
+import {
+	applyManageEntitySchemaProposal,
+	isManageEntitySchemaProposal,
+	MANAGE_ENTITY_SCHEMA_ACTION_KEY,
+	type ManageEntitySchemaProposal,
+} from "../../manage_entity_schema";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
 /**
@@ -291,6 +297,22 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 				),
 			describe: (p) => (p as ManageAutomationsProposal).args.action,
 			detectSoftFailure: detectManageAutomationsApplyFailure,
+		},
+		{
+			actionKey: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
+			nounLabel: "Entity type",
+			isValidProposal: isManageEntitySchemaProposal,
+			apply: (p, ctx, env, owner) =>
+				applyManageEntitySchemaProposal(
+					p as ManageEntitySchemaProposal,
+					ctx,
+					env,
+					owner,
+				),
+			describe: (p) => {
+				const proposal = p as ManageEntitySchemaProposal;
+				return `${proposal.action} ${String(proposal.args.slug)}`;
+			},
 		},
 		{
 			// An agent-authored ask. Unlike the builder families there is no held

@@ -1175,7 +1175,9 @@ export function finalizeLikedTweetsResult(
 			: null;
 	const status =
 		backfill.status === "complete" &&
-		(events.length > 0 || checkpoint.likes_oldest_tweet_id)
+		(events.length > 0 ||
+			checkpoint.likes_oldest_tweet_id ||
+			checkpoint.likes_backfill_completed_at)
 			? "complete"
 			: "in_progress";
 	const completedAt =
@@ -2052,9 +2054,15 @@ async function syncLikedTweetsViaExtension(
 		url: likesUrl,
 		parseResponse,
 		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
-		triggerNextPage: async (_tabId, browserDispatcher, sessionId) => {
-			const requestUrl = pages.prepareReplay();
-			if (!requestUrl) return;
+			triggerNextPage: async (_tabId, browserDispatcher, sessionId) => {
+				let requestUrl: string | undefined;
+				try {
+					requestUrl = pages.prepareReplay();
+				} catch {
+					parserErrors.push("X likes cursor rewrite failed");
+					return;
+				}
+				if (!requestUrl) return;
 			let observation: { ok?: boolean; status?: number };
 			try {
 				observation = await browserDispatcher.dispatch<{

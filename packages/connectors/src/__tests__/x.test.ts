@@ -732,7 +732,6 @@ describe("finalizeLikedTweetsResult", () => {
 			{
 				likes_backfill_cursor: "old-cursor",
 				likes_backfill_pages: 4,
-				likes_backfill_completed_at: "2025-06-01T00:00:00Z",
 			},
 			{},
 			{
@@ -745,6 +744,25 @@ describe("finalizeLikedTweetsResult", () => {
 		expect(result.checkpoint.likes_backfill_status).toBe("in_progress");
 		expect(result.checkpoint.likes_backfill_completed_at).toBeUndefined();
 		expect(result.metadata.collection_status).toBe("in_progress");
+	});
+
+	test("does not downgrade an already-completed empty incremental run", () => {
+		const completedAt = "2025-06-01T00:00:00Z";
+		const result = finalizeLikedTweetsResult(
+			[],
+			{
+				likes_backfill_status: "complete",
+				likes_backfill_completed_at: completedAt,
+			},
+			{},
+			{
+				status: "complete",
+				pagesRead: 0,
+				historicalItemsRead: 0,
+			},
+		);
+		expect(result.checkpoint.likes_backfill_status).toBe("complete");
+		expect(result.checkpoint.likes_backfill_completed_at).toBe(completedAt);
 	});
 });
 
@@ -1445,8 +1463,8 @@ describe("XConnector browser-first routing", () => {
 				],
 			],
 		},
-		{
-			name: "keeps a resumed cursor when replay transport fails",
+			{
+				name: "keeps a resumed cursor when replay transport fails",
 			replayResult: { ok: false, status: 0 },
 			replayThrows: true,
 			parserErrors: ["X likes cursor request failed (transport_error)"],
@@ -1457,9 +1475,21 @@ describe("XConnector browser-first routing", () => {
 			expectedCursor: "resume-cursor",
 			expectedEvents: ["500"],
 			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
-			drainResponses: [],
-		},
-	]) {
+				drainResponses: [],
+			},
+			{
+				name: "keeps collected likes when the captured cursor URL cannot be rewritten",
+				initialUrl: "https://x.com/i/api/graphql/hash/Likes",
+				replayResult: { ok: true, status: 200 },
+				replayThrows: false,
+				parserErrors: ["X likes cursor rewrite failed"],
+				checkpoint: {},
+				expectedCursor: "retry-cursor",
+				expectedEvents: ["500"],
+				expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+				drainResponses: [],
+			},
+		]) {
 		test(scenario.name, async () => {
 			let drainCount = 0;
 			const dispatcher = {
@@ -1470,7 +1500,7 @@ describe("XConnector browser-first routing", () => {
 							result: {
 								responses: [
 									{
-										url: likesTimelineUrl(),
+									url: scenario.initialUrl ?? likesTimelineUrl(),
 										body: JSON.stringify(
 											likesTimelineResponse("500", "retry-cursor"),
 										),

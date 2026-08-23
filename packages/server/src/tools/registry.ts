@@ -341,7 +341,7 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
   {
     name: 'get_approval',
     description:
-      'Get the server-authored review card for one approval run returned by a pending action. The card reads the canonical durable approval, exposes in-card controls only when this OAuth app context can resolve it, and always includes a review link while pending. Reading does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+      'Get the server-authored review card for one approval run returned by a pending action. On an unscoped OAuth session, pass organization with the target workspace slug or id. The card reads the canonical durable approval, exposes in-card controls only when this OAuth app context can resolve it, and always includes a review link while pending. Reading does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: GetApprovalSchema,
     outputSchema: LobuViewSchema,
     annotations: { ...AUDITED_READ, title: 'Get approval' },

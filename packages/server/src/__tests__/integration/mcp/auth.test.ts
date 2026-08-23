@@ -1140,6 +1140,175 @@ describe('MCP Authentication', () => {
       expect(result.return_value?.denied).toBe(false);
     });
 
+    it('uses the selected workspace role for cross-org SDK mutations on unscoped OAuth only', async () => {
+      const defaultOrg = await createTestOrganization({
+        name: 'Cross-Org SDK Default',
+        slug: 'cross-org-sdk-default',
+      });
+      const targetOrg = await createTestOrganization({
+        name: 'Cross-Org SDK Target',
+        slug: 'cross-org-sdk-target',
+      });
+      const crossOrgOwner = await createTestUser({});
+      await addUserToOrganization(crossOrgOwner.id, defaultOrg.id, 'member');
+      await addUserToOrganization(crossOrgOwner.id, targetOrg.id, 'owner');
+      const targetAgent = await createTestAgent({
+        organizationId: targetOrg.id,
+        ownerUserId: crossOrgOwner.id,
+      });
+      const sql = getTestDb();
+      const [targetDevice] = await sql<[{ id: string }]>`
+        INSERT INTO device_workers (
+          user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
+        ) VALUES (
+          ${crossOrgOwner.id}, 'cross-org-sdk-device', 'macos', ${sql.json([])},
+          'Cross-Org SDK Device', ${targetOrg.id}, ${'{opencode,codex}'}::text[]
+        )
+        RETURNING id
+      `;
+      const { token } = await createTestAccessToken(
+        crossOrgOwner.id,
+        defaultOrg.id,
+        client.client_id,
+        { scope: 'mcp:read mcp:write mcp:admin' }
+      );
+
+      const listed = await mcpListTools({ token });
+      expect(listed.tools.some((tool: any) => tool.name === 'run_sdk')).toBe(true);
+      const discovery = await mcpToolsCall<any>(
+        'search_sdk',
+        { query: 'automations.create' },
+        { token }
+      );
+      expect(discovery.match_count).toBe(1);
+
+      const result = await mcpToolsCall<any>(
+        'run_sdk',
+        {
+          script: `export default async (_ctx, client) => {
+            const target = await client.org(${JSON.stringify(targetOrg.slug)});
+            return target.automations.create({
+              slug: 'cross-org-sdk-created',
+              name: 'Cross-Org SDK Created',
+              prompt: 'Prove target-aware mutation authorization.',
+              agent_id: ${JSON.stringify(targetAgent.agentId)},
+              device_worker_id: ${JSON.stringify(String(targetDevice.id))},
+              agent_kind: 'opencode'
+            });
+          };`,
+        },
+        { token }
+      );
+      expect(result.success).toBe(true);
+      expect(result.return_value).toEqual(
+        expect.objectContaining({
+          action: 'create',
+          automation_id: expect.any(String),
+        })
+      );
+      expect(result.return_value).not.toHaveProperty('id');
+
+      const updated = await mcpToolsCall<any>(
+        'run_sdk',
+        {
+          script: `export default async (_ctx, client) => {
+            const target = await client.org(${JSON.stringify(targetOrg.slug)});
+            return target.automations.update({
+              automation_id: ${JSON.stringify(result.return_value.automation_id)},
+              agent_kind: 'codex'
+            });
+          };`,
+        },
+        { token }
+      );
+      expect(updated.success).toBe(true);
+
+      const [created] = await getTestDb()<
+        [{ organization_id: string; device_worker_id: string; agent_kind: string }]
+      >`
+        SELECT organization_id, device_worker_id, agent_kind
+        FROM automations
+        WHERE id = ${result.return_value.automation_id}
+      `;
+      expect(created.organization_id).toBe(targetOrg.id);
+      expect(created.device_worker_id).toBe(String(targetDevice.id));
+      expect(created.agent_kind).toBe('codex');
+
+      const scoped = await mcpRequest<any>(
+        'tools/call',
+        {
+          name: 'run_sdk',
+          arguments: {
+            script: `export default async (_ctx, client) => {
+              await client.org(${JSON.stringify(targetOrg.slug)});
+              return { reached: true };
+            };`,
+          },
+        },
+        { token, orgSlug: defaultOrg.slug }
+      );
+      expect(scoped.result?.structuredContent?.success).toBe(false);
+      expect(scoped.result?.structuredContent?.error?.message).toMatch(
+        /cross-org access is not available/i
+      );
+    });
+
+    it('denies a cross-org admin mutation when the selected workspace role is only member', async () => {
+      const defaultOrg = await createTestOrganization({
+        name: 'Cross-Org Deny Default',
+        slug: 'cross-org-deny-default',
+      });
+      const targetOrg = await createTestOrganization({
+        name: 'Cross-Org Deny Target',
+        slug: 'cross-org-deny-target',
+      });
+      const crossOrgMember = await createTestUser({});
+      // Owner where the session defaults, plain member in the workspace the
+      // script selects: the target role must govern, so lifting the default
+      // workspace's discovery ceiling cannot become an escalation.
+      await addUserToOrganization(crossOrgMember.id, defaultOrg.id, 'owner');
+      await addUserToOrganization(crossOrgMember.id, targetOrg.id, 'member');
+      const targetAgent = await createTestAgent({
+        organizationId: targetOrg.id,
+        ownerUserId: crossOrgMember.id,
+      });
+      const { token } = await createTestAccessToken(
+        crossOrgMember.id,
+        defaultOrg.id,
+        client.client_id,
+        { scope: 'mcp:read mcp:write mcp:admin' }
+      );
+
+      const denied = await mcpToolsCall<any>(
+        'run_sdk',
+        {
+          script: `export default async (_ctx, client) => {
+            const target = await client.org(${JSON.stringify(targetOrg.slug)});
+            return target.automations.create({
+              slug: 'cross-org-deny-created',
+              name: 'Cross-Org Deny Created',
+              prompt: 'Must not be created.',
+              agent_id: ${JSON.stringify(targetAgent.agentId)}
+            });
+          };`,
+        },
+        { token }
+      );
+      expect(denied.success).toBe(false);
+      // Assert the REASON, not just the failure: the target workspace's role is
+      // what denies. A passing `success: false` alone would also match an
+      // unrelated fault (bad agent id, missing device) and hide a regression.
+      expect(denied.error?.message).toMatch(
+        /organization-level write access is required|requires admin or owner access/i
+      );
+
+      const rows = await getTestDb()`
+        SELECT id FROM automations
+        WHERE organization_id = ${targetOrg.id} AND slug = 'cross-org-deny-created'
+      `;
+      expect(rows).toHaveLength(0);
+    });
+
     it('offers an owner at write tier progressive authorization for nested admin SDK methods', async () => {
       const roleOrg = await createTestOrganization({ name: 'Scoped Progressive Admin Org' });
       const owner = await createTestUser({});

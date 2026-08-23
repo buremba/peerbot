@@ -14,7 +14,9 @@ import type {
 	AutomationSource,
 	AutomationTrigger,
 	ListAutomationsArgs,
+	ManageAutomationsResult,
 } from "@lobu/core/contracts/tools/manage-automations";
+import type { AgentKind } from "@lobu/core/contracts/worker/device-automation";
 import {
 	type ManageAutomationsArgs,
 	manageAutomations,
@@ -30,6 +32,16 @@ type AutomationActionInput = Omit<ManageAutomationsArgs, "action" | "automation_
 
 export type AutomationListFilter = ListAutomationsArgs;
 
+type AutomationPendingApprovalResult = Extract<
+	ManageAutomationsResult,
+	{ status: "pending_approval" }
+>;
+
+/** Canonical create receipt; successful creates always return automation_id. */
+export type AutomationCreateResult =
+	| Extract<ManageAutomationsResult, { action: "create" }>
+	| (Omit<AutomationPendingApprovalResult, "action"> & { action: "create" });
+
 export interface AutomationCreateInput {
 	/** Attach the Automation to an entity. Omit for an org-scoped/global Automation. */
 	entity_id?: number;
@@ -44,6 +56,8 @@ export interface AutomationCreateInput {
 	reactions_guidance?: string;
 	reaction_script?: string;
 	agent_id?: string;
+	device_worker_id?: string;
+	agent_kind?: AgentKind;
 	model_config?: Record<string, unknown>;
 	execution_config?: AutomationExecutionConfig;
 	tags?: string[];
@@ -52,7 +66,9 @@ export interface AutomationCreateInput {
 export interface AutomationUpdateInput {
 	automation_id: AutomationId;
 	triggers?: AutomationTrigger[];
-	agent_id?: string;
+	agent_id?: string | null;
+	device_worker_id?: string | null;
+	agent_kind?: AgentKind | null;
 	model_config?: Record<string, unknown>;
 	/** `null` clears a previously-saved config back to NULL/defaults. */
 	execution_config?: AutomationExecutionConfig | null;
@@ -120,7 +136,7 @@ export interface AutomationsNamespace {
 	manage(input: ManageAutomationsArgs): Promise<unknown>;
 	list(filter?: AutomationListFilter): Promise<unknown>;
 	get(input: { automation_id: AutomationId }): Promise<unknown>;
-	create(input: AutomationCreateInput): Promise<unknown>;
+	create(input: AutomationCreateInput): Promise<AutomationCreateResult>;
 	update(input: AutomationUpdateInput): Promise<unknown>;
 	createVersion(input: AutomationCreateVersionInput): Promise<unknown>;
 	completeWindow(input: AutomationCompleteWindowInput): Promise<unknown>;

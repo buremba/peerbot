@@ -1043,8 +1043,7 @@ describe('automation CRUD', () => {
   // agent CLI on the device owner's machine, so create/update must verify the
   // caller may target that device. The exhaustive role × ownership matrix is in
   // src/__tests__/unit/automation-device-access.test.ts; this proves the gate is
-  // wired into the handlers end-to-end (device_worker_id only reaches the
-  // handler via the raw `manage()` escape hatch — the typed input omits it).
+  // wired into the handlers end-to-end, including the raw `manage()` escape hatch.
   describe('device_worker_id ownership gate', () => {
     async function seedDevice(opts: {
       userId: string;
@@ -1260,9 +1259,9 @@ describe('automation CRUD', () => {
       const listed = (await owner.automations.manage({
         action: 'list',
         entity_id: entityId,
-      })) as { automations?: Array<{ automation_id?: string; id?: string; view_url?: string }> };
+      })) as { automations?: Array<{ automation_id?: string; view_url?: string }> };
       const listedBase = (listed.automations ?? []).find(
-        (b) => String(b.automation_id ?? b.id) === String(base.automation_id)
+        (b) => String(b.automation_id) === String(base.automation_id)
       );
       expect(listedBase?.view_url).toContain(`/automations/${base.automation_id}`);
 

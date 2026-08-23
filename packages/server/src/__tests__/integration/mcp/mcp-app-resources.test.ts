@@ -1058,6 +1058,125 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(settled).toMatchObject({ approval_status: 'rejected' });
   });
 
+  it('renders and resolves a target-workspace approval through one unscoped OAuth session', async () => {
+    const defaultOrg = await createTestOrganization({
+      name: 'Approval Default Org',
+      slug: 'approval-default-org',
+    });
+    const targetOrg = await createTestOrganization({
+      name: 'Approval Target Org',
+      slug: 'approval-target-org',
+    });
+    await addUserToOrganization(owner.id, defaultOrg.id, 'member');
+    await addUserToOrganization(owner.id, targetOrg.id, 'owner');
+    const crossOrgToken = (
+      await createTestAccessToken(owner.id, defaultOrg.id, client.client_id, {
+        scope: 'mcp:read mcp:write mcp:admin',
+      })
+    ).token;
+    const sessionId = await initSession('/mcp', { sessionToken: crossOrgToken });
+
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${targetOrg.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: targetOrg.id,
+      originId: `mcp_app_cross_org_approval_${runId}`,
+      title: 'Cross-org review — pending approval',
+      content: 'Resolve this in the target workspace.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+    });
+
+    const renderResponse = await post('/mcp', {
+      body: {
+        jsonrpc: '2.0',
+        id: 'cross-org-get-approval',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId, organization: targetOrg.slug },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: crossOrgToken,
+    });
+    const renderBody = await renderResponse.json();
+    expect(renderBody.result?.isError).not.toBe(true);
+    expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
+    const capability = renderBody.result?._meta?.['lobu/approval-capability'];
+    expect(typeof capability).toBe('string');
+    expect(renderBody.result?.structuredContent?.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'approve', tool: 'resolve_approval' }),
+        expect.objectContaining({ id: 'reject', tool: 'resolve_approval' }),
+      ])
+    );
+
+    const rejectResponse = await post('/mcp', {
+      body: {
+        jsonrpc: '2.0',
+        id: 'cross-org-resolve-approval',
+        method: 'tools/call',
+        params: {
+          name: 'resolve_approval',
+          arguments: {
+            run_id: runId,
+            decision: 'reject',
+            reason: 'Cross-org callback verified',
+            _meta: { 'lobu/approval-capability': capability },
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: crossOrgToken,
+    });
+    const rejectBody = await rejectResponse.json();
+    expect(rejectBody.result?.isError).not.toBe(true);
+    expect(rejectBody.result?._meta?.['lobu/member-role']).toBe('owner');
+
+    const [settled] = await getDb()<{
+      organization_id: string;
+      approval_status: string;
+    }>`
+      SELECT organization_id, approval_status
+      FROM runs
+      WHERE id = ${runId}
+    `;
+    expect(settled).toEqual({
+      organization_id: targetOrg.id,
+      approval_status: 'rejected',
+    });
+
+    const scopedSessionId = await initSession(`/mcp/${defaultOrg.slug}`, {
+      sessionToken: crossOrgToken,
+    });
+    const scopedResponse = await post(`/mcp/${defaultOrg.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'scoped-cross-org-get-approval',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId, organization: targetOrg.slug },
+        },
+      },
+      headers: { 'mcp-session-id': scopedSessionId },
+      token: crossOrgToken,
+    });
+    const scopedBody = await scopedResponse.json();
+    expect(scopedBody.result?.isError).toBe(true);
+    expect(scopedBody.result?.content?.[0]?.text).toMatch(
+      /cross-org access is not available/i
+    );
+  });
+
   it('keeps an approval mutation text-only and resolves it only with the hidden app capability', async () => {
     const creationSessionId = await initSession(`/mcp/${org.slug}`, {
       agentId: actingAgent.agentId,

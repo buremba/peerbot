@@ -310,12 +310,17 @@ function createServerForContext(
   // Admin flat tools stay dispatchable via tools/call and REST but are omitted
   // here so agents compose through query_sdk / run_sdk instead.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const publicOnly = !!authCtx.organizationId && !authCtx.memberRole;
-    const maxAccessLevel = resolveMaxAccessLevel(authCtx.memberRole, authCtx.scopes);
+    // An unscoped OAuth session's default workspace is navigation state, not
+    // its authorization ceiling. Advertise the full scope-bounded SDK surface;
+    // client.org(target) resolves membership again and every leaf method gates
+    // against that target role.
+    const discoveryRole = authCtx.allowCrossOrg ? 'owner' : authCtx.memberRole;
+    const publicOnly = !!authCtx.organizationId && !discoveryRole;
+    const maxAccessLevel = resolveMaxAccessLevel(discoveryRole, authCtx.scopes);
     const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
-      adminScopeEligible: isAdminOrOwnerRole(authCtx.memberRole),
+      adminScopeEligible: authCtx.allowCrossOrg || isAdminOrOwnerRole(authCtx.memberRole),
     })
       .filter((t) => {
         const visibility = (t._meta?.ui as { visibility?: unknown } | undefined)?.visibility;
@@ -525,7 +530,14 @@ function createServerForContext(
           : undefined;
       const resultMeta =
         appResultMeta || uiMemberRoleMeta
-          ? { ...attachedMeta, ...appResultMeta, ...uiMemberRoleMeta }
+          ? {
+              ...appResultMeta,
+              ...uiMemberRoleMeta,
+              // A target-aware app handler may author a more specific role
+              // than the session default. This metadata is server-only and
+              // cannot be supplied through tool arguments.
+              ...attachedMeta,
+            }
           : attachedMeta;
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, publicResult);

@@ -163,6 +163,30 @@ export async function resolveOrgMembership(
 	return { orgId, slug, role, visibility };
 }
 
+/**
+ * Resolve a workspace selected by an unscoped OAuth caller and carry its
+ * membership into the handler context. The selected workspace, not the
+ * session's default workspace, is authoritative for every leaf permission
+ * check performed with the returned context.
+ */
+export async function resolveCrossOrgToolContext(
+	slugOrId: string,
+	ctx: ToolContext,
+	allowCrossOrg: boolean = ctx.allowCrossOrg,
+): Promise<ToolContext> {
+	if (!allowCrossOrg) {
+		throw new CrossOrgAccessDenied(
+			"Cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to /mcp/{slug} for the target workspace."
+		);
+	}
+	const member = await resolveOrgMembership(slugOrId, ctx);
+	return {
+		...ctx,
+		organizationId: member.orgId,
+		memberRole: member.role,
+	};
+}
+
 interface BuildClientSDKOptions {
 	mode?: SDKMode;
 	allowCrossOrg?: boolean;
@@ -237,17 +261,16 @@ export function buildClientSDK(
 		...namespaces,
 
 		async org(slugOrId) {
-			if (!allowCrossOrg) {
-				throw new CrossOrgAccessDenied(
-					"Cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to /mcp/{slug} for the target workspace."
-				);
-			}
-			const member = await resolveOrgMembership(slugOrId, ctx);
-			return buildClientSDK(
-				{ ...ctx, organizationId: member.orgId, memberRole: member.role },
-				env,
-				{ mode, allowCrossOrg, abortSignal: ctx.abortSignal }
+			const targetCtx = await resolveCrossOrgToolContext(
+				slugOrId,
+				ctx,
+				allowCrossOrg,
 			);
+			return buildClientSDK(targetCtx, env, {
+				mode,
+				allowCrossOrg,
+				abortSignal: ctx.abortSignal,
+			});
 		},
 
 		async query(querySql) {

@@ -18,7 +18,7 @@
  * Feeds:
  *   - tweets:        search by query or track a handle (API v2 or extension search)
  *   - my_tweets:     authenticated user's posts and replies (API v2 or extension)
- *   - liked_tweets:  posts the user has liked (API v2 or extension)
+ *   - liked_tweets:  posts the user has liked (signed-in extension, resumable cursor backfill)
  *   - bookmarks:        posts the user has bookmarked (API v2 or extension)
  *   - direct_messages:  1:1 and group DMs (OAuth API; extension fallback on /messages)
  *   - home_feed:        personalized x.com home timeline (extension only — there
@@ -53,7 +53,6 @@ import { X_IDENTITY, normalizeXHandle } from "./x-identity.js";
 const X_OAUTH_FEED_SCOPES: Record<string, readonly string[]> = {
 	tweets: ["tweet.read", "users.read"],
 	my_tweets: ["tweet.read", "users.read"],
-	liked_tweets: ["like.read", "tweet.read", "users.read"],
 	bookmarks: ["bookmark.read", "tweet.read", "users.read"],
 	direct_messages: ["dm.read", "tweet.read", "users.read"],
 };
@@ -64,6 +63,38 @@ interface XCheckpoint {
 	last_tweet_id?: string;
 	last_timestamp?: Date | string;
 	last_dm_event_id?: string;
+	likes_backfill_cursor?: string;
+	likes_backfill_status?: XLikesBackfillStatus;
+	likes_backfill_pages?: number;
+	likes_backfill_items?: number;
+	likes_oldest_tweet_id?: string;
+	likes_oldest_timestamp?: Date | string;
+	likes_backfill_completed_at?: Date | string;
+}
+
+type XLikesBackfillStatus = "in_progress" | "complete" | "platform_limited";
+
+interface XMediaAttachment {
+	kind: "image" | "video" | "animated_gif";
+	url: string;
+	preview_url?: string;
+	mime_type?: string;
+	alt_text?: string;
+	width?: number;
+	height?: number;
+	duration_ms?: number;
+	media_key?: string;
+	variants?: Array<{
+		url: string;
+		mime_type?: string;
+		bitrate?: number;
+	}>;
+}
+
+interface XExpandedUrl {
+	url: string;
+	expanded_url?: string;
+	display_url?: string;
 }
 
 interface XTweet {
@@ -82,6 +113,13 @@ interface XTweet {
 	isQuote: boolean;
 	conversationId?: string;
 	inReplyToId?: string;
+	quotedTweetId?: string;
+	repostedTweetId?: string;
+	attachments?: XMediaAttachment[];
+	urls?: XExpandedUrl[];
+	likedByUserId?: string;
+	likedByHandle?: string;
+	likedByDisplayName?: string;
 	/** True for promoted/ad tweets — dropped before emit, like LinkedIn's "Promoted" filter. */
 	promoted?: boolean;
 }
@@ -132,6 +170,18 @@ interface XApiListResponse {
 		result_count?: number;
 	};
 	errors?: Array<{ detail?: string; message?: string }>;
+}
+
+interface XTimelinePage {
+	tweets: XTweet[];
+	bottomCursor?: string;
+	recognized: boolean;
+	owner?: {
+		id?: string;
+		handle?: string;
+		displayName?: string;
+	};
+	errors: string[];
 }
 
 interface XApiDmEventRecord {
@@ -233,6 +283,56 @@ const X_TWEET_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
 	},
 ];
 
+/**
+ * A liked post has two people with different roles: the connected account that
+ * performed the interaction, and the post author. Both are named so the server
+ * can materialize the declared person-to-person relationship after resolving
+ * identities. Likes deliberately auto-create authors: this feed is an explicit
+ * personal signal, not a random home-timeline impression.
+ */
+const X_LIKED_POST_ATTRIBUTIONS: EventAttributionRule[] = [
+	{
+		// Author first: the current flat read-time identity slot should keep the
+		// content author, while the named resolver still retains both roles for
+		// relationship materialization.
+		name: "author",
+		role: "authored_by",
+		autoCreate: true,
+		target: X_PERSON_AUTHOR_TARGET,
+		traits: X_PERSON_AUTHOR_TRAITS,
+	},
+	{
+		name: "liker",
+		role: "performed_by",
+		autoCreate: true,
+		target: {
+			entityType: "person",
+			titlePath: "metadata.liked_by_name",
+			identities: [
+				{
+					namespace: X_IDENTITY.USER_ID,
+					eventPath: "metadata.liked_by_id",
+					primary: true,
+				},
+				{
+					namespace: X_IDENTITY.HANDLE,
+					eventPath: "metadata.liked_by_handle",
+				},
+			],
+		},
+		traits: {
+			x_handle: {
+				eventPath: "metadata.liked_by_handle",
+				mergeStrategy: "prefer_non_empty",
+			},
+			x_display_name: {
+				eventPath: "metadata.liked_by_name",
+				mergeStrategy: "prefer_non_empty",
+			},
+		},
+	},
+];
+
 const X_DM_COUNTERPARTY_ATTRIBUTIONS: EventAttributionRule[] = [
 	{
 		role: "authored_by",
@@ -241,12 +341,23 @@ const X_DM_COUNTERPARTY_ATTRIBUTIONS: EventAttributionRule[] = [
 			entityType: "person",
 			titlePath: "metadata.sender_name",
 			identities: [
-				{ namespace: X_IDENTITY.USER_ID, eventPath: "metadata.sender_id", primary: true },
-				{ namespace: X_IDENTITY.HANDLE, eventPath: "metadata.sender_handle", matchOnly: true },
+				{
+					namespace: X_IDENTITY.USER_ID,
+					eventPath: "metadata.sender_id",
+					primary: true,
+				},
+				{
+					namespace: X_IDENTITY.HANDLE,
+					eventPath: "metadata.sender_handle",
+					matchOnly: true,
+				},
 			],
 		},
 		traits: {
-			x_handle: { eventPath: "metadata.sender_handle", mergeStrategy: "prefer_non_empty" },
+			x_handle: {
+				eventPath: "metadata.sender_handle",
+				mergeStrategy: "prefer_non_empty",
+			},
 			// Same trait key as X_PERSON_AUTHOR_TRAITS / DM counterparty — keep
 			// person metadata vocabulary consistent across X attribution paths.
 			x_display_name: {
@@ -391,6 +502,13 @@ function buildSearchQuery(config: Record<string, unknown>): string {
 	return `from:${accountHandle}`;
 }
 
+function normalizeMediaKind(
+	type: string | undefined,
+): XMediaAttachment["kind"] {
+	if (type === "video" || type === "animated_gif") return type;
+	return "image";
+}
+
 function buildApiTweet(
 	tweet: XApiTweetRecord,
 	usernameById: Map<string, string>,
@@ -401,10 +519,13 @@ function buildApiTweet(
 	const referenced = tweet.referenced_tweets ?? [];
 	const publicMetrics = tweet.public_metrics ?? {};
 	const inReplyToId = referenced.find((ref) => ref.type === "replied_to")?.id;
+	const quotedTweetId = referenced.find((ref) => ref.type === "quoted")?.id;
+	const repostedTweetId = referenced.find(
+		(ref) => ref.type === "retweeted",
+	)?.id;
 
 	const authorId = tweet.author_id;
-	const username =
-		usernameById.get(authorId ?? "") ?? defaultUsername ?? "";
+	const username = usernameById.get(authorId ?? "") ?? defaultUsername ?? "";
 
 	return {
 		id: tweet.id,
@@ -421,6 +542,8 @@ function buildApiTweet(
 		isQuote: referenced.some((ref) => ref.type === "quoted"),
 		conversationId: tweet.conversation_id,
 		inReplyToId,
+		quotedTweetId,
+		repostedTweetId,
 	};
 }
 
@@ -438,6 +561,92 @@ function parseApiListResponse(
 		.filter((tweet): tweet is XTweet => tweet !== null);
 }
 
+function unwrapGraphqlTweetResult(result: any): any {
+	return result?.__typename === "TweetWithVisibilityResults"
+		? result.tweet
+		: result;
+}
+
+function graphqlReferencedTweetId(result: any): string | undefined {
+	const tweet = unwrapGraphqlTweetResult(result);
+	const id = tweet?.rest_id ?? tweet?.legacy?.id_str;
+	return id ? String(id) : undefined;
+}
+
+function extractGraphqlMedia(legacy: any): XMediaAttachment[] {
+	const rows =
+		legacy?.extended_entities?.media ?? legacy?.entities?.media ?? [];
+	if (!Array.isArray(rows)) return [];
+	return rows.flatMap((row: any) => {
+		const rawVariants = Array.isArray(row?.video_info?.variants)
+			? row.video_info.variants
+			: [];
+		const variants = rawVariants
+			.filter(
+				(variant: any) =>
+					typeof variant?.url === "string" && variant.url.length > 0,
+			)
+			.map((variant: any) => ({
+				url: variant.url,
+				...(typeof variant.content_type === "string"
+					? { mime_type: variant.content_type }
+					: {}),
+				...(typeof variant.bitrate === "number"
+					? { bitrate: variant.bitrate }
+					: {}),
+			}));
+		const playable = [...variants]
+			.filter((variant) => variant.mime_type !== "application/x-mpegURL")
+			.sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0]?.url;
+		const preview = row?.media_url_https ?? row?.media_url;
+		const url = playable ?? preview;
+		if (!url) return [];
+		const original = row?.original_info;
+		return [
+			{
+				kind: normalizeMediaKind(row?.type),
+				url,
+				...(preview ? { preview_url: preview } : {}),
+				...(typeof row?.ext_alt_text === "string" && row.ext_alt_text
+					? { alt_text: row.ext_alt_text }
+					: {}),
+				...(typeof original?.width === "number"
+					? { width: original.width }
+					: {}),
+				...(typeof original?.height === "number"
+					? { height: original.height }
+					: {}),
+				...(typeof row?.video_info?.duration_millis === "number"
+					? { duration_ms: row.video_info.duration_millis }
+					: {}),
+				...(typeof row?.media_key === "string"
+					? { media_key: row.media_key }
+					: {}),
+				...(variants.length > 0 ? { variants } : {}),
+			},
+		];
+	});
+}
+
+function extractGraphqlUrls(legacy: any): XExpandedUrl[] {
+	const rows = legacy?.entities?.urls;
+	if (!Array.isArray(rows)) return [];
+	return rows.flatMap((row: any) => {
+		if (typeof row?.url !== "string" || row.url.length === 0) return [];
+		return [
+			{
+				url: row.url,
+				...(typeof row.expanded_url === "string"
+					? { expanded_url: row.expanded_url }
+					: {}),
+				...(typeof row.display_url === "string"
+					? { display_url: row.display_url }
+					: {}),
+			},
+		];
+	});
+}
+
 /**
  * Extract one tweet from an x.com GraphQL `tweet_results.result` object.
  * Shared by the search and home-timeline parsers so both handle the same edge
@@ -448,10 +657,13 @@ function extractTweetFromGraphqlResult(result: any): XTweet | null {
 	if (!result || typeof result !== "object") return null;
 
 	// TweetWithVisibilityResults wraps the real tweet under `.tweet`.
-	const tweetNode =
-		result.__typename === "TweetWithVisibilityResults" ? result.tweet : result;
+	const tweetNode = unwrapGraphqlTweetResult(result);
 	const legacy = tweetNode?.legacy ?? result.legacy;
-	if (!legacy?.full_text) return null;
+	const noteText =
+		tweetNode?.note_tweet?.note_tweet_results?.result?.text ??
+		result?.note_tweet?.note_tweet_results?.result?.text;
+	const text = noteText ?? legacy?.full_text;
+	if (!text) return null;
 
 	const restId = legacy.id_str ?? tweetNode?.rest_id ?? result.rest_id;
 	if (!restId) return null;
@@ -466,7 +678,7 @@ function extractTweetFromGraphqlResult(result: any): XTweet | null {
 
 	return {
 		id: restId,
-		text: legacy.full_text,
+		text,
 		username: screenName,
 		authorId: authorId ? String(authorId) : undefined,
 		authorDisplayName,
@@ -480,6 +692,16 @@ function extractTweetFromGraphqlResult(result: any): XTweet | null {
 		isQuote: !!legacy.is_quote_status,
 		conversationId: legacy.conversation_id_str,
 		inReplyToId: legacy.in_reply_to_status_id_str,
+		quotedTweetId: graphqlReferencedTweetId(
+			tweetNode?.quoted_status_result?.result ??
+				result?.quoted_status_result?.result,
+		),
+		repostedTweetId: graphqlReferencedTweetId(
+			legacy?.retweeted_status_result?.result ??
+				tweetNode?.retweeted_status_result?.result,
+		),
+		attachments: extractGraphqlMedia(legacy),
+		urls: extractGraphqlUrls(legacy),
 		promoted: Boolean(result.promotedMetadata ?? tweetNode?.promotedMetadata),
 	};
 }
@@ -541,29 +763,95 @@ export function parseBrowserSearchResponse(
 	return extractTweetsFromInstructions(instructions);
 }
 
-/**
- * Parse x.com GraphQL timeline responses (profile tweets, likes, bookmarks).
- * Tries the common instruction-array shapes emitted by UserTweets, Likes, and
- * BookmarkTimeline endpoints.
- */
-export function parseBrowserTimelineResponse(
-	_url: string,
-	json: unknown,
-): XTweet[] {
-	const data = json as any;
-	const candidates = [
+function timelineInstructionCandidates(data: any): unknown[] {
+	return [
 		data?.data?.user?.result?.timeline_v2?.timeline?.instructions,
 		data?.data?.user?.result?.timeline?.timeline?.instructions,
 		data?.data?.bookmark_timeline_v2?.timeline?.instructions,
 		data?.data?.bookmarks_timeline?.timeline?.instructions,
 		data?.data?.viewer?.bookmarks_timeline?.timeline?.instructions,
 	];
-	for (const instructions of candidates) {
-		if (Array.isArray(instructions) && instructions.length > 0) {
-			return extractTweetsFromInstructions(instructions);
+}
+
+export function extractBottomCursor(instructions: any[]): string | undefined {
+	if (!Array.isArray(instructions)) return undefined;
+	for (const instruction of instructions) {
+		const entries = [
+			...(Array.isArray(instruction?.entries) ? instruction.entries : []),
+			...(instruction?.entry ? [instruction.entry] : []),
+			...(Array.isArray(instruction?.moduleItems)
+				? instruction.moduleItems
+				: []),
+		];
+		for (const entry of entries) {
+			const content = entry?.content ?? entry?.item?.content ?? entry;
+			const cursorType = content?.cursorType ?? content?.cursor_type;
+			const value = content?.value ?? content?.cursorValue;
+			if (
+				typeof value === "string" &&
+				value.length > 0 &&
+				typeof cursorType === "string" &&
+				cursorType.toLowerCase() === "bottom"
+			) {
+				return value;
+			}
 		}
 	}
-	return [];
+	return undefined;
+}
+
+export function parseBrowserTimelinePage(
+	_url: string,
+	json: unknown,
+): XTimelinePage {
+	const data = json as any;
+	const candidates = timelineInstructionCandidates(data);
+	const instructions = (candidates.find(
+		(candidate) => Array.isArray(candidate) && candidate.length > 0,
+	) ?? candidates.find(Array.isArray)) as any[] | undefined;
+	const ownerResult = data?.data?.user?.result;
+	const owner = ownerResult
+		? {
+				...(ownerResult.rest_id ? { id: String(ownerResult.rest_id) } : {}),
+				...(ownerResult?.core?.screen_name || ownerResult?.legacy?.screen_name
+					? {
+							handle:
+								ownerResult?.core?.screen_name ??
+								ownerResult?.legacy?.screen_name,
+						}
+					: {}),
+				...(ownerResult?.core?.name || ownerResult?.legacy?.name
+					? {
+							displayName: ownerResult?.core?.name ?? ownerResult?.legacy?.name,
+						}
+					: {}),
+			}
+		: undefined;
+	const errors = Array.isArray(data?.errors)
+		? data.errors.flatMap((error: any) => {
+				const message = error?.message ?? error?.detail;
+				return typeof message === "string" && message ? [message] : [];
+			})
+		: [];
+	return {
+		tweets: instructions ? extractTweetsFromInstructions(instructions) : [],
+		bottomCursor: instructions ? extractBottomCursor(instructions) : undefined,
+		recognized: instructions !== undefined,
+		owner,
+		errors,
+	};
+}
+
+/**
+ * Parse x.com GraphQL timeline responses (profile tweets, likes, bookmarks).
+ * Tries the common instruction-array shapes emitted by UserTweets, Likes, and
+ * BookmarkTimeline endpoints.
+ */
+export function parseBrowserTimelineResponse(
+	url: string,
+	json: unknown,
+): XTweet[] {
+	return parseBrowserTimelinePage(url, json).tweets;
 }
 
 const TWEET_FIELDS =
@@ -579,6 +867,7 @@ function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 	return {
 		origin_id: tweet.id,
 		payload_text: tweet.text,
+		attachments: tweet.attachments ?? [],
 		author_name: tweet.username ? `@${tweet.username}` : undefined,
 		occurred_at: tweet.publishedAt,
 		origin_type: originType ?? (tweet.isReply ? "reply" : "tweet"),
@@ -596,11 +885,32 @@ function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 			...(tweet.username
 				? { author_handle: normalizeXHandle(tweet.username) ?? tweet.username }
 				: {}),
-			...(tweet.authorDisplayName
-				? { author_name: tweet.authorDisplayName }
+			...(tweet.authorDisplayName || tweet.username
+				? { author_name: tweet.authorDisplayName ?? `@${tweet.username}` }
 				: {}),
 			...(tweet.conversationId
 				? { conversation_id: tweet.conversationId }
+				: {}),
+			...(tweet.inReplyToId ? { in_reply_to_id: tweet.inReplyToId } : {}),
+			...(tweet.quotedTweetId ? { quoted_tweet_id: tweet.quotedTweetId } : {}),
+			...(tweet.repostedTweetId
+				? { reposted_tweet_id: tweet.repostedTweetId }
+				: {}),
+			...(tweet.urls && tweet.urls.length > 0
+				? { expanded_urls: tweet.urls }
+				: {}),
+			...(tweet.likedByUserId ? { liked_by_id: tweet.likedByUserId } : {}),
+			...(tweet.likedByHandle
+				? {
+						liked_by_handle:
+							normalizeXHandle(tweet.likedByHandle) ?? tweet.likedByHandle,
+					}
+				: {}),
+			...(tweet.likedByDisplayName || tweet.likedByHandle
+				? {
+						liked_by_name:
+							tweet.likedByDisplayName ?? `@${tweet.likedByHandle}`,
+					}
 				: {}),
 		},
 	};
@@ -794,6 +1104,78 @@ export function finalizeSyncResult(
 	};
 }
 
+export function finalizeLikedTweetsResult(
+	tweets: XTweet[],
+	checkpoint: XCheckpoint,
+	metadata: Record<string, unknown>,
+	backfill: {
+		status: XLikesBackfillStatus;
+		nextCursor?: string;
+		pagesRead: number;
+		historicalItemsRead: number;
+	},
+): SyncResult {
+	// A browser backfill intentionally re-observes the newest page on every run.
+	// Do not drop the old boundary: deterministic origin ids let ingestion update
+	// metrics/media without creating a second canonical event.
+	const result = finalizeSyncResult(tweets, {}, metadata, {
+		originType: "liked_tweet",
+	});
+	const events = result.events;
+	const newest = events[0];
+	const oldest = [...events].sort(
+		(a, b) =>
+			new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
+	)[0];
+	const previousOldest = checkpoint.likes_oldest_timestamp
+		? new Date(checkpoint.likes_oldest_timestamp)
+		: null;
+	const nextOldest =
+		oldest &&
+		(!previousOldest ||
+			new Date(oldest.occurred_at).getTime() < previousOldest.getTime())
+			? oldest
+			: null;
+	const completedAt =
+		backfill.status === "complete" || backfill.status === "platform_limited"
+			? (checkpoint.likes_backfill_completed_at ?? new Date())
+			: checkpoint.likes_backfill_completed_at;
+
+	const nextCheckpoint: XCheckpoint = {
+		...checkpoint,
+		last_tweet_id: newest?.origin_id ?? checkpoint.last_tweet_id,
+		last_timestamp: newest?.occurred_at ?? checkpoint.last_timestamp,
+		likes_backfill_status: backfill.status,
+		likes_backfill_pages:
+			(checkpoint.likes_backfill_pages ?? 0) + backfill.pagesRead,
+		likes_backfill_items:
+			(checkpoint.likes_backfill_items ?? 0) + backfill.historicalItemsRead,
+		likes_oldest_tweet_id:
+			nextOldest?.origin_id ?? checkpoint.likes_oldest_tweet_id,
+		likes_oldest_timestamp:
+			nextOldest?.occurred_at ?? checkpoint.likes_oldest_timestamp,
+		...(backfill.nextCursor
+			? { likes_backfill_cursor: backfill.nextCursor }
+			: {}),
+		...(completedAt ? { likes_backfill_completed_at: completedAt } : {}),
+	};
+	if (!backfill.nextCursor) delete nextCheckpoint.likes_backfill_cursor;
+
+	return {
+		...result,
+		checkpoint: nextCheckpoint as unknown as Record<string, unknown>,
+		metadata: {
+			...result.metadata,
+			collection_status: backfill.status,
+			backfill_pages_this_run: backfill.pagesRead,
+			backfill_pages_total: nextCheckpoint.likes_backfill_pages,
+			backfill_items_this_run: backfill.historicalItemsRead,
+			backfill_items_total: nextCheckpoint.likes_backfill_items,
+			backfill_next_cursor: backfill.nextCursor ?? null,
+		},
+	};
+}
+
 // ── Extension dispatcher ───────────────────────────────────────
 //
 // Pulled from sessionState — the connector-worker subprocess splices a live
@@ -862,6 +1244,58 @@ function readScrollBudget(
 
 function readMaxPages(config: Record<string, unknown>, cap = 50): number {
 	return readScrollBudget(config, { defaultMax: 10, cap });
+}
+
+function readPositiveInteger(
+	value: unknown,
+	fallback: number,
+	cap: number,
+): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return fallback;
+	return Math.max(1, Math.min(cap, Math.floor(parsed)));
+}
+
+function readLikesBackfillPageBudget(config: Record<string, unknown>): number {
+	return readPositiveInteger(config.backfill_pages_per_run, 20, 60);
+}
+
+function readLikesIncrementalPageBudget(
+	config: Record<string, unknown>,
+): number {
+	return readPositiveInteger(config.incremental_pages, 2, 10);
+}
+
+export function readGraphqlCursor(requestUrl: string): string | undefined {
+	try {
+		const parsed = new URL(requestUrl);
+		const raw = parsed.searchParams.get("variables");
+		if (!raw) return undefined;
+		const variables = JSON.parse(raw) as { cursor?: unknown };
+		return typeof variables.cursor === "string" && variables.cursor
+			? variables.cursor
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function replaceGraphqlCursor(
+	requestUrl: string,
+	cursor: string,
+): string {
+	const parsed = new URL(requestUrl);
+	if (!/(^|\.)x\.com$/i.test(parsed.hostname)) {
+		throw new Error("X likes pagination refused a non-x.com request URL");
+	}
+	const raw = parsed.searchParams.get("variables");
+	if (!raw) {
+		throw new Error("X likes pagination response URL has no GraphQL variables");
+	}
+	const variables = JSON.parse(raw) as Record<string, unknown>;
+	variables.cursor = cursor;
+	parsed.searchParams.set("variables", JSON.stringify(variables));
+	return parsed.toString();
 }
 
 type XSyncBackend = "oauth_api" | "extension";
@@ -971,8 +1405,9 @@ function extractViewerUserId(json: unknown): string | undefined {
 		(data?.data as Record<string, unknown> | undefined)?.user_result,
 	];
 	for (const node of candidates) {
-		const result = (node as { user_results?: { result?: { rest_id?: string } } })
-			?.user_results?.result;
+		const result = (
+			node as { user_results?: { result?: { rest_id?: string } } }
+		)?.user_results?.result;
 		if (result?.rest_id) return String(result.rest_id);
 	}
 	return undefined;
@@ -998,9 +1433,7 @@ function buildBrowserDmMessage(
 	const createdAt = String(
 		messageData.time ?? messageData.created_at ?? messageData.timestamp ?? "",
 	);
-	const senderId = String(
-		messageData.sender_id ?? messageNode.sender_id ?? "",
-	);
+	const senderId = String(messageData.sender_id ?? messageNode.sender_id ?? "");
 	const conversationId = String(
 		messageNode.conversation_id ??
 			messageNode.conversationId ??
@@ -1077,17 +1510,13 @@ function extractDmMessagesFromNode(
 
 	const content = record.content;
 	if (content && typeof content === "object") {
-		messages.push(
-			...extractDmMessagesFromNode(content, authUserId, seen),
-		);
+		messages.push(...extractDmMessagesFromNode(content, authUserId, seen));
 	}
 
 	const entries = record.entries;
 	if (Array.isArray(entries)) {
 		for (const entry of entries) {
-			messages.push(
-				...extractDmMessagesFromNode(entry, authUserId, seen),
-			);
+			messages.push(...extractDmMessagesFromNode(entry, authUserId, seen));
 		}
 	}
 
@@ -1117,9 +1546,7 @@ function extractDmMessagesFromNode(
 		record.user_events,
 	];
 	for (const candidate of nestedCandidates) {
-		messages.push(
-			...extractDmMessagesFromNode(candidate, authUserId, seen),
-		);
+		messages.push(...extractDmMessagesFromNode(candidate, authUserId, seen));
 	}
 
 	return messages;
@@ -1436,70 +1863,167 @@ async function syncMyTweetsViaExtension(
 	});
 }
 
-async function syncLikedTweetsViaOAuthApi(
-	ctx: SyncContext,
-	config: Record<string, unknown>,
-	checkpoint: XCheckpoint,
-): Promise<SyncResult> {
-	const accessToken = ctx.credentials?.accessToken;
-	if (!accessToken) {
-		throw new Error("OAuth access token missing for liked_tweets feed");
-	}
-
-	const http = createOAuthHttpClient(accessToken);
-	const maxPages = readMaxPages(config);
-	const authUser = await resolveAuthenticatedUser(http);
-	const accountHandle = await resolveAccountHandle(config, http);
-	const userId =
-		accountHandle === authUser.username
-			? authUser.id
-			: await resolveUserId(accountHandle, http);
-
-	const { tweets, pageCount } = await paginateTweetEndpoint(
-		http,
-		(nextToken) => {
-			const url = new URL(
-				`https://api.x.com/2/users/${encodeURIComponent(userId)}/liked_tweets`,
-			);
-			url.searchParams.set("max_results", "100");
-			url.searchParams.set("tweet.fields", TWEET_FIELDS);
-			url.searchParams.set("expansions", "author_id");
-			url.searchParams.set("user.fields", "username");
-			if (nextToken) {
-				url.searchParams.set("pagination_token", nextToken);
-			}
-			return url;
-		},
-		maxPages,
-	);
-
-	return finalizeSyncResult(tweets, checkpoint, {
-		backend: "oauth_api",
-		api_calls: pageCount,
-		account_handle: accountHandle,
-		feed: "liked_tweets",
-	}, { originType: "liked_tweet" });
-}
-
 async function syncLikedTweetsViaExtension(
 	ctx: SyncContext,
 	config: Record<string, unknown>,
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
 	const accountHandle = await resolveAccountHandle(config);
-	const maxScrolls = readMaxPages(config);
 	const likesUrl = `https://x.com/${encodeURIComponent(accountHandle)}/likes`;
+	const dispatcher = requireExtensionDispatcher(ctx);
+	const previouslyComplete =
+		checkpoint.likes_backfill_status === "complete" ||
+		checkpoint.likes_backfill_status === "platform_limited";
+	const pageBudget = previouslyComplete
+		? readLikesIncrementalPageBudget(config)
+		: readLikesBackfillPageBudget(config);
+	let resumeCursor = previouslyComplete
+		? undefined
+		: checkpoint.likes_backfill_cursor;
+	let nextCursor: string | undefined;
+	let latestRequestUrl: string | undefined;
+	let owner: XTimelinePage["owner"];
+	let recognizedResponses = 0;
+	let requestedPages = 0;
+	let respondedPages = 0;
+	let pagesRead = 0;
+	let countedInitialBackfillPage = false;
+	let terminalSeen = false;
+	let activeRequestedCursor: string | undefined;
+	const historicalTweetIds = new Set<string>();
+	const parserErrors: string[] = [];
 
-	return syncViaExtension({
-		ctx,
+	const parseResponse = (url: string, json: unknown): XTweet[] => {
+		const page = parseBrowserTimelinePage(url, json);
+		if (!page.recognized) {
+			parserErrors.push(...page.errors);
+			return [];
+		}
+		recognizedResponses += 1;
+		latestRequestUrl = url;
+		owner = page.owner ?? owner;
+		parserErrors.push(...page.errors);
+		const responseCursor = readGraphqlCursor(url);
+		const isRequestedPage =
+			activeRequestedCursor !== undefined &&
+			responseCursor === activeRequestedCursor;
+		if (isRequestedPage) {
+			respondedPages += 1;
+			if (!previouslyComplete) {
+				pagesRead += 1;
+				for (const tweet of page.tweets) historicalTweetIds.add(tweet.id);
+			}
+			activeRequestedCursor = undefined;
+		}
+		if (
+			!previouslyComplete &&
+			!checkpoint.likes_backfill_cursor &&
+			!countedInitialBackfillPage
+		) {
+			countedInitialBackfillPage = true;
+			pagesRead += 1;
+			for (const tweet of page.tweets) historicalTweetIds.add(tweet.id);
+		}
+		if (page.bottomCursor) {
+			nextCursor = page.bottomCursor;
+		} else if (isRequestedPage || countedInitialBackfillPage) {
+			nextCursor = undefined;
+			terminalSeen = true;
+		}
+
+		return page.tweets.map((tweet) => ({
+			...tweet,
+			likedByUserId: owner?.id,
+			likedByHandle: owner?.handle ?? accountHandle,
+			likedByDisplayName:
+				owner?.displayName ?? `@${owner?.handle ?? accountHandle}`,
+		}));
+	};
+
+	const initialPageCountsAgainstBudget =
+		!previouslyComplete && !checkpoint.likes_backfill_cursor;
+	const paginationRequests = Math.max(
+		0,
+		pageBudget - (initialPageCountsAgainstBudget ? 1 : 0),
+	);
+	const result = await extensionNetworkSync<XTweet>({
+		dispatcher,
+		config: {
+			interceptPatterns: [{ regex: "/i/api/graphql/\\w+/.*Like" }],
+			allowedOrigins: X_ALLOWED_ORIGINS,
+			maxScrolls: paginationRequests,
+			scrollDelayMs: 750,
+			responseTimeoutMs: 5000,
+		},
 		url: likesUrl,
-		interceptPatterns: [{ regex: "/i/api/graphql/\\w+/.*Like" }],
-		parseResponse: parseBrowserTimelineResponse,
-		maxScrolls,
-		checkpoint,
-		metadata: { account_handle: accountHandle, feed: "liked_tweets" },
-		originType: "liked_tweet",
+		parseResponse,
+		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
+		triggerNextPage: async (_tabId, browserDispatcher, sessionId) => {
+			const cursor = resumeCursor ?? nextCursor;
+			resumeCursor = undefined;
+			if (!cursor || !latestRequestUrl) {
+				terminalSeen = recognizedResponses > 0;
+				return;
+			}
+			const requestUrl = replaceGraphqlCursor(latestRequestUrl, cursor);
+			activeRequestedCursor = cursor;
+			requestedPages += 1;
+			const observation = await browserDispatcher.dispatch<{
+				ok?: boolean;
+				status?: number;
+			}>("network_intercept_replay", {
+				session_id: sessionId,
+				url: requestUrl,
+				allowed_origins: X_ALLOWED_ORIGINS,
+			});
+			if (observation.ok !== true) {
+				throw new Error(
+					`X likes cursor request failed (${observation.status ?? "unknown"})`,
+				);
+			}
+		},
 	});
+
+	if (recognizedResponses === 0) {
+		throw new Error(
+			`X likes returned no recognizable timeline response${
+				parserErrors.length > 0 ? `: ${parserErrors.join("; ")}` : ""
+			}`,
+		);
+	}
+	if (requestedPages !== respondedPages) {
+		throw new Error(
+			`X likes pagination was interrupted: requested ${requestedPages} cursor page(s), received ${respondedPages}`,
+		);
+	}
+
+	const status: XLikesBackfillStatus = previouslyComplete
+		? (checkpoint.likes_backfill_status ?? "complete")
+		: terminalSeen
+			? "complete"
+			: nextCursor
+				? "in_progress"
+				: "platform_limited";
+	return finalizeLikedTweetsResult(
+		result.items,
+		checkpoint,
+		{
+			backend: result.backend,
+			api_calls: result.apiCallCount,
+			account_handle: accountHandle,
+			feed: "liked_tweets",
+			collection_scope: "x_browser_visible_history",
+			pages_requested: requestedPages,
+			pages_received: respondedPages,
+			parser_errors: parserErrors,
+		},
+		{
+			status,
+			nextCursor: status === "in_progress" ? nextCursor : undefined,
+			pagesRead,
+			historicalItemsRead: historicalTweetIds.size,
+		},
+	);
 }
 
 async function syncBookmarksViaOAuthApi(
@@ -1534,11 +2058,16 @@ async function syncBookmarksViaOAuthApi(
 		maxPages,
 	);
 
-	return finalizeSyncResult(tweets, checkpoint, {
-		backend: "oauth_api",
-		api_calls: pageCount,
-		feed: "bookmarks",
-	}, { originType: "bookmark" });
+	return finalizeSyncResult(
+		tweets,
+		checkpoint,
+		{
+			backend: "oauth_api",
+			api_calls: pageCount,
+			feed: "bookmarks",
+		},
+		{ originType: "bookmark" },
+	);
 }
 
 async function syncBookmarksViaExtension(
@@ -1568,14 +2097,10 @@ function parseApiDmListResponse(
 	const usernameById = new Map(
 		users.map((user) => [user.id, user.username ?? ""]),
 	);
-	const nameById = new Map(
-		users.map((user) => [user.id, user.name ?? ""]),
-	);
+	const nameById = new Map(users.map((user) => [user.id, user.name ?? ""]));
 
 	return (json.data ?? [])
-		.map((event) =>
-			buildDmMessage(event, authUserId, usernameById, nameById),
-		)
+		.map((event) => buildDmMessage(event, authUserId, usernameById, nameById))
 		.filter((message): message is XDmMessage => message !== null);
 }
 
@@ -1685,7 +2210,11 @@ async function syncHomeFeedViaDomScrape(
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
 	const maxScrolls = readScrollBudget(config, { defaultMax: 10, cap: 30 });
-	const { items: rows, loggedIn, usedExistingTab } = await extensionDomScrape<HomeFeedRow>({
+	const {
+		items: rows,
+		loggedIn,
+		usedExistingTab,
+	} = await extensionDomScrape<HomeFeedRow>({
 		dispatcher: requireExtensionDispatcher(ctx),
 		url: "https://x.com/home",
 		config: {
@@ -1694,7 +2223,8 @@ async function syncHomeFeedViaDomScrape(
 		},
 		parseRows: (raw) => raw as HomeFeedRow[],
 		allowedOrigins: X_ALLOWED_ORIGINS,
-		existingTabMatch: config.use_existing_tab === true ? "x.com/home" : undefined,
+		existingTabMatch:
+			config.use_existing_tab === true ? "x.com/home" : undefined,
 	});
 
 	if (!loggedIn) {
@@ -1705,7 +2235,9 @@ async function syncHomeFeedViaDomScrape(
 
 	const tweets = buildHomeFeedTweets(rows);
 	return finalizeSyncResult(tweets, checkpoint, {
-		backend: usedExistingTab ? "extension-cs-scrape-existing-tab" : "extension-cs-scrape",
+		backend: usedExistingTab
+			? "extension-cs-scrape-existing-tab"
+			: "extension-cs-scrape",
 		items_scraped: rows.length,
 		scrolls_this_run: maxScrolls,
 		timeline: "home",
@@ -1816,6 +2348,35 @@ const accountTimelineConfigSchema = {
 	},
 };
 
+const likedTweetsConfigSchema = {
+	type: "object",
+	required: ["account_handle"],
+	properties: {
+		account_handle: {
+			type: "string",
+			minLength: 1,
+			description:
+				'X handle whose signed-in likes are collected (e.g. "bu7emba").',
+		},
+		backfill_pages_per_run: {
+			type: "integer",
+			minimum: 1,
+			maximum: 60,
+			default: 20,
+			description:
+				"Maximum cursor pages consumed by one historical browser backfill run. The next cursor is checkpointed so later runs resume exactly.",
+		},
+		incremental_pages: {
+			type: "integer",
+			minimum: 1,
+			maximum: 10,
+			default: 2,
+			description:
+				"Pages read from the newest likes after the historical backfill reaches the platform boundary.",
+		},
+	},
+};
+
 const bookmarksConfigSchema = {
 	type: "object",
 	properties: {
@@ -1847,9 +2408,20 @@ const engagementMetadataSchema = {
 		is_retweet: { type: "boolean" },
 		is_reply: { type: "boolean" },
 		is_quote: { type: "boolean" },
+		conversation_id: { type: "string" },
+		in_reply_to_id: { type: "string" },
+		quoted_tweet_id: { type: "string" },
+		reposted_tweet_id: { type: "string" },
+		expanded_urls: { type: "array", items: { type: "object" } },
 		author_id: { type: "string", description: "X numeric user id" },
 		author_handle: { type: "string", description: "X @handle without @" },
 		author_name: { type: "string", description: "Display name" },
+		liked_by_id: { type: "string", description: "Connected X numeric user id" },
+		liked_by_handle: {
+			type: "string",
+			description: "Connected X @handle without @",
+		},
+		liked_by_name: { type: "string", description: "Connected account name" },
 	},
 };
 
@@ -2357,8 +2929,8 @@ export default class XConnector extends ConnectorRuntime {
 		key: "x",
 		name: "X (Twitter)",
 		description:
-			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.12.1",
+			"Fetches tweets, browser-visible like history, bookmarks, and DMs through the X API v2 or the paired Owletto Chrome extension. Links social actors into the person graph.",
+		version: "3.13.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -2461,13 +3033,16 @@ export default class XConnector extends ConnectorRuntime {
 				key: "liked_tweets",
 				name: "Liked Posts",
 				description:
-					"Posts the connected account has liked. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
-				configSchema: accountTimelineConfigSchema,
+					"Posts the connected account has liked. The paired signed-in Chrome extension performs resumable cursor backfill and incremental collection.",
+				configSchema: likedTweetsConfigSchema,
 				eventKinds: {
 					liked_tweet: {
 						description: "A post liked by the connected account",
 						metadataSchema: engagementMetadataSchema,
-						attributions: X_TWEET_AUTHOR_ATTRIBUTIONS,
+						attributions: X_LIKED_POST_ATTRIBUTIONS,
+						relationships: [
+							{ type: "engaged_with", from: "liker", to: "author" },
+						],
 					},
 				},
 			},
@@ -2636,9 +3211,7 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "my_tweets") {
-			if (
-				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
-			) {
+			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncMyTweetsViaOAuthApi(ctx, config, checkpoint),
@@ -2649,22 +3222,11 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "liked_tweets") {
-			if (
-				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
-			) {
-				return syncOAuthWithOptionalFallback(
-					config,
-					() => syncLikedTweetsViaOAuthApi(ctx, config, checkpoint),
-					() => syncLikedTweetsViaExtension(ctx, config, checkpoint),
-				);
-			}
 			return syncLikedTweetsViaExtension(ctx, config, checkpoint);
 		}
 
 		if (feedKey === "bookmarks") {
-			if (
-				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
-			) {
+			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncBookmarksViaOAuthApi(ctx, config, checkpoint),
@@ -2675,9 +3237,7 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "direct_messages") {
-			if (
-				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
-			) {
+			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncDirectMessagesViaOAuthApi(ctx, config, checkpoint),
@@ -2689,9 +3249,7 @@ export default class XConnector extends ConnectorRuntime {
 
 		// `tweets` feed: prefer the official API when scopes are sufficient,
 		// otherwise the extension's signed-in search.
-		if (
-			resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
-		) {
+		if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
 			return syncOAuthWithOptionalFallback(
 				config,
 				() => syncViaOAuthApi(ctx, config, checkpoint),

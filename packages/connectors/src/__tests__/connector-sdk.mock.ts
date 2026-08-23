@@ -97,28 +97,64 @@ export function connectorSdkMock() {
       };
       url: string;
       parseResponse: (url: string, json: unknown) => unknown[];
+      config?: { maxScrolls?: number };
+      triggerNextPage?: (
+        tabId: number,
+        dispatcher: {
+          dispatch: (
+            action: string,
+            input: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+        },
+        sessionId: string,
+      ) => Promise<void>;
     }) => {
       const observation = await opts.dispatcher.dispatch('navigate', {
         network_intercept: true,
         url: opts.url,
       });
       const responses =
-        (observation?.result as { responses?: Array<{ body?: string }> })
-          ?.responses ?? [];
+        (observation?.result as {
+          responses?: Array<{ body?: string; url?: string }>;
+        })?.responses ?? [];
       const items: unknown[] = [];
+      let apiCallCount = responses.length;
       for (const response of responses) {
         if (!response.body) continue;
         items.push(
           ...opts.parseResponse(
-            opts.url,
+            response.url ?? opts.url,
             JSON.parse(response.body) as unknown,
           ),
         );
       }
+      if (opts.triggerNextPage) {
+        const tabId = Number(observation?.tab_id ?? 1);
+        for (let page = 0; page < (opts.config?.maxScrolls ?? 0); page++) {
+          const before = items.length;
+          await opts.triggerNextPage(tabId, opts.dispatcher, 'test-network-session');
+          const drained = await opts.dispatcher.dispatch('network_intercept_drain', {});
+          const nextResponses =
+            (drained?.result as {
+              responses?: Array<{ body?: string; url?: string }>;
+            })?.responses ?? [];
+          apiCallCount += nextResponses.length;
+          for (const response of nextResponses) {
+            if (!response.body) continue;
+            items.push(
+              ...opts.parseResponse(
+                response.url ?? opts.url,
+                JSON.parse(response.body) as unknown,
+              ),
+            );
+          }
+          if (items.length === before) break;
+        }
+      }
       return {
         items,
         backend: 'extension-network',
-        apiCallCount: responses.length,
+        apiCallCount,
       };
     },
     // Connectors create their HTTP client as a class field at construction, so a

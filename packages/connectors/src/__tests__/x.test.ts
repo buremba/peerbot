@@ -10,9 +10,13 @@ let parseBrowserSearchResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let parseBrowserTimelineResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let parseBrowserTimelinePage: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let extractTweetsFromInstructions: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let finalizeSyncResult: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let finalizeLikedTweetsResult: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let finalizeDmSyncResult: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
@@ -37,14 +41,22 @@ let prepareXReply: any;
 let truncateHandoffReason: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let buildInjectHandoffBannerExpression: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let extractBottomCursor: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let readGraphqlCursor: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let replaceGraphqlCursor: any;
 
 beforeAll(async () => {
 	const mod = await import("../x");
 	parseBrowserSearchResponse = mod.parseBrowserSearchResponse;
 	parseBrowserTimelineResponse = mod.parseBrowserTimelineResponse;
+	parseBrowserTimelinePage = mod.parseBrowserTimelinePage;
 	parseBrowserDmResponse = mod.parseBrowserDmResponse;
 	extractTweetsFromInstructions = mod.extractTweetsFromInstructions;
 	finalizeSyncResult = mod.finalizeSyncResult;
+	finalizeLikedTweetsResult = mod.finalizeLikedTweetsResult;
 	finalizeDmSyncResult = mod.finalizeDmSyncResult;
 	buildHomeFeedTweets = mod.buildHomeFeedTweets;
 	parseUsernameFromStatusPath = mod.parseUsernameFromStatusPath;
@@ -56,6 +68,9 @@ beforeAll(async () => {
 	prepareXReply = mod.prepareXReply;
 	truncateHandoffReason = mod.truncateHandoffReason;
 	buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
+	extractBottomCursor = mod.extractBottomCursor;
+	readGraphqlCursor = mod.readGraphqlCursor;
+	replaceGraphqlCursor = mod.replaceGraphqlCursor;
 });
 
 // A tweet_results.result node in x.com's GraphQL shape. `restId`/`legacy` is
@@ -253,16 +268,181 @@ describe("parseBrowserTimelineResponse", () => {
 		];
 
 		const profile = parseBrowserTimelineResponse("https://x.com/alice", {
-			data: { user: { result: { timeline_v2: { timeline: { instructions } } } } },
+			data: {
+				user: { result: { timeline_v2: { timeline: { instructions } } } },
+			},
 		});
 		expect(profile).toHaveLength(1);
 		expect(profile[0]).toMatchObject({ id: "9", username: "alice" });
 
-		const bookmarks = parseBrowserTimelineResponse("https://x.com/i/bookmarks", {
-			data: { bookmark_timeline_v2: { timeline: { instructions } } },
-		});
+		const bookmarks = parseBrowserTimelineResponse(
+			"https://x.com/i/bookmarks",
+			{
+				data: { bookmark_timeline_v2: { timeline: { instructions } } },
+			},
+		);
 		expect(bookmarks).toHaveLength(1);
 		expect(bookmarks[0].text).toBe("profile tweet");
+	});
+
+	test("extracts the timeline owner and resumable bottom cursor", () => {
+		const instructions = [
+			{
+				entries: [
+					{
+						entryId: "tweet-9",
+						content: {
+							itemContent: {
+								tweet_results: {
+									result: tweetResult("9", "alice", "liked post"),
+								},
+							},
+						},
+					},
+					{
+						entryId: "cursor-bottom-1",
+						content: { cursorType: "Bottom", value: "cursor-page-2" },
+					},
+				],
+			},
+		];
+		const page = parseBrowserTimelinePage(
+			"https://x.com/i/api/graphql/q/Likes",
+			{
+				data: {
+					user: {
+						result: {
+							rest_id: "369272762",
+							core: { screen_name: "bu7emba", name: "burak emre" },
+							timeline_v2: { timeline: { instructions } },
+						},
+					},
+				},
+			},
+		);
+		expect(page).toMatchObject({
+			recognized: true,
+			bottomCursor: "cursor-page-2",
+			owner: {
+				id: "369272762",
+				handle: "bu7emba",
+				displayName: "burak emre",
+			},
+		});
+		expect(page.tweets).toHaveLength(1);
+		expect(extractBottomCursor(instructions)).toBe("cursor-page-2");
+	});
+
+	test("keeps long-form text, media, links, and every post reference", () => {
+		const rich = tweetResult("100", "alice", "short fallback", {
+			in_reply_to_status_id_str: "90",
+			conversation_id_str: "80",
+			is_quote_status: true,
+			entities: {
+				urls: [
+					{
+						url: "https://t.co/a",
+						expanded_url: "https://example.com/article",
+						display_url: "example.com/article",
+					},
+				],
+			},
+			extended_entities: {
+				media: [
+					{
+						type: "video",
+						media_key: "7_abc",
+						media_url_https: "https://pbs.twimg.com/media/preview.jpg",
+						ext_alt_text: "demo video",
+						original_info: { width: 1920, height: 1080 },
+						video_info: {
+							duration_millis: 1234,
+							variants: [
+								{
+									content_type: "video/mp4",
+									bitrate: 256000,
+									url: "https://video.twimg.com/low.mp4",
+								},
+								{
+									content_type: "video/mp4",
+									bitrate: 832000,
+									url: "https://video.twimg.com/high.mp4",
+								},
+							],
+						},
+					},
+				],
+			},
+			retweeted_status_result: {
+				result: tweetResult("70", "bob", "original repost"),
+			},
+		});
+		const richResult = {
+			...rich,
+			note_tweet: {
+				note_tweet_results: { result: { text: "complete long-form text" } },
+			},
+			quoted_status_result: {
+				result: tweetResult("60", "carol", "quoted source"),
+			},
+		};
+		const tweets = extractTweetsFromInstructions([
+			{
+				entries: [
+					{
+						entryId: "tweet-100",
+						content: {
+							itemContent: { tweet_results: { result: richResult } },
+						},
+					},
+				],
+			},
+		]);
+		expect(tweets[0]).toMatchObject({
+			text: "complete long-form text",
+			conversationId: "80",
+			inReplyToId: "90",
+			quotedTweetId: "60",
+			repostedTweetId: "70",
+			attachments: [
+				{
+					kind: "video",
+					url: "https://video.twimg.com/high.mp4",
+					preview_url: "https://pbs.twimg.com/media/preview.jpg",
+					alt_text: "demo video",
+					width: 1920,
+					height: 1080,
+					duration_ms: 1234,
+				},
+			],
+			urls: [
+				{
+					url: "https://t.co/a",
+					expanded_url: "https://example.com/article",
+				},
+			],
+		});
+	});
+});
+
+describe("X likes GraphQL cursor URLs", () => {
+	test("replaces only the cursor in a captured same-origin request", () => {
+		const url = `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
+			JSON.stringify({ userId: "369272762", cursor: "old", count: 20 }),
+		)}&features=${encodeURIComponent(JSON.stringify({ feature: true }))}`;
+		const replaced = replaceGraphqlCursor(url, "next-page");
+		expect(readGraphqlCursor(replaced)).toBe("next-page");
+		const parsed = new URL(replaced);
+		expect(JSON.parse(parsed.searchParams.get("features")!)).toEqual({
+			feature: true,
+		});
+	});
+
+	test("refuses a captured request outside x.com", () => {
+		const url = `https://evil.example/graphql?variables=${encodeURIComponent(
+			JSON.stringify({ cursor: "old" }),
+		)}`;
+		expect(() => replaceGraphqlCursor(url, "next")).toThrow(/non-x\.com/i);
 	});
 });
 
@@ -362,14 +542,24 @@ describe("finalizeSyncResult", () => {
 				publishedAt: new Date("2025-06-01T00:00:00Z"),
 			},
 		];
-		const liked = finalizeSyncResult(tweets as any, {}, {}, {
-			originType: "liked_tweet",
-		});
+		const liked = finalizeSyncResult(
+			tweets as any,
+			{},
+			{},
+			{
+				originType: "liked_tweet",
+			},
+		);
 		expect(liked.events[0].origin_type).toBe("liked_tweet");
 
-		const bookmarked = finalizeSyncResult(tweets as any, {}, {}, {
-			originType: "bookmark",
-		});
+		const bookmarked = finalizeSyncResult(
+			tweets as any,
+			{},
+			{},
+			{
+				originType: "bookmark",
+			},
+		);
 		expect(bookmarked.events[0].origin_type).toBe("bookmark");
 	});
 
@@ -383,6 +573,100 @@ describe("finalizeSyncResult", () => {
 			last_tweet_id: "7",
 			last_timestamp: "old",
 		});
+	});
+});
+
+describe("finalizeLikedTweetsResult", () => {
+	test("emits complete liked-post evidence and a resumable historical checkpoint", () => {
+		const tweets = [
+			{
+				id: "100",
+				text: "liked reply with media",
+				username: "alice",
+				authorId: "10",
+				authorDisplayName: "Alice",
+				likes: 12,
+				retweets: 3,
+				replies: 4,
+				quotes: 2,
+				publishedAt: new Date("2025-06-01T00:00:00Z"),
+				isRetweet: false,
+				isReply: true,
+				isQuote: true,
+				conversationId: "90",
+				inReplyToId: "90",
+				quotedTweetId: "80",
+				attachments: [
+					{
+						kind: "image",
+						url: "https://pbs.twimg.com/media/a.jpg",
+						alt_text: "diagram",
+					},
+				],
+				likedByUserId: "369272762",
+				likedByHandle: "bu7emba",
+				likedByDisplayName: "burak emre",
+			},
+		];
+		const result = finalizeLikedTweetsResult(
+			tweets,
+			{},
+			{ backend: "extension" },
+			{
+				status: "in_progress",
+				nextCursor: "page-2",
+				pagesRead: 1,
+				historicalItemsRead: 1,
+			},
+		);
+		expect(result.events[0]).toMatchObject({
+			origin_id: "100",
+			origin_type: "liked_tweet",
+			origin_parent_id: "90",
+			attachments: [
+				{
+					kind: "image",
+					url: "https://pbs.twimg.com/media/a.jpg",
+					alt_text: "diagram",
+				},
+			],
+			metadata: {
+				author_id: "10",
+				author_handle: "alice",
+				liked_by_id: "369272762",
+				liked_by_handle: "bu7emba",
+				conversation_id: "90",
+				in_reply_to_id: "90",
+				quoted_tweet_id: "80",
+			},
+		});
+		expect(result.checkpoint).toMatchObject({
+			last_tweet_id: "100",
+			likes_backfill_cursor: "page-2",
+			likes_backfill_status: "in_progress",
+			likes_backfill_pages: 1,
+			likes_backfill_items: 1,
+			likes_oldest_tweet_id: "100",
+		});
+	});
+
+	test("removes the cursor only after the browser-visible boundary is complete", () => {
+		const result = finalizeLikedTweetsResult(
+			[],
+			{
+				likes_backfill_cursor: "old-cursor",
+				likes_backfill_pages: 4,
+			},
+			{},
+			{
+				status: "complete",
+				pagesRead: 1,
+				historicalItemsRead: 0,
+			},
+		);
+		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
+		expect(result.checkpoint.likes_backfill_status).toBe("complete");
+		expect(result.checkpoint.likes_backfill_completed_at).toBeDefined();
 	});
 });
 
@@ -455,13 +739,30 @@ describe("XConnector definition", () => {
 			role: "authored_by",
 			target: { entityType: "person" },
 		});
-		expect(def.feeds.direct_messages.eventKinds.dm_message.attributions).toEqual(
+		expect(
+			def.feeds.direct_messages.eventKinds.dm_message.attributions,
+		).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ role: "authored_by" }),
 				expect.objectContaining({ role: "about" }),
 			]),
 		);
 		expect(def.feeds.liked_tweets.requiredScopes).toBeUndefined();
+		expect(def.feeds.liked_tweets.configSchema.required).toEqual([
+			"account_handle",
+		]);
+		expect(
+			def.feeds.liked_tweets.configSchema.properties.backfill_pages_per_run
+				.type,
+		).toBe("integer");
+		expect(
+			def.feeds.liked_tweets.eventKinds.liked_tweet.attributions.map(
+				(rule: { name?: string }) => rule.name,
+			),
+		).toEqual(["author", "liker"]);
+		expect(def.feeds.liked_tweets.eventKinds.liked_tweet.relationships).toEqual(
+			[{ type: "engaged_with", from: "liker", to: "author" }],
+		);
 		expect(def.feeds.bookmarks.requiredScopes).toBeUndefined();
 		expect(def.feeds.home_feed.description).toMatch(/home timeline/i);
 		// Extension is the browser fallback method (no public API for the timeline).
@@ -521,9 +822,219 @@ describe("parseBrowserDmResponse", () => {
 });
 
 describe("XConnector browser-first routing", () => {
+	test("collects signed-in likes with the liker identity", async () => {
+		const instructions = [
+			{
+				entries: [
+					{
+						entryId: "tweet-500",
+						content: {
+							itemContent: {
+								tweet_results: {
+									result: tweetResult("500", "alice", "liked by burak"),
+								},
+							},
+						},
+					},
+				],
+			},
+		];
+		const dispatcher = {
+			dispatch: async () => ({
+				result: {
+					responses: [
+						{
+							body: JSON.stringify({
+								data: {
+									user: {
+										result: {
+											rest_id: "369272762",
+											core: {
+												screen_name: "bu7emba",
+												name: "burak emre",
+											},
+											timeline_v2: { timeline: { instructions } },
+										},
+									},
+								},
+							}),
+						},
+					],
+				},
+			}),
+		};
+		const connector = new XConnector();
+		const result = await connector.sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "bu7emba",
+				use_extension: true,
+				backfill_pages_per_run: 1,
+			},
+			checkpoint: {},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+		expect(result.events).toHaveLength(1);
+		expect(result.events[0]).toMatchObject({
+			origin_id: "500",
+			origin_type: "liked_tweet",
+			metadata: {
+				author_handle: "alice",
+				liked_by_id: "369272762",
+				liked_by_handle: "bu7emba",
+				liked_by_name: "burak emre",
+			},
+		});
+		expect(result.metadata.collection_status).toBe("complete");
+	});
+
+	test("resumes historical likes from the checkpointed GraphQL cursor", async () => {
+		const timelineUrl = (cursor?: string) => {
+			const variables = {
+				userId: "369272762",
+				count: 20,
+				...(cursor ? { cursor } : {}),
+			};
+			return `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
+				JSON.stringify(variables),
+			)}`;
+		};
+		const response = (id: string, bottomCursor?: string) => ({
+			data: {
+				user: {
+					result: {
+						rest_id: "369272762",
+						core: { screen_name: "bu7emba", name: "burak emre" },
+						timeline_v2: {
+							timeline: {
+								instructions: [
+									{
+										entries: [
+											{
+												entryId: `tweet-${id}`,
+												content: {
+													itemContent: {
+														tweet_results: {
+															result: tweetResult(
+																id,
+																"alice",
+																`post ${id}`,
+																id === "100"
+																	? {
+																			created_at:
+																				"Wed Jun 04 12:00:00 +0000 2024",
+																		}
+																	: {},
+															),
+														},
+													},
+												},
+											},
+											...(bottomCursor
+												? [
+														{
+															entryId: "cursor-bottom",
+															content: {
+																cursorType: "Bottom",
+																value: bottomCursor,
+															},
+														},
+													]
+												: []),
+										],
+									},
+								],
+							},
+						},
+					},
+				},
+			},
+		});
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				if (action === "navigate") {
+					return {
+						tab_id: 42,
+						result: {
+							responses: [
+								{
+									url: timelineUrl(),
+									body: JSON.stringify(response("500", "fresh-cursor")),
+								},
+							],
+						},
+					};
+				}
+				if (action === "network_intercept_replay") {
+					return { ok: true, status: 200 };
+				}
+				if (action === "network_intercept_drain") {
+					return {
+						result: {
+							responses: [
+								{
+									url: timelineUrl("resume-cursor"),
+									body: JSON.stringify(response("100")),
+								},
+							],
+						},
+					};
+				}
+				return {};
+			},
+		};
+		const connector = new XConnector();
+		const result = await connector.sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "bu7emba",
+				use_extension: true,
+				backfill_pages_per_run: 1,
+			},
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+				likes_backfill_pages: 3,
+			},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+		const replay = calls.find(
+			(call) => call.action === "network_intercept_replay",
+		);
+		expect(replay?.input).toMatchObject({
+			session_id: "test-network-session",
+			url: timelineUrl("resume-cursor"),
+		});
+		expect(JSON.stringify(replay?.input)).not.toMatch(
+			/authorization|csrf|cookie/i,
+		);
+		expect(result.events.map((event: any) => event.origin_id).sort()).toEqual([
+			"100",
+			"500",
+		]);
+		expect(result.metadata).toMatchObject({
+			collection_status: "complete",
+			pages_requested: 1,
+			pages_received: 1,
+			backfill_pages_this_run: 1,
+			backfill_items_this_run: 1,
+		});
+		expect(result.checkpoint).toMatchObject({
+			likes_backfill_status: "complete",
+			likes_backfill_pages: 4,
+			likes_oldest_tweet_id: "100",
+		});
+		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
+	});
+
 	test("uses extension for bookmarks when OAuth lacks bookmark.read", async () => {
-		const calls: Array<{ action: string; input: Record<string, unknown> }> =
-			[];
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -565,8 +1076,7 @@ describe("XConnector browser-first routing", () => {
 	});
 
 	test("honors use_extension even when OAuth scopes are sufficient", async () => {
-		const calls: Array<{ action: string; input: Record<string, unknown> }> =
-			[];
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -593,8 +1103,7 @@ describe("XConnector browser-first routing", () => {
 	});
 
 	test("uses extension for direct_messages when OAuth lacks dm.read", async () => {
-		const calls: Array<{ action: string; input: Record<string, unknown> }> =
-			[];
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -984,9 +1493,9 @@ describe("isXAuthWall", () => {
 	// @LoginRadius is a real account. A substring test reads its permalink as an
 	// auth wall and kills the run on a signed-in page.
 	test("does not mistake a handle that starts with 'login' for the login page", () => {
-		expect(isXAuthWall("https://x.com/LoginRadius/status/2083959735481716957")).toBe(
-			false,
-		);
+		expect(
+			isXAuthWall("https://x.com/LoginRadius/status/2083959735481716957"),
+		).toBe(false);
 		expect(isXAuthWall("https://x.com/LoginRadius")).toBe(false);
 		expect(isXAuthWall("https://x.com/i/web/status/2083959735481716957")).toBe(
 			false,
@@ -1003,7 +1512,12 @@ describe("isReplySubmitLabel", () => {
 	});
 
 	test("does not match the composer or unrelated chrome", () => {
-		for (const label of ["Post text", "5 Replies. Reply", "Reply to thread", ""]) {
+		for (const label of [
+			"Post text",
+			"5 Replies. Reply",
+			"Reply to thread",
+			"",
+		]) {
 			expect(isReplySubmitLabel(label)).toBe(false);
 		}
 	});
@@ -1011,7 +1525,7 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.12.1");
+		expect(new XConnector().definition.version).toBe("3.13.0");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is
@@ -1027,7 +1541,8 @@ describe("prepare_reply action contract", () => {
 	});
 
 	test("accepts either tweet_url or tweet_id, and always a body", () => {
-		const schema = new XConnector().definition.actions.prepare_reply.inputSchema;
+		const schema = new XConnector().definition.actions.prepare_reply
+			.inputSchema;
 		expect(schema.required).toEqual(["body"]);
 		expect(schema.anyOf).toEqual([
 			{ required: ["tweet_url"] },
@@ -1270,7 +1785,10 @@ describe("prepareXReply", () => {
 	test("still rejects an empty body without touching the browser", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 		await expect(
-			prepareXReply(dispatcher, { tweetUrl: "2083959735481716957", body: "   " }),
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "   ",
+			}),
 		).rejects.toThrow(/must be non-empty/);
 		expect(calls).toHaveLength(0);
 	});
@@ -1354,7 +1872,8 @@ describe("prepare_reply handoff banner", () => {
 		const result = await prepareXReply(dispatcher, {
 			tweetUrl: "2083959735481716957",
 			body: "a draft",
-			reason: "he is asking exactly the question your event-sourcing post answers",
+			reason:
+				"he is asking exactly the question your event-sourcing post answers",
 		});
 
 		const banner = calls.find(
@@ -1432,7 +1951,9 @@ describe("prepare_reply handoff banner", () => {
 	});
 
 	test("keeps the context visible until the user dismisses it", () => {
-		const expr = buildInjectHandoffBannerExpression({ reason: "read this later" });
+		const expr = buildInjectHandoffBannerExpression({
+			reason: "read this later",
+		});
 		expect(expr).not.toContain("setTimeout");
 		expect(expr).toContain("root.remove()");
 	});

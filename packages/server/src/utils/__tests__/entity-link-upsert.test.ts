@@ -197,6 +197,143 @@ describe('applyEventAttributions', () => {
     expect(idents).toEqual([{ namespace: 'x_user_id', identifier: '123' }]);
   });
 
+  it('materializes an idempotent relationship between named event attributions', async () => {
+    const { org } = await setupOrg('named relationship org');
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+    `;
+    await sql`
+      INSERT INTO entity_relationship_types
+        (organization_id, slug, name, description, is_symmetric, status, created_at, updated_at)
+      VALUES
+        (${org.id}, 'engaged_with', 'Engaged With', 'Explicit social engagement', false, 'active', current_timestamp, current_timestamp)
+    `;
+    await createTestConnectorDefinition({
+      key: 'x-likes',
+      name: 'X Likes',
+      organization_id: org.id,
+      feeds_schema: {
+        [FEED_KEY]: {
+          eventKinds: {
+            liked_tweet: {
+              attributions: [
+                {
+                  name: 'author',
+                  role: 'authored_by',
+                  autoCreate: true,
+                  target: {
+                    entityType: 'person',
+                    titlePath: 'metadata.author_name',
+                    identities: [
+                      {
+                        namespace: 'x_user_id',
+                        eventPath: 'metadata.author_id',
+                        primary: true,
+                      },
+                      {
+                        namespace: 'x_handle',
+                        eventPath: 'metadata.author_handle',
+                      },
+                    ],
+                  },
+                },
+                {
+                  name: 'liker',
+                  role: 'performed_by',
+                  autoCreate: true,
+                  target: {
+                    entityType: 'person',
+                    titlePath: 'metadata.liked_by_name',
+                    identities: [
+                      {
+                        namespace: 'x_user_id',
+                        eventPath: 'metadata.liked_by_id',
+                        primary: true,
+                      },
+                      {
+                        namespace: 'x_handle',
+                        eventPath: 'metadata.liked_by_handle',
+                      },
+                    ],
+                  },
+                },
+              ],
+              relationships: [{ type: 'engaged_with', from: 'liker', to: 'author' }],
+            },
+          },
+        },
+      },
+    });
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'x-likes',
+      createDefaultFeed: false,
+    });
+    clearEntityLinkRulesCache();
+    const item: { origin_type: string; metadata: Record<string, unknown> } = {
+      origin_type: 'liked_tweet',
+      metadata: {
+        liked_by_id: '369272762',
+        liked_by_handle: 'bu7emba',
+        liked_by_name: 'burak emre',
+        author_id: '123',
+        author_handle: 'alice',
+        author_name: 'Alice',
+      },
+    };
+
+    await applyEventAttributions({
+      connectorKey: 'x-likes',
+      connectionId: connection.id,
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [item],
+    });
+    await applyEventAttributions({
+      connectorKey: 'x-likes',
+      connectionId: connection.id,
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [item],
+    });
+
+    const edges = await sql<{
+      from_name: string;
+      to_name: string;
+      relationship_type: string;
+      source: string;
+      metadata: Record<string, unknown>;
+    }>`
+      SELECT source_entity.name AS from_name,
+             target_entity.name AS to_name,
+             relationship_type.slug AS relationship_type,
+             relationship.source,
+             relationship.metadata
+      FROM entity_relationships relationship
+      JOIN entity_relationship_types relationship_type
+        ON relationship_type.id = relationship.relationship_type_id
+      JOIN entities source_entity ON source_entity.id = relationship.from_entity_id
+      JOIN entities target_entity ON target_entity.id = relationship.to_entity_id
+      WHERE relationship.organization_id = ${org.id}
+        AND relationship.deleted_at IS NULL
+    `;
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      from_name: 'burak emre',
+      to_name: 'Alice',
+      relationship_type: 'engaged_with',
+      source: 'feed',
+      metadata: {
+        connector_key: 'x-likes',
+        connection_id: connection.id,
+        feed_key: FEED_KEY,
+      },
+    });
+    expect(item.metadata.x_handle).toBe('alice');
+  });
+
   it('first-writer-wins when two rules stamp the same namespace on one event', async () => {
     // An X DM carries two person attributions that both resolve `x_user_id`:
     // the `authored_by` sender and the `about` counterparty. The event metadata

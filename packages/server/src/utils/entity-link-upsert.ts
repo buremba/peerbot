@@ -12,6 +12,7 @@
  *      logs a merge candidate when one event's identifiers resolve to
  *      multiple distinct entities.
  *   4) Merges declared `traits` onto entities.metadata per merge strategy.
+ *   5) Materializes declared relationships between named attributions.
  *
  * Never mutates `events.entity_ids` — events stay immutable, JOIN-at-read
  * recovers the relationship via entity_identities.
@@ -39,8 +40,14 @@ import {
   tryInsertEntityRow,
   withEntityWriteTransaction,
 } from './entity-management';
+import { upsertEdges } from './edge-writes';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
+import {
+  assertNotAclManagedEdge,
+  canonicalizeSymmetricEdge,
+  validateTypeRule,
+} from './relationship-validation';
 import { TtlCache } from './ttl-cache';
 
 interface BatchItem {
@@ -50,6 +57,7 @@ interface BatchItem {
 }
 
 type ResolvedEventAttributionRule = {
+  name?: string;
   role: EventAttributionRule['role'];
   entityType: string;
   autoCreate?: boolean;
@@ -63,8 +71,19 @@ interface RuleMap {
   [kind: string]: ResolvedEventAttributionRule[];
 }
 
+type ResolvedEventRelationship = {
+  type: string;
+  from: string;
+  to: string;
+};
+
+interface RelationshipMap {
+  [kind: string]: ResolvedEventRelationship[];
+}
+
 type EventKindAttributionDefinition = {
   attributions?: EventAttributionRule[];
+  relationships?: ResolvedEventRelationship[];
 };
 
 function resolveEventAttributions(
@@ -77,6 +96,7 @@ function resolveEventAttributions(
     }
     return [
       {
+        name: rule.name,
         role: rule.role,
         entityType: rule.target.entityType,
         autoCreate: rule.autoCreate,
@@ -92,6 +112,7 @@ function resolveEventAttributions(
 const RULES_CACHE_TTL_MS = 60_000;
 // Per-pod caches — no cross-replica sharing.
 const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
+const relationshipsCache = new TtlCache<RelationshipMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
 
 /**
@@ -158,6 +179,39 @@ async function loadEventAttributionRules(
   });
 }
 
+async function loadEventRelationships(
+  sql: DbClient,
+  params: {
+    connectorKey: string;
+    feedKey: string;
+    orgId: string;
+  }
+): Promise<RelationshipMap> {
+  const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
+  return relationshipsCache.getOrSet(cacheKey, async () => {
+    const rows = await sql`
+      SELECT feeds_schema
+      FROM connector_definitions
+      WHERE key = ${params.connectorKey}
+        AND organization_id = ${params.orgId}
+      LIMIT 1
+    `;
+    const result: RelationshipMap = {};
+    const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
+    const feedDef = feedsSchema?.[params.feedKey];
+    const eventKinds = feedDef?.eventKinds as
+      | Record<string, EventKindAttributionDefinition>
+      | undefined;
+    if (!eventKinds) return result;
+    for (const [kind, def] of Object.entries(eventKinds)) {
+      if (Array.isArray(def.relationships) && def.relationships.length > 0) {
+        result[kind] = def.relationships;
+      }
+    }
+    return result;
+  });
+}
+
 /**
  * Load the FIRST attribution rule matching `entityType` (and `role`, when given)
  * declared anywhere in the connector's feeds_schema. The live app-webhook path
@@ -216,6 +270,7 @@ export async function loadAttributionRuleByType(
 
 export function clearEntityLinkRulesCache(): void {
   rulesCache.clear();
+  relationshipsCache.clear();
   creatorCache.clear();
 }
 
@@ -835,8 +890,13 @@ export async function applyEventAttributions(
     orgId: params.orgId,
   });
   if (Object.keys(rulesByKind).length === 0) return;
-  await withEntityWriteTransaction(db, (tx) =>
-    resolveLinksByKind(
+  const relationshipsByKind = await loadEventRelationships(db, {
+    connectorKey: params.connectorKey,
+    feedKey: params.feedKey,
+    orgId: params.orgId,
+  });
+  await withEntityWriteTransaction(db, async (tx) => {
+    const resolved = await resolveLinksByKind(
       {
         connectorKey: params.connectorKey,
         connectionId: params.connectionId,
@@ -845,8 +905,17 @@ export async function applyEventAttributions(
         rulesByKind,
       },
       tx
-    )
-  );
+    );
+    await materializeEventRelationships(tx, {
+      connectorKey: params.connectorKey,
+      connectionId: params.connectionId,
+      feedKey: params.feedKey!,
+      orgId: params.orgId,
+      items: params.items,
+      relationshipsByKind,
+      namedEntityIdsByItem: resolved.namedEntityIdsByItem,
+    });
+  });
 }
 
 /**
@@ -878,8 +947,8 @@ export async function resolveEventAttributionsForItems(
 ): Promise<Map<number, number[]>> {
   if (params.items.length === 0) return new Map();
   const db = sql ?? getDb();
-  return withEntityWriteTransaction(db, (tx) =>
-    resolveLinksByKind(
+  return withEntityWriteTransaction(db, async (tx) => {
+    const resolved = await resolveLinksByKind(
       {
         connectorKey: params.connectorKey,
         connectionId: params.connectionId,
@@ -888,8 +957,94 @@ export async function resolveEventAttributionsForItems(
         rulesByKind: params.rules,
       },
       tx
-    )
-  );
+    );
+    return resolved.entityIdsByItem;
+  });
+}
+
+async function materializeEventRelationships(
+  sql: DbClient,
+  params: {
+    connectorKey: string;
+    connectionId?: number | null;
+    feedKey: string;
+    orgId: string;
+    items: BatchItem[];
+    relationshipsByKind: RelationshipMap;
+    namedEntityIdsByItem: Map<number, Map<string, number>>;
+  }
+): Promise<void> {
+  const pairsByType = new Map<string, Array<{ fromEntityId: number; toEntityId: number }>>();
+  params.items.forEach((item, index) => {
+    const kind = item.origin_type;
+    if (!kind) return;
+    const declarations = params.relationshipsByKind[kind];
+    const named = params.namedEntityIdsByItem.get(index);
+    if (!declarations || !named) return;
+    for (const declaration of declarations) {
+      const fromEntityId = named.get(declaration.from);
+      const toEntityId = named.get(declaration.to);
+      if (!fromEntityId || !toEntityId || fromEntityId === toEntityId) continue;
+      let pairs = pairsByType.get(declaration.type);
+      if (!pairs) {
+        pairs = [];
+        pairsByType.set(declaration.type, pairs);
+      }
+      pairs.push({ fromEntityId, toEntityId });
+    }
+  });
+  if (pairsByType.size === 0) return;
+
+  const slugs = [...pairsByType.keys()];
+  const typeRows = await sql<{
+    id: number | string;
+    slug: string;
+    purpose: string | null;
+    is_symmetric: boolean;
+  }>`
+    SELECT id, slug, purpose, is_symmetric
+    FROM entity_relationship_types
+    WHERE organization_id = ${params.orgId}
+      AND slug = ANY(${pgTextArray(slugs)}::text[])
+      AND status = 'active'
+      AND deleted_at IS NULL
+  `;
+  const typeBySlug = new Map(typeRows.map((row) => [row.slug, row]));
+
+  for (const [slug, rawPairs] of pairsByType) {
+    const type = typeBySlug.get(slug);
+    if (!type) {
+      throw new Error(
+        `Connector '${params.connectorKey}' feed '${params.feedKey}' relationship type '${slug}' is missing or inactive`
+      );
+    }
+    assertNotAclManagedEdge(type, 'connector event relationship materialization');
+    const relationshipTypeId = Number(type.id);
+    const pairs = rawPairs.map((pair) => {
+      if (!type.is_symmetric) return pair;
+      const canonical = canonicalizeSymmetricEdge(pair.fromEntityId, pair.toEntityId);
+      return { fromEntityId: canonical.from, toEntityId: canonical.to };
+    });
+    for (const pair of pairs) {
+      await validateTypeRule(relationshipTypeId, pair.fromEntityId, pair.toEntityId, sql);
+    }
+    await upsertEdges({
+      db: sql,
+      organizationId: params.orgId,
+      relationshipTypeId,
+      pairs,
+      source: 'feed',
+      confidence: 1,
+      metadata: {
+        connector_key: params.connectorKey,
+        connection_id: params.connectionId ?? null,
+        feed_key: params.feedKey,
+      },
+      // Never take ownership of a human-created edge with the same triple.
+      // Event rows remain the append-only evidence/recency surface.
+      onConflict: 'ignore',
+    });
+  }
 }
 
 /**
@@ -910,10 +1065,14 @@ async function resolveLinksByKind(
   // A real transaction handle for ALL match/insert/update writes. Public entry
   // points either join the caller's tx or open one before reaching this core.
   sql: DbClient
-): Promise<Map<number, number[]>> {
-  const resolvedByItem = new Map<number, number[]>();
+): Promise<{
+  entityIdsByItem: Map<number, number[]>;
+  namedEntityIdsByItem: Map<number, Map<string, number>>;
+}> {
+  const entityIdsByItem = new Map<number, number[]>();
+  const namedEntityIdsByItem = new Map<number, Map<string, number>>();
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
-    return resolvedByItem;
+    return { entityIdsByItem, namedEntityIdsByItem };
   }
 
   // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
@@ -946,7 +1105,7 @@ async function resolveLinksByKind(
       bucket.push({ index, item, link });
     }
   });
-  if (byRule.size === 0) return resolvedByItem;
+  if (byRule.size === 0) return { entityIdsByItem, namedEntityIdsByItem };
 
   // Resolve first, then lock every existing entity in one ascending-id pass.
   // Without a global lock order, two connector batches containing the same
@@ -983,11 +1142,11 @@ async function resolveLinksByKind(
   }
 
   const recordResolved = (index: number, entityId: number): void => {
-    const existing = resolvedByItem.get(index);
+    const existing = entityIdsByItem.get(index);
     if (existing) {
       if (!existing.includes(entityId)) existing.push(entityId);
     } else {
-      resolvedByItem.set(index, [entityId]);
+      entityIdsByItem.set(index, [entityId]);
     }
   };
 
@@ -1122,6 +1281,14 @@ async function resolveLinksByKind(
       });
 
       recordResolved(index, entityId);
+      if (rule.name) {
+        let names = namedEntityIdsByItem.get(index);
+        if (!names) {
+          names = new Map<string, number>();
+          namedEntityIdsByItem.set(index, names);
+        }
+        names.set(rule.name, entityId);
+      }
 
       // Cache the mapping for the rest of the batch — only for attached
       // identifiers, so an identifier that stayed on another entity (ON CONFLICT
@@ -1144,26 +1311,30 @@ async function resolveLinksByKind(
       // (e.g. an X DM stamps x_user_id for both the `authored_by` sender and the
       // `about` counterparty). Read-time recall can only match one of them via
       // this slot, so first-writer-wins: the earliest-declared rule (the primary
-      // author) keeps the slot, and we log the collision so the case that needs a
-      // richer, role-aware read model is observable rather than silently dropped.
-      // Making role queryable at read time is deliberately a separate change (it
-      // touches the shared recall SQL + every call site) — until then this is the
-      // honest boundary, not a workaround.
+      // author) keeps the slot. Unnamed legacy declarations log the collision;
+      // named declarations retain both role-aware ids in namedEntityIdsByItem,
+      // which is the relationship materializer's explicit multi-actor model.
       const md = (item.metadata ??= {});
       for (const id of attached) {
         const existing = md[id.namespace];
         if (existing !== undefined && existing !== id.identifier) {
-          logger.warn(
-            {
-              orgId: params.orgId,
-              connectorKey: params.connectorKey,
-              namespace: id.namespace,
-              kept: existing,
-              dropped: id.identifier,
-              role: rule.role,
-            },
-            'attribution metadata slot collision — a later rule resolved the same namespace to a different identifier; keeping the first-stamped value (read-time recall matches only one)'
-          );
+          // Named attributions intentionally preserve their role-aware entity
+          // ids for relationship materialization, so sharing a flat legacy
+          // identity slot is expected. Keep warnings for unnamed declarations,
+          // where a collision still means one actor is not queryable by role.
+          if (!rule.name) {
+            logger.warn(
+              {
+                orgId: params.orgId,
+                connectorKey: params.connectorKey,
+                namespace: id.namespace,
+                kept: existing,
+                dropped: id.identifier,
+                role: rule.role,
+              },
+              'attribution metadata slot collision — a later rule resolved the same namespace to a different identifier; keeping the first-stamped value (read-time recall matches only one)'
+            );
+          }
           continue;
         }
         md[id.namespace] = id.identifier;
@@ -1171,7 +1342,7 @@ async function resolveLinksByKind(
     }
   }
 
-  return resolvedByItem;
+  return { entityIdsByItem, namedEntityIdsByItem };
 }
 
 interface SenderIdentityParams {

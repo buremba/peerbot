@@ -2055,14 +2055,20 @@ async function syncLikedTweetsViaExtension(
 		triggerNextPage: async (_tabId, browserDispatcher, sessionId) => {
 			const requestUrl = pages.prepareReplay();
 			if (!requestUrl) return;
-			const observation = await browserDispatcher.dispatch<{
-				ok?: boolean;
-				status?: number;
-			}>("network_intercept_replay", {
-				session_id: sessionId,
-				url: requestUrl,
-				allowed_origins: X_ALLOWED_ORIGINS,
-			});
+			let observation: { ok?: boolean; status?: number };
+			try {
+				observation = await browserDispatcher.dispatch<{
+					ok?: boolean;
+					status?: number;
+				}>("network_intercept_replay", {
+					session_id: sessionId,
+					url: requestUrl,
+					allowed_origins: X_ALLOWED_ORIGINS,
+				});
+			} catch {
+				parserErrors.push("X likes cursor request failed (transport_error)");
+				return;
+			}
 			if (observation.ok !== true) {
 				parserErrors.push(
 					`X likes cursor request failed (${observation.status ?? "unknown"})`,

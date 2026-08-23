@@ -1312,6 +1312,7 @@ describe("XConnector browser-first routing", () => {
 		{
 			name: "keeps a retryable cursor when the final replay response is late",
 			replayResult: { ok: true, status: 200 },
+			replayThrows: false,
 			parserErrors: [],
 			checkpoint: {},
 			expectedCursor: "retry-cursor",
@@ -1322,6 +1323,7 @@ describe("XConnector browser-first routing", () => {
 		{
 			name: "keeps collected likes when cursor replay is rejected",
 			replayResult: { ok: false, status: 429 },
+			replayThrows: false,
 			parserErrors: ["X likes cursor request failed (429)"],
 			checkpoint: {},
 			expectedCursor: "retry-cursor",
@@ -1332,6 +1334,7 @@ describe("XConnector browser-first routing", () => {
 		{
 			name: "keeps a resumed cursor when its replay is rejected",
 			replayResult: { ok: false, status: 429 },
+			replayThrows: false,
 			parserErrors: ["X likes cursor request failed (429)"],
 			checkpoint: {
 				likes_backfill_cursor: "resume-cursor",
@@ -1345,6 +1348,7 @@ describe("XConnector browser-first routing", () => {
 		{
 			name: "counts a retried in-flight cursor once",
 			replayResult: { ok: true, status: 200 },
+			replayThrows: false,
 			parserErrors: [],
 			checkpoint: {
 				likes_backfill_cursor: "resume-cursor",
@@ -1371,6 +1375,7 @@ describe("XConnector browser-first routing", () => {
 		{
 			name: "keeps a resumed cursor when GraphQL returns an error page",
 			replayResult: { ok: true, status: 200 },
+			replayThrows: false,
 			parserErrors: ["rate limited"],
 			checkpoint: {
 				likes_backfill_cursor: "resume-cursor",
@@ -1399,6 +1404,20 @@ describe("XConnector browser-first routing", () => {
 				],
 			],
 		},
+		{
+			name: "keeps a resumed cursor when replay transport fails",
+			replayResult: { ok: false, status: 0 },
+			replayThrows: true,
+			parserErrors: ["X likes cursor request failed (transport_error)"],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "resume-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
+		},
 	]) {
 		test(scenario.name, async () => {
 			let drainCount = 0;
@@ -1420,6 +1439,7 @@ describe("XConnector browser-first routing", () => {
 						};
 					}
 					if (action === "network_intercept_replay") {
+						if (scenario.replayThrows) throw new Error("network down");
 						return scenario.replayResult;
 					}
 					if (action === "network_intercept_drain") {

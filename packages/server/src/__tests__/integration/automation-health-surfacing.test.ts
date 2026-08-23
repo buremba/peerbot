@@ -405,6 +405,47 @@ describe("automation health surfacing (#2033)", () => {
     expect(health.metrics.stalePendingAutomationRuns).toBeGreaterThanOrEqual(1);
     expect(health.issues.some((i) => /stuck pending/i.test(i))).toBe(true);
   });
+
+  it("3.2: reports an offline device deferral without a scheduler failure", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    const [device] = await sql<{ id: string }>`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id,
+        agent_kinds, last_seen_at
+      ) VALUES (
+        ${ctx.userId}, 'health-offline-mac', 'macos', ${sql.json({})}, 'Offline Mac',
+        ${ctx.organizationId}, ${"{claude-code}"}::text[],
+        current_timestamp - interval '10 minutes'
+      )
+      RETURNING id
+    `;
+    await sql`
+      UPDATE automations
+      SET device_worker_id = ${device.id}::uuid,
+          agent_kind = 'claude-code',
+          next_run_at = current_timestamp - interval '2 hours'
+      WHERE id = ${automationId}
+    `;
+    await sql`
+      INSERT INTO runs (
+        organization_id, run_type, automation_id, status, approval_status,
+        approved_input, created_at
+      ) VALUES (
+        ${ctx.organizationId}, 'automation', ${automationId}, 'pending', 'auto',
+        ${sql.json({ dispatch_source: "scheduled", device_worker_id: device.id })},
+        current_timestamp - interval '3 hours'
+      )
+    `;
+
+    const health = await getSchedulerHealth({} as Env);
+    expect(health.metrics.deferredDeviceAutomations).toBe(1);
+    expect(health.metrics.oldestDeviceDeferralHours).toBeGreaterThan(1);
+    expect(health.metrics.overdueAutomations).toBe(0);
+    expect(health.metrics.stalePendingAutomationRuns).toBe(0);
+    expect(health.healthy).toBe(true);
+    expect(health.issues).toEqual([]);
+  });
 });
 
 afterAll(() => {

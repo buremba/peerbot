@@ -30,6 +30,7 @@ import { materializeDueItems } from "../scheduled/due-materializer";
 import { markStaleRunsAsTimeout } from "../scheduled/stale-run-sweeper";
 import { fingerprintAutomationSources } from "../tools/get_content/automation-mode";
 import { nextRunAt } from "../utils/cron";
+import { DEVICE_ONLINE_WINDOW_SECONDS } from "../utils/device-liveness";
 import logger from "../utils/logger";
 import { ToolUserError } from "../utils/errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
@@ -41,6 +42,7 @@ import {
 import {
 	advanceScheduleAfterTerminalFailure,
 	advanceAutomationSchedule,
+	advanceAutomationScheduleAfterSuccessfulWindow,
 } from "./schedule-cursor";
 import {
 	resolveAutomationRunsByMessageIds,
@@ -599,6 +601,10 @@ async function finalizeStalePendingAutomationRuns(
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
         AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
+        AND NOT (
+          COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
+          AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
+        )
       ORDER BY r.created_at ASC
       FOR UPDATE OF r, w SKIP LOCKED
       LIMIT 100
@@ -715,9 +721,9 @@ export async function materializeDueAutomationRuns(
 	const counts = await materializeDueItems<DueAutomationRow>({
 		label: "automation",
 		fetchDue: async () => {
-			// Only schedule automations we can actually execute: either device-pinned (an
-			// external/device worker claims it via the poll lane — no cloud agent row
-			// needed) OR the assigned agent still exists in the org. An automation whose
+			// Only schedule automations we can actually execute: either a live, compatible
+			// device pin (claimed via the poll lane) OR an unpinned assignment whose agent
+			// still exists in the org. An automation whose
 			// `agents` row was deleted is otherwise materialized every cron tick and fails
 			// at dispatch ("Assigned agent ... does not exist"). Skipping at the source is
 			// self-healing: it resumes automatically if the agent is recreated. The
@@ -733,9 +739,27 @@ export async function materializeDueAutomationRuns(
           AND w.next_run_at IS NOT NULL
           AND w.next_run_at <= current_timestamp
           AND (
-            w.device_worker_id IS NOT NULL
+            (
+              w.device_worker_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM device_workers dw
+                WHERE dw.id = w.device_worker_id
+                  AND dw.last_seen_at > current_timestamp
+                    - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+                  AND (
+                    dw.agent_kinds IS NULL
+                    OR CASE
+                      WHEN NULLIF(w.agent_kind, '') IS NULL
+                        THEN cardinality(dw.agent_kinds) > 0
+                      ELSE w.agent_kind = ANY(dw.agent_kinds)
+                    END
+                  )
+              )
+            )
             OR (
-              w.agent_id IS NOT NULL
+              w.device_worker_id IS NULL
+              AND w.agent_id IS NOT NULL
               AND EXISTS (
                 SELECT 1 FROM agents a
                 WHERE a.id = w.agent_id
@@ -834,7 +858,12 @@ export async function materializeDueAutomationRuns(
 							granularity,
 						);
 					}
-					await advanceAutomationSchedule(sql, automation.id);
+					await advanceAutomationScheduleAfterSuccessfulWindow(
+						sql,
+						automation.id,
+						Boolean(automation.device_worker_id),
+						granularity
+					);
 					logger.info(
 						{ automationId: automation.id, empty: sourceState.empty },
 						"[automation] Skipped unchanged Automation sources before agent dispatch"

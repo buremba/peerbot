@@ -50,7 +50,8 @@ fi
 echo ">> Building Owletto (Release, $SIGN_ID, version $VERSION)..."
 (
   cd "$MAC"
-  xcodebuild -scheme Owletto -configuration Release \
+  "$ROOT/scripts/with-owletto-mac-daemon.sh" \
+    xcodebuild -scheme Owletto -configuration Release \
     -derivedDataPath "$DERIVED" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="$SIGN_ID" \
@@ -63,11 +64,17 @@ echo ">> Building Owletto (Release, $SIGN_ID, version $VERSION)..."
 
 APP="$DERIVED/Build/Products/Release/Owletto.app"
 [ -d "$APP" ] || die "build succeeded but $APP is missing"
+DAEMON="$APP/Contents/Resources/lobu-device-daemon/lobu-device-daemon"
+"$ROOT/scripts/verify-mac-device-daemon.sh" "$DAEMON" >/dev/null
 
 # Xcode + SPM Sparkle: re-seal nested helpers (same leaf-first order as CI).
 echo ">> Re-signing Sparkle helpers..."
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 OPTS=(--force --options runtime --timestamp --sign "$SIGN_ID")
+
+# Xcode treats the daemon as a resource, so seal its Mach-O explicitly before
+# re-signing the umbrella app that records the nested signature.
+codesign "${OPTS[@]}" "$DAEMON"
 
 resign_xpc() {
   local name="$1"

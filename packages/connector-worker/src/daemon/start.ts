@@ -44,6 +44,7 @@ export interface DaemonStartOptions {
   debug?: boolean;
   /** False only when the operator explicitly disables inherited-session delivery. */
   interactiveSession?: false;
+  workerCredentialMaintenance?: (activate: (workerApiToken: string) => void) => Promise<void>;
 }
 
 export function resolveDaemonWorkerId(
@@ -180,6 +181,9 @@ export async function startDaemonCommand(
     ...(label ? { label } : {}),
     ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
     ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
+    ...(opts.workerCredentialMaintenance
+      ? { workerCredentialMaintenance: opts.workerCredentialMaintenance }
+      : {}),
     ...(detected
       ? {
           agentKinds: [detected.kind],

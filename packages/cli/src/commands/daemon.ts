@@ -45,7 +45,7 @@ interface DaemonTarget {
 interface MintedDeviceCredential {
   workerId: string;
   workerApiToken: string;
-  expiresAt?: number;
+  expiresAt: number;
 }
 
 interface MintDeviceCredentialOptions {
@@ -68,15 +68,12 @@ class DeviceMintError extends Error {
 }
 
 /**
- * How much of a cached child PAT's life must remain for this start to reuse it
- * instead of re-minting. The daemon snapshots its bearer for the whole process
- * lifetime and polls for weeks, so the buffer has to outlast a realistic run:
- * with a shorter one, a start that reuses a nearly-expired token leaves the
- * worker polling 401 forever a day or two later — the exact silent failure
- * `startDaemonCommand`'s boot check exists to prevent. A third of the server's
- * 90-day child expiry keeps re-mints rare while staying well past that.
+ * How much of a child PAT's life must remain before a start or idle running
+ * daemon re-mints it. A third of the server's 90-day expiry keeps rotations
+ * rare while leaving time to ride out a temporary gateway outage.
  */
 const CHILD_TOKEN_REFRESH_BUFFER_MS = 30 * 24 * 60 * 60 * 1000;
+const CHILD_TOKEN_RETRY_MS = 60 * 1000;
 
 /** Shown when `lobu daemon` can't find anything to authorize against. */
 const SETUP_MESSAGE =
@@ -158,6 +155,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
 
   let workerId = explicitWorkerId ?? sessionWorkerId ?? cachedState?.workerId;
   let workerApiToken = explicitWorkerToken;
+  let workerCredentialExpiresAt: number | undefined;
 
   if (workerApiToken) {
     if (!workerApiToken.startsWith("owl_pat_")) {
@@ -184,6 +182,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
       hasUsableCachedWorkerToken(cachedState)
     ) {
       workerApiToken = cachedState.workerApiToken;
+      workerCredentialExpiresAt = cachedState.expiresAt;
     } else {
       let mintBearer = cachedState?.workerApiToken;
       if (!workerId) {
@@ -203,6 +202,8 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
         initialBearerIsChild:
           mintBearer !== undefined &&
           mintBearer === cachedState?.workerApiToken,
+        initialChildExpiresAt: cachedState?.expiresAt,
+        interactiveReauth: true,
         options: {
           gatewayOrigin: target.gatewayOrigin,
           bearer,
@@ -221,6 +222,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
         await persistDeviceCredential(contextName, statePlatform, minted);
       }
       workerApiToken = minted.workerApiToken;
+      workerCredentialExpiresAt = minted.expiresAt;
     }
   }
 
@@ -233,6 +235,26 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     );
   }
 
+  const workerCredentialMaintenance =
+    !explicitWorkerToken &&
+    !sessionLane &&
+    contextName &&
+    workerCredentialExpiresAt
+      ? createWorkerCredentialMaintenance({
+          contextName,
+          statePlatform,
+          gatewayOrigin: target.gatewayOrigin,
+          platform,
+          workerId,
+          label: options.label?.trim() || shortHost,
+          initialCredential: {
+            workerId,
+            workerApiToken,
+            expiresAt: workerCredentialExpiresAt,
+          },
+        })
+      : undefined;
+
   await startDaemonCommand({
     apiUrl: target.gatewayOrigin,
     platform: sessionLane ? "headless" : requestedPlatform,
@@ -244,6 +266,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
       .map((entry) => entry.trim())
       .filter(Boolean),
     workerApiToken,
+    ...(workerCredentialMaintenance ? { workerCredentialMaintenance } : {}),
     debug: options.debug === true,
     ...(options.interactiveSession === false
       ? { interactiveSession: false as const }
@@ -338,10 +361,14 @@ async function refreshInstallationLogin(contextName: string): Promise<string> {
 async function mintDeviceCredentialWithReauth({
   contextName,
   initialBearerIsChild,
+  initialChildExpiresAt,
+  interactiveReauth,
   options,
 }: {
   contextName: string;
   initialBearerIsChild: boolean;
+  initialChildExpiresAt?: number;
+  interactiveReauth: boolean;
   options: MintDeviceCredentialOptions;
 }): Promise<MintedDeviceCredential> {
   try {
@@ -349,9 +376,19 @@ async function mintDeviceCredentialWithReauth({
   } catch (error) {
     if (!isDeviceMintAuthError(error)) throw error;
 
-    // A cached child may have expired or been revoked. Retry with this exact
-    // installation's stored login first; never borrow a different context.
+    // Do not let OAuth silently undo revocation of a still-live child.
     if (initialBearerIsChild) {
+      if (!interactiveReauth) throw error;
+      if (
+        typeof initialChildExpiresAt !== "number" ||
+        initialChildExpiresAt > Date.now()
+      ) {
+        throw new DeviceMintError(
+          "The stored device credential was rejected before its local expiry; refusing to replace a possibly revoked device automatically. Re-pair this device explicitly.",
+          error.status,
+          error.code
+        );
+      }
       const installationBearer = await requireInstallationLogin(contextName);
       try {
         return await mintDeviceCredential({
@@ -366,6 +403,7 @@ async function mintDeviceCredentialWithReauth({
     // A stored login can be valid for ordinary MCP work but lack the newer
     // device_worker:run scope. Interactive starts repair it through the same
     // device-code flow; non-interactive starts receive the exact login command.
+    if (!interactiveReauth) throw error;
     return mintDeviceCredential({
       ...options,
       bearer: await refreshInstallationLogin(contextName),
@@ -391,7 +429,110 @@ function hasUsableCachedWorkerToken(state: DeviceState): boolean {
   return Boolean(
     state.workerApiToken?.startsWith("owl_pat_") &&
       typeof state.expiresAt === "number" &&
-      state.expiresAt > Date.now() + CHILD_TOKEN_REFRESH_BUFFER_MS
+      !childTokenNeedsRefresh(state.expiresAt)
+  );
+}
+
+function childTokenNeedsRefresh(expiresAt: number, now = Date.now()): boolean {
+  return expiresAt <= now + CHILD_TOKEN_REFRESH_BUFFER_MS;
+}
+
+function createWorkerCredentialMaintenance(options: {
+  contextName: string;
+  statePlatform: string;
+  gatewayOrigin: string;
+  platform: string;
+  workerId: string;
+  label: string;
+  initialCredential: MintedDeviceCredential & { expiresAt: number };
+}): (activate: (workerApiToken: string) => void) => Promise<void> {
+  const { contextName, statePlatform, initialCredential, ...mintTarget } =
+    options;
+  let current = initialCredential;
+  let persistencePending = false;
+  let retryAt = 0;
+
+  return async (activate) => {
+    const now = Date.now();
+    if (now < retryAt) return;
+
+    if (persistencePending) {
+      try {
+        await persistDeviceCredential(contextName, statePlatform, current);
+        persistencePending = false;
+        retryAt = 0;
+      } catch (error) {
+        if (current.expiresAt <= now) {
+          throw new Error(
+            `The rotated device credential could not be saved before it expired: ${String(error)}`
+          );
+        }
+        retryAt = now + CHILD_TOKEN_RETRY_MS;
+        warnCredentialMaintenance(
+          "Could not save the rotated device credential",
+          error
+        );
+      }
+      return;
+    }
+
+    const { expiresAt } = current;
+    if (!childTokenNeedsRefresh(expiresAt, now)) return;
+
+    let minted: MintedDeviceCredential;
+    try {
+      minted = await mintDeviceCredentialWithReauth({
+        contextName,
+        initialBearerIsChild: true,
+        initialChildExpiresAt: expiresAt,
+        interactiveReauth: false,
+        options: { ...mintTarget, bearer: current.workerApiToken },
+      });
+    } catch (error) {
+      const permanent =
+        error instanceof DeviceMintError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 429;
+      if (permanent || expiresAt <= now) throw error;
+      retryAt = Math.min(now + CHILD_TOKEN_RETRY_MS, expiresAt);
+      warnCredentialMaintenance(
+        "Could not rotate the device credential",
+        error
+      );
+      return;
+    }
+
+    if (minted.workerId !== mintTarget.workerId) {
+      throw new Error(
+        `The gateway rotated worker id "${mintTarget.workerId}" as "${minted.workerId}"; refusing to use a mismatched credential.`
+      );
+    }
+
+    let persistenceError: unknown;
+    try {
+      await persistDeviceCredential(contextName, statePlatform, minted);
+    } catch (error) {
+      persistenceError = error;
+    }
+
+    activate(minted.workerApiToken);
+    current = minted;
+    retryAt = 0;
+    if (persistenceError) {
+      persistencePending = true;
+      retryAt = Date.now() + CHILD_TOKEN_RETRY_MS;
+      warnCredentialMaintenance(
+        "Could not save the rotated device credential; it remains active in memory",
+        persistenceError
+      );
+    }
+  };
+}
+
+function warnCredentialMaintenance(message: string, error: unknown): void {
+  process.stderr.write(
+    `[daemon] ${message}; retrying: ${error instanceof Error ? error.message : String(error)}\n`
   );
 }
 
@@ -437,7 +578,11 @@ async function mintDeviceCredential(
     typeof parsed?.expires_at === "string"
       ? Date.parse(parsed.expires_at)
       : Number.NaN;
-  if (!workerId || !workerApiToken.startsWith("owl_pat_")) {
+  if (
+    !workerId ||
+    !workerApiToken.startsWith("owl_pat_") ||
+    !Number.isFinite(expiresAt)
+  ) {
     throw new DeviceMintError(
       "The gateway returned an invalid device credential.",
       res.status
@@ -446,7 +591,7 @@ async function mintDeviceCredential(
   return {
     workerId,
     workerApiToken,
-    ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+    expiresAt,
   };
 }
 
@@ -458,7 +603,7 @@ async function persistDeviceCredential(
   const state: DeviceState = {
     workerId: credential.workerId,
     workerApiToken: credential.workerApiToken,
-    ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+    expiresAt: credential.expiresAt,
   };
   const existing = await loadDeviceState(contextName, statePlatform);
   if (existing) {

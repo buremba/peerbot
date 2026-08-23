@@ -117,6 +117,32 @@ describe("device worker poll body", () => {
     expect(calls[2].body.capacity_available).toBe(3);
   });
 
+  test("uses a replacement bearer for every request after idle rotation", async () => {
+    const authorizations: Array<string | null> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization"));
+      return new Response(JSON.stringify({ next_poll_seconds: 5 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new WorkerClient({
+      apiUrl: "https://app.example.com",
+      workerId: "w-rotate",
+      authToken: "owl_pat_old",
+      capabilities: {},
+    });
+
+    await client.poll();
+    client.replaceAuthToken("owl_pat_new");
+    await client.poll();
+
+    expect(authorizations).toEqual([
+      "Bearer owl_pat_old",
+      "Bearer owl_pat_new",
+    ]);
+  });
+
   test("a headless device advertises automations.execute without being told to", async () => {
     // The gateway's Automation claim lane matches this exact string, so the
     // build — not the operator's --capabilities flag — is what opts a headless

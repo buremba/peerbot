@@ -14,6 +14,7 @@ export interface WorkerPollLoopOptions {
   pollIntervalMs?: number;
   maxConcurrentJobs?: number;
   execute: (job: PollResponse) => Promise<unknown>;
+  beforeIdlePoll?: () => Promise<void>;
 }
 
 export type WorkerPollLoopExit = (code: number) => void;
@@ -34,6 +35,7 @@ export class WorkerPollLoop {
   private readonly pollIntervalMs: number;
   private readonly maxConcurrentJobs: number;
   private readonly execute: (job: PollResponse) => Promise<unknown>;
+  private readonly beforeIdlePoll?: () => Promise<void>;
   private running = false;
   private admittingJobs = true;
   private activeJobs = 0;
@@ -43,6 +45,7 @@ export class WorkerPollLoop {
     this.pollIntervalMs = options.pollIntervalMs ?? 10000;
     this.maxConcurrentJobs = Math.max(1, options.maxConcurrentJobs ?? 1);
     this.execute = options.execute;
+    this.beforeIdlePoll = options.beforeIdlePoll;
   }
 
   async start(): Promise<void> {
@@ -59,6 +62,7 @@ export class WorkerPollLoop {
     log.info('[daemon] Starting worker daemon...');
     this.running = true;
     while (this.running) {
+      if (this.activeJobs === 0) await this.beforeIdlePoll?.();
       let nextDelayMs: number | undefined;
       try {
         nextDelayMs = await this.pollAndExecute();

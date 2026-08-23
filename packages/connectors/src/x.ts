@@ -32,22 +32,22 @@ import {
 	type ActionResult,
 	type ChromeActionDispatcher,
 	type ConnectorDefinition,
+	type EventAttributionRule,
+	type EventAttributionTargetSpec,
+	type EntityTraitSpec,
 	ConnectorRuntime,
 	calculateEngagementScore,
 	createHttpClient,
-	type EntityTraitSpec,
-	type EventAttributionRule,
-	type EventAttributionTargetSpec,
 	type EventEnvelope,
 	extensionDomScrape,
 	extensionNetworkSync,
-	type HttpClient,
 	HttpStatusError,
+	type HttpClient,
 	paginateByCursor,
 	type SyncContext,
 	type SyncResult,
 } from "@lobu/connector-sdk";
-import { normalizeXHandle, X_IDENTITY } from "./x-identity.js";
+import { X_IDENTITY, normalizeXHandle } from "./x-identity.js";
 
 /** OAuth scopes needed per feed for the API path (not used to pause browser-capable feeds). */
 const X_OAUTH_FEED_SCOPES: Record<string, readonly string[]> = {
@@ -346,23 +346,12 @@ const X_DM_COUNTERPARTY_ATTRIBUTIONS: EventAttributionRule[] = [
 			entityType: "person",
 			titlePath: "metadata.sender_name",
 			identities: [
-				{
-					namespace: X_IDENTITY.USER_ID,
-					eventPath: "metadata.sender_id",
-					primary: true,
-				},
-				{
-					namespace: X_IDENTITY.HANDLE,
-					eventPath: "metadata.sender_handle",
-					matchOnly: true,
-				},
+				{ namespace: X_IDENTITY.USER_ID, eventPath: "metadata.sender_id", primary: true },
+				{ namespace: X_IDENTITY.HANDLE, eventPath: "metadata.sender_handle", matchOnly: true },
 			],
 		},
 		traits: {
-			x_handle: {
-				eventPath: "metadata.sender_handle",
-				mergeStrategy: "prefer_non_empty",
-			},
+			x_handle: { eventPath: "metadata.sender_handle", mergeStrategy: "prefer_non_empty" },
 			// Same trait key as X_PERSON_AUTHOR_TRAITS / DM counterparty — keep
 			// person metadata vocabulary consistent across X attribution paths.
 			x_display_name: {
@@ -530,7 +519,8 @@ function buildApiTweet(
 	)?.id;
 
 	const authorId = tweet.author_id;
-	const username = usernameById.get(authorId ?? "") ?? defaultUsername ?? "";
+	const username =
+		usernameById.get(authorId ?? "") ?? defaultUsername ?? "";
 
 	return {
 		id: tweet.id,
@@ -1528,9 +1518,8 @@ function extractViewerUserId(json: unknown): string | undefined {
 		(data?.data as Record<string, unknown> | undefined)?.user_result,
 	];
 	for (const node of candidates) {
-		const result = (
-			node as { user_results?: { result?: { rest_id?: string } } }
-		)?.user_results?.result;
+		const result = (node as { user_results?: { result?: { rest_id?: string } } })
+			?.user_results?.result;
 		if (result?.rest_id) return String(result.rest_id);
 	}
 	return undefined;
@@ -1556,7 +1545,9 @@ function buildBrowserDmMessage(
 	const createdAt = String(
 		messageData.time ?? messageData.created_at ?? messageData.timestamp ?? "",
 	);
-	const senderId = String(messageData.sender_id ?? messageNode.sender_id ?? "");
+	const senderId = String(
+		messageData.sender_id ?? messageNode.sender_id ?? "",
+	);
 	const conversationId = String(
 		messageNode.conversation_id ??
 			messageNode.conversationId ??
@@ -1633,13 +1624,17 @@ function extractDmMessagesFromNode(
 
 	const content = record.content;
 	if (content && typeof content === "object") {
-		messages.push(...extractDmMessagesFromNode(content, authUserId, seen));
+		messages.push(
+			...extractDmMessagesFromNode(content, authUserId, seen),
+		);
 	}
 
 	const entries = record.entries;
 	if (Array.isArray(entries)) {
 		for (const entry of entries) {
-			messages.push(...extractDmMessagesFromNode(entry, authUserId, seen));
+			messages.push(
+				...extractDmMessagesFromNode(entry, authUserId, seen),
+			);
 		}
 	}
 
@@ -1669,7 +1664,9 @@ function extractDmMessagesFromNode(
 		record.user_events,
 	];
 	for (const candidate of nestedCandidates) {
-		messages.push(...extractDmMessagesFromNode(candidate, authUserId, seen));
+		messages.push(
+			...extractDmMessagesFromNode(candidate, authUserId, seen),
+		);
 	}
 
 	return messages;
@@ -2216,16 +2213,11 @@ async function syncBookmarksViaOAuthApi(
 		maxPages,
 	);
 
-	return finalizeSyncResult(
-		tweets,
-		checkpoint,
-		{
-			backend: "oauth_api",
-			api_calls: pageCount,
-			feed: "bookmarks",
-		},
-		{ originType: "bookmark" },
-	);
+	return finalizeSyncResult(tweets, checkpoint, {
+		backend: "oauth_api",
+		api_calls: pageCount,
+		feed: "bookmarks",
+	}, { originType: "bookmark" });
 }
 
 async function syncBookmarksViaExtension(
@@ -2255,10 +2247,14 @@ function parseApiDmListResponse(
 	const usernameById = new Map(
 		users.map((user) => [user.id, user.username ?? ""]),
 	);
-	const nameById = new Map(users.map((user) => [user.id, user.name ?? ""]));
+	const nameById = new Map(
+		users.map((user) => [user.id, user.name ?? ""]),
+	);
 
 	return (json.data ?? [])
-		.map((event) => buildDmMessage(event, authUserId, usernameById, nameById))
+		.map((event) =>
+			buildDmMessage(event, authUserId, usernameById, nameById),
+		)
 		.filter((message): message is XDmMessage => message !== null);
 }
 
@@ -2368,11 +2364,7 @@ async function syncHomeFeedViaDomScrape(
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
 	const maxScrolls = readScrollBudget(config, { defaultMax: 10, cap: 30 });
-	const {
-		items: rows,
-		loggedIn,
-		usedExistingTab,
-	} = await extensionDomScrape<HomeFeedRow>({
+	const { items: rows, loggedIn, usedExistingTab } = await extensionDomScrape<HomeFeedRow>({
 		dispatcher: requireExtensionDispatcher(ctx),
 		url: "https://x.com/home",
 		config: {
@@ -2381,8 +2373,7 @@ async function syncHomeFeedViaDomScrape(
 		},
 		parseRows: (raw) => raw as HomeFeedRow[],
 		allowedOrigins: X_ALLOWED_ORIGINS,
-		existingTabMatch:
-			config.use_existing_tab === true ? "x.com/home" : undefined,
+		existingTabMatch: config.use_existing_tab === true ? "x.com/home" : undefined,
 	});
 
 	if (!loggedIn) {
@@ -2393,9 +2384,7 @@ async function syncHomeFeedViaDomScrape(
 
 	const tweets = buildHomeFeedTweets(rows);
 	return finalizeSyncResult(tweets, checkpoint, {
-		backend: usedExistingTab
-			? "extension-cs-scrape-existing-tab"
-			: "extension-cs-scrape",
+		backend: usedExistingTab ? "extension-cs-scrape-existing-tab" : "extension-cs-scrape",
 		items_scraped: rows.length,
 		scrolls_this_run: maxScrolls,
 		timeline: "home",
@@ -3354,7 +3343,9 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "my_tweets") {
-			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
+			if (
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
+			) {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncMyTweetsViaOAuthApi(ctx, config, checkpoint),
@@ -3365,7 +3356,9 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "liked_tweets") {
-			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
+			if (
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
+			) {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncLikedTweetsViaOAuthApi(ctx, config, checkpoint),
@@ -3376,7 +3369,9 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "bookmarks") {
-			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
+			if (
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
+			) {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncBookmarksViaOAuthApi(ctx, config, checkpoint),
@@ -3387,7 +3382,9 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "direct_messages") {
-			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
+			if (
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
+			) {
 				return syncOAuthWithOptionalFallback(
 					config,
 					() => syncDirectMessagesViaOAuthApi(ctx, config, checkpoint),
@@ -3399,7 +3396,9 @@ export default class XConnector extends ConnectorRuntime {
 
 		// `tweets` feed: prefer the official API when scopes are sufficient,
 		// otherwise the extension's signed-in search.
-		if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
+		if (
+			resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
+		) {
 			return syncOAuthWithOptionalFallback(
 				config,
 				() => syncViaOAuthApi(ctx, config, checkpoint),

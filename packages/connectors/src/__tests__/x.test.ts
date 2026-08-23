@@ -332,19 +332,14 @@ describe("parseBrowserTimelineResponse", () => {
 		];
 
 		const profile = parseBrowserTimelineResponse("https://x.com/alice", {
-			data: {
-				user: { result: { timeline_v2: { timeline: { instructions } } } },
-			},
+			data: { user: { result: { timeline_v2: { timeline: { instructions } } } } },
 		});
 		expect(profile).toHaveLength(1);
 		expect(profile[0]).toMatchObject({ id: "9", username: "alice" });
 
-		const bookmarks = parseBrowserTimelineResponse(
-			"https://x.com/i/bookmarks",
-			{
-				data: { bookmark_timeline_v2: { timeline: { instructions } } },
-			},
-		);
+		const bookmarks = parseBrowserTimelineResponse("https://x.com/i/bookmarks", {
+			data: { bookmark_timeline_v2: { timeline: { instructions } } },
+		});
 		expect(bookmarks).toHaveLength(1);
 		expect(bookmarks[0].text).toBe("profile tweet");
 	});
@@ -613,25 +608,15 @@ describe("finalizeSyncResult", () => {
 				publishedAt: new Date("2025-06-01T00:00:00Z"),
 			},
 		];
-		const liked = finalizeSyncResult(
-			tweets as any,
-			{},
-			{},
-			{
-				originType: "liked_tweet",
-			},
-		);
+		const liked = finalizeSyncResult(tweets as any, {}, {}, {
+			originType: "liked_tweet",
+		});
 		expect(liked.events[0].origin_type).toBe("liked_tweet");
 		expect(liked.events[0].attachments).toBeUndefined();
 
-		const bookmarked = finalizeSyncResult(
-			tweets as any,
-			{},
-			{},
-			{
-				originType: "bookmark",
-			},
-		);
+		const bookmarked = finalizeSyncResult(tweets as any, {}, {}, {
+			originType: "bookmark",
+		});
 		expect(bookmarked.events[0].origin_type).toBe("bookmark");
 	});
 

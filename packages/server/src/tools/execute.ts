@@ -172,6 +172,29 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
  */
 const ORG_AGNOSTIC_TOOLS = new Set(['list_organizations']);
 
+/**
+ * These unscoped OAuth calls select their authoritative workspace inside the
+ * handler. Let them pass the default-workspace role gate; the target-aware
+ * leaf handlers still enforce the caller's real target membership and scope.
+ */
+function defersWorkspaceRoleToTarget(
+  toolName: string,
+  args: unknown,
+  authCtx: AuthContext
+): boolean {
+  if (!authCtx.allowCrossOrg) return false;
+  if (toolName === 'run_sdk') return true;
+  if (
+    toolName === 'get_approval' &&
+    args !== null &&
+    typeof args === 'object' &&
+    typeof (args as { organization?: unknown }).organization === 'string'
+  ) {
+    return true;
+  }
+  return toolName === 'resolve_approval' && Boolean(authCtx.mcpAppApprovalCapability);
+}
+
 export function checkToolAccess(
   toolName: string,
   args: unknown,
@@ -203,7 +226,9 @@ export function checkToolAccess(
   }
 
   const isReadOnly = isAuthorizationReadOnly(tool);
-  const { memberRole: role } = authCtx;
+  const role = defersWorkspaceRoleToTarget(toolName, args, authCtx)
+    ? 'owner'
+    : authCtx.memberRole;
   const requiredAccess = getRequiredAccessLevel(toolName, args, isReadOnly);
 
   // Admin-tools run: the per-turn allowlist is a LIMIT on which

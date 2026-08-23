@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   DISCOVERY_SCOPES,
   filterScopeByRole,
+  filterScopeForWorkspaceGrant,
   NON_PUBLIC_OAUTH_SCOPES,
   stripNonPublicOAuthScopes,
 } from '../../auth/oauth/scopes';
@@ -117,5 +118,28 @@ describe('filterScopeByRole', () => {
     );
     expect((owner as string).split(' ')).toContain('connections:token');
     expect((owner as string).split(' ')).toContain('mcp:admin');
+  });
+});
+
+describe('filterScopeForWorkspaceGrant', () => {
+  it('preserves admin capability when an unscoped session default is a member workspace', () => {
+    expect(
+      filterScopeForWorkspaceGrant('mcp:read mcp:write mcp:admin', 'member', false)
+    ).toBe('mcp:read mcp:write mcp:admin');
+  });
+
+  it('still caps a workspace-scoped grant by that workspace role', () => {
+    expect(
+      filterScopeForWorkspaceGrant('mcp:read mcp:write mcp:admin', 'member', true)
+    ).toBe('mcp:read mcp:write');
+    expect(filterScopeForWorkspaceGrant('mcp:admin', 'member', true)).toBeNull();
+  });
+
+  it('keeps empty requests empty on both branches', () => {
+    for (const workspaceScoped of [false, true]) {
+      for (const empty of ['', '   ', null, undefined]) {
+        expect(filterScopeForWorkspaceGrant(empty, 'owner', workspaceScoped)).toBe('');
+      }
+    }
   });
 });

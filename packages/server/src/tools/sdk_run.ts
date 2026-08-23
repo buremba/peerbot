@@ -376,7 +376,12 @@ async function runSandbox(
     sdk: (abortSignal) => buildClientSDK(ctx, env, { mode, allowCrossOrg, abortSignal }),
     sdkMode: mode,
     allowCrossOrg,
-    maxAccessLevel: resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes),
+    // The default workspace is not an authorization ceiling for unscoped
+    // OAuth. Target SDK contexts enforce their own membership at each call.
+    maxAccessLevel: resolveSdkMaxAccessLevel(
+      ctx.allowCrossOrg ? "owner" : ctx.memberRole,
+      ctx.scopes,
+    ),
     dryRun,
     dryRunDispatchPaths:
       ctx.executionMode === "capture" ? CAPTURE_DISPATCH_PATHS : undefined,
@@ -428,7 +433,7 @@ async function runSandbox(
   if (
     !result.success &&
     result.requiredMcpScopes.includes("mcp:admin") &&
-    isAdminOrOwnerRole(ctx.memberRole) &&
+    (ctx.allowCrossOrg || isAdminOrOwnerRole(ctx.memberRole)) &&
     (ctx.tokenType === "oauth" || ctx.tokenType === "pat") &&
     challengeRequestUrl
   ) {

@@ -16,6 +16,12 @@ import {
 import { resolveInteractionActionOrigin } from '../notifications/action-origin';
 import { ToolUserError } from '../utils/errors';
 import { buildResourcePermalink } from '../utils/url-builder';
+import {
+  AccessDeniedError,
+  CrossOrgAccessDenied,
+  OrgNotFoundError,
+  resolveCrossOrgToolContext,
+} from '../sandbox/client-sdk';
 import { getContent } from './get_content';
 import { manageOperations } from './admin/manage_operations';
 import { attachMcpResultMeta } from './mcp-result-meta';
@@ -156,6 +162,13 @@ export const ResolveApprovalSchema = Type.Object({
 
 export const GetApprovalSchema = Type.Object({
   run_id: Type.Integer({ minimum: 1 }),
+  organization: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        'Target workspace slug or id. Available only to unscoped OAuth sessions.',
+    })
+  ),
 });
 
 type LobuView = Static<typeof LobuViewSchema>;
@@ -640,19 +653,53 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
     ],
     actions,
   };
-  if (canIssueApprovalCapability(row, status, ctx)) {
-    return attachMcpResultMeta(view, {
-      'lobu/approval-capability': issueApprovalCapability(row, ctx),
-    });
+  return attachMcpResultMeta(view, {
+    // A cross-org card is rendered for the target workspace. Keep the app's
+    // role display aligned with the same target context that authored actions.
+    'lobu/member-role': ctx.memberRole,
+    ...(canIssueApprovalCapability(row, status, ctx)
+      ? { 'lobu/approval-capability': issueApprovalCapability(row, ctx) }
+      : {}),
+  });
+}
+
+/**
+ * Resolve a target workspace for an MCP-App tool call. `resolveCrossOrgToolContext`
+ * reports denial with the SDK's typed errors, which only the sandbox translates;
+ * at a plain tool boundary they would surface as a generic failure. Re-raise them
+ * as ToolUserErrors so REST and MCP agree on the status — 403 for denial, matching
+ * the sibling stale-capability check, and 404 for an unknown workspace.
+ */
+async function resolveApprovalWorkspace(
+  slugOrId: string,
+  ctx: ToolContext
+): Promise<ToolContext> {
+  try {
+    return await resolveCrossOrgToolContext(slugOrId, ctx);
+  } catch (error) {
+    if (
+      error instanceof CrossOrgAccessDenied ||
+      error instanceof AccessDeniedError
+    ) {
+      throw new ToolUserError(error.message, 403);
+    }
+    if (error instanceof OrgNotFoundError) {
+      throw new ToolUserError(error.message, 404);
+    }
+    throw error;
   }
-  return view;
 }
 
 const getApprovalImpl = async (
   args: Static<typeof GetApprovalSchema>,
   env: Env,
   ctx: ToolContext
-): Promise<LobuView> => buildApprovalView(args.run_id, env, ctx);
+): Promise<LobuView> => {
+  const approvalCtx = args.organization
+    ? await resolveApprovalWorkspace(args.organization, ctx)
+    : ctx;
+  return buildApprovalView(args.run_id, env, approvalCtx);
+};
 
 export const getApproval = withValidatedArgs(
   'get_approval',
@@ -671,11 +718,10 @@ const resolveApprovalImpl = async (
   // Drops `ctx.mcpAppsSupported` for the same reason issuance does — and it
   // has to drop it in the SAME change, or a card holding a freshly-issued
   // capability gets a 403 on every press. What remains authenticates the round
-  // trip: the capability must name this run, org, user and client, still be
+  // trip: the capability must name this run, user and client, still be
   // bound to the calling host, and not have expired.
   if (
     capability.runId !== args.run_id ||
-    capability.organizationId !== ctx.organizationId ||
     capability.userId !== ctx.userId ||
     capability.clientId !== ctx.clientId ||
     !approvalCapabilityMatchesHost(capability, ctx) ||
@@ -684,7 +730,15 @@ const resolveApprovalImpl = async (
     throw new ToolUserError('The MCP App approval capability is stale or does not match.', 403);
   }
 
-  const current = await findApprovalRow(args.run_id, env, ctx);
+  // The encrypted card capability carries the authoritative workspace. An
+  // unscoped OAuth session may resolve it under the same login; scoped/PAT
+  // connections remain unable to cross their bound workspace.
+  const approvalCtx =
+    capability.organizationId === ctx.organizationId
+      ? ctx
+      : await resolveApprovalWorkspace(capability.organizationId, ctx);
+
+  const current = await findApprovalRow(args.run_id, env, approvalCtx);
   if (current.interaction_status !== 'pending' || current.id !== capability.eventId) {
     throw new ToolUserError('This approval capability is stale; the run is no longer pending.', 409);
   }
@@ -697,7 +751,7 @@ const resolveApprovalImpl = async (
   // membership and run-owner/admin authority checks; clear only the non-human
   // transport identities after the capability has been fully revalidated.
   const humanContext: ToolContext = {
-    ...ctx,
+    ...approvalCtx,
     agentId: null,
     clientId: null,
     mcpSessionId: null,
@@ -713,7 +767,7 @@ const resolveApprovalImpl = async (
   if ('error' in result && typeof result.error === 'string') {
     throw new ToolUserError(result.error, 409);
   }
-  return buildApprovalView(args.run_id, env, ctx);
+  return buildApprovalView(args.run_id, env, approvalCtx);
 };
 
 export const resolveApproval = withValidatedArgs(

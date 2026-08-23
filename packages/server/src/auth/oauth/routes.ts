@@ -17,7 +17,11 @@ import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { buildAuthMd } from './auth-md';
 import { OAuthProvider } from './provider';
 import { canonicalizeMcpResource, publicMcpRequestUrl } from './resource-indicator';
-import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
+import {
+  DEFAULT_SCOPES_STRING,
+  filterScopeByRole,
+  filterScopeForWorkspaceGrant,
+} from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
@@ -691,10 +695,11 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
 
     if (consentHasMcpScopes) {
       const sql = createDbClientFromEnv(c.env);
+      const resourceOrgSlug = getOrgSlugFromResource(body.resource);
       const orgResult = await resolveOrganizationForGrant({
         sql,
         userId: user.id,
-        resourceOrgSlug: getOrgSlugFromResource(body.resource),
+        resourceOrgSlug,
         explicitOrgId: body.organization_id,
       });
       if ('error' in orgResult) {
@@ -711,11 +716,14 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
         );
       }
       organizationId = orgResult.organizationId;
-      // Drop `mcp:admin` from the granted scope when the user is not an
-      // owner/admin of the resolved org. Without this, a token can be issued
-      // with admin scope that the runtime role check immediately rejects,
-      // confusing the caller with a "reconnect with admin access" error.
-      const filtered = filterScopeByRole(body.scope, orgResult.memberRole);
+      // A scoped resource is governed by its one bound workspace. For /mcp,
+      // the resolved org is only the session default; target workspace role
+      // checks remain authoritative at runtime.
+      const filtered = filterScopeForWorkspaceGrant(
+        body.scope,
+        orgResult.memberRole,
+        resourceOrgSlug !== null
+      );
       if (filtered === null) {
         return c.json(
           createOAuthError(
@@ -725,9 +733,8 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
           400
         );
       }
-      // Grant exactly the role-filtered request (may include first-party scope
-      // names when a client still over-requests them). Runtime capability gates
-      // stay separate from this compatibility grant.
+      // Grant exactly the resource-aware filtered request. Runtime target-role
+      // gates stay separate from the token's transport capability.
       params.scope = filtered;
     }
 
@@ -1046,10 +1053,11 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     }
   } else if (deviceHasMcpScopes) {
     const sql = createDbClientFromEnv(c.env);
+    const resourceOrgSlug = getOrgSlugFromResource(deviceCode.resource);
     const orgResult = await resolveOrganizationForGrant({
       sql,
       userId: user.id,
-      resourceOrgSlug: getOrgSlugFromResource(deviceCode.resource),
+      resourceOrgSlug,
       explicitOrgId: body.organization_id,
       // Device pairing must not silently default a multi-org user's device to
       // their personal org — require an explicit pick.
@@ -1069,10 +1077,11 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
       );
     }
     organizationId = orgResult.organizationId;
-    // Drop `mcp:admin` from the granted scope when the user is not an
-    // owner/admin of the resolved org. See the consent submit handler for
-    // the full rationale.
-    scopeOverride = filterScopeByRole(deviceCode.scope, orgResult.memberRole);
+    scopeOverride = filterScopeForWorkspaceGrant(
+      deviceCode.scope,
+      orgResult.memberRole,
+      resourceOrgSlug !== null
+    );
     if (scopeOverride === null) {
       return c.json(
         createOAuthError(
@@ -1088,9 +1097,9 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     // scope-creep we removed from the authorization-code path. The first-party
     // `lobu login` requests `connections:token` explicitly in its
     // device_authorization scope (see `packages/cli/src/internal/oauth.ts`);
-    // `filterScopeByRole` only strips `mcp:admin`, so an explicitly-requested
-    // `connections:token` survives in `deviceCode.scope` and is granted. A
-    // device client that did NOT request it simply doesn't get it.
+    // The grant filter never strips `connections:token`, so an explicitly
+    // requested value survives in `deviceCode.scope`. A device client that did
+    // NOT request it simply doesn't get it.
   }
 
   const approved = await provider.approveDeviceCode(

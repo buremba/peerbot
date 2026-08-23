@@ -616,7 +616,7 @@ echo "✓ connector sync ran the compiled connector and emitted events (items=$R
 #    produce a complete_window tool-call). The reaction saves SDKE2E_REACTION_OK.
 AUTOMATIONS="$RUN_DIR/automations.json"
 api manage_automations '{"action":"list"}' > "$AUTOMATIONS" 2>/dev/null || fail "could not list Automations"
-AUTOMATION_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.automations||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.automation_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$AUTOMATIONS")"
+AUTOMATION_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.automations||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?.automation_id;process.stdout.write(id!=null?String(id):"")})' < "$AUTOMATIONS")"
 [ -n "$AUTOMATION_ID" ] || { cat "$AUTOMATIONS" >&2; fail "no 'digest' Automation found after apply"; }
 echo "✓ apply created the digest Automation (id=$AUTOMATION_ID)"
 
@@ -690,7 +690,7 @@ echo "✓ automation reaction ran and saved its assertable side effect (SDKE2E_R
 # 7b) Durable Automation outputs — exercise the installed config and public API,
 # not an internal helper. Complete one real connector-backed window containing
 # both output arrays, then read the typed entity and event through query_sql.
-PUBLISHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.automations||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="publisher");const id=w?(w.automation_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$AUTOMATIONS")"
+PUBLISHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.automations||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="publisher");const id=w?.automation_id;process.stdout.write(id!=null?String(id):"")})' < "$AUTOMATIONS")"
 [ -n "$PUBLISHER_ID" ] || { cat "$AUTOMATIONS" >&2; fail "no 'publisher' Automation found after apply"; }
 
 PUB="$RUN_DIR/publisher.json"

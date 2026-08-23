@@ -168,7 +168,10 @@ async function catalogForCaller(
 	ctx: ToolContext,
 	mode: SdkDiscoveryMode
 ): Promise<Array<[string, MethodMetadata]>> {
-	const callerMax = resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const callerMax = resolveSdkMaxAccessLevel(
+		ctx.allowCrossOrg ? "owner" : ctx.memberRole,
+		ctx.scopes,
+	);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
 	return Object.entries(SDK_DISCOVERY_METADATA).filter(([path, meta]) => {
 		if (!sdkMethodVisible(meta.access, callerMax, mode)) return false;
@@ -189,7 +192,7 @@ function hiddenMethodNote(
 	}
 	const guidance = resolveSdkAccessGuidance(
 		meta.access,
-		ctx.memberRole,
+		ctx.allowCrossOrg ? "owner" : ctx.memberRole,
 		ctx.scopes,
 	);
 	if (mode === "read" && meta.access !== "read") {
@@ -339,7 +342,10 @@ async function sdkMethodSearch(
 	const mode: SdkDiscoveryMode = args.mode ?? "full";
 	const catalog = await catalogForCaller(ctx, mode);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
-	const callerMax = resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const callerMax = resolveSdkMaxAccessLevel(
+		ctx.allowCrossOrg ? "owner" : ctx.memberRole,
+		ctx.scopes,
+	);
 	const isMultiMethodQuery =
 		terms.length > 1 &&
 		terms.every(
@@ -460,7 +466,7 @@ async function sdkMethodSearch(
 					.join(", ");
 				const guidance = resolveSdkAccessGuidance(
 					accesses,
-					ctx.memberRole,
+					ctx.allowCrossOrg ? "owner" : ctx.memberRole,
 					ctx.scopes,
 				);
 				const nextStep = guidance.available

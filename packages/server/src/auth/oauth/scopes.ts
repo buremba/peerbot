@@ -131,6 +131,29 @@ export function filterScopeByRole(
   return granted.join(' ');
 }
 
+/**
+ * Filter an MCP grant against the role that governs it. A workspace-scoped
+ * resource is permanently bound to that workspace, so its role can cap the
+ * token. An unscoped resource may target any authorized workspace at runtime;
+ * its selected/default workspace is navigation state and must not strip a
+ * capability that the user can exercise as an owner elsewhere.
+ *
+ * The unscoped branch strips nothing, so it only normalizes the request and
+ * cannot produce an all-stripped `null` grant.
+ */
+export function filterScopeForWorkspaceGrant(
+  scope: string | undefined | null,
+  memberRole: string | null,
+  workspaceScoped: boolean
+): string | null {
+  if (workspaceScoped) return filterScopeByRole(scope, memberRole);
+  return (scope || '')
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
 export function normalizeScopeList(value: unknown): string[] {
   const raw = Array.isArray(value)
     ? value

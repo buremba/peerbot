@@ -315,8 +315,6 @@ export function automationIdFromPrincipalId(
  * ancestor. Only a missing Automation row, or a non-empty `agent_id` whose agent
  * row no longer exists, is unresolved and must fail closed.
  *
- * Empty strings are tolerated as a legacy representation of NULL so existing
- * manual-open rows remain safe while callers migrate to the nullable contract.
  */
 export async function resolveAutomationOwner(
 	sql: DbClient,
@@ -325,9 +323,9 @@ export async function resolveAutomationOwner(
 ): Promise<{ ownerAgentId: string | null; resolved: boolean }> {
 	const rows = await sql<{ agent_id: string | null; owner_resolved: boolean }>`
     SELECT
-      NULLIF(BTRIM(w.agent_id), '') AS agent_id,
+      w.agent_id,
       CASE
-        WHEN NULLIF(BTRIM(w.agent_id), '') IS NULL THEN true
+        WHEN w.agent_id IS NULL THEN true
         ELSE EXISTS (
           SELECT 1
           FROM agents a

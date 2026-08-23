@@ -16,11 +16,10 @@ function stubSql(
 		const text = strings.join(" ");
 		if (text.includes("FROM automations")) {
 			if (!automationExists) return Promise.resolve([]);
-			const normalizedOwner = ownerAgentId?.trim() || null;
 			return Promise.resolve([
 				{
-					agent_id: normalizedOwner,
-					owner_resolved: normalizedOwner == null ? true : agentExists,
+					agent_id: ownerAgentId,
+					owner_resolved: ownerAgentId == null ? true : agentExists,
 				},
 			]);
 		}
@@ -151,16 +150,16 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("a legacy empty-string agent assignment resolves like null", async () => {
-		const actor = await resolveActingPrincipal(stubSql(""), {
+	it("an invalid empty-string agent assignment fails closed", async () => {
+		const actor = await resolveActingPrincipal(stubSql("", false), {
 			organizationId: ORG,
 			sessionAutomationId: 9,
 		});
 		expect(actor).toEqual({
 			kind: "automation",
 			id: "automation:9",
-			ownerAgentId: null,
-			ownerResolved: true,
+			ownerAgentId: "",
+			ownerResolved: false,
 		});
 	});
 

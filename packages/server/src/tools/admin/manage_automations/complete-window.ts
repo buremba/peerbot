@@ -606,8 +606,7 @@ export async function handleCompleteWindow(
     }
     externalClaimedBy = claimedBy;
 
-    // Only a run-bound token may perform pending -> running. Unbound legacy
-    // tokens remain usable solely for already-running in-process rows.
+    // Only a run-bound token may perform pending -> running.
     const claimed =
       tokenRunId != null
         ? await sql.begin(async (tx) =>
@@ -620,21 +619,6 @@ export async function handleCompleteWindow(
           )
         : false;
     if (!claimed) {
-      // Before durable external claimant attribution existed, complete_window
-      // transitioned manual-open runs to running with claimed_by left NULL. A
-      // retry of one of those rows must remain completable, but only one caller
-      // may adopt it. The conditional UPDATE is the claim.
-      await sql`
-        UPDATE runs
-        SET claimed_by = ${claimedBy},
-            claimed_at = COALESCE(claimed_at, current_timestamp),
-            last_heartbeat_at = COALESCE(last_heartbeat_at, current_timestamp)
-        WHERE id = ${runId}
-          AND automation_id = ${automationId}
-          AND run_type = ${callerRunType}
-          AND status IN ('claimed', 'running')
-          AND claimed_by IS NULL
-      `;
       const [state] = await sql<{ status: string; claimed_by: string | null }>`
         SELECT status, claimed_by
         FROM runs

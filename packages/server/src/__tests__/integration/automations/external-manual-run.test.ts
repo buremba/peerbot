@@ -283,6 +283,16 @@ describe('external manual Automation execution', () => {
       claimed_by: `user:${workspace.users.owner.id}`,
       model_used: 'chatgpt/test',
     });
+    const completedReplay = (await workspace.owner.automations.completeWindow({
+      automation_id: created.automation_id,
+      run_id: triggered.run_id,
+      window_token: read.window_token,
+      extracted_data: {
+        tasks: [{ task_key: 'invoice-review', action: 'Review invoice' }],
+      },
+      model: 'chatgpt/test',
+    })) as { completed_now: boolean };
+    expect(completedReplay.completed_now).toBe(false);
 
     // A token minted for run A must not authorize run B even when both runs
     // deliberately cover the same Automation period.
@@ -367,6 +377,44 @@ describe('external manual Automation execution', () => {
         model: 'chatgpt/test',
       })
     ).rejects.toThrow(/already claimed by another executor/);
+
+    // A running row without durable claimant attribution is invalid state. An
+    // external caller must not adopt it by supplying a valid run-bound token.
+    await sql`
+      UPDATE runs
+      SET claimed_by = NULL
+      WHERE id = ${secondRun.runId}
+    `;
+    await expect(
+      workspace.owner.automations.completeWindow({
+        automation_id: created.automation_id,
+        run_id: secondRun.runId,
+        window_token: secondRead.window_token,
+        extracted_data: {
+          findings: [{ task_key: 'unclaimed-running', action: 'Must not persist' }],
+        },
+        model: 'chatgpt/test',
+      })
+    ).rejects.toThrow(/could not be claimed/);
+    const [invalidRunning] = await sql<{ status: string; claimed_by: string | null }>`
+      SELECT status, claimed_by FROM runs WHERE id = ${secondRun.runId}
+    `;
+    expect(invalidRunning).toEqual({ status: 'running', claimed_by: null });
+
+    // Retrying a claim already durably owned by this caller remains valid.
+    await sql`
+      UPDATE runs
+      SET claimed_by = ${`user:${workspace.users.owner.id}`}
+      WHERE id = ${secondRun.runId}
+    `;
+    const sameClaimRetry = (await workspace.owner.automations.completeWindow({
+      automation_id: created.automation_id,
+      run_id: secondRun.runId,
+      window_token: secondRead.window_token,
+      extracted_data: { findings: [] },
+      model: 'chatgpt/test',
+    })) as { completed_now: boolean };
+    expect(sameClaimRetry.completed_now).toBe(true);
 
     const promoted = await sql<{
       parent_id: number | null;

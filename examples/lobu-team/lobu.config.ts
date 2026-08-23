@@ -226,8 +226,9 @@ const lunchFinalize = defineAutomation({
   // handoff contract is the entity, not an Automation-authored payload.
 });
 
-// This declaration owns only the existing agent's metadata. Model, tools,
-// skills, and sandbox settings remain unmanaged because they are omitted.
+// This declaration owns only the existing agent's metadata. `lobu apply`
+// diffs a settings field only when the config declares it, so the live model,
+// tools, and skills stay unmanaged here.
 const developer = defineAgent({
   id: "developer",
   name: "Developer",
@@ -249,7 +250,7 @@ const engineeringTaskRunner = defineAutomation({
   sources: {
     task_history: `SELECT id, semantic_type, occurred_at, payload_text, metadata
       FROM events
-      WHERE 35364 = ANY(entity_ids)
+      WHERE entity_ids @> ARRAY[35364]::bigint[]
       ORDER BY occurred_at DESC
       LIMIT 100`,
   },

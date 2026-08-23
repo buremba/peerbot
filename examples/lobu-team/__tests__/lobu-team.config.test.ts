@@ -48,6 +48,9 @@ describe("Lobu Team configuration", () => {
       agentKind: "opencode",
       tags: ["engineering-task", "dogfood"],
     });
+    expect(runner?.sources?.task_history).toContain(
+      "entity_ids @> ARRAY[35364]::bigint[]"
+    );
     expect(runner?.prompt).toContain("entity_id: 35364");
     expect(runner?.prompt).toContain("Never edit a shared checkout");
     expect(runner?.prompt).toContain("engineering-task.checkpoint");

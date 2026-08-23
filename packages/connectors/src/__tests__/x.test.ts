@@ -1275,6 +1275,9 @@ describe("XConnector browser-first routing", () => {
 			parserErrors: [],
 			checkpoint: {},
 			expectedCursor: "retry-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
 		},
 		{
 			name: "keeps collected likes when cursor replay is rejected",
@@ -1282,6 +1285,9 @@ describe("XConnector browser-first routing", () => {
 			parserErrors: ["X likes cursor request failed (429)"],
 			checkpoint: {},
 			expectedCursor: "retry-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
 		},
 		{
 			name: "keeps a resumed cursor when its replay is rejected",
@@ -1292,9 +1298,39 @@ describe("XConnector browser-first routing", () => {
 				likes_backfill_status: "in_progress",
 			},
 			expectedCursor: "resume-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
+		},
+		{
+			name: "counts a retried in-flight cursor once",
+			replayResult: { ok: true, status: 200 },
+			parserErrors: [],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "deep-cursor",
+			expectedEvents: ["200", "400", "500"],
+			expectedPages: { requested: 1, received: 1, unconfirmed: 0 },
+			drainResponses: [
+				[
+					{
+						url: likesTimelineUrl(),
+						body: JSON.stringify(likesTimelineResponse("400", "fresh-cursor")),
+					},
+				],
+				[
+					{
+						url: likesTimelineUrl("resume-cursor"),
+						body: JSON.stringify(likesTimelineResponse("200", "deep-cursor")),
+					},
+				],
+			],
 		},
 	]) {
 		test(scenario.name, async () => {
+			let drainCount = 0;
 			const dispatcher = {
 				dispatch: async (action: string) => {
 					if (action === "navigate") {
@@ -1316,7 +1352,11 @@ describe("XConnector browser-first routing", () => {
 						return scenario.replayResult;
 					}
 					if (action === "network_intercept_drain") {
-						return { result: { responses: [] } };
+						return {
+							result: {
+								responses: scenario.drainResponses[drainCount++] ?? [],
+							},
+						};
 					}
 					return {};
 				},
@@ -1335,14 +1375,14 @@ describe("XConnector browser-first routing", () => {
 				sessionState: { chrome_dispatcher: dispatcher },
 			});
 
-			expect(result.events.map((event: any) => event.origin_id)).toEqual([
-				"500",
-			]);
+			expect(
+				result.events.map((event: any) => event.origin_id).sort(),
+			).toEqual(scenario.expectedEvents);
 			expect(result.metadata).toMatchObject({
 				collection_status: "in_progress",
-				pages_requested: 1,
-				pages_received: 0,
-				pages_unconfirmed: 1,
+				pages_requested: scenario.expectedPages.requested,
+				pages_received: scenario.expectedPages.received,
+				pages_unconfirmed: scenario.expectedPages.unconfirmed,
 				parser_errors: scenario.parserErrors,
 			});
 			expect(result.checkpoint).toMatchObject({

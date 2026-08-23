@@ -932,7 +932,8 @@ function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 			...(tweet.username
 				? { author_handle: normalizeXHandle(tweet.username) ?? tweet.username }
 				: {}),
-			...(tweet.authorDisplayName || tweet.username
+			...(tweet.authorDisplayName ||
+			(originType === "liked_tweet" && tweet.username)
 				? { author_name: tweet.authorDisplayName ?? `@${tweet.username}` }
 				: {}),
 			...(tweet.conversationId
@@ -1404,9 +1405,9 @@ class XLikesPageTracker {
 			return undefined;
 		}
 
+		if (this.activeRequestedCursor === undefined) this.requestedPages += 1;
 		this.activeRequestedCursor = cursor;
 		this.nextCursor = cursor;
-		this.requestedPages += 1;
 		return replaceGraphqlCursor(this.latestRequestUrl, cursor);
 	}
 
@@ -2074,7 +2075,6 @@ async function syncLikedTweetsViaExtension(
 				parserErrors.push(
 					`X likes cursor request failed (${observation.status ?? "unknown"})`,
 				);
-				return;
 			}
 		},
 	});

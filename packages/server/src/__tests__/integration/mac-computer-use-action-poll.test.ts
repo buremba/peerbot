@@ -4,7 +4,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
@@ -14,21 +14,33 @@ import { post } from '../setup/test-helpers';
 const CONNECTOR_KEY = 'apple.computer_use';
 const OPERATION_KEY = 'permissions';
 
-const COMPUTER_USE_MANIFEST_PATH = resolve(
+const MAC_MANIFESTS_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  '../../../../owletto/apps/mac/Owletto/ConnectorManifests/apple_computer_use.json',
+  '../../../../owletto/apps/mac/Owletto/ConnectorManifests/macos-device-connector-manifests.json',
 );
 
 // Private-submodule guard: skip in sandboxes without owletto access, but in
 // CI a missing manifest must fail loudly, not silently skip.
-const itWithManifest = existsSync(COMPUTER_USE_MANIFEST_PATH)
+const itWithManifest = existsSync(MAC_MANIFESTS_PATH)
   ? it
   : process.env.CI
     ? it
     : it.skip;
 
 function loadComputerUseManifest(): Record<string, unknown> {
-  return JSON.parse(readFileSync(COMPUTER_USE_MANIFEST_PATH, 'utf8')) as Record<string, unknown>;
+  const manifests = JSON.parse(readFileSync(MAC_MANIFESTS_PATH, 'utf8')) as unknown;
+  if (!Array.isArray(manifests)) {
+    throw new Error('canonical Owletto Mac manifest artifact must be an array');
+  }
+  const manifest = manifests.find(
+    (candidate): candidate is Record<string, unknown> =>
+      candidate !== null &&
+      typeof candidate === 'object' &&
+      !Array.isArray(candidate) &&
+      candidate.key === CONNECTOR_KEY,
+  );
+  if (!manifest) throw new Error(`${CONNECTOR_KEY} missing from canonical Owletto Mac manifests`);
+  return manifest;
 }
 
 async function seedDeviceOwner() {

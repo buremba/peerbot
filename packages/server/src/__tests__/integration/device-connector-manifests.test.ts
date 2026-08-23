@@ -294,7 +294,16 @@ function loadOwlettoManifests(kind: 'mac' | 'chrome'): Array<Record<string, unkn
   return readdirSync(dir)
     .filter((file) => file.endsWith('.json'))
     .sort()
-    .map((file) => JSON.parse(readFileSync(join(dir, file), 'utf8')) as Record<string, unknown>);
+    .flatMap((file) => {
+      const parsed = JSON.parse(readFileSync(join(dir, file), 'utf8')) as unknown;
+      const manifests = Array.isArray(parsed) ? parsed : [parsed];
+      return manifests.map((manifest) => {
+        if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) {
+          throw new Error(`invalid Owletto connector manifest in ${file}`);
+        }
+        return manifest as Record<string, unknown>;
+      });
+    });
 }
 
 function capabilitiesFor(manifests: Array<Record<string, unknown>>): Record<string, boolean> {

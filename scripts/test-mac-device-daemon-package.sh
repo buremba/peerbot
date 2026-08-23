@@ -34,10 +34,9 @@ run_clean_with_token() (
 
 # Shared packaging assertion (arm64 Mach-O + `--version` metadata), run against
 # the copied artifact so the release workflows and this smoke agree on what a
-# publishable daemon looks like.
-run_clean "$ROOT/scripts/verify-mac-device-daemon.sh" ./lobu-device-daemon >/dev/null
-
-VERSION_JSON="$(run_clean ./lobu-device-daemon --version)"
+# publishable daemon looks like. It echoes the validated `--version` JSON, which
+# the `--no-poll` parity check below compares against.
+VERSION_JSON="$(run_clean "$ROOT/scripts/verify-mac-device-daemon.sh" ./lobu-device-daemon)"
 
 run_clean ./lobu-device-daemon --help | grep -q 'Usage:'
 

@@ -31,7 +31,6 @@ interface WindowTokenPayload {
   granularity: string; // Required for window creation
   content_count: number; // Content count at token generation - for staleness detection
   content_ids: number[]; // Exact event IDs returned to the worker; complete_window links these deterministically
-  run_id?: number;
   lease_expires_at?: string;
   page_before_occurred_at?: string;
   page_before_id?: number;

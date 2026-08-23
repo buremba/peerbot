@@ -99,6 +99,70 @@ function tweetResult(
 	};
 }
 
+function likesTimelineUrl(cursor?: string): string {
+	return `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
+		JSON.stringify({
+			userId: "1000000001",
+			count: 20,
+			...(cursor ? { cursor } : {}),
+		}),
+	)}`;
+}
+
+function likesTimelineResponse(id: string, bottomCursor?: string) {
+	return {
+		data: {
+			user: {
+				result: {
+					rest_id: "1000000001",
+					core: { screen_name: "testuser", name: "Test User" },
+					timeline_v2: {
+						timeline: {
+							instructions: [
+								{
+									entries: [
+										{
+											entryId: `tweet-${id}`,
+											content: {
+												itemContent: {
+													tweet_results: {
+														result: tweetResult(
+															id,
+															"alice",
+															`post ${id}`,
+															id === "100"
+																? {
+																		created_at:
+																			"Wed Jun 04 12:00:00 +0000 2024",
+																	}
+																: {},
+														),
+													},
+												},
+											},
+										},
+										...(bottomCursor
+											? [
+													{
+														entryId: "cursor-bottom",
+														content: {
+															cursorType: "Bottom",
+															value: bottomCursor,
+														},
+													},
+												]
+											: []),
+									],
+								},
+							],
+						},
+					},
+				},
+			},
+		},
+	};
+}
+
 function wrapSearchInstructions(instructions: unknown[]) {
 	return {
 		data: {
@@ -438,11 +502,18 @@ describe("X likes GraphQL cursor URLs", () => {
 		});
 	});
 
-	test("refuses a captured request outside x.com", () => {
+	test("accepts a captured twitter.com request", () => {
+		const url = `https://api.twitter.com/graphql?variables=${encodeURIComponent(
+			JSON.stringify({ cursor: "old" }),
+		)}`;
+		expect(readGraphqlCursor(replaceGraphqlCursor(url, "next"))).toBe("next");
+	});
+
+	test("refuses a captured request outside X", () => {
 		const url = `https://evil.example/graphql?variables=${encodeURIComponent(
 			JSON.stringify({ cursor: "old" }),
 		)}`;
-		expect(() => replaceGraphqlCursor(url, "next")).toThrow(/non-x\.com/i);
+		expect(() => replaceGraphqlCursor(url, "next")).toThrow(/non-X request/i);
 	});
 });
 
@@ -874,9 +945,7 @@ describe("XConnector browser-first routing", () => {
 					origin_type: "liked_tweet",
 				}),
 			]);
-			expect(
-				requested.some((url) => url.includes("/liked_tweets")),
-			).toBeTrue();
+			expect(requested.some((url) => url.includes("/liked_tweets"))).toBeTrue();
 			// Both actors must land in metadata: the `liker` attribution reads
 			// liked_by_*, the `author` attribution reads author_*. A missing liker
 			// silently halves the feed's people graph on the OAuth backend.
@@ -1086,68 +1155,8 @@ describe("XConnector browser-first routing", () => {
 	});
 
 	test("resumes historical likes from the checkpointed GraphQL cursor", async () => {
-		const timelineUrl = (cursor?: string) => {
-			const variables = {
-				userId: "1000000001",
-				count: 20,
-				...(cursor ? { cursor } : {}),
-			};
-			return `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
-				JSON.stringify(variables),
-			)}`;
-		};
-		const response = (id: string, bottomCursor?: string) => ({
-			data: {
-				user: {
-					result: {
-						rest_id: "1000000001",
-						core: { screen_name: "testuser", name: "Test User" },
-						timeline_v2: {
-							timeline: {
-								instructions: [
-									{
-										entries: [
-											{
-												entryId: `tweet-${id}`,
-												content: {
-													itemContent: {
-														tweet_results: {
-															result: tweetResult(
-																id,
-																"alice",
-																`post ${id}`,
-																id === "100"
-																	? {
-																			created_at:
-																				"Wed Jun 04 12:00:00 +0000 2024",
-																		}
-																	: {},
-															),
-														},
-													},
-												},
-											},
-											...(bottomCursor
-												? [
-														{
-															entryId: "cursor-bottom",
-															content: {
-																cursorType: "Bottom",
-																value: bottomCursor,
-															},
-														},
-													]
-												: []),
-										],
-									},
-								],
-							},
-						},
-					},
-				},
-			},
-		});
 		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+		let drainCount = 0;
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -1157,8 +1166,10 @@ describe("XConnector browser-first routing", () => {
 						result: {
 							responses: [
 								{
-									url: timelineUrl(),
-									body: JSON.stringify(response("500", "fresh-cursor")),
+									url: likesTimelineUrl(),
+									body: JSON.stringify(
+										likesTimelineResponse("500", "fresh-cursor"),
+									),
 								},
 							],
 						},
@@ -1168,12 +1179,35 @@ describe("XConnector browser-first routing", () => {
 					return { ok: true, status: 200 };
 				}
 				if (action === "network_intercept_drain") {
+					drainCount += 1;
+					if (drainCount === 1) {
+						return {
+							result: {
+								responses: [
+									{
+										url: likesTimelineUrl("resume-cursor"),
+										body: JSON.stringify(
+											likesTimelineResponse("200", "deep-cursor"),
+										),
+									},
+									// A late duplicate of the newest page must not move the
+									// checkpoint back from deep-cursor to fresh-cursor.
+									{
+										url: likesTimelineUrl(),
+										body: JSON.stringify(
+											likesTimelineResponse("500", "fresh-cursor"),
+										),
+									},
+								],
+							},
+						};
+					}
 					return {
 						result: {
 							responses: [
 								{
-									url: timelineUrl("resume-cursor"),
-									body: JSON.stringify(response("100")),
+									url: likesTimelineUrl("deep-cursor"),
+									body: JSON.stringify(likesTimelineResponse("100")),
 								},
 							],
 						},
@@ -1188,7 +1222,7 @@ describe("XConnector browser-first routing", () => {
 			config: {
 				account_handle: "testuser",
 				use_extension: true,
-				backfill_pages_per_run: 1,
+				backfill_pages_per_run: 2,
 			},
 			checkpoint: {
 				likes_backfill_cursor: "resume-cursor",
@@ -1199,33 +1233,93 @@ describe("XConnector browser-first routing", () => {
 			entityIds: [],
 			sessionState: { chrome_dispatcher: dispatcher },
 		});
-		const replay = calls.find(
+		const replays = calls.filter(
 			(call) => call.action === "network_intercept_replay",
 		);
-		expect(replay?.input).toMatchObject({
-			session_id: "test-network-session",
-			url: timelineUrl("resume-cursor"),
-		});
-		expect(JSON.stringify(replay?.input)).not.toMatch(
-			/authorization|csrf|cookie/i,
-		);
+		expect(replays.map((call) => call.input)).toEqual([
+			expect.objectContaining({
+				session_id: "test-network-session",
+				url: likesTimelineUrl("resume-cursor"),
+			}),
+			expect.objectContaining({
+				session_id: "test-network-session",
+				url: likesTimelineUrl("deep-cursor"),
+			}),
+		]);
+		expect(JSON.stringify(replays)).not.toMatch(/authorization|csrf|cookie/i);
 		expect(result.events.map((event: any) => event.origin_id).sort()).toEqual([
 			"100",
+			"200",
 			"500",
 		]);
 		expect(result.metadata).toMatchObject({
 			collection_status: "complete",
-			pages_requested: 1,
-			pages_received: 1,
-			backfill_pages_this_run: 1,
-			backfill_items_this_run: 1,
+			pages_requested: 2,
+			pages_received: 2,
+			pages_unconfirmed: 0,
+			backfill_pages_this_run: 2,
+			backfill_items_this_run: 2,
 		});
 		expect(result.checkpoint).toMatchObject({
 			likes_backfill_status: "complete",
-			likes_backfill_pages: 4,
+			likes_backfill_pages: 5,
 			likes_oldest_tweet_id: "100",
 		});
 		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
+	});
+
+	test("keeps a retryable cursor when the final replay response is late", async () => {
+		const dispatcher = {
+			dispatch: async (action: string) => {
+				if (action === "navigate") {
+					return {
+						tab_id: 42,
+						result: {
+							responses: [
+								{
+									url: likesTimelineUrl(),
+									body: JSON.stringify(
+										likesTimelineResponse("500", "retry-cursor"),
+									),
+								},
+							],
+						},
+					};
+				}
+				if (action === "network_intercept_replay") {
+					return { ok: true, status: 200 };
+				}
+				if (action === "network_intercept_drain") {
+					return { result: { responses: [] } };
+				}
+				return {};
+			},
+		};
+
+		const result = await new XConnector().sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				backfill_pages_per_run: 2,
+			},
+			checkpoint: {},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(result.events.map((event: any) => event.origin_id)).toEqual(["500"]);
+		expect(result.metadata).toMatchObject({
+			collection_status: "in_progress",
+			pages_requested: 1,
+			pages_received: 0,
+			pages_unconfirmed: 1,
+		});
+		expect(result.checkpoint).toMatchObject({
+			likes_backfill_status: "in_progress",
+			likes_backfill_cursor: "retry-cursor",
+		});
 	});
 
 	test("uses extension for bookmarks when OAuth lacks bookmark.read", async () => {

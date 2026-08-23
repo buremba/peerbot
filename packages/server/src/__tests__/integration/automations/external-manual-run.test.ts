@@ -304,7 +304,7 @@ describe('external manual Automation execution', () => {
         },
         model: 'chatgpt/test',
       })
-    ).rejects.toThrow(/window_token belongs to Automation run/);
+    ).rejects.toThrow(/window_token is fenced to Automation run/);
     const [stillPending] = await sql<{ status: string }>`
       SELECT status FROM runs WHERE id = ${secondRun.runId}
     `;

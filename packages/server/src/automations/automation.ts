@@ -601,6 +601,7 @@ async function finalizeStalePendingAutomationRuns(
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
         AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
+        -- Ownership comes from approved_input; never reinterpret it via mutable w.device_worker_id.
         AND NOT (
           COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
           AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
@@ -748,6 +749,7 @@ export async function materializeDueAutomationRuns(
                   AND dw.last_seen_at > current_timestamp
                     - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
                   AND (dw.platform = 'macos' OR dw.capabilities ? 'automations.execute')
+                  -- agent_kinds is the last authoritative ad; omitted downgrade polls preserve it.
                   AND (
                     dw.agent_kinds IS NULL
                     OR CASE

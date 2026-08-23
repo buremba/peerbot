@@ -1809,7 +1809,7 @@ const accountTimelineConfigSchema = {
 			type: "string",
 			minLength: 1,
 			description:
-				'Optional X handle (e.g. "buremba"). Defaults to the authenticated account when OAuth is available.',
+				'Optional X handle (e.g. "example_account"). Defaults to the authenticated account when OAuth is available.',
 		},
 		...scrollBudgetProperties,
 		...backendPreferenceProperties,
@@ -1823,7 +1823,7 @@ const bookmarksConfigSchema = {
 			type: "string",
 			minLength: 1,
 			description:
-				'Optional X handle (e.g. "buremba") for DM counterparty resolution when the viewer id is unavailable.',
+				'Optional X handle (e.g. "example_account") for DM counterparty resolution when the viewer id is unavailable.',
 		},
 		account_user_id: {
 			type: "string",

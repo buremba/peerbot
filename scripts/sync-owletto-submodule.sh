@@ -28,7 +28,7 @@ Refusing to overwrite them. Options:
     for owletto development.
   • Discard owletto-only edits and continue:
     RESET_OWLETTO=1 make owletto-mac
-    RESET_OWLETTO=1 make owletto-mac-e2e
+    RESET_OWLETTO=1 make owletto-mac-e2e ORG=<slug> CONN_ID=<id>
 EOF
     exit 1
   fi

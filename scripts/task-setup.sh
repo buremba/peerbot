@@ -111,11 +111,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `git worktree add` target and the `.env` source.
 #
 # `--path-format=absolute` is load-bearing. Without it, `--git-common-dir`
-# returns a path relative to git's cwd ("../.git"), and `dirname` of that
-# resolves against whatever directory the caller happens to be in — landing
-# the worktree at the wrong path (e.g. /Users/burakemre/Code instead of
-# /Users/burakemre/Code/lobu when run from the main checkout). The absolute
-# form makes the resolution invariant.
+# returns a path relative to git's cwd (".git" from the main checkout), and
+# `dirname` of that resolves against whatever directory the caller happens to
+# be in — landing the worktree under the caller's cwd instead of the repo
+# root. The absolute form makes the resolution invariant.
 repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)")"
 worktree_dir="$repo/.claude/worktrees/$name"
 branch="feat/$name"

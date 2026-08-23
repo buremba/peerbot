@@ -7,7 +7,7 @@
  * null-byte limitation in postgres text columns.
  *
  * Usage:
- *   pnpm tsx --env-file=.env scripts/lobu/install-connectors.ts --org buremba --file examples/personal-agent/spotify.connector.ts
+ *   bun --env-file=.env scripts/lobu/install-connectors.ts --org <slug> --file examples/personal-agent/spotify.connector.ts
  */
 
 import { basename, resolve } from 'node:path';
@@ -30,7 +30,7 @@ if (values.help || !values.org || !values.file?.length) {
 Install or refresh connector(s) in an organization.
 
 Usage:
-  pnpm tsx --env-file=.env scripts/lobu/install-connectors.ts --org <slug> --file <path-to-connector.ts>...
+  bun --env-file=.env scripts/lobu/install-connectors.ts --org <slug> --file <path-to-connector.ts>...
 
 Options:
   --org                      Organization slug (required)

@@ -48,10 +48,10 @@ Cookie name is `__Secure-better-auth.session_token` whenever the baseURL is `htt
 
 ## Find the Chrome connection
 
-Browser actions dispatch to a paired Chrome extension connection (usually org `buremba`):
+Browser actions dispatch to a paired Chrome extension connection. Pass the organization slug explicitly:
 
 ```bash
-lobu call manage_connections --org buremba --arg action=list --raw
+lobu call manage_connections --org <org-slug> --arg action=list --raw
 ```
 
 Pick the `chrome` connector with `status: active` on the machine whose browser you want to drive. `operations.listAvailable({ connection_id })` reports per-target `readiness` and `execution_targets` — use it to check the device is actually online before a long verification.
@@ -128,7 +128,7 @@ for (const d of ['', '; domain=app.lobu.ai', '; domain=.lobu.ai'])
 For one-off actions, `lobu call manage_operations` is quicker:
 
 ```bash
-lobu call manage_operations --org buremba --arg action=execute \
+lobu call manage_operations --org <org-slug> --arg action=execute \
   --arg connection_id=<chrome-connection-id> --arg operation_key=navigate \
   --arg input:='{"url":"https://app.lobu.ai/<path>","wait_for_load":true,"open_in_new_tab":true}' --raw
 ```

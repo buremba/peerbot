@@ -27,6 +27,14 @@ import {
 } from '../../setup/test-fixtures';
 import { del, get, mcpListTools, mcpRequest, mcpToolsCall, post } from '../../setup/test-helpers';
 
+async function verifyDeviceCode(userCode: string, cookie: string): Promise<void> {
+  const response = await get(
+    `/oauth/device/info?user_code=${encodeURIComponent(userCode)}`,
+    { cookie }
+  );
+  expect(response.status).toBe(200);
+}
+
 describe('MCP Authentication', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let publicOrg: Awaited<ReturnType<typeof createTestOrganization>>;
@@ -1570,6 +1578,7 @@ describe('MCP Authentication', () => {
     it('should approve device code with explicit organization_id', async () => {
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
+      await verifyDeviceCode(dc.userCode, sessionCookie);
       const response = await post('/oauth/device/approve', {
         body: {
           user_code: dc.userCode,
@@ -1588,6 +1597,7 @@ describe('MCP Authentication', () => {
     it('should return org_selection_required without organization_id (no resource slug)', async () => {
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
+      await verifyDeviceCode(dc.userCode, sessionCookie);
       const response = await post('/oauth/device/approve', {
         body: {
           user_code: dc.userCode,
@@ -1612,6 +1622,7 @@ describe('MCP Authentication', () => {
         resource: `http://localhost/mcp/${org.slug}`,
       });
 
+      await verifyDeviceCode(dc.userCode, sessionCookie);
       const response = await post('/oauth/device/approve', {
         body: {
           user_code: dc.userCode,
@@ -1629,6 +1640,7 @@ describe('MCP Authentication', () => {
     it('should reject device approve with invalid organization_id', async () => {
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
+      await verifyDeviceCode(dc.userCode, sessionCookie);
       const response = await post('/oauth/device/approve', {
         body: {
           user_code: dc.userCode,
@@ -1668,6 +1680,7 @@ describe('MCP Authentication', () => {
       const pSession = await createTestSession(pUser.id);
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
+      await verifyDeviceCode(dc.userCode, pSession.cookieHeader);
       const response = await post('/oauth/device/approve', {
         body: { user_code: dc.userCode, approved: true },
         cookie: pSession.cookieHeader,
@@ -1703,6 +1716,7 @@ describe('MCP Authentication', () => {
       const pSession = await createTestSession(pUser.id);
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
+      await verifyDeviceCode(dc.userCode, pSession.cookieHeader);
       const response = await post('/oauth/device/approve', {
         body: {
           user_code: dc.userCode,
@@ -1722,6 +1736,7 @@ describe('MCP Authentication', () => {
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
       // User approves the device on the OAuth page, picking `org`.
+      await verifyDeviceCode(dc.userCode, sessionCookie);
       const approveRes = await post('/oauth/device/approve', {
         body: {
           user_code: dc.userCode,

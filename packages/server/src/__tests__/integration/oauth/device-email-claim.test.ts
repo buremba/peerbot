@@ -17,8 +17,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { render } from '@react-email/render';
 import { MagicLinkEmail } from '../../../email/templates/magic-link';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestUser } from '../../setup/test-fixtures';
-import { post } from '../../setup/test-helpers';
+import { createTestSession, createTestUser } from '../../setup/test-fixtures';
+import { get, post } from '../../setup/test-helpers';
 
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
 
@@ -94,6 +94,22 @@ describe('POST /oauth/device/email — agent account claim', () => {
   it('rejects an unknown or expired user_code with 400 (the agent\'s own error)', async () => {
     const res = await post('/oauth/device/email', {
       body: { user_code: 'NOPE-NOPE', email: 'x@example.com' },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_grant');
+  });
+
+  it('rejects email delivery after a user has claimed the code', async () => {
+    const userCode = await pendingUserCode();
+    const user = await createTestUser({ name: 'Claimed verifier' });
+    const session = await createTestSession(user.id);
+    const info = await get(`/oauth/device/info?user_code=${encodeURIComponent(userCode)}`, {
+      cookie: session.cookieHeader,
+    });
+    expect(info.status).toBe(200);
+
+    const res = await post('/oauth/device/email', {
+      body: { user_code: userCode, email: `late-${Date.now()}@example.com` },
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe('invalid_grant');

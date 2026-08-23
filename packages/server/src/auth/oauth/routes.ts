@@ -28,6 +28,7 @@ import { getConfiguredPublicOrigin } from '../../utils/public-origin';
 import { resolveSession } from '../resolve-session';
 
 const oauthRoutes = new Hono<{ Bindings: Env }>();
+const INVALID_DEVICE_CODE_MESSAGE = 'Invalid or expired user code';
 
 /**
  * Parse a request body that may be application/x-www-form-urlencoded or JSON.
@@ -885,9 +886,9 @@ oauthRoutes.post('/oauth/device/email', async (c) => {
   // The user_code is the agent's own pending authorization — a bad one is the
   // agent's error, not account-existence info, so it is safe to 400 here.
   const provider = getProvider(c);
-  const deviceCode = await provider.getDeviceCodeByUserCode(userCode);
-  if (!deviceCode) {
-    return c.json(createOAuthError('invalid_grant', 'Invalid or expired user code'), 400);
+  const codeIsPending = await provider.isUnclaimedDeviceCodePending(userCode);
+  if (!codeIsPending) {
+    return c.json(createOAuthError('invalid_grant', INVALID_DEVICE_CODE_MESSAGE), 400);
   }
 
   // Land the magic link on the existing device consent page for this code.
@@ -944,10 +945,14 @@ oauthRoutes.get('/oauth/device/info', requireAuth, async (c) => {
   if (!userCode) {
     return c.json(createOAuthError('invalid_request', 'user_code is required'), 400);
   }
+  const user = c.get('user');
+  if (!user) {
+    return c.json(createOAuthError('access_denied', 'Authentication required'), 401);
+  }
   const provider = getProvider(c);
-  const deviceCode = await provider.getDeviceCodeByUserCode(userCode);
+  const deviceCode = await provider.claimDeviceCodeForUser(userCode, user.id);
   if (!deviceCode) {
-    return c.json(createOAuthError('invalid_grant', 'Invalid or expired user code'), 400);
+    return c.json(createOAuthError('invalid_grant', INVALID_DEVICE_CODE_MESSAGE), 400);
   }
   const client = await provider.clientsStore.getClient(deviceCode.client_id);
   return c.json({
@@ -989,14 +994,18 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   }
 
   if (!body.approved) {
-    await provider.denyDeviceCode(body.user_code);
+    const denied = await provider.denyDeviceCode(body.user_code, user.id);
+    if (!denied) {
+      return c.json(createOAuthError('invalid_grant', INVALID_DEVICE_CODE_MESSAGE), 400);
+    }
     return c.json({ status: 'denied' });
   }
 
-  // Look up the device code to check scope/resource
-  const deviceCode = await provider.getDeviceCodeByUserCode(body.user_code);
+  // Read scope/resource only after the verifier endpoint bound the code to
+  // this user. Consent decisions never create or overwrite ownership.
+  const deviceCode = await provider.getDeviceCodeForUser(body.user_code, user.id);
   if (!deviceCode) {
-    return c.json(createOAuthError('invalid_grant', 'Invalid or expired user code'), 400);
+    return c.json(createOAuthError('invalid_grant', INVALID_DEVICE_CODE_MESSAGE), 400);
   }
 
   const deviceHasMcpScopes = hasMcpScopes(deviceCode.scope);
@@ -1109,7 +1118,7 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     scopeOverride
   );
   if (!approved) {
-    return c.json(createOAuthError('invalid_grant', 'Failed to approve device code'), 400);
+    return c.json(createOAuthError('invalid_grant', INVALID_DEVICE_CODE_MESSAGE), 400);
   }
 
   return c.json({ status: 'approved' });

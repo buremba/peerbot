@@ -55,10 +55,12 @@ agent-attested (ID-JAG) zero-touch flow; do not attempt one.
 
    { "user_code": "<user_code>", "email": "<user email>" }
    \`\`\`
-   Always returns \`202\` once the \`user_code\` is valid. The response never
-   reveals whether the email already has an account. Lobu emails the user a
-   magic link; one click signs them in (creating the account on first use) and
-   lands them on the consent screen for this request.
+   Returns \`202\` while the \`user_code\` is still pending and unclaimed; once
+   someone has opened its consent screen the code is bound to them and this
+   returns \`invalid_grant\`. The response never reveals whether the email
+   already has an account. Lobu emails the user a magic link; one click signs
+   them in (creating the account on first use) and lands them on the consent
+   screen for this request.
 
 4. Poll the token endpoint until the user approves:
    \`\`\`http
@@ -83,7 +85,7 @@ with the standard \`refresh_token\` grant at \`${baseUrl}/oauth/token\`.
 | \`authorization_pending\` | token poll | user has not approved yet; keep polling |
 | \`slow_down\` | token poll | poll less often |
 | \`expired_token\` | token poll | the device_code expired; start over |
-| \`invalid_grant\` | device/email, token | unknown or expired \`user_code\`/\`device_code\` |
+| \`invalid_grant\` | device/email, token | invalid code; device/email also rejects a \`user_code\` already claimed by a verifier |
 | \`access_denied\` | token poll | the user denied the request |
 `;
 }

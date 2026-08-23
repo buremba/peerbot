@@ -1368,6 +1368,37 @@ describe("XConnector browser-first routing", () => {
 				],
 			],
 		},
+		{
+			name: "keeps a resumed cursor when GraphQL returns an error page",
+			replayResult: { ok: true, status: 200 },
+			parserErrors: ["rate limited"],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "resume-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [
+				[
+					{
+						url: likesTimelineUrl("resume-cursor"),
+						body: JSON.stringify({
+							errors: [{ message: "rate limited" }],
+							data: {
+								user: {
+									result: {
+										timeline_v2: {
+											timeline: { instructions: [] },
+										},
+									},
+								},
+							},
+						}),
+					},
+				],
+			],
+		},
 	]) {
 		test(scenario.name, async () => {
 			let drainCount = 0;

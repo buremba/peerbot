@@ -72,7 +72,7 @@ interface XCheckpoint {
 	likes_backfill_completed_at?: Date | string;
 }
 
-type XLikesBackfillStatus = "in_progress" | "complete" | "platform_limited";
+type XLikesBackfillStatus = "in_progress" | "complete";
 
 interface XMediaAttachment {
 	kind: "image" | "video" | "animated_gif";
@@ -1184,7 +1184,7 @@ export function finalizeLikedTweetsResult(
 			? oldest
 			: null;
 	const completedAt =
-		backfill.status === "complete" || backfill.status === "platform_limited"
+		backfill.status === "complete"
 			? (checkpoint.likes_backfill_completed_at ?? new Date())
 			: checkpoint.likes_backfill_completed_at;
 
@@ -1410,13 +1410,8 @@ class XLikesPageTracker {
 		return this.requestedPages - this.respondedPages;
 	}
 
-	status(
-		previousStatus: XLikesBackfillStatus | undefined,
-	): XLikesBackfillStatus {
-		if (!this.backfill) return previousStatus ?? "complete";
-		if (this.terminalSeen) return "complete";
-		if (this.unconfirmedPages > 0) return "in_progress";
-		return this.nextCursor ? "in_progress" : "platform_limited";
+	status(): XLikesBackfillStatus {
+		return !this.backfill || this.terminalSeen ? "complete" : "in_progress";
 	}
 
 	private recordHistoricalPage(tweets: XTweet[]): void {
@@ -1999,9 +1994,7 @@ async function syncLikedTweetsViaExtension(
 	const accountHandle = await resolveAccountHandle(config);
 	const likesUrl = `https://x.com/${encodeURIComponent(accountHandle)}/likes`;
 	const dispatcher = requireExtensionDispatcher(ctx);
-	const previouslyComplete =
-		checkpoint.likes_backfill_status === "complete" ||
-		checkpoint.likes_backfill_status === "platform_limited";
+	const previouslyComplete = checkpoint.likes_backfill_status === "complete";
 	const pageBudget = previouslyComplete
 		? readLikesIncrementalPageBudget(config)
 		: readLikesBackfillPageBudget(config);
@@ -2022,13 +2015,17 @@ async function syncLikedTweetsViaExtension(
 			responseShapes.add(summarizeXResponseShape(json));
 		}
 		const page = parseBrowserTimelinePage(url, json);
-		if (!page.recognized) {
-			parserErrors.push(...page.errors);
+		parserErrors.push(...page.errors);
+		if (
+			!page.recognized ||
+			(page.errors.length > 0 &&
+				page.tweets.length === 0 &&
+				!page.bottomCursor)
+		) {
 			return [];
 		}
 		pages.recordPage(url, page);
 		owner = page.owner ?? owner;
-		parserErrors.push(...page.errors);
 
 		return page.tweets.map((tweet) => ({
 			...tweet,
@@ -2091,7 +2088,7 @@ async function syncLikedTweetsViaExtension(
 			}`,
 		);
 	}
-	const status = pages.status(checkpoint.likes_backfill_status);
+	const status = pages.status();
 	return finalizeLikedTweetsResult(
 		result.items,
 		checkpoint,

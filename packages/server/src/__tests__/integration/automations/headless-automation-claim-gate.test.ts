@@ -56,6 +56,7 @@ async function setupDevicePinnedAutomation(opts: {
   workerId: string;
   platform: string;
   capabilities: Record<string, boolean>;
+  agentKind?: string;
 }): Promise<{
   sql: ReturnType<typeof getTestDb>;
   dbClient: DbClient;
@@ -98,7 +99,7 @@ async function setupDevicePinnedAutomation(opts: {
   await sql`
     UPDATE automations
     SET device_worker_id = ${deviceWorkerId}::uuid,
-        agent_kind = 'opencode'
+        agent_kind = ${opts.agentKind ?? 'opencode'}
     WHERE id = ${automationId}
   `;
 
@@ -216,6 +217,91 @@ describe('headless Automation claim gate (automations.execute)', () => {
       SELECT status FROM runs WHERE id = ${job.run_id}
     `;
     expect(String(run.status)).toBe('running');
+  });
+
+  it('checkpoints a Codex ACP session and returns it only to the same device on reclaim', async () => {
+    const workerId = 'headless-codex-acp';
+    const ctx = await setupDevicePinnedAutomation({
+      workerId,
+      platform: 'headless',
+      capabilities: { 'automations.execute': true },
+      agentKind: 'codex',
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      workerId
+    );
+    await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+
+    const pollBody = {
+      worker_id: workerId,
+      capabilities: { 'automations.execute': true },
+      agent_kinds: ['codex'],
+    };
+    const firstPoll = await post('/api/workers/poll', { token, body: pollBody });
+    expect(firstPoll.status).toBe(200);
+    const firstJob = (await firstPoll.json()) as {
+      run_id: number;
+      payload: {
+        context: {
+          agent_session: {
+            token: string;
+            resume_session_id?: string;
+          };
+        };
+      };
+    };
+    expect(firstJob.payload.context.agent_session.resume_session_id).toBeUndefined();
+    expect(verifyWorkerToken(firstJob.payload.context.agent_session.token)?.runId).toBe(
+      firstJob.run_id
+    );
+
+    const heartbeat = await post('/api/workers/heartbeat', {
+      token,
+      body: {
+        run_id: firstJob.run_id,
+        worker_id: workerId,
+        agent_session: {
+          protocol: 'acp',
+          agent_kind: 'codex',
+          session_id: 'codex-acp-session-99',
+        },
+      },
+    });
+    expect(heartbeat.status).toBe(200);
+    const [checkpointed] = await ctx.sql<{
+      run_metadata: { device_agent_session?: Record<string, unknown> } | null;
+    }>`
+      SELECT run_metadata FROM runs WHERE id = ${firstJob.run_id}
+    `;
+    expect(checkpointed.run_metadata?.device_agent_session).toEqual(
+      expect.objectContaining({
+        protocol: 'acp',
+        agent_kind: 'codex',
+        session_id: 'codex-acp-session-99',
+        worker_id: workerId,
+      })
+    );
+
+    // Model a daemon loss before terminal delivery. The durable run keeps its
+    // exact session checkpoint while the ordinary claim fields are released.
+    await ctx.sql`
+      UPDATE runs
+      SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
+          last_heartbeat_at = NULL
+      WHERE id = ${firstJob.run_id}
+    `;
+    const secondPoll = await post('/api/workers/poll', { token, body: pollBody });
+    expect(secondPoll.status).toBe(200);
+    const secondJob = (await secondPoll.json()) as {
+      run_id: number;
+      payload: { context: { agent_session: { resume_session_id?: string } } };
+    };
+    expect(secondJob.run_id).toBe(firstJob.run_id);
+    expect(secondJob.payload.context.agent_session.resume_session_id).toBe(
+      'codex-acp-session-99'
+    );
   });
 
   it('automation without an assigned agent still dispatches instructions-only (no run-scoped session)', async () => {

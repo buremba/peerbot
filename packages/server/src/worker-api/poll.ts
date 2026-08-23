@@ -1112,7 +1112,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       });
     }
     let devicePrompt = automationInstructions;
-    let agentSession: { conversation_id: string; mcp_url: string; token: string; expires_at: number } | undefined;
+    let agentSession: {
+      conversation_id: string;
+      mcp_url: string;
+      token: string;
+      expires_at: number;
+      resume_session_id?: string;
+    } | undefined;
     const requiresRunScopedAgentSession =
       effectivePlatform === 'macos' && authorizedCapabilities.includes('automations.execute');
     if (
@@ -1163,11 +1169,29 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             runId: row.run_id,
             organizationId: row.organization_id,
           });
+          // Hand back the run's own ACP checkpoint only to the device that
+          // wrote it, and only while the run still resolves to the same agent
+          // kind. Sessions are agent-local state, so a different device or a
+          // re-pinned agent kind cannot resume them.
+          const selectedAgentKind = agentKindFromPayload ?? row.automation_agent_kind ?? null;
+          const checkpoint = row.run_metadata?.['device_agent_session'];
+          const stored =
+            checkpoint != null && typeof checkpoint === 'object' && !Array.isArray(checkpoint)
+              ? (checkpoint as Record<string, unknown>)
+              : null;
+          const resumeSessionId =
+            stored?.['protocol'] === 'acp' &&
+            stored['worker_id'] === worker_id &&
+            stored['agent_kind'] === selectedAgentKind &&
+            typeof stored['session_id'] === 'string'
+              ? (stored['session_id'] as string)
+              : undefined;
           agentSession = {
             conversation_id: access.conversationId,
             mcp_url: `${resolvePublicOrigin(c.req.url)}/mcp/${encodeURIComponent(row.organization_slug)}`,
             token: access.token,
             expires_at: access.expiresAt,
+            ...(resumeSessionId ? { resume_session_id: resumeSessionId } : {}),
           };
         } catch (err) {
           if (requiresRunScopedAgentSession) {

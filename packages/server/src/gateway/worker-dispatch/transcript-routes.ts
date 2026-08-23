@@ -53,12 +53,12 @@ function authenticate(c: Context): WorkerTokenData | null {
 /**
  * Verify the `runId` the worker claims belongs to the JWT's (org, agent,
  * conv) tuple. The worker can't lie its way into another conversation's
- * row: the runId is authoritatively set by the gateway's MessageConsumer
- * from the runs-queue claim and threaded into the worker via WorkerConfig.
- * A misbehaving worker that POSTs a forged runId either targets one of its
- * own runs (allowed) or a run owned by a different (org, agent, conv) —
- * this function returns false in the latter case so the route rejects with
- * 403.
+ * row: the runId is authoritatively set by whichever server path minted the
+ * per-run token — the gateway's MessageConsumer from the runs-queue claim,
+ * or `buildAutomationRunWorkerAccess` at device poll. A misbehaving worker
+ * that POSTs a forged runId either targets one of its own runs (allowed) or
+ * a run owned by a different (org, agent, conv) — this function returns
+ * false in the latter case so the route rejects with 403.
  *
  * Codex P1#1 on PR #865 — the previous "latest run for (org, agent, conv)"
  * lookup at write time raced: worker A finishes execute() for run 100,
@@ -83,19 +83,37 @@ async function isRunOwnedByJwtScope(
   // `(action_input #>> '{}')::jsonb ->>` first. New rows (post fix below)
   // always take the 'object' branch; legacy in-flight rows take 'string'.
   const rows = await sql<{ ok: boolean }>`
-    SELECT 1 AS ok FROM public.runs
-    WHERE id = ${runId}
-      AND organization_id = ${organizationId}
-      AND CASE jsonb_typeof(action_input)
-            WHEN 'object' THEN action_input ->> 'agentId'
-            WHEN 'string' THEN (action_input #>> '{}')::jsonb ->> 'agentId'
+    SELECT 1 AS ok
+    FROM public.runs r
+    LEFT JOIN public.automations automation
+      ON automation.id = r.automation_id
+     AND automation.organization_id = r.organization_id
+    WHERE r.id = ${runId}
+      AND r.organization_id = ${organizationId}
+      AND (
+        (
+          CASE jsonb_typeof(r.action_input)
+            WHEN 'object' THEN r.action_input ->> 'agentId'
+            WHEN 'string' THEN (r.action_input #>> '{}')::jsonb ->> 'agentId'
             ELSE NULL
           END = ${agentId}
-      AND CASE jsonb_typeof(action_input)
-            WHEN 'object' THEN action_input ->> 'conversationId'
-            WHEN 'string' THEN (action_input #>> '{}')::jsonb ->> 'conversationId'
+          AND CASE jsonb_typeof(r.action_input)
+            WHEN 'object' THEN r.action_input ->> 'conversationId'
+            WHEN 'string' THEN (r.action_input #>> '{}')::jsonb ->> 'conversationId'
             ELSE NULL
           END = ${conversationId}
+        )
+        -- Device-pinned Automation runs carry no agentId/conversationId in
+        -- action_input: the identity is derived at poll time by
+        -- buildAutomationRunWorkerAccess from (agent, automation, run). Prove
+        -- ownership from the automation's own agent plus the same derived id.
+        OR (
+          r.run_type = 'automation'
+          AND automation.agent_id = ${agentId}
+          AND ${conversationId} =
+            ${agentId} || '_automation_' || r.automation_id::text || '_run_' || r.id::text
+        )
+      )
     LIMIT 1
   `;
   return rows.length > 0;
@@ -194,8 +212,7 @@ export function createTranscriptRoutes(): Hono {
 
     // The JWT must itself be bound to this exact runId. The deployment-
     // lifetime WORKER_TOKEN carries no `runId`, so it can never satisfy
-    // this check — only the per-run JWT that MessageConsumer mints
-    // alongside the runs-queue dispatch can. Without this, a worker
+    // this check — only a per-run JWT can. Without this, a worker
     // bearing a valid same-(org, agent, conv) deployment token could
     // POST under ANY same-scope run's slot, including the next pending
     // run, and overwrite a sibling worker's snapshot. Codex round 2

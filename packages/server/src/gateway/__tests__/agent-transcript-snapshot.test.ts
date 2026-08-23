@@ -24,6 +24,7 @@ import { createTranscriptRoutes } from "../worker-dispatch/transcript-routes.js"
 import { buildApiConversationId } from "../services/api-conversation-id.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { readSnapshotJsonl } from "../services/transcript-snapshot.js";
+import { readAutomationRunThreads } from "../services/automation-run-thread.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import {
   ensureDbForGatewayTests,
@@ -115,6 +116,69 @@ async function callRoute(
 }
 
 describe("agent_transcript_snapshot — snapshot route", () => {
+  test("direct Automation run token writes the transcript surfaced in Recent", async () => {
+    const agentId = "agent-automation-acp";
+    const orgId = await seedAgentRow(agentId, {
+      organizationId: "org_automation_acp",
+    });
+    const sql = getDb();
+    const userId = "automation-acp-owner";
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${userId}, 'Automation ACP owner', 'automation-acp@example.test',
+              false, now(), now())
+      ON CONFLICT (id) DO NOTHING
+    `;
+    const [automation] = await sql<{ id: number }>`
+      WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+      INSERT INTO automations (
+        id, automation_group_id, organization_id, agent_id, created_by, name, slug
+      )
+      SELECT id, id, ${orgId}, ${agentId}, ${userId}, 'ACP Automation', 'acp-' || id
+      FROM next_id
+      RETURNING id
+    `;
+    const automationId = Number(automation.id);
+    const [run] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, automation_id, status, action_input,
+        queue_name, run_at, created_at, completed_at
+      ) VALUES (
+        ${orgId}, 'automation', ${automationId}, 'completed', NULL,
+        'automation', now(), now(), now()
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    const conversationId = `${agentId}_automation_${automationId}_run_${runId}`;
+    const token = mintWorkerToken({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+      runId,
+    });
+    const transcript =
+      `${JSON.stringify({ type: "session", version: 3, id: "acp-session", timestamp: new Date().toISOString(), cwd: "/workspace" })}\n` +
+      `${JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "Run the Automation" }] } })}\n` +
+      `${JSON.stringify({ type: "message", id: "a1", parentId: "u1", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: "ACP trace is durable" }] } })}\n`;
+
+    const response = await callRoute("POST", "/snapshot", token, {
+      terminalStatus: "completed",
+      snapshotJsonl: transcript,
+      runId,
+    });
+    expect(response.status).toBe(200);
+
+    const recent = await readAutomationRunThreads({
+      agentId,
+      automationId,
+      organizationId: orgId,
+      limit: 10,
+    });
+    expect(recent.runs).toHaveLength(1);
+    expect(JSON.stringify(recent.runs[0]?.messages)).toContain("ACP trace is durable");
+  });
+
   test("happy-path-multi-turn: writes one row per terminal run, hydrates byte-for-byte", async () => {
     const orgId = await seedAgentRow("agent-happy", {
       organizationId: "org_happy",

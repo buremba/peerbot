@@ -5,7 +5,7 @@ import {
 } from '@lobu/core/contracts/worker/device-automation';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 import { executeAutomationRun, type AutomationExecutorConfig } from './automation.js';
-import { resolveRunnableAgentKinds } from './agent-binaries.js';
+import { locateBinary, resolveRunnableAgentKinds } from './agent-binaries.js';
 import {
   MutableWorkerAdvertisementProvider,
   WorkerClient,
@@ -24,6 +24,7 @@ const WORKER_PAT_PATTERN = /^owl_pat_[A-Za-z0-9_-]{32}$/;
 const DEFAULT_POLL_INTERVAL_MS = 10000;
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
 const NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS = 5000;
+export const INTERNAL_CODEX_ACP_ARG = '--internal-codex-acp';
 
 export interface MacDeviceDaemonOptions {
   apiUrl?: string;
@@ -220,6 +221,7 @@ export function createMacDeviceDaemon(
   if (validated.noPoll) throw new Error('cannot create a polling daemon with --no-poll');
 
   const runnableAgentKinds = resolveRunnableAgentKinds();
+  const codexPath = runnableAgentKinds.includes('codex') ? locateBinary('codex') : null;
   const defaultAgentKind = selectMacDeviceDaemonAgentKind(
     runnableAgentKinds,
     validated.defaultAgentKind
@@ -245,6 +247,24 @@ export function createMacDeviceDaemon(
     ...(defaultAgentKind ? { defaultAgentKind } : {}),
     requireRunScopedSession: true,
     shutdownSignal: shutdownController.signal,
+    ...(codexPath
+      ? {
+          codexAcp: {
+            // Re-exec this same entrypoint so the adapter is the artifact we
+            // shipped. Run from source (`bun src/...ts`, `node dist/...js`),
+            // argv[1] is the script the runtime needs handed back to it; in the
+            // `bun build --compile` binary argv[1] is the extensionless in-bundle
+            // path (`/$bunfs/root/...`) and execPath is the binary itself, which
+            // already knows its own entry.
+            adapterCommand: process.execPath,
+            adapterArgs:
+              process.argv[1] && /\.[cm]?[jt]s$/.test(process.argv[1])
+                ? [process.argv[1], INTERNAL_CODEX_ACP_ARG]
+                : [INTERNAL_CODEX_ACP_ARG],
+            codexPath,
+          },
+        }
+      : {}),
   };
   const loop = new WorkerPollLoop({
     client,

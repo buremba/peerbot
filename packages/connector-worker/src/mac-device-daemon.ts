@@ -4,6 +4,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import {
   MAC_DEVICE_DAEMON_PROTOCOL,
+  INTERNAL_CODEX_ACP_ARG,
   macDeviceDaemonMetadata,
   runMacDeviceDaemon,
   validateMacDeviceDaemonOptions,
@@ -149,7 +150,22 @@ async function main(): Promise<void> {
   await runMacDeviceDaemon(options);
 }
 
-main().catch((error) => {
+async function start(): Promise<void> {
+  if (process.argv[2] === INTERNAL_CODEX_ACP_ARG) {
+    // Dynamic on purpose, and not for bundle size — `bun build --compile` links
+    // this module into the artifact either way. The adapter is a side-effectful
+    // stdio server that binds process stdin/stdout the moment it is evaluated,
+    // so a static import would start a second ACP protocol loop in the daemon
+    // itself and steal the daemon's own stdio. Only the isolated child, which
+    // exists solely to be that server, may evaluate it.
+    // @ts-expect-error codex-acp is an executable-only package with no declarations.
+    await import('@agentclientprotocol/codex-acp');
+    return;
+  }
+  await main();
+}
+
+start().catch((error) => {
   process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

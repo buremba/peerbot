@@ -205,18 +205,34 @@ async function reactivateProfileCascade(
  */
 export async function heartbeat(c: Context<{ Bindings: Env }>) {
 	try {
-		const { run_id, worker_id, progress } =
+		const { run_id, worker_id, progress, agent_session } =
 			await c.req.json<HeartbeatRequest>();
 
 		const denied = await authorizeRunForWorker(c, run_id, worker_id);
 		if (denied) return denied;
 
 		const sql = getDb();
+		// Stamped with the reporting worker so poll can only resume an agent
+		// session on the device that owns it.
+		const agentSessionCheckpoint = agent_session
+			? sql`, run_metadata = jsonb_set(
+              COALESCE(run_metadata, '{}'::jsonb),
+              '{device_agent_session}',
+              ${sql.json({
+								protocol: agent_session.protocol,
+								agent_kind: agent_session.agent_kind,
+								session_id: agent_session.session_id,
+								worker_id,
+								updated_at: new Date().toISOString(),
+							})}::jsonb,
+              true
+            )`
+			: sql``;
 
 		await sql`
       UPDATE runs
       SET last_heartbeat_at = current_timestamp,
-          items_collected = COALESCE(${progress?.items_collected_so_far ?? null}, items_collected)
+          items_collected = COALESCE(${progress?.items_collected_so_far ?? null}, items_collected)${agentSessionCheckpoint}
       WHERE id = ${run_id}
     `;
 

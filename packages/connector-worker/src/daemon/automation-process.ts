@@ -101,9 +101,10 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
     try {
       target = spawnChild(binary, args, {
         env: process.env,
-        stdio: ['ignore', 'inherit', 'inherit'],
+        stdio: ['pipe', 'inherit', 'inherit'],
         windowsHide: true,
       });
+      if (target.stdin) process.stdin.pipe(target.stdin);
     } catch (error) {
       finish(127, null, error instanceof Error ? error.message : String(error));
     }
@@ -317,7 +318,8 @@ export async function terminateChild(proc: ChildProcess): Promise<'SIGTERM' | 'S
 export function spawnSupervisedCli(
   binary: string,
   args: string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  options: { stdin?: 'ignore' | 'pipe' } = {}
 ): SupervisedCli {
   const supervisor = spawn(
     process.execPath,
@@ -325,7 +327,7 @@ export function spawnSupervisedCli(
     {
       detached: SUPPORTS_PROCESS_GROUPS,
       env,
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      stdio: [options.stdin ?? 'ignore', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,
     }
   );

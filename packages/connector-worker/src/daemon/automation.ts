@@ -60,6 +60,10 @@ import {
   handoffToInteractiveSession,
   type InteractiveSession,
 } from './interactive-session.js';
+import {
+  CodexAcpTranscript,
+  runCodexAcpTurn,
+} from './codex-acp.js';
 
 /**
  * The slice of the daemon's `ExecutorConfig` the automation arm reads.
@@ -96,6 +100,13 @@ export interface AutomationExecutorConfig {
    * use to drive a fake binary.
    */
   binaryOverrides?: Partial<Record<AgentKind, string>>;
+  /** Mac-only packaged ACP adapter route for Codex Automations. */
+  codexAcp?: {
+    adapterCommand: string;
+    adapterArgs: string[];
+    adapterEnv?: NodeJS.ProcessEnv;
+    codexPath: string;
+  };
 }
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
@@ -106,6 +117,8 @@ export interface ExecutorResult {
   exitSignal: string | null;
   exitReason: WorkerExitReason;
   durationMs: number;
+  /** Present only for a Codex ACP turn; cumulative across finalize rounds. */
+  transcriptJsonl?: string;
 }
 
 const STDOUT_CAP = 4 * 1024 * 1024;
@@ -127,6 +140,8 @@ const DETAIL_TAIL_CHARS = 500;
 const LOCAL_MAX_ROUNDS = 8;
 const EXIT_REPORT_DELIVERY_ATTEMPTS = 3;
 const EXIT_REPORT_RETRY_DELAY_MS = 2000;
+const TRANSCRIPT_DELIVERY_ATTEMPTS = 3;
+const TRANSCRIPT_RETRY_DELAY_MS = 250;
 const TERMINAL_HEARTBEAT_GRACE_MS = 15_000;
 
 /** Sentinel for "binary not on PATH" so it maps to a distinct exit reason. */
@@ -699,6 +714,9 @@ export async function executeAutomationRun(
   // internally; per-run detection is not repeated here.
   const interactiveSession = attachedInteractiveSession(cfg);
   const agentSession = payload.context.agent_session;
+  const codexAcp = spec.kind === 'codex' ? cfg.codexAcp : undefined;
+  let acpSessionId = agentSession?.resume_session_id;
+  const acpTranscript = codexAcp ? new CodexAcpTranscript(process.cwd()) : undefined;
   const selectedSession = isInteractiveSessionEligible(spec.kind, interactiveSession, payload)
     ? interactiveSession
     : undefined;
@@ -809,6 +827,36 @@ export async function executeAutomationRun(
           `[executor] Automation run ${runId}: interactive ${selectedSession.kind} unavailable before delivery; using subprocess`
         );
       }
+      if (codexAcp && agentSession && acpTranscript) {
+        const result = await runCodexAcpTurn({
+          adapterCommand: codexAcp.adapterCommand,
+          adapterArgs: codexAcp.adapterArgs,
+          ...(codexAcp.adapterEnv ? { adapterEnv: codexAcp.adapterEnv } : {}),
+          codexPath: codexAcp.codexPath,
+          cwd: process.cwd(),
+          prompt,
+          mcp: { url: agentSession.mcp_url, bearer: agentSession.token },
+          ...(acpSessionId ? { resumeSessionId: acpSessionId } : {}),
+          ...(payload.automation.execution_config?.model
+            ? { model: payload.automation.execution_config.model }
+            : {}),
+          ...(payload.automation.execution_config?.effort
+            ? { effort: payload.automation.execution_config.effort }
+            : {}),
+          timeoutMs,
+          abortSignal: runAbort.signal,
+          transcript: acpTranscript,
+          onSessionReady: async (sessionId) => {
+            await client.heartbeat(runId, undefined, {
+              protocol: 'acp',
+              agent_kind: 'codex',
+              session_id: sessionId,
+            });
+          },
+        });
+        acpSessionId = result.sessionId;
+        return result;
+      }
       return runCli(
         spec,
         prompt,
@@ -821,8 +869,43 @@ export async function executeAutomationRun(
         cfg.terminalHeartbeatGraceMs
       );
     },
-    deliver: (result, finalizeAttempt) =>
-      deliverExitReport(client, runId, result, finalizeAttempt),
+    deliver: async (result, finalizeAttempt) => {
+      const report = await deliverExitReport(client, runId, result, finalizeAttempt);
+      if (report && report.status !== 'resume' && result.transcriptJsonl && agentSession) {
+        const terminalStatus =
+          report.status === 'completed'
+            ? 'completed'
+            : report.status === 'cancelled' || result.exitReason === 'cancelled'
+              ? 'cancelled'
+              : result.exitReason === 'timeout'
+                ? 'timeout'
+                : 'failed';
+        let transcriptError: unknown;
+        for (let attempt = 0; attempt < TRANSCRIPT_DELIVERY_ATTEMPTS; attempt++) {
+          try {
+            await client.writeAutomationTranscript(
+              runId,
+              agentSession.token,
+              terminalStatus,
+              result.transcriptJsonl
+            );
+            transcriptError = undefined;
+            break;
+          } catch (error) {
+            transcriptError = error;
+            if (attempt + 1 < TRANSCRIPT_DELIVERY_ATTEMPTS) {
+              await sleep(TRANSCRIPT_RETRY_DELAY_MS);
+            }
+          }
+        }
+        if (transcriptError) {
+          log.info(
+            `[executor] Automation run ${runId}: terminal ACP transcript upload failed: ${transcriptError instanceof Error ? transcriptError.message : String(transcriptError)}`
+          );
+        }
+      }
+      return report;
+    },
     reportError: (error, reason) =>
       completeAutomationWithError(client, runId, error, reason),
   };

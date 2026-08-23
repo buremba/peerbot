@@ -45,6 +45,7 @@ export function buildAutomationRunWorkerAccess(args: {
       agentId: args.agentId,
       organizationId: args.organizationId,
       platform: "api",
+      runId: args.runId,
       source: AUTOMATION_RUN_SOURCE,
       sessionKey: userId,
     }),

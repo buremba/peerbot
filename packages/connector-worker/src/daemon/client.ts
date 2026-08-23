@@ -29,7 +29,8 @@ export interface ExecutorClient {
       items_collected_so_far?: number;
       current_page?: number;
       elapsed_ms?: number;
-    }
+    },
+    agentSession?: NonNullable<HeartbeatRequest['agent_session']>
   ): Promise<void>;
   stream(batch: StreamBatch): Promise<void>;
   complete(req: CompleteRequest): Promise<void>;
@@ -57,6 +58,13 @@ export interface ExecutorClient {
   ): Promise<CompleteAutomationResponse>;
   /** MCP endpoint + bearer the automation arm wires into the spawned CLI. */
   readonly mcpWiring?: { url: string; bearer?: string };
+  /** Terminal ACP transcript upload authenticated by the per-run agent token. */
+  writeAutomationTranscript(
+    runId: number,
+    bearer: string,
+    terminalStatus: 'completed' | 'failed' | 'timeout' | 'cancelled',
+    snapshotJsonl: string
+  ): Promise<void>;
 }
 
 // ============================================
@@ -81,6 +89,7 @@ export type {
   DispatchChromeActionResponse,
   EmbedEvent,
   EmitAuthArtifactRequest,
+  HeartbeatRequest,
   OAuthCredentials,
   PollAuthSignalRequest,
   PollAuthSignalResponse,
@@ -98,6 +107,7 @@ import type {
   DispatchChromeActionResponse,
   EmbedEvent,
   EmitAuthArtifactRequest,
+  HeartbeatRequest,
   PollAuthSignalRequest,
   PollAuthSignalResponse,
   PollResponse,
@@ -349,13 +359,40 @@ export class WorkerClient implements ExecutorClient {
       items_collected_so_far?: number;
       current_page?: number;
       elapsed_ms?: number;
-    }
+    },
+    agentSession?: NonNullable<HeartbeatRequest['agent_session']>
   ): Promise<void> {
     await this.requestVoid('/api/workers/heartbeat', {
       run_id: runId,
       worker_id: this.workerId,
       progress,
+      ...(agentSession ? { agent_session: agentSession } : {}),
     });
+  }
+
+  async writeAutomationTranscript(
+    runId: number,
+    bearer: string,
+    terminalStatus: 'completed' | 'failed' | 'timeout' | 'cancelled',
+    snapshotJsonl: string
+  ): Promise<void> {
+    const route = '/worker/transcript/snapshot';
+    const response = await fetch(`${this.apiUrl}${route}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ runId, terminalStatus, snapshotJsonl }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new WorkerHttpError(
+        response.status,
+        route,
+        `${response.statusText} ${body}`.trim()
+      );
+    }
   }
 
   /**

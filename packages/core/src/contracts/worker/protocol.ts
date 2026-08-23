@@ -199,6 +199,10 @@ export const AutomationPollContextSchema = Type.Object({
       mcp_url: Type.String(),
       token: Type.String(),
       expires_at: Type.Number(),
+      /** Exact same-device ACP session to continue; never discovered by listing sessions. */
+      resume_session_id: Type.Optional(
+        Type.String({ minLength: 1, maxLength: 512 })
+      ),
     })
   ),
 });
@@ -477,6 +481,14 @@ export const PollAuthSignalResponseSchema = Type.Object({
 export const HeartbeatRequestSchema = Type.Object({
   run_id: Type.Integer(),
   worker_id: Type.String(),
+  /** Durable checkpoint written before the first prompt in a new ACP session. */
+  agent_session: Type.Optional(
+    Type.Object({
+      protocol: Type.Literal("acp"),
+      agent_kind: Type.Literal("codex"),
+      session_id: Type.String({ minLength: 1, maxLength: 512 }),
+    })
+  ),
   progress: Type.Optional(
     Type.Object({
       items_collected_so_far: Type.Optional(Type.Integer()),

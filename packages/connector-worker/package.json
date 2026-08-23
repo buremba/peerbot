@@ -57,6 +57,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.6.2",
+    "@agentclientprotocol/sdk": "1.4.0",
     "@lobu/connector-sdk": "workspace:*",
     "@lobu/core": "workspace:*",
     "@lobu/embeddings": "workspace:*",

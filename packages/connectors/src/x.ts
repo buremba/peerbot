@@ -913,7 +913,7 @@ function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 	return {
 		origin_id: tweet.id,
 		payload_text: tweet.text,
-		attachments: tweet.attachments ?? [],
+		...(tweet.attachments?.length ? { attachments: tweet.attachments } : {}),
 		author_name: tweet.username ? `@${tweet.username}` : undefined,
 		occurred_at: tweet.publishedAt,
 		origin_type: originType ?? (tweet.isReply ? "reply" : "tweet"),
@@ -3151,13 +3151,7 @@ export default class XConnector extends ConnectorRuntime {
 					},
 					reply: {
 						description: "A reply to a tweet",
-						metadataSchema: {
-							...engagementMetadataSchema,
-							properties: {
-								...engagementMetadataSchema.properties,
-								conversation_id: { type: "string" },
-							},
-						},
+						metadataSchema: engagementMetadataSchema,
 						attributions: X_TWEET_AUTHOR_ATTRIBUTIONS,
 					},
 				},
@@ -3176,13 +3170,7 @@ export default class XConnector extends ConnectorRuntime {
 					},
 					reply: {
 						description: "A reply posted by the connected account",
-						metadataSchema: {
-							...engagementMetadataSchema,
-							properties: {
-								...engagementMetadataSchema.properties,
-								conversation_id: { type: "string" },
-							},
-						},
+						metadataSchema: engagementMetadataSchema,
 						attributions: X_TWEET_AUTHOR_ATTRIBUTIONS,
 					},
 				},

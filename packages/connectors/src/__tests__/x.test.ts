@@ -622,6 +622,7 @@ describe("finalizeSyncResult", () => {
 			},
 		);
 		expect(liked.events[0].origin_type).toBe("liked_tweet");
+		expect(liked.events[0].attachments).toBeUndefined();
 
 		const bookmarked = finalizeSyncResult(
 			tweets as any,
@@ -1529,7 +1530,7 @@ describe("XConnector browser-first routing", () => {
 		const connector = new XConnector();
 		await connector.sync({
 			feedKey: "my_tweets",
-			config: { use_extension: "true", account_handle: "buremba" },
+			config: { use_extension: "true", account_handle: "testuser" },
 			checkpoint: {},
 			credentials: {
 				provider: "twitter",
@@ -1541,7 +1542,7 @@ describe("XConnector browser-first routing", () => {
 		});
 
 		expect(calls).toHaveLength(1);
-		expect(calls[0].input.url).toBe("https://x.com/buremba");
+		expect(calls[0].input.url).toBe("https://x.com/testuser");
 	});
 
 	test("uses extension for direct_messages when OAuth lacks dm.read", async () => {

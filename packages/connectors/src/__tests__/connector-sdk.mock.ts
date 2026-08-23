@@ -128,6 +128,8 @@ export function connectorSdkMock() {
           ),
         );
       }
+      // This stub models response parsing and custom pagination only. It does not
+      // model the real SDK's checkAuth or responseTimeoutMs behavior.
       if (opts.triggerNextPage) {
         const tabId = Number(observation?.tab_id ?? 1);
         for (let page = 0; page < (opts.config?.maxScrolls ?? 0); page++) {

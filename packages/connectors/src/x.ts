@@ -2069,9 +2069,10 @@ async function syncLikedTweetsViaExtension(
 				allowed_origins: X_ALLOWED_ORIGINS,
 			});
 			if (observation.ok !== true) {
-				throw new Error(
+				parserErrors.push(
 					`X likes cursor request failed (${observation.status ?? "unknown"})`,
 				);
+				return;
 			}
 		},
 	});

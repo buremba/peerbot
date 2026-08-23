@@ -1268,59 +1268,75 @@ describe("XConnector browser-first routing", () => {
 		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
 	});
 
-	test("keeps a retryable cursor when the final replay response is late", async () => {
-		const dispatcher = {
-			dispatch: async (action: string) => {
-				if (action === "navigate") {
-					return {
-						tab_id: 42,
-						result: {
-							responses: [
-								{
-									url: likesTimelineUrl(),
-									body: JSON.stringify(
-										likesTimelineResponse("500", "retry-cursor"),
-									),
-								},
-							],
-						},
-					};
-				}
-				if (action === "network_intercept_replay") {
-					return { ok: true, status: 200 };
-				}
-				if (action === "network_intercept_drain") {
-					return { result: { responses: [] } };
-				}
-				return {};
-			},
-		};
+	for (const scenario of [
+		{
+			name: "keeps a retryable cursor when the final replay response is late",
+			replayResult: { ok: true, status: 200 },
+			parserErrors: [],
+		},
+		{
+			name: "keeps collected likes when cursor replay is rejected",
+			replayResult: { ok: false, status: 429 },
+			parserErrors: ["X likes cursor request failed (429)"],
+		},
+	]) {
+		test(scenario.name, async () => {
+			const dispatcher = {
+				dispatch: async (action: string) => {
+					if (action === "navigate") {
+						return {
+							tab_id: 42,
+							result: {
+								responses: [
+									{
+										url: likesTimelineUrl(),
+										body: JSON.stringify(
+											likesTimelineResponse("500", "retry-cursor"),
+										),
+									},
+								],
+							},
+						};
+					}
+					if (action === "network_intercept_replay") {
+						return scenario.replayResult;
+					}
+					if (action === "network_intercept_drain") {
+						return { result: { responses: [] } };
+					}
+					return {};
+				},
+			};
 
-		const result = await new XConnector().sync({
-			feedKey: "liked_tweets",
-			config: {
-				account_handle: "testuser",
-				use_extension: true,
-				backfill_pages_per_run: 2,
-			},
-			checkpoint: {},
-			credentials: {},
-			entityIds: [],
-			sessionState: { chrome_dispatcher: dispatcher },
-		});
+			const result = await new XConnector().sync({
+				feedKey: "liked_tweets",
+				config: {
+					account_handle: "testuser",
+					use_extension: true,
+					backfill_pages_per_run: 2,
+				},
+				checkpoint: {},
+				credentials: {},
+				entityIds: [],
+				sessionState: { chrome_dispatcher: dispatcher },
+			});
 
-		expect(result.events.map((event: any) => event.origin_id)).toEqual(["500"]);
-		expect(result.metadata).toMatchObject({
-			collection_status: "in_progress",
-			pages_requested: 1,
-			pages_received: 0,
-			pages_unconfirmed: 1,
+			expect(result.events.map((event: any) => event.origin_id)).toEqual([
+				"500",
+			]);
+			expect(result.metadata).toMatchObject({
+				collection_status: "in_progress",
+				pages_requested: 1,
+				pages_received: 0,
+				pages_unconfirmed: 1,
+				parser_errors: scenario.parserErrors,
+			});
+			expect(result.checkpoint).toMatchObject({
+				likes_backfill_status: "in_progress",
+				likes_backfill_cursor: "retry-cursor",
+			});
 		});
-		expect(result.checkpoint).toMatchObject({
-			likes_backfill_status: "in_progress",
-			likes_backfill_cursor: "retry-cursor",
-		});
-	});
+	}
 
 	test("uses extension for bookmarks when OAuth lacks bookmark.read", async () => {
 		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];

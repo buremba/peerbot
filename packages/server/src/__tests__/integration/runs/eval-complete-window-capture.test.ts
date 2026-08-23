@@ -160,11 +160,16 @@ describe('eval complete_window capture', () => {
     `;
     expect(live.action_output).toEqual(LIVE_EXTRACTION);
     const [evalResult] = await ctx.sql<
-      { dry_run: boolean; dry_run_preview: { captured: string; extracted_data: unknown } }[]
+      {
+        dry_run: boolean;
+        dry_run_preview: { captured: string; extracted_data: unknown };
+        claimed_by: string | null;
+      }[]
     >`
-      SELECT dry_run, dry_run_preview FROM runs WHERE id = ${ctx.evalRunId}
+      SELECT dry_run, dry_run_preview, claimed_by FROM runs WHERE id = ${ctx.evalRunId}
     `;
     expect(evalResult.dry_run).toBe(true);
+    expect(evalResult.claimed_by).toBeNull();
     expect(evalResult.dry_run_preview).toMatchObject({
       captured: 'complete_window',
       extracted_data: EVAL_EXTRACTION,

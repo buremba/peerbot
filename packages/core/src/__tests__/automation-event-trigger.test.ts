@@ -153,3 +153,22 @@ describe("automation event trigger", () => {
     ).toBe(false);
   });
 });
+
+describe("manage Automations agent assignment", () => {
+  test("accepts null to clear agent_id and rejects an empty-string workaround", () => {
+    expect(
+      Value.Check(ManageAutomationsSchema, {
+        action: "update",
+        automation_id: "1",
+        agent_id: null,
+      })
+    ).toBe(true);
+    expect(
+      Value.Check(ManageAutomationsSchema, {
+        action: "update",
+        automation_id: "1",
+        agent_id: "",
+      })
+    ).toBe(false);
+  });
+});

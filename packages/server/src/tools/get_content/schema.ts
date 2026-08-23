@@ -25,13 +25,13 @@ export const GetContentSchema = Type.Object({
   automation_id: Type.Optional(
     Type.Number({
       description:
-        "Persisted Automation ID (`automation_id`) to fetch content for. When provided, uses the Automation's sources and computes its pending window. Returns window_token for complete_window action.",
+        "Persisted Automation ID (`automation_id`) to fetch content for. With run_id, uses that run's queued version/window; otherwise computes the Automation's pending window. Returns window_token for complete_window action.",
     })
   ),
   template_version_id: Type.Optional(
     Type.Number({
       description:
-        "Pin to a specific persisted Automation version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Automation's current version.",
+        "Pin an interactive or legacy Automation read to a persisted version. When run_id is present, the run's snapshotted version is authoritative and a conflicting value is rejected. Without run_id, omission defaults to the Automation's current version.",
     })
   ),
   connection_ids: Type.Optional(
@@ -75,7 +75,8 @@ export const GetContentSchema = Type.Object({
   ),
   run_id: Type.Optional(
     Type.Number({
-      description: 'Automation run ID to filter by (shows only content analyzed in this run)',
+      description:
+        'Run ID. With automation_id, binds the Automation read to that run\'s queued version, window, and trigger inputs. Without automation_id, filters to content analyzed in this run.',
     })
   ),
   analyzed_by_automation_id: Type.Optional(

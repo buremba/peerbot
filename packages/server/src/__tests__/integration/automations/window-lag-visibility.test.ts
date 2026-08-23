@@ -175,12 +175,12 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: dispatched.window_end,
 			dispatchSource: "manual",
 		});
-		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${createdRun.runId}`;
+		const runBound = await read({ run_id: createdRun.runId });
 		const completion = await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
-				window_token: dispatched.window_token,
+				window_token: runBound.window_token,
 				run_id: createdRun.runId,
 				extracted_data: { summary: "Analysed the dispatched window." },
 			},
@@ -271,12 +271,12 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: dispatched.window_end,
 			dispatchSource: "manual",
 		});
-		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${currentRun.runId}`;
+		const currentRunBound = await read({ run_id: currentRun.runId });
 		await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
-				window_token: dispatched.window_token,
+				window_token: currentRunBound.window_token,
 				run_id: currentRun.runId,
 				extracted_data: { summary: "current" },
 			},
@@ -293,12 +293,12 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: backfill.window_end,
 			dispatchSource: "manual",
 		});
-		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${backfillRun.runId}`;
+		const backfillRunBound = await read({ run_id: backfillRun.runId });
 		await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
-				window_token: backfill.window_token,
+				window_token: backfillRunBound.window_token,
 				run_id: backfillRun.runId,
 				extracted_data: { summary: "backfilled" },
 			},

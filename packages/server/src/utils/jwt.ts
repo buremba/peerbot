@@ -24,12 +24,13 @@ export function deriveJwtSecret(encryptionKey: string): string {
 
 interface WindowTokenPayload {
   automation_id: number;
+  /** Durable Automation run this read was bound to. Omitted on legacy/preview reads. */
+  run_id?: number;
   window_start: string;
   window_end: string;
   granularity: string; // Required for window creation
   content_count: number; // Content count at token generation - for staleness detection
   content_ids: number[]; // Exact event IDs returned to the worker; complete_window links these deterministically
-  run_id?: number;
   lease_expires_at?: string;
   page_before_occurred_at?: string;
   page_before_id?: number;

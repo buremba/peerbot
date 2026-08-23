@@ -47,6 +47,7 @@ import type { ManageAutomationsArgs } from '../manage_automations';
 import { normalizeExtractedData, parseJson, requireAutomationAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
+import { claimPendingAutomationRun } from '../../../runs/queue-service';
 import { AUTOMATION_EVAL_RUN_TYPE, AUTOMATION_RUN_TYPE } from "../../../runs/run-types.js";
 import {
   advanceExpectedAutomationWindow,
@@ -261,10 +262,17 @@ export async function handleCompleteWindow(
 
   const firstToken = tokenPayloads[0];
   const { automation_id: automationId, window_start, window_end, granularity } = firstToken;
-  const claimToken = tokenPayloads.find((token) => token.run_id != null);
-  if (claimToken?.run_id !== undefined && claimToken.run_id !== runId) {
+  const tokenRunIds = new Set(tokenPayloads.map((token) => token.run_id ?? null));
+  if (tokenRunIds.size !== 1) {
     throw new ToolUserError(
-      `window_token is fenced to Automation run ${claimToken.run_id}, not ${runId}.`,
+      'window_tokens must all carry the same Automation run fence.',
+      409
+    );
+  }
+  const tokenRunId = firstToken.run_id ?? null;
+  if (tokenRunId !== null && tokenRunId !== runId) {
+    throw new ToolUserError(
+      `window_token is fenced to Automation run ${tokenRunId}, not ${runId}.`,
       409
     );
   }
@@ -276,16 +284,16 @@ export async function handleCompleteWindow(
       token.window_end !== window_end ||
       token.granularity !== granularity
     ) {
-      throw new ToolUserError('All window_tokens must belong to the same Automation window.', 400);
-    }
-  }
-  for (const token of tokenPayloads) {
-    if (token.run_id != null && token.run_id !== runId) {
-      throw new ToolUserError('window_tokens are fenced to different run attempts.', 409);
+      throw new ToolUserError('All window_tokens must belong to the same Automation run/window.', 400);
     }
   }
   const terminalPageToken = assertCompleteWindowPageChain(tokenPayloads);
-  const leaseFenceToken = terminalPageToken?.run_id != null ? terminalPageToken : claimToken;
+  const leaseFenceToken =
+    terminalPageToken?.run_id != null
+      ? terminalPageToken
+      : tokenRunId !== null
+        ? firstToken
+        : undefined;
 
   const pgSql = createDbClientFromEnv(env);
   await requireAutomationAccess(pgSql, [String(automationId)], ctx, 'write');
@@ -335,10 +343,24 @@ export async function handleCompleteWindow(
     );
   }
 
+  const approvedInput = runRows[0].approved_input;
+  const approvedInputRecord =
+    approvedInput && typeof approvedInput === 'object' && !Array.isArray(approvedInput)
+      ? (approvedInput as Record<string, unknown>)
+      : {};
+  const assignedAgentId =
+    typeof approvedInputRecord.agent_id === 'string'
+      ? approvedInputRecord.agent_id.trim()
+      : '';
+  const assignedDeviceWorkerId =
+    typeof approvedInputRecord.device_worker_id === 'string'
+      ? approvedInputRecord.device_worker_id.trim()
+      : '';
+  const manualOpenRun = !assignedAgentId && !assignedDeviceWorkerId;
+
   if (snapshotVersionId == null && runRows[0].version_id != null) {
     snapshotVersionId = Number(runRows[0].version_id);
   }
-  const approvedInput = runRows[0].approved_input;
   if (approvedInput && typeof approvedInput === 'object') {
     const input = approvedInput as {
       trigger_signal?: unknown;
@@ -572,6 +594,25 @@ export async function handleCompleteWindow(
     };
   }
 
+  // Manual-open runs pend for an external MCP client. Only claim after every
+  // payload/token/schema validation above succeeds, so recoverable bad output
+  // cannot strand the durable run in running state.
+  let externalClaimedBy: string | null = null;
+  if (manualOpenRun) {
+    const claimedBy = ctx.clientId
+      ? `mcp:${ctx.clientId}`
+      : ctx.userId
+        ? `user:${ctx.userId}`
+        : null;
+    if (!claimedBy) {
+      throw new ToolUserError(
+        `Automation run ${runId} requires an authenticated MCP client or user to claim it.`,
+        401
+      );
+    }
+    externalClaimedBy = claimedBy;
+  }
+
   // ============================================
   // STEP 6: Wrap all DB operations in a transaction
   // If classification processing fails (e.g., embeddings service unavailable),
@@ -584,6 +625,49 @@ export async function handleCompleteWindow(
   // the window commits.
   let deferredApprovals: DeferredMutation[] = [];
   const result = await sql.begin(async (tx) => {
+    if (externalClaimedBy !== null) {
+      // Claim and complete in one transaction. A downstream write failure must
+      // return an externally opened run to pending instead of stranding it as
+      // running until stale-run recovery.
+      const claimed =
+        tokenRunId != null
+          ? await claimPendingAutomationRun(tx, {
+              runId,
+              automationId,
+              claimedBy: externalClaimedBy,
+              status: 'running',
+            })
+          : false;
+      if (!claimed) {
+        const [state] = await tx<{ status: string; claimed_by: string | null }>`
+          SELECT status, claimed_by
+          FROM runs
+          WHERE id = ${runId}
+            AND automation_id = ${automationId}
+            AND run_type = ${callerRunType}
+          LIMIT 1
+        `;
+        if (state?.status === 'pending' && tokenRunId == null) {
+          throw new ToolUserError(
+            `Automation run ${runId} requires a run-bound window_token. Read it with knowledge.read({ automation_id: ${automationId}, run_id: ${runId} }).`,
+            409
+          );
+        }
+        const retryingOwnClaim =
+          (state?.status === 'claimed' || state?.status === 'running') &&
+          state.claimed_by === externalClaimedBy;
+        const alreadyCompleted = state?.status === 'completed';
+        if (!retryingOwnClaim && !alreadyCompleted) {
+          throw new ToolUserError(
+            state?.claimed_by
+              ? `Automation run ${runId} is already claimed by another executor.`
+              : `Automation run ${runId} could not be claimed; retry after the active run clears.`,
+            409
+          );
+        }
+      }
+    }
+
     const [lockedAutomation] = await tx<{ schedule: string | null }>`
       SELECT schedule FROM automations
       WHERE id = ${automationId} AND organization_id = ${automationOrgId}
@@ -593,12 +677,9 @@ export async function handleCompleteWindow(
     const [lockedRun] = await tx<{
       status: string;
       expires_at: string | Date | null;
-      agent_id: string | null;
-      device_worker_id: string | null;
+      claimed_by: string | null;
     }>`
-      SELECT status, expires_at,
-             approved_input->>'agent_id' AS agent_id,
-             approved_input->>'device_worker_id' AS device_worker_id
+      SELECT status, expires_at, claimed_by
       FROM runs
       WHERE id = ${runId}
         AND organization_id = ${automationOrgId}
@@ -620,21 +701,6 @@ export async function handleCompleteWindow(
         completed_now: false,
       };
     }
-    if (lockedRun.status === 'pending') {
-      const isManualOpenRun =
-        claimToken == null &&
-        !lockedRun.agent_id &&
-        !lockedRun.device_worker_id;
-      if (isManualOpenRun) {
-        await tx`
-          UPDATE runs
-          SET status = 'running',
-              claimed_at = COALESCE(claimed_at, current_timestamp)
-          WHERE id = ${runId} AND status = 'pending'
-        `;
-        lockedRun.status = 'running';
-      }
-    }
     if (lockedRun.expires_at != null) {
       const leaseExpiresAt = new Date(lockedRun.expires_at).toISOString();
       if (!leaseFenceToken?.lease_expires_at || leaseFenceToken.lease_expires_at !== leaseExpiresAt) {
@@ -646,6 +712,12 @@ export async function handleCompleteWindow(
     }
     if (lockedRun.status !== 'running' && lockedRun.status !== 'claimed') {
       throw new ToolUserError(`Automation run ${runId} is no longer completable.`, 409);
+    }
+    if (externalClaimedBy !== null && lockedRun.claimed_by !== externalClaimedBy) {
+      throw new ToolUserError(
+        `Automation run ${runId} is already claimed by another executor.`,
+        409
+      );
     }
 
     // ============================================
@@ -849,6 +921,10 @@ export async function handleCompleteWindow(
         AND automation_id = ${automationId}
         AND run_type = ${AUTOMATION_RUN_TYPE}
         AND status IN ('running', 'claimed')
+        AND (
+          ${externalClaimedBy}::text IS NULL
+          OR claimed_by = ${externalClaimedBy}
+        )
       RETURNING approved_input->>'dispatch_source' AS dispatch_source
     `;
     if (!completedRun) {

@@ -348,16 +348,27 @@ describe("automation contract", () => {
 			);
 		}
 
-		const page1 = (await api.knowledge.read({
+		const preview = (await api.knowledge.read({
 			automation_id: automationId,
 			since: "2026-01-02",
 			until: "2026-01-02",
+			limit: 1,
+		})) as { window_start: string; window_end: string };
+		const run = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			windowStart: preview.window_start,
+			windowEnd: preview.window_end,
+			dispatchSource: "manual",
+		});
+
+		const page1 = (await api.knowledge.read({
+			automation_id: automationId,
+			run_id: run.runId,
 			limit: 2,
 		})) as {
 			content: Array<{ id: number; occurred_at: string }>;
 			window_token: string;
-			window_start: string;
-			window_end: string;
 			page: {
 				has_more: boolean;
 				next_cursor?: { occurred_at: string; id: number };
@@ -373,8 +384,7 @@ describe("automation contract", () => {
 
 		const page2 = (await api.knowledge.read({
 			automation_id: automationId,
-			since: "2026-01-02",
-			until: "2026-01-02",
+			run_id: run.runId,
 			limit: 2,
 			before_occurred_at: page1.page.next_cursor!.occurred_at,
 			before_id: page1.page.next_cursor!.id,
@@ -394,8 +404,7 @@ describe("automation contract", () => {
 		expect(page2.page.has_more).toBe(true);
 		const page3 = (await api.knowledge.read({
 			automation_id: automationId,
-			since: "2026-01-02",
-			until: "2026-01-02",
+			run_id: run.runId,
 			limit: 2,
 			before_occurred_at: page2.page.next_cursor!.occurred_at,
 			before_id: page2.page.next_cursor!.id,
@@ -406,13 +415,6 @@ describe("automation contract", () => {
 		};
 		expect(page3.content.map((item) => item.id)).toEqual([events[4].id]);
 		expect(page3.page.has_more).toBe(false);
-		const run = await createAutomationRun({
-			organizationId: workspace.org.id,
-			automationId,
-			windowStart: page1.window_start,
-			windowEnd: page1.window_end,
-			dispatchSource: "manual",
-		});
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
 			run_id: run.runId,
@@ -451,9 +453,17 @@ describe("automation contract", () => {
 		const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 		const windowEnd = new Date().toISOString();
 
+		const run = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			windowStart,
+			windowEnd,
+			dispatchSource: "manual",
+		});
 		const windowToken = await generateWindowToken(
 			{
 				automation_id: automationId,
+				run_id: run.runId,
 				window_start: windowStart,
 				window_end: windowEnd,
 				granularity: "daily",
@@ -462,13 +472,6 @@ describe("automation contract", () => {
 			},
 			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
-		const run = await createAutomationRun({
-			organizationId: workspace.org.id,
-			automationId,
-			windowStart,
-			windowEnd,
-			dispatchSource: "manual",
-		});
 		const completion = (await api.automations.completeWindow({
 			automation_id: String(automationId),
 			run_id: run.runId,

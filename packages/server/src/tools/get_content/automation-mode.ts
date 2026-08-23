@@ -8,8 +8,15 @@
 
 import { createHash } from 'node:crypto';
 import type { AutomationTimeGranularity, ContentItem } from '@lobu/connector-sdk';
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
-import { MAX_COALESCED_AUTOMATION_EVENT_INPUTS } from '../../automations/workspace-event-contract';
+import {
+  inferAutomationGranularityFromSchedule,
+  isAutomationTimeGranularity,
+} from '@lobu/connector-sdk';
+import {
+  automationTriggerSignals,
+  isWorkspaceEventTriggerSignal,
+  MAX_COALESCED_AUTOMATION_EVENT_INPUTS,
+} from '../../automations/workspace-event-contract';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
 import type { Outputs, UnprocessedRange, AutomationSource } from '../../types/automations';
@@ -402,6 +409,100 @@ export async function fingerprintAutomationSources(args: {
 // Automation Mode Handler
 // ============================================
 
+interface BoundAutomationRun {
+  versionId: number | null;
+  windowStart: Date;
+  windowEnd: Date;
+  granularity: AutomationTimeGranularity;
+  triggerContentIds: number[];
+}
+
+/**
+ * Resolve execution inputs already snapshotted on a durable run.
+ *
+ * In Automation mode the existing run_id argument binds the read to the queued
+ * run instead of recomputing the live cursor or current version.
+ */
+async function loadBoundAutomationRun(
+  sql: DbClient,
+  organizationId: string,
+  automationId: number,
+  runId: number,
+  claimedGranularity?: AutomationTimeGranularity
+): Promise<BoundAutomationRun> {
+  const rows = await sql<{ approved_input: unknown }>`
+    SELECT approved_input
+    FROM runs
+    WHERE id = ${runId}
+      AND organization_id = ${organizationId}
+      AND automation_id = ${automationId}
+      AND run_type IN ('automation', 'automation_eval')
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(
+      `Automation run ${runId} does not belong to Automation ${automationId}.`,
+      404
+    );
+  }
+
+  const raw = rows[0].approved_input;
+  const input =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const windowStart = new Date(
+    typeof input.window_start === 'string' ? input.window_start : ''
+  );
+  const windowEnd = new Date(
+    typeof input.window_end === 'string' ? input.window_end : ''
+  );
+  if (
+    Number.isNaN(windowStart.getTime()) ||
+    Number.isNaN(windowEnd.getTime()) ||
+    windowEnd.getTime() <= windowStart.getTime()
+  ) {
+    throw new ToolUserError(
+      `Automation run ${runId} is missing a valid queued window snapshot.`,
+      409
+    );
+  }
+  // claimedGranularity comes only from the server-resolved matching
+  // claimed/running run. Pending external runs must carry their own durable
+  // snapshot; do not infer a live schedule fallback here.
+  const granularity = isAutomationTimeGranularity(input.granularity)
+    ? input.granularity
+    : claimedGranularity;
+  if (!granularity) {
+    throw new ToolUserError(
+      `Automation run ${runId} is missing a valid queued granularity snapshot.`,
+      409
+    );
+  }
+
+  const rawVersionId = input.version_id;
+  const parsedVersionId =
+    typeof rawVersionId === 'number'
+      ? rawVersionId
+      : typeof rawVersionId === 'string' && rawVersionId.trim()
+        ? Number(rawVersionId)
+        : Number.NaN;
+  const versionId =
+    Number.isSafeInteger(parsedVersionId) && parsedVersionId > 0
+      ? parsedVersionId
+      : null;
+
+  return {
+    versionId,
+    windowStart,
+    windowEnd,
+    granularity,
+    triggerContentIds: automationTriggerSignals(input)
+      .filter(isWorkspaceEventTriggerSignal)
+      .map((signal) => signal.event_id),
+  };
+}
+
 export async function handleAutomationMode(
   args: GetContentArgs,
   env: Env,
@@ -426,14 +527,46 @@ export async function handleAutomationMode(
   const { generateWindowToken } = await import('../../utils/jwt');
 
   const automationId = args.automation_id!;
+  if (
+    context.claimedWindow &&
+    args.run_id != null &&
+    Number(args.run_id) !== context.claimedWindow.runId
+  ) {
+    throw new ToolUserError(
+      `Automation run ${args.run_id} does not match claimed run ${context.claimedWindow.runId}.`,
+      409
+    );
+  }
+  const boundRun =
+    args.run_id != null
+      ? await loadBoundAutomationRun(
+          sql,
+          context.organizationId,
+          automationId,
+          Number(args.run_id),
+          context.claimedWindow?.granularity
+        )
+      : null;
 
-  // Workers pass `template_version_id` (snapshotted at run-creation time)
-  // so the prompt/schema we hand back matches the version this run was
-  // queued for, even if the group has been edited since. The version row
-  // is owned by the group root (automation_id = i.automation_group_id), and we
-  // require it to live in the same group to prevent cross-automation pinning.
+  if (
+    boundRun?.versionId != null &&
+    args.template_version_id != null &&
+    Number(args.template_version_id) !== boundRun.versionId
+  ) {
+    throw new ToolUserError(
+      `Automation run ${args.run_id} is pinned to template version ${boundRun.versionId}, not ${args.template_version_id}.`,
+      409
+    );
+  }
+
+  // A verified lease or bound run snapshot wins over the live Automation and
+  // a caller-provided version. The version row is still constrained to this
+  // Automation group by the join below.
   const pinnedVersionId =
-    context.claimedWindow?.templateVersionId ?? args.template_version_id ?? null;
+    context.claimedWindow?.templateVersionId ??
+    boundRun?.versionId ??
+    args.template_version_id ??
+    null;
   const automationResult = await sql`
     SELECT
       i.id,
@@ -466,6 +599,7 @@ export async function handleAutomationMode(
     versionSources.length > 0 ? versionSources : parseJson(automation.sources) || [];
   const timeGranularity =
     context.claimedWindow?.granularity ??
+    boundRun?.granularity ??
     inferAutomationGranularityFromSchedule(automation.schedule as string | null);
   // The extraction contract is composed from versioned outputs and the
   // optional reaction input contract.
@@ -494,13 +628,28 @@ export async function handleAutomationMode(
   // outside the Automation's scope resolves to no row rather than to unscoped
   // data. The exact ids travel through the data-source placeholder compiler so
   // they remain bound parameters instead of executable SQL text.
-  const triggerContentIds = [
+  const requestedTriggerContentIds = [
     ...new Set(
       (args.content_ids ?? [])
         .map((id) => Number(id))
         .filter((id) => Number.isSafeInteger(id) && id > 0)
     ),
   ];
+  if (boundRun) {
+    const queuedTriggerIds = new Set(boundRun.triggerContentIds);
+    const unexpected = requestedTriggerContentIds.filter(
+      (id) => !queuedTriggerIds.has(id)
+    );
+    if (unexpected.length > 0) {
+      throw new ToolUserError(
+        `Automation run ${args.run_id} does not include trigger content id${unexpected.length === 1 ? '' : 's'} ${unexpected.join(', ')}.`,
+        409
+      );
+    }
+  }
+  const triggerContentIds = boundRun
+    ? [...new Set(boundRun.triggerContentIds)]
+    : requestedTriggerContentIds;
   let triggerInputSourceName: string | null = null;
   if (triggerContentIds.length > MAX_COALESCED_AUTOMATION_EVENT_INPUTS) {
     throw new ToolUserError(
@@ -544,11 +693,16 @@ export async function handleAutomationMode(
     attribute_values: row.attribute_values as ClassifierConfig['attribute_values'],
   }));
 
-  // Compute window dates - use since/until if provided, else compute pending window
+  // A bound run owns its queued window. Interactive previews may still request
+  // an explicit range or fall back to the Automation's pending cursor.
   let windowStart: Date, windowEnd: Date, windowCursor: Date | null;
   if (context.claimedWindow) {
     windowStart = new Date(context.claimedWindow.windowStart);
     windowEnd = new Date(context.claimedWindow.windowEnd);
+    windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
+  } else if (boundRun) {
+    windowStart = boundRun.windowStart;
+    windowEnd = boundRun.windowEnd;
     windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
   } else if (args.since && args.until) {
     // An agent-chosen range, aligned to the granularity so an agent-written
@@ -637,11 +791,16 @@ export async function handleAutomationMode(
   // Generate signed JWT window token with the exact content IDs returned to
   // the worker. complete_window uses these IDs directly, so window bookkeeping
   // matches what the agent actually saw.
-  // Claimed/internal execution tokens also carry the run attempt and optional
-  // external lease fence. Interactive ad-hoc reads remain unbound.
+  // Claimed/internal execution tokens carry the run attempt and optional lease
+  // fence. External run-bound reads carry the run whose snapshot supplied the
+  // version, window, and content set. Interactive ad-hoc reads remain unbound.
+  const tokenRunId =
+    context.claimedWindow?.runId ??
+    (boundRun && args.run_id != null ? Number(args.run_id) : null);
   const windowToken = await generateWindowToken(
     {
       automation_id: automationId,
+      ...(tokenRunId != null ? { run_id: tokenRunId } : {}),
       window_start: windowStartIso,
       window_end: windowEndIso,
       granularity: timeGranularity,
@@ -649,7 +808,6 @@ export async function handleAutomationMode(
       content_ids: contentIds,
       ...(context.claimedWindow
         ? {
-            run_id: context.claimedWindow.runId,
             ...(context.claimedWindow.leaseExpiresAt
               ? { lease_expires_at: context.claimedWindow.leaseExpiresAt }
               : {}),

@@ -23,6 +23,7 @@ import type { ToolContext } from "../../registry";
 import { recordToolConfigChange } from "../helpers/config-audit";
 import { requireExists } from "../helpers/db-helpers";
 import type { ManageAutomationsArgs } from "../manage_automations";
+import { resolveAutomationExecutor } from "./executors";
 
 // ============================================
 // handleTrigger
@@ -43,9 +44,27 @@ export async function handleTrigger(
     throw new ToolUserError("automation_id is required for trigger action", 400);
   }
 
-  if (!isLobuGatewayRunning()) {
+  const [automation] = await sql<{
+    agent_id: string | null;
+    device_worker_id: string | null;
+    agent_kind: string | null;
+  }>`
+    SELECT agent_id, device_worker_id::text AS device_worker_id, agent_kind
+    FROM automations
+    WHERE id = ${Number(args.automation_id)}
+    LIMIT 1
+  `;
+  const executor = automation
+    ? resolveAutomationExecutor({
+        agentId: automation.agent_id,
+        deviceWorkerId: automation.device_worker_id,
+        agentKind: automation.agent_kind,
+      })
+    : null;
+  if (executor?.kind === "agent" && !isLobuGatewayRunning()) {
     throw new Error("Embedded Lobu is not available.");
   }
+
   const dispatchResult = await queueAndDispatchAutomationRun(
     Number(args.automation_id),
     "manual",

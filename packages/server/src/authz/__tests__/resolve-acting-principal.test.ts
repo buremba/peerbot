@@ -3,28 +3,25 @@ import type { DbClient } from "../../db/client";
 import { resolveActingPrincipal } from "../entity-policy";
 
 /**
- * The single seam every write surface resolves identity through. It merges the
- * two channels an acting automation arrives on (an explicit `automation_source` and the
- * reaction session's own automation), looks up the owning agent —
- * so no call site has to merge them and a reaction can't dodge its agent's
- * envelope by omitting attribution.
- *
- * The stub routes by query text: the automation-owner JOIN (`FROM automations`) returns a
- * row iff `ownerAgentId` is set; the direct-agent existence probe (`FROM agents`,
- * no join) returns a row iff `agentExists`. This lets a test model an agent that was
- * deleted out from under a live session (agentExists=false) distinctly from a
- * missing automation.
+ * The single seam every write surface resolves identity through. The stub
+ * models the two independent facts the production query returns: whether the
+ * Automation row exists and whether its optional managed agent still exists.
  */
 function stubSql(
 	ownerAgentId: string | null,
 	agentExists = true,
+	automationExists = true,
 ): DbClient {
 	const sql = (strings: TemplateStringsArray) => {
 		const text = strings.join(" ");
 		if (text.includes("FROM automations")) {
-			return Promise.resolve(
-				ownerAgentId == null ? [] : [{ agent_id: ownerAgentId }],
-			);
+			if (!automationExists) return Promise.resolve([]);
+			return Promise.resolve([
+				{
+					agent_id: ownerAgentId,
+					owner_resolved: ownerAgentId == null ? true : agentExists,
+				},
+			]);
 		}
 		// Direct-agent existence probe: SELECT 1 AS one FROM agents ...
 		return Promise.resolve(agentExists ? [{ one: 1 }] : []);
@@ -32,9 +29,9 @@ function stubSql(
 	return sql as unknown as DbClient;
 }
 
-/** A stub where the automation row is GONE — the owner JOIN returns no rows. */
+/** A stub where the Automation row itself is gone. */
 function stubSqlNoAutomation(): DbClient {
-	return stubSql(null);
+	return stubSql(null, true, false);
 }
 
 const ORG = "org-1";
@@ -63,6 +60,20 @@ describe("resolveActingPrincipal", () => {
 		// nonexistent id) to null out ownerAgentId and skip its own deny rows. The
 		// explicit tag must NOT override the authenticated agent identity.
 		const actor = await resolveActingPrincipal(stubSql("other-owner"), {
+			organizationId: ORG,
+			agentId: "agent-1",
+			explicitAutomationId: 7,
+		});
+		expect(actor).toEqual({
+			kind: "agent",
+			id: "agent-1",
+			ownerAgentId: null,
+			ownerResolved: true,
+		});
+	});
+
+	it("an authed agent cannot tag an agentless Automation to shed its own policy", async () => {
+		const actor = await resolveActingPrincipal(stubSql(null), {
 			organizationId: ORG,
 			agentId: "agent-1",
 			explicitAutomationId: 7,
@@ -126,6 +137,32 @@ describe("resolveActingPrincipal", () => {
 		expect(actor.id).toBe("automation:9");
 	});
 
+	it("an agentless session Automation remains a resolved Automation principal", async () => {
+		const actor = await resolveActingPrincipal(stubSql(null), {
+			organizationId: ORG,
+			sessionAutomationId: 9,
+		});
+		expect(actor).toEqual({
+			kind: "automation",
+			id: "automation:9",
+			ownerAgentId: null,
+			ownerResolved: true,
+		});
+	});
+
+	it("an invalid empty-string agent assignment fails closed", async () => {
+		const actor = await resolveActingPrincipal(stubSql("", false), {
+			organizationId: ORG,
+			sessionAutomationId: 9,
+		});
+		expect(actor).toEqual({
+			kind: "automation",
+			id: "automation:9",
+			ownerAgentId: "",
+			ownerResolved: false,
+		});
+	});
+
 	it("a plain user turn has no owner to fold", async () => {
 		const actor = await resolveActingPrincipal(stubSql(null), {
 			organizationId: ORG,
@@ -178,7 +215,7 @@ describe("resolveActingPrincipal", () => {
 		// after the owner is deleted. The owner JOIN requires the agent row, so the
 		// lookup returns no rows → ownerResolved=false → gate denies. (stubSql(null)
 		// models the JOIN finding nothing because the agent side is gone.)
-		const actor = await resolveActingPrincipal(stubSql(null), {
+		const actor = await resolveActingPrincipal(stubSql("deleted-owner", false), {
 			organizationId: ORG,
 			sessionAutomationId: 9,
 		});

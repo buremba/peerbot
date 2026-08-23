@@ -16,15 +16,14 @@ import { log, setDebug } from './log.js';
 import {
   attachInteractiveSession,
   deriveInteractiveWorkerId,
-  deriveLegacyClaudeWorkerId,
   detectInteractiveSession,
   type InteractiveSession,
 } from './interactive-session.js';
 
 /**
  * Accepted `--worker-id` shape. Deliberately narrow: the default is
- * `<platform>:<short-hostname>` (or a session-derived id under
- * `--inside-claude`), and anything a shell, a URL path, or a JSON payload
+ * `<platform>:<short-hostname>` (or a session-derived id in a supported
+ * interactive agent), and anything a shell, a URL path, or a JSON payload
  * would mangle has no business being a durable device identity.
  */
 const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -45,23 +44,18 @@ export interface DaemonStartOptions {
   debug?: boolean;
   /** False only when the operator explicitly disables inherited-session delivery. */
   interactiveSession?: false;
-  /** Legacy explicit Claude-only detection. */
-  insideClaude?: boolean;
 }
 
 export function resolveDaemonWorkerId(
-  opts: Pick<DaemonStartOptions, 'workerId' | 'insideClaude'>,
+  opts: Pick<DaemonStartOptions, 'workerId'>,
   platform: string | undefined,
   shortHostname: string,
-  interactiveSession?: InteractiveSession,
-  env: NodeJS.ProcessEnv = process.env
+  interactiveSession?: InteractiveSession
 ): string {
   return (
     opts.workerId ??
     (interactiveSession
       ? deriveInteractiveWorkerId(interactiveSession)
-      : opts.insideClaude
-        ? deriveLegacyClaudeWorkerId(env)
       : platform
         ? `${platform}:${shortHostname}`
         : `worker-${randomUUID().slice(0, 8)}`)
@@ -71,14 +65,11 @@ export function resolveDaemonWorkerId(
 export function resolveDaemonLaunchContext(
   opts: Pick<
     DaemonStartOptions,
-    'platform' | 'defaultPlatform' | 'insideClaude' | 'interactiveSession'
+    'platform' | 'defaultPlatform' | 'interactiveSession'
   >,
   env: NodeJS.ProcessEnv = process.env,
   sessionsDir?: string
 ): { platform: string | undefined; interactiveSession: InteractiveSession | undefined } {
-  if (opts.insideClaude && opts.interactiveSession === false) {
-    throw new Error('--inside-claude cannot be combined with --no-interactive-session');
-  }
   const detected =
     opts.interactiveSession === false
       ? undefined
@@ -86,23 +77,18 @@ export function resolveDaemonLaunchContext(
           const result = detectInteractiveSession({
             env,
             ...(sessionsDir ? { sessionsDir } : {}),
-            claudeOnly: opts.insideClaude === true,
           });
           return result.ok ? result.session : undefined;
         })();
-  if ((detected || opts.insideClaude) && opts.platform && opts.platform !== 'headless') {
+  if (detected && opts.platform && opts.platform !== 'headless') {
     // Interactive delivery registers a per-session headless device, so it can
     // never also claim the host's own platform identity.
-    const optOut = opts.insideClaude ? 'Drop --inside-claude' : 'Pass --no-interactive-session';
     throw new Error(
-      `an inherited interactive agent session registers as --platform headless, so it cannot be combined with --platform ${opts.platform}. ${optOut} to register this host as a ${opts.platform} device instead.`
+      `an inherited interactive agent session registers as --platform headless, so it cannot be combined with --platform ${opts.platform}. Pass --no-interactive-session to register this host as a ${opts.platform} device instead.`
     );
   }
   return {
-    platform:
-      detected || opts.insideClaude
-        ? 'headless'
-        : (opts.platform ?? opts.defaultPlatform),
+    platform: detected ? 'headless' : (opts.platform ?? opts.defaultPlatform),
     interactiveSession: detected,
   };
 }
@@ -182,8 +168,6 @@ export async function startDaemonCommand(
     log.info(
       `[cli] interactive-session delivery enabled for ${detected.kind}`
     );
-  } else if (opts.insideClaude) {
-    log.info('[cli] legacy inside-Claude delivery enabled; parent detection will retry per run');
   }
 
   const daemonConfig = {
@@ -203,9 +187,7 @@ export async function startDaemonCommand(
             defaultAgentKind: detected.kind,
           }
         }
-      : opts.insideClaude
-        ? { executor: { insideClaude: true } }
-        : {}),
+      : {}),
   };
   if (detected) attachInteractiveSession(daemonConfig, detected);
   return startDaemon(daemonConfig, env);

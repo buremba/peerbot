@@ -10,7 +10,7 @@ function payload(agentKind: 'claude-code' | 'pi' = 'claude-code'): AutomationPol
   return {
     automation: {
       id: 'automation-1',
-      name: 'Inside Claude test',
+      name: 'Interactive session test',
       agent_kind: agentKind,
       prompt: 'Do the bounded work',
     },
@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe('interactive-session routing', () => {
-  test('an explicit worker id wins over the inside-Claude derived identity', () => {
+  test('an explicit worker id wins over the session-derived identity', () => {
     expect(
       resolveDaemonWorkerId(
         { workerId: 'headless:operator-selected' },
@@ -70,7 +70,6 @@ describe('interactive-session routing', () => {
       messagingToken: 'messaging-token',
       registryPath: '/private/unused-session.json',
     };
-    spyOn(interactive, 'detectInteractiveSession').mockReturnValue({ ok: true, session });
     let finishParent!: () => void;
     const parentCompletion = new Promise<interactive.InteractiveSessionCompletion>((resolve) => {
       finishParent = () =>
@@ -106,11 +105,17 @@ describe('interactive-session routing', () => {
       payload: payload(),
     };
 
-    const execution = executeAutomationRun(client as never, job, {
-      insideClaude: true,
-      heartbeatIntervalMs: 5,
-      binaryOverrides: { 'claude-code': '/definitely/not/a/claude/binary' },
-    });
+    const execution = executeAutomationRun(
+      client as never,
+      job,
+      interactive.attachInteractiveSession(
+        {
+          heartbeatIntervalMs: 5,
+          binaryOverrides: { 'claude-code': '/definitely/not/a/claude/binary' },
+        },
+        session
+      )
+    );
     await new Promise((resolve) => setTimeout(resolve, 20));
     finishParent();
     await execution;
@@ -135,7 +140,6 @@ describe('interactive-session routing', () => {
       messagingToken: 'messaging-token',
       registryPath: '/private/unused-session.json',
     };
-    spyOn(interactive, 'detectInteractiveSession').mockReturnValue({ ok: true, session });
     const handoff = spyOn(interactive, 'handoffToInteractiveSession').mockResolvedValue({
       kind: 'handed-off',
       certainty: 'possible',
@@ -163,7 +167,10 @@ describe('interactive-session routing', () => {
     await executeAutomationRun(
       client as never,
       { run_id: 93, run_type: 'automation', payload: turnPayload } satisfies PollResponse,
-      { insideClaude: true, binaryOverrides: { 'claude-code': '/never/spawned' } }
+      interactive.attachInteractiveSession(
+        { binaryOverrides: { 'claude-code': '/never/spawned' } },
+        session
+      )
     );
 
     expect(handoff).toHaveBeenCalledTimes(1);
@@ -181,7 +188,6 @@ describe('interactive-session routing', () => {
       messagingToken: 'messaging-token',
       registryPath: '/private/unused-session.json',
     };
-    spyOn(interactive, 'detectInteractiveSession').mockReturnValue({ ok: true, session });
     spyOn(interactive, 'handoffToInteractiveSession').mockResolvedValue({
       kind: 'handed-off',
       certainty: 'possible',
@@ -207,7 +213,10 @@ describe('interactive-session routing', () => {
     await executeAutomationRun(
       client as never,
       { run_id: 92, run_type: 'automation', payload: payload() } satisfies PollResponse,
-      { insideClaude: true, binaryOverrides: { 'claude-code': '/definitely/not/a/claude/binary' } }
+      interactive.attachInteractiveSession(
+        { binaryOverrides: { 'claude-code': '/definitely/not/a/claude/binary' } },
+        session
+      )
     );
 
     expect(reports).toHaveLength(1);

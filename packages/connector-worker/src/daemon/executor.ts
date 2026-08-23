@@ -69,8 +69,6 @@ export interface ExecutorConfig {
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;
-  /** Legacy explicit Claude-only delivery. */
-  insideClaude?: boolean;
   /** Daemon lifecycle signal used only by pending interactive handoffs. */
   shutdownSignal?: AbortSignal;
   /** Local agent kind used when an Automation omits agent_kind. */

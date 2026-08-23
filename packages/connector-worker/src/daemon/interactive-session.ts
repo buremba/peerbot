@@ -254,10 +254,8 @@ export function detectOpenCodeInteractiveSession(
 export function detectInteractiveSession(opts: {
   env?: NodeJS.ProcessEnv;
   sessionsDir?: string;
-  claudeOnly?: boolean;
 } = {}): { ok: true; session: InteractiveSession } | { ok: false; reason: string } {
   const env = opts.env ?? process.env;
-  if (opts.claudeOnly) return detectParentClaudeSession({ env, sessionsDir: opts.sessionsDir });
 
   const candidates: InteractiveSession[] = [];
   if (env.CLAUDE_PID || env.CLAUDE_CODE_SESSION_ID) {
@@ -284,14 +282,6 @@ export function detectInteractiveSession(opts: {
 export function deriveInteractiveWorkerId(session: InteractiveSession): string {
   const provider = session.kind === 'claude-code' ? 'claude' : session.kind;
   return `headless:${provider}:${createHash('sha256').update(session.sessionId).digest('hex').slice(0, 24)}`;
-}
-
-export function deriveLegacyClaudeWorkerId(
-  env: NodeJS.ProcessEnv = process.env,
-  fallbackSeed = randomBytes(16).toString('hex')
-): string {
-  const seed = env.CLAUDE_CODE_SESSION_ID?.trim() || env.CLAUDE_PID?.trim() || fallbackSeed;
-  return `headless:claude:${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`;
 }
 
 function sessionLabel(session: InteractiveSession): string {

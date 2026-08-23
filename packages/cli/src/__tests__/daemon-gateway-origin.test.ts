@@ -159,7 +159,9 @@ describe("lobu daemon", () => {
     );
   });
 
-  test("--inside-claude bypasses cache and wizard so the daemon derives a per-session id", async () => {
+  test("an explicit --worker-id wins over both the cache and the session lane", async () => {
+    process.env.CODEX_THREAD_ID = "thread-exact";
+    process.env.CODEX_SESSION_ID = "thread-exact";
     const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
       workerId: "macos:cached-host",
     });
@@ -173,39 +175,15 @@ describe("lobu daemon", () => {
 
     await daemonCommand({
       apiUrl: "http://127.0.0.1:9564",
-      insideClaude: true,
+      workerId: "headless:attached-explicit",
     });
 
     expect(start.mock.calls[0]?.[0]).toMatchObject({
-      apiUrl: "http://127.0.0.1:9564",
+      workerId: "headless:attached-explicit",
       platform: "headless",
-      defaultPlatform: "headless",
-      insideClaude: true,
     });
-    expect(start.mock.calls[0]?.[0]?.workerId).toMatch(/^headless:claude:/);
     expect(load).not.toHaveBeenCalled();
     expect(wizard).not.toHaveBeenCalled();
-  });
-
-  test("an explicit --worker-id wins over both the cache and the session lane", async () => {
-    const load = spyOn(deviceState, "loadDeviceState").mockResolvedValue({
-      workerId: "macos:cached-host",
-    });
-    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
-      undefined as never
-    );
-
-    await daemonCommand({
-      apiUrl: "http://127.0.0.1:9564",
-      workerId: "headless:attached-explicit",
-      insideClaude: true,
-    });
-
-    expect(start.mock.calls[0]?.[0]).toMatchObject({
-      workerId: "headless:attached-explicit",
-      insideClaude: true,
-    });
-    expect(load).not.toHaveBeenCalled();
   });
 
   test("auto-detected Codex bypasses the host cache and remains in the centralized session lane", async () => {

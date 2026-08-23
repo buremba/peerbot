@@ -2040,7 +2040,7 @@ describe("automation contract", () => {
 			expect(String(run.status)).toBe("pending");
 		});
 
-		it("does not expire a stale manually triggered pending run", async () => {
+		it("expires a stale manually triggered pending run without advancing its schedule", async () => {
 			const { sql, automationId } = await createAutomatedAutomation();
 			await materializeDueAutomationRuns({} as Env);
 			await sql`
@@ -2057,12 +2057,12 @@ describe("automation contract", () => {
       `;
 
 			const { timedOut } = await sweepStaleAutomationRuns(sql);
-			expect(timedOut).toBe(0);
+			expect(timedOut).toBe(1);
 			const [run] = await sql`
         SELECT status FROM runs
         WHERE automation_id = ${automationId} AND run_type = 'automation'
       `;
-			expect(String(run.status)).toBe("pending");
+			expect(String(run.status)).toBe("timeout");
 			const [automation] =
 				await sql`SELECT next_run_at FROM automations WHERE id = ${automationId}`;
 			expect(new Date(automation.next_run_at as string).getTime()).toBeLessThan(

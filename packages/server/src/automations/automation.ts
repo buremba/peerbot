@@ -609,10 +609,14 @@ export async function sweepStaleAutomationRuns(
  * the same transaction prevents the next Automation scheduler tick from immediately
  * recreating the missed run.
  *
- * Manual runs are intentionally excluded: a manual caller owns retry policy.
- * Scheduled device runs remain durable past the TTL while their exact snapshot
- * owner exists. If that row is deleted, only the stale orphan times out; its
- * schedule cursor stays due so current ownership retries the same window.
+ * Unclaimed manual runs use the same coarse TTL: an external caller can vanish
+ * after triggering but before claiming, and that abandoned pending row must not
+ * wedge later manual or scheduled activation. Their timeout never advances a
+ * schedule cursor; claimed/running work remains governed by the heartbeat and
+ * coarse execution paths below. Scheduled device runs remain durable past the
+ * TTL while their exact snapshot owner exists. If that row is deleted, only the
+ * stale orphan times out; its schedule cursor stays due so current ownership
+ * retries the same window.
  */
 async function finalizeStalePendingAutomationRuns(
 	sql: DbClient,
@@ -635,7 +639,6 @@ async function finalizeStalePendingAutomationRuns(
       WHERE r.run_type = 'automation'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
-        AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
         -- Snapshot ownership stays durable after retarget; only a missing exact row is orphaned.
         AND NOT (
           COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'

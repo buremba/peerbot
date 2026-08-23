@@ -6,7 +6,7 @@
  * injected so the device build does not import fleet connector machinery.
  */
 
-import type { PollResponse, WorkerClient } from './client.js';
+import { type PollResponse, WorkerHttpError, type WorkerClient } from './client.js';
 import { log } from './log.js';
 
 export interface WorkerPollLoopOptions {
@@ -14,6 +14,9 @@ export interface WorkerPollLoopOptions {
   pollIntervalMs?: number;
   maxConcurrentJobs?: number;
   execute: (job: PollResponse) => Promise<unknown>;
+  beforeIdlePoll?: () => Promise<void>;
+  /** Persisted device credentials treat poll-time revocation as terminal. */
+  failClosedOnPollAuthError?: boolean;
 }
 
 export type WorkerPollLoopExit = (code: number) => void;
@@ -34,6 +37,8 @@ export class WorkerPollLoop {
   private readonly pollIntervalMs: number;
   private readonly maxConcurrentJobs: number;
   private readonly execute: (job: PollResponse) => Promise<unknown>;
+  private readonly beforeIdlePoll?: () => Promise<void>;
+  private readonly failClosedOnPollAuthError: boolean;
   private running = false;
   private admittingJobs = true;
   private activeJobs = 0;
@@ -43,6 +48,8 @@ export class WorkerPollLoop {
     this.pollIntervalMs = options.pollIntervalMs ?? 10000;
     this.maxConcurrentJobs = Math.max(1, options.maxConcurrentJobs ?? 1);
     this.execute = options.execute;
+    this.beforeIdlePoll = options.beforeIdlePoll;
+    this.failClosedOnPollAuthError = options.failClosedOnPollAuthError === true;
   }
 
   async start(): Promise<void> {
@@ -59,10 +66,18 @@ export class WorkerPollLoop {
     log.info('[daemon] Starting worker daemon...');
     this.running = true;
     while (this.running) {
+      if (this.activeJobs === 0) await this.beforeIdlePoll?.();
       let nextDelayMs: number | undefined;
       try {
         nextDelayMs = await this.pollAndExecute();
       } catch (err) {
+        if (
+          this.failClosedOnPollAuthError &&
+          err instanceof WorkerHttpError &&
+          (err.status === 401 || err.status === 403)
+        ) {
+          throw err;
+        }
         log.info('[daemon] Poll error:', err);
       }
       if (this.running) await this.sleep(nextDelayMs ?? this.pollIntervalMs);

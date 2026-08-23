@@ -31,6 +31,7 @@ export interface DaemonConfig {
   manifests?: unknown[];
   /** Fixed advertisement for an exact interactive session. */
   agentKinds?: AgentKind[];
+  workerCredentialMaintenance?: (activate: (workerApiToken: string) => void) => Promise<void>;
 }
 
 const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
@@ -50,6 +51,7 @@ export class WorkerDaemon {
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
     const interactiveSession = attachedInteractiveSession(daemonConfig);
+    const credentialMaintenance = daemonConfig.workerCredentialMaintenance;
     this.client = new WorkerClient({
       apiUrl: daemonConfig.apiUrl,
       workerId: daemonConfig.workerId,
@@ -85,6 +87,13 @@ export class WorkerDaemon {
       pollIntervalMs: daemonConfig.pollIntervalMs,
       maxConcurrentJobs: daemonConfig.maxConcurrentJobs,
       execute: (job) => executeRun(this.client, job, this.env, this.config.executor),
+      ...(credentialMaintenance
+        ? {
+            beforeIdlePoll: () =>
+              credentialMaintenance((token) => this.client.replaceAuthToken(token)),
+            failClosedOnPollAuthError: true,
+          }
+        : {}),
     });
   }
 

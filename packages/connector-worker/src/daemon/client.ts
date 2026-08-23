@@ -277,6 +277,10 @@ export class WorkerClient implements ExecutorClient {
     return this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {};
   }
 
+  replaceAuthToken(authToken: string): void {
+    this.authToken = authToken;
+  }
+
   private async post<B = unknown>(path: string, body: B): Promise<Response> {
     const response = await fetch(`${this.apiUrl}${path}`, {
       method: 'POST',

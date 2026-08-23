@@ -1,7 +1,118 @@
 import { describe, expect, test } from "bun:test";
+import { WorkerHttpError } from "../daemon/client";
 import { WorkerPollLoop } from "../daemon/poll-loop";
 
 describe("worker daemon capacity polling", () => {
+  test("runs credential maintenance before polls only when no job is active", async () => {
+    const order: string[] = [];
+    let releaseJob: (() => void) | undefined;
+    const jobDone = new Promise<void>((resolve) => {
+      releaseJob = resolve;
+    });
+    let polls = 0;
+    let loop: WorkerPollLoop;
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => {
+        polls++;
+        order.push(`poll:${polls}`);
+        if (polls === 1) return { run_id: 42, run_type: "sync" };
+        if (polls === 2) {
+          releaseJob?.();
+          return { next_poll_seconds: 0.001 };
+        }
+        loop.stop();
+        return { next_poll_seconds: 0.001 };
+      },
+    } as never;
+    loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 1,
+      maxConcurrentJobs: 1,
+      execute: async () => jobDone,
+      beforeIdlePoll: async () => {
+        order.push("maintenance");
+      },
+    });
+
+    await loop.start();
+
+    expect(order).toEqual([
+      "maintenance",
+      "poll:1",
+      "poll:2",
+      "maintenance",
+      "poll:3",
+    ]);
+  });
+
+  test("treats credential maintenance refusal as fatal before polling", async () => {
+    let polls = 0;
+    const loop = new WorkerPollLoop({
+      client: {
+        healthCheck: async () => true,
+        poll: async () => {
+          polls++;
+          return {};
+        },
+      } as never,
+      execute: async () => {},
+      beforeIdlePoll: async () => {
+        throw new Error("device credential was revoked");
+      },
+    });
+
+    await expect(loop.start()).rejects.toThrow(/credential was revoked/);
+    expect(polls).toBe(0);
+  });
+
+  for (const status of [401, 403]) {
+    test(`persisted credential mode treats poll ${status} as fatal`, async () => {
+      let polls = 0;
+      const loop = new WorkerPollLoop({
+        client: {
+          healthCheck: async () => true,
+          poll: async () => {
+            polls++;
+            throw new WorkerHttpError(status, "/api/workers/poll", "rejected");
+          },
+        } as never,
+        execute: async () => {},
+        failClosedOnPollAuthError: true,
+      });
+
+      await expect(loop.start()).rejects.toMatchObject({ status });
+      expect(polls).toBe(1);
+    });
+  }
+
+  test("persisted credential mode retries poll 429 and 5xx responses", async () => {
+    const statuses = [429, 503];
+    let polls = 0;
+    let loop: WorkerPollLoop;
+    loop = new WorkerPollLoop({
+      client: {
+        healthCheck: async () => true,
+        poll: async () => {
+          polls++;
+          const status = statuses.shift();
+          if (status) {
+            throw new WorkerHttpError(status, "/api/workers/poll", "retry");
+          }
+          loop.stop();
+          return { next_poll_seconds: 0.001 };
+        },
+      } as never,
+      pollIntervalMs: 1,
+      execute: async () => {},
+      failClosedOnPollAuthError: true,
+    });
+
+    await loop.start();
+
+    expect(polls).toBe(3);
+  });
+
   test("polls at capacity with zero and does not execute a returned job", async () => {
     const calls: number[] = [];
     let executed = 0;

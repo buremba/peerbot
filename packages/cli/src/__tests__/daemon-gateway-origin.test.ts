@@ -327,6 +327,8 @@ describe("lobu daemon", () => {
   });
 
   test("a valid cached child PAT starts without OAuth or another mint", async () => {
+    const now = Date.now();
+    const nowSpy = spyOn(Date, "now").mockReturnValue(now);
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "local",
       url: "http://127.0.0.1:8787",
@@ -336,7 +338,7 @@ describe("lobu daemon", () => {
     spyOn(deviceState, "loadDeviceState").mockResolvedValue({
       workerId: "headless:cached",
       workerApiToken: "owl_pat_cached-child",
-      expiresAt: Date.now() + 60 * 86_400_000,
+      expiresAt: now + 60 * 86_400_000,
     });
     const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
       "oauth-should-not-be-read"
@@ -356,9 +358,44 @@ describe("lobu daemon", () => {
       workerId: "headless:cached",
       workerApiToken: "owl_pat_cached-child",
     });
+
+    const maintenance = start.mock.calls[0]?.[0]?.workerCredentialMaintenance;
+    expect(maintenance).toBeDefined();
+    nowSpy.mockReturnValue(now + 31 * 86_400_000);
+    const order: string[] = [];
+    const update = spyOn(deviceState, "updateDeviceState").mockImplementation(
+      async () => {
+        order.push("save");
+      }
+    );
+    fetchSpy.mockResolvedValue(
+      jsonResponse({
+        worker_id: "headless:cached",
+        access_token: "owl_pat_rotated-child",
+        expires_at: new Date(now + 121 * 86_400_000).toISOString(),
+      })
+    );
+
+    await maintenance?.((token) => order.push(`activate:${token}`));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<
+          string,
+          string
+        >
+      ).Authorization
+    ).toBe("Bearer owl_pat_cached-child");
+    expect(update).toHaveBeenCalledWith(
+      "local",
+      "headless",
+      expect.objectContaining({ workerApiToken: "owl_pat_rotated-child" })
+    );
+    expect(order).toEqual(["save", "activate:owl_pat_rotated-child"]);
   });
 
-  test("a rejected child-PAT rotation retries with this installation's OAuth login", async () => {
+  test("an unexpired rejected child PAT fails closed instead of undoing revocation with OAuth", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "local",
       url: "http://127.0.0.1:8787",
@@ -369,6 +406,37 @@ describe("lobu daemon", () => {
       workerId: "headless:cached",
       workerApiToken: "owl_pat_revoked-child",
       expiresAt: Date.now() + 30 * 60_000,
+    });
+    const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-installation-login"
+    );
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "revoked" }, 401)
+    );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await expect(daemonCommand({})).rejects.toThrow(
+      /rejected before its local expiry.*possibly revoked/s
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(getToken).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  test("a locally expired child PAT retries with this installation's OAuth login", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_expired-child",
+      expiresAt: Date.now() - 1,
     });
     const update = spyOn(deviceState, "updateDeviceState").mockResolvedValue();
     const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
@@ -397,7 +465,7 @@ describe("lobu daemon", () => {
           string
         >
       ).Authorization
-    ).toBe("Bearer owl_pat_revoked-child");
+    ).toBe("Bearer owl_pat_expired-child");
     expect(
       (
         (fetchSpy.mock.calls[1]?.[1] as RequestInit).headers as Record<
@@ -415,6 +483,120 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.workerApiToken).toBe(
       "owl_pat_rotated-child"
     );
+  });
+
+  test("a post-mint save failure activates once and retries only the local write", async () => {
+    const now = Date.now();
+    const nowSpy = spyOn(Date, "now").mockReturnValue(now);
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_cached-child",
+      expiresAt: now + 60 * 86_400_000,
+    });
+    const update = spyOn(deviceState, "updateDeviceState")
+      .mockRejectedValueOnce(new Error("disk unavailable"))
+      .mockResolvedValue();
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        worker_id: "headless:cached",
+        access_token: "owl_pat_rotated-child",
+        expires_at: new Date(now + 121 * 86_400_000).toISOString(),
+      })
+    );
+    spyOn(process.stderr, "write").mockImplementation(() => true);
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+    const maintenance = start.mock.calls[0]?.[0]?.workerCredentialMaintenance;
+    nowSpy.mockReturnValue(now + 31 * 86_400_000);
+    const activated: string[] = [];
+
+    await maintenance?.((token) => activated.push(token));
+    nowSpy.mockReturnValue(now + 31 * 86_400_000 + 60_001);
+    await maintenance?.((token) => activated.push(token));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(activated).toEqual(["owl_pat_rotated-child"]);
+  });
+
+  test("runtime rotation never falls back to installation OAuth after an expired child is rejected", async () => {
+    const now = Date.now();
+    const nowSpy = spyOn(Date, "now").mockReturnValue(now);
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_cached-child",
+      expiresAt: now + 60 * 86_400_000,
+    });
+    const getToken = spyOn(credentials, "getContextToken").mockResolvedValue(
+      "oauth-installation-login"
+    );
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "expired" }, 401)
+    );
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+    const maintenance = start.mock.calls[0]?.[0]?.workerCredentialMaintenance;
+    nowSpy.mockReturnValue(now + 61 * 86_400_000);
+
+    await expect(maintenance?.(() => undefined)).rejects.toThrow(
+      /Could not authorize this device/
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(getToken).not.toHaveBeenCalled();
+  });
+
+  test("runtime rotation treats rate limiting as retryable while the child remains valid", async () => {
+    const now = Date.now();
+    const nowSpy = spyOn(Date, "now").mockReturnValue(now);
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "local",
+      url: "http://127.0.0.1:8787",
+      source: "config",
+    });
+    delete process.env.WORKER_API_TOKEN;
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue({
+      workerId: "headless:cached",
+      workerApiToken: "owl_pat_cached-child",
+      expiresAt: now + 60 * 86_400_000,
+    });
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: "rate_limited" }, 429)
+    );
+    spyOn(process.stderr, "write").mockImplementation(() => true);
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+    const maintenance = start.mock.calls[0]?.[0]?.workerCredentialMaintenance;
+    nowSpy.mockReturnValue(now + 31 * 86_400_000);
+    await maintenance?.(() => {
+      throw new Error("must not activate");
+    });
+    nowSpy.mockReturnValue(now + 31 * 86_400_000 + 30_000);
+    await maintenance?.(() => {
+      throw new Error("must not activate");
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   test("a stale installation login reruns device-code auth before retrying the mint", async () => {

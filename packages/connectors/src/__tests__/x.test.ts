@@ -748,9 +748,7 @@ describe("XConnector definition", () => {
 			]),
 		);
 		expect(def.feeds.liked_tweets.requiredScopes).toBeUndefined();
-		expect(def.feeds.liked_tweets.configSchema.required).toEqual([
-			"account_handle",
-		]);
+		expect(def.feeds.liked_tweets.configSchema.required).toBeUndefined();
 		expect(
 			def.feeds.liked_tweets.configSchema.properties.backfill_pages_per_run
 				.type,
@@ -760,9 +758,9 @@ describe("XConnector definition", () => {
 				(rule: { name?: string }) => rule.name,
 			),
 		).toEqual(["author", "liker"]);
-		expect(def.feeds.liked_tweets.eventKinds.liked_tweet.relationships).toEqual(
-			[{ type: "engaged_with", from: "liker", to: "author" }],
-		);
+		expect(
+			def.feeds.liked_tweets.eventKinds.liked_tweet.relationships,
+		).toBeUndefined();
 		expect(def.feeds.bookmarks.requiredScopes).toBeUndefined();
 		expect(def.feeds.home_feed.description).toMatch(/home timeline/i);
 		// Extension is the browser fallback method (no public API for the timeline).
@@ -822,6 +820,128 @@ describe("parseBrowserDmResponse", () => {
 });
 
 describe("XConnector browser-first routing", () => {
+	test("keeps an existing empty-config OAuth Likes feed on the API path", async () => {
+		const originalFetch = globalThis.fetch;
+		const requested: string[] = [];
+		globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			requested.push(url);
+			if (url.includes("/2/users/me")) {
+				return new Response(
+					JSON.stringify({ data: { id: "369272762", username: "bu7emba" } }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			if (url.includes("/2/users/369272762/liked_tweets")) {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "500",
+								text: "liked through OAuth",
+								author_id: "123",
+								created_at: "2026-08-23T12:00:00.000Z",
+								public_metrics: {},
+							},
+						],
+						includes: { users: [{ id: "123", username: "alice" }] },
+						meta: {},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		try {
+			const connector = new XConnector();
+			const result = await connector.sync({
+				feedKey: "liked_tweets",
+				config: {},
+				checkpoint: {},
+				credentials: {
+					provider: "twitter",
+					accessToken: "oauth-token",
+					scope: "like.read tweet.read users.read",
+				},
+				entityIds: [],
+			});
+
+			expect(result.metadata.backend).toBe("oauth_api");
+			expect(result.events).toEqual([
+				expect.objectContaining({
+					origin_id: "500",
+					origin_type: "liked_tweet",
+				}),
+			]);
+			expect(
+				requested.some((url) => url.includes("/liked_tweets")),
+			).toBeTrue();
+			// Both actors must land in metadata: the `liker` attribution reads
+			// liked_by_*, the `author` attribution reads author_*. A missing liker
+			// silently halves the feed's people graph on the OAuth backend.
+			expect(result.events[0].metadata).toMatchObject({
+				author_id: "123",
+				author_handle: "alice",
+				liked_by_id: "369272762",
+				liked_by_handle: "bu7emba",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	test("carries extension backfill checkpoint state through an OAuth run", async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.includes("/2/users/me")) {
+				return new Response(
+					JSON.stringify({ data: { id: "369272762", username: "bu7emba" } }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			if (url.includes("/liked_tweets")) {
+				return new Response(JSON.stringify({ data: [], meta: {} }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		try {
+			const connector = new XConnector();
+			const result = await connector.sync({
+				feedKey: "liked_tweets",
+				config: {},
+				checkpoint: {
+					likes_backfill_cursor: "resume-cursor",
+					likes_backfill_status: "in_progress",
+					likes_backfill_pages: 4,
+					likes_oldest_tweet_id: "7",
+				},
+				credentials: {
+					provider: "twitter",
+					accessToken: "oauth-token",
+					scope: "like.read tweet.read users.read",
+				},
+				entityIds: [],
+			});
+
+			// An OAuth run must not erase the resumable browser backfill state, or
+			// the next extension run restarts the whole history from scratch.
+			expect(result.checkpoint).toMatchObject({
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+				likes_backfill_pages: 4,
+				likes_oldest_tweet_id: "7",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 	test("distinguishes a missing Likes response from a parser shape mismatch", async () => {
 		const connector = new XConnector();
 		const dispatcher = {
@@ -1600,7 +1720,7 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.13.1");
+		expect(new XConnector().definition.version).toBe("3.13.3");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is

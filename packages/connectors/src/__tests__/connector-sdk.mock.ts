@@ -158,17 +158,23 @@ export function connectorSdkMock() {
       };
     },
     // Connectors create their HTTP client as a class field at construction, so a
-    // throwing stub would break `new XConnector()`. Return an inert client whose
-    // network methods throw only IF actually called — tests that exercise a
-    // request path override `connector.http` / `connector.requestJson` first.
+    // throwing stub would break `new XConnector()`. `get`/`post` are faithful
+    // minimal implementations over global fetch (HttpStatusError on non-2xx,
+    // mirroring connector-sdk/src/http-client.ts) so tests can drive a
+    // connector's real request and error paths by stubbing `globalThis.fetch`.
+    // The remaining methods throw only IF actually called — tests that need
+    // them override `connector.http` / `connector.requestJson` first.
     createHttpClient: () => ({
-      get: notUsed('http.get'),
+      get: async (url: string) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new HttpStatusError({ status: response.status, body: await response.text() });
+        }
+        return response.json();
+      },
       json: notUsed('http.json'),
       request: notUsed('http.request'),
       raw: notUsed('http.raw'),
-      // Faithful minimal `post`: JSON body via global fetch, HttpStatusError on
-      // non-2xx — mirrors connector-sdk/src/http-client.ts semantics so tests
-      // can drive a connector's sync error paths by stubbing globalThis.fetch.
       post: async (url: string, body?: unknown) => {
         const response = await fetch(url, {
           method: 'POST',

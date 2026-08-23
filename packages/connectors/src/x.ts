@@ -18,7 +18,7 @@
  * Feeds:
  *   - tweets:        search by query or track a handle (API v2 or extension search)
  *   - my_tweets:     authenticated user's posts and replies (API v2 or extension)
- *   - liked_tweets:  posts the user has liked (signed-in extension, resumable cursor backfill)
+ *   - liked_tweets:  posts the user has liked (API v2 or signed-in extension backfill)
  *   - bookmarks:        posts the user has bookmarked (API v2 or extension)
  *   - direct_messages:  1:1 and group DMs (OAuth API; extension fallback on /messages)
  *   - home_feed:        personalized x.com home timeline (extension only — there
@@ -53,6 +53,7 @@ import { X_IDENTITY, normalizeXHandle } from "./x-identity.js";
 const X_OAUTH_FEED_SCOPES: Record<string, readonly string[]> = {
 	tweets: ["tweet.read", "users.read"],
 	my_tweets: ["tweet.read", "users.read"],
+	liked_tweets: ["like.read", "tweet.read", "users.read"],
 	bookmarks: ["bookmark.read", "tweet.read", "users.read"],
 	direct_messages: ["dm.read", "tweet.read", "users.read"],
 };
@@ -289,10 +290,11 @@ const X_TWEET_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
 
 /**
  * A liked post has two people with different roles: the connected account that
- * performed the interaction, and the post author. Both are named so the server
- * can materialize the declared person-to-person relationship after resolving
- * identities. Likes deliberately auto-create authors: this feed is an explicit
- * personal signal, not a random home-timeline impression.
+ * performed the interaction, and the post author. Both are resolved into the
+ * event's people graph inputs. Likes deliberately auto-create authors: this
+ * feed is an explicit personal signal, not a random home-timeline impression.
+ * A direct person-to-person edge is deliberately not declared here because a
+ * bundled connector cannot require a workspace-specific relationship type.
  */
 const X_LIKED_POST_ATTRIBUTIONS: EventAttributionRule[] = [
 	{
@@ -2087,6 +2089,77 @@ async function syncLikedTweetsViaExtension(
 	);
 }
 
+async function syncLikedTweetsViaOAuthApi(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accessToken = ctx.credentials?.accessToken;
+	if (!accessToken) {
+		throw new Error("OAuth access token missing for liked_tweets feed");
+	}
+
+	const http = createOAuthHttpClient(accessToken);
+	const maxPages = readMaxPages(config);
+	const authUser = await resolveAuthenticatedUser(http);
+	const accountHandle = await resolveAccountHandle(config, http);
+	const userId =
+		accountHandle === authUser.username
+			? authUser.id
+			: await resolveUserId(accountHandle, http);
+
+	const { tweets, pageCount } = await paginateTweetEndpoint(
+		http,
+		(nextToken) => {
+			const url = new URL(
+				`https://api.x.com/2/users/${encodeURIComponent(userId)}/liked_tweets`,
+			);
+			url.searchParams.set("max_results", "100");
+			url.searchParams.set("tweet.fields", TWEET_FIELDS);
+			url.searchParams.set("expansions", "author_id");
+			url.searchParams.set("user.fields", "username");
+			if (nextToken) {
+				url.searchParams.set("pagination_token", nextToken);
+			}
+			return url;
+		},
+		maxPages,
+	);
+
+	// Stamp the liker on every row: the `liker` attribution reads
+	// `metadata.liked_by_*`, so without this the OAuth backend would resolve
+	// only the author and silently drop half the feed's declared people graph.
+	const likedBy = tweets.map((tweet) => ({
+		...tweet,
+		likedByUserId: userId,
+		likedByHandle: accountHandle,
+		likedByDisplayName: `@${accountHandle}`,
+	}));
+
+	const result = finalizeSyncResult(
+		likedBy,
+		checkpoint,
+		{
+			backend: "oauth_api",
+			api_calls: pageCount,
+			account_handle: accountHandle,
+			feed: "liked_tweets",
+		},
+		{ originType: "liked_tweet" },
+	);
+
+	// finalizeSyncResult only knows the shared tweet watermark. Carry the
+	// extension backfill state forward untouched: a connection that switches
+	// backends must not lose its resumable cursor and restart the whole backfill.
+	return {
+		...result,
+		checkpoint: {
+			...checkpoint,
+			...result.checkpoint,
+		} as unknown as Record<string, unknown>,
+	};
+}
+
 async function syncBookmarksViaOAuthApi(
 	ctx: SyncContext,
 	config: Record<string, unknown>,
@@ -2411,14 +2484,14 @@ const accountTimelineConfigSchema = {
 
 const likedTweetsConfigSchema = {
 	type: "object",
-	required: ["account_handle"],
 	properties: {
 		account_handle: {
 			type: "string",
 			minLength: 1,
 			description:
-				'X handle whose signed-in likes are collected (e.g. "bu7emba").',
+				'Optional X handle (e.g. "bu7emba"). Defaults to the authenticated account on OAuth; required for extension collection.',
 		},
+		...backendPreferenceProperties,
 		backfill_pages_per_run: {
 			type: "integer",
 			minimum: 1,
@@ -2991,7 +3064,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, browser-visible like history, bookmarks, and DMs through the X API v2 or the paired Owletto Chrome extension. Links social actors into the person graph.",
-		version: "3.13.1",
+		version: "3.13.3",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -3094,16 +3167,13 @@ export default class XConnector extends ConnectorRuntime {
 				key: "liked_tweets",
 				name: "Liked Posts",
 				description:
-					"Posts the connected account has liked. The paired signed-in Chrome extension performs resumable cursor backfill and incremental collection.",
+					"Posts the connected account has liked. OAuth remains available for API-backed feeds; the paired signed-in Chrome extension performs resumable cursor backfill and incremental collection.",
 				configSchema: likedTweetsConfigSchema,
 				eventKinds: {
 					liked_tweet: {
 						description: "A post liked by the connected account",
 						metadataSchema: engagementMetadataSchema,
 						attributions: X_LIKED_POST_ATTRIBUTIONS,
-						relationships: [
-							{ type: "engaged_with", from: "liker", to: "author" },
-						],
 					},
 				},
 			},
@@ -3283,6 +3353,13 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "liked_tweets") {
+			if (resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api") {
+				return syncOAuthWithOptionalFallback(
+					config,
+					() => syncLikedTweetsViaOAuthApi(ctx, config, checkpoint),
+					() => syncLikedTweetsViaExtension(ctx, config, checkpoint),
+				);
+			}
 			return syncLikedTweetsViaExtension(ctx, config, checkpoint);
 		}
 

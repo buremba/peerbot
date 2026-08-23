@@ -1115,14 +1115,6 @@ const connectedWith = defineRelationshipType({
     "Social connection observed on a platform (LinkedIn connection, mutual follow). Symmetric.",
 });
 
-const engagedWith = defineRelationshipType({
-  key: "engaged_with",
-  name: "Engaged With",
-  description:
-    "A person explicitly engaged with another person's content through a like, comment, reply, or repost.",
-  rules: [{ source: person, target: person }],
-});
-
 const founderOf = defineRelationshipType({
   key: "founder_of",
   name: "Founder Of",
@@ -1362,7 +1354,6 @@ export default defineConfig({
     memberOf,
     mentions,
     connectedWith,
-    engagedWith,
     founderOf,
     sameAs,
   ],

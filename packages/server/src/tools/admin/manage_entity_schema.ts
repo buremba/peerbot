@@ -488,13 +488,18 @@ async function governEntitySchemaMutation(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  enforceRoleScopeAccess('admin', ctx.memberRole, ctx.scopes, {
-    adminRole: 'Entity schema mutations require workspace owner or admin access.',
-    writeRole: 'Entity schema mutations require workspace owner or admin access.',
-    readScope: 'Entity schema mutations require MCP admin access.',
-    writeScope: 'Entity schema mutations require MCP admin access.',
-    adminScope: 'Entity schema mutations require MCP admin access.',
-  });
+  // Automation reactions are trusted in-process callers with no human role or
+  // OAuth scopes. Preserve routeAction's historical system-call bypass here,
+  // then resolve their Automation principal through the write policy below.
+  if (!isInProcessSystemCall(ctx)) {
+    enforceRoleScopeAccess('admin', ctx.memberRole, ctx.scopes, {
+      adminRole: 'Entity schema mutations require workspace owner or admin access.',
+      writeRole: 'Entity schema mutations require workspace owner or admin access.',
+      readScope: 'Entity schema mutations require MCP admin access.',
+      writeScope: 'Entity schema mutations require MCP admin access.',
+      adminScope: 'Entity schema mutations require MCP admin access.',
+    });
+  }
   const sql = getDb();
   const initiator = resolveRunInitiator(ctx);
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
@@ -1049,7 +1054,9 @@ async function prepareEntityTypeCreate(
 ): Promise<PreparedEntityTypeCreate> {
   if (!args.slug) throw new ToolUserError('slug is required for create action', 400);
   if (!args.name) throw new ToolUserError('name is required for create action', 400);
-  if (!ctx.userId) throw new ToolUserError('Authentication required to create entity types', 401);
+  if (!ctx.userId && !isInProcessSystemCall(ctx)) {
+    throw new ToolUserError('Authentication required to create entity types', 401);
+  }
 
   // Preserve `$` for the reserved-slug check (isReservedEntityTypeSlug); domain
   // creates still get a normalized slug for storage when not reserved.
@@ -1189,7 +1196,9 @@ async function etHandleUpdate(
   db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
   if (!args.slug) throw new ToolUserError('slug is required for update action', 400);
-  if (!ctx.userId) throw new ToolUserError('Authentication required to update entity types', 401);
+  if (!ctx.userId && !isInProcessSystemCall(ctx)) {
+    throw new ToolUserError('Authentication required to update entity types', 401);
+  }
 
   const slug = normalizeEntityTypeSlug(args.slug);
   const sql = db;
@@ -1358,7 +1367,9 @@ async function etHandleDelete(
 ): Promise<ManageEntitySchemaResult> {
   if (!rawSlug) throw new ToolUserError('slug is required for delete action', 400);
   const slug = normalizeEntityTypeSlug(rawSlug);
-  if (!ctx.userId) throw new ToolUserError('Authentication required to delete entity types', 401);
+  if (!ctx.userId && !isInProcessSystemCall(ctx)) {
+    throw new ToolUserError('Authentication required to delete entity types', 401);
+  }
 
   const sql = db;
 

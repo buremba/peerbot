@@ -9,9 +9,14 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SCOPE_CHECK_NOT_APPLICABLE } from "../../../auth/tool-access";
 import { upsertEntityApprovalPolicy } from "../../../authz/entity-policy";
 import { getDb } from "../../../db/client";
+import type { Env } from "../../../index";
 import { clearInMemoryMcpSessionsForTests } from "../../../mcp-handler";
+import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
+import { manageEntitySchema } from "../../../tools/admin/manage_entity_schema";
+import type { ToolContext } from "../../../tools/registry";
 import {
 	addUserToOrganization,
 	createTestAccessToken,
@@ -48,6 +53,7 @@ describe("MCP entitySchema.createType approval", () => {
 	let memberToken: string;
 	let ownerWriteToken: string;
 	let ownerAdminToken: string;
+	let automationId: number;
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -82,6 +88,19 @@ describe("MCP entitySchema.createType approval", () => {
 				scope: "mcp:read mcp:write mcp:admin profile:read",
 			})
 		).token;
+
+		automationId = (await getDb().begin(async (tx) => {
+			const id = await getNextNumericId(tx, "automations");
+			await tx`
+				INSERT INTO automations (
+					id, automation_group_id, organization_id, created_by, name, slug
+				) VALUES (
+					${id}, ${id}, ${org.id}, ${owner.id},
+					'Reaction schema mutation', 'reaction-schema-mutation'
+				)
+			`;
+			return id;
+		})) as number;
 	});
 
 	beforeEach(async () => {
@@ -199,6 +218,117 @@ describe("MCP entitySchema.createType approval", () => {
 			}),
 		).rejects.toThrow(/admin|owner/i);
 		expect(await entityTypeExists("direct-member-type")).toBe(false);
+	});
+
+	it("governs trusted in-process Automation schema mutations without a human role", async () => {
+		const reactionCtx: ToolContext = {
+			organizationId: org.id,
+			userId: null,
+			memberRole: null,
+			isAuthenticated: true,
+			tokenType: "session",
+			scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
+			scopedToOrg: true,
+			allowCrossOrg: false,
+			clientId: null,
+			actingAutomationId: automationId,
+			actingRunId: 1,
+			sourceContext: { source: "automation-run" },
+		};
+		const env = {} as Env;
+
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "automation",
+			effects: { create_type: "deny" },
+		});
+		const denied = await manageEntitySchema(
+			{
+				schema_type: "entity_type",
+				action: "create",
+				slug: "reaction-denied-type",
+				name: "Reaction denied type",
+			},
+			env,
+			reactionCtx,
+		);
+		expect(denied).toMatchObject({ status: "denied" });
+		expect(await entityTypeExists("reaction-denied-type")).toBe(false);
+
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "automation",
+			effects: {
+				create_type: "auto",
+				update_type: "auto",
+				create_relationship_type: "auto",
+				update_relationship_type: "auto",
+			},
+		});
+		for (const [slug, name] of [
+			["reaction-source-type", "Reaction source type"],
+			["reaction-target-type", "Reaction target type"],
+		] as const) {
+			await expect(
+				manageEntitySchema(
+					{ schema_type: "entity_type", action: "create", slug, name },
+					env,
+					reactionCtx,
+				),
+			).resolves.toMatchObject({ status: "applied" });
+		}
+		await expect(
+			manageEntitySchema(
+				{
+					schema_type: "entity_type",
+					action: "update",
+					slug: "reaction-source-type",
+					name: "Reaction source updated",
+				},
+				env,
+				reactionCtx,
+			),
+		).resolves.toMatchObject({ status: "applied" });
+		await expect(
+			manageEntitySchema(
+				{
+					schema_type: "relationship_type",
+					action: "create",
+					slug: "reaction-related-type",
+					name: "Reaction related type",
+				},
+				env,
+				reactionCtx,
+			),
+		).resolves.toMatchObject({ status: "applied" });
+		await expect(
+			manageEntitySchema(
+				{
+					schema_type: "relationship_type",
+					action: "add_rule",
+					slug: "reaction-related-type",
+					source_entity_type_slug: "reaction-source-type",
+					target_entity_type_slug: "reaction-target-type",
+				},
+				env,
+				reactionCtx,
+			),
+		).resolves.toMatchObject({ status: "applied" });
+
+		const [source] = await getDb()<[{ name: string }]>`
+			SELECT name FROM entity_types
+			WHERE organization_id = ${org.id} AND slug = 'reaction-source-type'
+		`;
+		expect(source.name).toBe("Reaction source updated");
+		expect(
+			await getDb()`
+				SELECT r.id FROM entity_relationship_type_rules r
+				JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+				WHERE rt.organization_id = ${org.id}
+					AND rt.slug = 'reaction-related-type'
+					AND r.deleted_at IS NULL
+			`,
+		).toHaveLength(1);
 	});
 
 	it("requires policy approval and applies only after embedded human approval", async () => {

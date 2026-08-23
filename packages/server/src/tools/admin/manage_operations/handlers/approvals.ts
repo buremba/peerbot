@@ -202,9 +202,10 @@ async function lockOrganizationForApproval(
  * Builder-gate approval handler: the per-family knobs the ONE generic
  * claim/approve/reject path varies over. manage_agents and manage_automations both
  * queue a pending `run_type='internal'` run keyed by `action_key`, hold the
- * proposal in `action_input`, and apply it via `apply(proposal, ctx, env,
- * ownerUserId)` on approval — so the whole lifecycle is shared and only these
- * fields differ. Add a new builder family by registering another handler here.
+ * proposal in `action_input`, and apply it via the handler's transactional or
+ * non-transactional apply seam on approval — so the whole lifecycle is shared
+ * and only these fields differ. Add a new builder family by registering another
+ * handler here.
  */
 interface BuilderApprovalHandler {
 	/** `runs.action_key` this family's pending rows carry. */
@@ -226,7 +227,7 @@ interface BuilderApprovalHandler {
 	 * the tool contract and then dropped on the floor here, so a form-shaped
 	 * approval reported success while discarding everything the reviewer typed.
 	 */
-	apply(
+	apply?(
 		proposal: unknown,
 		ctx: ToolContext,
 		env: Env,
@@ -333,13 +334,6 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 			actionKey: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
 			nounLabel: "Entity schema",
 			isValidProposal: isManageEntitySchemaProposal,
-			apply: (p, ctx, env, owner) =>
-				applyManageEntitySchemaProposal(
-					p as StoredManageEntitySchemaProposal,
-					ctx,
-					env,
-					owner,
-				),
 			applyInTransaction: (p, ctx, env, owner, _input, db) =>
 				applyManageEntitySchemaProposal(
 					p as StoredManageEntitySchemaProposal,
@@ -655,6 +649,12 @@ async function tryApproveBuilderRun(
 			tx,
 		);
 		if (!claim) return null;
+		const apply = claim.handler.apply;
+		if (!apply) {
+			throw new Error(
+				`Approval handler ${claim.handler.actionKey} requires transactional apply`,
+			);
+		}
 		const desc = claim.handler.describe(claim.proposal);
 		const confirmedEventId = await supersedeActionEvent(
 			args.run_id,
@@ -667,11 +667,11 @@ async function tryApproveBuilderRun(
 			tx,
 		);
 		requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
-		return { ...claim, desc };
+		return { ...claim, apply, desc };
 	});
 	if (!claimed) return null;
 
-	const { handler, proposal, requesterUserId, desc } = claimed;
+	const { handler, apply, proposal, requesterUserId, desc } = claimed;
 
 	// Apply runs OUTSIDE any transaction — the family's write can be
 	// slow/network-bound and must not hold a DB transaction open. The catch
@@ -681,7 +681,7 @@ async function tryApproveBuilderRun(
 	// failBuilderRun.
 	let output: unknown;
 	try {
-		output = await handler.apply(
+		output = await apply(
 			proposal,
 			ctx,
 			env,

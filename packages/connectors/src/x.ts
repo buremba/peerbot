@@ -1345,6 +1345,89 @@ export function replaceGraphqlCursor(
 	return parsed.toString();
 }
 
+class XLikesPageTracker {
+	readonly historicalTweetIds = new Set<string>();
+	recognizedResponses = 0;
+	requestedPages = 0;
+	respondedPages = 0;
+	pagesRead = 0;
+	nextCursor: string | undefined;
+
+	private activeRequestedCursor: string | undefined;
+	private countedInitialPage = false;
+	private latestRequestUrl: string | undefined;
+	private resumeCursor: string | undefined;
+	private terminalSeen = false;
+
+	constructor(
+		private readonly backfill: boolean,
+		resumeCursor: string | undefined,
+		private readonly startsAtFirstPage: boolean,
+	) {
+		this.resumeCursor = resumeCursor;
+	}
+
+	recordPage(url: string, page: XTimelinePage): void {
+		this.recognizedResponses += 1;
+		this.latestRequestUrl = url;
+
+		const responseCursor = readGraphqlCursor(url);
+		const isRequestedPage =
+			this.activeRequestedCursor !== undefined &&
+			responseCursor === this.activeRequestedCursor;
+		if (isRequestedPage) {
+			this.respondedPages += 1;
+			this.recordHistoricalPage(page.tweets);
+			this.activeRequestedCursor = undefined;
+		}
+
+		if (this.startsAtFirstPage && !this.countedInitialPage) {
+			this.countedInitialPage = true;
+			this.recordHistoricalPage(page.tweets);
+		}
+
+		if (page.bottomCursor) {
+			this.nextCursor = page.bottomCursor;
+		} else if (isRequestedPage || this.countedInitialPage) {
+			this.nextCursor = undefined;
+			this.terminalSeen = true;
+		}
+	}
+
+	prepareReplay(): string | undefined {
+		const cursor = this.resumeCursor ?? this.nextCursor;
+		this.resumeCursor = undefined;
+		if (!cursor || !this.latestRequestUrl) {
+			this.terminalSeen = this.recognizedResponses > 0;
+			return undefined;
+		}
+
+		this.activeRequestedCursor = cursor;
+		this.requestedPages += 1;
+		return replaceGraphqlCursor(this.latestRequestUrl, cursor);
+	}
+
+	assertComplete(): void {
+		if (this.requestedPages !== this.respondedPages) {
+			throw new Error(
+				`X likes pagination was interrupted: requested ${this.requestedPages} cursor page(s), received ${this.respondedPages}`,
+			);
+		}
+	}
+
+	status(previousStatus: XLikesBackfillStatus | undefined): XLikesBackfillStatus {
+		if (!this.backfill) return previousStatus ?? "complete";
+		if (this.terminalSeen) return "complete";
+		return this.nextCursor ? "in_progress" : "platform_limited";
+	}
+
+	private recordHistoricalPage(tweets: XTweet[]): void {
+		if (!this.backfill) return;
+		this.pagesRead += 1;
+		for (const tweet of tweets) this.historicalTweetIds.add(tweet.id);
+	}
+}
+
 type XSyncBackend = "oauth_api" | "extension";
 
 function parseGrantedScopes(scope: string | null | undefined): Set<string> {
@@ -1924,20 +2007,14 @@ async function syncLikedTweetsViaExtension(
 	const pageBudget = previouslyComplete
 		? readLikesIncrementalPageBudget(config)
 		: readLikesBackfillPageBudget(config);
-	let resumeCursor = previouslyComplete
-		? undefined
-		: checkpoint.likes_backfill_cursor;
-	let nextCursor: string | undefined;
-	let latestRequestUrl: string | undefined;
+	const startsAtFirstPage =
+		!previouslyComplete && !checkpoint.likes_backfill_cursor;
+	const pages = new XLikesPageTracker(
+		!previouslyComplete,
+		previouslyComplete ? undefined : checkpoint.likes_backfill_cursor,
+		startsAtFirstPage,
+	);
 	let owner: XTimelinePage["owner"];
-	let recognizedResponses = 0;
-	let requestedPages = 0;
-	let respondedPages = 0;
-	let pagesRead = 0;
-	let countedInitialBackfillPage = false;
-	let terminalSeen = false;
-	let activeRequestedCursor: string | undefined;
-	const historicalTweetIds = new Set<string>();
 	const parserErrors: string[] = [];
 	const responseShapes = new Set<string>();
 	let parsedJsonResponses = 0;
@@ -1952,37 +2029,9 @@ async function syncLikedTweetsViaExtension(
 			parserErrors.push(...page.errors);
 			return [];
 		}
-		recognizedResponses += 1;
-		latestRequestUrl = url;
+		pages.recordPage(url, page);
 		owner = page.owner ?? owner;
 		parserErrors.push(...page.errors);
-		const responseCursor = readGraphqlCursor(url);
-		const isRequestedPage =
-			activeRequestedCursor !== undefined &&
-			responseCursor === activeRequestedCursor;
-		if (isRequestedPage) {
-			respondedPages += 1;
-			if (!previouslyComplete) {
-				pagesRead += 1;
-				for (const tweet of page.tweets) historicalTweetIds.add(tweet.id);
-			}
-			activeRequestedCursor = undefined;
-		}
-		if (
-			!previouslyComplete &&
-			!checkpoint.likes_backfill_cursor &&
-			!countedInitialBackfillPage
-		) {
-			countedInitialBackfillPage = true;
-			pagesRead += 1;
-			for (const tweet of page.tweets) historicalTweetIds.add(tweet.id);
-		}
-		if (page.bottomCursor) {
-			nextCursor = page.bottomCursor;
-		} else if (isRequestedPage || countedInitialBackfillPage) {
-			nextCursor = undefined;
-			terminalSeen = true;
-		}
 
 		return page.tweets.map((tweet) => ({
 			...tweet,
@@ -1993,11 +2042,9 @@ async function syncLikedTweetsViaExtension(
 		}));
 	};
 
-	const initialPageCountsAgainstBudget =
-		!previouslyComplete && !checkpoint.likes_backfill_cursor;
 	const paginationRequests = Math.max(
 		0,
-		pageBudget - (initialPageCountsAgainstBudget ? 1 : 0),
+		pageBudget - (startsAtFirstPage ? 1 : 0),
 	);
 	const result = await extensionNetworkSync<XTweet>({
 		dispatcher,
@@ -2012,15 +2059,8 @@ async function syncLikedTweetsViaExtension(
 		parseResponse,
 		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
 		triggerNextPage: async (_tabId, browserDispatcher, sessionId) => {
-			const cursor = resumeCursor ?? nextCursor;
-			resumeCursor = undefined;
-			if (!cursor || !latestRequestUrl) {
-				terminalSeen = recognizedResponses > 0;
-				return;
-			}
-			const requestUrl = replaceGraphqlCursor(latestRequestUrl, cursor);
-			activeRequestedCursor = cursor;
-			requestedPages += 1;
+			const requestUrl = pages.prepareReplay();
+			if (!requestUrl) return;
 			const observation = await browserDispatcher.dispatch<{
 				ok?: boolean;
 				status?: number;
@@ -2037,7 +2077,7 @@ async function syncLikedTweetsViaExtension(
 		},
 	});
 
-	if (recognizedResponses === 0) {
+	if (pages.recognizedResponses === 0) {
 		if (result.apiCallCount === 0) {
 			throw new Error(
 				`X likes captured no matching GraphQL responses (pattern=${X_LIKES_INTERCEPT_PATTERN})`,
@@ -2054,19 +2094,9 @@ async function syncLikedTweetsViaExtension(
 			}`,
 		);
 	}
-	if (requestedPages !== respondedPages) {
-		throw new Error(
-			`X likes pagination was interrupted: requested ${requestedPages} cursor page(s), received ${respondedPages}`,
-		);
-	}
+	pages.assertComplete();
 
-	const status: XLikesBackfillStatus = previouslyComplete
-		? (checkpoint.likes_backfill_status ?? "complete")
-		: terminalSeen
-			? "complete"
-			: nextCursor
-				? "in_progress"
-				: "platform_limited";
+	const status = pages.status(checkpoint.likes_backfill_status);
 	return finalizeLikedTweetsResult(
 		result.items,
 		checkpoint,
@@ -2076,15 +2106,15 @@ async function syncLikedTweetsViaExtension(
 			account_handle: accountHandle,
 			feed: "liked_tweets",
 			collection_scope: "x_browser_visible_history",
-			pages_requested: requestedPages,
-			pages_received: respondedPages,
+			pages_requested: pages.requestedPages,
+			pages_received: pages.respondedPages,
 			parser_errors: parserErrors,
 		},
 		{
 			status,
-			nextCursor: status === "in_progress" ? nextCursor : undefined,
-			pagesRead,
-			historicalItemsRead: historicalTweetIds.size,
+			nextCursor: status === "in_progress" ? pages.nextCursor : undefined,
+			pagesRead: pages.pagesRead,
+			historicalItemsRead: pages.historicalTweetIds.size,
 		},
 	);
 }

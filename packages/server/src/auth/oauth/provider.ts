@@ -654,10 +654,10 @@ export class OAuthProvider {
       const result = await this.sql`
         UPDATE oauth_device_codes
         SET status = 'approved',
-            user_id = ${userId},
             organization_id = ${organizationId},
             scope = ${scopeOverride}
         WHERE user_code = ${userCode}
+          AND user_id = ${userId}
           AND status = 'pending'
           AND expires_at > NOW()
         RETURNING device_code
@@ -667,9 +667,9 @@ export class OAuthProvider {
     const result = await this.sql`
       UPDATE oauth_device_codes
       SET status = 'approved',
-          user_id = ${userId},
           organization_id = ${organizationId}
       WHERE user_code = ${userCode}
+        AND user_id = ${userId}
         AND status = 'pending'
         AND expires_at > NOW()
       RETURNING device_code
@@ -678,13 +678,14 @@ export class OAuthProvider {
   }
 
   /**
-   * Deny a device code
+   * Deny a device code owned by the authenticated verifier.
    */
-  async denyDeviceCode(userCode: string): Promise<boolean> {
+  async denyDeviceCode(userCode: string, userId: string): Promise<boolean> {
     const result = await this.sql`
       UPDATE oauth_device_codes
       SET status = 'denied'
       WHERE user_code = ${userCode}
+        AND user_id = ${userId}
         AND status = 'pending'
         AND expires_at > NOW()
       RETURNING device_code
@@ -693,12 +694,56 @@ export class OAuthProvider {
   }
 
   /**
-   * Look up a pending device code by user_code for the consent page
+   * Validate an unclaimed pending code before sending its consent email.
+   *
+   * Unauthenticated, so it must not confirm a code another user already owns:
+   * once claimed, the email path reports the same miss as an unknown code.
    */
-  async getDeviceCodeByUserCode(userCode: string): Promise<StoredDeviceCode | null> {
+  async isUnclaimedDeviceCodePending(userCode: string): Promise<boolean> {
+    const result = await this.sql`
+      SELECT 1 FROM oauth_device_codes
+      WHERE user_code = ${userCode}
+        AND user_id IS NULL
+        AND status = 'pending'
+        AND expires_at > NOW()
+    `;
+    return result.length > 0;
+  }
+
+  /**
+   * Atomically bind an unclaimed pending code to the authenticated verifier.
+   *
+   * Repeated verification by the same user is idempotent. Every other user
+   * observes the same miss as an unknown or expired code.
+   */
+  async claimDeviceCodeForUser(
+    userCode: string,
+    userId: string
+  ): Promise<StoredDeviceCode | null> {
+    const result = await this.sql`
+      UPDATE oauth_device_codes
+      SET user_id = ${userId}
+      WHERE user_code = ${userCode}
+        AND (user_id IS NULL OR user_id = ${userId})
+        AND status = 'pending'
+        AND expires_at > NOW()
+      RETURNING *
+    `;
+    if (result.length === 0) return null;
+    return result[0] as StoredDeviceCode;
+  }
+
+  /**
+   * Read a pending code only when it belongs to the authenticated verifier.
+   */
+  async getDeviceCodeForUser(
+    userCode: string,
+    userId: string
+  ): Promise<StoredDeviceCode | null> {
     const result = await this.sql`
       SELECT * FROM oauth_device_codes
       WHERE user_code = ${userCode}
+        AND user_id = ${userId}
         AND status = 'pending'
         AND expires_at > NOW()
     `;

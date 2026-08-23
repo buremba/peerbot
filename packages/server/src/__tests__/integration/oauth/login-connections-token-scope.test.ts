@@ -79,6 +79,20 @@ function call(
   );
 }
 
+async function verifyDeviceCode(
+  app: Hono<{ Bindings: Env }>,
+  userCode: string,
+  cookie: string
+): Promise<void> {
+  const response = await call(
+    app,
+    'GET',
+    `/oauth/device/info?user_code=${encodeURIComponent(userCode)}`,
+    { headers: { Cookie: cookie } }
+  );
+  expect(response.status).toBe(200);
+}
+
 beforeAll(async () => {
   await initWorkspaceProvider();
 });
@@ -128,7 +142,8 @@ describe('Stage 1 — login token carries connections:token', () => {
     expect(deviceAuth.status).toBe(200);
     const da = (await deviceAuth.json()) as { device_code: string; user_code: string };
 
-    // 3. Approve the device code as the logged-in user (session cookie).
+    // 3. Verify, then approve the device code as the logged-in user.
+    await verifyDeviceCode(app, da.user_code, session.cookieHeader);
     const approve = await call(app, 'POST', '/oauth/device/approve', {
       body: { user_code: da.user_code, approved: true },
       headers: { Cookie: session.cookieHeader },
@@ -275,6 +290,7 @@ describe('Stage 1 — login token carries connections:token', () => {
     });
     const da = (await deviceAuth.json()) as { device_code: string; user_code: string };
 
+    await verifyDeviceCode(app, da.user_code, session.cookieHeader);
     const approve = await call(app, 'POST', '/oauth/device/approve', {
       body: { user_code: da.user_code, approved: true },
       headers: { Cookie: session.cookieHeader },

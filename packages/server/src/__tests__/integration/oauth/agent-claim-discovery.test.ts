@@ -199,7 +199,13 @@ describe('user_claimed flow — full loop', () => {
     });
     expect(email.status).toBe(202);
 
-    // 4. User clicks the magic link (modelled by the session) and approves.
+    // 4. User clicks the magic link (modelled by the session). Loading the
+    // consent page verifies and binds the exact code before approval.
+    const info = await call(app, 'GET', `/oauth/device/info?user_code=${user_code}`, {
+      headers: { Cookie: session.cookieHeader },
+    });
+    expect(info.status).toBe(200);
+
     const approve = await call(app, 'POST', '/oauth/device/approve', {
       body: { user_code, approved: true },
       headers: { Cookie: session.cookieHeader },

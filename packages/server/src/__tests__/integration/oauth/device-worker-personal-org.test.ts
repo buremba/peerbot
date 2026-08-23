@@ -67,6 +67,20 @@ function call(
   );
 }
 
+async function verifyDeviceCode(
+  app: Hono<{ Bindings: Env }>,
+  userCode: string,
+  cookie: string
+): Promise<void> {
+  const response = await call(
+    app,
+    'GET',
+    `/oauth/device/info?user_code=${encodeURIComponent(userCode)}`,
+    { headers: { Cookie: cookie } }
+  );
+  expect(response.status).toBe(200);
+}
+
 async function markPersonalOrg(orgId: string, userId: string): Promise<void> {
   const sql = getTestDb();
   // Match personal-org-provisioning.ts: store the marker as plain JSON text
@@ -130,6 +144,7 @@ describe('device-worker grant always binds to the personal org', () => {
 
     // Approve — note NO organization_id is sent. The handler must force the
     // personal org; it must NOT bounce with org_selection_required.
+    await verifyDeviceCode(app, da.user_code, session.cookieHeader);
     const approve = await call(app, 'POST', '/oauth/device/approve', {
       body: { user_code: da.user_code, approved: true },
       headers: { Cookie: session.cookieHeader },
@@ -188,6 +203,7 @@ describe('device-worker grant always binds to the personal org', () => {
     });
     const da = (await deviceAuth.json()) as { device_code: string; user_code: string };
 
+    await verifyDeviceCode(app, da.user_code, session.cookieHeader);
     const approve = await call(app, 'POST', '/oauth/device/approve', {
       body: { user_code: da.user_code, approved: true },
       headers: { Cookie: session.cookieHeader },
@@ -246,6 +262,7 @@ describe('device-worker grant always binds to the personal org', () => {
     });
     const da = (await deviceAuth.json()) as { user_code: string };
 
+    await verifyDeviceCode(app, da.user_code, session.cookieHeader);
     const approve = await call(app, 'POST', '/oauth/device/approve', {
       body: { user_code: da.user_code, approved: true },
       headers: { Cookie: session.cookieHeader },

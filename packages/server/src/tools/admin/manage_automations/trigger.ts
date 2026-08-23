@@ -29,22 +29,47 @@ import type { ToolContext } from "../../registry";
 import { recordToolConfigChange } from "../helpers/config-audit";
 import { requireExists } from "../helpers/db-helpers";
 import type { ManageAutomationsArgs } from "../manage_automations";
+import {
+  encodeExternalAutomationClaimOwner,
+  isExternalAutomationClaimOwner,
+} from "./claim-next-window";
 import { resolveAutomationExecutor } from "./executors";
 
 async function loadTriggerExecution(
   sql: DbClient,
   runId: number,
   automationId: number,
-): Promise<AutomationTriggerExecution> {
-  const [run] = await sql<{ approved_input: unknown }>`
-    SELECT approved_input
-    FROM runs
-    WHERE id = ${runId}
-      AND automation_id = ${automationId}
-      AND run_type = 'automation'
+  automationIdString: string,
+  ctx: ToolContext,
+): Promise<{
+  execution: AutomationTriggerExecution;
+  shouldDispatch: boolean;
+}> {
+  const [run] = await sql<{
+    approved_input: unknown;
+    status: string;
+    claimed_by: string | null;
+    expires_at: string | Date | null;
+    device_claimed_by: string | null;
+  }>`
+    SELECT r.approved_input, r.status, r.claimed_by, r.expires_at,
+           (
+             SELECT dw.worker_id
+             FROM device_workers dw
+             WHERE dw.id::text = r.approved_input->>'device_worker_id'
+             LIMIT 1
+           ) AS device_claimed_by
+    FROM runs r
+    WHERE r.id = ${runId}
+      AND r.automation_id = ${automationId}
+      AND r.run_type = 'automation'
     LIMIT 1
+    FOR UPDATE
   `;
-  const payload = parseAutomationRunPayload(run?.approved_input);
+  if (!run) {
+    throw new Error("Automation run is missing a valid dispatch payload.");
+  }
+  const payload = parseAutomationRunPayload(run.approved_input);
   if (!payload || payload.automation_id !== automationId) {
     throw new Error("Automation run is missing a valid dispatch payload.");
   }
@@ -53,36 +78,100 @@ async function loadTriggerExecution(
     deviceWorkerId: payload.device_worker_id,
     agentKind: payload.agent_kind,
   });
+  let persistedExecution: AutomationTriggerExecution;
   if (executor?.kind === "agent") {
-    return {
+    persistedExecution = {
       lane: "managed_agent",
       owner: "lobu",
       agent_id: executor.agentId,
       next_action: { kind: "handled_elsewhere" },
     };
-  }
-  if (executor?.kind === "device") {
-    return {
+  } else if (executor?.kind === "device") {
+    persistedExecution = {
       lane: "device_worker",
       owner: "device",
       device_worker_id: executor.deviceWorkerId,
       agent_kind: executor.agentKind,
       next_action: { kind: "handled_elsewhere" },
     };
-  }
-  return {
-    lane: "external_client",
-    owner: "caller",
-    next_action: {
-      kind: "complete_window",
-      read: {
-        method: "knowledge.read",
-        input: { automation_id: payload.automation_id, run_id: runId },
+  } else {
+    persistedExecution = {
+      lane: "external_client",
+      owner: "caller",
+      next_action: {
+        kind: "complete_window",
+        read: {
+          method: "knowledge.read",
+          input: { automation_id: payload.automation_id, run_id: runId },
+        },
+        // biome-ignore lint/suspicious/noThenProperty: Public protocol field required by the trigger handoff contract.
+        then: "automations.completeWindow",
       },
-      // biome-ignore lint/suspicious/noThenProperty: Public protocol field required by the trigger handoff contract.
-      then: "automations.completeWindow",
-    },
-  };
+    };
+  }
+
+  if (run.status === "pending") {
+    return { execution: persistedExecution, shouldDispatch: true };
+  }
+  if (run.status !== "claimed" && run.status !== "running") {
+    throw new ToolUserError(
+      `Automation run ${runId} is no longer active.`,
+      409,
+    );
+  }
+
+  const claimedBy = run.claimed_by?.trim();
+  if (!claimedBy) {
+    throw new ToolUserError(
+      `Automation run ${runId} has no recognized active claimant.`,
+      409,
+    );
+  }
+  if (isExternalAutomationClaimOwner(claimedBy)) {
+    const leaseExpiresAt =
+      run.expires_at == null ? Number.NaN : new Date(run.expires_at).getTime();
+    if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.now()) {
+      throw new ToolUserError(
+        `Automation run ${runId} has no recognized active claimant.`,
+        409,
+      );
+    }
+    if (claimedBy === encodeExternalAutomationClaimOwner(ctx)) {
+      return {
+        execution: {
+          lane: "external_client",
+          owner: "caller",
+          next_action: {
+            kind: "resume_claim",
+            method: "automations.claimNextWindow",
+            input: { automation_id: automationIdString, run_id: runId },
+          },
+        },
+        shouldDispatch: false,
+      };
+    }
+    return {
+      execution: {
+        lane: "external_client",
+        owner: "another_caller",
+        next_action: { kind: "handled_elsewhere" },
+      },
+      shouldDispatch: false,
+    };
+  }
+
+  const nativeManagedClaim =
+    executor?.kind === "agent" &&
+    (claimedBy === "lobu-dispatcher" || claimedBy === `lobu:${executor.agentId}`);
+  const nativeDeviceClaim =
+    executor?.kind === "device" && claimedBy === run.device_claimed_by;
+  if (!nativeManagedClaim && !nativeDeviceClaim) {
+    throw new ToolUserError(
+      `Automation run ${runId} has no recognized active claimant.`,
+      409,
+    );
+  }
+  return { execution: persistedExecution, shouldDispatch: false };
 }
 
 // ============================================
@@ -92,6 +181,7 @@ async function loadTriggerExecution(
 export async function handleTrigger(
   args: ManageAutomationsArgs,
   _env: Env,
+  ctx: ToolContext,
 ): Promise<AutomationTriggerResult> {
   const sql = getDb();
 
@@ -100,12 +190,6 @@ export async function handleTrigger(
   }
   const automationIdString = args.automation_id;
   const automationId = Number(automationIdString);
-  if (!Number.isSafeInteger(automationId) || automationId < 1) {
-    throw new ToolUserError(
-      "automation_id must be a positive integer for trigger action",
-      400,
-    );
-  }
 
   const queued = await sql.begin(async (tx) => {
     const run = await enqueueAutomationRunForAutomationInTransaction(
@@ -113,20 +197,28 @@ export async function handleTrigger(
       "manual",
       tx,
     );
-    const execution = await loadTriggerExecution(
+    const loaded = await loadTriggerExecution(
       tx,
       run.runId,
       automationId,
+      automationIdString,
+      ctx,
     );
-    if (execution.lane === "managed_agent" && !isLobuGatewayRunning()) {
+    if (
+      loaded.shouldDispatch &&
+      loaded.execution.lane === "managed_agent" &&
+      !isLobuGatewayRunning()
+    ) {
       throw new Error("Embedded Lobu is not available.");
     }
-    return { ...run, execution };
+    return { ...run, ...loaded };
   });
-  const dispatch = await dispatchPendingAutomationRuns({
-    db: sql,
-    runIds: [queued.runId],
-  });
+  const dispatch = queued.shouldDispatch
+    ? await dispatchPendingAutomationRuns({
+        db: sql,
+        runIds: [queued.runId],
+      })
+    : { failed: 0 };
   const runInfo = await getAutomationRunInfo(queued.runId, sql);
 
   if (dispatch.failed > 0) {

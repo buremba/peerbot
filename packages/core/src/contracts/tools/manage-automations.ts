@@ -512,7 +512,7 @@ export const ManageAutomationsSchema = Type.Object(
         }),
         Type.Literal("trigger", {
           description:
-            "Create or reuse an immediate Automation run. The result identifies whether Lobu, a device worker, or this caller owns execution; external callers must follow its knowledge.read then automations.completeWindow next action.",
+            "Create or reuse an immediate Automation run. The result identifies whether Lobu, a device worker, this caller, or another external caller owns execution. Follow the returned next_action: a pending external run uses knowledge.read then automations.completeWindow, while the owner of an existing external lease resumes it with automations.claimNextWindow.",
         }),
         Type.Literal("delete", {
           description:
@@ -1096,6 +1096,23 @@ export const AutomationTriggerExecutionSchema = Type.Union([
       // biome-ignore lint/suspicious/noThenProperty: Public protocol field required by the trigger handoff contract.
       then: Type.Literal("automations.completeWindow"),
     }),
+  }),
+  Type.Object({
+    lane: Type.Literal("external_client"),
+    owner: Type.Literal("caller"),
+    next_action: Type.Object({
+      kind: Type.Literal("resume_claim"),
+      method: Type.Literal("automations.claimNextWindow"),
+      input: Type.Object({
+        automation_id: Type.String(),
+        run_id: Type.Integer(),
+      }),
+    }),
+  }),
+  Type.Object({
+    lane: Type.Literal("external_client"),
+    owner: Type.Literal("another_caller"),
+    next_action: Type.Object({ kind: Type.Literal("handled_elsewhere") }),
   }),
 ]);
 export type AutomationTriggerExecution = Static<

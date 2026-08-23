@@ -587,7 +587,7 @@ export default async (_ctx, client) => {
 	},
 	"automations.trigger": {
 		summary:
-			"Create or reuse an immediate Automation run. The typed result identifies the persisted run's execution lane and owner: Lobu handles managed_agent, the pinned device handles device_worker, and the caller handles external_client by following next_action.read (knowledge.read with automation_id + run_id) and then automations.completeWindow. created is false when an active run was reused.",
+			"Create or reuse an immediate Automation run. The typed result identifies the durable execution owner. Pending runs use their persisted managed_agent, device_worker, or external_client lane. An existing external lease returns owner caller with a resume_claim action when this caller owns it, or owner another_caller with handled_elsewhere. A pending external_client run uses next_action.read (knowledge.read with automation_id + run_id) then automations.completeWindow. created is false when an active run was reused.",
 		access: "external",
 		signature:
 			"automations.trigger(input: { automation_id: string }): Promise<AutomationTriggerResult>",
@@ -596,6 +596,10 @@ export default async (_ctx, client) => {
 		usageExample: `export default async (_ctx, client) => {
   const run = await client.automations.trigger({ automation_id: '42' });
   if (run.execution.lane !== 'external_client') return run;
+  if (run.execution.next_action.kind === 'handled_elsewhere') return run;
+  if (run.execution.next_action.kind === 'resume_claim') {
+    return client.automations.claimNextWindow(run.execution.next_action.input);
+  }
 
   const context = await client.knowledge.read(run.execution.next_action.read.input);
   // Analyze context, then submit the result with the returned run_id and window_token:

@@ -4791,6 +4791,25 @@ export type ManageAutomationsResponses = {
                 };
                 then: "automations.completeWindow";
               };
+            }
+          | {
+              lane: "external_client";
+              owner: "caller";
+              next_action: {
+                kind: "resume_claim";
+                method: "automations.claimNextWindow";
+                input: {
+                  automation_id: string;
+                  run_id: number;
+                };
+              };
+            }
+          | {
+              lane: "external_client";
+              owner: "another_caller";
+              next_action: {
+                kind: "handled_elsewhere";
+              };
             };
       }
     | {

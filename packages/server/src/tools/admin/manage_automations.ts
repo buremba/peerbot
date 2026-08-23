@@ -1039,7 +1039,7 @@ const runManageAutomations = defineFlatActionTool<ManageAutomationsArgs, ManageA
     create_version: flatAction((args, ctx, env) => handleCreateVersion(args, env, ctx)),
     complete_window: flatAction((args, ctx, env) => handleCompleteWindow(args, env, ctx)),
     claim_next_window: flatAction((args, ctx, env) => handleClaimNextWindow(args, env, ctx)),
-    trigger: flatAction((args, _ctx, env) => handleTrigger(args, env)),
+    trigger: flatAction((args, ctx, env) => handleTrigger(args, env, ctx)),
     delete: flatAction((args, ctx) => handleDelete(args, ctx)),
     set_reaction_script: flatAction((args, ctx, env) => handleSetReactionScript(args, env, ctx)),
     get_versions: flatAction(handleGetVersions),

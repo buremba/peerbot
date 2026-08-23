@@ -416,6 +416,9 @@ describe("sdkSearch", () => {
 		expect(rendered).toContain("Promise<AutomationTriggerResult>");
 		expect(rendered).toContain("external_client");
 		expect(rendered).toContain("created is false");
+		expect(rendered).toContain("resume_claim");
+		expect(rendered).toContain("another_caller");
+		expect(rendered).toContain("client.automations.claimNextWindow");
 		expect(rendered).toContain("run.execution.next_action.read.input");
 		expect(rendered).toContain("client.automations.completeWindow");
 	});

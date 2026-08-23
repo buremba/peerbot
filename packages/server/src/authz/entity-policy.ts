@@ -1109,7 +1109,7 @@ function actionEffectSetForInput(
 		];
 	}
 	if (resourceClass === "entity_schema") {
-		return [];
+		throw new Error("entity_schema policies require an explicit effects map");
 	}
 	return [
 		{

@@ -269,6 +269,7 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 				String(run.approved_input.window_end),
 			).toISOString();
 			expect(windowStart).toBe(oldest.toISOString());
+			expect(run.approved_input.device_worker_id).toBe(deviceId);
 
 			await sql`
 				UPDATE runs SET status = 'running', claimed_at = current_timestamp,

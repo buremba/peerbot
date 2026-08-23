@@ -1061,32 +1061,32 @@ async function queueWorkspaceEventActivationInTransaction(
   },
   tx: DbClient
 ): Promise<void> {
-    const subscribed = await findSubscribedWorkspaceEventTypes(
-      args.organizationId,
+  const subscribed = await findSubscribedWorkspaceEventTypes(
+    args.organizationId,
     [args.eventType],
     tx
-    );
-    if (!subscribed.has(args.eventType)) return;
-    const inherited =
-      args.producerAutomationId == null || args.actingRunId == null
-        ? null
-        : await loadRunEventCausality(
-            args.organizationId,
-            args.actingRunId,
+  );
+  if (!subscribed.has(args.eventType)) return;
+  const inherited =
+    args.producerAutomationId == null || args.actingRunId == null
+      ? null
+      : await loadRunEventCausality(
+          args.organizationId,
+          args.actingRunId,
           args.producerAutomationId,
           tx
-          );
-      await enqueueWorkspaceEventActivations(tx, [
-        {
-          organizationId: args.organizationId,
-          eventId: args.eventId,
-          rootEventIds: inherited?.rootEventIds ?? [args.eventId],
-          causalAutomationIds:
-            inherited?.causalAutomationIds ??
+        );
+  await enqueueWorkspaceEventActivations(tx, [
+    {
+      organizationId: args.organizationId,
+      eventId: args.eventId,
+      rootEventIds: inherited?.rootEventIds ?? [args.eventId],
+      causalAutomationIds:
+        inherited?.causalAutomationIds ??
         (args.producerAutomationId == null ? [] : [args.producerAutomationId]),
-          depth: inherited?.depth ?? 1,
-        },
-      ]);
+      depth: inherited?.depth ?? 1,
+    },
+  ]);
 }
 
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
@@ -1222,13 +1222,13 @@ export async function insertConnectionlessAuditEvent(
             ...(afterPersist ? { afterPersist } : {}),
           });
     if (!options?.sql) {
-    await queueWorkspaceEventActivation({
-      organizationId: params.organizationId,
-      eventId: inserted.id,
-      eventType: formattedEventType,
-      producerAutomationId,
+      await queueWorkspaceEventActivation({
+        organizationId: params.organizationId,
+        eventId: inserted.id,
+        eventType: formattedEventType,
+        producerAutomationId,
         actingRunId,
-    });
+      });
     }
     return inserted;
   } catch (error) {

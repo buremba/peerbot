@@ -520,6 +520,16 @@ export async function handleAutomationMode(
   const { generateWindowToken } = await import('../../utils/jwt');
 
   const automationId = args.automation_id!;
+  if (
+    context.claimedWindow &&
+    args.run_id != null &&
+    Number(args.run_id) !== context.claimedWindow.runId
+  ) {
+    throw new ToolUserError(
+      `Automation run ${args.run_id} does not match claimed run ${context.claimedWindow.runId}.`,
+      409
+    );
+  }
   const boundRun =
     args.run_id != null
       ? await loadBoundAutomationRun(

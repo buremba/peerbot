@@ -605,47 +605,6 @@ export async function handleCompleteWindow(
       );
     }
     externalClaimedBy = claimedBy;
-
-    // Only a run-bound token may perform pending -> running.
-    const claimed =
-      tokenRunId != null
-        ? await sql.begin(async (tx) =>
-            claimPendingAutomationRun(tx, {
-              runId,
-              automationId,
-              claimedBy,
-              status: 'running',
-            })
-          )
-        : false;
-    if (!claimed) {
-      const [state] = await sql<{ status: string; claimed_by: string | null }>`
-        SELECT status, claimed_by
-        FROM runs
-        WHERE id = ${runId}
-          AND automation_id = ${automationId}
-          AND run_type = ${callerRunType}
-        LIMIT 1
-      `;
-      if (state?.status === 'pending' && tokenRunId == null) {
-        throw new ToolUserError(
-          `Automation run ${runId} requires a run-bound window_token. Read it with knowledge.read({ automation_id: ${automationId}, run_id: ${runId} }).`,
-          409
-        );
-      }
-      const retryingOwnClaim =
-        (state?.status === 'claimed' || state?.status === 'running') &&
-        state.claimed_by === claimedBy;
-      const alreadyCompleted = state?.status === 'completed';
-      if (!retryingOwnClaim && !alreadyCompleted) {
-        throw new ToolUserError(
-          state?.claimed_by
-            ? `Automation run ${runId} is already claimed by another executor.`
-            : `Automation run ${runId} could not be claimed; retry after the active run clears.`,
-          409
-        );
-      }
-    }
   }
 
   // ============================================
@@ -660,6 +619,49 @@ export async function handleCompleteWindow(
   // the window commits.
   let deferredApprovals: DeferredMutation[] = [];
   const result = await sql.begin(async (tx) => {
+    if (externalClaimedBy !== null) {
+      // Claim and complete in one transaction. A downstream write failure must
+      // return an externally opened run to pending instead of stranding it as
+      // running until stale-run recovery.
+      const claimed =
+        tokenRunId != null
+          ? await claimPendingAutomationRun(tx, {
+              runId,
+              automationId,
+              claimedBy: externalClaimedBy,
+              status: 'running',
+            })
+          : false;
+      if (!claimed) {
+        const [state] = await tx<{ status: string; claimed_by: string | null }>`
+          SELECT status, claimed_by
+          FROM runs
+          WHERE id = ${runId}
+            AND automation_id = ${automationId}
+            AND run_type = ${callerRunType}
+          LIMIT 1
+        `;
+        if (state?.status === 'pending' && tokenRunId == null) {
+          throw new ToolUserError(
+            `Automation run ${runId} requires a run-bound window_token. Read it with knowledge.read({ automation_id: ${automationId}, run_id: ${runId} }).`,
+            409
+          );
+        }
+        const retryingOwnClaim =
+          (state?.status === 'claimed' || state?.status === 'running') &&
+          state.claimed_by === externalClaimedBy;
+        const alreadyCompleted = state?.status === 'completed';
+        if (!retryingOwnClaim && !alreadyCompleted) {
+          throw new ToolUserError(
+            state?.claimed_by
+              ? `Automation run ${runId} is already claimed by another executor.`
+              : `Automation run ${runId} could not be claimed; retry after the active run clears.`,
+            409
+          );
+        }
+      }
+    }
+
     const [lockedAutomation] = await tx<{ schedule: string | null }>`
       SELECT schedule FROM automations
       WHERE id = ${automationId} AND organization_id = ${automationOrgId}

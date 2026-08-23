@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
 import { handleCompleteWindow } from '../../../tools/admin/manage_automations/complete-window';
+import { handleAutomationMode } from '../../../tools/get_content/automation-mode';
 import type { ToolContext } from '../../../tools/registry';
 import { generateWindowToken, verifyWindowToken } from '../../../utils/jwt';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -325,6 +326,27 @@ describe('external manual Automation execution', () => {
       dispatchSource: 'manual',
     });
     await expect(
+      handleAutomationMode(
+        {
+          automation_id: automationId,
+          run_id: secondRun.runId,
+        },
+        TEST_ENV,
+        sql,
+        {
+          organizationId: workspace.org.id,
+          userId: workspace.users.owner.id,
+          claimedWindow: {
+            runId: triggered.run_id,
+            windowStart: queuedWindowStart,
+            windowEnd: queuedWindowEnd,
+            templateVersionId: queuedVersionId,
+            granularity: 'weekly',
+          },
+        }
+      )
+    ).rejects.toThrow(/does not match claimed run/);
+    await expect(
       workspace.owner.automations.completeWindow({
         automation_id: created.automation_id,
         run_id: secondRun.runId,
@@ -379,6 +401,31 @@ describe('external manual Automation execution', () => {
       limit: 25,
     })) as { window_token?: string };
     if (!secondRead.window_token) throw new Error('second run returned no window token');
+
+    // The external claim is part of the completion transaction. A failure
+    // after pending -> running must roll the claim back with every output write.
+    await expect(
+      workspace.owner.automations.completeWindow({
+        automation_id: created.automation_id,
+        run_id: secondRun.runId,
+        window_token: secondRead.window_token,
+        extracted_data: {
+          findings: [
+            { task_key: 'duplicate', action: 'Same key' },
+            { task_key: 'duplicate', action: 'Same key' },
+          ],
+        },
+        model: 'chatgpt/test',
+      })
+    ).rejects.toThrow(/duplicate exact key/);
+    const [rolledBackClaim] = await sql<{
+      status: string;
+      claimed_by: string | null;
+    }>`
+      SELECT status, claimed_by FROM runs WHERE id = ${secondRun.runId}
+    `;
+    expect(rolledBackClaim).toEqual({ status: 'pending', claimed_by: null });
+
     await sql`
       UPDATE runs
       SET status = 'running',

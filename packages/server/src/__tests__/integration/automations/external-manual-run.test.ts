@@ -3,9 +3,13 @@ import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
 import { handleCompleteWindow } from '../../../tools/admin/manage_automations/complete-window';
 import type { ToolContext } from '../../../tools/registry';
-import { generateWindowToken } from '../../../utils/jwt';
+import { generateWindowToken, verifyWindowToken } from '../../../utils/jwt';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestEntity, createTestEvent } from '../../setup/test-fixtures';
+import {
+  createTestAgent,
+  createTestEntity,
+  createTestEvent,
+} from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const TASK_SCHEMA = {
@@ -99,6 +103,7 @@ describe('external manual Automation execution', () => {
     const queuedWindowStart = String(queued.approved_input.window_start);
     const queuedWindowEnd = String(queued.approved_input.window_end);
     expect(queuedVersionId).toBeGreaterThan(0);
+    expect(queued.approved_input.granularity).toBe('weekly');
 
     // A workspace event-window run stores exact durable pointers in its run
     // snapshot. The caller should not have to repeat content_ids when reading
@@ -132,12 +137,22 @@ describe('external manual Automation execution', () => {
       WHERE id = ${triggered.run_id}
     `;
 
-    // Change the live Automation to an incompatible output name after the run
-    // is queued. The run-bound read must keep the original version and schema.
+    // Change the live Automation to an incompatible output name and daily
+    // cadence after the run is queued. The run-bound read must keep the
+    // original version, schema, and weekly period semantics.
     await workspace.owner.automations.createVersion({
       automation_id: created.automation_id,
       prompt: 'Extract findings instead.',
       outputs: EDITED_OUTPUTS,
+    });
+    const liveAgent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId: workspace.users.owner.id,
+    });
+    await workspace.owner.automations.update({
+      automation_id: created.automation_id,
+      agent_id: liveAgent.agentId,
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     });
     const [edited] = await sql<{ current_version_id: number }>`
       SELECT current_version_id
@@ -159,6 +174,7 @@ describe('external manual Automation execution', () => {
         required?: string[];
         properties?: Record<string, unknown>;
       };
+      window_lag?: { granularity?: string };
     };
     expect(read.window_start).toBe(queuedWindowStart);
     expect(read.window_end).toBe(queuedWindowEnd);
@@ -167,6 +183,8 @@ describe('external manual Automation execution', () => {
     expect(read.extraction_schema?.properties?.findings).toBeUndefined();
     expect(read.content.map((item) => Number(item.id))).toContain(triggerEvent.id);
     if (!read.window_token) throw new Error('run-bound read returned no window token');
+    expect(read.window_lag?.granularity).toBe('weekly');
+    expect((await verifyWindowToken(read.window_token, TEST_ENV)).granularity).toBe('weekly');
 
     const unrelatedEvent = await createTestEvent({
       entity_id: parent.id,
@@ -273,16 +291,18 @@ describe('external manual Automation execution', () => {
       status: string;
       claimed_by: string | null;
       model_used: string | null;
+      approved_input: Record<string, unknown>;
     }>`
-      SELECT status, claimed_by, model_used
+      SELECT status, claimed_by, model_used, approved_input
       FROM runs
       WHERE id = ${triggered.run_id}
     `;
-    expect(completed).toEqual({
+    expect(completed).toMatchObject({
       status: 'completed',
       claimed_by: `user:${workspace.users.owner.id}`,
       model_used: 'chatgpt/test',
     });
+    expect(completed.approved_input.granularity).toBe('weekly');
     const completedReplay = (await workspace.owner.automations.completeWindow({
       automation_id: created.automation_id,
       run_id: triggered.run_id,

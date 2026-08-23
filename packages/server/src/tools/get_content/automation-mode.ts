@@ -8,7 +8,10 @@
 
 import { createHash } from 'node:crypto';
 import type { AutomationTimeGranularity, ContentItem } from '@lobu/connector-sdk';
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
+import {
+  inferAutomationGranularityFromSchedule,
+  isAutomationTimeGranularity,
+} from '@lobu/connector-sdk';
 import {
   automationTriggerSignals,
   isWorkspaceEventTriggerSignal,
@@ -410,6 +413,7 @@ interface BoundAutomationRun {
   versionId: number | null;
   windowStart: Date;
   windowEnd: Date;
+  granularity: AutomationTimeGranularity;
   triggerContentIds: number[];
 }
 
@@ -462,6 +466,12 @@ async function loadBoundAutomationRun(
       409
     );
   }
+  if (!isAutomationTimeGranularity(input.granularity)) {
+    throw new ToolUserError(
+      `Automation run ${runId} is missing a valid queued granularity snapshot.`,
+      409
+    );
+  }
 
   const rawVersionId = input.version_id;
   const parsedVersionId =
@@ -479,6 +489,7 @@ async function loadBoundAutomationRun(
     versionId,
     windowStart,
     windowEnd,
+    granularity: input.granularity,
     triggerContentIds: automationTriggerSignals(input)
       .filter(isWorkspaceEventTriggerSignal)
       .map((signal) => signal.event_id),
@@ -570,6 +581,7 @@ export async function handleAutomationMode(
     versionSources.length > 0 ? versionSources : parseJson(automation.sources) || [];
   const timeGranularity =
     context.claimedWindow?.granularity ??
+    boundRun?.granularity ??
     inferAutomationGranularityFromSchedule(automation.schedule as string | null);
   // The extraction contract is composed from versioned outputs and the
   // optional reaction input contract.

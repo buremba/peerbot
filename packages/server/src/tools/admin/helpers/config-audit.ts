@@ -8,14 +8,14 @@
  * changes in the Deployments feed) stops being possible.
  */
 
-import type { ConfigResourceKind } from "../../../utils/config-redaction";
-import { deriveToolActorSource } from "../../../utils/apply-context";
-import type { DbClient } from "../../../db/client";
+import type { ConfigResourceKind } from '../../../utils/config-redaction';
+import { deriveToolActorSource } from '../../../utils/apply-context';
+import type { DbClient } from '../../../db/client';
 import {
-	insertConfigChangeEventInTransaction,
-	recordConfigChangeEvent,
-} from "../../../utils/insert-event";
-import type { ToolContext } from "../../registry";
+  insertConfigChangeEventInTransaction,
+  recordConfigChangeEvent,
+} from '../../../utils/insert-event';
+import type { ToolContext } from '../../registry';
 
 interface ToolConfigChangeParams {
   /**
@@ -26,7 +26,7 @@ interface ToolConfigChangeParams {
   organizationId?: string;
   resourceKind: ConfigResourceKind;
   resourceId: string | number;
-	op: "created" | "updated" | "deleted";
+  op: 'created' | 'updated' | 'deleted';
   /** Human-readable summary (e.g. "Automation 'inbox' paused"). */
   summary: string;
   /** Full post-change state (redacted by the writer); null for deletes. */
@@ -36,7 +36,7 @@ interface ToolConfigChangeParams {
 
 export function recordToolConfigChange(
   ctx: ToolContext,
-	params: ToolConfigChangeParams,
+  params: ToolConfigChangeParams
 ): void {
   recordConfigChangeEvent({
     organizationId: ctx.organizationId,
@@ -50,19 +50,19 @@ export function recordToolConfigChange(
 
 /** Awaited variant for mutations whose state and audit must share a commit. */
 export async function insertToolConfigChange(
-	ctx: ToolContext,
-	params: ToolConfigChangeParams,
-	sql: DbClient,
+  ctx: ToolContext,
+  params: ToolConfigChangeParams,
+  sql: DbClient
 ): Promise<void> {
-	await insertConfigChangeEventInTransaction(
-		{
-			organizationId: ctx.organizationId,
-			...params,
-			applyId: ctx.applyId ?? null,
-			actorSource: deriveToolActorSource(ctx),
-			createdBy: ctx.userId ?? null,
-			clientId: ctx.clientId ?? null,
-		},
-		sql,
-	);
+  await insertConfigChangeEventInTransaction(
+    {
+      organizationId: ctx.organizationId,
+      ...params,
+      applyId: ctx.applyId ?? null,
+      actorSource: deriveToolActorSource(ctx),
+      createdBy: ctx.userId ?? null,
+      clientId: ctx.clientId ?? null,
+    },
+    sql
+  );
 }

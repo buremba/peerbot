@@ -13,16 +13,8 @@ import {
 	automationIdFromPrincipalId,
 } from "../../../../authz/entity-policy";
 import { lockOrgForAclInvalidation } from "../../../../authz/acl-generation";
-import {
-	type DbClient,
-	getDb,
-	parsePgNumberArray,
-	pgTextArray,
-} from "../../../../db/client";
-import {
-	lockResolutionCandidate,
-	wasResolutionRejected,
-} from "../../../../entity-resolution/rejection";
+import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from "../../../../db/client";
+import { lockResolutionCandidate, wasResolutionRejected } from "../../../../entity-resolution/rejection";
 import { droppedEvidence } from "../../../../entity-resolution/evidence-strength";
 import { ResolutionFingerprintError } from "../../../../entity-resolution/staleness";
 import type { Env } from "../../../../index";
@@ -48,10 +40,7 @@ import {
 	refreshMergeProposalFingerprint,
 	resolveMergeApproval,
 } from "../../entity-field-approval";
-import {
-	AGENT_ASK_ACTION_KEY,
-	isAgentAskProposal,
-} from "../../../../notifications/ask";
+import { AGENT_ASK_ACTION_KEY, isAgentAskProposal } from "../../../../notifications/ask";
 import { validateAskAnswerForProposal } from "../../../../notifications/ask-schema";
 import {
 	applyManageAgentsProposal,
@@ -527,151 +516,119 @@ async function tryApproveBuilderRun(
 	if (refusal) return { error: refusal };
 
 	const reviewer = await resolveReviewer(ctx);
-	const [pendingFamily] = await getDb()<{
-		action_key: string;
-	}>`
-		SELECT action_key FROM runs
-		WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-		  AND run_type = 'internal' AND approval_status = 'pending'
-		LIMIT 1
-	`;
-	const transactionalHandler = pendingFamily
-		? getBuilderApprovalHandlers().find(
-				(candidate) =>
-					candidate.actionKey === pendingFamily.action_key &&
-					candidate.applyInTransaction,
-			)
-		: null;
-	if (transactionalHandler?.applyInTransaction) {
-		let claimedDesc = transactionalHandler.actionKey;
-		try {
-			return await getDb().begin(async (tx) => {
-				await lockOrganizationForApproval(tx, ctx.organizationId);
-				const claim = await claimBuilderRun(
-					args.run_id,
-					ctx.organizationId,
-					"approved",
-					undefined,
-					tx,
-				);
-				if (!claim) return null;
-				if (!claim.handler.applyInTransaction) {
-					throw new Error(
-						"Transactional approval handler changed while claiming run",
-					);
+	const input = (args.input as Record<string, unknown> | undefined) ?? null;
+	const transaction = {
+		attempt: null as { nounLabel: string; desc: string } | null,
+	};
+	let phaseOne;
+	try {
+		// Every builder family shares one claim + confirmed-card transaction.
+		// DB-only mutations finish inside it; external/slow handlers return a
+		// continuation that runs after this short transaction commits.
+		phaseOne = await getDb().begin(async (tx) => {
+			await lockOrganizationForApproval(tx, ctx.organizationId);
+			const claim = await claimBuilderRun(
+				args.run_id,
+				ctx.organizationId,
+				"approved",
+				undefined,
+				tx,
+			);
+			if (!claim) return null;
+			const desc = claim.handler.describe(claim.proposal);
+			const confirmedEventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"confirmed",
+				`${claim.handler.nounLabel}: ${desc} — executing`,
+				`Builder action confirmed: ${desc}`,
+				{},
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
+
+			const applyInTransaction = claim.handler.applyInTransaction;
+			if (!applyInTransaction) {
+				const apply = claim.handler.apply;
+				if (!apply) {
+					throw new Error(`Approval handler ${claim.handler.actionKey} has no apply seam`);
 				}
-				claimedDesc = claim.handler.describe(claim.proposal);
-				const confirmedEventId = await supersedeActionEvent(
-					args.run_id,
-					ctx.organizationId,
-					"confirmed",
-					`${claim.handler.nounLabel}: ${claimedDesc} — executing`,
-					`Builder action confirmed: ${claimedDesc}`,
-					{},
-					reviewer,
-					tx,
-				);
-				requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
-				const output = await claim.handler.applyInTransaction(
-					claim.proposal,
-					ctx,
-					env,
-					claim.requesterUserId,
-					(args.input as Record<string, unknown> | undefined) ?? null,
-					tx,
-				);
-				const softFailure = claim.handler.detectSoftFailure?.(output) ?? null;
-				if (softFailure) throw new Error(softFailure);
-				await tx`
-					UPDATE runs SET status = 'completed', completed_at = NOW(),
-					  action_output = ${tx.json(output as Record<string, unknown>)}
-					WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-				`;
-				const eventId = await supersedeActionEvent(
-					args.run_id,
-					ctx.organizationId,
-					"completed",
-					`${claim.handler.nounLabel}: ${claimedDesc} — completed`,
-					`Builder action completed: ${claimedDesc}`,
-					{ output: output as Record<string, unknown> },
-					reviewer,
-					tx,
-				);
-				requireApprovalCard(args.run_id, eventId, "completed");
-				return {
+				return { kind: "external" as const, ...claim, apply, desc };
+			}
+
+			transaction.attempt = { nounLabel: claim.handler.nounLabel, desc };
+			const output = await applyInTransaction(
+				claim.proposal,
+				ctx,
+				env,
+				claim.requesterUserId,
+				input,
+				tx,
+			);
+			const softFailure = claim.handler.detectSoftFailure?.(output) ?? null;
+			if (softFailure) throw new Error(softFailure);
+			await tx`
+				UPDATE runs SET status = 'completed', completed_at = NOW(),
+				  action_output = ${tx.json(output as Record<string, unknown>)}
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+			`;
+			const eventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"completed",
+				`${claim.handler.nounLabel}: ${desc} — completed`,
+				`Builder action completed: ${desc}`,
+				{ output: output as Record<string, unknown> },
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, eventId, "completed");
+			return {
+				kind: "completed" as const,
+				result: {
 					action: "approve" as const,
-					approved: true,
+					approved: true as const,
 					run_id: args.run_id,
 					event_id: eventId,
-					message: `${claim.handler.nounLabel} ${claimedDesc} approved and applied.`,
-				};
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const eventId = await getDb().begin(async (tx) => {
-				await lockOrganizationForApproval(tx, ctx.organizationId);
-				await tx`
-					UPDATE runs SET approval_status = 'pending', status = 'pending',
-					  error_message = ${message}
-					WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-					  AND approval_status = 'pending' AND status = 'pending'
-				`;
-				const failedEventId = await supersedeActionEvent(
-					args.run_id,
-					ctx.organizationId,
-					"apply_failed",
-					`${transactionalHandler.nounLabel}: ${claimedDesc} — apply failed, still pending`,
-					`Applying the approved mutation failed: ${message}`,
-					{ error_message: message },
-					reviewer,
-					tx,
-				);
-				requireApprovalCard(args.run_id, failedEventId, "apply_failed");
-				return failedEventId;
-			});
-			return {
-				error: `Failed to apply ${transactionalHandler.nounLabel.toLowerCase()}: ${message}. The approval is still pending.`,
-				event_id: eventId,
+					message: `${claim.handler.nounLabel} ${desc} approved and applied.`,
+				},
 			};
-		}
-	}
-
-	// Phase 1 (atomic): claim the run AND write the 'confirmed' card in ONE
-	// transaction. If the card INSERT fails (or the card is missing), the claim
-	// rolls back and the run stays pending — never an approved run with no card
-	// (or a card with no run).
-	const claimed = await getDb().begin(async (tx) => {
-		const claim = await claimBuilderRun(
-			args.run_id,
-			ctx.organizationId,
-			"approved",
-			undefined,
-			tx,
-		);
-		if (!claim) return null;
-		const apply = claim.handler.apply;
-		if (!apply) {
-			throw new Error(
-				`Approval handler ${claim.handler.actionKey} requires transactional apply`,
+		});
+	} catch (error) {
+		const attempt = transaction.attempt;
+		if (!attempt) throw error;
+		const message = error instanceof Error ? error.message : String(error);
+		const eventId = await getDb().begin(async (tx) => {
+			await lockOrganizationForApproval(tx, ctx.organizationId);
+			await tx`
+				UPDATE runs SET approval_status = 'pending', status = 'pending',
+				  error_message = ${message}
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+				  AND approval_status = 'pending' AND status = 'pending'
+			`;
+			const failedEventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"apply_failed",
+				`${attempt.nounLabel}: ${attempt.desc} — apply failed, still pending`,
+				`Applying the approved mutation failed: ${message}`,
+				{ error_message: message },
+				reviewer,
+				tx,
 			);
-		}
-		const desc = claim.handler.describe(claim.proposal);
-		const confirmedEventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"confirmed",
-			`${claim.handler.nounLabel}: ${desc} — executing`,
-			`Builder action confirmed: ${desc}`,
-			{},
-			reviewer,
-			tx,
-		);
-		requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
-		return { ...claim, apply, desc };
-	});
-	if (!claimed) return null;
+			requireApprovalCard(args.run_id, failedEventId, "apply_failed");
+			return failedEventId;
+		});
+		return {
+			error: `Failed to apply ${attempt.nounLabel.toLowerCase()}: ${message}. The approval is still pending.`,
+			event_id: eventId,
+		};
+	}
+	if (!phaseOne) return null;
+	if (phaseOne.kind === "completed") return phaseOne.result;
 
-	const { handler, apply, proposal, requesterUserId, desc } = claimed;
+	const { handler, apply, proposal, requesterUserId, desc } = phaseOne;
 
 	// Apply runs OUTSIDE any transaction — the family's write can be
 	// slow/network-bound and must not hold a DB transaction open. The catch
@@ -686,7 +643,7 @@ async function tryApproveBuilderRun(
 			ctx,
 			env,
 			requesterUserId,
-			(args.input as Record<string, unknown> | undefined) ?? null,
+			input,
 		);
 		// Some handlers return `{ error }` / partial-failure summaries instead of
 		// throwing — treat those as failures so the run isn't marked completed
@@ -1248,9 +1205,12 @@ async function tryApproveEntityChangeRun(
 					await lockResolutionCandidate(tx, {
 						organizationId: ctx.organizationId,
 						winnerId: mergeProposal.winner_entity_id,
-						loserIds: mergeProposal.entity_ids ?? [mergeProposal.entity_id],
+						loserIds:
+							mergeProposal.entity_ids ?? [mergeProposal.entity_id],
 					});
-					const reviewedFingerprint = resolutionFingerprintOf(claimed.proposal);
+					const reviewedFingerprint = resolutionFingerprintOf(
+						claimed.proposal,
+					);
 					if (
 						reviewedFingerprint &&
 						(await wasResolutionRejected(tx, {
@@ -1339,8 +1299,7 @@ async function tryRejectEntityChangeRun(
 	if (!pending?.action_input) return null;
 	const reason = args.reason ?? "Rejected by user";
 	const reviewer = await resolveReviewer(ctx);
-	const pendingIsMerge =
-		entityChangeOperation(pending.action_input) === "merge";
+	const pendingIsMerge = entityChangeOperation(pending.action_input) === "merge";
 	const reject = async (
 		db: DbClient,
 	): Promise<ManageOperationsResult | null> => {
@@ -1664,11 +1623,7 @@ export async function handleApprove(
 		// Phase 2a (durable): persist the execution output BEFORE the
 		// terminalization attempt so a failed completed-card write cannot lose
 		// the only durable record of an already-successful external mutation.
-		await persistDurableApplyOutput(
-			args.run_id,
-			ctx.organizationId,
-			result.output,
-		);
+		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output);
 
 		// Phase 2b (atomic): terminal completed runs write + 'completed' card.
 		// The card guard runs INSIDE the tx so a missing card rolls the
@@ -2015,8 +1970,7 @@ async function resolveRunRevisionContext(
   `;
 	if (rows.length === 0) return { automationId: null, entityIds: [] };
 	return {
-		automationId:
-			rows[0].automation_id != null ? Number(rows[0].automation_id) : null,
+		automationId: rows[0].automation_id != null ? Number(rows[0].automation_id) : null,
 		// entity_ids arrives as a raw PG array string under fetch_types:false — never
 		// call .map on it directly. parsePgNumberArray handles both string and array.
 		entityIds: parsePgNumberArray(rows[0].entity_ids),

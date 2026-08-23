@@ -340,18 +340,10 @@ async function loadAutomationLabel(
 	automationAgentId: string | null;
 }> {
 	if (attribution !== ApprovalAttribution.Automation) {
-		return {
-			actorLabel: "An agent",
-			automationName: null,
-			automationAgentId: null,
-		};
+		return { actorLabel: "An agent", automationName: null, automationAgentId: null };
 	}
 	if (!automationId) {
-		return {
-			actorLabel: "An Automation",
-			automationName: null,
-			automationAgentId: null,
-		};
+		return { actorLabel: "An Automation", automationName: null, automationAgentId: null };
 	}
 	const rows = await getDb()<{
 		name: string | null;
@@ -521,15 +513,11 @@ export async function proposeEntityFieldChange(
 		proposal.entity_id,
 		Object.keys(proposal.fields),
 	);
-	return proposeEntityChange(
-		ctx,
-		{
+	return proposeEntityChange(ctx, {
 		...proposal,
 		...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
 		operation: "update",
-		},
-		parentRunId,
-	);
+	}, parentRunId);
 }
 
 export async function proposeEntityDelete(
@@ -537,11 +525,7 @@ export async function proposeEntityDelete(
 	proposal: Omit<EntityDeleteProposal, "operation">,
 	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(
-		ctx,
-		{ ...proposal, operation: "delete" },
-		parentRunId,
-	);
+	return proposeEntityChange(ctx, { ...proposal, operation: "delete" }, parentRunId);
 }
 
 export async function proposeEntityCreate(
@@ -549,11 +533,7 @@ export async function proposeEntityCreate(
 	proposal: Omit<EntityCreateProposal, "operation">,
 	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(
-		ctx,
-		{ ...proposal, operation: "create" },
-		parentRunId,
-	);
+	return proposeEntityChange(ctx, { ...proposal, operation: "create" }, parentRunId);
 }
 
 /**
@@ -584,10 +564,7 @@ async function buildMergeReviewSnapshot(
 	const requireResolutionKeys = (entityId: number) => {
 		const keys = keysById.get(entityId);
 		if (!keys) {
-			throw new ToolUserError(
-				`Resolution keys for entity ${entityId} not found`,
-				404,
-			);
+			throw new ToolUserError(`Resolution keys for entity ${entityId} not found`, 404);
 		}
 		return keys;
 	};
@@ -605,8 +582,7 @@ async function buildMergeReviewSnapshot(
 		requireResolutionKeys(input.winnerEntityId),
 	);
 	const [loser, ...rest] = linkedDuplicates;
-	if (!loser)
-		throw new ToolUserError("At least one duplicate entity is required", 400);
+	if (!loser) throw new ToolUserError("At least one duplicate entity is required", 400);
 	return { loser, duplicates: [loser, ...rest], winner: linkedWinner };
 }
 
@@ -623,16 +599,12 @@ export async function proposeEntityMerge(
 		winnerEntityId: proposal.winner_entity_id,
 		resolutionKeys,
 	});
-	return proposeEntityChange(
-		ctx,
-		{
+	return proposeEntityChange(ctx, {
 		...proposal,
 		entity_id: current.loser.id as number,
 		operation: "merge",
 		current,
-		},
-		parentRunId,
-	);
+	}, parentRunId);
 }
 
 /**

@@ -1405,6 +1405,7 @@ class XLikesPageTracker {
 		}
 
 		this.activeRequestedCursor = cursor;
+		this.nextCursor = cursor;
 		this.requestedPages += 1;
 		return replaceGraphqlCursor(this.latestRequestUrl, cursor);
 	}
@@ -1418,6 +1419,7 @@ class XLikesPageTracker {
 	): XLikesBackfillStatus {
 		if (!this.backfill) return previousStatus ?? "complete";
 		if (this.terminalSeen) return "complete";
+		if (this.unconfirmedPages > 0) return "in_progress";
 		return this.nextCursor ? "in_progress" : "platform_limited";
 	}
 

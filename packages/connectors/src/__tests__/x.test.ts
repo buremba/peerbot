@@ -1273,11 +1273,25 @@ describe("XConnector browser-first routing", () => {
 			name: "keeps a retryable cursor when the final replay response is late",
 			replayResult: { ok: true, status: 200 },
 			parserErrors: [],
+			checkpoint: {},
+			expectedCursor: "retry-cursor",
 		},
 		{
 			name: "keeps collected likes when cursor replay is rejected",
 			replayResult: { ok: false, status: 429 },
 			parserErrors: ["X likes cursor request failed (429)"],
+			checkpoint: {},
+			expectedCursor: "retry-cursor",
+		},
+		{
+			name: "keeps a resumed cursor when its replay is rejected",
+			replayResult: { ok: false, status: 429 },
+			parserErrors: ["X likes cursor request failed (429)"],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "resume-cursor",
 		},
 	]) {
 		test(scenario.name, async () => {
@@ -1315,7 +1329,7 @@ describe("XConnector browser-first routing", () => {
 					use_extension: true,
 					backfill_pages_per_run: 2,
 				},
-				checkpoint: {},
+				checkpoint: scenario.checkpoint,
 				credentials: {},
 				entityIds: [],
 				sessionState: { chrome_dispatcher: dispatcher },
@@ -1333,7 +1347,7 @@ describe("XConnector browser-first routing", () => {
 			});
 			expect(result.checkpoint).toMatchObject({
 				likes_backfill_status: "in_progress",
-				likes_backfill_cursor: "retry-cursor",
+				likes_backfill_cursor: scenario.expectedCursor,
 			});
 		});
 	}

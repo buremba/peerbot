@@ -213,7 +213,7 @@ describe("golden strings (byte-compatible with the Mac app)", () => {
 
     expect(built).toContain('"entity_type": "engineering-task"');
     expect(built).toContain('"repository": "lobu-ai/lobu"');
-    expect(built).toContain("knowledge.read({ entity_ids: [35364]");
+    expect(built).toContain("knowledge.read({ entity_id: 35364");
     expect(built).toContain("semantic_type: 'engineering-task.checkpoint'");
   });
 });

@@ -13,34 +13,76 @@ import path from 'node:path';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 
 const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 
 export interface AutomationWorkspaceOptions {
   root?: string;
-  cloneRepository?: (repository: string, destination: string) => Promise<void>;
-  readOriginRepository?: (workspace: string) => Promise<string>;
+  signal?: AbortSignal;
+  gitTimeoutMs?: number;
+  cloneRepository?: (
+    repository: string,
+    destination: string,
+    execution: Pick<AutomationWorkspaceOptions, 'signal' | 'gitTimeoutMs'>
+  ) => Promise<void>;
+  readOriginRepository?: (
+    workspace: string,
+    execution: Pick<AutomationWorkspaceOptions, 'signal' | 'gitTimeoutMs'>
+  ) => Promise<string>;
 }
 
 export function defaultAutomationWorkspaceRoot(): string {
   return path.join(homedir(), 'lobu-workspaces');
 }
 
-function runGit(args: string[], cwd?: string): Promise<string> {
+export function runGitCommand(
+  args: string[],
+  options: {
+    cwd?: string;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    binary?: string;
+  } = {}
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GCM_INTERACTIVE: 'Never',
+      GIT_TERMINAL_PROMPT: '0',
+      SSH_ASKPASS_REQUIRE: 'never',
+    };
     delete env.WORKER_API_TOKEN;
-    execFile('git', args, { cwd, env, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        const detail = stderr.trim() || error.message;
-        reject(new Error(`git ${args[0] ?? 'command'} failed: ${detail}`));
-        return;
+    execFile(
+      options.binary ?? 'git',
+      args,
+      {
+        cwd: options.cwd,
+        env,
+        maxBuffer: 1024 * 1024,
+        signal: options.signal,
+        timeout: options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const detail = stderr.trim() || error.message;
+          reject(new Error(`git ${args[0] ?? 'command'} failed: ${detail}`, { cause: error }));
+          return;
+        }
+        resolve(stdout.trim());
       }
-      resolve(stdout.trim());
-    });
+    );
   });
 }
 
-async function cloneGitHubRepository(repository: string, destination: string): Promise<void> {
-  await runGit(['clone', '--', `https://github.com/${repository}.git`, destination]);
+async function cloneGitHubRepository(
+  repository: string,
+  destination: string,
+  execution: Pick<AutomationWorkspaceOptions, 'signal' | 'gitTimeoutMs'>
+): Promise<void> {
+  await runGitCommand(['clone', '--', `https://github.com/${repository}.git`, destination], {
+    signal: execution.signal,
+    timeoutMs: execution.gitTimeoutMs,
+  });
 }
 
 function repositoryFromOrigin(origin: string): string | null {
@@ -51,8 +93,15 @@ function repositoryFromOrigin(origin: string): string | null {
   return ssh?.[1] ?? null;
 }
 
-async function readGitHubOriginRepository(workspace: string): Promise<string> {
-  const origin = await runGit(['remote', 'get-url', 'origin'], workspace);
+async function readGitHubOriginRepository(
+  workspace: string,
+  execution: Pick<AutomationWorkspaceOptions, 'signal' | 'gitTimeoutMs'>
+): Promise<string> {
+  const origin = await runGitCommand(['remote', 'get-url', 'origin'], {
+    cwd: workspace,
+    signal: execution.signal,
+    timeoutMs: execution.gitTimeoutMs,
+  });
   const repository = repositoryFromOrigin(origin);
   if (!repository) {
     throw new Error(`task workspace '${workspace}' has a non-GitHub origin`);
@@ -86,11 +135,12 @@ async function prepareTaskCheckout(
   const workspace = path.join(root, `task-${entity.id}`);
   const cloneRepository = options.cloneRepository ?? cloneGitHubRepository;
   const readOriginRepository = options.readOriginRepository ?? readGitHubOriginRepository;
+  const execution = { signal: options.signal, gitTimeoutMs: options.gitTimeoutMs };
   if (!existsSync(workspace)) {
     const stagingRoot = mkdtempSync(path.join(root, `.task-${entity.id}-`));
     const stagingCheckout = path.join(stagingRoot, 'checkout');
     try {
-      await cloneRepository(repository, stagingCheckout);
+      await cloneRepository(repository, stagingCheckout, execution);
       if (!existsSync(path.join(stagingCheckout, '.git'))) {
         throw new Error(`clone for ${repository} did not create a Git checkout`);
       }
@@ -104,7 +154,7 @@ async function prepareTaskCheckout(
   if (!existsSync(path.join(workspace, '.git'))) {
     throw new Error(`task workspace '${workspace}' is not a Git checkout`);
   }
-  const actualRepository = await readOriginRepository(workspace);
+  const actualRepository = await readOriginRepository(workspace, execution);
   if (actualRepository.toLowerCase() !== repository.toLowerCase()) {
     throw new Error(
       `task workspace '${workspace}' belongs to ${actualRepository}, expected ${repository}`

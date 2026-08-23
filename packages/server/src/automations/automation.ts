@@ -34,6 +34,7 @@ import logger from "../utils/logger";
 import { ToolUserError } from "../utils/errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
+import { engineeringTaskWorkspacesEnabled } from "../utils/engineering-task-workspaces.js";
 import {
 	advanceExpectedAutomationWindow,
 	computePendingWindow,
@@ -1142,6 +1143,10 @@ async function claimAutomationRun(
         -- complete_window). The server dispatcher must leave them pending.
         AND r.approved_input->>'agent_id' IS NOT NULL
         AND r.approved_input->>'agent_id' <> ''
+        AND (
+          NOT (r.approved_input ? 'task_entity')
+          OR ${engineeringTaskWorkspacesEnabled()}::boolean
+        )
         ${specificRunClause}
       ORDER BY r.created_at ASC
       FOR UPDATE SKIP LOCKED

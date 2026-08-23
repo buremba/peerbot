@@ -42,6 +42,7 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { AUTOMATION_RUN_TYPES_PG } from "./run-types.js";
+import { engineeringTaskWorkspacesEnabled } from '../utils/engineering-task-workspaces';
 
 type AutomationDispatchSource = 'scheduled' | 'manual' | 'event';
 export interface EngineeringTaskSnapshot {
@@ -205,6 +206,26 @@ export async function claimPendingAutomationRun(
   if (hasTaskEntity && taskEntity === undefined) {
     throw new Error(`Automation run ${params.runId} has an invalid engineering-task snapshot`);
   }
+  let currentTaskEntity: EngineeringTaskSnapshot | undefined;
+  try {
+    currentTaskEntity = await loadEngineeringTaskSnapshot(
+      tx,
+      String(runRows[0]?.organization_id),
+      params.automationId
+    );
+  } catch (error) {
+    if (error instanceof ToolUserError) return false;
+    throw error;
+  }
+  if (
+    (currentTaskEntity || taskEntity) &&
+    (!engineeringTaskWorkspacesEnabled() ||
+      !currentTaskEntity ||
+      !taskEntity ||
+      currentTaskEntity.id !== taskEntity.id)
+  ) {
+    return false;
+  }
   const taskEntityId = taskEntity?.id ?? 0;
   if (hasTaskEntity) {
     // This entity row is the durable cross-Automation mutex. Different
@@ -309,6 +330,17 @@ async function loadEngineeringTaskSnapshot(
         ? (rows[0].metadata as Record<string, unknown>)
         : {},
   };
+}
+
+function assertEngineeringTaskWorkspaceEnabled(
+  taskEntity: EngineeringTaskSnapshot | undefined
+): void {
+  if (taskEntity && !engineeringTaskWorkspacesEnabled()) {
+    throw new ToolUserError(
+      'Engineering-task execution is paused until isolated workspaces are activated.',
+      503
+    );
+  }
 }
 
 // ============================================
@@ -671,6 +703,12 @@ async function createAutomationRunWithClient(
     sourceFingerprint?: string;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
+  const taskEntity = await loadEngineeringTaskSnapshot(
+    sql,
+    params.organizationId,
+    params.automationId
+  );
+  assertEngineeringTaskWorkspaceEnabled(taskEntity);
   const existing = await findActiveAutomationRun(sql, params.automationId);
   if (existing) {
     logger.info(
@@ -694,12 +732,6 @@ async function createAutomationRunWithClient(
   const snapshotGranularity = inferAutomationGranularityFromSchedule(
     versionRows[0]?.schedule as string | null | undefined
   );
-  const taskEntity = await loadEngineeringTaskSnapshot(
-    sql,
-    params.organizationId,
-    params.automationId
-  );
-
   // device_worker_id + agent_kind get persisted into approved_input so the
   // server-side dispatcher (#802) can skip device-pinned rows from the SQL
   // side, and so /api/workers/poll can claim them with a parallel CTE
@@ -891,6 +923,12 @@ export async function createAutomationEventRun(
   const sql = db ?? getDb();
   const execute = async (tx: DbClient): Promise<AutomationEventRunResult> => {
     await lockAutomationForActivation(tx, params.automationId);
+    const taskEntity = await loadEngineeringTaskSnapshot(
+      tx,
+      params.organizationId,
+      params.automationId
+    );
+    assertEngineeringTaskWorkspaceEnabled(taskEntity);
 
     const duplicate = await tx`
       SELECT id, status
@@ -1033,11 +1071,6 @@ export async function createAutomationEventRun(
     const versionId = versionRows[0]?.current_version_id == null
       ? null
       : Number(versionRows[0]?.current_version_id);
-    const taskEntity = await loadEngineeringTaskSnapshot(
-      tx,
-      params.organizationId,
-      params.automationId
-    );
     const payload: AutomationRunPayload = {
       automation_id: params.automationId,
       agent_id: params.agentId ?? undefined,

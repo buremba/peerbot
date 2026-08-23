@@ -828,7 +828,10 @@ export async function executeAutomationRun(
           `[executor] Automation run ${runId}: interactive ${selectedSession.kind} unavailable before delivery; using subprocess`
         );
       }
-      const workspace = await prepareAutomationWorkspace(job, { root: cfg.workspaceRoot });
+      const workspace = await prepareAutomationWorkspace(job, {
+        root: cfg.workspaceRoot,
+        signal: runAbort.signal,
+      });
       return runCli(
         spec,
         prompt,

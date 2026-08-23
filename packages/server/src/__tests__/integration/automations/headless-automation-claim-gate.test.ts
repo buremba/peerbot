@@ -29,6 +29,21 @@ import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { mcpToolsCall, post } from '../../setup/test-helpers';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
+const ENGINEERING_TASK_EVENT_KINDS = {
+  'engineering-task.checkpoint': {
+    description: 'Durable implementation checkpoint',
+  },
+  'engineering-task.decision': {
+    description: 'Durable engineering decision',
+  },
+  'engineering-task.verification_completed': {
+    description: 'Completed verification evidence',
+  },
+  'engineering-task.review_completed': {
+    description: 'Completed review outcome',
+  },
+};
+
 async function createWorkerBoundPat(
   userId: string,
   organizationId: string,
@@ -90,6 +105,15 @@ async function setupDevicePinnedAutomation(opts: {
       UPDATE entities
       SET metadata = ${sql.json(opts.entityMetadata)}
       WHERE id = ${entity.id}
+    `;
+  }
+  if (opts.entityType === 'engineering-task') {
+    await sql`
+      UPDATE entity_types et
+      SET event_kinds = ${sql.json(ENGINEERING_TASK_EVENT_KINDS)}
+      FROM entities e
+      WHERE e.id = ${entity.id}
+        AND et.id = e.entity_type_id
     `;
   }
   const agent = await createTestAgent({
@@ -166,14 +190,21 @@ describe('headless Automation claim gate (automations.execute)', () => {
   // rather than inheriting it: a fork that starts without one would otherwise
   // exercise the mint-failure fallback and silently stop asserting the session.
   const previousEncryptionKey = process.env.ENCRYPTION_KEY;
+  const previousTaskWorkspaceGate = process.env.LOBU_ENGINEERING_TASK_WORKSPACES;
 
   beforeAll(() => {
     process.env.ENCRYPTION_KEY = randomBytes(32).toString('base64');
+    process.env.LOBU_ENGINEERING_TASK_WORKSPACES = '1';
   });
 
   afterAll(() => {
     if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
     else process.env.ENCRYPTION_KEY = previousEncryptionKey;
+    if (previousTaskWorkspaceGate === undefined) {
+      delete process.env.LOBU_ENGINEERING_TASK_WORKSPACES;
+    } else {
+      process.env.LOBU_ENGINEERING_TASK_WORKSPACES = previousTaskWorkspaceGate;
+    }
   });
 
   beforeEach(async () => {
@@ -327,6 +358,117 @@ describe('headless Automation claim gate (automations.execute)', () => {
       id: ctx.entityId,
       entity_type: 'engineering-task',
       metadata: { repository: 'lobu-ai/lobu', status: 'open' },
+    });
+  });
+
+  it('refuses to queue engineering tasks before staged activation', async () => {
+    const ctx = await setupDevicePinnedAutomation({
+      workerId: 'headless-task-disabled',
+      platform: 'headless',
+      capabilities: {
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu' },
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'headless-task-disabled'
+    );
+
+    delete process.env.LOBU_ENGINEERING_TASK_WORKSPACES;
+    try {
+      const trigger = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, {
+        token,
+      });
+      expect(trigger.status).toBe(503);
+      await expect(trigger.json()).resolves.toMatchObject({
+        error: expect.stringContaining('paused until isolated workspaces are activated'),
+      });
+      const [count] = await ctx.sql`
+        SELECT count(*)::int AS count
+        FROM runs
+        WHERE automation_id = ${ctx.automationId}
+      `;
+      expect(Number(count.count)).toBe(0);
+    } finally {
+      process.env.LOBU_ENGINEERING_TASK_WORKSPACES = '1';
+    }
+  });
+
+  it('does not claim a legacy engineering-task run without a durable task snapshot', async () => {
+    const workerId = 'headless-task-missing-snapshot';
+    const ctx = await setupDevicePinnedAutomation({
+      workerId,
+      platform: 'headless',
+      capabilities: {
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu' },
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      workerId
+    );
+    const trigger = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, {
+      token,
+    });
+    const { run_id } = (await trigger.json()) as { run_id: number };
+    await ctx.sql`
+      UPDATE runs
+      SET approved_input = approved_input - 'task_entity'
+      WHERE id = ${run_id}
+    `;
+
+    const poll = await post('/api/workers/poll', {
+      token,
+      body: isolatedPollBody(workerId),
+    });
+    expect((await poll.json()) as { run_id?: number }).not.toHaveProperty('run_id');
+    const [run] = await ctx.sql`SELECT status FROM runs WHERE id = ${run_id}`;
+    expect(String(run.status)).toBe('pending');
+  });
+
+  it('refuses an Automation targeting multiple engineering tasks', async () => {
+    const workerId = 'headless-multiple-tasks';
+    const ctx = await setupDevicePinnedAutomation({
+      workerId,
+      platform: 'headless',
+      capabilities: {
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu' },
+    });
+    const secondTask = await createTestEntity({
+      name: 'Ambiguous engineering task',
+      entity_type: 'engineering-task',
+      organization_id: ctx.workspace.org.id,
+      created_by: ctx.workspace.users.owner.id,
+    });
+    await ctx.sql`
+      UPDATE automations
+      SET entity_ids = ARRAY[${ctx.entityId}, ${secondTask.id}]::bigint[]
+      WHERE id = ${ctx.automationId}
+    `;
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      workerId
+    );
+
+    const trigger = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, {
+      token,
+    });
+    expect(trigger.status).toBe(400);
+    await expect(trigger.json()).resolves.toMatchObject({
+      error: expect.stringContaining('targets multiple engineering tasks'),
     });
   });
 
@@ -486,11 +628,16 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(String(run.status)).toBe('running');
   });
 
-  it('capable macOS daemon receives team-org session and can complete the window over MCP', async () => {
+  it('task-run session reads its task, persists a checkpoint, and completes over MCP', async () => {
     const ctx = await setupDevicePinnedAutomation({
       workerId: 'mac-capable',
       platform: 'macos',
-      capabilities: { 'automations.execute': true },
+      capabilities: {
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu', status: 'open' },
     });
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
@@ -505,7 +652,10 @@ describe('headless Automation claim gate (automations.execute)', () => {
       body: {
         worker_id: 'mac-capable',
         platform: 'macos',
-        capabilities: { 'automations.execute': true },
+        capabilities: {
+          'automations.execute': true,
+          'automations.workspace.v1': true,
+        },
         agent_kinds: ['opencode'],
       },
     });
@@ -528,24 +678,43 @@ describe('headless Automation claim gate (automations.execute)', () => {
       'run_sdk',
       {
         script: `export default async (_c, client) => {
+          const task = await client.entities.get({ entity_id: ${ctx.entityId} });
+          await client.knowledge.read({ entity_id: ${ctx.entityId}, limit: 100 });
+          const checkpoint = await client.knowledge.save({
+            entity_ids: [${ctx.entityId}],
+            semantic_type: 'engineering-task.checkpoint',
+            content: 'status=completed; branch=test/task-checkpoint; tests=integration; verification=passed',
+          });
           const window = await client.knowledge.read({ automation_id: '${ctx.automationId}' });
-          return client.automations.completeWindow({
+          const completed = await client.automations.completeWindow({
             automation_id: '${ctx.automationId}',
             run_id: ${job.run_id},
             window_token: window.window_token,
             extracted_data: { summary: 'completed by the Mac daemon session' },
             model: 'device-cli:opencode',
           });
+          return { task_id: task.id, checkpoint_id: checkpoint.id, completed };
         }`,
       },
       { token: session!.token, orgSlug: ctx.workspace.org.slug }
     );
-    expect(completion.success).toBe(true);
+    if (!completion.success) throw new Error(JSON.stringify(completion, null, 2));
 
     const [run] = await ctx.sql`
       SELECT status FROM runs WHERE id = ${job.run_id}
     `;
     expect(String(run.status)).toBe('completed');
+    const [checkpoint] = await ctx.sql`
+      SELECT id, semantic_type, payload_text, entity_ids
+      FROM events
+      WHERE organization_id = ${ctx.workspace.org.id}
+        AND semantic_type = 'engineering-task.checkpoint'
+        AND ${ctx.entityId} = ANY(entity_ids)
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(checkpoint).toBeDefined();
+    expect(String(checkpoint.payload_text)).toContain('branch=test/task-checkpoint');
   });
 
   it('capable macOS daemon fails closed when no assigned agent can mint a session', async () => {

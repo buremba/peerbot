@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
-import { prepareAutomationWorkspace } from '../daemon/automation-workspace.js';
+import {
+  prepareAutomationWorkspace,
+  runGitCommand,
+} from '../daemon/automation-workspace.js';
 
 function job(entity?: PollResponse['entity']): PollResponse {
   return {
@@ -14,6 +17,60 @@ function job(entity?: PollResponse['entity']): PollResponse {
 }
 
 describe('Automation workspace isolation', () => {
+  test('Git execution is non-interactive and does not inherit the worker token', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'lobu-git-environment-'));
+    const script = path.join(root, 'inspect-git-env.mjs');
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({
+        terminalPrompt: process.env.GIT_TERMINAL_PROMPT,
+        credentialInteractive: process.env.GCM_INTERACTIVE,
+        askpass: process.env.SSH_ASKPASS_REQUIRE,
+        workerToken: process.env.WORKER_API_TOKEN ?? null,
+      }));\n`
+    );
+    const priorToken = process.env.WORKER_API_TOKEN;
+    process.env.WORKER_API_TOKEN = 'must-not-cross-the-process-boundary';
+    try {
+      const output = await runGitCommand([script], {
+        binary: process.execPath,
+        timeoutMs: 5_000,
+      });
+      expect(JSON.parse(output)).toEqual({
+        terminalPrompt: '0',
+        credentialInteractive: 'Never',
+        askpass: 'never',
+        workerToken: null,
+      });
+    } finally {
+      if (priorToken === undefined) delete process.env.WORKER_API_TOKEN;
+      else process.env.WORKER_API_TOKEN = priorToken;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('Git execution is bounded and cancellable', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'lobu-git-timeout-'));
+    const script = path.join(root, 'hang.mjs');
+    writeFileSync(script, 'setInterval(() => {}, 1_000);\n');
+    try {
+      await expect(
+        runGitCommand([script], { binary: process.execPath, timeoutMs: 50 })
+      ).rejects.toThrow('git');
+
+      const controller = new AbortController();
+      const cancelled = runGitCommand([script], {
+        binary: process.execPath,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+      });
+      controller.abort();
+      await expect(cancelled).rejects.toThrow('git');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('provisions one stable checkout per engineering task', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'lobu-task-workspace-'));
     const cloned: Array<{ repository: string; destination: string }> = [];

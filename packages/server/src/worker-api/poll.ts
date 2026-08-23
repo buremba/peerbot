@@ -53,6 +53,7 @@ import { selectedConnectorVersionArtifactSql } from '../utils/connector-executio
 import { classifySelectedConnectorExecution } from '../utils/connector-execution-backend';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
+import { engineeringTaskWorkspacesEnabled } from '../utils/engineering-task-workspaces';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
 import {
   storedManifestMap,
@@ -702,6 +703,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 OR ${effectivePlatform}::text = 'macos'
               )
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+              AND (
+                NOT (r.approved_input ? 'task_entity')
+                OR ${engineeringTaskWorkspacesEnabled()}::boolean
+              )
               AND (
                 NOT (r.approved_input ? 'task_entity')
                 OR 'automations.workspace.v1' = ANY(${pgTextArray(authorizedCapabilities)}::text[])

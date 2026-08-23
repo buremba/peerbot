@@ -61,6 +61,7 @@ import {
   handoffToInteractiveSession,
   type InteractiveSession,
 } from './interactive-session.js';
+import { prepareAutomationWorkspace } from './automation-workspace.js';
 
 /**
  * The slice of the daemon's `ExecutorConfig` the automation arm reads.
@@ -82,6 +83,8 @@ export interface AutomationExecutorConfig {
   requireRunScopedSession?: boolean;
   /** Test-only override; production deliberately uses the 15-second default. */
   terminalHeartbeatGraceMs?: number;
+  /** Root for isolated run/task directories. Defaults to ~/lobu-workspaces. */
+  workspaceRoot?: string;
   /**
    * Agent to use when the Automation names no `agent_kind`.
    *
@@ -375,6 +378,7 @@ export async function runCli(
   config: AutomationPollPayload['automation']['execution_config'],
   access: AutomationRunAccess,
   timeoutMs: number,
+  cwd: string,
   binaryPath?: string,
   abortSignal?: AbortSignal,
   shutdownSignal?: AbortSignal,
@@ -410,7 +414,7 @@ export async function runCli(
       env.PATH = `${extraPath}:${currentPath}`;
     }
 
-    const supervised = spawnSupervisedCli(binary, args, env);
+    const supervised = spawnSupervisedCli(binary, args, env, cwd);
     const proc = supervised.supervisor;
     supervisor = proc;
     const { stdout, stderr } = proc;
@@ -757,11 +761,16 @@ export async function executeAutomationRun(
           durationMs: 0,
         };
       }
-      let prompt = buildDeviceAutomationPrompt(payload, runId);
+      let prompt = buildDeviceAutomationPrompt(payload, runId, job.entity);
       if (finalizeNudge && finalizeNudge !== '') {
         prompt += `\n\n---\nFINALIZE NUDGE (prior attempt did not complete the window):\n${finalizeNudge}\n`;
       }
-      if (selectedSession && agentSession && executionRoute !== 'subprocess') {
+      if (
+        job.entity?.entity_type !== 'engineering-task' &&
+        selectedSession &&
+        agentSession &&
+        executionRoute !== 'subprocess'
+      ) {
         const handoff = await handoffToInteractiveSession({
           session: selectedSession,
           runId,
@@ -819,12 +828,14 @@ export async function executeAutomationRun(
           `[executor] Automation run ${runId}: interactive ${selectedSession.kind} unavailable before delivery; using subprocess`
         );
       }
+      const workspace = await prepareAutomationWorkspace(job, { root: cfg.workspaceRoot });
       return runCli(
         spec,
         prompt,
         payload.automation.execution_config,
         resolveAutomationRunAccess(payload, client.mcpWiring),
         timeoutMs,
+        workspace,
         cfg.binaryOverrides?.[spec.kind],
         runAbort.signal,
         cfg.shutdownSignal,

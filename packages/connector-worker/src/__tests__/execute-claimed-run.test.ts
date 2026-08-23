@@ -88,6 +88,7 @@ function opts(overrides: Record<string, unknown> = {}) {
     authToken: 'session_token_from_the_claimer',
     job: automationJob(),
     binaryOverrides: { pi: fakeBinary },
+    workspaceRoot: path.join(tmp, 'workspaces'),
     ...overrides,
   } as Parameters<typeof executeClaimedAutomationRun>[0];
 }

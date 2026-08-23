@@ -56,11 +56,16 @@ async function setupDevicePinnedAutomation(opts: {
   workerId: string;
   platform: string;
   capabilities: Record<string, boolean>;
+  entityType?: string;
+  entityMetadata?: Record<string, unknown>;
 }): Promise<{
   sql: ReturnType<typeof getTestDb>;
   dbClient: DbClient;
   workspace: Awaited<ReturnType<typeof TestWorkspace.create>>;
   automationId: number;
+  deviceWorkerId: string;
+  entityId: number;
+  agentId: string;
 }> {
   const sql = getTestDb();
   const dbClient = sql as unknown as DbClient;
@@ -76,9 +81,17 @@ async function setupDevicePinnedAutomation(opts: {
 
   const entity = await createTestEntity({
     name: 'Claim Gate Entity',
+    entity_type: opts.entityType,
     organization_id: workspace.org.id,
     created_by: ownerUserId,
   });
+  if (opts.entityMetadata) {
+    await sql`
+      UPDATE entities
+      SET metadata = ${sql.json(opts.entityMetadata)}
+      WHERE id = ${entity.id}
+    `;
+  }
   const agent = await createTestAgent({
     organizationId: workspace.org.id,
     ownerUserId,
@@ -102,7 +115,50 @@ async function setupDevicePinnedAutomation(opts: {
     WHERE id = ${automationId}
   `;
 
-  return { sql, dbClient, workspace, automationId };
+  return {
+    sql,
+    dbClient,
+    workspace,
+    automationId,
+    deviceWorkerId,
+    entityId: entity.id,
+    agentId: agent.agentId,
+  };
+}
+
+async function createPinnedAutomationForEntity(
+  ctx: Awaited<ReturnType<typeof setupDevicePinnedAutomation>>,
+  entityId: number,
+  slug: string
+): Promise<number> {
+  const created = (await ctx.workspace.owner.automations.create({
+    entity_id: entityId,
+    slug,
+    name: slug,
+    prompt: 'Work only on the attached engineering task.',
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+    agent_id: ctx.agentId,
+  })) as { automation_id: string };
+  const automationId = Number(created.automation_id);
+  await ctx.sql`
+    UPDATE automations
+    SET device_worker_id = ${ctx.deviceWorkerId}::uuid,
+        agent_kind = 'opencode'
+    WHERE id = ${automationId}
+  `;
+  return automationId;
+}
+
+function isolatedPollBody(workerId: string) {
+  return {
+    worker_id: workerId,
+    capabilities: {
+      'os.shell': true,
+      'automations.execute': true,
+      'automations.workspace.v1': true,
+    },
+    agent_kinds: ['opencode'],
+  };
 }
 
 describe('headless Automation claim gate (automations.execute)', () => {
@@ -216,6 +272,166 @@ describe('headless Automation claim gate (automations.execute)', () => {
       SELECT status FROM runs WHERE id = ${job.run_id}
     `;
     expect(String(run.status)).toBe('running');
+  });
+
+  it('withholds engineering tasks until the daemon advertises isolated workspaces', async () => {
+    const ctx = await setupDevicePinnedAutomation({
+      workerId: 'headless-task-worker',
+      platform: 'headless',
+      capabilities: {
+        'os.shell': true,
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu', status: 'open' },
+    });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'headless-task-worker'
+    );
+    const trig = await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    const { run_id } = (await trig.json()) as { run_id: number };
+
+    const legacyPoll = await post('/api/workers/poll', {
+      token,
+      body: {
+        worker_id: 'headless-task-worker',
+        capabilities: { 'os.shell': true, 'automations.execute': true },
+        agent_kinds: ['opencode'],
+      },
+    });
+    expect((await legacyPoll.json()) as { run_id?: number }).not.toHaveProperty('run_id');
+
+    const isolatedPoll = await post('/api/workers/poll', {
+      token,
+      body: {
+        worker_id: 'headless-task-worker',
+        capabilities: {
+          'os.shell': true,
+          'automations.execute': true,
+          'automations.workspace.v1': true,
+        },
+        agent_kinds: ['opencode'],
+      },
+    });
+    const job = (await isolatedPoll.json()) as {
+      run_id?: number;
+      entity_ids?: number[];
+      entity?: { id: number; entity_type: string; metadata: Record<string, unknown> };
+    };
+    expect(job.run_id).toBe(run_id);
+    expect(job.entity_ids).toEqual([ctx.entityId]);
+    expect(job.entity).toMatchObject({
+      id: ctx.entityId,
+      entity_type: 'engineering-task',
+      metadata: { repository: 'lobu-ai/lobu', status: 'open' },
+    });
+  });
+
+  it('allows only one active writer across Automations targeting the same task', async () => {
+    const workerId = 'headless-one-task-writer';
+    const ctx = await setupDevicePinnedAutomation({
+      workerId,
+      platform: 'headless',
+      capabilities: {
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu' },
+    });
+    const secondAutomationId = await createPinnedAutomationForEntity(
+      ctx,
+      ctx.entityId,
+      'same-task-second-automation'
+    );
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      workerId
+    );
+    await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    await post(`/api/workers/me/automations/${secondAutomationId}/trigger`, { token });
+
+    const first = await post('/api/workers/poll', {
+      token,
+      body: isolatedPollBody(workerId),
+    });
+    const firstJob = (await first.json()) as { run_id?: number };
+    expect(firstJob.run_id).toBeGreaterThan(0);
+
+    const blocked = await post('/api/workers/poll', {
+      token,
+      body: isolatedPollBody(workerId),
+    });
+    expect((await blocked.json()) as { run_id?: number }).not.toHaveProperty('run_id');
+
+    await ctx.sql`
+      UPDATE runs
+      SET status = 'completed', completed_at = current_timestamp
+      WHERE id = ${firstJob.run_id}
+    `;
+    const released = await post('/api/workers/poll', {
+      token,
+      body: isolatedPollBody(workerId),
+    });
+    expect(((await released.json()) as { run_id?: number }).run_id).toBeGreaterThan(0);
+  });
+
+  it('claims different engineering tasks concurrently', async () => {
+    const workerId = 'headless-parallel-tasks';
+    const ctx = await setupDevicePinnedAutomation({
+      workerId,
+      platform: 'headless',
+      capabilities: {
+        'automations.execute': true,
+        'automations.workspace.v1': true,
+      },
+      entityType: 'engineering-task',
+      entityMetadata: { repository: 'lobu-ai/lobu' },
+    });
+    const secondTask = await createTestEntity({
+      name: 'Second engineering task',
+      entity_type: 'engineering-task',
+      organization_id: ctx.workspace.org.id,
+      created_by: ctx.workspace.users.owner.id,
+    });
+    await ctx.sql`
+      UPDATE entities
+      SET metadata = ${ctx.sql.json({ repository: 'lobu-ai/lobu' })}
+      WHERE id = ${secondTask.id}
+    `;
+    const secondAutomationId = await createPinnedAutomationForEntity(
+      ctx,
+      secondTask.id,
+      'different-task-automation'
+    );
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      workerId
+    );
+    await post(`/api/workers/me/automations/${ctx.automationId}/trigger`, { token });
+    await post(`/api/workers/me/automations/${secondAutomationId}/trigger`, { token });
+
+    const first = await post('/api/workers/poll', {
+      token,
+      body: isolatedPollBody(workerId),
+    });
+    const second = await post('/api/workers/poll', {
+      token,
+      body: isolatedPollBody(workerId),
+    });
+    const jobs = [await first.json(), await second.json()] as Array<{
+      run_id?: number;
+      entity?: { id: number };
+    }>;
+    expect(jobs.every((job) => job.run_id != null)).toBe(true);
+    expect(new Set(jobs.map((job) => job.entity?.id))).toEqual(
+      new Set([ctx.entityId, secondTask.id])
+    );
   });
 
   it('automation without an assigned agent still dispatches instructions-only (no run-scoped session)', async () => {

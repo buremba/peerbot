@@ -198,4 +198,22 @@ describe("golden strings (byte-compatible with the Mac app)", () => {
     ).toBe(true);
     expect(built).toContain("run_id: 7");
   });
+
+  test("engineering tasks carry durable task and checkpoint instructions", () => {
+    const built = buildDeviceAutomationPrompt(payload("window"), 7, {
+      id: 35364,
+      name: "Dogfood task isolation test",
+      entity_type: "engineering-task",
+      metadata: {
+        repository: "lobu-ai/lobu",
+        status: "open",
+        verification_status: "pending",
+      },
+    });
+
+    expect(built).toContain('"entity_type": "engineering-task"');
+    expect(built).toContain('"repository": "lobu-ai/lobu"');
+    expect(built).toContain("knowledge.read({ entity_ids: [35364]");
+    expect(built).toContain("semantic_type: 'engineering-task.checkpoint'");
+  });
 });

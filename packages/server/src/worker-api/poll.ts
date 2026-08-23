@@ -29,7 +29,10 @@ import { deriveAutomationExtractionSchema } from '../utils/automation-extraction
 import { withDbRetry } from '../db/with-retry';
 import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
-import { claimPendingAutomationRun } from '../runs/queue-service';
+import {
+  claimPendingAutomationRun,
+  parseEngineeringTaskSnapshot,
+} from '../runs/queue-service';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
 import {
   type MaterializedDueFeedRun,
@@ -700,6 +703,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               )
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
               AND (
+                NOT (r.approved_input ? 'task_entity')
+                OR 'automations.workspace.v1' = ANY(${pgTextArray(authorizedCapabilities)}::text[])
+              )
+              AND (
                 ${agentKindsParam}::text[] IS NULL
                 OR CASE
                   WHEN NULLIF(r.approved_input->>'agent_kind', '') IS NULL
@@ -713,6 +720,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 WHERE active.automation_id = r.automation_id
                   AND active.run_type = 'automation'
                   AND active.status IN ('claimed', 'running')
+              )
+              AND (
+                NOT (r.approved_input ? 'task_entity')
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM runs task_writer
+                  WHERE task_writer.organization_id = r.organization_id
+                    AND task_writer.run_type = r.run_type
+                    AND task_writer.status IN ('claimed', 'running')
+                    AND task_writer.approved_input->'task_entity'->>'id' =
+                        r.approved_input->'task_entity'->>'id'
+                )
               )
             )
           )
@@ -1059,6 +1078,22 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // matching device can land on this row.
   if (row.run_type === 'automation') {
     const approved = (row.approved_input ?? {}) as Record<string, unknown>;
+    const rawTaskEntity = approved['task_entity'];
+    const taskEntity = parseEngineeringTaskSnapshot(rawTaskEntity);
+    if (rawTaskEntity !== undefined && taskEntity === undefined) {
+      const message = 'Automation run has an invalid engineering-task snapshot';
+      await failClaimedWorkerRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: message,
+      });
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: message,
+        ...pollMetadata,
+      });
+    }
     const triggerSignals = automationTriggerSignals({
       trigger_signal: approved.trigger_signal,
       trigger_signals: approved.trigger_signals,
@@ -1225,6 +1260,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       run_id: row.run_id,
       run_type: row.run_type,
       organization_id: row.organization_id,
+      ...(taskEntity ? { entity_ids: [taskEntity.id], entity: taskEntity } : {}),
       payload: {
         automation: {
           id: automationIdStr,

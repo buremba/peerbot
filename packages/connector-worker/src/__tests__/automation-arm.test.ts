@@ -62,6 +62,7 @@ setInterval(() => {}, 1000);
         undefined,
         { wiring: undefined, env: {} },
         10_000,
+        dir,
         fake,
         controller.signal,
         controller.signal

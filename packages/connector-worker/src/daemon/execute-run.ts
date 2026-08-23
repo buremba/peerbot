@@ -53,6 +53,8 @@ export interface ExecuteClaimedRunOptions {
   defaultAgentKind?: AgentKind;
   /** Explicit per-agent binary paths (else PATH lookup). Test injection seam. */
   binaryOverrides?: Partial<Record<AgentKind, string>>;
+  /** Root for isolated task/run directories. Defaults to ~/lobu-workspaces. */
+  workspaceRoot?: string;
   debug?: boolean;
 }
 
@@ -154,5 +156,6 @@ export async function executeClaimedAutomationRun(
       : {}),
     ...(opts.defaultAgentKind ? { defaultAgentKind: opts.defaultAgentKind } : {}),
     ...(opts.binaryOverrides ? { binaryOverrides: opts.binaryOverrides } : {}),
+    ...(opts.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {}),
   });
 }

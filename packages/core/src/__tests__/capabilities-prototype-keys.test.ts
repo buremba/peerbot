@@ -61,12 +61,14 @@ describe("platform allowlist lookups ignore inherited keys", () => {
       "os.shell",
       "os.files",
       "automations.execute",
+      "automations.workspace.v1",
       "os.notifications",
       "browser.tabs",
       "computer_use",
     ]);
     expect(authorized.authorized.sort()).toEqual([
       "automations.execute",
+      "automations.workspace.v1",
       "os.files",
       "os.shell",
     ]);

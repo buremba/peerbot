@@ -231,7 +231,10 @@ export function createMacDeviceDaemon(
     apiUrl: validated.apiUrl,
     workerId: validated.workerId,
     authToken: validated.workerApiToken,
-    capabilities: { 'automations.execute': true } satisfies WorkerCapabilities,
+    capabilities: {
+      'automations.execute': true,
+      'automations.workspace.v1': true,
+    } satisfies WorkerCapabilities,
     version: validated.version,
     platform: MAC_DEVICE_PLATFORM,
     agentKinds: runnableAgentKinds,

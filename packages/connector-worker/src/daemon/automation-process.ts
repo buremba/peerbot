@@ -317,12 +317,14 @@ export async function terminateChild(proc: ChildProcess): Promise<'SIGTERM' | 'S
 export function spawnSupervisedCli(
   binary: string,
   args: string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  cwd: string
 ): SupervisedCli {
   const supervisor = spawn(
     process.execPath,
     ['-e', CLI_SUPERVISOR_SOURCE, '--', binary, ...args],
     {
+      cwd,
       detached: SUPPORTS_PROCESS_GROUPS,
       env,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

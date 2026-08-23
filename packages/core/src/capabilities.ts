@@ -46,6 +46,7 @@ export const MAC_DEVICE_CAPABILITIES = [
   // advertising this capability. Legacy Swift workers omit it and retain the
   // existing instructions-only/legacy session handling.
   "automations.execute",
+  "automations.workspace.v1",
   "screentime",
   "local_directory",
   "healthkit",
@@ -73,6 +74,7 @@ export const HEADLESS_CAPABILITIES = [
   "os.shell",
   "os.files",
   "automations.execute",
+  "automations.workspace.v1",
 ] as const;
 
 const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {

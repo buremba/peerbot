@@ -134,6 +134,7 @@ describe("device worker poll body", () => {
       "os.shell": true,
       "os.files": true,
       "automations.execute": true,
+      "automations.workspace.v1": true,
     });
   });
 

@@ -75,6 +75,8 @@ export interface ExecutorConfig {
   shutdownSignal?: AbortSignal;
   /** Local agent kind used when an Automation omits agent_kind. */
   defaultAgentKind?: AgentKind;
+  /** Root for isolated Automation run/task directories. */
+  workspaceRoot?: string;
   /**
    * Explicit per-agent binary paths for the automation arm (else PATH lookup).
    * Lets an operator point the daemon at a non-PATH CLI install, and is the

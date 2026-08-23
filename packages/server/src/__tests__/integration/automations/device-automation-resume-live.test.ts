@@ -223,6 +223,7 @@ describe("device automation resume — live server round-trip", () => {
 				generateEmbeddings: false,
 				timeoutMs: 30_000,
 				maxOldSpaceSize: 1024,
+				workspaceRoot: path.join(tmp, "workspaces"),
 				binaryOverrides: { pi: fakeBinary },
 			}
 		);
@@ -268,6 +269,7 @@ describe("device automation resume — live server round-trip", () => {
 			job: automationJob(runId, workspace.org.id),
 			timeoutMs: 30_000,
 			heartbeatIntervalMs: 60_000,
+			workspaceRoot: path.join(tmp, "workspaces"),
 			binaryOverrides: { pi: fakeBinary },
 		});
 
@@ -314,6 +316,7 @@ describe("device automation resume — live server round-trip", () => {
 			job: automationJob(runId, workspace.org.id),
 			timeoutMs: 30_000,
 			heartbeatIntervalMs: 60_000,
+			workspaceRoot: path.join(tmp, "workspaces"),
 			binaryOverrides: { pi: fakeBinary },
 		});
 

@@ -99,6 +99,7 @@ function cfg(): ExecutorConfig {
     generateEmbeddings: true,
     timeoutMs: 30_000,
     maxOldSpaceSize: 1024,
+    workspaceRoot: path.join(tmp, 'workspaces'),
     binaryOverrides: { pi: fakeBinary },
   };
 }
@@ -197,7 +198,7 @@ async function cleanupFailedParentLossTest(
 beforeAll(async () => {
   writeFileSync(
     fakeBinary,
-    `#!/bin/sh\necho "FAKE_OUTPUT"\necho "---INVOCATION---" >> "$FAKE_CLI_LOG"\nprintf '%s\\n' "$@" >> "$FAKE_CLI_LOG"\nexit 0\n`
+    `#!/bin/sh\necho "FAKE_OUTPUT cwd=$(pwd)"\necho "---INVOCATION---" >> "$FAKE_CLI_LOG"\nprintf '%s\\n' "$@" >> "$FAKE_CLI_LOG"\nexit 0\n`
   );
   chmodSync(fakeBinary, 0o755);
   writeFileSync(
@@ -455,6 +456,7 @@ describe('automation arm e2e', () => {
     expect(completions[0].path).toBe('/api/workers/me/runs/42/complete-automation');
     expect(completions[0].body.worker_id).toBe('wrk_1');
     expect(completions[0].body.output).toContain('FAKE_OUTPUT');
+    expect(completions[0].body.output).toContain(path.join(tmp, 'workspaces', 'run-42'));
     expect(completions[0].body.exit_reason).toBe('ok');
     expect(completions[0].body.finalize_attempt).toBe(0);
     expect(readArgsLog().split('---INVOCATION---').length - 1).toBe(1);

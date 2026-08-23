@@ -44,6 +44,40 @@ import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { AUTOMATION_RUN_TYPES_PG } from "./run-types.js";
 
 type AutomationDispatchSource = 'scheduled' | 'manual' | 'event';
+export interface EngineeringTaskSnapshot {
+  id: number;
+  name: string;
+  entity_type: 'engineering-task';
+  metadata: Record<string, unknown>;
+}
+
+export function parseEngineeringTaskSnapshot(
+  value: unknown
+): EngineeringTaskSnapshot | undefined {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const snapshot = value as Record<string, unknown>;
+  const id = Number(snapshot.id);
+  if (
+    !Number.isSafeInteger(id) ||
+    id <= 0 ||
+    typeof snapshot.name !== 'string' ||
+    snapshot.entity_type !== 'engineering-task' ||
+    snapshot.metadata == null ||
+    typeof snapshot.metadata !== 'object' ||
+    Array.isArray(snapshot.metadata)
+  ) {
+    return undefined;
+  }
+  return {
+    id,
+    name: snapshot.name,
+    entity_type: 'engineering-task',
+    metadata: snapshot.metadata as Record<string, unknown>,
+  };
+}
+
 export type AutomationActivationTrigger =
   | AutomationEventTrigger
   | AutomationWorkspaceEventTrigger;
@@ -90,6 +124,8 @@ export interface AutomationRunPayload {
    * default agent".
    */
   agent_kind?: string | null;
+  /** Durable execution identity for an Automation attached to an engineering task. */
+  task_entity?: EngineeringTaskSnapshot;
   /** Present for event activations; each signal points at already-durable input. */
   trigger_signal?: AutomationActivationSignal;
   /** Coalesced deliveries waiting in this run, including trigger_signal. */
@@ -152,6 +188,39 @@ export async function claimPendingAutomationRun(
   `;
   if (automation.length === 0) return false;
 
+  const runRows = await tx`
+    SELECT organization_id, approved_input
+    FROM runs
+    WHERE id = ${params.runId}
+      AND automation_id = ${params.automationId}
+      AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+      AND status = 'pending'
+    LIMIT 1
+  `;
+  if (runRows.length === 0) return false;
+  const approvedInput = runRows[0]?.approved_input as Record<string, unknown> | null;
+  const rawTaskEntity = approvedInput?.task_entity;
+  const taskEntity = parseEngineeringTaskSnapshot(rawTaskEntity);
+  const hasTaskEntity = rawTaskEntity !== undefined;
+  if (hasTaskEntity && taskEntity === undefined) {
+    throw new Error(`Automation run ${params.runId} has an invalid engineering-task snapshot`);
+  }
+  const taskEntityId = taskEntity?.id ?? 0;
+  if (hasTaskEntity) {
+    // This entity row is the durable cross-Automation mutex. Different
+    // Automations can point at the same engineering task, so the existing
+    // per-Automation row lock alone cannot guarantee one writer per task.
+    const taskLock = await tx`
+      SELECT id
+      FROM entities
+      WHERE id = ${taskEntityId}
+        AND organization_id = ${String(runRows[0]?.organization_id)}
+        AND deleted_at IS NULL
+      FOR UPDATE SKIP LOCKED
+    `;
+    if (taskLock.length === 0) return false;
+  }
+
   try {
     const claimed = await tx.savepoint(
       async (sp) => sp`
@@ -179,6 +248,17 @@ export async function claimPendingAutomationRun(
               AND active.run_type = r.run_type
               AND active.status IN ('claimed', 'running')
           )
+          AND (
+            ${hasTaskEntity}::boolean = false
+            OR NOT EXISTS (
+              SELECT 1
+              FROM runs task_writer
+              WHERE task_writer.organization_id = r.organization_id
+                AND task_writer.run_type = r.run_type
+                AND task_writer.status IN ('claimed', 'running')
+                AND task_writer.approved_input->'task_entity'->>'id' = ${String(taskEntityId)}
+            )
+          )
         RETURNING r.id
       `
     );
@@ -190,6 +270,45 @@ export async function claimPendingAutomationRun(
     if (isUniqueViolation(error, AUTOMATION_EXECUTION_UNIQUE_INDEX)) return false;
     throw error;
   }
+}
+
+async function loadEngineeringTaskSnapshot(
+  sql: DbClient,
+  organizationId: string,
+  automationId: number
+): Promise<EngineeringTaskSnapshot | undefined> {
+  const rows = await sql`
+    SELECT e.id, e.name, et.slug AS entity_type, e.metadata
+    FROM automations a
+    JOIN entities e
+      ON e.id = ANY(a.entity_ids)
+     AND e.organization_id = a.organization_id
+     AND e.deleted_at IS NULL
+    JOIN entity_types et
+      ON et.id = e.entity_type_id
+     AND et.organization_id = e.organization_id
+     AND et.deleted_at IS NULL
+    WHERE a.id = ${automationId}
+      AND a.organization_id = ${organizationId}
+      AND et.slug = 'engineering-task'
+    ORDER BY e.id
+    LIMIT 2
+  `;
+  if (rows.length > 1) {
+    throw new ToolUserError(
+      `Automation ${automationId} targets multiple engineering tasks; attach exactly one task per Automation.`
+    );
+  }
+  if (rows.length === 0) return undefined;
+  return {
+    id: Number(rows[0]?.id),
+    name: String(rows[0]?.name),
+    entity_type: 'engineering-task',
+    metadata:
+      rows[0]?.metadata && typeof rows[0].metadata === 'object' && !Array.isArray(rows[0].metadata)
+        ? (rows[0].metadata as Record<string, unknown>)
+        : {},
+  };
 }
 
 // ============================================
@@ -575,6 +694,11 @@ async function createAutomationRunWithClient(
   const snapshotGranularity = inferAutomationGranularityFromSchedule(
     versionRows[0]?.schedule as string | null | undefined
   );
+  const taskEntity = await loadEngineeringTaskSnapshot(
+    sql,
+    params.organizationId,
+    params.automationId
+  );
 
   // device_worker_id + agent_kind get persisted into approved_input so the
   // server-side dispatcher (#802) can skip device-pinned rows from the SQL
@@ -600,6 +724,7 @@ async function createAutomationRunWithClient(
     version_id: snapshotVersionId,
     device_worker_id: normalizedDeviceWorkerId,
     agent_kind: normalizedAgentKind,
+    task_entity: taskEntity,
     source_fingerprint: params.sourceFingerprint,
   };
   const idempotencyKey = [
@@ -908,6 +1033,11 @@ export async function createAutomationEventRun(
     const versionId = versionRows[0]?.current_version_id == null
       ? null
       : Number(versionRows[0]?.current_version_id);
+    const taskEntity = await loadEngineeringTaskSnapshot(
+      tx,
+      params.organizationId,
+      params.automationId
+    );
     const payload: AutomationRunPayload = {
       automation_id: params.automationId,
       agent_id: params.agentId ?? undefined,
@@ -920,6 +1050,7 @@ export async function createAutomationEventRun(
       version_id: versionId,
       device_worker_id: params.deviceWorkerId ?? null,
       agent_kind: params.agentKind ?? null,
+      task_entity: taskEntity,
       trigger_signal: params.signal,
       trigger_signals: [params.signal],
       delivery_ids: [params.signal.delivery_id],

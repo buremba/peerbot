@@ -262,15 +262,19 @@ export class WorkerClient implements ExecutorClient {
 
   /**
    * Capabilities this poll advertises. On the headless platform the daemon adds
-   * `automations.execute` itself: the gateway hands `run_type='automation'` runs
-   * only to devices advertising it, so the string is the build signal that keeps
+   * its Automation protocol capabilities itself: the gateway hands Automation
+   * runs only to devices advertising the matching build signal, which keeps
    * an older daemon — one whose executor mishandles the automation lane — from
    * claiming and wedging a run. Whether this host can actually launch the
    * Automation's CLI is a separate gate: the `agent_kinds` discovered below.
    */
   private advertisedCapabilities(): WorkerCapabilities {
     if (this.platform !== 'headless') return this.capabilities;
-    return { ...this.capabilities, 'automations.execute': true };
+    return {
+      ...this.capabilities,
+      'automations.execute': true,
+      'automations.workspace.v1': true,
+    };
   }
 
   private authHeaders(): Record<string, string> {

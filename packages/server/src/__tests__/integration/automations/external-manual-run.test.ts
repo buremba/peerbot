@@ -1,3 +1,4 @@
+import type { AutomationTriggerResult } from '@lobu/core/contracts/tools/manage-automations';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
@@ -88,8 +89,12 @@ describe('external manual Automation execution', () => {
     // materialize and remain pending for the external MCP completion path.
     const triggered = (await workspace.owner.automations.trigger({
       automation_id: created.automation_id,
-    })) as { run_id: number; status: string };
+    })) as AutomationTriggerResult;
     expect(triggered.status).toBe('pending');
+    if (triggered.execution.lane !== 'external_client') {
+      throw new Error(`Expected external_client, got ${triggered.execution.lane}`);
+    }
+    expect(triggered.execution.next_action.then).toBe('automations.completeWindow');
 
     const [queued] = await sql<{
       status: string;
@@ -163,8 +168,7 @@ describe('external manual Automation execution', () => {
     expect(Number(edited.current_version_id)).not.toBe(queuedVersionId);
 
     const read = (await workspace.owner.knowledge.read({
-      automation_id: automationId,
-      run_id: triggered.run_id,
+      ...triggered.execution.next_action.read.input,
       limit: 25,
     })) as {
       window_token?: string;
@@ -277,7 +281,7 @@ describe('external manual Automation execution', () => {
     expect(stillUnclaimed).toEqual({ status: 'pending', claimed_by: null });
 
     const completion = (await workspace.owner.automations.completeWindow({
-      automation_id: created.automation_id,
+      automation_id: triggered.automation_id,
       run_id: triggered.run_id,
       window_token: read.window_token,
       extracted_data: {

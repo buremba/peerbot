@@ -4758,6 +4758,59 @@ export type ManageAutomationsResponses = {
         automation_id: string;
         run_id: number;
         status: string;
+        created: boolean;
+        execution:
+          | {
+              lane: "managed_agent";
+              owner: "lobu";
+              agent_id: string;
+              next_action: {
+                kind: "handled_elsewhere";
+              };
+            }
+          | {
+              lane: "device_worker";
+              owner: "device";
+              device_worker_id: string;
+              agent_kind: string | null;
+              next_action: {
+                kind: "handled_elsewhere";
+              };
+            }
+          | {
+              lane: "external_client";
+              owner: "caller";
+              next_action: {
+                kind: "complete_window";
+                read: {
+                  method: "knowledge.read";
+                  input: {
+                    automation_id: number;
+                    run_id: number;
+                  };
+                };
+                then: "automations.completeWindow";
+              };
+            }
+          | {
+              lane: "external_client";
+              owner: "caller";
+              next_action: {
+                kind: "resume_claim";
+                method: "automations.claimNextWindow";
+                input: {
+                  automation_id: string;
+                  run_id: number;
+                };
+              };
+            }
+          | {
+              lane: "external_client";
+              owner: "another_caller";
+              next_action: {
+                kind: "handled_elsewhere";
+              };
+            };
       }
     | {
         action: "delete";
@@ -5214,11 +5267,11 @@ export type ReadKnowledgeData = {
      */
     entity_id?: number;
     /**
-     * Persisted Automation ID (`automation_id`) to fetch content for. When provided, uses the Automation's sources and computes its pending window. Returns window_token for complete_window action.
+     * Persisted Automation ID (`automation_id`) to fetch content for. With run_id, uses that run's queued version/window; otherwise computes the Automation's pending window. Returns window_token for complete_window action.
      */
     automation_id?: number;
     /**
-     * Pin to a specific persisted Automation version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Automation's current version.
+     * Pin an interactive or legacy Automation read to a persisted version. When run_id is present, the run's snapshotted version is authoritative and a conflicting value is rejected. Without run_id, omission defaults to the Automation's current version.
      */
     template_version_id?: number;
     /**
@@ -5246,7 +5299,7 @@ export type ReadKnowledgeData = {
      */
     platforms?: Array<string>;
     /**
-     * Automation run ID to filter by (shows only content analyzed in this run)
+     * Run ID. With automation_id, binds the Automation read to that run's queued version, window, and trigger inputs. Without automation_id, filters to content analyzed in this run.
      */
     run_id?: number;
     /**

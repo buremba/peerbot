@@ -405,6 +405,24 @@ describe("sdkSearch", () => {
 		}
 	});
 
+	it("documents the external Automation trigger completion handoff", async () => {
+		const result = await sdkSearch(
+			{ query: "automations.trigger" },
+			stubEnv,
+			adminCtx,
+		);
+		const rendered = result.results[0];
+
+		expect(rendered).toContain("Promise<AutomationTriggerResult>");
+		expect(rendered).toContain("external_client");
+		expect(rendered).toContain("created is false");
+		expect(rendered).toContain("resume_claim");
+		expect(rendered).toContain("another_caller");
+		expect(rendered).toContain("client.automations.claimNextWindow");
+		expect(rendered).toContain("run.execution.next_action.read.input");
+		expect(rendered).toContain("client.automations.completeWindow");
+	});
+
 	it.each([
 		["feeds.get", ["limit?: number", "search_term?: string"]],
 		["feeds.readMany", ["timeout_ms?: number", "search_term?: string"]],

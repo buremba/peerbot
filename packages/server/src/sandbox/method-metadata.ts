@@ -305,8 +305,10 @@ export default async (_ctx, client) => {
 	},
 	"knowledge.read": {
 		summary:
-			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or Automation-window context.",
+			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or Automation-window context. Pass automation_id with run_id to bind the read to that queued run's persisted version, window, and trigger inputs.",
 		access: "read",
+		signature:
+			"knowledge.read(input: { content_ids?: number[]; automation_id?: number; run_id?: number; ... }): Promise<unknown>",
 		example: "await client.knowledge.read({ content_ids: [2321593] });",
 	},
 	"knowledge.delete": {
@@ -585,11 +587,28 @@ export default async (_ctx, client) => {
 	},
 	"automations.trigger": {
 		summary:
-			"Trigger an immediate Automation run and dispatch it to its assigned agent.",
+			"Create or reuse an immediate Automation run. The typed result identifies the durable execution owner. Pending runs use their persisted managed_agent, device_worker, or external_client lane. An existing external lease returns owner caller with a resume_claim action when this caller owns it, or owner another_caller with handled_elsewhere. A pending external_client run uses next_action.read (knowledge.read with automation_id + run_id) then automations.completeWindow. created is false when an active run was reused.",
 		access: "external",
-		example: "await client.automations.trigger({ automation_id: '42' });",
+		signature:
+			"automations.trigger(input: { automation_id: string }): Promise<AutomationTriggerResult>",
+		example:
+			"const run = await client.automations.trigger({ automation_id: '42' });",
 		usageExample: `export default async (_ctx, client) => {
-  return client.automations.trigger({ automation_id: '42' });
+  const run = await client.automations.trigger({ automation_id: '42' });
+  if (run.execution.lane !== 'external_client') return run;
+  if (run.execution.next_action.kind === 'handled_elsewhere') return run;
+  if (run.execution.next_action.kind === 'resume_claim') {
+    return client.automations.claimNextWindow(run.execution.next_action.input);
+  }
+
+  const context = await client.knowledge.read(run.execution.next_action.read.input);
+  // Analyze context, then submit the result with the returned run_id and window_token:
+  return client.automations.completeWindow({
+    automation_id: run.automation_id,
+    run_id: run.run_id,
+    window_token: context.window_token,
+    extracted_data: { /* match context.extraction_schema */ },
+  });
 };`,
 	},
 	"automations.delete": {

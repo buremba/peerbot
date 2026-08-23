@@ -511,7 +511,8 @@ export const ManageAutomationsSchema = Type.Object(
             "Atomically claim the oldest completed Automation period and return bounded source context plus a fenced window token.",
         }),
         Type.Literal("trigger", {
-          description: "Manually fire an Automation run.",
+          description:
+            "Create or reuse an immediate Automation run. The result identifies whether Lobu, a device worker, this caller, or another external caller owns execution. Follow the returned next_action: a pending external run uses knowledge.read then automations.completeWindow, while the owner of an existing external lease resumes it with automations.claimNextWindow.",
         }),
         Type.Literal("delete", {
           description:
@@ -1066,6 +1067,70 @@ export type AutomationClaimNextWindowResult = Static<
   typeof AutomationClaimNextWindowResultSchema
 >;
 
+export const AutomationTriggerExecutionSchema = Type.Union([
+  Type.Object({
+    lane: Type.Literal("managed_agent"),
+    owner: Type.Literal("lobu"),
+    agent_id: Type.String(),
+    next_action: Type.Object({ kind: Type.Literal("handled_elsewhere") }),
+  }),
+  Type.Object({
+    lane: Type.Literal("device_worker"),
+    owner: Type.Literal("device"),
+    device_worker_id: Type.String(),
+    agent_kind: Type.Union([Type.String(), Type.Null()]),
+    next_action: Type.Object({ kind: Type.Literal("handled_elsewhere") }),
+  }),
+  Type.Object({
+    lane: Type.Literal("external_client"),
+    owner: Type.Literal("caller"),
+    next_action: Type.Object({
+      kind: Type.Literal("complete_window"),
+      read: Type.Object({
+        method: Type.Literal("knowledge.read"),
+        input: Type.Object({
+          automation_id: Type.Integer(),
+          run_id: Type.Integer(),
+        }),
+      }),
+      // biome-ignore lint/suspicious/noThenProperty: Public protocol field required by the trigger handoff contract.
+      then: Type.Literal("automations.completeWindow"),
+    }),
+  }),
+  Type.Object({
+    lane: Type.Literal("external_client"),
+    owner: Type.Literal("caller"),
+    next_action: Type.Object({
+      kind: Type.Literal("resume_claim"),
+      method: Type.Literal("automations.claimNextWindow"),
+      input: Type.Object({
+        automation_id: Type.String(),
+        run_id: Type.Integer(),
+      }),
+    }),
+  }),
+  Type.Object({
+    lane: Type.Literal("external_client"),
+    owner: Type.Literal("another_caller"),
+    next_action: Type.Object({ kind: Type.Literal("handled_elsewhere") }),
+  }),
+]);
+export type AutomationTriggerExecution = Static<
+  typeof AutomationTriggerExecutionSchema
+>;
+
+export const AutomationTriggerResultSchema = Type.Object({
+  action: Type.Literal("trigger"),
+  automation_id: Type.String(),
+  run_id: Type.Integer(),
+  status: Type.String(),
+  created: Type.Boolean(),
+  execution: AutomationTriggerExecutionSchema,
+});
+export type AutomationTriggerResult = Static<
+  typeof AutomationTriggerResultSchema
+>;
+
 export const ManageAutomationsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("list"),
@@ -1100,12 +1165,7 @@ export const ManageAutomationsResultSchema = Type.Union([
     content_linked: Type.Integer(),
   }),
   AutomationClaimNextWindowResultSchema,
-  Type.Object({
-    action: Type.Literal("trigger"),
-    automation_id: Type.String(),
-    run_id: Type.Integer(),
-    status: Type.String(),
-  }),
+  AutomationTriggerResultSchema,
   Type.Object({
     action: Type.Literal("delete"),
     results: Type.Array(ManageAutomationsDeleteResultSchema),

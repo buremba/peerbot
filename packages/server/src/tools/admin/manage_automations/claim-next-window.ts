@@ -9,7 +9,10 @@ import type { AutomationClaimNextWindowResult } from '@lobu/core/contracts/tools
 import type { DbClient } from '../../../db/client';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
-import { claimPendingAutomationRun, createAutomationRun } from '../../../runs/queue-service';
+import {
+  claimPendingAutomationRun,
+  createAutomationRunInTransaction,
+} from '../../../runs/queue-service';
 import { classifyRunOutcome } from '../../../runs/run-outcome';
 import { ToolUserError } from '../../../utils/errors';
 import { ensureExpectedAutomationWindowStart } from '../../../utils/window-utils';
@@ -21,7 +24,7 @@ const DEFAULT_LEASE_SECONDS = 900;
 const MIN_LEASE_SECONDS = 30;
 const MAX_LEASE_SECONDS = 3600;
 
-function claimOwner(ctx: ToolContext): string {
+export function encodeExternalAutomationClaimOwner(ctx: ToolContext): string {
   const identity = {
     user_id: ctx.userId ?? null,
     agent_id: ctx.agentId ?? null,
@@ -35,6 +38,31 @@ function claimOwner(ctx: ToolContext): string {
     );
   }
   return `external:${JSON.stringify(identity)}`;
+}
+
+export function isExternalAutomationClaimOwner(value: string): boolean {
+  if (!value.startsWith('external:')) return false;
+  try {
+    const identity = JSON.parse(value.slice('external:'.length)) as unknown;
+    if (identity == null || typeof identity !== 'object' || Array.isArray(identity)) {
+      return false;
+    }
+    const record = identity as Record<string, unknown>;
+    const keys = ['user_id', 'agent_id', 'client_id', 'mcp_session_id'];
+    if (
+      Object.keys(record).length !== keys.length ||
+      !keys.every(
+        (key) =>
+          Object.hasOwn(record, key) &&
+          (record[key] == null || typeof record[key] === 'string')
+      )
+    ) {
+      return false;
+    }
+    return keys.some((key) => record[key] != null);
+  } catch {
+    return false;
+  }
 }
 
 export async function handleClaimNextWindow(
@@ -69,7 +97,7 @@ export async function handleClaimNextWindow(
   }
 
   const sql = getDb();
-  const owner = claimOwner(ctx);
+  const owner = encodeExternalAutomationClaimOwner(ctx);
   const claimedWindow = await sql.begin(async (tx) => {
     const [automation] = await tx<{
       organization_id: string;
@@ -180,7 +208,7 @@ export async function handleClaimNextWindow(
       `;
       const run = pending
         ? { runId: Number(pending.id) }
-        : await createAutomationRun(
+        : await createAutomationRunInTransaction(
             {
               organizationId: automation.organization_id,
               automationId,

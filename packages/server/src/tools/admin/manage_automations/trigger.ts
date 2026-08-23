@@ -3,14 +3,16 @@
  *   trigger, set_reaction_script
  */
 
-import { getDb } from "../../../db/client";
+import { getDb, type DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
 import { isLobuGatewayRunning } from "../../../lobu/gateway";
 import { ToolUserError } from "../../../utils/errors";
 import logger from "../../../utils/logger";
 import {
+  dispatchPendingAutomationRuns,
+  enqueueAutomationRunForAutomationInTransaction,
   getAutomationRunInfo,
-  queueAndDispatchAutomationRun,
+  parseAutomationRunPayload,
 } from "../../../automations/automation";
 import {
   compileReactionScript,
@@ -18,12 +20,159 @@ import {
   validateReactionDefaultExport,
 } from "../../../automations/reaction-executor";
 import { assertAutomationInstructions } from "../../../automations/triggers";
-import type { AutomationTrigger } from "@lobu/core/contracts/tools/manage-automations";
+import type {
+  AutomationTrigger,
+  AutomationTriggerExecution,
+  AutomationTriggerResult,
+} from "@lobu/core/contracts/tools/manage-automations";
 import type { ToolContext } from "../../registry";
 import { recordToolConfigChange } from "../helpers/config-audit";
 import { requireExists } from "../helpers/db-helpers";
 import type { ManageAutomationsArgs } from "../manage_automations";
+import {
+  encodeExternalAutomationClaimOwner,
+  isExternalAutomationClaimOwner,
+} from "./claim-next-window";
 import { resolveAutomationExecutor } from "./executors";
+
+async function loadTriggerExecution(
+  sql: DbClient,
+  runId: number,
+  automationId: number,
+  automationIdString: string,
+  ctx: ToolContext,
+): Promise<{
+  execution: AutomationTriggerExecution;
+  shouldDispatch: boolean;
+}> {
+  const [run] = await sql<{
+    approved_input: unknown;
+    status: string;
+    claimed_by: string | null;
+    expires_at: string | Date | null;
+    device_claimed_by: string | null;
+  }>`
+    SELECT r.approved_input, r.status, r.claimed_by, r.expires_at,
+           (
+             SELECT dw.worker_id
+             FROM device_workers dw
+             WHERE dw.id::text = r.approved_input->>'device_worker_id'
+             LIMIT 1
+           ) AS device_claimed_by
+    FROM runs r
+    WHERE r.id = ${runId}
+      AND r.automation_id = ${automationId}
+      AND r.run_type = 'automation'
+    LIMIT 1
+    FOR UPDATE
+  `;
+  if (!run) {
+    throw new Error("Automation run is missing a valid dispatch payload.");
+  }
+  const payload = parseAutomationRunPayload(run.approved_input);
+  if (!payload || payload.automation_id !== automationId) {
+    throw new Error("Automation run is missing a valid dispatch payload.");
+  }
+  const executor = resolveAutomationExecutor({
+    agentId: payload.agent_id,
+    deviceWorkerId: payload.device_worker_id,
+    agentKind: payload.agent_kind,
+  });
+  let persistedExecution: AutomationTriggerExecution;
+  if (executor?.kind === "agent") {
+    persistedExecution = {
+      lane: "managed_agent",
+      owner: "lobu",
+      agent_id: executor.agentId,
+      next_action: { kind: "handled_elsewhere" },
+    };
+  } else if (executor?.kind === "device") {
+    persistedExecution = {
+      lane: "device_worker",
+      owner: "device",
+      device_worker_id: executor.deviceWorkerId,
+      agent_kind: executor.agentKind,
+      next_action: { kind: "handled_elsewhere" },
+    };
+  } else {
+    persistedExecution = {
+      lane: "external_client",
+      owner: "caller",
+      next_action: {
+        kind: "complete_window",
+        read: {
+          method: "knowledge.read",
+          input: { automation_id: payload.automation_id, run_id: runId },
+        },
+        // biome-ignore lint/suspicious/noThenProperty: Public protocol field required by the trigger handoff contract.
+        then: "automations.completeWindow",
+      },
+    };
+  }
+
+  if (run.status === "pending") {
+    return { execution: persistedExecution, shouldDispatch: true };
+  }
+  if (run.status !== "claimed" && run.status !== "running") {
+    throw new ToolUserError(
+      `Automation run ${runId} is no longer active.`,
+      409,
+    );
+  }
+
+  const claimedBy = run.claimed_by?.trim();
+  if (!claimedBy) {
+    throw new ToolUserError(
+      `Automation run ${runId} has no recognized active claimant.`,
+      409,
+    );
+  }
+  if (isExternalAutomationClaimOwner(claimedBy)) {
+    const leaseExpiresAt =
+      run.expires_at == null ? Number.NaN : new Date(run.expires_at).getTime();
+    if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.now()) {
+      throw new ToolUserError(
+        `Automation run ${runId} has no recognized active claimant.`,
+        409,
+      );
+    }
+    if (claimedBy === encodeExternalAutomationClaimOwner(ctx)) {
+      return {
+        execution: {
+          lane: "external_client",
+          owner: "caller",
+          next_action: {
+            kind: "resume_claim",
+            method: "automations.claimNextWindow",
+            input: { automation_id: automationIdString, run_id: runId },
+          },
+        },
+        shouldDispatch: false,
+      };
+    }
+    return {
+      execution: {
+        lane: "external_client",
+        owner: "another_caller",
+        next_action: { kind: "handled_elsewhere" },
+      },
+      shouldDispatch: false,
+    };
+  }
+
+  const nativeManagedClaim =
+    executor?.kind === "agent" &&
+    (claimedBy === "lobu-dispatcher" || claimedBy === `lobu:${executor.agentId}`);
+  const nativeDeviceClaim =
+    executor?.kind === "device" && claimedBy === run.device_claimed_by;
+  if (!nativeManagedClaim && !nativeDeviceClaim) {
+    throw new ToolUserError(
+      `Automation run ${runId} has no recognized active claimant.`,
+      409,
+    );
+  }
+  return { execution: persistedExecution, shouldDispatch: false };
+}
 
 // ============================================
 // handleTrigger
@@ -32,57 +181,59 @@ import { resolveAutomationExecutor } from "./executors";
 export async function handleTrigger(
   args: ManageAutomationsArgs,
   _env: Env,
-): Promise<{
-  action: "trigger";
-  automation_id: string;
-  run_id: number;
-  status: string;
-}> {
+  ctx: ToolContext,
+): Promise<AutomationTriggerResult> {
   const sql = getDb();
 
   if (!args.automation_id) {
     throw new ToolUserError("automation_id is required for trigger action", 400);
   }
+  const automationIdString = args.automation_id;
+  const automationId = Number(automationIdString);
 
-  const [automation] = await sql<{
-    agent_id: string | null;
-    device_worker_id: string | null;
-    agent_kind: string | null;
-  }>`
-    SELECT agent_id, device_worker_id::text AS device_worker_id, agent_kind
-    FROM automations
-    WHERE id = ${Number(args.automation_id)}
-    LIMIT 1
-  `;
-  const executor = automation
-    ? resolveAutomationExecutor({
-        agentId: automation.agent_id,
-        deviceWorkerId: automation.device_worker_id,
-        agentKind: automation.agent_kind,
+  const queued = await sql.begin(async (tx) => {
+    const run = await enqueueAutomationRunForAutomationInTransaction(
+      automationId,
+      "manual",
+      tx,
+    );
+    const loaded = await loadTriggerExecution(
+      tx,
+      run.runId,
+      automationId,
+      automationIdString,
+      ctx,
+    );
+    if (
+      loaded.shouldDispatch &&
+      loaded.execution.lane === "managed_agent" &&
+      !isLobuGatewayRunning()
+    ) {
+      throw new Error("Embedded Lobu is not available.");
+    }
+    return { ...run, ...loaded };
+  });
+  const dispatch = queued.shouldDispatch
+    ? await dispatchPendingAutomationRuns({
+        db: sql,
+        runIds: [queued.runId],
       })
-    : null;
-  if (executor?.kind === "agent" && !isLobuGatewayRunning()) {
-    throw new Error("Embedded Lobu is not available.");
-  }
+    : { failed: 0 };
+  const runInfo = await getAutomationRunInfo(queued.runId, sql);
 
-  const dispatchResult = await queueAndDispatchAutomationRun(
-    Number(args.automation_id),
-    "manual",
-    sql,
-  );
-
-  if (dispatchResult.dispatch.failed > 0) {
-    const failedRun = await getAutomationRunInfo(dispatchResult.runId, sql);
+  if (dispatch.failed > 0) {
     throw new Error(
-      failedRun?.error_message || "Failed to dispatch Automation run.",
+      runInfo?.error_message || "Failed to dispatch Automation run.",
     );
   }
 
   return {
     action: "trigger",
-    automation_id: args.automation_id,
-    run_id: dispatchResult.runId,
-    status: dispatchResult.status,
+    automation_id: automationIdString,
+    run_id: queued.runId,
+    status: runInfo?.status ?? queued.status,
+    created: queued.created,
+    execution: queued.execution,
   };
 }
 

@@ -24,6 +24,7 @@ import { getLobuServiceToken } from "../lobu/service-token";
 import {
 	claimPendingAutomationRun,
 	createAutomationRun,
+	createAutomationRunInTransaction,
 	type AutomationRunPayload,
 } from "../runs/queue-service";
 import { materializeDueItems } from "../scheduled/due-materializer";
@@ -250,7 +251,8 @@ async function enqueueAutomationRunForRecord(
 	sql: DbClient,
 	automation: DueAutomationRow,
 	dispatchSource: AutomationRunPayload["dispatch_source"],
-	sourceFingerprint?: string
+	sourceFingerprint?: string,
+	tx?: DbClient,
 ): Promise<QueueAutomationRunResult> {
 	if ((automation.status ?? "active") !== "active") {
 		throw new Error(`Automation ${automation.id} is not active.`);
@@ -278,8 +280,7 @@ async function enqueueAutomationRunForRecord(
 		granularity
 	);
 
-	const queued = await createAutomationRun(
-		{
+	const runParams = {
 			organizationId: automation.organization_id,
 			automationId: automation.id,
 			agentId: executor?.kind === "agent" ? executor.agentId : null,
@@ -291,9 +292,10 @@ async function enqueueAutomationRunForRecord(
 			agentKind:
 				executor?.kind === "device" ? executor.agentKind : null,
 			sourceFingerprint,
-		},
-		sql
-	);
+		};
+	const queued = tx
+		? await createAutomationRunInTransaction(runParams, tx)
+		: await createAutomationRun(runParams, sql);
 
 	return queued;
 }
@@ -336,19 +338,50 @@ async function completeSkippedAutomationRun(
 	});
 }
 
-export async function enqueueAutomationRunForAutomation(
+async function enqueueAutomationRunForAutomationWithClient(
 	automationId: number,
 	dispatchSource: AutomationRunPayload["dispatch_source"],
-	db?: DbClient
+	sql: DbClient,
+	tx?: DbClient,
 ): Promise<QueueAutomationRunResult> {
-	const sql = db ?? getDb();
 	const automation = await loadAutomationForAutomation(sql, automationId);
 
 	if (!automation) {
 		throw new ToolUserError(`Automation ${automationId} not found.`, 404);
 	}
 
-	return enqueueAutomationRunForRecord(sql, automation, dispatchSource);
+	return enqueueAutomationRunForRecord(
+		sql,
+		automation,
+		dispatchSource,
+		undefined,
+		tx,
+	);
+}
+
+export async function enqueueAutomationRunForAutomation(
+	automationId: number,
+	dispatchSource: AutomationRunPayload["dispatch_source"],
+	db?: DbClient,
+): Promise<QueueAutomationRunResult> {
+	return enqueueAutomationRunForAutomationWithClient(
+		automationId,
+		dispatchSource,
+		db ?? getDb(),
+	);
+}
+
+export async function enqueueAutomationRunForAutomationInTransaction(
+	automationId: number,
+	dispatchSource: AutomationRunPayload["dispatch_source"],
+	tx: DbClient,
+): Promise<QueueAutomationRunResult> {
+	return enqueueAutomationRunForAutomationWithClient(
+		automationId,
+		dispatchSource,
+		tx,
+		tx,
+	);
 }
 
 async function markAutomationRunFailedIdempotent(
@@ -1541,7 +1574,7 @@ export async function queueAndDispatchAutomationRun(
 	const queued = await enqueueAutomationRunForAutomation(
 		automationId,
 		dispatchSource,
-		sql
+		sql,
 	);
 	const dispatch = await dispatchPendingAutomationRuns({
 		db: sql,

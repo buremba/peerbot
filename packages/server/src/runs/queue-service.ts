@@ -643,25 +643,30 @@ async function createAutomationRunWithClient(
   return { runId, status, created: true };
 }
 
-export async function createAutomationRun(
-  params: {
-    organizationId: string;
-    automationId: number;
-    agentId?: string | null;
-    windowStart: string;
-    windowEnd: string;
-    dispatchSource: AutomationDispatchSource;
-    deviceWorkerId?: string | null;
-    agentKind?: string | null;
-    sourceFingerprint?: string;
-  },
-  db?: DbClient
+interface CreateAutomationRunParams {
+  organizationId: string;
+  automationId: number;
+  agentId?: string | null;
+  windowStart: string;
+  windowEnd: string;
+  dispatchSource: AutomationDispatchSource;
+  deviceWorkerId?: string | null;
+  agentKind?: string | null;
+  sourceFingerprint?: string;
+}
+
+async function createAutomationRunInternal(
+  params: CreateAutomationRunParams,
+  db: DbClient | undefined,
+  useSavepoint: boolean
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const sql = db ?? getDb();
 
   try {
     if (db) {
-      return await createAutomationRunWithClient(sql, params);
+      return useSavepoint
+        ? await sql.savepoint((tx) => createAutomationRunWithClient(tx, params))
+        : await createAutomationRunWithClient(sql, params);
     }
 
     return await sql.begin(async (tx) => createAutomationRunWithClient(tx, params));
@@ -720,6 +725,21 @@ export async function createAutomationRun(
     logger.error({ error, automationId: params.automationId }, '[queue] Failed to create automation run');
     throw error;
   }
+}
+
+export async function createAutomationRun(
+  params: CreateAutomationRunParams,
+  db?: DbClient
+): Promise<{ runId: number; status: string; created: boolean }> {
+  return createAutomationRunInternal(params, db, false);
+}
+
+/** Create inside a caller-owned transaction without poisoning it on a unique race. */
+export async function createAutomationRunInTransaction(
+  params: CreateAutomationRunParams,
+  tx: DbClient
+): Promise<{ runId: number; status: string; created: boolean }> {
+  return createAutomationRunInternal(params, tx, true);
 }
 
 /** An activation that produced (or joined) a durable run. */

@@ -22,7 +22,10 @@ import {
   seedOwnerContext,
 } from '../setup/test-fixtures';
 
-async function seedFeed(slug: string): Promise<{
+async function seedFeed(
+  slug: string,
+  status: 'active' | 'paused' = 'active'
+): Promise<{
   feedId: number;
   ctx: Awaited<ReturnType<typeof seedOwnerContext>>['ctx'];
 }> {
@@ -49,7 +52,7 @@ async function seedFeed(slug: string): Promise<{
       (organization_id, connection_id, feed_key, status, checkpoint,
        created_at, updated_at)
     VALUES
-      (${org.id}, ${conn.id}, 'items', 'active', ${sql.json({ cursor: 'c0' })},
+      (${org.id}, ${conn.id}, 'items', ${status}, ${sql.json({ cursor: 'c0' })},
        NOW(), NOW())
     RETURNING id
   `) as Array<{ id: number }>;
@@ -75,6 +78,37 @@ describe('client.feeds.trigger dry_run', () => {
 
     expect(runs).toHaveLength(1);
     expect(runs[0].dry_run).toBe(true);
+  });
+
+  it('allows a dry run while the feed stays paused with its checkpoint intact', async () => {
+    const sql = getTestDb();
+    const { feedId, ctx } = await seedFeed('rss-sdk-paused-dry', 'paused');
+
+    const feeds = buildFeedsNamespace(ctx, {} as Env);
+    await feeds.trigger({ feed_id: feedId, dry_run: true });
+
+    const runs = (await sql`
+      SELECT dry_run FROM runs WHERE feed_id = ${feedId}
+    `) as Array<{ dry_run: boolean }>;
+    const feed = (await sql`
+      SELECT status, checkpoint FROM feeds WHERE id = ${feedId}
+    `) as Array<{ status: string; checkpoint: { cursor: string } }>;
+
+    expect(runs).toEqual([{ dry_run: true }]);
+    expect(feed).toEqual([{ status: 'paused', checkpoint: { cursor: 'c0' } }]);
+  });
+
+  it('still rejects a persistent trigger while the feed is paused', async () => {
+    const sql = getTestDb();
+    const { feedId, ctx } = await seedFeed('rss-sdk-paused-wet', 'paused');
+
+    const feeds = buildFeedsNamespace(ctx, {} as Env);
+    await expect(feeds.trigger({ feed_id: feedId })).rejects.toThrow(
+      'Feed is paused, must be active to trigger sync'
+    );
+
+    const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;
+    expect(runs).toHaveLength(0);
   });
 
   it('leaves the run persistent when dry_run is omitted', async () => {

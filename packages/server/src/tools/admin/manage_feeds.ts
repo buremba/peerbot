@@ -1039,11 +1039,14 @@ async function handleTriggerFeed(
   if (feed.kind !== 'collected') {
     return { error: `Feed is ${feed.kind}, only collected feeds can be triggered` };
   }
-  if (feed.status !== 'active') {
+  const dryRun = args.dry_run === true;
+  // A dry run is the safe validation lane for a paused feed: it executes the
+  // connector but leaves feed state, checkpoints, and collected data untouched.
+  // Persistent runs still require an active feed.
+  if (feed.status !== 'active' && !(dryRun && feed.status === 'paused')) {
     return { error: `Feed is ${feed.status}, must be active to trigger sync` };
   }
 
-  const dryRun = args.dry_run === true;
   const created = await createSyncRun(args.feed_id, env, undefined, { dryRun });
   if (!created.ok) {
     return { action: 'trigger_feed', message: describeSyncRunSkip(created.reason) };

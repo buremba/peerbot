@@ -30,6 +30,7 @@ import { materializeDueItems } from "../scheduled/due-materializer";
 import { markStaleRunsAsTimeout } from "../scheduled/stale-run-sweeper";
 import { fingerprintAutomationSources } from "../tools/get_content/automation-mode";
 import { nextRunAt } from "../utils/cron";
+import { DEVICE_ONLINE_WINDOW_SECONDS } from "../utils/device-liveness";
 import logger from "../utils/logger";
 import { ToolUserError } from "../utils/errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
@@ -41,6 +42,7 @@ import {
 import {
 	advanceScheduleAfterTerminalFailure,
 	advanceAutomationSchedule,
+	advanceAutomationScheduleAfterSuccessfulWindow,
 } from "./schedule-cursor";
 import {
 	resolveAutomationRunsByMessageIds,
@@ -575,9 +577,9 @@ export async function sweepStaleAutomationRuns(
  * recreating the missed run.
  *
  * Manual runs are intentionally excluded: a manual caller owns retry policy.
- * Fresh rows are protected by the same generous TTL used for non-heartbeating
- * executions, allowing device-pinned Automations to wait for a temporarily
- * offline device without being churned.
+ * Scheduled device runs remain durable past the TTL while their exact snapshot
+ * owner exists. If that row is deleted, only the stale orphan times out; its
+ * schedule cursor stays due so current ownership retries the same window.
  */
 async function finalizeStalePendingAutomationRuns(
 	sql: DbClient,
@@ -590,15 +592,26 @@ async function finalizeStalePendingAutomationRuns(
 			schedule: string | null;
 			timezone: string | null;
 			dispatch_source: string | null;
+			device_worker_id: string | null;
 		}>`
       SELECT r.id, r.automation_id, w.schedule, w.timezone,
-             r.approved_input->>'dispatch_source' AS dispatch_source
+             r.approved_input->>'dispatch_source' AS dispatch_source,
+             NULLIF(r.approved_input->>'device_worker_id', '') AS device_worker_id
       FROM runs r
       JOIN automations w ON w.id = r.automation_id
       WHERE r.run_type = 'automation'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
         AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
+        -- Snapshot ownership stays durable after retarget; only a missing exact row is orphaned.
+        AND NOT (
+          COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
+          AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM device_workers dw
+            WHERE dw.id::text = r.approved_input->>'device_worker_id'
+          )
+        )
       ORDER BY r.created_at ASC
       FOR UPDATE OF r, w SKIP LOCKED
       LIMIT 100
@@ -628,6 +641,9 @@ async function finalizeStalePendingAutomationRuns(
 				continue;
 			}
 			if (!candidate.schedule) continue;
+			// An orphaned device snapshot must retry the same unfinished window under
+			// current ownership, so preserve both schedule and coverage cursors.
+			if (candidate.device_worker_id) continue;
 			const next = nextRunAt(
 				candidate.schedule,
 				new Date(),
@@ -715,9 +731,9 @@ export async function materializeDueAutomationRuns(
 	const counts = await materializeDueItems<DueAutomationRow>({
 		label: "automation",
 		fetchDue: async () => {
-			// Only schedule automations we can actually execute: either device-pinned (an
-			// external/device worker claims it via the poll lane — no cloud agent row
-			// needed) OR the assigned agent still exists in the org. An automation whose
+			// Only schedule automations we can actually execute: either a live, compatible
+			// device pin (claimed via the poll lane) OR an unpinned assignment whose agent
+			// still exists in the org. An automation whose
 			// `agents` row was deleted is otherwise materialized every cron tick and fails
 			// at dispatch ("Assigned agent ... does not exist"). Skipping at the source is
 			// self-healing: it resumes automatically if the agent is recreated. The
@@ -733,9 +749,29 @@ export async function materializeDueAutomationRuns(
           AND w.next_run_at IS NOT NULL
           AND w.next_run_at <= current_timestamp
           AND (
-            w.device_worker_id IS NOT NULL
+            (
+              w.device_worker_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM device_workers dw
+                WHERE dw.id = w.device_worker_id
+                  AND dw.last_seen_at > current_timestamp
+                    - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+                  AND (dw.platform = 'macos' OR dw.capabilities ? 'automations.execute')
+                  -- agent_kinds is the last authoritative ad; omitted downgrade polls preserve it.
+                  AND (
+                    dw.agent_kinds IS NULL
+                    OR CASE
+                      WHEN NULLIF(w.agent_kind, '') IS NULL
+                        THEN cardinality(dw.agent_kinds) > 0
+                      ELSE w.agent_kind = ANY(dw.agent_kinds)
+                    END
+                  )
+              )
+            )
             OR (
-              w.agent_id IS NOT NULL
+              w.device_worker_id IS NULL
+              AND w.agent_id IS NOT NULL
               AND EXISTS (
                 SELECT 1 FROM agents a
                 WHERE a.id = w.agent_id
@@ -834,7 +870,12 @@ export async function materializeDueAutomationRuns(
 							granularity,
 						);
 					}
-					await advanceAutomationSchedule(sql, automation.id);
+					await advanceAutomationScheduleAfterSuccessfulWindow(
+						sql,
+						automation.id,
+						Boolean(automation.device_worker_id),
+						granularity
+					);
 					logger.info(
 						{ automationId: automation.id, empty: sourceState.empty },
 						"[automation] Skipped unchanged Automation sources before agent dispatch"

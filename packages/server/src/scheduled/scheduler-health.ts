@@ -38,6 +38,8 @@ interface SchedulerHealthStatus {
     overdueAutomations: number;
     automationsOverdueByHours: number;
     stalePendingAutomationRuns: number;
+    deferredDeviceAutomations: number;
+    oldestDeviceDeferralHours: number;
     /** Approvals still undecided past PENDING_APPROVAL_TTL_DAYS. */
     stalePendingApprovals: number;
     /** Age of the oldest undecided approval, in days. */
@@ -207,25 +209,54 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
     // automations (by automations.next_run_at) and pending automation runs stuck past
     // the stale interval, feeding the SAME issues[] the feed path uses.
     const automationStats = await sql`
+      WITH scheduling AS (
+        SELECT a.status, a.schedule, a.next_run_at,
+          a.device_worker_id IS NOT NULL AND NOT (
+            d.id IS NOT NULL
+            AND d.last_seen_at > current_timestamp
+              - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+            AND COALESCE(d.platform = 'macos' OR d.capabilities ? 'automations.execute', false)
+            AND (
+              d.agent_kinds IS NULL
+              OR CASE WHEN NULLIF(a.agent_kind, '') IS NULL
+                THEN cardinality(d.agent_kinds) > 0
+                ELSE a.agent_kind = ANY(d.agent_kinds)
+              END
+            )
+          ) AS device_deferred
+        FROM automations a
+        LEFT JOIN device_workers d ON d.id = a.device_worker_id
+      )
       SELECT
         CAST(COUNT(*) FILTER (WHERE status = 'active' AND schedule IS NOT NULL) AS INTEGER)
           AS active_automations,
         CAST(COUNT(*) FILTER (
           WHERE status = 'active' AND schedule IS NOT NULL
-            AND next_run_at < current_timestamp
+            AND next_run_at < current_timestamp AND NOT device_deferred
         ) AS INTEGER) AS overdue_automations,
-        MAX(CASE
-          WHEN status = 'active' AND schedule IS NOT NULL
-            AND next_run_at < current_timestamp
-            THEN EXTRACT(EPOCH FROM (current_timestamp - next_run_at)) / 3600.0
-          ELSE NULL
-        END) AS max_overdue_hours
-      FROM automations
+        MAX(CASE WHEN status = 'active' AND schedule IS NOT NULL
+          AND next_run_at < current_timestamp AND NOT device_deferred
+          THEN EXTRACT(EPOCH FROM (current_timestamp - next_run_at)) / 3600.0
+        END) AS max_overdue_hours,
+        CAST(COUNT(*) FILTER (WHERE status = 'active' AND schedule IS NOT NULL
+          AND next_run_at < current_timestamp AND device_deferred
+        ) AS INTEGER) AS deferred_device_automations,
+        MAX(CASE WHEN status = 'active' AND schedule IS NOT NULL
+          AND next_run_at < current_timestamp AND device_deferred
+          THEN EXTRACT(EPOCH FROM (current_timestamp - next_run_at)) / 3600.0
+        END) AS max_device_deferral_hours
+      FROM scheduling
     `;
 
     const activeAutomations = Number(automationStats[0]?.active_automations || 0);
     const overdueAutomations = Number(automationStats[0]?.overdue_automations || 0);
     const automationsOverdueByHours = Number(automationStats[0]?.max_overdue_hours || 0);
+    const deferredDeviceAutomations = Number(
+      automationStats[0]?.deferred_device_automations || 0
+    );
+    const oldestDeviceDeferralHours = Number(
+      automationStats[0]?.max_device_deferral_hours || 0
+    );
 
     // Pending automation runs stuck past AUTOMATION_RUN_STALE_INTERVAL — the reaper
     // should have timed these out; a growing count means the reaper/dispatch is
@@ -237,6 +268,14 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
       WHERE run_type = 'automation'
         AND status = 'pending'
         AND created_at < current_timestamp - INTERVAL '${intervals.automationRunStaleInterval}'
+        AND NOT (
+          COALESCE(approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
+          AND NULLIF(approved_input->>'device_worker_id', '') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM device_workers dw
+            WHERE dw.id::text = approved_input->>'device_worker_id'
+          )
+        )
     `
     );
     const stalePendingAutomationRuns = Number(
@@ -343,6 +382,8 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         overdueAutomations,
         automationsOverdueByHours: Math.round(automationsOverdueByHours * 10) / 10,
         stalePendingAutomationRuns,
+        deferredDeviceAutomations,
+        oldestDeviceDeferralHours: Math.round(oldestDeviceDeferralHours * 10) / 10,
         stalePendingApprovals,
         oldestPendingApprovalDays: Math.round(oldestPendingApprovalDays * 10) / 10,
       },
@@ -365,6 +406,8 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         overdueAutomations: 0,
         automationsOverdueByHours: 0,
         stalePendingAutomationRuns: 0,
+        deferredDeviceAutomations: 0,
+        oldestDeviceDeferralHours: 0,
         stalePendingApprovals: 0,
         oldestPendingApprovalDays: 0,
       },

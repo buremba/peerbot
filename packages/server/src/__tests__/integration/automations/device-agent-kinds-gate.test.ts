@@ -24,10 +24,11 @@
 
 import type { Context } from 'hono';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
+import { materializeDueAutomationRuns } from '../../../automations/automation';
+import { parsePgTextArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { listDeviceWorkers } from '../../../worker-api/device-management';
-import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
-import { parsePgTextArray } from '../../../db/client';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
@@ -184,6 +185,36 @@ describe('device agent_kinds advertisement + automation claim gate', () => {
       SELECT agent_kinds FROM device_workers WHERE id = ${ctx.deviceWorkerId}::uuid
     `;
     expect(parsePgTextArray(afterOmit.agent_kinds)).toEqual(['claude-code', 'pi']);
+  });
+
+  it('conservatively defers scheduling after an incompatible advertisement survives a downgrade poll', async () => {
+    const ctx = await setup({ workerId: 'mac-kinds-downgrade', agentKind: 'claude-code' });
+    await poll(ctx, ['codex']);
+    await ctx.sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp - interval '1 minute'
+      WHERE id = ${ctx.automationId}
+    `;
+    const [before] = await ctx.sql`
+      SELECT next_run_at FROM automations WHERE id = ${ctx.automationId}
+    `;
+
+    // Omission is the legacy/downgrade contract: the live claim is permissive,
+    // but the durable row retains the last authoritative advertisement. The
+    // scheduler therefore prefers a retryable deferral over creating a run the
+    // last capable client said this device could not execute.
+    await poll(ctx);
+    expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(0);
+
+    const [after] = await ctx.sql`
+      SELECT next_run_at FROM automations WHERE id = ${ctx.automationId}
+    `;
+    expect(new Date(after.next_run_at).toISOString()).toBe(
+      new Date(before.next_run_at).toISOString()
+    );
+    expect(
+      await ctx.sql`SELECT id FROM runs WHERE automation_id = ${ctx.automationId}`
+    ).toHaveLength(0);
   });
 
   it('claims a run whose agent_kind the device advertised', async () => {

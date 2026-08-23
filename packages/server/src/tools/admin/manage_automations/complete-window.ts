@@ -38,7 +38,7 @@ import {
   processAutomationClassifications,
   stripFields,
 } from '../../../automations/classifier-extraction';
-import { advanceAutomationSchedule } from '../../../automations/schedule-cursor';
+import { advanceAutomationScheduleAfterSuccessfulWindow } from '../../../automations/schedule-cursor';
 import { executeReaction } from '../../../automations/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
 import type { Outputs } from '../../../types/automations';
@@ -943,7 +943,12 @@ export async function handleCompleteWindow(
           timeGranularity
         );
       }
-      await advanceAutomationSchedule(tx, automationId);
+      await advanceAutomationScheduleAfterSuccessfulWindow(
+        tx,
+        automationId,
+        Boolean(lockedRun.device_worker_id),
+        timeGranularity
+      );
     }
 
     logger.info(

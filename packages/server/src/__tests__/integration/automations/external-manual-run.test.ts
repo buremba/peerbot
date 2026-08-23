@@ -539,6 +539,78 @@ describe('external manual Automation execution', () => {
     })) as { completed_now: boolean };
     expect(sameClaimRetry.completed_now).toBe(true);
 
+    const legacyWindowStart = new Date(
+      new Date(queuedWindowStart).getTime() + 14 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const legacyWindowEnd = new Date(
+      new Date(queuedWindowEnd).getTime() + 14 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const inProcessRun = await createAutomationRun({
+      organizationId: workspace.org.id,
+      automationId,
+      agentId: null,
+      windowStart: legacyWindowStart,
+      windowEnd: legacyWindowEnd,
+      dispatchSource: 'manual',
+    });
+    await sql`
+      UPDATE runs
+      SET approved_input = approved_input - 'granularity'
+      WHERE id = ${inProcessRun.runId}
+    `;
+
+    // An external pending read has no authoritative claim context and must not
+    // reconstruct a missing durable snapshot from the live schedule.
+    await expect(
+      handleAutomationMode(
+        { automation_id: automationId, run_id: inProcessRun.runId },
+        TEST_ENV,
+        sql,
+        {
+          organizationId: workspace.org.id,
+          userId: workspace.users.owner.id,
+        }
+      )
+    ).rejects.toThrow(/missing a valid queued granularity snapshot/);
+    const [pendingWithoutGranularity] = await sql<{
+      status: string;
+      claimed_by: string | null;
+    }>`
+      SELECT status, claimed_by FROM runs WHERE id = ${inProcessRun.runId}
+    `;
+    expect(pendingWithoutGranularity).toEqual({ status: 'pending', claimed_by: null });
+
+    // origin/main already resolves trusted claimedWindow context for the
+    // matching claimed/running in-process run. Preserve that established lane
+    // without adding a general schedule-based fallback for external callers.
+    await sql`
+      UPDATE runs
+      SET status = 'running'
+      WHERE id = ${inProcessRun.runId}
+    `;
+    const inProcessRead = await handleAutomationMode(
+      { automation_id: automationId, run_id: inProcessRun.runId },
+      TEST_ENV,
+      sql,
+      {
+        organizationId: workspace.org.id,
+        userId: null,
+        claimedWindow: {
+          runId: inProcessRun.runId,
+          windowStart: legacyWindowStart,
+          windowEnd: legacyWindowEnd,
+          templateVersionId: queuedVersionId,
+          granularity: 'weekly',
+        },
+      }
+    );
+    expect(inProcessRead.window_lag?.granularity).toBe('weekly');
+    const inProcessToken = await verifyWindowToken(inProcessRead.window_token, TEST_ENV);
+    expect(inProcessToken).toMatchObject({
+      run_id: inProcessRun.runId,
+      granularity: 'weekly',
+    });
+
     const promoted = await sql<{
       parent_id: number | null;
       metadata: Record<string, unknown>;

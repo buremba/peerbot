@@ -427,7 +427,8 @@ async function loadBoundAutomationRun(
   sql: DbClient,
   organizationId: string,
   automationId: number,
-  runId: number
+  runId: number,
+  claimedGranularity?: AutomationTimeGranularity
 ): Promise<BoundAutomationRun> {
   const rows = await sql<{ approved_input: unknown }>`
     SELECT approved_input
@@ -466,7 +467,13 @@ async function loadBoundAutomationRun(
       409
     );
   }
-  if (!isAutomationTimeGranularity(input.granularity)) {
+  // claimedGranularity comes only from the server-resolved matching
+  // claimed/running run. Pending external runs must carry their own durable
+  // snapshot; do not infer a live schedule fallback here.
+  const granularity = isAutomationTimeGranularity(input.granularity)
+    ? input.granularity
+    : claimedGranularity;
+  if (!granularity) {
     throw new ToolUserError(
       `Automation run ${runId} is missing a valid queued granularity snapshot.`,
       409
@@ -489,7 +496,7 @@ async function loadBoundAutomationRun(
     versionId,
     windowStart,
     windowEnd,
-    granularity: input.granularity,
+    granularity,
     triggerContentIds: automationTriggerSignals(input)
       .filter(isWorkspaceEventTriggerSignal)
       .map((signal) => signal.event_id),
@@ -536,7 +543,8 @@ export async function handleAutomationMode(
           sql,
           context.organizationId,
           automationId,
-          Number(args.run_id)
+          Number(args.run_id),
+          context.claimedWindow?.granularity
         )
       : null;
 

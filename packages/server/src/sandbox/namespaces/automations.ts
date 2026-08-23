@@ -13,6 +13,7 @@ import type {
 	AutomationExecutionConfig,
 	AutomationSource,
 	AutomationTrigger,
+	AutomationTriggerResult,
 	ListAutomationsArgs,
 	ManageAutomationsResult,
 } from "@lobu/core/contracts/tools/manage-automations";
@@ -141,7 +142,7 @@ export interface AutomationsNamespace {
 	createVersion(input: AutomationCreateVersionInput): Promise<unknown>;
 	completeWindow(input: AutomationCompleteWindowInput): Promise<unknown>;
 	claimNextWindow(input: AutomationClaimNextWindowInput): Promise<AutomationClaimNextWindowResult>;
-	trigger(input: { automation_id: AutomationId }): Promise<unknown>;
+	trigger(input: { automation_id: AutomationId }): Promise<AutomationTriggerResult>;
 	/** Delete one or more Automations. */
 	delete(input: { automation_ids: AutomationId[] }): Promise<unknown>;
 	setReactionScript(input: {

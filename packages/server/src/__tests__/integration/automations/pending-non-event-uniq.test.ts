@@ -16,7 +16,10 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
-import { createAutomationRun } from '../../../runs/queue-service';
+import {
+  createAutomationRun,
+  createAutomationRunInTransaction,
+} from '../../../runs/queue-service';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
@@ -163,14 +166,22 @@ describe('createAutomationRun pending non-event unique index', () => {
 
     // Different dispatch_source + window → different idempotency key; only the
     // partial pending-non-event index conflicts (status=pending, non-event).
-    const manualPromise = createAutomationRun({
-      organizationId: workspace.org.id,
-      automationId,
-      agentId,
-      windowStart: '2026-06-01T00:00:00.000Z',
-      windowEnd: '2026-06-02T00:00:00.000Z',
-      dispatchSource: 'manual',
-    });
+    // Keep the conflicting insert inside a caller-owned transaction. Recovery
+    // must roll the unique violation back to a savepoint before querying the
+    // winning row; otherwise PostgreSQL leaves this outer transaction aborted.
+    const manualPromise = (sql as unknown as DbClient).begin((tx) =>
+      createAutomationRunInTransaction(
+        {
+          organizationId: workspace.org.id,
+          automationId,
+          agentId,
+          windowStart: '2026-06-01T00:00:00.000Z',
+          windowEnd: '2026-06-02T00:00:00.000Z',
+          dispatchSource: 'manual',
+        },
+        tx
+      )
+    );
 
     await waitForLockWait(sql);
     release.resolve();

@@ -9,7 +9,10 @@ import type { AutomationClaimNextWindowResult } from '@lobu/core/contracts/tools
 import type { DbClient } from '../../../db/client';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
-import { claimPendingAutomationRun, createAutomationRun } from '../../../runs/queue-service';
+import {
+  claimPendingAutomationRun,
+  createAutomationRunInTransaction,
+} from '../../../runs/queue-service';
 import { classifyRunOutcome } from '../../../runs/run-outcome';
 import { ToolUserError } from '../../../utils/errors';
 import { ensureExpectedAutomationWindowStart } from '../../../utils/window-utils';
@@ -180,7 +183,7 @@ export async function handleClaimNextWindow(
       `;
       const run = pending
         ? { runId: Number(pending.id) }
-        : await createAutomationRun(
+        : await createAutomationRunInTransaction(
             {
               organizationId: automation.organization_id,
               automationId,

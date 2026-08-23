@@ -3,14 +3,16 @@
  *   trigger, set_reaction_script
  */
 
-import { getDb } from "../../../db/client";
+import { getDb, type DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
 import { isLobuGatewayRunning } from "../../../lobu/gateway";
 import { ToolUserError } from "../../../utils/errors";
 import logger from "../../../utils/logger";
 import {
+  dispatchPendingAutomationRuns,
+  enqueueAutomationRunForAutomationInTransaction,
   getAutomationRunInfo,
-  queueAndDispatchAutomationRun,
+  parseAutomationRunPayload,
 } from "../../../automations/automation";
 import {
   compileReactionScript,
@@ -18,12 +20,70 @@ import {
   validateReactionDefaultExport,
 } from "../../../automations/reaction-executor";
 import { assertAutomationInstructions } from "../../../automations/triggers";
-import type { AutomationTrigger } from "@lobu/core/contracts/tools/manage-automations";
+import type {
+  AutomationTrigger,
+  AutomationTriggerExecution,
+  AutomationTriggerResult,
+} from "@lobu/core/contracts/tools/manage-automations";
 import type { ToolContext } from "../../registry";
 import { recordToolConfigChange } from "../helpers/config-audit";
 import { requireExists } from "../helpers/db-helpers";
 import type { ManageAutomationsArgs } from "../manage_automations";
 import { resolveAutomationExecutor } from "./executors";
+
+async function loadTriggerExecution(
+  sql: DbClient,
+  runId: number,
+  automationId: string,
+): Promise<AutomationTriggerExecution> {
+  const [run] = await sql<{ approved_input: unknown }>`
+    SELECT approved_input
+    FROM runs
+    WHERE id = ${runId}
+      AND automation_id = ${Number(automationId)}
+      AND run_type = 'automation'
+    LIMIT 1
+  `;
+  const payload = parseAutomationRunPayload(run?.approved_input);
+  if (!payload || payload.automation_id !== Number(automationId)) {
+    throw new Error("Automation run is missing a valid dispatch payload.");
+  }
+  const executor = resolveAutomationExecutor({
+    agentId: payload.agent_id,
+    deviceWorkerId: payload.device_worker_id,
+    agentKind: payload.agent_kind,
+  });
+  if (executor?.kind === "agent") {
+    return {
+      lane: "managed_agent",
+      owner: "lobu",
+      agent_id: executor.agentId,
+      next_action: { kind: "handled_elsewhere" },
+    };
+  }
+  if (executor?.kind === "device") {
+    return {
+      lane: "device_worker",
+      owner: "device",
+      device_worker_id: executor.deviceWorkerId,
+      agent_kind: executor.agentKind,
+      next_action: { kind: "handled_elsewhere" },
+    };
+  }
+  return {
+    lane: "external_client",
+    owner: "caller",
+    next_action: {
+      kind: "complete_window",
+      read: {
+        method: "knowledge.read",
+        input: { automation_id: payload.automation_id, run_id: runId },
+      },
+      // biome-ignore lint/suspicious/noThenProperty: Public protocol field required by the trigger handoff contract.
+      then: "automations.completeWindow",
+    },
+  };
+}
 
 // ============================================
 // handleTrigger
@@ -32,57 +92,49 @@ import { resolveAutomationExecutor } from "./executors";
 export async function handleTrigger(
   args: ManageAutomationsArgs,
   _env: Env,
-): Promise<{
-  action: "trigger";
-  automation_id: string;
-  run_id: number;
-  status: string;
-}> {
+): Promise<AutomationTriggerResult> {
   const sql = getDb();
 
   if (!args.automation_id) {
     throw new ToolUserError("automation_id is required for trigger action", 400);
   }
+  const automationId = args.automation_id;
 
-  const [automation] = await sql<{
-    agent_id: string | null;
-    device_worker_id: string | null;
-    agent_kind: string | null;
-  }>`
-    SELECT agent_id, device_worker_id::text AS device_worker_id, agent_kind
-    FROM automations
-    WHERE id = ${Number(args.automation_id)}
-    LIMIT 1
-  `;
-  const executor = automation
-    ? resolveAutomationExecutor({
-        agentId: automation.agent_id,
-        deviceWorkerId: automation.device_worker_id,
-        agentKind: automation.agent_kind,
-      })
-    : null;
-  if (executor?.kind === "agent" && !isLobuGatewayRunning()) {
-    throw new Error("Embedded Lobu is not available.");
-  }
+  const queued = await sql.begin(async (tx) => {
+    const run = await enqueueAutomationRunForAutomationInTransaction(
+      Number(automationId),
+      "manual",
+      tx,
+    );
+    const execution = await loadTriggerExecution(
+      tx,
+      run.runId,
+      automationId,
+    );
+    if (execution.lane === "managed_agent" && !isLobuGatewayRunning()) {
+      throw new Error("Embedded Lobu is not available.");
+    }
+    return { ...run, execution };
+  });
+  const dispatch = await dispatchPendingAutomationRuns({
+    db: sql,
+    runIds: [queued.runId],
+  });
+  const runInfo = await getAutomationRunInfo(queued.runId, sql);
 
-  const dispatchResult = await queueAndDispatchAutomationRun(
-    Number(args.automation_id),
-    "manual",
-    sql,
-  );
-
-  if (dispatchResult.dispatch.failed > 0) {
-    const failedRun = await getAutomationRunInfo(dispatchResult.runId, sql);
+  if (dispatch.failed > 0) {
     throw new Error(
-      failedRun?.error_message || "Failed to dispatch Automation run.",
+      runInfo?.error_message || "Failed to dispatch Automation run.",
     );
   }
 
   return {
     action: "trigger",
-    automation_id: args.automation_id,
-    run_id: dispatchResult.runId,
-    status: dispatchResult.status,
+    automation_id: automationId,
+    run_id: queued.runId,
+    status: runInfo?.status ?? queued.status,
+    created: queued.created,
+    execution: queued.execution,
   };
 }
 

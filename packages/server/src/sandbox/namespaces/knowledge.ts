@@ -66,6 +66,8 @@ export interface KnowledgeReadInput {
 	content_ids?: number[];
 	/** Fetch structured knowledge for an Automation window. */
 	automation_id?: number;
+	/** Bind an Automation read to the queued run's version, window, and trigger inputs. */
+	run_id?: number;
 	since?: string;
 	until?: string;
 	limit?: number;

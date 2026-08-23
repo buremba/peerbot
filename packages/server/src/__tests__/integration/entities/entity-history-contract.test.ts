@@ -147,6 +147,57 @@ describe('entity history contracts', () => {
     expect(after[0].count).toBe(before[0].count);
   });
 
+  it('rolls a relationship link back when its canonical event cannot be appended', async () => {
+    const sql = getTestDb();
+    await workspace.owner.entity_schema.createRelType({
+      slug: 'atomic-related-brand',
+      name: 'Atomic Related Brand',
+    });
+    const from = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Atomic From',
+    })) as { entity: { id: number } };
+    const to = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Atomic To',
+    })) as { entity: { id: number } };
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_relationship_link_event() RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.metadata->>'_lobu_event_type' = 'relationship.linked' THEN
+          RAISE EXCEPTION 'simulated relationship event persistence failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_fail_relationship_link_event_trg
+        BEFORE INSERT ON events
+        FOR EACH ROW EXECUTE FUNCTION test_fail_relationship_link_event();
+    `);
+    try {
+      await expect(
+        workspace.owner.entities.link({
+          from_entity_id: from.entity.id,
+          to_entity_id: to.entity.id,
+          relationship_type_slug: 'atomic-related-brand',
+        })
+      ).rejects.toThrow(/relationship event persistence failure/i);
+    } finally {
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS test_fail_relationship_link_event_trg ON events;
+        DROP FUNCTION IF EXISTS test_fail_relationship_link_event();
+      `);
+    }
+    const edges = await sql`
+      SELECT id FROM entity_relationships
+      WHERE organization_id = ${workspace.org.id}
+        AND from_entity_id = ${from.entity.id}
+        AND to_entity_id = ${to.entity.id}
+        AND deleted_at IS NULL
+    `;
+    expect(edges).toHaveLength(0);
+  });
+
   it('force-deletes a tree with event history by detaching event references, not deleting events', async () => {
     const root = (await workspace.owner.entities.create({ type: 'brand', name: 'Purged Root' })) as {
       entity: { id: number };

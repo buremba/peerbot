@@ -18,20 +18,14 @@ import {
   type AuditEventType,
   formatAuditEventType,
 } from './audit-event-type';
-import type {
-  AuditLifecycleSubject,
-  EdgeOp,
-} from '../automations/platform-event-catalog';
+import type { AuditLifecycleSubject, EdgeOp } from '../automations/platform-event-catalog';
 import {
   type AuditResourceKind,
   type ConfigResourceKind,
   redactConfigState,
   type WorkspaceAuditResourceKind,
 } from './config-redaction';
-import {
-  lookupGeoEnrichment,
-  mergeEnrichedMetadata,
-} from './geo-enrichment';
+import { lookupGeoEnrichment, mergeEnrichedMetadata } from './geo-enrichment';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 import { stripNul, stripNulDeep } from './strip-nul';
@@ -371,8 +365,7 @@ function isSemanticallyEqual(
     existing.payload_type === (params.payloadType ?? 'text') &&
     stableJson(existing.payload_data ?? {}) === stableJson(params.payloadData ?? {}) &&
     stableJson(existing.payload_template ?? null) === stableJson(params.payloadTemplate ?? null) &&
-    semanticAttachmentState(existing.attachments) ===
-      semanticAttachmentState(params.attachments) &&
+    semanticAttachmentState(existing.attachments) === semanticAttachmentState(params.attachments) &&
     (existing.author_name ?? null) === (params.authorName ?? null) &&
     (existing.source_url ?? null) === (params.sourceUrl ?? null) &&
     // Only compare occurred_at when the caller supplied one. Insert defaults a
@@ -565,8 +558,7 @@ async function loadEventLineage(
     feedId: nullableNumber(prior.feed_id),
     runId: params.runId ?? nullableNumber(prior.run_id),
     automationId: params.automationId ?? nullableNumber(prior.automation_id),
-    automationVersionId:
-      params.automationVersionId ?? nullableNumber(prior.automation_version_id),
+    automationVersionId: params.automationVersionId ?? nullableNumber(prior.automation_version_id),
     parentOriginId: params.parentOriginId ?? prior.origin_parent_id ?? null,
     identityNs: prior.identity_ns ?? null,
     identityKey: prior.identity_key ?? null,
@@ -616,7 +608,8 @@ export async function insertEvent(
   const sql = options?.sql ?? getDb();
   // Explicit successors inherit connector lineage from their predecessor even
   // when the caller omits (or disagrees about) connectorKey.
-  const inheritedConnectorRows = params.supersedesEventId != null
+  const inheritedConnectorRows =
+    params.supersedesEventId != null
     ? ((await sql`
         SELECT connector_key FROM events
         WHERE id = ${params.supersedesEventId}
@@ -688,9 +681,7 @@ export async function insertEvent(
   // Core find→decide→insert, parameterized on the active SQL handle so it can
   // run either directly on the singleton pool or inside the dedup transaction
   // below (which holds an advisory lock for the duration).
-  const runInsert = async (
-    activeSql: DbClient
-  ): Promise<InsertedEvent> => {
+  const runInsert = async (activeSql: DbClient): Promise<InsertedEvent> => {
     let supersedesEventId = params.supersedesEventId ?? null;
 
     if (options?.onConflictUpdate) {
@@ -731,7 +722,10 @@ export async function insertEvent(
             // observations may still have moved; reconcile them on this row.
             const stateWritten = await applyVolatileState(
               existingRow.id,
-              { metadata: existing.metadata ?? null, score: existing.score ?? null },
+              {
+                metadata: existing.metadata ?? null,
+                score: existing.score ?? null,
+              },
               params,
               activeSql
             );
@@ -982,9 +976,7 @@ export async function insertEvent(
   // (The dedup path can only derive a supersede when connectionId+originId are
   // both present, and that case is already inside the advisory-lock tx above.)
   if (params.supersedesEventId != null && !options?.sql) {
-    return sql.begin(async (tx) =>
-      runInsert(tx)
-    ) as Promise<InsertedEvent>;
+    return sql.begin(async (tx) => runInsert(tx)) as Promise<InsertedEvent>;
   }
 
   return runInsert(sql);
@@ -994,7 +986,7 @@ export async function insertEvent(
 // Change Event (fire-and-forget audit trail)
 // ============================================
 
-interface ChangeEventParams {
+export interface ChangeEventParams {
   entityIds: number[];
   organizationId: string;
   /**
@@ -1041,37 +1033,9 @@ async function queueWorkspaceEventActivation(args: {
   actingRunId: number | null;
 }): Promise<void> {
   try {
-    const subscribed = await findSubscribedWorkspaceEventTypes(
-      args.organizationId,
-      [args.eventType]
-    );
-    if (!subscribed.has(args.eventType)) return;
-    // Inherit the producing run's chain when there is one; otherwise this row
-    // genuinely starts a chain. Resolved only after the subscription check, so
-    // an unsubscribed org never pays for the lookup.
-    const inherited =
-      args.producerAutomationId == null || args.actingRunId == null
-        ? null
-        : await loadRunEventCausality(
-            args.organizationId,
-            args.actingRunId,
-            args.producerAutomationId
-          );
     const sql = getDb();
     await sql.begin(async (tx) => {
-      await enqueueWorkspaceEventActivations(tx, [
-        {
-          organizationId: args.organizationId,
-          eventId: args.eventId,
-          rootEventIds: inherited?.rootEventIds ?? [args.eventId],
-          causalAutomationIds:
-            inherited?.causalAutomationIds ??
-            (args.producerAutomationId == null
-              ? []
-              : [args.producerAutomationId]),
-          depth: inherited?.depth ?? 1,
-        },
-      ]);
+      await queueWorkspaceEventActivationInTransaction(args, tx);
     });
   } catch (err) {
     logger.error(
@@ -1086,9 +1050,50 @@ async function queueWorkspaceEventActivation(args: {
   }
 }
 
+/** Append the activation task on the same transaction as its platform event. */
+async function queueWorkspaceEventActivationInTransaction(
+  args: {
+    organizationId: string;
+    eventId: number;
+    eventType: string;
+    producerAutomationId: number | null;
+    actingRunId: number | null;
+  },
+  tx: DbClient
+): Promise<void> {
+    const subscribed = await findSubscribedWorkspaceEventTypes(
+      args.organizationId,
+    [args.eventType],
+    tx
+    );
+    if (!subscribed.has(args.eventType)) return;
+    const inherited =
+      args.producerAutomationId == null || args.actingRunId == null
+        ? null
+        : await loadRunEventCausality(
+            args.organizationId,
+            args.actingRunId,
+          args.producerAutomationId,
+          tx
+          );
+      await enqueueWorkspaceEventActivations(tx, [
+        {
+          organizationId: args.organizationId,
+          eventId: args.eventId,
+          rootEventIds: inherited?.rootEventIds ?? [args.eventId],
+          causalAutomationIds:
+            inherited?.causalAutomationIds ??
+        (args.producerAutomationId == null ? [] : [args.producerAutomationId]),
+          depth: inherited?.depth ?? 1,
+        },
+      ]);
+}
+
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
 
 interface ConnectionlessAuditInsertOptions {
+  /** Join the state mutation transaction and make event + activation atomic. */
+  sql?: DbClient;
   /**
    * Serialize this insert against a concurrent force-delete of the entities it
    * references, and omit ids that lost the race. Whichever side commits first
@@ -1114,10 +1119,12 @@ interface ConnectionlessAuditInsertOptions {
  * ordinary readers and non-key updates never wait on an audit write.
  */
 async function insertAuditEventPruningDeletedEntityRefs(
-  params: InsertEventParams
+  params: InsertEventParams,
+  db: DbClient,
+  afterPersist?: (event: InsertedEvent, tx: DbClient) => Promise<void>
 ): Promise<InsertedEvent> {
   const entityIdsLiteral = `{${params.entityIds.join(',')}}`;
-  return getDb().begin(async (tx) => {
+  const write = async (tx: DbClient) => {
     await tx`
       SELECT 1 FROM organization WHERE id = ${params.organizationId} FOR KEY SHARE
     `;
@@ -1134,9 +1141,12 @@ async function insertAuditEventPruningDeletedEntityRefs(
         ...params,
         entityIds: params.entityIds.filter((id) => survivingIds.has(id)),
       },
-      { sql: tx }
+      { sql: tx, afterPersist }
     );
-  }) as Promise<InsertedEvent>;
+  };
+  return (
+    typeof db.savepoint === 'function' ? write(db) : db.begin(write)
+  ) as Promise<InsertedEvent>;
 }
 
 /**
@@ -1174,8 +1184,11 @@ export async function insertConnectionlessAuditEvent(
   // that already resolved its producer keeps saying so; absent both, the row is
   // a genuine root (a person, a cron tick, a connector sync).
   const actingScope = getActingAutomationScope();
-  const producerAutomationId =
-    params.automationId ?? actingScope?.automationId ?? null;
+  const producerAutomationId = params.automationId ?? actingScope?.automationId ?? null;
+  const actingRunId =
+    actingScope != null && actingScope.automationId === producerAutomationId
+      ? actingScope.runId
+      : null;
 
   try {
     const eventParams = {
@@ -1184,26 +1197,43 @@ export async function insertConnectionlessAuditEvent(
       automationId: producerAutomationId,
       metadata,
     };
+    const afterPersist = options?.sql
+      ? (event: InsertedEvent, tx: DbClient) =>
+          queueWorkspaceEventActivationInTransaction(
+            {
+              organizationId: params.organizationId,
+              eventId: event.id,
+              eventType: formattedEventType,
+              producerAutomationId,
+              actingRunId,
+            },
+            tx
+          )
+      : undefined;
     const inserted =
       options?.lockAndPruneEntityRefs && params.entityIds.length > 0
-        ? await insertAuditEventPruningDeletedEntityRefs(eventParams)
-        : await insertEvent(eventParams);
+        ? await insertAuditEventPruningDeletedEntityRefs(
+            eventParams,
+            options?.sql ?? getDb(),
+            afterPersist
+          )
+        : await insertEvent(eventParams, {
+            ...(options?.sql ? { sql: options.sql } : {}),
+            ...(afterPersist ? { afterPersist } : {}),
+          });
+    if (!options?.sql) {
     await queueWorkspaceEventActivation({
       organizationId: params.organizationId,
       eventId: inserted.id,
       eventType: formattedEventType,
       producerAutomationId,
-      // Only the ambient scope knows the run; an explicitly-passed producer
-      // carries no run reference, so such a row starts its own chain.
-      actingRunId:
-        actingScope != null &&
-        actingScope.automationId === producerAutomationId
-          ? actingScope.runId
-          : null,
+        actingRunId,
     });
+    }
     return inserted;
   } catch (error) {
     if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX)) throw error;
+    if (options?.sql) throw error;
     const sql = getDb();
     const existing = await sql`
       SELECT id, entity_ids, origin_id, title, semantic_type, created_at
@@ -1252,7 +1282,8 @@ export function recordChangeEvent(params: ChangeEventParams): void {
 
   retryWithBackoff(
     () =>
-      insertConnectionlessAuditEvent({
+      insertConnectionlessAuditEvent(
+        {
         entityIds: params.entityIds,
         organizationId: params.organizationId,
         originId: externalId,
@@ -1263,7 +1294,8 @@ export function recordChangeEvent(params: ChangeEventParams): void {
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
       },
-      { subject: params.subject, op: params.op }),
+        { subject: params.subject, op: params.op }
+      ),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -1280,13 +1312,36 @@ export function recordChangeEvent(params: ChangeEventParams): void {
   });
 }
 
+/** Canonical entity.updated event joined to its semantic mutation transaction. */
+export async function insertChangeEventInTransaction(
+  params: ChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent | null> {
+  if (params.entityIds.length === 0) return null;
+  return insertConnectionlessAuditEvent(
+    {
+      entityIds: params.entityIds,
+      organizationId: params.organizationId,
+      originId: `change_${crypto.randomUUID()}`,
+      title: params.title,
+      content: params.content,
+      semanticType: 'change',
+      metadata: params.metadata,
+      createdBy: params.createdBy ?? null,
+      clientId: params.clientId ?? null,
+    },
+    { subject: params.subject, op: params.op },
+    { sql }
+  );
+}
+
 interface EdgeFieldChange {
   field: string;
   old: unknown;
   new: unknown;
 }
 
-interface EdgeChangeEventParams {
+export interface EdgeChangeEventParams {
   organizationId: string;
   relationshipId: number;
   fromEntityId: number;
@@ -1327,7 +1382,8 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
 
   retryWithBackoff(
     () =>
-      insertConnectionlessAuditEvent({
+      insertConnectionlessAuditEvent(
+        {
         organizationId: params.organizationId,
         // Both endpoints, so the change surfaces on either entity's timeline.
         entityIds: [params.fromEntityId, params.toEntityId],
@@ -1351,7 +1407,8 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
       // `verb` not `op`: the stored op is imperative (link/unlink/update_link)
       // while the shared vocabulary is past-tense.
       { subject: 'relationship', op: verb },
-      { lockAndPruneEntityRefs: true }),
+        { lockAndPruneEntityRefs: true }
+      ),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -1366,6 +1423,39 @@ export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
       '[insert-event] edge change audit event DROPPED after retry — edge history is missing this row'
     );
   });
+}
+
+/** Canonical relationship transition event joined to its edge transaction. */
+export async function insertEdgeChangeEventInTransaction(
+  params: EdgeChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent> {
+  const verb: EdgeOp =
+    params.op === 'link' ? 'linked' : params.op === 'unlink' ? 'unlinked' : 'updated';
+  return insertConnectionlessAuditEvent(
+    {
+      organizationId: params.organizationId,
+      entityIds: [params.fromEntityId, params.toEntityId],
+      originId: `edge:${params.relationshipId}:${params.op}:${crypto.randomUUID()}`,
+      semanticType: 'change',
+      title: `Relationship ${verb}: ${params.relationshipTypeSlug ?? params.relationshipTypeId}`,
+      metadata: {
+        _lobu_relationship_change: true,
+        category: 'relationship',
+        op: params.op,
+        relationshipId: String(params.relationshipId),
+        fromEntityId: String(params.fromEntityId),
+        toEntityId: String(params.toEntityId),
+        relationshipTypeId: String(params.relationshipTypeId),
+        relationshipTypeSlug: params.relationshipTypeSlug,
+        changes: params.changes,
+      },
+      createdBy: params.createdBy ?? null,
+      clientId: params.clientId ?? null,
+    },
+    { subject: 'relationship', op: verb },
+    { lockAndPruneEntityRefs: true, sql }
+  );
 }
 
 // ============================================
@@ -1438,10 +1528,9 @@ interface StateChangeEventParams<ResourceKind extends AuditResourceKind> {
   clientId?: string | null;
 }
 
-interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
+export interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
 
-interface WorkspaceChangeEventParams
-  extends StateChangeEventParams<WorkspaceAuditResourceKind> {}
+interface WorkspaceChangeEventParams extends StateChangeEventParams<WorkspaceAuditResourceKind> {}
 
 /**
  * Record a state mutation as a `semantic_type='change'` event with the full
@@ -1464,7 +1553,8 @@ function recordStateChangeEvent(
 
   retryWithBackoff(
     () =>
-      insertConnectionlessAuditEvent({
+      insertConnectionlessAuditEvent(
+        {
         entityIds: [],
         organizationId: params.organizationId,
         originId: externalId,
@@ -1492,7 +1582,8 @@ function recordStateChangeEvent(
         createdBy: params.createdBy ?? null,
         clientId: params.clientId ?? null,
       },
-      { subject: params.resourceKind, op: params.op }),
+        { subject: params.resourceKind, op: params.op }
+      ),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(
@@ -1514,6 +1605,44 @@ export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
   recordStateChangeEvent(params, 'config');
 }
 
+/**
+ * Durable config audit seam for semantic mutations that already own a
+ * transaction. The config event and any subscribed Automation activation task
+ * commit with the state change; failures roll the whole mutation back.
+ */
+export async function insertConfigChangeEventInTransaction(
+  params: ConfigChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent> {
+  const originId = `config_${params.resourceKind}_${params.op}_${params.resourceId}_${crypto.randomUUID()}`;
+  const state = redactConfigState(params.resourceKind, params.state);
+  return insertConnectionlessAuditEvent(
+    {
+      entityIds: [],
+      organizationId: params.organizationId,
+      originId,
+      title: params.summary,
+      semanticType: 'change',
+      originType: `config_${params.resourceKind}_${params.op}`,
+      payloadType: 'empty',
+      payloadData: { state },
+      metadata: {
+        category: 'config',
+        resource_kind: params.resourceKind,
+        resource_id: String(params.resourceId),
+        op: params.op,
+        ...(params.changedFields?.length ? { changed_fields: params.changedFields } : {}),
+        ...(params.applyId ? { apply_id: params.applyId } : {}),
+        ...(params.actorSource ? { actor_source: params.actorSource } : {}),
+      },
+      createdBy: params.createdBy ?? null,
+      clientId: params.clientId ?? null,
+    },
+    { subject: params.resourceKind, op: params.op },
+    { sql }
+  );
+}
+
 export function recordWorkspaceChangeEvent(params: WorkspaceChangeEventParams): void {
   recordStateChangeEvent(params, 'workspace');
 }
@@ -1529,7 +1658,8 @@ export function recordLifecycleEvent(params: LifecycleEventParams): void {
   // silent drop skews the cumulative counts forever.
   retryWithBackoff(
     () =>
-      insertConnectionlessAuditEvent({
+      insertConnectionlessAuditEvent(
+        {
         entityIds: [],
         organizationId: params.organizationId,
         originId: externalId,
@@ -1545,7 +1675,8 @@ export function recordLifecycleEvent(params: LifecycleEventParams): void {
         },
         createdBy: params.createdBy ?? null,
       },
-      { subject: params.entityType, op: params.op }),
+        { subject: params.entityType, op: params.op }
+      ),
     AUDIT_EVENT_RETRY
   ).catch((err) => {
     logger.error(

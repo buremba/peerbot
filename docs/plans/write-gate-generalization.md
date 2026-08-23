@@ -399,3 +399,21 @@ so verbs like `execute`/`install` aren't crammed into create/update/delete seman
 code registry declares legal actions/effects/targets/predicate-fields per resource class.
 Closer to the Snowflake privilege model. Adopt when connector_action's own UI + the
 v1.1 predicate engine land.
+
+## 9. Entity-schema extension and durable transition signals
+
+`entity_schema` is a resource class in the same policy table and resolver. Its semantic
+actions are `create_type`, `update_type`, `delete_type`,
+`create_relationship_type`, `update_relationship_type`, and
+`delete_relationship_type`; relationship rule edits intentionally map to
+`update_relationship_type`. No policy row preserves the historical owner/admin immediate
+apply. A matching approval row persists one prepared command in the existing run/card,
+and approval applies that command in the same transaction as claim and terminalization.
+
+Platform event semantics remain deliberately narrow. The canonical entity signal is
+`entity.updated`; relationship signals are `relationship.linked`,
+`relationship.unlinked`, and `relationship.updated`. We do not add
+`entity.created/deleted/merged/unmerged`: those operations continue to change durable
+world state without implicitly becoming Automation signals. Canonical signals are emitted
+only from semantic mutation boundaries, never low-level row/projection writers, and state,
+event, and workspace-event activation task commit together.

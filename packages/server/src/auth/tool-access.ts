@@ -52,7 +52,11 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// stays admin-tier below. `trigger` is write-tier: manual activation is the
 	// open lane — any member (or their MCP client) may fire an Automation and
 	// complete the resulting run.
-	manage_automations: new Set(["claim_next_window", "complete_window", "trigger"]),
+	manage_automations: new Set([
+		"claim_next_window",
+		"complete_window",
+		"trigger",
+	]),
 	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the
 	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
 	// decide their own run. The handler enforces admin-or-run-owner per run — a
@@ -222,7 +226,7 @@ function getAction(args: unknown): string | null {
 function actionMatches(
 	policy: Record<string, Set<string> | null>,
 	toolName: string,
-	args: unknown
+	args: unknown,
 ): boolean {
 	if (!(toolName in policy)) return false;
 	const allowedActions = policy[toolName];
@@ -231,25 +235,10 @@ function actionMatches(
 	return !!action && allowedActions.has(action);
 }
 
-/**
- * Entity-type creation is write-visible because an MCP call only creates an
- * approval proposal. Relationship-type creation shares the same internal
- * `create` action but still mutates immediately and therefore remains admin.
- * The handler's inner action gate receives only `{ action }`, so direct
- * browser/CLI calls continue through the canonical admin check.
- */
-function isEntityTypeCreateProposal(toolName: string, args: unknown): boolean {
-	if (toolName !== "manage_entity_schema" || !args || typeof args !== "object") {
-		return false;
-	}
-	const input = args as { action?: unknown; schema_type?: unknown };
-	return input.action === "create" && input.schema_type === "entity_type";
-}
-
 export function requiresMemberWrite(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean
+	readOnlyHint: boolean,
 ): boolean {
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return false;
 	return actionMatches(MEMBER_WRITE_ACTIONS, toolName, args);
@@ -258,7 +247,7 @@ export function requiresMemberWrite(
 export function requiresOwnerAdmin(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean
+	readOnlyHint: boolean,
 ): boolean {
 	// query_sql / metric_series are read-tier (members may query their org's
 	// operational data). The auth/identity tables (oauth_tokens, oauth_clients,
@@ -276,10 +265,9 @@ export function requiresOwnerAdmin(
 export function getRequiredAccessLevel(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean
+	readOnlyHint: boolean,
 ): ToolAccessLevel {
 	if (toolName === "list_organizations") return "read";
-	if (isEntityTypeCreateProposal(toolName, args)) return "write";
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return "admin";
 	if (requiresMemberWrite(toolName, args, readOnlyHint)) return "write";
 	return "read";
@@ -303,7 +291,7 @@ export const SCOPE_CHECK_NOT_APPLICABLE: readonly string[] = ["*"];
 
 export function hasRequiredMcpScope(
 	requiredAccess: ToolAccessLevel,
-	scopes: readonly string[] | null | undefined
+	scopes: readonly string[] | null | undefined,
 ): boolean {
 	// Fail closed: a null/undefined scope set means the caller presented no
 	// MCP scope claim. It must NOT be treated as full access.
@@ -334,7 +322,7 @@ export function hasRequiredMcpScope(
  */
 export function resolveMaxAccessLevel(
 	memberRole: string | null | undefined,
-	scopes: readonly string[] | null | undefined
+	scopes: readonly string[] | null | undefined,
 ): ToolAccessLevel {
 	const roleLevel: ToolAccessLevel = !memberRole
 		? "read"
@@ -361,7 +349,7 @@ export function resolveMaxAccessLevel(
  */
 export function resolveSdkMaxAccessLevel(
 	memberRole: string | null | undefined,
-	scopes: readonly string[] | null | undefined
+	scopes: readonly string[] | null | undefined,
 ): ToolAccessLevel {
 	const current = resolveMaxAccessLevel(memberRole, scopes);
 	if (
@@ -379,7 +367,7 @@ export function isPublicReadable(toolName: string, args: unknown): boolean {
 }
 
 export function getPublicReadableActions(
-	toolName: string
+	toolName: string,
 ): Set<string> | null | undefined {
 	return PUBLIC_READ_ACTIONS[toolName];
 }

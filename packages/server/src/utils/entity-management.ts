@@ -29,13 +29,7 @@ import {
 	mutationPrincipalId,
 	automationIdFromPrincipalId,
 } from "../authz/entity-policy";
-import {
-	createDbClientFromEnv,
-	type DbClient,
-	getDb,
-	pgBigintArray,
-	pgTextArray,
-} from "../db/client";
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from "../db/client";
 import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
@@ -74,8 +68,9 @@ export type EntityTypeCountInput = {
 export async function countStoredEntitiesOfType(
 	typeId: number,
 	organizationId: string,
+	db: DbClient = getDb(),
 ): Promise<number> {
-	const sql = getDb();
+	const sql = db;
 	const rows = await sql`
     SELECT COUNT(*)::int as count
     FROM entities e
@@ -193,6 +188,8 @@ export async function getEntityCountsByTypes(
 interface EntityCreateOptions {
 	skipHooks?: boolean;
 	hookContext?: EntityHookContext;
+	/** Join an existing semantic mutation transaction when supplied. */
+	sql?: DbClient;
 	/**
 	 * Fields a human already approved on a create card. Absent means none, so an
 	 * escalate throws and the caller routes the create into an approval.
@@ -203,6 +200,23 @@ interface EntityCreateOptions {
 }
 
 interface EntityUpdateOptions {
+	/** Join an existing semantic mutation transaction when supplied. */
+	sql?: DbClient;
+	/**
+	 * Semantic caller hook executed after the row write but before commit. Low-level
+	 * projection writers omit it; manage_entity uses it for canonical entity.updated.
+	 */
+	afterPersist?: (
+		before: {
+			name: string | null;
+			slug: string | null;
+			parent_id: number | null;
+			metadata: Record<string, unknown> | null;
+			content: string | null;
+		},
+		after: CreatedEntity,
+		tx: DbClient,
+	) => Promise<void>;
 	policyPrincipalKind?: MutationPrincipalKind;
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
@@ -232,13 +246,13 @@ interface EntityUpdateOptions {
 // ============================================
 
 const CONVENIENCE_FIELDS = [
-  'domain',
-  'category',
-  'platform_type',
-  'main_market',
-  'market',
-  'link',
-  'external_ids',
+	"domain",
+	"category",
+	"platform_type",
+	"main_market",
+	"market",
+	"link",
+	"external_ids",
 ] as const;
 
 /**
@@ -253,10 +267,10 @@ function mergeConvenienceFields(
   const out = { ...base };
   for (const key of CONVENIENCE_FIELDS) {
     const value = data[key];
-    if (mode === 'update') {
+		if (mode === "update") {
       if (value !== undefined) out[key] = value;
-    } else if (key === 'external_ids') {
-      if (value && typeof value === 'object' && Object.keys(value).length > 0) {
+		} else if (key === "external_ids") {
+			if (value && typeof value === "object" && Object.keys(value).length > 0) {
         out[key] = value;
       }
     } else if (value) {
@@ -444,7 +458,9 @@ async function insertEntityRowWithConflictMode(
 ): Promise<InsertedEntityRow | null> {
 	const { tx, row } = params;
 	const embeddingLiteral = toVectorLiteral(row.embedding);
-	const conflictClause = onConflictDoNothing ? tx`ON CONFLICT DO NOTHING` : tx``;
+	const conflictClause = onConflictDoNothing
+		? tx`ON CONFLICT DO NOTHING`
+		: tx``;
 	const rows = await tx<InsertedEntityRow>`
     INSERT INTO entities (
       organization_id, entity_type_id, name, slug, parent_id, metadata,
@@ -522,7 +538,8 @@ export async function patchEntityRows(params: {
 	const hasName = patch.name !== undefined;
 	const hasSlug = patch.slug !== undefined;
 	const hasParent = patch.parentId !== undefined;
-	const hasCurrentViewTemplateVersion = patch.currentViewTemplateVersionId !== undefined;
+	const hasCurrentViewTemplateVersion =
+		patch.currentViewTemplateVersionId !== undefined;
 	const hasMetadata = patch.metadata !== undefined;
 	const hasFieldControls = patch.fieldControls !== undefined;
 	const hasEnabledClassifiers = patch.enabledClassifiers !== undefined;
@@ -784,17 +801,20 @@ export async function fullProposalVerdict(params: {
 async function preventEntityCycles(
 	entityId: number | null,
 	parentId: number | null,
+	db: DbClient = getDb(),
 ): Promise<void> {
   if (parentId === null) return;
 
-  const sql = getDb();
+	const sql = db;
   const MAX_DEPTH = 10;
   let currentId: number | null = parentId;
   let depth = 0;
 
   while (currentId !== null) {
     if ((entityId !== null && currentId === entityId) || ++depth >= MAX_DEPTH) {
-      throw new Error('Circular reference detected or hierarchy too deep (max 10 levels)');
+			throw new Error(
+				"Circular reference detected or hierarchy too deep (max 10 levels)",
+			);
     }
 
     const rows: Array<Record<string, unknown>> = await sql`
@@ -828,7 +848,10 @@ async function preventEntityCycles(
  * `entities_merged_into_fkey` (redirects — this function), and
  * `entity_merge_operations`' two (the ledger, deleted explicitly below).
  */
-async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<number[]> {
+async function loadEntityTreeIds(
+	sql: DbClient,
+	entityId: number,
+): Promise<number[]> {
   const rows = await sql<{ id: number }>`
     WITH RECURSIVE entity_tree AS (
       SELECT id
@@ -891,7 +914,7 @@ export async function createEntity(
 		}
 	}
 
-	const sql = getDb();
+	const sql = opts?.sql ?? getDb();
 
 	// Resolve entity_type slug → entity_types(id) via the schema search path:
 	//   1. The entity's own org (the user's tenant — local types win).
@@ -946,14 +969,14 @@ export async function createEntity(
 
 	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
 	if (data.parent_id) {
-		await preventEntityCycles(null, data.parent_id);
+		await preventEntityCycles(null, data.parent_id, sql);
 	}
 
 	const contentValue = data.content?.trim() || null;
 	const contentHash = data.content_hash || null;
 
 	try {
-		const inserted = await sql.begin(async (tx) => {
+		const inserted = await withEntityWriteTransaction(sql, async (tx) => {
 			return insertEntityRow({
 				tx,
 				// THE create path. Everything a tenant, an agent or the API creates
@@ -1026,21 +1049,20 @@ export async function createEntity(
 export async function updateEntity(
 	entityId: number,
 	data: Partial<EntityData>,
-	env: Env,
+	_env: Env,
 	ctx: ToolContext,
 	opts?: EntityUpdateOptions,
 ): Promise<
 	CreatedEntity & { fieldMerge?: FieldMergeInfo; deferred?: DeferredMutation }
 > {
-	const pgSql = createDbClientFromEnv(env);
-	const sql = getDb();
+	const sql = opts?.sql ?? getDb();
 
 	// Validate write access (uses PG for auth tables)
-	await requireWriteAccess(pgSql, entityId, ctx);
+	await requireWriteAccess(sql, entityId, ctx);
 
 	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
 	if (data.parent_id !== undefined && data.parent_id !== null) {
-		await preventEntityCycles(entityId, data.parent_id);
+		await preventEntityCycles(entityId, data.parent_id, sql);
 	}
 
 	// Generate new slug if provided or name is being updated
@@ -1084,10 +1106,18 @@ export async function updateEntity(
 	// Lock the entity row, merge metadata, and write in ONE transaction: concurrent
 	// updates to the same entity serialize on the row lock, fixing the pre-existing
 	// non-transactional read-modify-write race on entities.metadata.
-	const result = await sql.begin(async (tx) => {
+	const result = await withEntityWriteTransaction(sql, async (tx) => {
+		// Canonical change events take an organization FK lock before commit. Claim
+		// it before the entity row so organization deletion cannot hold the parent
+		// while waiting on this row in the opposite order.
+		await tx`
+			SELECT 1 FROM organization
+			WHERE id = ${ctx.organizationId}
+			FOR KEY SHARE
+		`;
 		const current = await tx`
       SELECT e.metadata, e.field_controls, e.organization_id, et.slug AS entity_type,
-             e.name, e.parent_id, e.content
+             e.name, e.slug, e.parent_id, e.content
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.id = ${entityId} AND e.deleted_at IS NULL
@@ -1175,8 +1205,7 @@ export async function updateEntity(
 					attribution: opts?.attribution ?? "agent",
 					parentRunId: opts?.parentRunId ?? null,
 					principalId:
-						opts?.principalId ??
-						mutationPrincipalId({ agentId: ctx.agentId }),
+						opts?.principalId ?? mutationPrincipalId({ agentId: ctx.agentId }),
 					ownerAgentId: opts?.ownerAgentId ?? null,
 					ownerResolved: opts?.ownerResolved ?? true,
 					entityTypeSlug: String(current[0].entity_type),
@@ -1378,7 +1407,10 @@ export async function updateEntity(
 				blocked: Object.fromEntries(
 					Object.keys(proposedFields).map((k) => [
 						k,
-						{ current: proposedCurrent[k] ?? null, proposed: proposedFields[k] },
+						{
+							current: proposedCurrent[k] ?? null,
+							proposed: proposedFields[k],
+						},
 					]),
 				),
 			};
@@ -1394,7 +1426,7 @@ export async function updateEntity(
 		if (sel.length === 0) {
 			throw new Error(`Entity ${entityId} not found`);
 		}
-		return {
+		const updated = {
 			...sel[0],
 			fieldMerge,
 			deferWholeWrite,
@@ -1408,6 +1440,20 @@ export async function updateEntity(
 			proposedFields: Record<string, unknown>;
 			proposedCurrent: Record<string, unknown>;
 		};
+		await opts?.afterPersist?.(
+			{
+				name: (current[0].name as string | null) ?? null,
+				slug: (current[0].slug as string | null) ?? null,
+				parent_id:
+					current[0].parent_id == null ? null : Number(current[0].parent_id),
+				metadata:
+					(current[0].metadata as Record<string, unknown> | null) ?? null,
+				content: (current[0].content as string | null) ?? null,
+			},
+			updated,
+			tx,
+		);
+		return updated;
 	});
 
 	// Split the deferral inputs off the returned row: they are this function's
@@ -1496,7 +1542,7 @@ export async function getEntity(
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
       (
         SELECT COUNT(*) FROM current_event_records ev
-        WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}
+        WHERE ${sql.unsafe(entityLinkMatchSql("e.id::bigint", "ev"))}
           AND ev.organization_id = ${ctx.organizationId}
       ) as total_content,
       (
@@ -1506,7 +1552,7 @@ export async function getEntity(
         WHERE f.organization_id = ${ctx.organizationId}
           AND f.deleted_at IS NULL
           AND c.deleted_at IS NULL
-          AND ${sql.unsafe(feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id'))}
+          AND ${sql.unsafe(feedLinkedToBusinessEntitySql("e.id", "f", "c", "e.organization_id"))}
       ) as active_connections,
       (
         SELECT COUNT(*) FROM automations i
@@ -1563,11 +1609,13 @@ export interface ForceDeleteTreeReport {
 export async function deleteEntity(
 	entityId: number,
 	force: boolean = false,
-	env: Env,
+	_env: Env,
 	ctx: ToolContext,
 	opts?: {
 		skipHooks?: boolean;
 		dryRun?: boolean;
+		/** Join an existing semantic mutation transaction when supplied. */
+		sql?: DbClient;
 		/**
 		 * Set only when this call IS the application of a delete a human already
 		 * approved, so a rule that escalates on the delete does not escalate the
@@ -1589,11 +1637,10 @@ export async function deleteEntity(
    */
   refused?: true;
 }> {
-  const pgSql = createDbClientFromEnv(env);
-  const sql = getDb();
+	const sql = opts?.sql ?? getDb();
 
   // Validate write access (uses PG for auth tables)
-  await requireWriteAccess(pgSql, entityId, ctx);
+	await requireWriteAccess(sql, entityId, ctx);
 
   // Resolve the hook now, but do not run its cleanup until the row rule has
   // accepted the delete. The write transaction validates again under lock.
@@ -1607,7 +1654,7 @@ export async function deleteEntity(
     `;
     if (entityRow.length > 0) {
       const beforeDelete = getEntityHooks(
-        entityRow[0].entity_type as string
+				entityRow[0].entity_type as string,
       )?.beforeDelete;
       if (beforeDelete) {
         runBeforeDeleteHook = () =>
@@ -1617,7 +1664,7 @@ export async function deleteEntity(
               entity_type: entityRow[0].entity_type as string,
               metadata: entityRow[0].metadata as Record<string, unknown> | null,
             },
-            { organizationId: ctx.organizationId, userId: ctx.userId }
+						{ organizationId: ctx.organizationId, userId: ctx.userId },
           );
       }
     }
@@ -1635,7 +1682,7 @@ export async function deleteEntity(
     const childCount = Number(children[0]?.count || 0);
     if (childCount > 0) {
       throw new Error(
-        `Cannot delete entity: it has ${childCount} child entities. Use force_delete_tree=true to delete the entire hierarchy.`
+				`Cannot delete entity: it has ${childCount} child entities. Use force_delete_tree=true to delete the entire hierarchy.`,
       );
     }
   }
@@ -1725,7 +1772,7 @@ export async function deleteEntity(
     // matches every empty/NULL-linked row IN EVERY ORG (empty set ⊂ anything),
     // and lets the GIN index on entity_ids drive the scan instead of a
     // full-table pass.
-    await sql.begin(async (tx) => {
+		await withEntityWriteTransaction(sql, async (tx) => {
       // Parent row first: this locks the entity tree below and then bumps the
       // org generation, the reverse of organization deletion's parent-then-
       // cascade order unless the org is claimed up front.
@@ -1931,7 +1978,7 @@ export async function deleteEntity(
       message:
         report.events_detached > 0
           ? `Entity and all descendants deleted; ${report.events_detached} event rows kept as history and detached`
-          : 'Entity and all descendants deleted successfully',
+					: "Entity and all descendants deleted successfully",
       deleted: entityTreeIds.length,
       tree: report,
     };
@@ -1962,7 +2009,7 @@ export async function deleteEntity(
       };
     }
     return {
-      message: 'Dry run: entity would be soft-deleted',
+			message: "Dry run: entity would be soft-deleted",
       deleted: 0,
       dry_run: true,
     };
@@ -2023,7 +2070,7 @@ export async function deleteEntity(
   });
 
   return {
-    message: 'Entity soft-deleted successfully',
+		message: "Entity soft-deleted successfully",
     deleted: 1,
   };
 }
@@ -2055,7 +2102,7 @@ export async function listEntities(
   limit: number;
   offset: number;
   sortBy: string;
-  sortOrder: 'asc' | 'desc';
+	sortOrder: "asc" | "desc";
 }> {
 	const sql = getDb();
 	const limit = Math.min(Math.max(filters.limit || 100, 1), 500);
@@ -2176,14 +2223,14 @@ export async function listEntities(
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
     LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
-    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql('e.id::bigint', 'ev')}) tc ON true
+    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql("e.id::bigint", "ev")}) tc ON true
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT c.connector_key) as cnt
       FROM feeds f
       JOIN connections c ON c.id = f.connection_id
       WHERE f.deleted_at IS NULL
         AND c.deleted_at IS NULL
-        AND ${feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id')}
+        AND ${feedLinkedToBusinessEntitySql("e.id", "f", "c", "e.organization_id")}
     ) ac ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM automations i WHERE e.id = ANY(i.entity_ids)) ic ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM entities c WHERE c.parent_id = e.id) cc ON true
@@ -2192,7 +2239,7 @@ export async function listEntities(
 
   const totalCountResult = await sql.unsafe<{ total_count: number }>(
     `SELECT CAST(COUNT(*) AS INTEGER) as total_count ${baseQuery}`,
-    params
+		params,
   );
 
   // Two-stage page fetch. The four per-row count LATERALs make enrichment
@@ -2203,16 +2250,16 @@ export async function listEntities(
   // BY only, no LATERALs — and enrich just those rows. Sorts by computed
   // columns (total_content, …) need the counts for ordering, so they keep the
   // single-query shape.
-  const plainSort = sortBy === 'name' || sortBy === 'created_at';
+	const plainSort = sortBy === "name" || sortBy === "created_at";
   const pageIdClause = plainSort
     ? `AND e.id = ANY(ARRAY(
          SELECT e2.id FROM entities e2
          JOIN entity_types et2 ON et2.id = e2.entity_type_id
-         WHERE ${renderWhere('e2', 'et2')}
-         ORDER BY ${sortColumnMap[sortBy].replace(/^e\./, 'e2.')} ${sortOrderSql}, e2.id ASC
+         WHERE ${renderWhere("e2", "et2")}
+         ORDER BY ${sortColumnMap[sortBy].replace(/^e\./, "e2.")} ${sortOrderSql}, e2.id ASC
          LIMIT ${limit + 1} OFFSET ${offset}
        ))`
-    : '';
+		: "";
 
   const result = await sql.unsafe<CreatedEntity>(
     `SELECT
@@ -2226,8 +2273,8 @@ export async function listEntities(
     ${pageIdClause}
     ORDER BY ${orderBy}
     LIMIT ${limit + 1}
-    ${plainSort ? '' : `OFFSET ${offset}`}`,
-    params
+    ${plainSort ? "" : `OFFSET ${offset}`}`,
+		params,
   );
 
   const hasMore = result.length > limit;
@@ -2237,7 +2284,15 @@ export async function listEntities(
 
   const totalCount = Number(totalCountResult[0]?.total_count || 0);
 
-  return { entities, hasMore, totalCount, limit, offset, sortBy, sortOrder: normalizedSortOrder };
+	return {
+		entities,
+		hasMore,
+		totalCount,
+		limit,
+		offset,
+		sortBy,
+		sortOrder: normalizedSortOrder,
+	};
 }
 
 /**
@@ -2247,11 +2302,14 @@ export async function listEntities(
  */
 export function derivedRowSlug(row: Record<string, unknown>): string {
   const raw = row.slug ?? row.id;
-  return raw != null ? String(raw).trim() : '';
+	return raw != null ? String(raw).trim() : "";
 }
 
 /** Display name for a derived row: its name/title column, else the slug. */
-export function derivedRowName(row: Record<string, unknown>, slug: string): string {
+export function derivedRowName(
+	row: Record<string, unknown>,
+	slug: string,
+): string {
   const raw = row.name ?? row.title ?? slug;
   return raw != null && String(raw).trim() ? String(raw) : slug;
 }
@@ -2278,7 +2336,7 @@ async function listDerivedEntities(
   limit: number;
   offset: number;
   sortBy: string;
-  sortOrder: 'asc' | 'desc';
+	sortOrder: "asc" | "desc";
 }> {
 	const result = await queryDerivedEntityView(
 		backingSql,
@@ -2331,7 +2389,7 @@ async function listDerivedEntities(
 
 export interface RelationshipColumnSpec {
   relationship_type: string;
-  direction?: 'outbound' | 'inbound' | 'both';
+	direction?: "outbound" | "inbound" | "both";
   label: string;
 }
 
@@ -2351,7 +2409,9 @@ export async function batchLoadRelationships(
   if (entityIds.length === 0 || specs.length === 0) return result;
 
   const sql = getDb();
-  const typeSlugs = pgTextArray([...new Set(specs.map((s) => s.relationship_type))]);
+	const typeSlugs = pgTextArray([
+		...new Set(specs.map((s) => s.relationship_type)),
+	]);
   const idArray = pgBigintArray(entityIds);
 
   const rows = await sql`
@@ -2374,20 +2434,23 @@ export async function batchLoadRelationships(
   `;
 
   // Build a direction lookup per spec
-  const specByType = new Map<string, 'outbound' | 'inbound' | 'both'>();
+	const specByType = new Map<string, "outbound" | "inbound" | "both">();
   for (const spec of specs) {
-    specByType.set(spec.relationship_type, spec.direction ?? 'both');
+		specByType.set(spec.relationship_type, spec.direction ?? "both");
   }
 
   for (const row of rows) {
     const relType = row.relationship_type_slug as string;
-    const direction = specByType.get(relType) ?? 'both';
+		const direction = specByType.get(relType) ?? "both";
     const fromId = Number(row.from_entity_id);
     const toId = Number(row.to_entity_id);
 
     const pairs: Array<[number, RelatedEntityInfo]> = [];
 
-    if ((direction === 'outbound' || direction === 'both') && entityIds.includes(fromId)) {
+		if (
+			(direction === "outbound" || direction === "both") &&
+			entityIds.includes(fromId)
+		) {
       pairs.push([
         fromId,
         {
@@ -2398,7 +2461,10 @@ export async function batchLoadRelationships(
         },
       ]);
     }
-    if ((direction === 'inbound' || direction === 'both') && entityIds.includes(toId)) {
+		if (
+			(direction === "inbound" || direction === "both") &&
+			entityIds.includes(toId)
+		) {
       pairs.push([
         toId,
         {

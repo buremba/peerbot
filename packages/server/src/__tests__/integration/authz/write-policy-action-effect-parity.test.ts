@@ -316,6 +316,10 @@ describe("write-policy action/effect decision parity", () => {
 		expect(isLegalActionEffect("entity", "create", "disabled")).toBe(false); // illegal effect
 		expect(isLegalActionEffect("connector_action", "execute", "disabled")).toBe(true);
 		expect(isLegalActionEffect("connector_action", "create", "auto")).toBe(false);
+		expect(isLegalActionEffect("entity_schema", "create_type", "approval")).toBe(true);
+		expect(isLegalActionEffect("entity_schema", "update_relationship_type", "deny")).toBe(true);
+		expect(isLegalActionEffect("entity_schema", "create", "auto")).toBe(false);
+		expect(isLegalActionEffect("entity_schema", "delete_type", "disabled")).toBe(false);
 	});
 
 	it("fail-closed: a stored effect illegal for the class resolves to deny, not the default", async () => {

@@ -79,8 +79,8 @@ import {
 import { ToolUserError } from "../../utils/errors";
 import { persistEntityWritePolicyDenial } from "../../utils/entity-write-denial-audit";
 import {
-	recordChangeEvent,
-	recordEdgeChangeEvent,
+	insertChangeEventInTransaction,
+	insertEdgeChangeEventInTransaction,
 	stableJson,
 } from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
@@ -113,7 +113,10 @@ import {
 	toEntityInfo,
 } from "../view-urls";
 import { defineFlatActionTool, flatAction } from "./action-tool";
-import { proposeEntityDelete, proposeEntityMerge } from "./entity-field-approval";
+import {
+	proposeEntityDelete,
+	proposeEntityMerge,
+} from "./entity-field-approval";
 
 export { ManageEntityResultSchema, ManageEntitySchema };
 
@@ -325,7 +328,10 @@ async function handleCreate(
 			const errorMessages =
 				validation.errors?.map((e) => e.message).join("; ") ??
 				"Invalid metadata";
-			throw new ToolUserError(`Metadata validation failed: ${errorMessages}`, 400);
+			throw new ToolUserError(
+				`Metadata validation failed: ${errorMessages}`,
+				400,
+			);
 		}
 	}
 
@@ -366,7 +372,7 @@ async function handleCreate(
 	// its provenance disagree about who proposed the row.
 	const createAttribution = await resolveAutomationAttribution(
 		ctx,
-		args.automation_source
+		args.automation_source,
 	);
 	const attribution = attributionFor(actor);
 	const createDecision = await runMutationGate({
@@ -562,7 +568,10 @@ async function handleUpdate(
 			const errorMessages =
 				validation.errors?.map((e) => e.message).join("; ") ??
 				"Invalid metadata";
-			throw new ToolUserError(`Metadata validation failed: ${errorMessages}`, 400);
+			throw new ToolUserError(
+				`Metadata validation failed: ${errorMessages}`,
+				400,
+			);
 		}
 		Object.assign(args.metadata, metadataForValidation);
 	}
@@ -603,7 +612,7 @@ async function handleUpdate(
 	// Update approvals inherit the producing run as their causal parent.
 	const updateAttribution = await resolveAutomationAttribution(
 		ctx,
-		args.automation_source
+		args.automation_source,
 	);
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
@@ -612,50 +621,41 @@ async function handleUpdate(
 		parentRunId: updateAttribution.runId,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
-	});
-	const entityDetails =
-		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
-
-	// Record field changes as a system event
-	const beforeMetadata =
-		typeof before.metadata === "string"
-			? JSON.parse(before.metadata as string)
-			: (before.metadata ?? {});
-	const afterMetadata =
-		typeof entityDetails.metadata === "string"
-			? JSON.parse(entityDetails.metadata as string)
-			: (entityDetails.metadata ?? {});
-
+		afterPersist: async (lockedBefore, after, tx) => {
+			const beforeMetadata = lockedBefore.metadata ?? {};
+			const afterMetadata = after.metadata ?? {};
 	const changes: Array<{ field: string; old: unknown; new: unknown }> = [];
-
-	if (before.name !== entityDetails.name) {
-		changes.push({ field: "name", old: before.name, new: entityDetails.name });
+			if (lockedBefore.name !== after.name) {
+				changes.push({
+					field: "name",
+					old: lockedBefore.name,
+					new: after.name,
+				});
 	}
-	if (before.slug !== entityDetails.slug) {
-		changes.push({ field: "slug", old: before.slug, new: entityDetails.slug });
+			if (lockedBefore.slug !== after.slug) {
+				changes.push({
+					field: "slug",
+					old: lockedBefore.slug,
+					new: after.slug,
+				});
 	}
-	const beforeParentId =
-		before.parent_id != null ? Number(before.parent_id) : null;
-	const afterParentId = entityDetails.parent_id ?? null;
-	if (beforeParentId !== afterParentId) {
+			if (lockedBefore.parent_id !== (after.parent_id ?? null)) {
 		changes.push({
 			field: "parent_id",
-			old: beforeParentId,
-			new: afterParentId,
+					old: lockedBefore.parent_id,
+					new: after.parent_id ?? null,
 		});
 	}
 	if (args.content !== undefined) {
 		changes.push({ field: "content", old: "[changed]", new: "[changed]" });
 	}
-
-	// Diff metadata keys (includes convenience fields like domain, category, etc.)
-	const allMetadataKeys = new Set([
+			for (const key of new Set([
 		...Object.keys(beforeMetadata),
 		...Object.keys(afterMetadata),
-	]);
-	for (const key of allMetadataKeys) {
+			])) {
 		if (
-			JSON.stringify(beforeMetadata[key]) !== JSON.stringify(afterMetadata[key])
+					stableJson(beforeMetadata[key] ?? null) !==
+					stableJson(afterMetadata[key] ?? null)
 		) {
 			changes.push({
 				field: key,
@@ -664,25 +664,29 @@ async function handleUpdate(
 			});
 		}
 	}
-
-	if (changes.length > 0) {
+			if (changes.length === 0) return;
 		const contentLines = changes.map(
-			(c) =>
-				`- ${c.field}: ${JSON.stringify(c.old)} → ${JSON.stringify(c.new)}`,
+				(change) =>
+					`- ${change.field}: ${JSON.stringify(change.old)} → ${JSON.stringify(change.new)}`,
 		);
-
-		recordChangeEvent({
+			await insertChangeEventInTransaction(
+				{
 			entityIds: [entityId],
 			organizationId: ctx.organizationId,
 			subject: "entity",
 			op: "updated",
-			title: `Entity updated: ${changes.map((c) => c.field).join(", ")}`,
-			content: `Entity "${entityDetails.name}" (id: ${entityId}) updated:\n${contentLines.join("\n")}`,
+					title: `Entity updated: ${changes.map((change) => change.field).join(", ")}`,
+					content: `Entity "${after.name}" (id: ${entityId}) updated:\n${contentLines.join("\n")}`,
 			metadata: { changes },
 			createdBy: ctx.userId ?? null,
 			clientId: ctx.clientId ?? null,
+				},
+				tx,
+			);
+		},
 		});
-	}
+	const entityDetails =
+		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
 
 	const viewUrl = await buildEntityViewUrl(ctx, entityDetails);
 
@@ -775,7 +779,7 @@ async function handleMerge(
 	// record the same Automation, so resolve it once for the handler.
 	const mergeAttribution = await resolveAutomationAttribution(
 		ctx,
-		args.automation_source
+		args.automation_source,
 	);
 	const loserIds = [
 		...new Set(
@@ -1532,7 +1536,7 @@ async function handleDelete(
 	const deleteActor = await actingPrincipalFor(args, ctx);
 	const deleteAttribution = await resolveAutomationAttribution(
 		ctx,
-		args?.automation_source
+		args?.automation_source,
 	);
 	const attribution = attributionFor(deleteActor);
 	const current = {
@@ -1636,15 +1640,21 @@ async function handleDelete(
 		) {
 			throw err;
 		}
-		const queued = await proposeEntityDelete(ctx, {
+		const queued = await proposeEntityDelete(
+			ctx,
+			{
 			entity_id: entityId,
 			force_delete_tree: force,
 			current,
 			automation_id:
-				ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
+					ctx.actingAutomationId ??
+					args?.automation_source?.automation_id ??
+					null,
 			attribution,
 			reason: err.verdict.reason,
-		}, deleteAttribution.runId);
+			},
+			deleteAttribution.runId,
+		);
 		return {
 			action: "delete",
 			success: false,
@@ -1768,6 +1778,17 @@ async function lockEdgeForMutation(
 	return rows[0];
 }
 
+async function lockOrganizationForSemanticEvent(
+	tx: DbClient,
+	organizationId: string,
+): Promise<void> {
+	await tx`
+		SELECT 1 FROM organization
+		WHERE id = ${organizationId}
+		FOR KEY SHARE
+	`;
+}
+
 async function handleLink(
 	args: ManageEntityArgs,
 	env: Env,
@@ -1813,7 +1834,7 @@ async function handleLink(
   // edges here would be minting access, so this surface refuses them outright —
   // classification is only a trust boundary if the classified rows stop being
   // generically writable.
-  assertNotAclManagedEdge(typeRows[0], 'link');
+	assertNotAclManagedEdge(typeRows[0], "link");
   const typeId = Number(typeRows[0].id);
   const isSymmetric = Boolean(typeRows[0].is_symmetric);
 
@@ -1854,7 +1875,9 @@ async function handleLink(
 	const confidence =
 		args.confidence ?? (source === "ui" || source === "api" ? 1.0 : null);
 
-	const inserted = await sql`
+	const created = await sql.begin(async (tx) => {
+		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
+		const inserted = await tx`
     INSERT INTO entity_relationships (
       organization_id, from_entity_id, to_entity_id, relationship_type_id,
       metadata, confidence, source, created_by, updated_by,
@@ -1864,7 +1887,7 @@ async function handleLink(
       ${fromId},
       ${toId},
       ${typeId},
-      ${args.metadata ? sql.json(args.metadata) : null},
+		${args.metadata ? tx.json(args.metadata) : null},
       ${confidence},
       ${source},
       ${ctx.userId},
@@ -1876,18 +1899,19 @@ async function handleLink(
   `;
   const relationshipId = Number((inserted[0] as { id: unknown }).id);
 
-  const created = await sql.unsafe<RelationshipRow>(
+		const createdRows = await tx.unsafe<RelationshipRow>(
     `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
 		[relationshipId],
   );
 
-	recordEdgeChangeEvent({
+		await insertEdgeChangeEventInTransaction(
+			{
 		organizationId: ctx.organizationId,
 		relationshipId,
 		fromEntityId: fromId,
 		toEntityId: toId,
 		relationshipTypeId: typeId,
-		relationshipTypeSlug: args.relationship_type_slug,
+				relationshipTypeSlug: args.relationship_type_slug ?? null,
 		op: "link",
 		changes: [
 			{ field: "exists", old: false, new: true },
@@ -1897,9 +1921,13 @@ async function handleLink(
 		],
 		createdBy: ctx.userId,
 		clientId: ctx.clientId,
+			},
+			tx,
+		);
+		return createdRows[0];
 	});
 
-	return { action: "link", relationship: created[0] };
+	return { action: "link", relationship: created };
 }
 
 async function handleUnlink(
@@ -1911,7 +1939,8 @@ async function handleUnlink(
 
   const sql = getDb();
 
-	const before = await sql.begin(async (tx) => {
+	await sql.begin(async (tx) => {
+		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
 		const edge = await lockEdgeForMutation(
 			tx,
 			args.relationship_id!,
@@ -1923,25 +1952,26 @@ async function handleUnlink(
       SET deleted_at = current_timestamp, updated_at = current_timestamp, updated_by = ${ctx.userId}
       WHERE id = ${args.relationship_id} AND deleted_at IS NULL
     `;
-		return edge;
-	});
-
-	recordEdgeChangeEvent({
+		await insertEdgeChangeEventInTransaction(
+			{
 		organizationId: ctx.organizationId,
-		relationshipId: Number(before.id),
-		fromEntityId: Number(before.from_entity_id),
-		toEntityId: Number(before.to_entity_id),
-		relationshipTypeId: Number(before.relationship_type_id),
-		relationshipTypeSlug: before.relationship_type_slug,
+				relationshipId: Number(edge.id),
+				fromEntityId: Number(edge.from_entity_id),
+				toEntityId: Number(edge.to_entity_id),
+				relationshipTypeId: Number(edge.relationship_type_id),
+				relationshipTypeSlug: edge.relationship_type_slug,
 		op: "unlink",
 		changes: [
 			{ field: "exists", old: true, new: false },
-			{ field: "metadata", old: before.metadata, new: null },
-			{ field: "confidence", old: before.confidence, new: null },
-			{ field: "source", old: before.source, new: null },
+					{ field: "metadata", old: edge.metadata, new: null },
+					{ field: "confidence", old: edge.confidence, new: null },
+					{ field: "source", old: edge.source, new: null },
 		],
 		createdBy: ctx.userId,
 		clientId: ctx.clientId,
+			},
+			tx,
+		);
 	});
 
 	return {
@@ -1960,7 +1990,8 @@ async function handleUpdateLink(
 
   const sql = getDb();
 
-	const { before, after, updated } = await sql.begin(async (tx) => {
+	const updated = await sql.begin(async (tx) => {
+		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
 		const edge = await lockEdgeForMutation(
 			tx,
 			args.relationship_id!,
@@ -1971,7 +2002,8 @@ async function handleUpdateLink(
 		validateSource(args.source);
 		const hasMetadata = args.metadata !== undefined;
 		const metadataChanged =
-			hasMetadata && stableJson(edge.metadata ?? null) !== stableJson(args.metadata ?? null);
+			hasMetadata &&
+			stableJson(edge.metadata ?? null) !== stableJson(args.metadata ?? null);
 		// Check the locked pre-image so concurrent updates cannot move a reconciled
 		// edge out of the scope that retires it.
 		validateReconciledEdgeUpdate(edge.source, args.source, metadataChanged);
@@ -1997,33 +2029,34 @@ async function handleUpdateLink(
 			`SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
 			[args.relationship_id],
 		);
-		return {
-			before: edge,
-			after: updatedRows[0],
-			updated: relationship[0],
-		};
-	});
-
+		const after = updatedRows[0];
 	const changes = [
-		{ field: "metadata", old: before.metadata, new: after.metadata },
-		{ field: "confidence", old: before.confidence, new: after.confidence },
-		{ field: "source", old: before.source, new: after.source },
-	].filter((c) => stableJson(c.old ?? null) !== stableJson(c.new ?? null));
-
+			{ field: "metadata", old: edge.metadata, new: after.metadata },
+			{ field: "confidence", old: edge.confidence, new: after.confidence },
+			{ field: "source", old: edge.source, new: after.source },
+		].filter(
+			(change) =>
+				stableJson(change.old ?? null) !== stableJson(change.new ?? null),
+		);
 	if (changes.length > 0) {
-		recordEdgeChangeEvent({
+			await insertEdgeChangeEventInTransaction(
+				{
 			organizationId: ctx.organizationId,
-			relationshipId: Number(before.id),
-			fromEntityId: Number(before.from_entity_id),
-			toEntityId: Number(before.to_entity_id),
-			relationshipTypeId: Number(before.relationship_type_id),
-			relationshipTypeSlug: before.relationship_type_slug,
+					relationshipId: Number(edge.id),
+					fromEntityId: Number(edge.from_entity_id),
+					toEntityId: Number(edge.to_entity_id),
+					relationshipTypeId: Number(edge.relationship_type_id),
+					relationshipTypeSlug: edge.relationship_type_slug,
 			op: "update_link",
 			changes,
 			createdBy: ctx.userId,
 			clientId: ctx.clientId,
-		});
+				},
+				tx,
+			);
 	}
+		return relationship[0];
+	});
 
 	return { action: "update_link", relationship: updated };
 }

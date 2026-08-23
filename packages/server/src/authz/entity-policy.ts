@@ -48,7 +48,22 @@ export type EntityMutationMode = "auto" | "approval" | "deny" | "disabled";
  * table + resolver so a new class is a value, not a schema change (see
  * docs/plans/write-gate-generalization.md).
  */
-export type WriteResourceClass = "entity" | "agent_config" | "connector_action";
+export type WriteResourceClass =
+	| "entity"
+	| "agent_config"
+	| "connector_action"
+	| "entity_schema";
+
+export function isWriteResourceClass(
+	value: unknown,
+): value is WriteResourceClass {
+	return (
+		value === "entity" ||
+		value === "agent_config" ||
+		value === "connector_action" ||
+		value === "entity_schema"
+	);
+}
 
 /** A non-human principal a policy row may target. NULL principal = any of this kind. */
 export type PolicyPrincipalKind = "agent" | "automation";
@@ -154,7 +169,6 @@ type EntityApprovalPolicyRow = {
 	effects: Partial<Record<WriteAction, EntityMutationMode>>;
 };
 
-
 export function isEntityMutationMode(
 	value: unknown,
 ): value is EntityMutationMode {
@@ -180,9 +194,7 @@ function normalizeMode(
 }
 
 function normalizeResourceClass(value: unknown): WriteResourceClass {
-	if (value === "agent_config") return "agent_config";
-	if (value === "connector_action") return "connector_action";
-	return "entity";
+	return isWriteResourceClass(value) ? value : "entity";
 }
 
 function normalizePrincipalKind(value: unknown): PolicyPrincipalKind | null {
@@ -412,7 +424,11 @@ export async function resolveActingPrincipal(
 	if (args.sessionAutomationId != null) {
 		return automationPrincipal(
 			args.sessionAutomationId,
-			await resolveAutomationOwner(sql, args.sessionAutomationId, args.organizationId),
+			await resolveAutomationOwner(
+				sql,
+				args.sessionAutomationId,
+				args.organizationId,
+			),
 		);
 	}
 	if (args.explicitAutomationId != null) {
@@ -565,7 +581,10 @@ function foldEffectForAction(
 
 /** Effective effect for one action (single envelope for all agent runs). */
 function foldEffectForDecision(
-	candidates: EntityApprovalPolicyRow[], resourceClass: WriteResourceClass, action: WriteAction): EntityMutationMode {
+	candidates: EntityApprovalPolicyRow[],
+	resourceClass: WriteResourceClass,
+	action: WriteAction,
+): EntityMutationMode {
 	return foldEffectForAction(candidates, resourceClass, action);
 }
 
@@ -645,7 +664,13 @@ function isWriteAction(value: unknown): value is WriteAction {
 		value === "create" ||
 		value === "update" ||
 		value === "delete" ||
-		value === "execute"
+		value === "execute" ||
+		value === "create_type" ||
+		value === "update_type" ||
+		value === "delete_type" ||
+		value === "create_relationship_type" ||
+		value === "update_relationship_type" ||
+		value === "delete_relationship_type"
 	);
 }
 
@@ -815,7 +840,6 @@ export async function evaluateEntityMutation(args: {
 	return decision;
 }
 
-
 /**
  * Class-generic write decision for a non-scoped resource (agent_config today;
  * connector_action later). Humans with any org membership apply immediately —
@@ -892,8 +916,7 @@ export async function resolveWriteEffect(args: {
 		targetAgentId: args.targetAgentId ?? null,
 		sql: args.sql,
 	});
-	return foldEffectForDecision(
-		candidates, args.resourceClass, args.action);
+	return foldEffectForDecision(candidates, args.resourceClass, args.action);
 }
 
 /**
@@ -1068,7 +1091,10 @@ function actionEffectSetForInput(
 	if (input.effects) {
 		const governed = new Set(WRITE_ACTION_MANIFEST[resourceClass].actions);
 		return (Object.keys(input.effects) as WriteAction[])
-			.filter((action) => governed.has(action) && input.effects?.[action] !== undefined)
+			.filter(
+				(action) =>
+					governed.has(action) && input.effects?.[action] !== undefined,
+			)
 			.map((action) => ({
 				action,
 				effect: clamp(action, input.effects?.[action] as EntityMutationMode),
@@ -1082,10 +1108,22 @@ function actionEffectSetForInput(
 			},
 		];
 	}
+	if (resourceClass === "entity_schema") {
+		return [];
+	}
 	return [
-		{ action: "create", effect: clamp("create", normalizeMode(input.createMode, "auto")) },
-		{ action: "update", effect: clamp("update", normalizeMode(input.updateMode, "auto")) },
-		{ action: "delete", effect: clamp("delete", normalizeMode(input.deleteMode, "approval")) },
+		{
+			action: "create",
+			effect: clamp("create", normalizeMode(input.createMode, "auto")),
+		},
+		{
+			action: "update",
+			effect: clamp("update", normalizeMode(input.updateMode, "auto")),
+		},
+		{
+			action: "delete",
+			effect: clamp("delete", normalizeMode(input.deleteMode, "approval")),
+		},
 	];
 }
 
@@ -1145,16 +1183,24 @@ export async function upsertEntityApprovalPolicy(
 	const applyUpdate = (tx: DbClient) => tx<EntityApprovalPolicyRow>`
       UPDATE write_approval_policies
       SET approval_connection_id = ${
-				preserveDelivery ? sql`COALESCE(approval_connection_id, ${approvalConnectionId})` : approvalConnectionId
+				preserveDelivery
+					? sql`COALESCE(approval_connection_id, ${approvalConnectionId})`
+					: approvalConnectionId
 			},
           approval_channel_id = ${
-						preserveDelivery ? sql`COALESCE(approval_channel_id, ${approvalChannelId})` : approvalChannelId
+						preserveDelivery
+							? sql`COALESCE(approval_channel_id, ${approvalChannelId})`
+							: approvalChannelId
 					},
           approval_team_id = ${
-						preserveDelivery ? sql`COALESCE(approval_team_id, ${approvalTeamId})` : approvalTeamId
+						preserveDelivery
+							? sql`COALESCE(approval_team_id, ${approvalTeamId})`
+							: approvalTeamId
 					},
           approval_channel_name = ${
-						preserveDelivery ? sql`COALESCE(approval_channel_name, ${approvalChannelName})` : approvalChannelName
+						preserveDelivery
+							? sql`COALESCE(approval_channel_name, ${approvalChannelName})`
+							: approvalChannelName
 					},
           updated_at = now()
       WHERE organization_id = ${organizationId}

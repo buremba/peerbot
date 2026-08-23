@@ -23,11 +23,14 @@ import {
 } from '@lobu/core/contracts/tools/manage-entity-schema';
 import { Value } from '@sinclair/typebox/value';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
-import {
-  isPlatformEventType,
-  platformEventKinds,
-} from '../../automations/platform-event-catalog';
+import { isPlatformEventType, platformEventKinds } from '../../automations/platform-event-catalog';
 import { compileEntityRule } from '../../authz/entity-rule-executor';
+import {
+  type ActingPrincipal,
+  resolveActingPrincipal,
+  resolveWritePolicyDecision,
+} from '../../authz/entity-policy';
+import type { WriteAction } from '../../authz/write-action-manifest';
 import { type DbClient, getDb } from '../../db/client';
 import {
   currentMcpActivityAttribution,
@@ -36,13 +39,17 @@ import {
 import { validateMetricReadModes } from '../../metrics/read-mode';
 import { resolveActionOrigin } from '../../notifications/action-origin';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
-import { recordToolConfigChange } from './helpers/config-audit';
+import { insertToolConfigChange } from './helpers/config-audit';
 import {
   type DataSourceContext,
   type DataSourceInput,
   executeDataSources,
 } from '../../utils/execute-data-sources';
-import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
+import {
+  enforceRoleScopeAccess,
+  isAdminOrOwnerRole,
+  isInProcessSystemCall,
+} from '../access-control';
 import {
   assertNotAuthorizationType,
   isAclManagedRelationshipSlug,
@@ -67,7 +74,6 @@ import { ToolUserError } from '../../utils/errors';
 import { isUniqueViolation } from '../../utils/pg-errors';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import type { ToolContext } from '../registry';
-import { enforceRoleScopeAccess } from '../access-control';
 import { resolveRunInitiator } from '../initiator';
 import { withValidatedArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
@@ -103,11 +109,11 @@ const runRelationshipTypeActions = defineFlatActionTool<
 >('manage_entity_schema', {
   list: flatAction(rtHandleList),
   get: flatAction(rtHandleGet),
-  create: flatAction(rtHandleCreate),
-  update: flatAction(rtHandleUpdate),
-  delete: flatAction(rtHandleDelete),
-  add_rule: flatAction(rtHandleAddRule),
-  remove_rule: flatAction(rtHandleRemoveRule),
+  create: flatAction((args, ctx) => rtHandleCreate(args, ctx)),
+  update: flatAction((args, ctx) => rtHandleUpdate(args, ctx)),
+  delete: flatAction((args, ctx) => rtHandleDelete(args, ctx)),
+  add_rule: flatAction((args, ctx) => rtHandleAddRule(args, ctx)),
+  remove_rule: flatAction((args, ctx) => rtHandleRemoveRule(args, ctx)),
   list_rules: flatAction(rtHandleListRules),
 });
 
@@ -127,35 +133,78 @@ async function manageEntitySchemaImpl(
 		Object.hasOwn(args as object, 'properties')
 	) {
 		throw new ToolUserError(
-			"[invalid_schema] top-level properties is not supported; put JSON Schema fields under metadata_schema.properties",
+      '[invalid_schema] top-level properties is not supported; put JSON Schema fields under metadata_schema.properties',
 			422
 		);
 	}
   if (args.schema_type === 'entity_type') {
-    // MCP clients propose entity-type creation; they never apply it inline.
-    // Direct browser/CLI calls carry no MCP transport identity and retain the
-    // existing owner/admin route below.
-    if (args.action === 'create' && ctx.mcpSessionId) {
-      return queueEntityTypeCreateForApproval(args, ctx);
-    }
+    if (isEntitySchemaMutation(args)) return governEntitySchemaMutation(args, ctx);
     return runEntityTypeActions(args, env, ctx);
   }
+  if (isEntitySchemaMutation(args)) return governEntitySchemaMutation(args, ctx);
   return runRelationshipTypeActions(args, env, ctx);
+}
+
+/** Pre-policy proposal shape written by the narrow MCP create gate in v15.8. */
+export type LegacyManageEntitySchemaProposal = {
+  schema_type: 'entity_type';
+  action: 'create';
+  args: Record<string, unknown>;
+};
+
+export type StoredManageEntitySchemaProposal =
+  | ManageEntitySchemaProposal
+  | LegacyManageEntitySchemaProposal;
+
+function normalizeStoredEntitySchemaProposal(value: unknown): ManageEntitySchemaProposal | null {
+  if (Value.Check(ManageEntitySchemaProposalSchema, value)) {
+    const proposal = value as ManageEntitySchemaProposal;
+    if (!Value.Check(ManageEntitySchemaSchema, proposal.args)) return null;
+    const args = proposal.args as ManageEntitySchemaArgs;
+    return args.schema_type === proposal.schema_type &&
+      args.action === proposal.action &&
+      entitySchemaPolicyAction(args) === proposal.policy_action
+      ? proposal
+      : null;
+  }
+
+  // Pending approvals are durable data. Keep the prior one-action proposal
+  // readable while all newly queued commands use the governed v1 envelope.
+  if (!value || typeof value !== 'object') return null;
+  const legacy = value as Partial<LegacyManageEntitySchemaProposal>;
+  if (
+    legacy.schema_type !== 'entity_type' ||
+    legacy.action !== 'create' ||
+    !Value.Check(ManageEntitySchemaSchema, legacy.args)
+  )
+    return null;
+  const args = legacy.args as ManageEntitySchemaArgs;
+  if (args.schema_type !== 'entity_type' || args.action !== 'create') return null;
+  return {
+    version: 1,
+    resource_class: 'entity_schema',
+    policy_action: 'create_type',
+    schema_type: 'entity_type',
+    action: 'create',
+    args: legacy.args as Record<string, unknown>,
+    current: null,
+    precondition: {
+      target_kind: 'entity_type',
+      target_id: null,
+      updated_at: null,
+    },
+    policy_principal_kind: 'agent',
+    policy_principal_id: null,
+    owner_agent_id: null,
+    owner_resolved: true,
+  };
 }
 
 /** Validate the durable proposal shape before the approval registry claims it. */
 export function isManageEntitySchemaProposal(
   value: unknown
-): value is ManageEntitySchemaProposal {
-  if (!Value.Check(ManageEntitySchemaProposalSchema, value)) return false;
-  const proposal = value as ManageEntitySchemaProposal;
-  return (
-    proposal.schema_type === 'entity_type' &&
-    proposal.action === 'create' &&
-    Value.Check(ManageEntitySchemaSchema, proposal.args) &&
-    proposal.args.schema_type === 'entity_type' &&
-    proposal.args.action === 'create'
-  );
+): value is StoredManageEntitySchemaProposal {
+  return normalizeStoredEntitySchemaProposal(value) !== null;
 }
 
 /**
@@ -163,57 +212,345 @@ export function isManageEntitySchemaProposal(
  * human owner/admin. The original proposer remains the row/audit author.
  */
 export async function applyManageEntitySchemaProposal(
-  proposal: ManageEntitySchemaProposal,
+  proposal: StoredManageEntitySchemaProposal,
   ctx: ToolContext,
   _env: Env,
-  requesterUserId: string | null
+  requesterUserId: string | null,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
-  if (!isManageEntitySchemaProposal(proposal)) {
+  const prepared = normalizeStoredEntitySchemaProposal(proposal);
+  if (!prepared) {
     throw new ToolUserError('Invalid manage_entity_schema approval proposal', 400);
   }
-  return etHandleCreate(proposal.args as ManageEntitySchemaArgs, {
+  const decision = await resolveWritePolicyDecision({
+    organizationId: ctx.organizationId,
+    resourceClass: 'entity_schema',
+    principalKind: prepared.policy_principal_kind,
+    principalId: prepared.policy_principal_id,
+    ownerAgentId: prepared.owner_agent_id,
+    ownerResolved: prepared.owner_resolved,
+    action: prepared.policy_action,
+    sql: db,
+  });
+  if (decision === 'deny') {
+    throw new ToolUserError('The entity schema policy now denies this mutation.', 403);
+  }
+  return applyPreparedEntitySchemaMutation(
+    prepared,
+    {
     ...ctx,
-    userId: requesterUserId,
+      userId: requesterUserId ?? ctx.userId,
+      agentId: null,
+      clientId: null,
+      mcpSessionId: null,
+    },
+    db
+  );
+}
+
+function isEntitySchemaMutation(args: ManageEntitySchemaArgs): boolean {
+  return (
+    args.action === 'create' ||
+    args.action === 'update' ||
+    args.action === 'delete' ||
+    args.action === 'add_rule' ||
+    args.action === 'remove_rule'
+  );
+}
+
+function entitySchemaPolicyAction(args: ManageEntitySchemaArgs): WriteAction | null {
+  if (!isEntitySchemaMutation(args)) return null;
+  if (args.schema_type === 'entity_type') {
+    if (args.action === 'create') return 'create_type';
+    if (args.action === 'update') return 'update_type';
+    if (args.action === 'delete') return 'delete_type';
+    return null;
+  }
+  if (args.action === 'create') return 'create_relationship_type';
+  if (args.action === 'delete') return 'delete_relationship_type';
+  return 'update_relationship_type';
+}
+
+function timestamp(value: unknown): string | null {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.valueOf()) ? String(value) : date.toISOString();
+}
+
+async function schemaActingPrincipal(sql: DbClient, ctx: ToolContext): Promise<ActingPrincipal> {
+  // An MCP/API transport is a client acting for a user, not an attended human
+  // approval context. Treat it as the generic agent principal unless a bound
+  // agent/Automation identity is available; direct UI/CLI calls stay human.
+  return resolveActingPrincipal(sql, {
+    organizationId: ctx.organizationId,
+    userId: ctx.clientId || ctx.mcpSessionId ? null : ctx.userId,
+    agentId: ctx.agentId,
+    sessionAutomationId: ctx.actingAutomationId ?? null,
   });
 }
 
-async function queueEntityTypeCreateForApproval(
+async function prepareEntitySchemaMutation(
+  args: ManageEntitySchemaArgs,
+  ctx: ToolContext,
+  actor: ActingPrincipal & { kind: 'agent' | 'automation' },
+  sql: DbClient
+): Promise<ManageEntitySchemaProposal> {
+  const policyAction = entitySchemaPolicyAction(args);
+  if (!policyAction) throw new ToolUserError('Unsupported entity schema mutation', 400);
+  const normalizedArgs = {
+    ...args,
+    ...(args.slug && args.schema_type === 'entity_type'
+      ? { slug: normalizeEntityTypeSlug(args.slug) }
+      : {}),
+  } as ManageEntitySchemaArgs;
+  let current: Record<string, unknown> | null = null;
+  let targetKind: 'entity_type' | 'relationship_type' | 'relationship_rule' = args.schema_type;
+  let relatedId: number | undefined;
+  let relatedUpdatedAt: string | undefined;
+
+  if (args.schema_type === 'entity_type' && args.action === 'create') {
+    await prepareEntityTypeCreate(normalizedArgs, ctx, sql);
+  } else if (args.schema_type === 'relationship_type' && args.action === 'create') {
+    if (!args.slug || !args.name)
+      throw new ToolUserError('slug and name are required for create action', 400);
+    if (args.slug.startsWith('$')) {
+    throw new ToolUserError(
+        "Relationship type slugs starting with '$' are reserved for system types",
+        422
+    );
+  }
+    const rows = await sql`SELECT id FROM entity_relationship_types
+      WHERE organization_id = ${ctx.organizationId} AND slug = ${args.slug} AND deleted_at IS NULL`;
+    if (rows.length > 0)
+      throw new ToolUserError(
+        `[relationship_type_exists] Relationship type with slug "${args.slug}" already exists`,
+        409
+      );
+    if (args.inverse_type_slug) {
+      const inverse = await resolveInverseType(sql, args.inverse_type_slug, ctx);
+      if (inverse.ownedByCaller) {
+        relatedId = inverse.id;
+        relatedUpdatedAt = inverse.updatedAt;
+      }
+    }
+  } else if (args.action === 'remove_rule') {
+    if (!args.rule_id) throw new ToolUserError('rule_id is required for remove_rule action', 400);
+    targetKind = 'relationship_rule';
+    const rows = await sql`
+      SELECT r.*, rt.slug AS relationship_type_slug
+      FROM entity_relationship_type_rules r
+      JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+      WHERE r.id = ${args.rule_id} AND r.deleted_at IS NULL
+        AND rt.organization_id = ${ctx.organizationId}
+      LIMIT 1`;
+    if (rows.length === 0) throw new ToolUserError(`Rule ${args.rule_id} not found`, 404);
+    current = rows[0] as Record<string, unknown>;
+  } else {
+    if (!normalizedArgs.slug)
+      throw new ToolUserError(`slug is required for ${args.action} action`, 400);
+    const table = args.schema_type === 'entity_type' ? 'entity_types' : 'entity_relationship_types';
+    const rows = await sql.unsafe(
+      `SELECT * FROM ${table} WHERE organization_id = $1 AND slug = $2 AND deleted_at IS NULL LIMIT 1`,
+      [ctx.organizationId, normalizedArgs.slug]
+    );
+    if (rows.length === 0)
+      throw new ToolUserError(
+        `${args.schema_type === 'entity_type' ? 'Entity' : 'Relationship'} type '${normalizedArgs.slug}' not found`,
+        404
+      );
+    current = rows[0] as Record<string, unknown>;
+  }
+
+  return {
+    version: 1,
+    resource_class: 'entity_schema',
+    policy_action: policyAction as ManageEntitySchemaProposal['policy_action'],
+    schema_type: args.schema_type,
+    action: args.action as ManageEntitySchemaProposal['action'],
+    args: normalizedArgs as unknown as Record<string, unknown>,
+    current,
+    precondition: {
+      target_kind: targetKind,
+      target_id: current == null ? null : Number(current.id),
+      updated_at: current == null ? null : timestamp(current.updated_at),
+      ...(relatedId == null
+        ? {}
+        : {
+            related_id: relatedId,
+            related_updated_at: relatedUpdatedAt,
+          }),
+    },
+    policy_principal_kind: actor.kind,
+    policy_principal_id: actor.id,
+    owner_agent_id: actor.ownerAgentId,
+    owner_resolved: actor.ownerResolved,
+  };
+}
+
+async function assertPreparedEntitySchemaFresh(
+  proposal: ManageEntitySchemaProposal,
+  ctx: ToolContext,
+  sql: DbClient
+): Promise<void> {
+  const args = proposal.args as ManageEntitySchemaArgs;
+  const expected = proposal.precondition;
+  let rows: unknown[];
+  if (expected.target_kind === 'relationship_rule') {
+    rows = await sql`SELECT r.id, r.updated_at FROM entity_relationship_type_rules r
+      JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+      WHERE r.id = ${expected.target_id} AND r.deleted_at IS NULL
+        AND rt.organization_id = ${ctx.organizationId} FOR UPDATE OF r`;
+  } else {
+    const table =
+      expected.target_kind === 'entity_type' ? 'entity_types' : 'entity_relationship_types';
+    if (expected.target_id == null) {
+      rows = await sql.unsafe(
+        `SELECT id, updated_at FROM ${table} WHERE organization_id = $1 AND slug = $2 AND deleted_at IS NULL`,
+        [ctx.organizationId, args.slug]
+      );
+      if (rows.length > 0) {
+        throw new ToolUserError(
+          'This schema approval is stale because the target now exists.',
+          409
+        );
+      }
+    } else {
+      rows = await sql.unsafe(
+        `SELECT id, updated_at FROM ${table} WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`,
+        [ctx.organizationId, expected.target_id]
+      );
+    }
+  }
+  if (expected.target_id != null) {
+    const row = rows[0] as { id?: unknown; updated_at?: unknown } | undefined;
+    if (
+      !row ||
+      Number(row.id) !== expected.target_id ||
+      timestamp(row.updated_at) !== expected.updated_at
+    ) {
+      throw new ToolUserError(
+        'This schema approval is stale because the schema changed after it was proposed.',
+        409
+      );
+    }
+  }
+  if (expected.related_id != null) {
+    const related = await sql`SELECT id, updated_at FROM entity_relationship_types
+      WHERE organization_id = ${ctx.organizationId}
+        AND id = ${expected.related_id}
+        AND deleted_at IS NULL
+      FOR UPDATE`;
+    const row = related[0] as { id?: unknown; updated_at?: unknown } | undefined;
+    if (
+      !row ||
+      Number(row.id) !== expected.related_id ||
+      timestamp(row.updated_at) !== expected.related_updated_at
+    ) {
+      throw new ToolUserError(
+        'This schema approval is stale because its inverse relationship type changed after it was proposed.',
+        409
+      );
+    }
+  }
+  if (proposal.action === 'add_rule') {
+    const duplicates = await sql`SELECT id FROM entity_relationship_type_rules
+      WHERE relationship_type_id = ${expected.target_id}
+        AND source_entity_type_slug = ${args.source_entity_type_slug}
+        AND target_entity_type_slug = ${args.target_entity_type_slug}
+        AND deleted_at IS NULL`;
+    if (duplicates.length > 0)
+      throw new ToolUserError('This schema approval is stale because the rule now exists.', 409);
+  }
+}
+
+async function applyPreparedEntitySchemaMutation(
+  proposal: ManageEntitySchemaProposal,
+  ctx: ToolContext,
+  sql: DbClient
+): Promise<ManageEntitySchemaResult> {
+  await assertPreparedEntitySchemaFresh(proposal, ctx, sql);
+  const args = proposal.args as ManageEntitySchemaArgs;
+  if (args.schema_type === 'entity_type') {
+    if (args.action === 'create') return etHandleCreate(args, ctx, sql);
+    if (args.action === 'update') return etHandleUpdate(args, ctx, sql);
+    if (args.action === 'delete') return etHandleDelete(args.slug, ctx, sql);
+  } else {
+    if (args.action === 'create') return rtHandleCreate(args, ctx, sql);
+    if (args.action === 'update') return rtHandleUpdate(args, ctx, sql);
+    if (args.action === 'delete') return rtHandleDelete(args, ctx, sql);
+    if (args.action === 'add_rule') return rtHandleAddRule(args, ctx, sql);
+    if (args.action === 'remove_rule') return rtHandleRemoveRule(args, ctx, sql);
+  }
+  throw new ToolUserError('Unsupported prepared entity schema mutation', 400);
+}
+
+async function governEntitySchemaMutation(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!ctx.userId) {
-    throw new ToolUserError(
-      'Entity type proposals require an authenticated workspace member',
-      401
-    );
-  }
-  enforceRoleScopeAccess('write', ctx.memberRole, ctx.scopes, {
-    adminRole: 'Entity type proposals require workspace membership.',
-    writeRole: 'Entity type proposals require workspace membership with write access.',
-    readScope: 'Entity type proposals require an MCP session with read access.',
-    writeScope: 'Entity type proposals require an MCP session with write access.',
-    adminScope: 'Entity type proposals require an MCP session with admin access.',
+  enforceRoleScopeAccess('admin', ctx.memberRole, ctx.scopes, {
+    adminRole: 'Entity schema mutations require workspace owner or admin access.',
+    writeRole: 'Entity schema mutations require workspace owner or admin access.',
+    readScope: 'Entity schema mutations require MCP admin access.',
+    writeScope: 'Entity schema mutations require MCP admin access.',
+    adminScope: 'Entity schema mutations require MCP admin access.',
   });
-
-  // Reject malformed, reserved, duplicate, or uncompilable proposals before a
-  // durable card is created. Approval repeats the same validation against the
-  // then-current database state.
-  const prepared = await prepareEntityTypeCreate(args, ctx);
-  const proposal: ManageEntitySchemaProposal = {
-    schema_type: 'entity_type',
-    action: 'create',
-    args: { ...args, slug: prepared.slug },
-  };
-  const initiator = resolveRunInitiator(ctx);
-  const label = `create entity type ${prepared.slug}`;
   const sql = getDb();
+  const initiator = resolveRunInitiator(ctx);
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-
-  const { runId, eventId } = await sql.begin(async (tx) => {
+  const outcome = await sql.begin(async (tx) => {
+    // Config audit rows and pending runs both reference the organization. Claim
+    // the parent before any schema row so organization deletion cannot take the
+    // inverse parent-then-child lock order.
+    await tx`
+			SELECT 1 FROM organization
+			WHERE id = ${ctx.organizationId}
+			FOR KEY SHARE
+		`;
+    const actor = await schemaActingPrincipal(tx, ctx);
+    if (actor.kind === 'user') {
+      const synthetic = {
+        kind: 'agent',
+        id: null,
+        ownerAgentId: null,
+        ownerResolved: true,
+      } as const;
+      const proposal = await prepareEntitySchemaMutation(args, ctx, synthetic, tx);
+      return {
+        kind: 'applied' as const,
+        result: await applyPreparedEntitySchemaMutation(proposal, ctx, tx),
+      };
+    }
+    const proposal = await prepareEntitySchemaMutation(
+      args,
+      ctx,
+      actor as ActingPrincipal & { kind: 'agent' | 'automation' },
+      tx
+    );
+    const decision = await resolveWritePolicyDecision({
+      organizationId: ctx.organizationId,
+      resourceClass: 'entity_schema',
+      principalKind: actor.kind,
+      principalId: actor.id,
+      ownerAgentId: actor.ownerAgentId,
+      ownerResolved: actor.ownerResolved,
+      action: proposal.policy_action,
+      sql: tx,
+    });
+    if (decision === 'deny') return { kind: 'denied' as const };
+    if (decision === 'allow') {
+      return {
+        kind: 'applied' as const,
+        result: await applyPreparedEntitySchemaMutation(proposal, ctx, tx),
+      };
+    }
+    const label =
+      `${proposal.action} ${proposal.schema_type.replace('_', ' ')} ${String(proposal.args.slug ?? proposal.args.rule_id ?? '')}`.trim();
     const inserted = await tx`
       INSERT INTO runs (
         organization_id, run_type, action_key, action_input,
         created_by_user_id, initiator_kind, initiator_ref,
+        policy_principal_kind, policy_principal_id,
         approval_status, status, created_at
       ) VALUES (
         ${ctx.organizationId}, 'internal', ${MANAGE_ENTITY_SCHEMA_ACTION_KEY},
@@ -221,6 +558,7 @@ async function queueEntityTypeCreateForApproval(
         ${initiator.createdByUserId},
         ${initiator.initiatorKind},
         ${tx.json(initiator.initiatorRef)},
+        ${proposal.policy_principal_kind}, ${proposal.policy_principal_id},
         'pending', 'pending', current_timestamp
       )
       RETURNING id
@@ -241,9 +579,10 @@ async function queueEntityTypeCreateForApproval(
         metadata: {
           tool: 'manage_entity_schema',
           action_key: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
-          schema_type: 'entity_type',
-          action: 'create',
-          slug: prepared.slug,
+          schema_type: proposal.schema_type,
+          action: proposal.action,
+          policy_action: proposal.policy_action,
+          slug: proposal.args.slug ?? null,
           proposal,
           current: null,
           initiator: {
@@ -258,14 +597,28 @@ async function queueEntityTypeCreateForApproval(
       },
       { sql: tx }
     );
-    return { runId, eventId: Number(event.id) };
+    return {
+      kind: 'pending' as const,
+      runId,
+      eventId: Number(event.id),
+      proposal,
+      label,
+    };
   });
 
-  const approvalUrl = buildResourcePermalink(
-    ownerSlug,
-    { kind: 'run', runId },
-    baseUrl
-  );
+  if (outcome.kind === 'applied') return outcome.result;
+  if (outcome.kind === 'denied') {
+    return {
+      schema_type: args.schema_type,
+      action: args.action as 'create' | 'update' | 'delete' | 'add_rule' | 'remove_rule',
+      status: 'denied',
+      message: `Policy denies ${entitySchemaPolicyAction(args)} for this principal.`,
+    };
+  }
+
+  const { runId, eventId, proposal, label } = outcome;
+
+  const approvalUrl = buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
   const chatOrigin = await resolveApprovalChatOrigin(ctx);
   const actionOrigin = await resolveActionOrigin(ctx);
   notifyActionApprovalNeeded({
@@ -281,22 +634,20 @@ async function queueEntityTypeCreateForApproval(
     requesterUserId: ctx.userId,
     mcpActivity: currentMcpActivityAttribution(ctx),
     actionOrigin,
-  }).catch((error) =>
-    logger.error(error, 'Failed to send entity type approval notification')
-  );
+  }).catch((error) => logger.error(error, 'Failed to send entity schema approval notification'));
 
   return {
-    schema_type: 'entity_type',
-    action: 'create',
+    schema_type: proposal.schema_type,
+    action: proposal.action,
     status: 'pending_approval',
     run_id: runId,
     event_id: eventId,
     ...(approvalUrl ? { approval_url: approvalUrl } : {}),
     message: approvalUrl
-      ? `Entity type '${prepared.slug}' is queued for human approval. Call get_approval with run_id ${runId} to show the embedded confirmation, or give the user approval_url.`
-      : `Entity type '${prepared.slug}' is queued for human approval. Call get_approval with run_id ${runId} to show the embedded confirmation.`,
+      ? `Entity schema mutation is queued for human approval. Call get_approval with run_id ${runId} to show the embedded confirmation, or give the user approval_url.`
+      : `Entity schema mutation is queued for human approval. Call get_approval with run_id ${runId} to show the embedded confirmation.`,
     proposal,
-    current: null,
+    current: proposal.current,
   };
 }
 
@@ -446,9 +797,10 @@ function assertValidBacking(backing: ManageEntitySchemaArgs['backing']): void {
 
 async function getRelationshipCountForType(
   typeId: number,
-  organizationId: string
+  organizationId: string,
+  db: DbClient = getDb()
 ): Promise<number> {
-  const sql = getDb();
+  const sql = db;
   const rows = await sql`
     SELECT COUNT(*)::int as count
     FROM entity_relationships r
@@ -467,14 +819,10 @@ async function recordAudit(
   beforePayload: Record<string, unknown> | null,
   afterPayload: Record<string, unknown> | null
 ): Promise<void> {
-  try {
     await sql`
       INSERT INTO entity_type_audit (entity_type_id, action, actor, before_payload, after_payload, created_at)
       VALUES (${entityTypeId}, ${action}, ${actor}, ${beforePayload ? sql.json(beforePayload) : null}, ${afterPayload ? sql.json(afterPayload) : null}, current_timestamp)
     `;
-  } catch (err) {
-    logger.warn({ err, entityTypeId, action }, 'Failed to record entity_type audit entry');
-  }
 }
 
 // ============================================
@@ -696,7 +1044,8 @@ interface PreparedEntityTypeCreate {
 /** Validate an entity-type create without mutating durable state. */
 async function prepareEntityTypeCreate(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<PreparedEntityTypeCreate> {
   if (!args.slug) throw new ToolUserError('slug is required for create action', 400);
   if (!args.name) throw new ToolUserError('name is required for create action', 400);
@@ -713,7 +1062,7 @@ async function prepareEntityTypeCreate(
 
   const slug = normalizeEntityTypeSlug(args.slug);
 
-  const sql = getDb();
+  const sql = db;
 
   const existing = await sql`
     SELECT id FROM entity_types
@@ -725,7 +1074,10 @@ async function prepareEntityTypeCreate(
   if (existing.length > 0) {
     // Coded 409 (not a generic 400): `lobu apply` upserts by probing `create`
     // and retrying as `update` ONLY on an explicit duplicate signal.
-    throw new ToolUserError(`[entity_type_exists] Entity type with slug '${slug}' already exists`, 409);
+    throw new ToolUserError(
+      `[entity_type_exists] Entity type with slug '${slug}' already exists`,
+      409
+    );
   }
 
   validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
@@ -743,10 +1095,11 @@ async function prepareEntityTypeCreate(
 
 async function etHandleCreate(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
-  const { slug, rulesCompiled } = await prepareEntityTypeCreate(args, ctx);
-  const sql = getDb();
+  const { slug, rulesCompiled } = await prepareEntityTypeCreate(args, ctx, db);
+  const sql = db;
   const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
   const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
@@ -810,26 +1163,36 @@ async function etHandleCreate(
     inserted[0] as Record<string, unknown>
   );
 
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'entity-type',
     resourceId: slug,
     op: 'created',
     summary: `Entity type '${args.name}' created`,
     state: inserted[0] as Record<string, unknown>,
-  });
+    },
+    sql
+  );
 
-  return { schema_type: 'entity_type', action: 'create', entity_type: created };
+  return {
+    schema_type: 'entity_type',
+    action: 'create',
+    status: 'applied',
+    entity_type: created,
+  };
 }
 
 async function etHandleUpdate(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
   if (!args.slug) throw new ToolUserError('slug is required for update action', 400);
   if (!ctx.userId) throw new ToolUserError('Authentication required to update entity types', 401);
 
   const slug = normalizeEntityTypeSlug(args.slug);
-  const sql = getDb();
+  const sql = db;
 
   const existing = await sql`
     SELECT * FROM entity_types
@@ -854,7 +1217,8 @@ async function etHandleUpdate(
   if (args.backing?.sql) {
     const existingCount = await countStoredEntitiesOfType(
       Number(current.id),
-      ctx.organizationId
+      ctx.organizationId,
+      sql
     );
     if (existingCount > 0) {
       throw new ToolUserError(
@@ -928,7 +1292,8 @@ async function etHandleUpdate(
     `SELECT ${ENTITY_TYPE_COLUMNS} FROM entity_types WHERE id = $1 LIMIT 1`,
     [current.id]
   );
-  if (updated.length === 0) throw new ToolUserError(`Entity type '${args.slug}' not found after update`, 404);
+  if (updated.length === 0)
+    throw new ToolUserError(`Entity type '${args.slug}' not found after update`, 404);
 
   const result = mapRowToEntityType(updated[0] as Record<string, unknown>);
   // Same policy as get/list: never run a derived backing SQL just to echo a
@@ -965,27 +1330,37 @@ async function etHandleUpdate(
     ...(hasBacking ? ['backing'] : []),
     ...(hasMetricsConfig ? ['metrics_config'] : []),
   ];
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'entity-type',
     resourceId: slug,
     op: 'updated',
     summary: `Entity type '${result.name ?? args.slug}' updated`,
     state: updated[0] as Record<string, unknown>,
     ...(etChangedFields.length > 0 ? { changedFields: etChangedFields } : {}),
-  });
+    },
+    sql
+  );
 
-  return { schema_type: 'entity_type', action: 'update', entity_type: result };
+  return {
+    schema_type: 'entity_type',
+    action: 'update',
+    status: 'applied',
+    entity_type: result,
+  };
 }
 
 async function etHandleDelete(
   rawSlug: string | undefined,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
   if (!rawSlug) throw new ToolUserError('slug is required for delete action', 400);
   const slug = normalizeEntityTypeSlug(rawSlug);
   if (!ctx.userId) throw new ToolUserError('Authentication required to delete entity types', 401);
 
-  const sql = getDb();
+  const sql = db;
 
   const existing = await sql`
     SELECT * FROM entity_types
@@ -998,7 +1373,7 @@ async function etHandleDelete(
 
   const current = existing[0];
   // Only stored rows block delete — derived views have no `entities` rows.
-  const entityCount = await countStoredEntitiesOfType(Number(current.id), ctx.organizationId);
+  const entityCount = await countStoredEntitiesOfType(Number(current.id), ctx.organizationId, sql);
   if (entityCount > 0) {
     throw new ToolUserError(
       `Cannot delete entity type '${slug}': ${entityCount} entities of this type exist. Remove or reassign them first.`,
@@ -1023,17 +1398,22 @@ async function etHandleDelete(
     null
   );
 
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'entity-type',
     resourceId: slug,
     op: 'deleted',
     summary: `Entity type '${slug}' deleted`,
     state: null,
-  });
+    },
+    sql
+  );
 
   return {
     schema_type: 'entity_type',
     action: 'delete',
+    status: 'applied',
     success: true,
     message: `Entity type '${slug}' deleted successfully`,
   };
@@ -1091,7 +1471,11 @@ async function etHandleAudit(
     created_at: String(row.created_at),
   }));
 
-  return { schema_type: 'entity_type', action: 'audit', audit_entries: auditEntries };
+  return {
+    schema_type: 'entity_type',
+    action: 'audit',
+    audit_entries: auditEntries,
+  };
 }
 
 // ============================================
@@ -1114,11 +1498,12 @@ async function requireRelationshipType(
   slug: string | undefined,
   action: string,
   ctx: ToolContext,
-  mode: 'read' | 'write' = 'write'
-): Promise<{ typeId: number; sql: ReturnType<typeof getDb> }> {
+  mode: 'read' | 'write' = 'write',
+  db: DbClient = getDb()
+): Promise<{ typeId: number; sql: DbClient }> {
   if (!slug) throw new ToolUserError(`slug is required for ${action} action`, 400);
 
-  const sql = getDb();
+  const sql = db;
 
   if (mode === 'read') {
     const rows = await sql`
@@ -1172,9 +1557,10 @@ async function resolveInverseType(
   sql: DbClient,
   inverseSlug: string,
   ctx: ToolContext
-): Promise<{ id: number; ownedByCaller: boolean }> {
+): Promise<{ id: number; ownedByCaller: boolean; updatedAt: string }> {
   const rows = await sql`
-    SELECT rt.id, rt.slug, rt.purpose, (rt.organization_id = ${ctx.organizationId}) AS owned
+    SELECT rt.id, rt.slug, rt.purpose, rt.updated_at,
+      (rt.organization_id = ${ctx.organizationId}) AS owned
     FROM entity_relationship_types rt
     LEFT JOIN organization o ON o.id = rt.organization_id
     WHERE rt.slug = ${inverseSlug}
@@ -1190,10 +1576,17 @@ async function resolveInverseType(
   // declared equivalence between two vocabularies, so allowing it would let a
   // caller attach their own freely-writable type to the one the ACL gates read.
   assertNotAuthorizationType(
-    { slug: String(rows[0].slug ?? inverseSlug), purpose: rows[0].purpose as string | null },
+    {
+      slug: String(rows[0].slug ?? inverseSlug),
+      purpose: rows[0].purpose as string | null,
+    },
     'inverse_type_slug'
   );
-  return { id: Number(rows[0].id), ownedByCaller: Boolean(rows[0].owned) };
+  return {
+    id: Number(rows[0].id),
+    ownedByCaller: Boolean(rows[0].owned),
+    updatedAt: timestamp(rows[0].updated_at) ?? '',
+  };
 }
 
 // ============================================
@@ -1291,16 +1684,20 @@ async function rtHandleGet(
 
 async function rtHandleCreate(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
   if (!args.slug) throw new ToolUserError('slug is required for create action', 400);
   if (!args.name) throw new ToolUserError('name is required for create action', 400);
 
   if (args.slug.startsWith('$')) {
-    throw new ToolUserError("Relationship type slugs starting with '$' are reserved for system types", 422);
+    throw new ToolUserError(
+      "Relationship type slugs starting with '$' are reserved for system types",
+      422
+    );
   }
 
-  const sql = getDb();
+  const sql = db;
 
   // Org-scoped duplicate check — the unique index is (organization_id, slug),
   // so a same-slug PUBLIC type from another org must NOT block this org from
@@ -1386,36 +1783,39 @@ async function rtHandleCreate(
     WHERE rt.id = ${typeId}
   `;
 
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'relationship-type',
     resourceId: args.slug,
     op: 'created',
     summary: `Relationship type '${args.name}' created`,
     state: created[0] as unknown as Record<string, unknown>,
-  });
+    },
+    sql
+  );
 
   return {
     schema_type: 'relationship_type',
     action: 'create',
+    status: 'applied',
     relationship_type: created[0] as unknown as RelationshipTypeRow,
   };
 }
 
 async function rtHandleUpdate(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
-  const { typeId, sql } = await requireRelationshipType(args.slug, 'update', ctx);
+  const { typeId, sql } = await requireRelationshipType(args.slug, 'update', ctx, 'write', db);
 
   // A config can declare member_of before its first ACL sync classifies the row,
   // and may update harmless fields while it is still unclassified. It may not
   // archive the type: the materializer upserts against active slugs, so the next
   // sync would create a second type while existing grants remain attached to the
   // old one and stop being reconciled.
-  if (
-    isAclManagedRelationshipSlug(args.slug ?? '') &&
-    args.status === 'archived'
-  ) {
+  if (isAclManagedRelationshipSlug(args.slug ?? '') && args.status === 'archived') {
     throw new ToolUserError(
       `Relationship type '${args.slug}' is ACL-managed and cannot be archived`,
       403
@@ -1431,8 +1831,8 @@ async function rtHandleUpdate(
   // this guard an update carrying it returned success with the row unchanged).
   if (args.is_symmetric !== undefined) {
     throw new ToolUserError(
-      "is_symmetric is create-only and cannot be changed on update — it affects relationship canonicalization/dedup for existing rows. To change it, create a new relationship type and migrate.",
-      422,
+      'is_symmetric is create-only and cannot be changed on update — it affects relationship canonicalization/dedup for existing rows. To change it, create a new relationship type and migrate.',
+      422
     );
   }
 
@@ -1442,7 +1842,8 @@ async function rtHandleUpdate(
       inverseTypeId = null;
     } else {
       const inverse = await resolveInverseType(sql, args.inverse_type_slug, ctx);
-      if (inverse.id === typeId) throw new ToolUserError('inverse_type_id cannot point to self', 422);
+      if (inverse.id === typeId)
+        throw new ToolUserError('inverse_type_id cannot point to self', 422);
       inverseTypeId = inverse.id;
     }
   }
@@ -1485,32 +1886,38 @@ async function rtHandleUpdate(
     ...(args.inverse_type_slug !== undefined ? ['inverse_type_id'] : []),
     ...(args.status !== undefined ? ['status'] : []),
   ];
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'relationship-type',
     resourceId: args.slug ?? typeId,
     op: 'updated',
     summary: `Relationship type '${args.slug ?? typeId}' updated`,
     state: updated[0] as unknown as Record<string, unknown>,
     ...(rtChangedFields.length > 0 ? { changedFields: rtChangedFields } : {}),
-  });
+    },
+    sql
+  );
 
   return {
     schema_type: 'relationship_type',
     action: 'update',
+    status: 'applied',
     relationship_type: updated[0] as unknown as RelationshipTypeRow,
   };
 }
 
 async function rtHandleDelete(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
-  const { typeId, sql } = await requireRelationshipType(args.slug, 'delete', ctx);
+  const { typeId, sql } = await requireRelationshipType(args.slug, 'delete', ctx, 'write', db);
 
   // Refuse while relationship instances exist — mirrors entity-type delete so
   // `lobu apply` prune (and the UI) can never orphan live relationship data
   // under a deleted definition.
-  const relationshipCount = await getRelationshipCountForType(typeId, ctx.organizationId);
+  const relationshipCount = await getRelationshipCountForType(typeId, ctx.organizationId, sql);
   if (relationshipCount > 0) {
     throw new ToolUserError(
       `Cannot delete relationship type '${args.slug}': ${relationshipCount} relationships of this type exist. Remove or reassign them first.`,
@@ -1537,17 +1944,22 @@ async function rtHandleDelete(
     WHERE relationship_type_id = ${typeId} AND deleted_at IS NULL
   `;
 
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'relationship-type',
     resourceId: args.slug ?? typeId,
     op: 'deleted',
     summary: `Relationship type '${args.slug ?? typeId}' deleted`,
     state: null,
-  });
+    },
+    sql
+  );
 
   return {
     schema_type: 'relationship_type',
     action: 'delete',
+    status: 'applied',
     success: true,
     message: `Relationship type "${args.slug}" deleted`,
   };
@@ -1555,14 +1967,15 @@ async function rtHandleDelete(
 
 async function rtHandleAddRule(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
   if (!args.source_entity_type_slug)
     throw new ToolUserError('source_entity_type_slug is required for add_rule action', 400);
   if (!args.target_entity_type_slug)
     throw new ToolUserError('target_entity_type_slug is required for add_rule action', 400);
 
-  const { typeId, sql } = await requireRelationshipType(args.slug, 'add_rule', ctx);
+  const { typeId, sql } = await requireRelationshipType(args.slug, 'add_rule', ctx, 'write', db);
 
   const existingRule = await sql`
     SELECT id FROM entity_relationship_type_rules
@@ -1601,7 +2014,9 @@ async function rtHandleAddRule(
     WHERE id = ${ruleId}
   `;
 
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'relationship-type',
     resourceId: args.slug ?? typeId,
     op: 'updated',
@@ -1612,22 +2027,26 @@ async function rtHandleAddRule(
       rule_added: created[0] as unknown as Record<string, unknown>,
     },
     changedFields: ['rules'],
-  });
+    },
+    sql
+  );
 
   return {
     schema_type: 'relationship_type',
     action: 'add_rule',
+    status: 'applied',
     rule: created[0] as unknown as RelationshipTypeRuleRow,
   };
 }
 
 async function rtHandleRemoveRule(
   args: ManageEntitySchemaArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  db: DbClient = getDb()
 ): Promise<ManageEntitySchemaResult> {
   if (!args.rule_id) throw new ToolUserError('rule_id is required for remove_rule action', 400);
 
-  const sql = getDb();
+  const sql = db;
 
   const ruleRows = await sql`
     SELECT r.id, rt.organization_id, rt.slug AS relationship_type_slug, rt.purpose
@@ -1662,7 +2081,9 @@ async function rtHandleRemoveRule(
   `;
 
   const removedRuleTypeSlug = String(ruleRows[0].relationship_type_slug ?? '');
-  recordToolConfigChange(ctx, {
+  await insertToolConfigChange(
+    ctx,
+    {
     resourceKind: 'relationship-type',
     resourceId: removedRuleTypeSlug || args.rule_id,
     op: 'updated',
@@ -1673,11 +2094,14 @@ async function rtHandleRemoveRule(
       rule_removed: args.rule_id,
     },
     changedFields: ['rules'],
-  });
+    },
+    sql
+  );
 
   return {
     schema_type: 'relationship_type',
     action: 'remove_rule',
+    status: 'applied',
     success: true,
     message: `Rule ${args.rule_id} removed`,
   };

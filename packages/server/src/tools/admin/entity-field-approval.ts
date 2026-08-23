@@ -52,10 +52,15 @@ import {
 	type EntityData,
 	mergeEntityFields,
 	patchEntityRows,
+	withEntityWriteTransaction,
 } from "../../utils/entity-management";
 import { applyMergeGroupInTransaction } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
-import { insertEvent, stableJson } from "../../utils/insert-event";
+import {
+	insertChangeEventInTransaction,
+	insertEvent,
+	stableJson,
+} from "../../utils/insert-event";
 import logger from "../../utils/logger";
 import {
 	buildConnectionUrl,
@@ -335,10 +340,18 @@ async function loadAutomationLabel(
 	automationAgentId: string | null;
 }> {
 	if (attribution !== ApprovalAttribution.Automation) {
-		return { actorLabel: "An agent", automationName: null, automationAgentId: null };
+		return {
+			actorLabel: "An agent",
+			automationName: null,
+			automationAgentId: null,
+		};
 	}
 	if (!automationId) {
-		return { actorLabel: "An Automation", automationName: null, automationAgentId: null };
+		return {
+			actorLabel: "An Automation",
+			automationName: null,
+			automationAgentId: null,
+		};
 	}
 	const rows = await getDb()<{
 		name: string | null;
@@ -508,11 +521,15 @@ export async function proposeEntityFieldChange(
 		proposal.entity_id,
 		Object.keys(proposal.fields),
 	);
-	return proposeEntityChange(ctx, {
+	return proposeEntityChange(
+		ctx,
+		{
 		...proposal,
 		...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
 		operation: "update",
-	}, parentRunId);
+		},
+		parentRunId,
+	);
 }
 
 export async function proposeEntityDelete(
@@ -520,7 +537,11 @@ export async function proposeEntityDelete(
 	proposal: Omit<EntityDeleteProposal, "operation">,
 	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "delete" }, parentRunId);
+	return proposeEntityChange(
+		ctx,
+		{ ...proposal, operation: "delete" },
+		parentRunId,
+	);
 }
 
 export async function proposeEntityCreate(
@@ -528,7 +549,11 @@ export async function proposeEntityCreate(
 	proposal: Omit<EntityCreateProposal, "operation">,
 	parentRunId: number | null = null,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "create" }, parentRunId);
+	return proposeEntityChange(
+		ctx,
+		{ ...proposal, operation: "create" },
+		parentRunId,
+	);
 }
 
 /**
@@ -559,7 +584,10 @@ async function buildMergeReviewSnapshot(
 	const requireResolutionKeys = (entityId: number) => {
 		const keys = keysById.get(entityId);
 		if (!keys) {
-			throw new ToolUserError(`Resolution keys for entity ${entityId} not found`, 404);
+			throw new ToolUserError(
+				`Resolution keys for entity ${entityId} not found`,
+				404,
+			);
 		}
 		return keys;
 	};
@@ -577,7 +605,8 @@ async function buildMergeReviewSnapshot(
 		requireResolutionKeys(input.winnerEntityId),
 	);
 	const [loser, ...rest] = linkedDuplicates;
-	if (!loser) throw new ToolUserError("At least one duplicate entity is required", 400);
+	if (!loser)
+		throw new ToolUserError("At least one duplicate entity is required", 400);
 	return { loser, duplicates: [loser, ...rest], winner: linkedWinner };
 }
 
@@ -594,12 +623,16 @@ export async function proposeEntityMerge(
 		winnerEntityId: proposal.winner_entity_id,
 		resolutionKeys,
 	});
-	return proposeEntityChange(ctx, {
+	return proposeEntityChange(
+		ctx,
+		{
 		...proposal,
 		entity_id: current.loser.id as number,
 		operation: "merge",
 		current,
-	}, parentRunId);
+		},
+		parentRunId,
+	);
 }
 
 /**
@@ -1113,8 +1146,9 @@ const ATTRIBUTE_FIELD_KEYS = new Set(["$name", "$parent_id", "$content"]);
 export async function applyEntityFieldChangeProposal(
 	proposal: EntityFieldChangeProposal,
 	approverUserId: string | null,
+	db: DbClient = getDb(),
 ): Promise<FieldMergeResult> {
-	const sql = getDb();
+	const sql = db;
 	const metadataFields = Object.fromEntries(
 		Object.entries(proposal.fields).filter(
 			([key]) => !ATTRIBUTE_FIELD_KEYS.has(key),
@@ -1125,7 +1159,23 @@ export async function applyEntityFieldChangeProposal(
 			ATTRIBUTE_FIELD_KEYS.has(key),
 		),
 	);
-	return await sql.begin(async (tx) => {
+	return await withEntityWriteTransaction(sql, async (tx) => {
+		// Resolve and claim the organization parent before mergeEntityFields locks
+		// the entity. The canonical event insert below takes the same FK lock, and
+		// this order avoids deadlocking with organization deletion's parent-first
+		// cascade.
+		const [scope] = await tx<{ organization_id: string }>`
+			SELECT organization_id FROM entities
+			WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
+		`;
+		if (!scope) {
+			throw new ToolUserError(`Entity ${proposal.entity_id} not found`, 404);
+		}
+		await tx`
+			SELECT 1 FROM organization
+			WHERE id = ${scope.organization_id}
+			FOR KEY SHARE
+		`;
 		const merge =
 			Object.keys(metadataFields).length > 0
 				? await mergeEntityFields({
@@ -1231,6 +1281,31 @@ export async function applyEntityFieldChangeProposal(
 		) {
 			throw new AtomicCardStaleError(merge.stale);
 		}
+		const appliedChanges = Object.entries(merge.applied).map(
+			([field, value]) => ({ field, old: value.old, new: value.new }),
+		);
+		if (appliedChanges.length > 0) {
+			const [entity] = await tx<{ name: string }>`
+				SELECT name FROM entities
+				WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
+			`;
+			if (!entity) {
+				throw new ToolUserError(`Entity ${proposal.entity_id} not found`, 404);
+			}
+			await insertChangeEventInTransaction(
+				{
+					entityIds: [proposal.entity_id],
+					organizationId: scope.organization_id,
+					subject: "entity",
+					op: "updated",
+					title: `Entity updated: ${appliedChanges.map((change) => change.field).join(", ")}`,
+					content: `Approved entity update applied to "${entity.name}" (id: ${proposal.entity_id}).`,
+					metadata: { changes: appliedChanges, approval_applied: true },
+					createdBy: approverUserId,
+				},
+				tx,
+			);
+		}
 		return merge;
 	}).catch((err) => {
 		// Not an apply failure: nothing was wrong with the write, the reviewed
@@ -1317,6 +1392,7 @@ export async function applyEntityChangeProposal(
 		return applyEntityFieldChangeProposal(
 			asUpdateProposal(proposal),
 			ctx.userId ?? null,
+			db,
 		);
 	}
 	if (operation === "create") {
@@ -1333,6 +1409,7 @@ export async function applyEntityChangeProposal(
 				created_by: ctx.userId ?? createProposal.entity_data.created_by,
 			},
 			{
+				sql: db,
 				hookContext: {
 					organizationId: ctx.organizationId,
 					userId: ctx.userId,
@@ -1383,6 +1460,9 @@ export async function applyEntityChangeProposal(
 		deleteProposal.force_delete_tree ?? false,
 		env,
 		ctx,
-		{ approvedFields: [RESERVED_COLUMN_NAMES.softDelete] },
+		{
+			sql: db,
+			approvedFields: [RESERVED_COLUMN_NAMES.softDelete],
+		},
 	);
 }

@@ -28,15 +28,14 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
-import {
-	createEntity,
-	updateEntity,
-} from "../../../utils/entity-management";
+import { createEntity, updateEntity } from "../../../utils/entity-management";
 import {
 	applyEntityChangeProposal,
 	applyEntityFieldChangeProposal,
+	proposeEntityCreate,
 	proposeEntityDelete,
 } from "../../../tools/admin/entity-field-approval";
+import { manageOperations } from "../../../tools/admin/manage_operations";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
 import {
@@ -370,5 +369,124 @@ describe("an approved DELETE card is honoured despite the rule that escalated it
       SELECT deleted_at FROM entities WHERE id = ${invoice.id}
     `;
 		expect(row.deleted_at).not.toBeNull();
+	}, 60_000);
+});
+
+const FAIL_TERMINAL_ENTITY_APPROVAL = `
+CREATE OR REPLACE FUNCTION test_fail_entity_terminal_approval() RETURNS trigger AS $fn$
+BEGIN
+  IF NEW.interaction_type = 'approval' AND NEW.interaction_status = 'completed' THEN
+    RAISE EXCEPTION 'simulated entity terminal approval failure';
+  END IF;
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+CREATE TRIGGER test_fail_entity_terminal_approval_trg
+  BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION test_fail_entity_terminal_approval();
+`;
+const DROP_FAIL_TERMINAL_ENTITY_APPROVAL = `
+DROP TRIGGER IF EXISTS test_fail_entity_terminal_approval_trg ON events;
+DROP FUNCTION IF EXISTS test_fail_entity_terminal_approval();
+`;
+
+async function approveWithTerminalFailure(
+	runId: number,
+	ctx: ToolContext,
+): Promise<void> {
+	const sql = getTestDb();
+	await sql.unsafe(FAIL_TERMINAL_ENTITY_APPROVAL);
+	try {
+		const result = await manageOperations(
+			{ action: "approve", run_id: runId },
+			TEST_ENV,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			error: expect.stringMatching(/terminal approval failure/i),
+		});
+	} finally {
+		await sql.unsafe(DROP_FAIL_TERMINAL_ENTITY_APPROVAL);
+	}
+	const [run] = await sql<{ approval_status: string; status: string }[]>`
+		SELECT approval_status, status FROM runs WHERE id = ${runId}
+	`;
+	expect(run).toEqual({ approval_status: "pending", status: "pending" });
+}
+
+describe("entity approval apply shares the terminal approval transaction", () => {
+	beforeEach(async () => {
+		await getTestDb().unsafe(DROP_FAIL_TERMINAL_ENTITY_APPROVAL);
+		await cleanupTestDatabase();
+	});
+
+	it("rolls an approved create back when completion persistence fails", async () => {
+		const { org, user } = await seed();
+		const queued = await proposeEntityCreate(
+			ctxFor(org.id, { agentId: "atomic-create-agent" }),
+			{
+				entity_data: {
+					entity_type: "invoice",
+					name: "INV-CREATE-ROLLBACK",
+					organization_id: org.id,
+					created_by: user.id,
+					metadata: { amount: 1000 },
+				},
+				proposal: { entity_type: "invoice", name: "INV-CREATE-ROLLBACK" },
+				attribution: "agent",
+			},
+		);
+		await approveWithTerminalFailure(
+			queued.runId,
+			ctxFor(org.id, { userId: user.id }),
+		);
+		expect(
+			await getTestDb()`SELECT id FROM entities
+			WHERE organization_id = ${org.id} AND name = 'INV-CREATE-ROLLBACK'`,
+		).toHaveLength(0);
+	}, 60_000);
+
+	it("rolls an approved update back when completion persistence fails", async () => {
+		const { org, user, agent, invoice } = await seed();
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+		const deferred = await updateEntity(
+			invoice.id,
+			{ metadata: { amount: 90000 } },
+			TEST_ENV,
+			agentCtx,
+		);
+		expect(deferred.deferred).toBeTruthy();
+		const queued = await deferred.deferred!.queue(agentCtx, TEST_ENV);
+		await approveWithTerminalFailure(
+			queued.runId,
+			ctxFor(org.id, { userId: user.id }),
+		);
+		expect((await readMetadata(invoice.id)).amount).toBe(1000);
+	}, 60_000);
+
+	it("rolls an approved delete back when completion persistence fails", async () => {
+		const { org, user, invoice } = await seed();
+		const queued = await proposeEntityDelete(
+			ctxFor(org.id, { agentId: "atomic-delete-agent" }),
+			{
+				entity_id: invoice.id,
+				force_delete_tree: false,
+				current: {
+					id: invoice.id,
+					entity_type: "invoice",
+					name: invoice.name,
+					metadata: invoice.metadata,
+				},
+				attribution: "agent",
+			},
+		);
+		await approveWithTerminalFailure(
+			queued.runId,
+			ctxFor(org.id, { userId: user.id }),
+		);
+		const [row] = await getTestDb()<[{ deleted_at: Date | null }]>`
+			SELECT deleted_at FROM entities WHERE id = ${invoice.id}
+		`;
+		expect(row.deleted_at).toBeNull();
 	}, 60_000);
 });

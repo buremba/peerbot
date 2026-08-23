@@ -23,7 +23,18 @@ import type { WriteResourceClass } from "./entity-policy";
  * a write connector operation). `install` is intentionally NOT declared until a
  * class actually uses it — an undeclared action is illegal, not a reserved no-op.
  */
-export type WriteAction = "read" | "create" | "update" | "delete" | "execute";
+export type WriteAction =
+	| "read"
+	| "create"
+	| "update"
+	| "delete"
+	| "execute"
+	| "create_type"
+	| "update_type"
+	| "delete_type"
+	| "create_relationship_type"
+	| "update_relationship_type"
+	| "delete_relationship_type";
 
 /**
  * The decision a policy attaches to an action. `auto` applies inline; `approval`
@@ -38,7 +49,7 @@ interface ClassManifest {
 	/** The effects legal for this class. An effect outside this set is illegal for the class. */
 	readonly effects: readonly WriteEffect[];
 	/** The effect applied when no policy row matches, per action. */
-	readonly defaultEffect: Readonly<Record<WriteAction, WriteEffect>>;
+	readonly defaultEffect: Readonly<Partial<Record<WriteAction, WriteEffect>>>;
 }
 
 /**
@@ -62,7 +73,6 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 			create: "auto",
 			update: "auto",
 			delete: "approval",
-			execute: "deny",
 		},
 	},
 	agent_config: {
@@ -82,7 +92,6 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 			create: "approval",
 			update: "approval",
 			delete: "deny",
-			execute: "deny",
 		},
 	},
 	connector_action: {
@@ -95,10 +104,26 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		// alone decide (today's semantics). A row only ever tightens.
 		defaultEffect: {
 			execute: "auto",
-			read: "deny",
-			create: "deny",
-			update: "deny",
-			delete: "deny",
+		},
+	},
+	entity_schema: {
+		actions: [
+			"create_type",
+			"update_type",
+			"delete_type",
+			"create_relationship_type",
+			"update_relationship_type",
+			"delete_relationship_type",
+		],
+		effects: ["auto", "approval", "deny"],
+		// Preserve the historical owner/admin semantics until a workspace opts in.
+		defaultEffect: {
+			create_type: "auto",
+			update_type: "auto",
+			delete_type: "auto",
+			create_relationship_type: "auto",
+			update_relationship_type: "auto",
+			delete_relationship_type: "auto",
 		},
 	},
 };
@@ -124,5 +149,5 @@ export function defaultEffectFor(
 ): WriteEffect {
 	const m = WRITE_ACTION_MANIFEST[resourceClass];
 	if (!m.actions.includes(action)) return "deny";
-	return m.defaultEffect[action];
+	return m.defaultEffect[action] ?? "deny";
 }

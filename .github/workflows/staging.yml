@@ -28,9 +28,6 @@ permissions:
 concurrency:
   group: staging-lock
 
-env:
-  KUBECONFIG: /tmp/kubeconfig
-
 jobs:
   reconcile:
     runs-on: ubuntu-24.04
@@ -52,14 +49,37 @@ jobs:
       WILDCARD_TLS_SECRET: wildcard-lobu-ai-tls
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      # Deploy identity, checked before the first cluster write. KUBE_SERVER
+      # and KUBE_CLUSTER_UID have no default: until an operator sets both repo
+      # variables this job stops at the preflight (see the script's header).
+      KUBE_EXPECTED_CONTEXT: ${{ vars.KUBE_CONTEXT || 'lobu-prod' }}
+      KUBE_EXPECTED_SERVER: ${{ vars.KUBE_SERVER }}
+      KUBE_EXPECTED_CLUSTER_UID: ${{ vars.KUBE_CLUSTER_UID }}
+      KUBE_REQUIRED_CAPABILITIES: |
+        get|namespaces|
+        list|ingresses.networking.k8s.io|@ALL_NAMESPACES
+        delete|ingresses.networking.k8s.io|@ALL_NAMESPACES
+        get|ingresses.networking.k8s.io|@PREVIEW_NS
+        create|ingresses.networking.k8s.io|@PREVIEW_NS
+        patch|ingresses.networking.k8s.io|@PREVIEW_NS
+        get|services|@PREVIEW_NS
+        get|deployments.apps|@PREVIEW_NS
+        patch|deployments.apps|@PREVIEW_NS
+        watch|deployments.apps|@PREVIEW_NS
+        get|secrets|@WILDCARD_TLS_NS
+        get|secrets|@PREVIEW_NS
+        create|secrets|@PREVIEW_NS
+        patch|secrets|@PREVIEW_NS
       # labeled = acquire, unlabeled = release (label event or manual dispatch)
       STAGING_ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || github.event.action }}
     steps:
-      - name: Setup kubeconfig
+      - uses: actions/checkout@v7
+
+      - name: Setup and preflight kubeconfig
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
-          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG"
+          ./scripts/lib/kubeconfig-preflight.sh setup
 
       - name: Release lock (unlabeled)
         if: env.STAGING_ACTION == 'unlabeled'
@@ -174,3 +194,7 @@ jobs:
             "Removing the \`staging\` label releases the lock and takes the public host down.")
           gh pr comment "$PR_NUM" --body "$STAGING_BODY"
           echo "staging locked to PR #$PR_NUM at https://$STAGING_HOST"
+
+      - name: Remove kubeconfig
+        if: always()
+        run: ./scripts/lib/kubeconfig-preflight.sh cleanup

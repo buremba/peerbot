@@ -1270,6 +1270,11 @@ jobs:
         # close/unlabel race, so without this it would first run in anger.
         run: bash scripts/lib/__tests__/preview-teardown.test.sh
 
+      - name: Kubeconfig workflow guards
+        # Mutating deploy workflows must fail closed before their first cluster
+        # write when the credential, cluster identity, or RBAC scope is stale.
+        run: sh scripts/lib/__tests__/kubeconfig-preflight.test.sh
+
       - name: Remote CI wrapper guards
         # Depot rewrites .github/actions paths to .depot/actions for local runs.
         # Pin the duplicate action and the fail-closed run-status parser so a

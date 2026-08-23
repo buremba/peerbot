@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Build/install Owletto (Developer ID) and probe prod computer_use.
+# Usage: ORG=example-org CONN_ID=123 scripts/owletto-mac-e2e.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ORG="${ORG:-buremba}"
 CONTEXT="${CONTEXT:-lobu}"
-CONN_ID="${CONN_ID:-397}"
+: "${ORG:?Set ORG to the organization slug to test}"
+: "${CONN_ID:?Set CONN_ID to the Owletto connection ID to test}"
+# CONN_ID is interpolated into the `lobu memory exec` script body below, so it
+# must be a bare integer literal rather than arbitrary text.
+[[ "$CONN_ID" =~ ^[0-9]+$ ]] || { echo "error: CONN_ID must be numeric (got '$CONN_ID')" >&2; exit 1; }
 
 cd "$ROOT"
 git -c submodule.recurse=false pull --ff-only origin main

@@ -3,8 +3,6 @@
  * mounted at `POST /api/:orgSlug/:toolName`. Companion to `lobu call --list`
  * (`GET /api/:orgSlug/tools`).
  *
- * Design ref: `/Users/burakemre/.claude/plans/lobu-call-dispatcher.md`.
- *
  * Argument shapes (mutually exclusive):
  *   --input-file <path>     JSON object read from disk
  *   stdin                   JSON object piped on stdin (when stdin is not a TTY)

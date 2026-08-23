@@ -1373,7 +1373,7 @@ describe("XConnector browser-first routing", () => {
 			],
 		},
 		{
-			name: "keeps a resumed cursor when GraphQL returns an error page",
+			name: "keeps a resumed cursor when GraphQL returns partial data with errors",
 			replayResult: { ok: true, status: 200 },
 			replayThrows: false,
 			parserErrors: ["rate limited"],
@@ -1389,16 +1389,8 @@ describe("XConnector browser-first routing", () => {
 					{
 						url: likesTimelineUrl("resume-cursor"),
 						body: JSON.stringify({
+							...likesTimelineResponse("200", "deep-cursor"),
 							errors: [{ message: "rate limited" }],
-							data: {
-								user: {
-									result: {
-										timeline_v2: {
-											timeline: { instructions: [] },
-										},
-									},
-								},
-							},
 						}),
 					},
 				],

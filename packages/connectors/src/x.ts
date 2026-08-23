@@ -2016,12 +2016,7 @@ async function syncLikedTweetsViaExtension(
 		}
 		const page = parseBrowserTimelinePage(url, json);
 		parserErrors.push(...page.errors);
-		if (
-			!page.recognized ||
-			(page.errors.length > 0 &&
-				page.tweets.length === 0 &&
-				!page.bottomCursor)
-		) {
+		if (!page.recognized || page.errors.length > 0) {
 			return [];
 		}
 		pages.recordPage(url, page);

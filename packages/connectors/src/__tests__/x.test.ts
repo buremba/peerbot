@@ -312,8 +312,8 @@ describe("parseBrowserTimelineResponse", () => {
 				data: {
 					user: {
 						result: {
-							rest_id: "369272762",
-							core: { screen_name: "bu7emba", name: "burak emre" },
+							rest_id: "1000000001",
+							core: { screen_name: "testuser", name: "Test User" },
 							timeline_v2: { timeline: { instructions } },
 						},
 					},
@@ -324,9 +324,9 @@ describe("parseBrowserTimelineResponse", () => {
 			recognized: true,
 			bottomCursor: "cursor-page-2",
 			owner: {
-				id: "369272762",
-				handle: "bu7emba",
-				displayName: "burak emre",
+				id: "1000000001",
+				handle: "testuser",
+				displayName: "Test User",
 			},
 		});
 		expect(page.tweets).toHaveLength(1);
@@ -428,7 +428,7 @@ describe("parseBrowserTimelineResponse", () => {
 describe("X likes GraphQL cursor URLs", () => {
 	test("replaces only the cursor in a captured same-origin request", () => {
 		const url = `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
-			JSON.stringify({ userId: "369272762", cursor: "old", count: 20 }),
+			JSON.stringify({ userId: "1000000001", cursor: "old", count: 20 }),
 		)}&features=${encodeURIComponent(JSON.stringify({ feature: true }))}`;
 		const replaced = replaceGraphqlCursor(url, "next-page");
 		expect(readGraphqlCursor(replaced)).toBe("next-page");
@@ -603,9 +603,9 @@ describe("finalizeLikedTweetsResult", () => {
 						alt_text: "diagram",
 					},
 				],
-				likedByUserId: "369272762",
-				likedByHandle: "bu7emba",
-				likedByDisplayName: "burak emre",
+				likedByUserId: "1000000001",
+				likedByHandle: "testuser",
+				likedByDisplayName: "Test User",
 			},
 		];
 		const result = finalizeLikedTweetsResult(
@@ -633,8 +633,8 @@ describe("finalizeLikedTweetsResult", () => {
 			metadata: {
 				author_id: "10",
 				author_handle: "alice",
-				liked_by_id: "369272762",
-				liked_by_handle: "bu7emba",
+				liked_by_id: "1000000001",
+				liked_by_handle: "testuser",
 				conversation_id: "90",
 				in_reply_to_id: "90",
 				quoted_tweet_id: "80",
@@ -828,11 +828,11 @@ describe("XConnector browser-first routing", () => {
 			requested.push(url);
 			if (url.includes("/2/users/me")) {
 				return new Response(
-					JSON.stringify({ data: { id: "369272762", username: "bu7emba" } }),
+					JSON.stringify({ data: { id: "1000000001", username: "testuser" } }),
 					{ status: 200, headers: { "content-type": "application/json" } },
 				);
 			}
-			if (url.includes("/2/users/369272762/liked_tweets")) {
+			if (url.includes("/2/users/1000000001/liked_tweets")) {
 				return new Response(
 					JSON.stringify({
 						data: [
@@ -883,8 +883,8 @@ describe("XConnector browser-first routing", () => {
 			expect(result.events[0].metadata).toMatchObject({
 				author_id: "123",
 				author_handle: "alice",
-				liked_by_id: "369272762",
-				liked_by_handle: "bu7emba",
+				liked_by_id: "1000000001",
+				liked_by_handle: "testuser",
 			});
 		} finally {
 			globalThis.fetch = originalFetch;
@@ -897,7 +897,7 @@ describe("XConnector browser-first routing", () => {
 			const url = String(input);
 			if (url.includes("/2/users/me")) {
 				return new Response(
-					JSON.stringify({ data: { id: "369272762", username: "bu7emba" } }),
+					JSON.stringify({ data: { id: "1000000001", username: "testuser" } }),
 					{ status: 200, headers: { "content-type": "application/json" } },
 				);
 			}
@@ -952,7 +952,7 @@ describe("XConnector browser-first routing", () => {
 			connector.sync({
 				feedKey: "liked_tweets",
 				config: {
-					account_handle: "bu7emba",
+					account_handle: "testuser",
 					use_extension: true,
 					backfill_pages_per_run: 1,
 				},
@@ -997,7 +997,7 @@ describe("XConnector browser-first routing", () => {
 			await connector.sync({
 				feedKey: "liked_tweets",
 				config: {
-					account_handle: "bu7emba",
+					account_handle: "testuser",
 					use_extension: true,
 					backfill_pages_per_run: 1,
 				},
@@ -1043,10 +1043,10 @@ describe("XConnector browser-first routing", () => {
 								data: {
 									user: {
 										result: {
-											rest_id: "369272762",
+											rest_id: "1000000001",
 											core: {
-												screen_name: "bu7emba",
-												name: "burak emre",
+												screen_name: "testuser",
+												name: "Test User",
 											},
 											timeline_v2: { timeline: { instructions } },
 										},
@@ -1062,7 +1062,7 @@ describe("XConnector browser-first routing", () => {
 		const result = await connector.sync({
 			feedKey: "liked_tweets",
 			config: {
-				account_handle: "bu7emba",
+				account_handle: "testuser",
 				use_extension: true,
 				backfill_pages_per_run: 1,
 			},
@@ -1077,9 +1077,9 @@ describe("XConnector browser-first routing", () => {
 			origin_type: "liked_tweet",
 			metadata: {
 				author_handle: "alice",
-				liked_by_id: "369272762",
-				liked_by_handle: "bu7emba",
-				liked_by_name: "burak emre",
+				liked_by_id: "1000000001",
+				liked_by_handle: "testuser",
+				liked_by_name: "Test User",
 			},
 		});
 		expect(result.metadata.collection_status).toBe("complete");
@@ -1088,7 +1088,7 @@ describe("XConnector browser-first routing", () => {
 	test("resumes historical likes from the checkpointed GraphQL cursor", async () => {
 		const timelineUrl = (cursor?: string) => {
 			const variables = {
-				userId: "369272762",
+				userId: "1000000001",
 				count: 20,
 				...(cursor ? { cursor } : {}),
 			};
@@ -1100,8 +1100,8 @@ describe("XConnector browser-first routing", () => {
 			data: {
 				user: {
 					result: {
-						rest_id: "369272762",
-						core: { screen_name: "bu7emba", name: "burak emre" },
+						rest_id: "1000000001",
+						core: { screen_name: "testuser", name: "Test User" },
 						timeline_v2: {
 							timeline: {
 								instructions: [
@@ -1186,7 +1186,7 @@ describe("XConnector browser-first routing", () => {
 		const result = await connector.sync({
 			feedKey: "liked_tweets",
 			config: {
-				account_handle: "bu7emba",
+				account_handle: "testuser",
 				use_extension: true,
 				backfill_pages_per_run: 1,
 			},

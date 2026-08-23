@@ -2519,7 +2519,7 @@ const likedTweetsConfigSchema = {
 			type: "string",
 			minLength: 1,
 			description:
-				'Optional X handle (e.g. "bu7emba"). Defaults to the authenticated account on OAuth; required for extension collection.',
+				'Optional X handle (e.g. "testuser"). Defaults to the authenticated account on OAuth; required for extension collection.',
 		},
 		...backendPreferenceProperties,
 		backfill_pages_per_run: {

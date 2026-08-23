@@ -34,7 +34,6 @@ export interface DaemonOptions {
   capabilities?: string;
   label?: string;
   debug?: boolean;
-  insideClaude?: boolean;
   interactiveSession?: boolean;
 }
 
@@ -110,20 +109,14 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     ...(options.interactiveSession === false
       ? { interactiveSession: false as const }
       : {}),
-    ...(options.insideClaude === true ? { insideClaude: true } : {}),
   });
   const platform = launchContext.platform ?? defaultPlatform;
-  const sessionLane =
-    launchContext.interactiveSession !== undefined ||
-    options.insideClaude === true;
+  const sessionLane = launchContext.interactiveSession !== undefined;
   const shortHost = hostname().split(".")[0] || hostname();
   const explicitWorkerId = options.workerId?.trim() || undefined;
   const sessionWorkerId = sessionLane
     ? resolveDaemonWorkerId(
-        {
-          workerId: explicitWorkerId,
-          ...(options.insideClaude === true ? { insideClaude: true } : {}),
-        },
+        { workerId: explicitWorkerId },
         platform,
         shortHost,
         launchContext.interactiveSession
@@ -255,7 +248,6 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
     ...(options.interactiveSession === false
       ? { interactiveSession: false as const }
       : {}),
-    ...(options.insideClaude === true ? { insideClaude: true } : {}),
   });
 }
 

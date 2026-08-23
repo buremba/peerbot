@@ -342,34 +342,6 @@ describe('interactive daemon launch context', () => {
     expect(() => resolveDaemonLaunchContext({ platform: 'macos' }, env)).toThrow(
       /registers as --platform headless.*Pass --no-interactive-session/s
     );
-    // The legacy flag has a different escape hatch, so the hint must name it.
-    expect(() =>
-      resolveDaemonLaunchContext({ platform: 'macos', insideClaude: true }, env)
-    ).toThrow(/registers as --platform headless.*Drop --inside-claude/s);
-  });
-
-  test('legacy inside-Claude detects only the exact inherited Claude parent', async () => {
-    const fixture = await parentFixture();
-    const env = {
-      CLAUDE_PID: String(process.pid),
-      CLAUDE_CODE_SESSION_ID: fixture.session.sessionId,
-      CLAUDE_CODE_MESSAGING_SOCKET: fixture.session.socketPath,
-      CLAUDE_CODE_MESSAGING_TOKEN: fixture.session.messagingToken,
-      CODEX_THREAD_ID: 'nested-codex',
-      CODEX_SESSION_ID: 'nested-codex',
-    };
-    expect(
-      resolveDaemonLaunchContext({ insideClaude: true, defaultPlatform: 'macos' }, env, fixture.dir)
-    ).toMatchObject({
-      platform: 'headless',
-      interactiveSession: { kind: 'claude-code', sessionId: fixture.session.sessionId },
-    });
-  });
-
-  test('legacy inside-Claude remains headless and retryable when startup metadata is absent', () => {
-    expect(
-      resolveDaemonLaunchContext({ insideClaude: true, defaultPlatform: 'macos' }, {})
-    ).toEqual({ platform: 'headless', interactiveSession: undefined });
   });
 });
 

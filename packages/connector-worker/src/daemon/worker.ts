@@ -66,10 +66,9 @@ export class WorkerDaemon {
     });
 
     this.env = env;
-    this.shutdownController =
-      interactiveSession || daemonConfig.executor?.insideClaude
-        ? new AbortController()
-        : undefined;
+    this.shutdownController = interactiveSession
+      ? new AbortController()
+      : undefined;
     const executor = {
       timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
       ...(daemonConfig.executor ?? {}),

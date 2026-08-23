@@ -57,7 +57,6 @@ import { WorkerDecodeError, WorkerHttpError } from './client.js';
 import { log } from './log.js';
 import {
   attachedInteractiveSession,
-  detectInteractiveSession,
   handoffToInteractiveSession,
   type InteractiveSession,
 } from './interactive-session.js';
@@ -74,8 +73,6 @@ import {
 export interface AutomationExecutorConfig {
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
-  /** Legacy explicit Claude opt-in; normal startup detects a session once internally. */
-  insideClaude?: boolean;
   /** Stops a pending interactive handoff during daemon shutdown. */
   shutdownSignal?: AbortSignal;
   /** Standalone Mac daemons must never use the device PAT for MCP writes. */
@@ -698,16 +695,9 @@ export async function executeAutomationRun(
       ? configuredTimeout * 1000
       : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-  // `--inside-claude` remains accepted for callers that construct this config
-  // directly. Normal daemon startup detects once and attaches it internally.
-  const interactiveSession =
-    attachedInteractiveSession(cfg) ??
-    (cfg.insideClaude
-      ? (() => {
-          const detected = detectInteractiveSession({ claudeOnly: true });
-          return detected.ok ? detected.session : undefined;
-        })()
-      : undefined);
+  // Daemon startup detects the inherited session once and attaches it
+  // internally; per-run detection is not repeated here.
+  const interactiveSession = attachedInteractiveSession(cfg);
   const agentSession = payload.context.agent_session;
   const selectedSession = isInteractiveSessionEligible(spec.kind, interactiveSession, payload)
     ? interactiveSession

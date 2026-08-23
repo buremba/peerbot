@@ -1193,10 +1193,6 @@ Memory:
       "Device platform (defaults to headless; native macOS uses Owletto)"
     )
     .option(
-      "--inside-claude",
-      "Legacy Claude-only interactive delivery opt-in (supported sessions are now detected automatically)"
-    )
-    .option(
       "--no-interactive-session",
       "Disable automatic delivery into an inherited Claude, Codex, or OpenCode session"
     )

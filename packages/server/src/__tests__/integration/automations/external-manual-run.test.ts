@@ -402,6 +402,62 @@ describe('external manual Automation execution', () => {
     })) as { window_token?: string };
     if (!secondRead.window_token) throw new Error('second run returned no window token');
 
+    const secondTokenPayload = await verifyWindowToken(secondRead.window_token, TEST_ENV);
+    if (secondTokenPayload.run_id == null) {
+      throw new Error('second run returned an unbound window token');
+    }
+    const pageCursor = {
+      occurred_at: queuedWindowStart,
+      id: 1,
+    };
+    const boundRootToken = await generateWindowToken(
+      {
+        automation_id: secondTokenPayload.automation_id,
+        run_id: secondTokenPayload.run_id,
+        window_start: secondTokenPayload.window_start,
+        window_end: secondTokenPayload.window_end,
+        granularity: secondTokenPayload.granularity,
+        content_count: 0,
+        content_ids: [],
+        page_next_occurred_at: pageCursor.occurred_at,
+        page_next_id: pageCursor.id,
+        page_has_more: true,
+      },
+      TEST_ENV
+    );
+    const unboundContinuationToken = await generateWindowToken(
+      {
+        automation_id: secondTokenPayload.automation_id,
+        window_start: secondTokenPayload.window_start,
+        window_end: secondTokenPayload.window_end,
+        granularity: secondTokenPayload.granularity,
+        content_count: 0,
+        content_ids: [],
+        page_before_occurred_at: pageCursor.occurred_at,
+        page_before_id: pageCursor.id,
+        page_has_more: false,
+      },
+      TEST_ENV
+    );
+    await expect(
+      workspace.owner.automations.completeWindow({
+        automation_id: created.automation_id,
+        run_id: secondRun.runId,
+        window_tokens: [boundRootToken, unboundContinuationToken],
+        extracted_data: {
+          findings: [{ task_key: 'mixed-fence', action: 'Must not persist' }],
+        },
+        model: 'chatgpt/test',
+      })
+    ).rejects.toThrow(/must all carry the same Automation run fence/);
+    const [stillPendingAfterMixedFence] = await sql<{
+      status: string;
+      claimed_by: string | null;
+    }>`
+      SELECT status, claimed_by FROM runs WHERE id = ${secondRun.runId}
+    `;
+    expect(stillPendingAfterMixedFence).toEqual({ status: 'pending', claimed_by: null });
+
     // The external claim is part of the completion transaction. A failure
     // after pending -> running must roll the claim back with every output write.
     await expect(

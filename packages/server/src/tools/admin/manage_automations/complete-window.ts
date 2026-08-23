@@ -262,11 +262,17 @@ export async function handleCompleteWindow(
 
   const firstToken = tokenPayloads[0];
   const { automation_id: automationId, window_start, window_end, granularity } = firstToken;
-  const claimToken = tokenPayloads.find((token) => token.run_id != null);
-  const tokenRunId = claimToken?.run_id ?? null;
-  if (claimToken?.run_id !== undefined && claimToken.run_id !== runId) {
+  const tokenRunIds = new Set(tokenPayloads.map((token) => token.run_id ?? null));
+  if (tokenRunIds.size !== 1) {
     throw new ToolUserError(
-      `window_token is fenced to Automation run ${claimToken.run_id}, not ${runId}.`,
+      'window_tokens must all carry the same Automation run fence.',
+      409
+    );
+  }
+  const tokenRunId = firstToken.run_id ?? null;
+  if (tokenRunId !== null && tokenRunId !== runId) {
+    throw new ToolUserError(
+      `window_token is fenced to Automation run ${tokenRunId}, not ${runId}.`,
       409
     );
   }
@@ -281,13 +287,13 @@ export async function handleCompleteWindow(
       throw new ToolUserError('All window_tokens must belong to the same Automation run/window.', 400);
     }
   }
-  for (const token of tokenPayloads) {
-    if (token.run_id != null && token.run_id !== runId) {
-      throw new ToolUserError('window_tokens are fenced to different run attempts.', 409);
-    }
-  }
   const terminalPageToken = assertCompleteWindowPageChain(tokenPayloads);
-  const leaseFenceToken = terminalPageToken?.run_id != null ? terminalPageToken : claimToken;
+  const leaseFenceToken =
+    terminalPageToken?.run_id != null
+      ? terminalPageToken
+      : tokenRunId !== null
+        ? firstToken
+        : undefined;
 
   const pgSql = createDbClientFromEnv(env);
   await requireAutomationAccess(pgSql, [String(automationId)], ctx, 'write');

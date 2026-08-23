@@ -323,9 +323,9 @@ describe("method-metadata", () => {
 	});
 
 	it("documents destructive event-kind replacement and structured-event rendering", () => {
-		expect(METHOD_METADATA["entitySchema.createType"].access).toBe("write");
+		expect(METHOD_METADATA["entitySchema.createType"].access).toBe("admin");
 		expect(METHOD_METADATA["entitySchema.createType"].summary).toContain(
-			"human approval",
+			"workspace write policy",
 		);
 		expect(METHOD_METADATA["entitySchema.updateType"].summary).toContain(
 			"replaces the entire registry",

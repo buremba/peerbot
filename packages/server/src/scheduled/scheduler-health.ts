@@ -215,7 +215,7 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
             d.id IS NOT NULL
             AND d.last_seen_at > current_timestamp
               - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
-            AND (d.platform = 'macos' OR d.capabilities ? 'automations.execute')
+            AND COALESCE(d.platform = 'macos' OR d.capabilities ? 'automations.execute', false)
             AND (
               d.agent_kinds IS NULL
               OR CASE WHEN NULLIF(a.agent_kind, '') IS NULL
@@ -271,6 +271,10 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         AND NOT (
           COALESCE(approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
           AND NULLIF(approved_input->>'device_worker_id', '') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM device_workers dw
+            WHERE dw.id::text = approved_input->>'device_worker_id'
+          )
         )
     `
     );

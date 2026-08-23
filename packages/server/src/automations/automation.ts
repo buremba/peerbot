@@ -577,9 +577,9 @@ export async function sweepStaleAutomationRuns(
  * recreating the missed run.
  *
  * Manual runs are intentionally excluded: a manual caller owns retry policy.
- * Fresh rows are protected by the same generous TTL used for non-heartbeating
- * executions, allowing device-pinned Automations to wait for a temporarily
- * offline device without being churned.
+ * Scheduled device runs remain durable past the TTL while their exact snapshot
+ * owner exists. If that row is deleted, only the stale orphan times out; its
+ * schedule cursor stays due so current ownership retries the same window.
  */
 async function finalizeStalePendingAutomationRuns(
 	sql: DbClient,
@@ -592,19 +592,25 @@ async function finalizeStalePendingAutomationRuns(
 			schedule: string | null;
 			timezone: string | null;
 			dispatch_source: string | null;
+			device_worker_id: string | null;
 		}>`
       SELECT r.id, r.automation_id, w.schedule, w.timezone,
-             r.approved_input->>'dispatch_source' AS dispatch_source
+             r.approved_input->>'dispatch_source' AS dispatch_source,
+             NULLIF(r.approved_input->>'device_worker_id', '') AS device_worker_id
       FROM runs r
       JOIN automations w ON w.id = r.automation_id
       WHERE r.run_type = 'automation'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
         AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
-        -- Ownership comes from approved_input; never reinterpret it via mutable w.device_worker_id.
+        -- Snapshot ownership stays durable after retarget; only a missing exact row is orphaned.
         AND NOT (
           COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
           AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM device_workers dw
+            WHERE dw.id::text = r.approved_input->>'device_worker_id'
+          )
         )
       ORDER BY r.created_at ASC
       FOR UPDATE OF r, w SKIP LOCKED
@@ -635,6 +641,9 @@ async function finalizeStalePendingAutomationRuns(
 				continue;
 			}
 			if (!candidate.schedule) continue;
+			// An orphaned device snapshot must retry the same unfinished window under
+			// current ownership, so preserve both schedule and coverage cursors.
+			if (candidate.device_worker_id) continue;
 			const next = nextRunAt(
 				candidate.schedule,
 				new Date(),

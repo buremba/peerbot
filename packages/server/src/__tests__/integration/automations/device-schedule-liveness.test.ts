@@ -170,6 +170,10 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 			UPDATE automations SET device_worker_id = ${replacement.id}::uuid
 			WHERE id = ${automationId}
 		`;
+		await sql`
+			UPDATE device_workers SET last_seen_at = current_timestamp - interval '10 minutes'
+			WHERE id = ${deviceId}::uuid
+		`;
 		expect((await sweepStaleAutomationRuns(sql)).timedOut).toBe(0);
 		const [retargetedRun] = await sql<{
 			status: string;
@@ -179,6 +183,23 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 		expect(retargetedRun.approved_input.device_worker_id).toBe(deviceId);
 		expect(await cursor(sql, automationId)).toEqual(before);
 		expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(0);
+
+		await sql`DELETE FROM device_workers WHERE id = ${deviceId}::uuid`;
+		expect((await sweepStaleAutomationRuns(sql)).timedOut).toBe(1);
+		expect(
+			(await sql`SELECT status FROM runs WHERE id = ${run.id}`)[0].status,
+		).toBe("timeout");
+		expect(await cursor(sql, automationId)).toEqual(before);
+
+		expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(1);
+		const [retried] = await sql<{ approved_input: Record<string, unknown> }>`
+			SELECT approved_input FROM runs
+			WHERE automation_id = ${automationId} AND status = 'pending'
+		`;
+		expect(retried.approved_input.device_worker_id).toBe(replacement.id);
+		expect(
+			new Date(String(retried.approved_input.window_start)).toISOString(),
+		).toBe(before.nextWindowStart);
 	});
 
 	it("does not materialize for a fresh headless device that cannot claim Automations", async () => {

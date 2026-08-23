@@ -118,6 +118,32 @@ describe('materializeActionOutputAttachments', () => {
     expect(await artifactStore.read(firstArtifactId!)).toBeNull();
   });
 
+  it('materializes a screenshot-sized payload the old 2MB cap would have dropped', async () => {
+    // Prod's largest Chrome screenshot decodes to ~3.1MB. Over the cap,
+    // materializeInlineAttachments warns and CONTINUES — the attachment is
+    // dropped, not rejected — so a too-low cap loses screenshots silently.
+    const bytes = Buffer.alloc(3 * 1024 * 1024 + 1024, 0x41);
+    const { output, publishedArtifactIds } = await materializeActionOutputAttachments(99, {
+      tab_id: 7,
+      attachments: [
+        {
+          kind: 'image',
+          filename: 'screenshot.png',
+          mime_type: 'image/png',
+          size_bytes: bytes.length,
+          data: bytes.toString('base64'),
+        },
+      ],
+    });
+
+    expect(publishedArtifactIds).toHaveLength(1);
+    const attachment = (output.attachments as Array<Record<string, unknown>>)[0];
+    expect(attachment).not.toHaveProperty('data');
+    expect(attachment.artifact_id).toEqual(expect.any(String));
+    const stored = await artifactStore.read(String(attachment.artifact_id));
+    expect(stored?.bytes.length).toBe(bytes.length);
+  });
+
   it('deletes materialized action artifacts when finalization is abandoned', async () => {
     const { publishedArtifactIds } = await materializeActionOutputAttachments(
       88,

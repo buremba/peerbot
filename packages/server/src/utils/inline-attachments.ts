@@ -33,11 +33,16 @@ import logger from "./logger";
 /**
  * Hard cap on a single decoded attachment we'll publish. Server-side guard so
  * a compromised or buggy worker can't force unbounded memory + artifact-store
- * writes. Matches the Mac bridge's client-side 2MB cap for voice notes; if a
- * future connector legitimately needs to ship something larger, push it
- * through a multipart upload endpoint instead of inline base64.
+ * writes.
+ *
+ * 8MB, not the 2MB the Mac bridge caps voice notes at, because screenshots go
+ * through here too and a 2MB cap silently DROPS them (see the `buffer.length >`
+ * branch below — it warns and continues). Measured against prod: the Chrome
+ * extension's largest screenshot decodes to ~3.1MB and 12 of 424 exceed 2MB,
+ * and the Mac capture path peaks at ~1.9MB, within 5% of the old cap. Anything
+ * legitimately larger than 8MB belongs in a multipart upload, not inline base64.
  */
-const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const MAX_INLINE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
 interface InlineAttachment {
   kind?: string;

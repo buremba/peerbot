@@ -155,18 +155,21 @@ describe("An Automation's output is visible when written and still not its own i
 		});
 	});
 
-	const dispatch = async (automationId: number): Promise<AutomationContent> =>
-		(await handleAutomationMode({ automation_id: automationId }, ENV, sql, {
+	const dispatch = async (
+		automationId: number,
+		args: Record<string, unknown> = {},
+	): Promise<AutomationContent> =>
+		(await handleAutomationMode({ automation_id: automationId, ...args }, ENV, sql, {
 			organizationId: orgId,
 			userId,
 		})) as unknown as AutomationContent;
 
-	/** The claimed run that owns the dispatched period — completion writes its
-	 *  result onto this row, so it must exist and be active first. */
-	const claimRunForWindow = async (
+	/** Create the run that owns the dispatched period and read the run-bound token
+	 *  that may atomically claim it during completion. */
+	const bindRunToWindow = async (
 		automationId: number,
 		dispatched: AutomationContent,
-	): Promise<number> => {
+	): Promise<{ runId: number; windowToken: string }> => {
 		const queued = await createAutomationRun({
 			organizationId: orgId,
 			automationId,
@@ -174,11 +177,10 @@ describe("An Automation's output is visible when written and still not its own i
 			windowEnd: dispatched.window_end,
 			dispatchSource: "scheduled",
 		});
-		await sql`
-			UPDATE runs SET status = 'running', claimed_at = NOW()
-			WHERE id = ${queued.runId}
-		`;
-		return queued.runId;
+		const runBound = await dispatch(automationId, { run_id: queued.runId });
+		expect(runBound.window_start).toBe(dispatched.window_start);
+		expect(runBound.window_end).toBe(dispatched.window_end);
+		return { runId: queued.runId, windowToken: runBound.window_token };
 	};
 
 	const complete = async (
@@ -186,12 +188,13 @@ describe("An Automation's output is visible when written and still not its own i
 		dispatched: AutomationContent,
 		signals: Array<{ content: string; title: string }>,
 	) => {
+		const runBound = await bindRunToWindow(automationId, dispatched);
 		const completion = await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
-				run_id: await claimRunForWindow(automationId, dispatched),
-				window_token: dispatched.window_token,
+				run_id: runBound.runId,
+				window_token: runBound.windowToken,
 				extracted_data: {
 					signals: signals.map((s) => ({
 						...s,

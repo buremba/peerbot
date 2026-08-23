@@ -716,7 +716,6 @@ describe("finalizeLikedTweetsResult", () => {
 			likes_backfill_cursor: "page-2",
 			likes_backfill_status: "in_progress",
 			likes_backfill_pages: 1,
-			likes_backfill_items: 1,
 			likes_oldest_tweet_id: "100",
 		});
 	});

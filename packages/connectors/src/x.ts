@@ -67,7 +67,6 @@ interface XCheckpoint {
 	likes_backfill_cursor?: string;
 	likes_backfill_status?: XLikesBackfillStatus;
 	likes_backfill_pages?: number;
-	likes_backfill_items?: number;
 	likes_oldest_tweet_id?: string;
 	likes_oldest_timestamp?: Date | string;
 	likes_backfill_completed_at?: Date | string;
@@ -1196,8 +1195,6 @@ export function finalizeLikedTweetsResult(
 		likes_backfill_status: backfill.status,
 		likes_backfill_pages:
 			(checkpoint.likes_backfill_pages ?? 0) + backfill.pagesRead,
-		likes_backfill_items:
-			(checkpoint.likes_backfill_items ?? 0) + backfill.historicalItemsRead,
 		likes_oldest_tweet_id:
 			nextOldest?.origin_id ?? checkpoint.likes_oldest_tweet_id,
 		likes_oldest_timestamp:
@@ -1218,7 +1215,6 @@ export function finalizeLikedTweetsResult(
 			backfill_pages_this_run: backfill.pagesRead,
 			backfill_pages_total: nextCheckpoint.likes_backfill_pages,
 			backfill_items_this_run: backfill.historicalItemsRead,
-			backfill_items_total: nextCheckpoint.likes_backfill_items,
 			backfill_next_cursor: backfill.nextCursor ?? null,
 		},
 	};
@@ -1356,19 +1352,19 @@ class XLikesPageTracker {
 
 	private activeRequestedCursor: string | undefined;
 	private latestRequestUrl: string | undefined;
-	private resumeCursor: string | undefined;
+	private readonly startedFromResume: boolean;
 	private terminalSeen = false;
 
 	constructor(
 		private readonly backfill: boolean,
 		resumeCursor: string | undefined,
 	) {
-		this.resumeCursor = resumeCursor;
+		this.nextCursor = resumeCursor;
+		this.startedFromResume = resumeCursor !== undefined;
 	}
 
 	recordPage(url: string, page: XTimelinePage): void {
 		const isInitialPage = this.recognizedResponses === 0;
-		const hasResumeCursor = this.resumeCursor !== undefined;
 		this.recognizedResponses += 1;
 
 		const responseCursor = readGraphqlCursor(url);
@@ -1376,7 +1372,7 @@ class XLikesPageTracker {
 			this.activeRequestedCursor !== undefined &&
 			responseCursor === this.activeRequestedCursor;
 		const advancesCursor =
-			isRequestedPage || (isInitialPage && !hasResumeCursor);
+			isRequestedPage || (isInitialPage && !this.startedFromResume);
 		if (!this.latestRequestUrl || advancesCursor) this.latestRequestUrl = url;
 
 		if (isRequestedPage) {
@@ -1385,7 +1381,7 @@ class XLikesPageTracker {
 			this.activeRequestedCursor = undefined;
 		}
 
-		if (this.backfill && isInitialPage && !hasResumeCursor) {
+		if (this.backfill && isInitialPage && !this.startedFromResume) {
 			this.recordHistoricalPage(page.tweets);
 		}
 
@@ -1398,8 +1394,7 @@ class XLikesPageTracker {
 	}
 
 	prepareReplay(): string | undefined {
-		const cursor = this.resumeCursor ?? this.nextCursor;
-		this.resumeCursor = undefined;
+		const cursor = this.nextCursor;
 		if (!cursor || !this.latestRequestUrl) {
 			this.terminalSeen = this.recognizedResponses > 0;
 			return undefined;

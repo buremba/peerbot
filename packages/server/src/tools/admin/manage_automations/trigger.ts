@@ -34,18 +34,18 @@ import { resolveAutomationExecutor } from "./executors";
 async function loadTriggerExecution(
   sql: DbClient,
   runId: number,
-  automationId: string,
+  automationId: number,
 ): Promise<AutomationTriggerExecution> {
   const [run] = await sql<{ approved_input: unknown }>`
     SELECT approved_input
     FROM runs
     WHERE id = ${runId}
-      AND automation_id = ${Number(automationId)}
+      AND automation_id = ${automationId}
       AND run_type = 'automation'
     LIMIT 1
   `;
   const payload = parseAutomationRunPayload(run?.approved_input);
-  if (!payload || payload.automation_id !== Number(automationId)) {
+  if (!payload || payload.automation_id !== automationId) {
     throw new Error("Automation run is missing a valid dispatch payload.");
   }
   const executor = resolveAutomationExecutor({
@@ -98,11 +98,18 @@ export async function handleTrigger(
   if (!args.automation_id) {
     throw new ToolUserError("automation_id is required for trigger action", 400);
   }
-  const automationId = args.automation_id;
+  const automationIdString = args.automation_id;
+  const automationId = Number(automationIdString);
+  if (!Number.isSafeInteger(automationId) || automationId < 1) {
+    throw new ToolUserError(
+      "automation_id must be a positive integer for trigger action",
+      400,
+    );
+  }
 
   const queued = await sql.begin(async (tx) => {
     const run = await enqueueAutomationRunForAutomationInTransaction(
-      Number(automationId),
+      automationId,
       "manual",
       tx,
     );
@@ -130,7 +137,7 @@ export async function handleTrigger(
 
   return {
     action: "trigger",
-    automation_id: automationId,
+    automation_id: automationIdString,
     run_id: queued.runId,
     status: runInfo?.status ?? queued.status,
     created: queued.created,

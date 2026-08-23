@@ -75,6 +75,22 @@ describe("Automation trigger execution contract", () => {
 		expect(retriggered.execution).toEqual(triggered.execution);
 	});
 
+	it.each(["not-a-number", "0", "-1", "1.5", "9007199254740992"])(
+		"rejects invalid Automation ID %s before enqueue",
+		async (automationId) => {
+			const workspace = await TestWorkspace.create({
+				name: "Invalid Trigger ID Org",
+			});
+
+			await expect(
+				workspace.owner.automations.trigger({ automation_id: automationId }),
+			).rejects.toThrow(/automation_id must be a positive integer/);
+			const sql = getTestDb();
+			const runs = await sql`SELECT id FROM runs WHERE run_type = 'automation'`;
+			expect(runs).toHaveLength(0);
+		},
+	);
+
 	it("coalesces concurrent external triggers without poisoning either transaction", async () => {
 		const sql = getTestDb();
 		const workspace = await TestWorkspace.create({

@@ -207,6 +207,10 @@ interface XApiDmListResponse {
 
 /** x.com origins the dispatched chrome actions are allowed to touch. */
 const X_ALLOWED_ORIGINS = ["x.com", "*.x.com", "twitter.com", "*.twitter.com"];
+const X_LIKES_INTERCEPT_PATTERN = "/i/api/graphql/[^/]+/[^?]*Like";
+const X_RESPONSE_SHAPE_MAX_PATHS = 20;
+const X_RESPONSE_SHAPE_MAX_DEPTH = 6;
+const X_RESPONSE_SHAPE_MAX_SAMPLES = 3;
 
 /**
  * Link tweet-like X events to `person` rows via immutable `x_user_id` + `x_handle`.
@@ -771,6 +775,47 @@ function timelineInstructionCandidates(data: any): unknown[] {
 		data?.data?.bookmarks_timeline?.timeline?.instructions,
 		data?.data?.viewer?.bookmarks_timeline?.timeline?.instructions,
 	];
+}
+
+/**
+ * Return bounded JSON key paths for diagnostics without retaining response
+ * values. X response bodies can contain private timeline text, so parser
+ * failures may report structure only — never values or the raw body.
+ */
+function summarizeXResponseShape(json: unknown): string {
+	const paths: string[] = [];
+	const seen = new Set<object>();
+
+	const visit = (value: unknown, path: string, depth: number): void => {
+		if (
+			paths.length >= X_RESPONSE_SHAPE_MAX_PATHS ||
+			depth >= X_RESPONSE_SHAPE_MAX_DEPTH ||
+			value === null ||
+			typeof value !== "object"
+		) {
+			return;
+		}
+		if (seen.has(value)) return;
+		seen.add(value);
+
+		if (Array.isArray(value)) {
+			const arrayPath = `${path}[]`;
+			paths.push(arrayPath);
+			if (value.length > 0) visit(value[0], arrayPath, depth + 1);
+			return;
+		}
+
+		for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+			if (!/^[A-Za-z0-9_]{1,64}$/.test(key)) continue;
+			const nextPath = path ? `${path}.${key}` : key;
+			paths.push(nextPath);
+			if (paths.length >= X_RESPONSE_SHAPE_MAX_PATHS) return;
+			visit((value as Record<string, unknown>)[key], nextPath, depth + 1);
+		}
+	};
+
+	visit(json, "", 0);
+	return paths.length > 0 ? paths.join(",") : "empty";
 }
 
 export function extractBottomCursor(instructions: any[]): string | undefined {
@@ -1892,8 +1937,14 @@ async function syncLikedTweetsViaExtension(
 	let activeRequestedCursor: string | undefined;
 	const historicalTweetIds = new Set<string>();
 	const parserErrors: string[] = [];
+	const responseShapes = new Set<string>();
+	let parsedJsonResponses = 0;
 
 	const parseResponse = (url: string, json: unknown): XTweet[] => {
+		parsedJsonResponses += 1;
+		if (responseShapes.size < X_RESPONSE_SHAPE_MAX_SAMPLES) {
+			responseShapes.add(summarizeXResponseShape(json));
+		}
 		const page = parseBrowserTimelinePage(url, json);
 		if (!page.recognized) {
 			parserErrors.push(...page.errors);
@@ -1949,7 +2000,7 @@ async function syncLikedTweetsViaExtension(
 	const result = await extensionNetworkSync<XTweet>({
 		dispatcher,
 		config: {
-			interceptPatterns: [{ regex: "/i/api/graphql/\\w+/.*Like" }],
+			interceptPatterns: [{ regex: X_LIKES_INTERCEPT_PATTERN }],
 			allowedOrigins: X_ALLOWED_ORIGINS,
 			maxScrolls: paginationRequests,
 			scrollDelayMs: 750,
@@ -1985,8 +2036,18 @@ async function syncLikedTweetsViaExtension(
 	});
 
 	if (recognizedResponses === 0) {
+		if (result.apiCallCount === 0) {
+			throw new Error(
+				`X likes captured no matching GraphQL responses (pattern=${X_LIKES_INTERCEPT_PATTERN})`,
+			);
+		}
+		if (parsedJsonResponses === 0) {
+			throw new Error(
+				`X likes captured ${result.apiCallCount} matching response(s), but none contained parseable JSON`,
+			);
+		}
 		throw new Error(
-			`X likes returned no recognizable timeline response${
+			`X likes captured ${result.apiCallCount} matching response(s) and parsed ${parsedJsonResponses} JSON response(s), but found no recognizable timeline shape (keys=${Array.from(responseShapes).join("|")})${
 				parserErrors.length > 0 ? `: ${parserErrors.join("; ")}` : ""
 			}`,
 		);
@@ -2930,7 +2991,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, browser-visible like history, bookmarks, and DMs through the X API v2 or the paired Owletto Chrome extension. Links social actors into the person graph.",
-		version: "3.13.0",
+		version: "3.13.1",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [

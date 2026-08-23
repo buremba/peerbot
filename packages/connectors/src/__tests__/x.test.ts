@@ -822,6 +822,81 @@ describe("parseBrowserDmResponse", () => {
 });
 
 describe("XConnector browser-first routing", () => {
+	test("distinguishes a missing Likes response from a parser shape mismatch", async () => {
+		const connector = new XConnector();
+		const dispatcher = {
+			dispatch: async () => ({ result: { responses: [] } }),
+		};
+
+		await expect(
+			connector.sync({
+				feedKey: "liked_tweets",
+				config: {
+					account_handle: "bu7emba",
+					use_extension: true,
+					backfill_pages_per_run: 1,
+				},
+				checkpoint: {},
+				credentials: {},
+				entityIds: [],
+				sessionState: { chrome_dispatcher: dispatcher },
+			}),
+		).rejects.toThrow(/captured no matching GraphQL responses/i);
+	});
+
+	test("reports only bounded key paths when the live Likes shape changes", async () => {
+		const connector = new XConnector();
+		const dispatcher = {
+			dispatch: async () => ({
+				result: {
+					responses: [
+						{
+							url: "https://x.com/i/api/graphql/hash-with-dash/Likes",
+							body: JSON.stringify({
+								data: {
+									account: {
+										likesTimeline: [],
+										privateValue: "never include this value",
+										...Object.fromEntries(
+											Array.from({ length: 30 }, (_, index) => [
+												`z${String(index).padStart(2, "0")}`,
+												index,
+											]),
+										),
+									},
+								},
+							}),
+						},
+					],
+				},
+			}),
+		};
+
+		let message = "";
+		try {
+			await connector.sync({
+				feedKey: "liked_tweets",
+				config: {
+					account_handle: "bu7emba",
+					use_extension: true,
+					backfill_pages_per_run: 1,
+				},
+				checkpoint: {},
+				credentials: {},
+				entityIds: [],
+				sessionState: { chrome_dispatcher: dispatcher },
+			});
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+
+		expect(message).toContain("captured 1 matching response(s)");
+		expect(message).toContain("data.account.likesTimeline[]");
+		expect(message).not.toContain("never include this value");
+		const shape = message.match(/\(keys=([^)]*)\)/)?.[1];
+		expect(shape?.split(",")).toHaveLength(20);
+	});
+
 	test("collects signed-in likes with the liker identity", async () => {
 		const instructions = [
 			{
@@ -1525,7 +1600,7 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.13.0");
+		expect(new XConnector().definition.version).toBe("3.13.1");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is

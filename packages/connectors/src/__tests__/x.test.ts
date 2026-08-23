@@ -706,12 +706,13 @@ describe("finalizeLikedTweetsResult", () => {
 		});
 	});
 
-	test("removes the cursor only after the browser-visible boundary is complete", () => {
+	test("removes the cursor only after a liked-post boundary is complete", () => {
 		const result = finalizeLikedTweetsResult(
 			[],
 			{
 				likes_backfill_cursor: "old-cursor",
 				likes_backfill_pages: 4,
+				likes_oldest_tweet_id: "100",
 			},
 			{},
 			{
@@ -723,6 +724,27 @@ describe("finalizeLikedTweetsResult", () => {
 		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
 		expect(result.checkpoint.likes_backfill_status).toBe("complete");
 		expect(result.checkpoint.likes_backfill_completed_at).toBeDefined();
+	});
+
+	test("keeps a fresh empty capture retryable", () => {
+		const result = finalizeLikedTweetsResult(
+			[],
+			{
+				likes_backfill_cursor: "old-cursor",
+				likes_backfill_pages: 4,
+				likes_backfill_completed_at: "2025-06-01T00:00:00Z",
+			},
+			{},
+			{
+				status: "complete",
+				pagesRead: 1,
+				historicalItemsRead: 0,
+			},
+		);
+		expect(result.checkpoint.likes_backfill_cursor).toBe("old-cursor");
+		expect(result.checkpoint.likes_backfill_status).toBe("in_progress");
+		expect(result.checkpoint.likes_backfill_completed_at).toBeUndefined();
+		expect(result.metadata.collection_status).toBe("in_progress");
 	});
 });
 
@@ -1080,7 +1102,7 @@ describe("XConnector browser-first routing", () => {
 						content: {
 							itemContent: {
 								tweet_results: {
-									result: tweetResult("500", "alice", "liked by burak"),
+									result: tweetResult("500", "alice", "liked by tester"),
 								},
 							},
 						},
@@ -1137,6 +1159,47 @@ describe("XConnector browser-first routing", () => {
 			},
 		});
 		expect(result.metadata.collection_status).toBe("complete");
+	});
+
+	test("retries after a recognized but empty first Likes page", async () => {
+		const dispatcher = {
+			dispatch: async () => ({
+				result: {
+					responses: [
+						{
+							url: likesTimelineUrl(),
+							body: JSON.stringify({
+								data: {
+									user: {
+										result: {
+											timeline_v2: { timeline: { instructions: [] } },
+										},
+									},
+								},
+							}),
+						},
+					],
+				},
+			}),
+		};
+
+		const result = await new XConnector().sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				backfill_pages_per_run: 1,
+			},
+			checkpoint: {},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(result.events).toHaveLength(0);
+		expect(result.metadata.collection_status).toBe("in_progress");
+		expect(result.checkpoint.likes_backfill_status).toBe("in_progress");
+		expect(result.checkpoint.likes_backfill_completed_at).toBeUndefined();
 	});
 
 	test("counts the initial page toward the incremental page budget", async () => {

@@ -1173,16 +1173,21 @@ export function finalizeLikedTweetsResult(
 			new Date(oldest.occurred_at).getTime() < previousOldest.getTime())
 			? oldest
 			: null;
+	const status =
+		backfill.status === "complete" &&
+		(events.length > 0 || checkpoint.likes_oldest_tweet_id)
+			? "complete"
+			: "in_progress";
 	const completedAt =
-		backfill.status === "complete"
+		status === "complete"
 			? (checkpoint.likes_backfill_completed_at ?? new Date())
-			: checkpoint.likes_backfill_completed_at;
+			: undefined;
 
 	const nextCheckpoint: XCheckpoint = {
 		...checkpoint,
 		last_tweet_id: newest?.origin_id ?? checkpoint.last_tweet_id,
 		last_timestamp: newest?.occurred_at ?? checkpoint.last_timestamp,
-		likes_backfill_status: backfill.status,
+		likes_backfill_status: status,
 		likes_backfill_pages:
 			(checkpoint.likes_backfill_pages ?? 0) + backfill.pagesRead,
 		likes_oldest_tweet_id:
@@ -1194,18 +1199,22 @@ export function finalizeLikedTweetsResult(
 			: {}),
 		...(completedAt ? { likes_backfill_completed_at: completedAt } : {}),
 	};
-	if (!backfill.nextCursor) delete nextCheckpoint.likes_backfill_cursor;
+	if (status === "complete") delete nextCheckpoint.likes_backfill_cursor;
+	else delete nextCheckpoint.likes_backfill_completed_at;
 
 	return {
 		...result,
 		checkpoint: nextCheckpoint as unknown as Record<string, unknown>,
 		metadata: {
 			...result.metadata,
-			collection_status: backfill.status,
+			collection_status: status,
 			backfill_pages_this_run: backfill.pagesRead,
 			backfill_pages_total: nextCheckpoint.likes_backfill_pages,
 			backfill_items_this_run: backfill.historicalItemsRead,
-			backfill_next_cursor: backfill.nextCursor ?? null,
+			backfill_next_cursor:
+				status === "in_progress"
+					? (nextCheckpoint.likes_backfill_cursor ?? null)
+					: null,
 		},
 	};
 }
@@ -1377,7 +1386,7 @@ class XLikesPageTracker {
 
 		if (advancesCursor && page.bottomCursor) {
 			this.nextCursor = page.bottomCursor;
-		} else if (advancesCursor) {
+		} else if (advancesCursor && page.tweets.length > 0) {
 			this.nextCursor = undefined;
 			this.terminalSeen = true;
 		}
@@ -1386,7 +1395,6 @@ class XLikesPageTracker {
 	prepareReplay(): string | undefined {
 		const cursor = this.nextCursor;
 		if (!cursor || !this.latestRequestUrl) {
-			this.terminalSeen = this.recognizedResponses > 0;
 			return undefined;
 		}
 

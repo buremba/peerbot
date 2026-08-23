@@ -7,6 +7,7 @@ import {
   defineConfig,
   defineConnection,
   defineEntityType,
+  defineRelationshipType,
   defineSkill,
   reactionFromFile,
   secret,
@@ -117,6 +118,69 @@ const lunchRun = defineEntityType({
   },
 });
 
+const engineeringTask = defineEntityType({
+  key: "engineering-task",
+  name: "Engineering Task",
+  description:
+    "A durable unit of engineering work coordinated by Lobu agents and linked to code changes.",
+  properties: {
+    branch: Type.Optional(Type.String()),
+    source: Type.Optional(Type.String()),
+    status: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: [
+          "open",
+          "implementing",
+          "review",
+          "verification",
+          "merged",
+          "done",
+          "blocked",
+        ],
+      })
+    ),
+    github_pr: Type.Optional(Type.Integer()),
+    repository: Type.Optional(Type.String()),
+    github_issue: Type.Optional(Type.Integer()),
+    verification_level: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: ["none", "tests", "e2e", "ui", "production"],
+      })
+    ),
+    verification_status: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: ["pending", "passed", "failed"],
+      })
+    ),
+    verification_required: Type.Optional(Type.Boolean()),
+  },
+  eventKinds: {
+    "engineering-task.checkpoint": {
+      description:
+        "Durable implementation checkpoint with status, branch, PR, tests, verification, and blockers",
+    },
+    "engineering-task.decision": {
+      description: "Durable engineering decision and rationale",
+    },
+    "engineering-task.verification_completed": {
+      description: "Completed test or environment verification evidence",
+    },
+    "engineering-task.review_completed": {
+      description: "Completed code review outcome and remaining findings",
+    },
+  },
+});
+
+const targetsRepository = defineRelationshipType({
+  key: "targets_repository",
+  name: "Targets Repository",
+  description: "Engineering task targets a code repository resource.",
+  rules: [{ source: engineeringTask, target: "$resource" }],
+});
+
 // The office's Deliveroo connection. Feedless — it exposes only on-demand
 // actions (search_restaurants / read_menu) that the lobu-team-lunch-finalize reaction
 // drives through the paired Owletto Chrome extension. `restaurants_url` is the
@@ -160,6 +224,44 @@ const lunchFinalize = defineAutomation({
   // No inline schema: the reaction reads the run's outcome straight off the
   // `lunch-run` entity this prompt updates (status "done" + restaurant), so the
   // handoff contract is the entity, not an Automation-authored payload.
+});
+
+// This declaration owns only the existing agent's metadata. Model, tools,
+// skills, and sandbox settings remain unmanaged because they are omitted.
+const developer = defineAgent({
+  id: "developer",
+  name: "Developer",
+  description:
+    "A software development agent for Lobu repositories that works in the team Vercel sandbox, runs checks, creates pull requests, reviews previews, and coordinates approved merges.",
+});
+
+// Dogfood task 35364 is deliberately project-owned. The worker and local coding
+// agent are selected here, not embedded in Lobu's shared runtime. Change
+// `agentKind` to another daemon-supported CLI when switching agents.
+const engineeringTaskRunner = defineAutomation({
+  agent: "developer",
+  slug: "engineering-task-runner-dogfood-35364",
+  name: "Engineering Task Runner Dogfood 35364",
+  triggers: [],
+  tags: ["engineering-task", "dogfood"],
+  deviceWorkerId: "66af4f1d-13c5-4d2d-b848-5b6b5dde7b63",
+  agentKind: "opencode",
+  sources: {
+    task_history: `SELECT id, semantic_type, occurred_at, payload_text, metadata
+      FROM events
+      WHERE 35364 = ANY(entity_ids)
+      ORDER BY occurred_at DESC
+      LIMIT 100`,
+  },
+  prompt: `Continue engineering task 35364.
+
+Before editing, read the task with client.entities.get({ entity_id: 35364 }) and its durable history with client.knowledge.read({ entity_id: 35364, limit: 100 }). The task metadata repository is authoritative.
+
+Never edit a shared checkout. Work only in a workspace owned by task 35364. If no isolated task workspace is available, another writer is active, or a required environment change needs approval, stop without editing and save a blocked checkpoint.
+
+Before completing the Automation run, append engineering-task.checkpoint linked to entity 35364 with the current status, workspace, branch, PR, tests, verification, and blockers. Persist important rationale as engineering-task.decision, test evidence as engineering-task.verification_completed, and review results as engineering-task.review_completed. Update the task metadata when its current status, branch, PR, or verification state changes.
+
+Use the existing GitHub connector and approval flow. Never bypass an approval or merge without the required review and verification evidence.`,
 });
 
 const productOps = defineAgent({
@@ -373,14 +475,20 @@ export default defineConfig({
   orgName: "Lobu Team",
   orgDescription: "Lobu Team agents and internal operations",
   organizationId: "UdNAH1bb3csC842vhOgxAHVcfX4tYU5A",
-  agents: [foodOrdering, productOps],
+  agents: [foodOrdering, developer, productOps],
   authProfiles: [productActivityDbAuth, productionLogsAuth],
-  entities: [lunchRun],
+  entities: [lunchRun, engineeringTask],
+  relationships: [targetsRepository],
   connections: [
     deliverooConn,
     productActivityDb,
     productionLogs,
     lobuTeamSlack,
   ],
-  automations: [lunchOpen, lunchFinalize, productActivityDigest],
+  automations: [
+    lunchOpen,
+    lunchFinalize,
+    productActivityDigest,
+    engineeringTaskRunner,
+  ],
 });

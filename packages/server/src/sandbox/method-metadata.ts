@@ -216,8 +216,8 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.createType": {
 		summary:
-			"Create an entity type. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT `properties` — a top-level `properties` key is silently ignored.",
-		access: "admin",
+			"Propose an entity type for human approval. Returns a run_id for `get_approval` plus an approval_url. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT top-level `properties`.",
+		access: "write",
 		example:
 			"await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
 	},

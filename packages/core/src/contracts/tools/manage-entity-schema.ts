@@ -39,10 +39,10 @@ export const ManageEntitySchemaSchema = Type.Object({
       Type.Literal("get", { description: "Fetch one type by slug." }),
       Type.Literal("create", {
         description:
-          "Create an entity type or relationship type (queued for approval).",
+          "Create an entity type or relationship type. MCP ClientSDK entity-type creates are queued for human approval; direct owner/admin calls and relationship-type creates apply immediately.",
       }),
       Type.Literal("update", {
-        description: "Patch a type (queued for approval).",
+        description: "Patch a type.",
       }),
       Type.Literal("delete", {
         description: "Soft-delete a type; refuses if rows still reference it.",
@@ -329,6 +329,16 @@ export type RelationshipTypeRuleRow = Static<
   typeof RelationshipTypeRuleRowSchema
 >;
 
+/** Held MCP-authored entity-type create, persisted until a human decides it. */
+export const ManageEntitySchemaProposalSchema = Type.Object({
+  schema_type: Type.Literal("entity_type"),
+  action: Type.Literal("create"),
+  args: Type.Record(Type.String(), Type.Unknown()),
+});
+export type ManageEntitySchemaProposal = Static<
+  typeof ManageEntitySchemaProposalSchema
+>;
+
 /**
  * Result of `manage_entity_schema` — discriminated union keyed on
  * `schema_type` + `action`. TypeBox-first: `Static<>` derives the TS type from
@@ -368,6 +378,17 @@ export const ManageEntitySchemaResultSchema = Type.Union([
     schema_type: Type.Literal("entity_type"),
     action: Type.Literal("create"),
     entity_type: EntityTypeRowSchema,
+  }),
+  Type.Object({
+    schema_type: Type.Literal("entity_type"),
+    action: Type.Literal("create"),
+    status: Type.Literal("pending_approval"),
+    run_id: Type.Integer(),
+    event_id: Type.Integer(),
+    approval_url: Type.Optional(Type.String()),
+    message: Type.String(),
+    proposal: ManageEntitySchemaProposalSchema,
+    current: Type.Null(),
   }),
   Type.Object({
     schema_type: Type.Literal("entity_type"),

@@ -91,6 +91,7 @@ export class WorkerDaemon {
         ? {
             beforeIdlePoll: () =>
               credentialMaintenance((token) => this.client.replaceAuthToken(token)),
+            failClosedOnPollAuthError: true,
           }
         : {}),
     });

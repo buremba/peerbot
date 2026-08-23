@@ -2041,7 +2041,7 @@ async function syncLikedTweetsViaExtension(
 
 	const paginationRequests = Math.max(
 		0,
-		pageBudget - (startsAtFirstPage ? 1 : 0),
+		pageBudget - (startsAtFirstPage || previouslyComplete ? 1 : 0),
 	);
 	const result = await extensionNetworkSync<XTweet>({
 		dispatcher,

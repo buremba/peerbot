@@ -1153,6 +1153,47 @@ describe("XConnector browser-first routing", () => {
 		expect(result.metadata.collection_status).toBe("complete");
 	});
 
+	test("counts the initial page toward the incremental page budget", async () => {
+		const calls: string[] = [];
+		const dispatcher = {
+			dispatch: async (action: string) => {
+				calls.push(action);
+				if (action === "navigate") {
+					return {
+						tab_id: 42,
+						result: {
+							responses: [
+								{
+									url: likesTimelineUrl(),
+									body: JSON.stringify(
+										likesTimelineResponse("500", "older-cursor"),
+									),
+								},
+							],
+						},
+					};
+				}
+				return {};
+			},
+		};
+
+		const result = await new XConnector().sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				incremental_pages: 1,
+			},
+			checkpoint: { likes_backfill_status: "complete" },
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(result.events.map((event: any) => event.origin_id)).toEqual(["500"]);
+		expect(calls).not.toContain("network_intercept_replay");
+	});
+
 	test("resumes historical likes from the checkpointed GraphQL cursor", async () => {
 		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		let drainCount = 0;

@@ -445,6 +445,18 @@ describe("automation health surfacing (#2033)", () => {
     expect(health.metrics.stalePendingAutomationRuns).toBe(0);
     expect(health.healthy).toBe(true);
     expect(health.issues).toEqual([]);
+
+    await sql`
+      UPDATE device_workers
+      SET platform = 'headless', last_seen_at = current_timestamp,
+          capabilities = ${sql.json(["os.shell"])}
+      WHERE id = ${device.id}::uuid
+    `;
+    const incapableHealth = await getSchedulerHealth({} as Env);
+    expect(incapableHealth.metrics.deferredDeviceAutomations).toBe(1);
+    expect(incapableHealth.metrics.overdueAutomations).toBe(0);
+    expect(incapableHealth.metrics.stalePendingAutomationRuns).toBe(0);
+    expect(incapableHealth.healthy).toBe(true);
   });
 });
 

@@ -215,6 +215,7 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
             d.id IS NOT NULL
             AND d.last_seen_at > current_timestamp
               - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+            AND (d.platform = 'macos' OR d.capabilities ? 'automations.execute')
             AND (
               d.agent_kinds IS NULL
               OR CASE WHEN NULLIF(a.agent_kind, '') IS NULL

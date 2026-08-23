@@ -154,6 +154,56 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 			(await sql`SELECT status FROM runs WHERE id = ${run.id}`)[0].status,
 		).toBe("pending");
 		expect(await cursor(sql, automationId)).toEqual(before);
+
+		const [replacement] = await sql<{ id: string }>`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, label, organization_id,
+				agent_kinds, last_seen_at
+			)
+			SELECT user_id, 'device-schedule-replacement', 'macos', ${sql.json({})},
+				'Replacement Mac', organization_id, ${"{claude-code}"}::text[],
+				current_timestamp
+			FROM device_workers WHERE id = ${deviceId}::uuid
+			RETURNING id
+		`;
+		await sql`
+			UPDATE automations SET device_worker_id = ${replacement.id}::uuid
+			WHERE id = ${automationId}
+		`;
+		expect((await sweepStaleAutomationRuns(sql)).timedOut).toBe(0);
+		const [retargetedRun] = await sql<{
+			status: string;
+			approved_input: Record<string, unknown>;
+		}>`SELECT status, approved_input FROM runs WHERE id = ${run.id}`;
+		expect(retargetedRun.status).toBe("pending");
+		expect(retargetedRun.approved_input.device_worker_id).toBe(deviceId);
+		expect(await cursor(sql, automationId)).toEqual(before);
+		expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(0);
+	});
+
+	it("does not materialize for a fresh headless device that cannot claim Automations", async () => {
+		const { sql, automationId, deviceId } = await setupDeviceAutomation();
+		const before = await cursor(sql, automationId);
+		await sql`
+			UPDATE device_workers
+			SET platform = 'headless', last_seen_at = current_timestamp,
+				capabilities = ${sql.json(["os.shell"])},
+				agent_kinds = ${"{claude-code}"}::text[]
+			WHERE id = ${deviceId}::uuid
+		`;
+
+		expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(0);
+		expect(await cursor(sql, automationId)).toEqual(before);
+		expect(
+			await sql`SELECT id FROM runs WHERE automation_id = ${automationId}`,
+		).toHaveLength(0);
+
+		await sql`
+			UPDATE device_workers
+			SET capabilities = ${sql.json(["automations.execute"])}
+			WHERE id = ${deviceId}::uuid
+		`;
+		expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(1);
 	});
 
 	it("completes every missed period oldest-first, then advances to the next cron", async () => {

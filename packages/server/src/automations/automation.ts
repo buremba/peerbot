@@ -747,6 +747,7 @@ export async function materializeDueAutomationRuns(
                 WHERE dw.id = w.device_worker_id
                   AND dw.last_seen_at > current_timestamp
                     - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
+                  AND (dw.platform = 'macos' OR dw.capabilities ? 'automations.execute')
                   AND (
                     dw.agent_kinds IS NULL
                     OR CASE

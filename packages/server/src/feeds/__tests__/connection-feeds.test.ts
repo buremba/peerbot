@@ -146,6 +146,45 @@ describe("listConnectionFeeds", () => {
 		expect(feeds).toHaveLength(0);
 	});
 
+	it("reports operations from the exact archived definition pinned by the feed", async () => {
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions (
+				organization_id, key, name, version, status, feeds_schema
+			) VALUES (
+				${orgId}, 'slack', 'Slack historical', '0.9.0', 'archived',
+				${sql.json({ inbox: { key: "inbox", operations: ["read"] } })}
+			)
+		`;
+		await sql`
+			UPDATE feeds
+			SET pinned_version = '0.9.0'
+			WHERE organization_id = ${orgId}
+				AND connection_id = ${connectionId}
+				AND feed_key = 'inbox'
+		`;
+
+		try {
+			const feeds = await listConnectionFeeds(orgId, runtimeConnId);
+			const inbox = feeds.find((feed) => feed.feedKey === "inbox");
+			expect(inbox?.operations).toEqual(["read"]);
+		} finally {
+			await sql`
+				UPDATE feeds
+				SET pinned_version = NULL
+				WHERE organization_id = ${orgId}
+					AND connection_id = ${connectionId}
+					AND feed_key = 'inbox'
+			`;
+			await sql`
+				DELETE FROM connector_definitions
+				WHERE organization_id = ${orgId}
+					AND key = 'slack'
+					AND version = '0.9.0'
+			`;
+		}
+	});
+
 	it("resolves the live connection when a soft-deleted row shares its slug", async () => {
 		// A soft-deleted connection keeps its slug (the unique index only covers
 		// live rows), so the slug resolver could match both and error. It must

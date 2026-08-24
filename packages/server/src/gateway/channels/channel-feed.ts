@@ -69,13 +69,17 @@ export async function ensureChannelFeed(opts: {
 		]);
 		const again = await findChannelFeedId(tx, connectionId, channelKey);
 		if (again !== null) return again;
+		// Keep the retired discriminator coherent while old replicas can still
+		// compile @feed sources from it. New code selects the data plane solely
+		// from config.store; remove these two writes with the retained columns.
 		const inserted = await tx`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, display_name,
-        status, config
+        status, config, kind, virtual
       ) VALUES (
         ${organizationId}, ${connectionId}::bigint, ${channelKey}, ${displayName},
-        'active', ${tx.json({ store: CHANNEL_FEED_STORE })}::jsonb
+        'active', ${tx.json({ store: CHANNEL_FEED_STORE })}::jsonb,
+        'streaming', false
       )
       RETURNING id
     `;

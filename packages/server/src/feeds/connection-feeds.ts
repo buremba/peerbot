@@ -43,9 +43,18 @@ export async function listConnectionFeeds(
 					AND definition.organization_id = f.organization_id
 					AND (
 						(f.pinned_version IS NULL AND definition.status = 'active')
-						OR definition.version = f.pinned_version
+						OR (
+							f.pinned_version IS NOT NULL
+							AND (
+								definition.version = f.pinned_version
+								OR definition.status = 'active'
+							)
+						)
 					)
-				ORDER BY (definition.status = 'active') DESC, definition.updated_at DESC, definition.id DESC
+				ORDER BY (definition.version = f.pinned_version) DESC,
+					(definition.status = 'active') DESC,
+					definition.updated_at DESC,
+					definition.id DESC
 				LIMIT 1
 			), '[]'::jsonb)                    AS operations,
 			COALESCE(f.config ->> 'store', 'events') AS store,

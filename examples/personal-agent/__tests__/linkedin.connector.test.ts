@@ -2103,10 +2103,50 @@ describe("LinkedInConnector home_feed", () => {
     ).rejects.toThrow(/No partial home-feed batch was persisted/i);
   });
 
+  test("persists the durable post identity resolved from a copied short URL", async () => {
+    const fetchImpl = async () =>
+      new Response(null, {
+        status: 301,
+        headers: {
+          location:
+            "https://www.linkedin.com/posts/example-user_activity-1234567890123456789-abcd",
+        },
+      });
+    const dispatcher = {
+      dispatch: async () => ({
+        result: {
+          loggedIn: true,
+          rows: [
+            {
+              id: "opaque-component-key",
+              body: "Fixture Author • 1st A real organic post with enough text",
+              post_url: "https://lnkd.in/p/example-token",
+            },
+          ],
+        },
+      }),
+    };
+    const connector = new LinkedInConnector(fetchImpl);
+
+    const result = await connector.sync({
+      feedKey: "home_feed",
+      config: {},
+      checkpoint: {},
+      sessionState: { chrome_dispatcher: dispatcher },
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]).toMatchObject({
+      origin_id: "li_home_activity_1234567890123456789",
+      source_url:
+        "https://www.linkedin.com/feed/update/urn:li:activity:1234567890123456789",
+    });
+  });
+
   test("never falls back to an embedded origin when copied-link resolution fails", async () => {
-    const failedFetch = (async () => {
+    const failedFetch = async () => {
       throw new Error("temporary redirect failure");
-    }) as typeof fetch;
+    };
     const dispatcher = {
       dispatch: async () => ({
         result: {

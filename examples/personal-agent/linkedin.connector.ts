@@ -530,22 +530,24 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // menu" button using obfuscated classes, while permalink pages still use a
     // comment social-bar class with an experiment suffix (`--cr`). The semantic
     // sibling branch covers the feed and the prefix class match covers the
-    // permalink shape. Comment and repost counts stay post-only — a comment's
-    // reply count is a different quantity.
+    // permalink shape. Current post cards put their count block immediately
+    // before the divider and action bar; those semantic siblings avoid the
+    // obfuscated classes. Comment and repost counts stay post-only — a
+    // comment's reply count is a different quantity.
     reaction_count_text: {
       selector:
-        ':scope[id^="replaceableComment_"] div:has(> button[aria-label="Open reactions menu"]) > :first-child, :scope[id^="replaceableComment_"] [class*="comments-comment-social-bar__reactions-count"], .social-details-social-counts__reactions-count, .social-details-social-counts__reactions',
+        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > a:first-child, :scope[id^="replaceableComment_"] div:has(> button[aria-label="Open reactions menu"]) > :first-child, :scope[id^="replaceableComment_"] [class*="comments-comment-social-bar__reactions-count"], .social-details-social-counts__reactions-count, .social-details-social-counts__reactions',
       take: "text",
     },
     reaction_count_label: {
       selector:
-        ':scope[id^="replaceableComment_"] [aria-label*=" reaction on " i], :scope[id^="replaceableComment_"] [aria-label*=" reactions on " i], .social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i]:not([id^="replaceableComment_"] *), [aria-label$=" reactions" i]:not([id^="replaceableComment_"] *)',
+        ':scope[id^="replaceableComment_"] [aria-label*=" reaction on " i], :scope[id^="replaceableComment_"] [aria-label*=" reactions on " i], .social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i]:not([aria-label^="Reaction button state:" i]):not([id^="replaceableComment_"] *), [aria-label$=" reactions" i]:not([aria-label^="Reaction button state:" i]):not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
     comment_count_text: {
       selector:
-        ".social-details-social-counts__comments, .social-details-social-counts__comments-count",
+        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > div:first-child, .social-details-social-counts__comments, .social-details-social-counts__comments-count',
       take: "text",
     },
     comment_count_label: {
@@ -556,7 +558,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
     },
     repost_count_text: {
       selector:
-        ".social-details-social-counts__reposts, .social-details-social-counts__reposts-count",
+        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > a:last-child, .social-details-social-counts__reposts, .social-details-social-counts__reposts-count',
       take: "text",
     },
     repost_count_label: {
@@ -892,15 +894,18 @@ function maxHomeFeedCounter(
 }
 
 function homeFeedReactionCount(row: HomeFeedRow): number | undefined {
+  for (const value of [row.reaction_count_text, row.reaction_count_label]) {
+    const others = value?.match(
+      /\band\s+(\d[\d,.]*(?:\s*[kmb])?)\s+others?\s+reacted\b/i
+    );
+    if (others) return parseLinkedInCompactCount(others[1]) + 1;
+  }
+
   const explicitTotal = maxHomeFeedCounter(row.reaction_count_text);
   if (explicitTotal !== undefined) return explicitTotal;
 
   const label = row.reaction_count_label;
   if (!label) return undefined;
-  const others = label.match(
-    /\band\s+(\d[\d,.]*(?:\s*[kmb])?)\s+others?\s+reacted\b/i
-  );
-  if (others) return parseLinkedInCompactCount(others[1]) + 1;
   return maxHomeFeedCounter(label);
 }
 
@@ -2534,7 +2539,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.1",
+    version: "3.11.2",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -3120,8 +3125,9 @@ export default class LinkedInConnector extends ConnectorRuntime<
    * Personalized home feed via the extension's content-script scrape. Network
    * capture can't read it (the CDP debugger stops the feed rendering), so we
    * dispatch a `cs_scrape` against linkedin.com/feed/ with the home-feed
-   * selectors. Each run uses its own scratch tab; the paired Chrome profile
-   * supplies the shared login cookies.
+   * selectors. Prefer an already-loaded feed tab in the paired Chrome profile;
+   * otherwise reuse a site-persistent tab so a slow first hydration is still
+   * available to the next scheduled retry.
    */
   private async syncHomeFeed(
     maxScrolls: number,
@@ -3137,11 +3143,18 @@ export default class LinkedInConnector extends ConnectorRuntime<
       },
       parseRows: (raw) => raw as HomeFeedRow[],
       allowedOrigins: LINKEDIN_ALLOWED_ORIGINS,
+      existingTabMatch: "linkedin.com/feed/",
+      persistent: true,
     });
 
     if (!loggedIn) {
       throw new Error(
         "Not logged into LinkedIn. Sign in to linkedin.com in the paired Chrome profile, then re-run the sync."
+      );
+    }
+    if (rows.length === 0) {
+      throw new Error(
+        "LinkedIn is logged in, but the home feed produced no post rows. Keep a signed-in linkedin.com/feed/ tab open on the paired browser and retry."
       );
     }
 

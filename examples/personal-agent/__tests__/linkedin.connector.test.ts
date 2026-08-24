@@ -1691,7 +1691,8 @@ describe("LinkedInConnector home_feed", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].action).toBe("navigate");
     expect(calls[0].input.cs_scrape).toBe(true);
-    expect(calls[0].input.persistent).toBe(false);
+    expect(calls[0].input.persistent).toBe(true);
+    expect(calls[0].input.existing_tab_match).toBe("linkedin.com/feed/");
     expect(calls[0].input.focus).toBe(false);
     expect(calls[0].input.url).toBe("https://www.linkedin.com/feed/");
     expect(
@@ -1952,6 +1953,70 @@ describe("LinkedInConnector home_feed", () => {
     expect(comment.metadata.reposts).toBeUndefined();
   });
 
+  test("scores current obfuscated post counters without reading the Like control", async () => {
+    const res = await syncHomeFeedDom(`
+      <div componentkey="expandedcurrent_counter_postFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Fixture Current Author"></button>
+        <span id="translatable-commentary-urn:li:activity:8888888888888888888"></span>
+        <p>A current home-feed post with enough useful text to pass the filter</p>
+        <div>
+          <a href="https://www.linkedin.com/">
+            <span>Fixture Reactor and 236 others reacted</span>
+            <span>Fixture Reactor and 236 others</span>
+          </a>
+          <div>
+            <div><p><span>15 comments</span><span>15 comments</span></p></div>
+            <p>•</p>
+            <a href="https://www.linkedin.com/"><p><span>2 reposts</span><span>2 reposts</span></p></a>
+          </div>
+        </div>
+        <hr />
+        <div>
+          <div>
+            <button aria-label="Reaction button state: no reaction">Like</button>
+            <button aria-label="Open reactions menu"></button>
+          </div>
+          <button>Comment</button>
+          <button>Repost</button>
+        </div>
+      </div>`);
+
+    expect(res.events).toHaveLength(1);
+    expect(res.events[0]).toMatchObject({
+      origin_id: "li_home_activity_8888888888888888888",
+      score: 100,
+      metadata: { reactions: 237, comments: 15, reposts: 2 },
+    });
+  });
+
+  test("does not cross-map single-kind current counter groups", async () => {
+    const res = await syncHomeFeedDom(`
+      <div componentkey="expandedreaction_onlyFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Reaction Only Author"></button>
+        <span id="translatable-commentary-urn:li:activity:9000000000000000001"></span>
+        <p>A reaction-only current post with enough useful text for the filter</p>
+        <div><a href="https://www.linkedin.com/"><span>4 reactions</span><span>4</span></a></div>
+        <hr />
+        <div><div><button aria-label="Reaction button state: no reaction">Like</button><button aria-label="Open reactions menu"></button></div></div>
+      </div>
+      <div componentkey="expandedcomment_onlyFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Comment Only Author"></button>
+        <span id="translatable-commentary-urn:li:activity:9000000000000000002"></span>
+        <p>A comment-only current post with enough useful text for the filter</p>
+        <div><div><div><p><span>1 comment</span><span>1 comment</span></p></div></div></div>
+        <hr />
+        <div><div><button aria-label="Reaction button state: no reaction">Like</button><button aria-label="Open reactions menu"></button></div></div>
+      </div>`);
+
+    expect(res.events).toHaveLength(2);
+    expect(res.events[0].metadata).toMatchObject({ reactions: 4 });
+    expect(res.events[0].metadata.comments).toBeUndefined();
+    expect(res.events[0].metadata.reposts).toBeUndefined();
+    expect(res.events[1].metadata).toMatchObject({ comments: 1 });
+    expect(res.events[1].metadata.reactions).toBeUndefined();
+    expect(res.events[1].metadata.reposts).toBeUndefined();
+  });
+
   test("min_scrolls/max_scrolls pick a scroll budget in range each run", async () => {
     const scrollMaxes: number[] = [];
     const dispatcher = {
@@ -1962,7 +2027,15 @@ describe("LinkedInConnector home_feed", () => {
         return {
           tab_id: 1,
           cs_scrape: true,
-          result: { loggedIn: true, rows: [] },
+          result: {
+            loggedIn: true,
+            rows: [
+              {
+                id: "scroll-budget-fixture",
+                body: "A loaded feed row used only to verify the scroll budget",
+              },
+            ],
+          },
         };
       },
     };
@@ -1982,6 +2055,21 @@ describe("LinkedInConnector home_feed", () => {
     } finally {
       Math.random = realRandom;
     }
+  });
+
+  test("fails health checks when a logged-in feed emits no rows", async () => {
+    const dispatcher = {
+      dispatch: async () => ({ result: { loggedIn: true, rows: [] } }),
+    };
+    const connector = new LinkedInConnector();
+    await expect(
+      connector.sync({
+        feedKey: "home_feed",
+        config: {},
+        checkpoint: {},
+        sessionState: { chrome_dispatcher: dispatcher },
+      })
+    ).rejects.toThrow(/no post rows/i);
   });
 
   test("throws a clear error when not logged into LinkedIn", async () => {
@@ -2455,7 +2543,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.1");
+    expect(c.definition.version).toBe("3.11.2");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

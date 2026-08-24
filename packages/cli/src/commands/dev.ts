@@ -686,7 +686,6 @@ function matchingLoopbackEndpoints(leftRaw: string, rightRaw: string): boolean {
         scheme,
         host: "loopback",
         port: url.port || (scheme === "https:" ? "443" : "80"),
-        path: url.pathname.replace(/\/+$/, "") || "/",
       };
     } catch {
       return null;
@@ -700,8 +699,7 @@ function matchingLoopbackEndpoints(leftRaw: string, rightRaw: string): boolean {
     right !== null &&
     left.scheme === right.scheme &&
     left.host === right.host &&
-    left.port === right.port &&
-    left.path === right.path
+    left.port === right.port
   );
 }
 
@@ -836,8 +834,11 @@ export async function announceLocalSignIn(
     if (requestedContextName) {
       const configured = await dependencies.inspectContextImpl(contextName);
       if (configured) {
+        const hasRunnerOwnedLifecycle =
+          configured.lifecycle === "managed" ||
+          (contextName === "local" && configured.lifecycle === undefined);
         if (
-          configured.lifecycle !== "managed" ||
+          !hasRunnerOwnedLifecycle ||
           !matchingLoopbackEndpoints(configured.url, gatewayUrl)
         ) {
           throw new Error("explicit context is not owned by this local runner");

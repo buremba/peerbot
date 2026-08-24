@@ -712,6 +712,52 @@ describe("lobu run local sign-in diagnostics", () => {
     }
   });
 
+  test.each([
+    {
+      name: "legacy lifecycle-less local context",
+      contextName: "local",
+      configured: { url: "http://localhost:8788" },
+    },
+    {
+      name: "managed context with an API base path",
+      contextName: "__owletto_debug_v2__5:local",
+      configured: {
+        url: "http://localhost:8788/api/v1",
+        lifecycle: "managed" as const,
+      },
+    },
+  ])("refreshes credentials for a $name", async ({
+    contextName,
+    configured,
+  }) => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = contextName;
+    process.env.LOBU_API_URL = "http://127.0.0.1:8788";
+    const calls: string[] = [];
+
+    try {
+      const result = await announceLocalSignIn("http://127.0.0.1:8788", true, {
+        ...dependencies(),
+        inspectContextImpl: async () => configured,
+        addContextImpl: async (name, url, server) => {
+          calls.push(`context:${name}:${url}:${server?.lifecycle}`);
+        },
+        saveCredentialsImpl: async (_credentials, name) => {
+          calls.push(`credentials:${name}`);
+        },
+      });
+
+      expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(calls).toContain(`credentials:${contextName}`);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
+  });
+
   test("refuses to overwrite an explicit remote context", async () => {
     const previousContext = process.env.LOBU_CONTEXT;
     const previousApiUrl = process.env.LOBU_API_URL;

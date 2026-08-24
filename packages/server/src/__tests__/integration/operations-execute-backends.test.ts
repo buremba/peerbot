@@ -1,9 +1,10 @@
-import { MCP_PROTOCOL_VERSION } from "@lobu/core";
+import GoogleCalendarConnector from "@lobu/connectors/google_calendar";
+import { MCP_PROTOCOL_VERSION, REDACTED_SENTINEL } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../index";
+import { createAutomationRun } from "../../runs/queue-service";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
-import { createAutomationRun } from "../../runs/queue-service";
 import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -19,6 +20,12 @@ import {
 const LOCAL = "demo.ops.backend.local";
 const MCP = "demo.ops.backend.mcp";
 const HTTP = "demo.ops.backend.http";
+const GOOGLE_CALENDAR_DELETE_ACTION = new GoogleCalendarConnector().definition
+	.actions?.delete_event;
+
+if (!GOOGLE_CALENDAR_DELETE_ACTION) {
+	throw new Error("Google Calendar delete_event action is missing");
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -110,6 +117,7 @@ describe("operations.execute backend lifecycle", () => {
 					kind: "write",
 					requiresApproval: true,
 				},
+				delete_event: GOOGLE_CALENDAR_DELETE_ACTION,
 				stage_browser: {
 					name: "Stage browser",
 					kind: "write",
@@ -247,6 +255,20 @@ describe("operations.execute backend lifecycle", () => {
 										},
 									},
 									responses: { "200": { description: "ok" } },
+								},
+							},
+							"/items/{id}": {
+								delete: {
+									operationId: "delete_item",
+									parameters: [
+										{
+											name: "id",
+											in: "path",
+											required: true,
+											schema: { type: "string" },
+										},
+									],
+									responses: { "204": { description: "deleted" } },
 								},
 							},
 						},
@@ -815,7 +837,7 @@ describe("operations.execute backend lifecycle", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("queues destructive local actions for approval", async () => {
+	it("does not equate required approval with high impact", async () => {
 		const result = await manageOperations(
 			{
 				action: "execute",
@@ -831,6 +853,134 @@ describe("operations.execute backend lifecycle", () => {
 			status: "pending_approval",
 		});
 		expect(result).toHaveProperty("approval_url");
+		const [approval] = await getTestDb()`
+			SELECT metadata->'approval_context' AS approval_context,
+			       metadata->'review_fields' AS review_fields
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.approval_context).toEqual({
+			kind: "connector",
+			impact: { level: "normal" },
+		});
+		expect(approval.review_fields).toEqual([
+			{ key: "resource", value: "Connector operation" },
+			{ key: "connection", value: `Test Connection ${LOCAL}` },
+			{ key: "operation", value: "Needs approval" },
+		]);
+	});
+
+	it("keeps connector inputs that collide with review headers visible", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "needs_approval",
+				input: {
+					resource: "customer-record",
+					input_resource: "already-prefixed-customer-record",
+					connection: "input-connection",
+					operation: "preview",
+					issue: "synthetic-issue-001",
+				},
+			},
+			{} as Env,
+			ctx,
+		);
+		const [approval] = await getTestDb()`
+			SELECT metadata->'review_fields' AS review_fields
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.review_fields).toEqual([
+			{ key: "resource", value: "Connector operation" },
+			{ key: "connection", value: `Test Connection ${LOCAL}` },
+			{ key: "operation", value: "Needs approval" },
+			{ key: "input_resource", value: "customer-record" },
+			{
+				key: "input_input_resource",
+				value: "already-prefixed-customer-record",
+			},
+			{ key: "input_connection", value: "input-connection" },
+			{ key: "input_operation", value: "preview" },
+			{ key: "input_issue", value: "synthetic-issue-001" },
+		]);
+	});
+
+	it("redacts connector credentials before prefixing approval review keys", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "needs_approval",
+				input: {
+					authorization: "Bearer plaintext-authorization",
+					cookie: "session=plaintext-cookie",
+					database_url: "postgres://user:plaintext-password@db.example/app",
+					settings: {
+						client_secret: "plaintext-nested-secret",
+						region: "eu-west-1",
+					},
+				},
+			},
+			{} as Env,
+			ctx,
+		);
+		const [approval] = await getTestDb()`
+			SELECT metadata->'review_fields' AS review_fields
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.review_fields).toEqual([
+			{ key: "resource", value: "Connector operation" },
+			{ key: "connection", value: `Test Connection ${LOCAL}` },
+			{ key: "operation", value: "Needs approval" },
+			{ key: "input_authorization", value: REDACTED_SENTINEL },
+			{ key: "input_cookie", value: REDACTED_SENTINEL },
+			{ key: "input_database_url", value: REDACTED_SENTINEL },
+			{
+				key: "input_settings",
+				value: {
+					client_secret: REDACTED_SENTINEL,
+					region: "eu-west-1",
+				},
+			},
+		]);
+	});
+
+	it("marks a real destructive connector action as high impact", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "delete_event",
+				input: { event_id: "calendar-event-123" },
+			},
+			{} as Env,
+			ctx,
+		);
+		const [approval] = await getTestDb()`
+			SELECT metadata->'approval_context' AS approval_context
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.approval_context).toEqual({
+			kind: "connector",
+			impact: {
+				level: "high",
+				reason:
+					"This action can remove or irreversibly change data in the connected service.",
+				consequences: ["Lobu may not be able to undo the external change."],
+			},
+		});
 	});
 
 	it("surfaces MCP discovery failure for an explicit connection", async () => {
@@ -949,12 +1099,17 @@ describe("operations.execute backend lifecycle", () => {
 		);
 		expect(listed).toMatchObject({
 			action: "list_available",
-			operations: [
+			operations: expect.arrayContaining([
 				expect.objectContaining({
 					operation_key: "create_item",
 					backend: "http_operation",
 				}),
-			],
+				expect.objectContaining({
+					operation_key: "delete_item",
+					backend: "http_operation",
+					annotations: expect.objectContaining({ destructiveHint: true }),
+				}),
+			]),
 		});
 		const result = await manageOperations(
 			{
@@ -971,6 +1126,39 @@ describe("operations.execute backend lifecycle", () => {
 			status: "completed",
 			output: {
 				body: { created: true, body: { value: "http-ok" } },
+			},
+		});
+	});
+
+	it("marks an OpenAPI DELETE approval as high impact", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: httpConnectionId,
+				operation_key: "delete_item",
+				input: { path: { id: "item-123" } },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "pending_approval",
+		});
+		const [approval] = await getTestDb()`
+			SELECT metadata->'approval_context' AS approval_context
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.approval_context).toEqual({
+			kind: "connector",
+			impact: {
+				level: "high",
+				reason:
+					"This action can remove or irreversibly change data in the connected service.",
+				consequences: ["Lobu may not be able to undo the external change."],
 			},
 		});
 	});

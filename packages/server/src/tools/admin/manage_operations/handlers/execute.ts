@@ -1,5 +1,10 @@
 import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtime";
-import { getErrorMessage } from "@lobu/core";
+import {
+	deepRedactSecrets,
+	getErrorMessage,
+	isSecretKey,
+	REDACTED_SENTINEL,
+} from "@lobu/core";
 import { ExecuteAction, type ManageOperationsResult } from "../schemas";
 import type { Static } from "@sinclair/typebox";
 import { readGrantedScopesFromAuthData } from "../../../../auth/oauth/scopes";
@@ -33,6 +38,12 @@ import { getAuthProfileById } from "../../../../utils/auth-profiles";
 import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
+import {
+	ApprovalKind,
+	approvalContext,
+	highApprovalImpact,
+	normalApprovalImpact,
+} from "../../../../utils/approval-context";
 import { insertEvent } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
 import { stripNul, stripNulDeep } from "../../../../utils/strip-nul";
@@ -107,6 +118,31 @@ export function buildActionConfig(
 		...connectionCredentials,
 		...(connectionConfig ?? {}),
 	};
+}
+
+/**
+ * Review rows for a connector approval card: what is being run and where,
+ * ahead of the operation input. Prefix every user argument with `input_` so
+ * trusted routing context and arbitrary input keys stay in separate namespaces.
+ */
+function connectorApprovalReviewFields(
+	connectionName: string,
+	operationName: string,
+	input: Record<string, unknown>,
+): Array<{ key: string; value: unknown }> {
+	const inputFields = Object.entries(input).map(([key, value]) => ({
+		key: `input_${key}`,
+		value:
+			value != null && isSecretKey(key)
+				? REDACTED_SENTINEL
+				: deepRedactSecrets(value),
+	}));
+	return [
+		{ key: "resource", value: "Connector operation" },
+		{ key: "connection", value: connectionName },
+		{ key: "operation", value: operationName },
+		...inputFields,
+	];
 }
 
 async function executeLocalActionInline(
@@ -745,6 +781,20 @@ export async function handleExecute(
 					operation_input: input,
 					action_input: input,
 					input_schema: operation.input_schema ?? null,
+					...approvalContext(
+						ApprovalKind.Connector,
+						operation.annotations?.destructiveHint === true
+							? highApprovalImpact(
+									"This action can remove or irreversibly change data in the connected service.",
+									["Lobu may not be able to undo the external change."],
+								)
+							: normalApprovalImpact(),
+					),
+					review_fields: connectorApprovalReviewFields(
+						connection.display_name ?? connection.connector_key,
+						operation.name,
+						input,
+					),
 					status: "pending_approval",
 					connection_name:
 						connection.display_name ?? connection.connector_key,

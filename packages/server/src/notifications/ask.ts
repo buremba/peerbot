@@ -10,6 +10,10 @@ import { currentMcpActivityEventMetadata } from "../lobu/stores/mcp-client-conve
 import { resolveRunInitiator } from "../tools/initiator";
 import type { ToolContext } from "../tools/registry";
 import { ToolUserError } from "../utils/errors";
+import {
+	ApprovalKind,
+	approvalContext,
+} from "../utils/approval-context";
 import { insertEvent } from "../utils/insert-event";
 import {
 	CURRENT_ASK_SCHEMA_VERSION,
@@ -102,6 +106,7 @@ export async function queueAgentAsk(params: {
 				interactionStatus: "pending",
 				interactionInputSchema: params.inputSchema,
 				metadata: {
+					...approvalContext(ApprovalKind.Question),
 					tool: "notify",
 					action_key: AGENT_ASK_ACTION_KEY,
 					question: params.question,

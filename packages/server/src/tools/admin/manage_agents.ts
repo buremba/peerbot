@@ -54,6 +54,12 @@ import { resolveActionOrigin } from '../../notifications/action-origin';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { resolveApprovalChatOrigin } from './approval-delivery';
 import { insertEvent } from '../../utils/insert-event';
+import {
+  ApprovalKind,
+  approvalContext,
+  highApprovalImpact,
+  normalApprovalImpact,
+} from '../../utils/approval-context';
 import logger from '../../utils/logger';
 import {
   buildAgentSettingsUrl,
@@ -718,6 +724,12 @@ async function queueWriteForApproval(
         interactionStatus: 'pending',
         interactionInput: proposal as unknown as Record<string, unknown>,
         metadata: {
+          ...approvalContext(
+            ApprovalKind.Agent,
+            proposal.action === 'delete'
+              ? highApprovalImpact('This permanently deletes the agent and its configuration.')
+              : normalApprovalImpact()
+          ),
           tool: 'manage_agents',
           action_key: MANAGE_AGENTS_ACTION_KEY,
           action: proposal.action,

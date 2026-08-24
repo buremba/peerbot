@@ -6,6 +6,7 @@ import {
   REDACTED_SENTINEL,
 } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
+import { getScopedConnectorDefinition } from '../catalog/connector-definitions';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import {
@@ -15,6 +16,13 @@ import {
 } from '../notifications/action-card-state';
 import { resolveInteractionActionOrigin } from '../notifications/action-origin';
 import { ToolUserError } from '../utils/errors';
+import {
+  ApprovalKind,
+  highApprovalImpact,
+  normalApprovalImpact,
+  readApprovalContext,
+  type ApprovalImpact,
+} from '../utils/approval-context';
 import { buildResourcePermalink } from '../utils/url-builder';
 import {
   AccessDeniedError,
@@ -41,6 +49,12 @@ const ACTION_LABEL_MAX_LENGTH = 120;
 const ACTION_HREF_MAX_LENGTH = 2_048;
 const APPROVAL_CAPABILITY_MAX_LENGTH = 4_096;
 const APPROVAL_CAPABILITY_TTL_MS = 10 * 60 * 1_000;
+const APPROVAL_IMPACT_REASON_MAX_LENGTH = 500;
+const APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH = 500;
+const APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS = 5;
+const CONNECTOR_KEY_MAX_LENGTH = 200;
+const CONNECTOR_NAME_MAX_LENGTH = 200;
+const CONNECTOR_FAVICON_DOMAIN_MAX_LENGTH = 253;
 const DISPLAY_REDACTION = '[redacted]';
 const SECRET_SCHEMA_VALUE_KEYS = new Set(['const', 'default', 'enum', 'example', 'examples']);
 
@@ -81,6 +95,32 @@ const LobuViewBlockSchema = Type.Union([
   DiffBlockSchema,
   FormBlockSchema,
 ]);
+
+const ApprovalKindSchema = Type.Union(
+  Object.values(ApprovalKind).map((kind) => Type.Literal(kind))
+);
+
+const ApprovalImpactSchema = Type.Object({
+  level: Type.Union([Type.Literal('normal'), Type.Literal('high')]),
+  reason: Type.Optional(Type.String({ maxLength: APPROVAL_IMPACT_REASON_MAX_LENGTH })),
+  consequences: Type.Optional(
+    Type.Array(Type.String({ maxLength: APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH }), {
+      maxItems: APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS,
+    })
+  ),
+});
+
+const ConnectorIdentitySchema = Type.Object({
+  key: Type.String({ minLength: 1, maxLength: CONNECTOR_KEY_MAX_LENGTH }),
+  name: Type.String({ minLength: 1, maxLength: CONNECTOR_NAME_MAX_LENGTH }),
+  favicon_domain: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: CONNECTOR_FAVICON_DOMAIN_MAX_LENGTH,
+      pattern: '^[A-Za-z0-9.-]+$',
+    })
+  ),
+});
 
 const LinkActionSchema = Type.Object({
   id: Type.String({ minLength: 1, maxLength: ACTION_ID_MAX_LENGTH }),
@@ -145,6 +185,9 @@ const ApprovalToolActionSchema = Type.Union([
 export const LobuViewSchema = Type.Object({
   version: Type.Literal(1),
   title: Type.Optional(Type.String({ maxLength: TITLE_MAX_LENGTH })),
+  icon: Type.Optional(ApprovalKindSchema),
+  connector: Type.Optional(ConnectorIdentitySchema),
+  impact: Type.Optional(ApprovalImpactSchema),
   tone: Type.Optional(
     Type.Union([Type.Literal('warning'), Type.Literal('default'), Type.Literal('bare')])
   ),
@@ -198,6 +241,16 @@ const DIFF_ENVELOPE_ROUTING_KEYS = new Set([
   'version',
 ]);
 
+const HIGH_IMPACT_APPROVAL_ACTIONS = new Set([
+  'delete',
+  'disconnect',
+  'merge',
+  'remove',
+  'remove_rule',
+  'reset',
+  'revoke',
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -219,13 +272,22 @@ function displayRedacted(value: unknown): unknown {
   );
 }
 
+function isDisplaySecretKey(key: string): boolean {
+  let candidate = key;
+  while (true) {
+    if (isSecretKey(candidate)) return true;
+    if (!candidate.startsWith('input_')) return false;
+    candidate = candidate.slice('input_'.length);
+  }
+}
+
 /**
  * Approval metadata is stored for execution, not presentation. Redact by the
  * field name before detaching a primitive value from its key, then deep-walk
  * nested objects and URI userinfo using the shared Lobu secret classifier.
  */
 function redactForDisplay(value: unknown, key?: string): unknown {
-  if (key && value != null && isSecretKey(key)) return DISPLAY_REDACTION;
+  if (key && value != null && isDisplaySecretKey(key)) return DISPLAY_REDACTION;
   return displayRedacted(deepRedactSecrets(value));
 }
 
@@ -241,7 +303,7 @@ function stripSecretSchemaValues(value: unknown): unknown {
 
 function sanitizeFormFieldSchema(name: string, value: unknown): unknown {
   const sanitized = sanitizeFormSchema(value);
-  if (!isSecretKey(name)) return sanitized;
+  if (!isDisplaySecretKey(name)) return sanitized;
   if (!isRecord(sanitized)) return DISPLAY_REDACTION;
 
   const field = stripSecretSchemaValues(sanitized) as Record<string, unknown>;
@@ -277,7 +339,7 @@ function sanitizeFormInitialValue(value: unknown): unknown {
   if (!isRecord(value)) return redactForDisplay(value);
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => !isSecretKey(key))
+      .filter(([key]) => !isDisplaySecretKey(key))
       .map(([key, inner]) => [key, sanitizeFormInitialValue(inner)])
   );
 }
@@ -325,6 +387,82 @@ function displayFieldFormat(key: string, value: unknown): 'code' | undefined {
     return 'code';
   }
   return undefined;
+}
+
+/**
+ * Kind for an approval written before its producer stamped `approval_context`:
+ * a row already pending at rollout still has to render as the kind of thing it
+ * is. Keyed on `metadata.tool`, which every producer persists.
+ */
+function legacyApprovalKind(row: ApprovalContentItem): ApprovalKind {
+  const metadata = row.metadata ?? {};
+  if (metadata.tool === 'manage_entity_schema') return ApprovalKind.EntitySchema;
+  if (metadata.tool === 'manage_agents') return ApprovalKind.Agent;
+  if (metadata.tool === 'manage_automations') return ApprovalKind.Automation;
+  if (metadata.tool === 'notify') return ApprovalKind.Question;
+  if (
+    metadata.tool === 'entity_change' ||
+    metadata.tool === 'entity_field_change' ||
+    metadata.resourceKind === 'entity'
+  )
+    return ApprovalKind.Entity;
+  if (stringOrNull(row.platform) || metadata.operation_key) return ApprovalKind.Connector;
+  return ApprovalKind.Approval;
+}
+
+function legacyApprovalImpact(
+  metadata: Record<string, unknown> | null,
+  kind: ApprovalKind
+): ApprovalImpact {
+  if (metadata?.review_tone === 'warning') {
+    return highApprovalImpact('This action was marked as high impact by its producer.');
+  }
+  if (metadata?.review_tone === 'default') return normalApprovalImpact();
+  const action = typeof metadata?.action === 'string' ? metadata.action.toLowerCase() : '';
+  if (HIGH_IMPACT_APPROVAL_ACTIONS.has(action)) {
+    return highApprovalImpact('This action can remove or irreversibly change data.');
+  }
+  if (kind === ApprovalKind.Connector) {
+    return highApprovalImpact(
+      'This connector approval predates impact metadata, so its external effect cannot be verified.',
+      ['Review the connected-service change before approving.']
+    );
+  }
+  return normalApprovalImpact();
+}
+
+function approvalImpactForView(impact: ApprovalImpact): ApprovalImpact {
+  return {
+    level: impact.level,
+    ...(impact.reason !== undefined
+      ? { reason: truncate(impact.reason, APPROVAL_IMPACT_REASON_MAX_LENGTH) }
+      : {}),
+    ...(impact.consequences !== undefined
+      ? {
+          consequences: impact.consequences
+            .slice(0, APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS)
+            .map((item) => truncate(item, APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH)),
+        }
+      : {}),
+  };
+}
+
+function approvalContextForView(
+  row: ApprovalContentItem,
+  status: string
+): { kind: ApprovalKind; impact: ApprovalImpact } {
+  const explicit = readApprovalContext(row.metadata?.approval_context);
+  const kind = explicit?.kind ?? legacyApprovalKind(row);
+  if (status !== 'pending') {
+    return {
+      kind,
+      impact: normalApprovalImpact(),
+    };
+  }
+  return {
+    kind,
+    impact: approvalImpactForView(explicit?.impact ?? legacyApprovalImpact(row.metadata, kind)),
+  };
 }
 
 function approvalBlocks(row: {
@@ -421,6 +559,7 @@ type ApprovalContentItem = {
   run_id: number;
   created_at: string;
   client_id: string | null;
+  platform: string | null;
   agent_id: string | null;
   automation_id: number | null;
   title: string | null;
@@ -437,6 +576,38 @@ function stringOrNull(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+function safeFaviconDomain(value: unknown): string | null {
+  const domain = stringOrNull(value);
+  if (
+    !domain ||
+    domain.length > CONNECTOR_FAVICON_DOMAIN_MAX_LENGTH ||
+    !/^[A-Za-z0-9.-]+$/.test(domain)
+  ) {
+    return null;
+  }
+  return domain;
+}
+
+async function approvalConnectorIdentity(
+  row: ApprovalContentItem,
+  kind: ApprovalKind,
+  ctx: ToolContext
+): Promise<NonNullable<LobuView['connector']> | null> {
+  if (kind !== ApprovalKind.Connector) return null;
+  const connectorKey = stringOrNull(row.platform) ?? stringOrNull(row.metadata?.connector_key);
+  if (!connectorKey) return null;
+  const definition = await getScopedConnectorDefinition({
+    organizationId: ctx.organizationId,
+    connectorKey,
+  });
+  const faviconDomain = safeFaviconDomain(definition?.favicon_domain);
+  return {
+    key: truncate(connectorKey, CONNECTOR_KEY_MAX_LENGTH),
+    name: truncate(definition?.name ?? connectorKey, CONNECTOR_NAME_MAX_LENGTH),
+    ...(faviconDomain ? { favicon_domain: faviconDomain } : {}),
+  };
 }
 
 function approvalDecisionBlock(
@@ -646,12 +817,15 @@ async function findApprovalRow(
 
 async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Promise<LobuView> {
   const row = await findApprovalRow(runId, env, ctx);
-  const origin = await approvalOrigin(row, ctx).catch(() => ({
-    kind: 'direct' as const,
-    label: 'Direct request',
-  }));
-
   const status = row.interaction_status ?? 'pending';
+  const approvalContext = approvalContextForView(row, status);
+  const [origin, connector] = await Promise.all([
+    approvalOrigin(row, ctx).catch(() => ({
+      kind: 'direct' as const,
+      label: 'Direct request',
+    })),
+    approvalConnectorIdentity(row, approvalContext.kind, ctx).catch(() => null),
+  ]);
   const decisionBlock = approvalDecisionBlock(row, status);
   const baseTitle = displayValue(row.title ?? `Approval run ${runId}`, TITLE_MAX_LENGTH).replace(
     /\s+—\s+(?:pending approval|approved|rejected|completed|failed|cancelled)$/i,
@@ -680,7 +854,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
         {
           id: 'reject',
           label: 'Reject',
-          variant: 'destructive',
+          variant: 'outline',
           icon: 'x',
           confirm: true,
           confirmPrompt: 'Reject this pending action?',
@@ -706,7 +880,10 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
       status === 'pending' ? baseTitle : `${baseTitle} · ${status}`,
       TITLE_MAX_LENGTH
     ),
-    tone: status === 'pending' ? 'warning' : 'default',
+    icon: approvalContext.kind,
+    ...(connector ? { connector } : {}),
+    impact: approvalContext.impact,
+    tone: approvalContext.impact.level === 'high' ? 'warning' : 'default',
     blocks: [
       ...approvalBlocks({
         content: row.payload_text,

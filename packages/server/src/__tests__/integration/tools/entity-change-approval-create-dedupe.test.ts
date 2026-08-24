@@ -95,11 +95,17 @@ describe("entity create approval dedupe", () => {
 		expect(activeRuns).toHaveLength(1);
 
 		const currentEvents = await sql`
-			SELECT id
+			SELECT id, metadata
 			FROM current_event_records
 			WHERE run_id = ${runId}
 			  AND interaction_type = 'approval'
 		`;
 		expect(currentEvents).toHaveLength(1);
+		expect(currentEvents[0]?.metadata).toMatchObject({
+			approval_context: {
+				kind: "entity",
+				impact: { level: "normal" },
+			},
+		});
 	});
 });

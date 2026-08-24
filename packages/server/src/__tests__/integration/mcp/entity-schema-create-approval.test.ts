@@ -538,10 +538,40 @@ describe("MCP entitySchema.createType approval", () => {
 		);
 		expect(await entityTypeExists("member-proposed-type")).toBe(false);
 
-		const { response: resolved } = await resolveInApp(
+		const { response: resolved, view } = await resolveInApp(
 			pending.run_id,
 			"approve",
 		);
+		expect(view.title).toBe("Create entity type: ChatGPT schema E2E");
+		expect(view.icon).toBe("entity-schema");
+		expect(view.impact).toEqual({ level: "normal" });
+		expect(view.tone).toBe("default");
+		expect(view.blocks[0]).toEqual({
+			type: "diff",
+			fields: [
+				{ label: "Resource", after: "Entity type" },
+				{ label: "Name", after: "ChatGPT schema E2E" },
+				{
+					label: "Slug",
+					after: "member-proposed-type",
+					format: "code",
+				},
+				{ label: "Metadata schema", after: "Any metadata (no schema)" },
+				{ label: "Storage", after: "Stored" },
+				{ label: "Event kinds", after: "None declared" },
+				{ label: "Metrics", after: "None declared" },
+				{ label: "Write rules", after: "None" },
+			],
+		});
+		expect(view.blocks.some((block: { type?: string }) => block.type === "code")).toBe(false);
+		expect(JSON.stringify(view.blocks)).not.toMatch(
+			/owner_resolved|policy_action|precondition|resource_class/,
+		);
+		expect(view.actions.map((action: { label: string }) => action.label)).toEqual([
+			"Approve",
+			"Reject",
+			"Review in Lobu",
+		]);
 		expect(resolved.result?.isError).not.toBe(true);
 		expect(resolved.result?.structuredContent).toEqual(
 			expect.objectContaining({
@@ -875,10 +905,27 @@ describe("MCP entitySchema.createType approval", () => {
 				AND slug = 'stale-update-type'
 		`;
 
-		const { response } = await resolveInApp(
+		const { response, view } = await resolveInApp(
 			proposed.return_value.run_id,
 			"approve",
 		);
+		expect(view.blocks[0]).toEqual({
+			type: "diff",
+			fields: [
+				{ label: "Resource", after: "Entity type" },
+				{
+					label: "Name",
+					before: "Original",
+					after: "Approved old name",
+				},
+				{
+					label: "Slug",
+					before: "stale-update-type",
+					after: "stale-update-type",
+					format: "code",
+				},
+			],
+		});
 		expect(response.result?.isError).toBe(true);
 		expect(response.result?.content?.[0]?.text).toMatch(/stale/i);
 		const [row] = await getDb()<[{ name: string }]>`

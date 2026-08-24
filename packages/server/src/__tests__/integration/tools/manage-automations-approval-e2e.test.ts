@@ -217,6 +217,10 @@ describe("manage_automations — builder gate e2e", () => {
 		expect(eventRows[0]?.interaction_status).toBe("pending");
 		expect(eventRows[0]?.metadata).toMatchObject({
 			mcp_session_id: "session-manage-automations",
+			approval_context: {
+				kind: "automation",
+				impact: { level: "normal" },
+			},
 		});
 		expect(
 			(eventRows[0]?.metadata as { initiator?: Record<string, unknown> })

@@ -297,6 +297,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime<Record<str
         name: 'Delete Event',
         description: 'Delete/cancel an event.',
         requiresApproval: true,
+        annotations: {
+          destructiveHint: true,
+        },
         requiredScopes: ['https://www.googleapis.com/auth/calendar.events'],
         inputSchema: {
           type: 'object',

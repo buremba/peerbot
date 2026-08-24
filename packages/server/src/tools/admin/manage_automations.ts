@@ -43,6 +43,12 @@ import { resolveActionOrigin } from '../../notifications/action-origin';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { resolveApprovalChatOrigin } from './approval-delivery';
 import { insertEvent } from '../../utils/insert-event';
+import {
+  ApprovalKind,
+  approvalContext,
+  highApprovalImpact,
+  normalApprovalImpact,
+} from '../../utils/approval-context';
 import logger from '../../utils/logger';
 import { buildResourcePermalink, buildAutomationSettingsUrl } from '../../utils/url-builder';
 import { parsePositiveIntegerId, ToolUserError } from '../../utils/errors';
@@ -772,6 +778,12 @@ async function queueAutomationWriteForApproval(
         interactionInputSchema: inputSchema,
         interactionInput: displayInput,
         metadata: {
+          ...approvalContext(
+            ApprovalKind.Automation,
+            args.action === 'delete'
+              ? highApprovalImpact('This archives the Automation and stops future runs.')
+              : normalApprovalImpact()
+          ),
           tool: 'manage_automations',
           action_key: MANAGE_AUTOMATIONS_ACTION_KEY,
           action: args.action,

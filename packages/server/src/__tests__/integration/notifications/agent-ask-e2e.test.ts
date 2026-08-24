@@ -176,12 +176,19 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(metadata.resource_type).toBe("event");
 
 		const [interaction] = await sql`
-			SELECT interaction_type, interaction_status, interaction_input_schema, run_id
+			SELECT interaction_type, interaction_status, interaction_input_schema, run_id,
+			       metadata AS interaction_metadata
 			FROM events WHERE id = ${Number(metadata.resource_id)}
 		`;
 		expect(interaction.interaction_type).toBe("approval");
 		expect(interaction.interaction_status).toBe("pending");
 		expect(Number(interaction.run_id)).toBe(sent.run_id);
+		expect(interaction.interaction_metadata).toMatchObject({
+			approval_context: {
+				kind: "question",
+				impact: { level: "normal" },
+			},
+		});
 
 		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
 		expect(card?.status).toBe("action_approval_needed");

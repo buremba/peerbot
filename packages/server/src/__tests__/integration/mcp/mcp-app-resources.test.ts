@@ -209,7 +209,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?.text).not.toContain('<base');
     expect(content?._meta?.ui?.csp).toEqual({
       connectDomains: [],
-      resourceDomains: ['http://localhost'],
+      resourceDomains: ['https://t2.gstatic.com', 'http://localhost'],
       frameDomains: [],
     });
     expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
@@ -372,7 +372,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource.mimeType).toBe('text/html;profile=mcp-app');
     expect(resource._meta?.ui?.csp).toEqual({
       connectDomains: [],
-      resourceDomains: ['http://localhost'],
+      resourceDomains: ['https://t2.gstatic.com', 'http://localhost'],
       frameDomains: [],
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
@@ -1307,7 +1307,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(renderBody.result?.isError).not.toBe(true);
     const view = renderBody.result?.structuredContent;
     expect(view?.version).toBe(1);
-    expect(view?.tone).toBe('warning');
+    expect(view?.icon).toBe('agent');
+    expect(view?.impact).toEqual({ level: 'normal' });
+    expect(view?.tone).toBe('default');
     expect(view?.actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1319,6 +1321,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         expect.objectContaining({
           id: 'reject',
           label: 'Reject',
+          variant: 'outline',
           tool: 'resolve_approval',
           args: { run_id: runId, decision: 'reject' },
         }),
@@ -1720,6 +1723,65 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
+  it('redacts prefixed connector review credentials in the rendered approval view', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_connector_secret_approval_${run.id}`,
+      title: 'Connector operation — pending approval',
+      content: 'Review the connector operation.',
+      semanticType: 'operation',
+      runId: Number(run.id),
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      metadata: {
+        approval_context: { kind: 'connector', impact: { level: 'normal' } },
+        review_fields: [
+          { key: 'input_authorization', value: 'Bearer plaintext-review-authorization' },
+          { key: 'input_cookie', value: 'session=plaintext-review-cookie' },
+          {
+            key: 'input_database_url',
+            value: 'postgres://user:plaintext-review-password@db.example/app',
+          },
+          { key: 'input_summary', value: 'Safe review summary' },
+        ],
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 211,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: Number(run.id) },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    const serialized = JSON.stringify(body.result?.structuredContent);
+    expect(serialized).not.toContain('plaintext-review-authorization');
+    expect(serialized).not.toContain('plaintext-review-cookie');
+    expect(serialized).not.toContain('plaintext-review-password');
+    expect(serialized).toContain('Safe review summary');
+    expect(body.result?.structuredContent?.blocks?.[0]?.fields).toEqual([
+      { label: 'Input authorization', after: '[redacted]' },
+      { label: 'Input cookie', after: '[redacted]' },
+      { label: 'Input database url', after: '[redacted]' },
+      { label: 'Input summary', after: 'Safe review summary' },
+    ]);
+  });
+
   it('keeps explicit null distinct from an empty string in approval diffs', async () => {
     const [run] = await getDb()<{ id: number }>`
       INSERT INTO runs (
@@ -1769,6 +1831,275 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     ]);
     expect(body.result?.content?.[0]?.text).toContain('before → null');
     expect(body.result?.content?.[0]?.text).toContain('before → —');
+  });
+
+  it('includes the scoped connector identity used by the approval card', async () => {
+    const connectorKey = 'github.approval-card';
+    await getDb()`
+      INSERT INTO connector_definitions (
+        organization_id, key, name, favicon_domain, status
+      ) VALUES (
+        ${org.id}, ${connectorKey}, 'GitHub', 'github.com', 'active'
+      )
+    `;
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', ${connectorKey}, 'update_issue'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_connector_identity_${runId}`,
+      title: 'Update issue — pending approval',
+      content: 'Review this issue update.',
+      semanticType: 'operation',
+      connectorKey,
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      metadata: {
+        approval_context: { kind: 'connector', impact: { level: 'normal' } },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 215,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent).toMatchObject({
+      icon: 'connector',
+      connector: {
+        key: connectorKey,
+        name: 'GitHub',
+        favicon_domain: 'github.com',
+      },
+    });
+  });
+
+  it('uses the warning tone only for an elevated-impact pending action', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_delete_approval_${runId}`,
+      title: 'Delete entity type: Legacy customer — pending approval',
+      content: 'Review this high-impact deletion.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { slug: 'legacy-customer' },
+      metadata: {
+        action: 'delete',
+        proposal: { slug: 'legacy-customer' },
+        approval_context: {
+          kind: 'entity-schema',
+          impact: {
+            level: 'high',
+            reason: 'This removes the entity type contract.',
+            consequences: ['Future writes can no longer use this type.'],
+          },
+        },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 216,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.icon).toBe('entity-schema');
+    expect(body.result?.structuredContent?.impact).toEqual({
+      level: 'high',
+      reason: 'This removes the entity type contract.',
+      consequences: ['Future writes can no longer use this type.'],
+    });
+    expect(body.result?.structuredContent?.tone).toBe('warning');
+    expect(body.result?.structuredContent?.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'approve', variant: 'primary' }),
+        expect.objectContaining({ id: 'reject', variant: 'outline' }),
+        expect.objectContaining({ id: 'review', variant: 'outline' }),
+      ])
+    );
+  });
+
+  it('classifies an approval written before approval_context existed', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_legacy_approval_${runId}`,
+      title: 'Delete entity: Legacy contact — pending approval',
+      content: 'Review this deletion.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { entity_id: 42 },
+      // A row already pending at rollout: the producer never stamped
+      // `approval_context`, so kind comes from `tool` and impact from `action`.
+      metadata: { tool: 'entity_change', action: 'delete' },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 217,
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.icon).toBe('entity');
+    expect(body.result?.structuredContent?.impact).toEqual({
+      level: 'high',
+      reason: 'This action can remove or irreversibly change data.',
+    });
+    expect(body.result?.structuredContent?.tone).toBe('warning');
+  });
+
+  it('warns for a legacy connector approval whose impact cannot be reconstructed', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', 'github', 'legacy_external_action'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_legacy_connector_approval_${runId}`,
+      title: 'Legacy connector action — pending approval',
+      content: 'Review this connected-service change.',
+      semanticType: 'operation',
+      connectorKey: 'github',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { target: 'external-record-123' },
+      metadata: { operation_key: 'legacy_external_action' },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 218,
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.icon).toBe('connector');
+    expect(body.result?.structuredContent?.impact).toEqual({
+      level: 'high',
+      reason:
+        'This connector approval predates impact metadata, so its external effect cannot be verified.',
+      consequences: ['Review the connected-service change before approving.'],
+    });
+    expect(body.result?.structuredContent?.tone).toBe('warning');
+  });
+
+  it('bounds explicit approval impact metadata for the MCP view contract', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_bounded_approval_impact_${runId}`,
+      title: 'Bound approval impact — pending approval',
+      content: 'Review this bounded impact metadata.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      metadata: {
+        approval_context: {
+          kind: 'entity-schema',
+          impact: {
+            level: 'high',
+            reason: 'r'.repeat(501),
+            consequences: [
+              'c'.repeat(501),
+              'two',
+              'three',
+              'four',
+              'five',
+              'six',
+            ],
+          },
+        },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 218,
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    const impact = body.result?.structuredContent?.impact;
+    expect(impact.reason).toHaveLength(500);
+    expect(impact.reason.endsWith('…')).toBe(true);
+    expect(impact.consequences).toHaveLength(5);
+    expect(impact.consequences[0]).toHaveLength(500);
+    expect(impact.consequences[0].endsWith('…')).toBe(true);
+    expect(impact.consequences).not.toContain('six');
   });
 
   it('keeps user-authored envelope-shaped fields in an ordinary approval proposal', async () => {

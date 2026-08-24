@@ -351,7 +351,12 @@ async function getOpenApiOperations(
 				backend: "http_operation",
 				requires_approval: requiresApproval,
 				annotations:
-					kind === "read" ? { idempotentHint: true } : { openWorldHint: true },
+					kind === "read"
+						? { idempotentHint: true }
+						: {
+								openWorldHint: true,
+								...(method === "delete" ? { destructiveHint: true } : {}),
+							},
 				input_schema: getOperationInputSchema(
 					spec,
 					pathParameters,
@@ -448,9 +453,7 @@ function getLocalActionOperations(
 		backend: "local_action",
 		requires_approval: def.requiresApproval ?? false,
 		required_scopes: normalizeRequiredScopes(def.requiredScopes),
-		annotations:
-			normalizeAnnotations(def.annotations) ??
-			((def.requiresApproval ?? false) ? { destructiveHint: true } : undefined),
+		annotations: normalizeAnnotations(def.annotations),
 		input_schema: def.input_schema ?? def.inputSchema,
 		output_schema: def.output_schema ?? def.outputSchema,
 		supports_execute: executeSupported,

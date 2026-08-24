@@ -56,6 +56,12 @@ import {
 import { applyMergeGroupInTransaction } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
 import {
+	ApprovalKind,
+	approvalContext,
+	highApprovalImpact,
+	normalApprovalImpact,
+} from "../../utils/approval-context";
+import {
 	insertChangeEventInTransaction,
 	insertEvent,
 	stableJson,
@@ -843,6 +849,18 @@ export async function proposeEntityChange(
 				interactionStatus: "pending",
 				interactionInput: proposal as unknown as Record<string, unknown>,
 				metadata: {
+					...approvalContext(
+						ApprovalKind.Entity,
+						operation === "delete"
+							? highApprovalImpact(
+									"This removes the entity from active workspace data.",
+								)
+							: operation === "merge"
+								? highApprovalImpact(
+										"This combines duplicate records into the selected winner.",
+									)
+								: normalApprovalImpact(),
+					),
 					tool: actionKey,
 					action_key: actionKey,
 					action: operation === "update" ? "change" : operation,

@@ -26,11 +26,12 @@ function isObject(value: unknown): value is JsonObject {
 
 function actionParameters(value: unknown): Record<string, string> | undefined {
   if (isObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).filter((entry): entry is [string, string] =>
-        typeof entry[1] === "string"
-      )
+    const entries = Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
     );
+    return entries.length > 0
+      ? Object.fromEntries(entries)
+      : undefined;
   }
   if (!Array.isArray(value)) return undefined;
   const entries = value.flatMap((parameter) =>

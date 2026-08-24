@@ -18,8 +18,8 @@ function standardDirectMessage(text = "hello Lobu"): any {
   };
   const user = {
     name: "users/123",
-    displayName: "Emre",
-    email: "emre@lobu.ai",
+    displayName: "Test User",
+    email: "test.user@example.com",
     type: "HUMAN",
   };
   return {
@@ -59,16 +59,27 @@ function webhook(body: Record<string, unknown>) {
   });
 }
 
+async function waitForDelivery(promise: Promise<void>): Promise<void> {
+  await Promise.race([
+    promise,
+    Bun.sleep(1_000).then(() => {
+      throw new Error("Timed out waiting for Google Chat event delivery");
+    }),
+  ]);
+}
+
 describe("Google Chat platform compatibility", () => {
   test("dispatches Google's standalone MESSAGE payload to the DM handler", async () => {
     const chat = await createTestChat();
     const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
     chat.onDirectMessage(async (_thread, message) => {
       delivered.push(message.text);
+      completion.resolve();
     });
 
     const response = await chat.webhooks.gchat(webhook(standardDirectMessage()));
-    await Bun.sleep(10);
+    await waitForDelivery(completion.promise);
 
     expect(response.status).toBe(200);
     expect(delivered).toEqual(["hello Lobu"]);
@@ -77,8 +88,10 @@ describe("Google Chat platform compatibility", () => {
   test("dispatches a standalone space mention to the mention handler", async () => {
     const chat = await createTestChat();
     const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
     chat.onNewMention(async (_thread, message) => {
       delivered.push(message.text);
+      completion.resolve();
     });
     const event = standardDirectMessage("@Lobu help");
     event.space.type = "ROOM";
@@ -97,7 +110,7 @@ describe("Google Chat platform compatibility", () => {
     event.message.thread = { name: "spaces/AAAA-test/threads/thread-1" };
 
     const response = await chat.webhooks.gchat(webhook(event));
-    await Bun.sleep(10);
+    await waitForDelivery(completion.promise);
 
     expect(response.status).toBe(200);
     expect(delivered).toEqual(["@lobu help"]);
@@ -106,8 +119,10 @@ describe("Google Chat platform compatibility", () => {
   test("dispatches standalone CARD_CLICKED action metadata", async () => {
     const chat = await createTestChat();
     const delivered: Array<{ actionId: string; value?: string }> = [];
+    const completion = Promise.withResolvers<void>();
     chat.onAction("approve", async (event) => {
       delivered.push({ actionId: event.actionId, value: event.value });
+      completion.resolve();
     });
     const messageEvent = standardDirectMessage();
 
@@ -118,13 +133,14 @@ describe("Google Chat platform compatibility", () => {
         space: messageEvent.space,
         user: messageEvent.user,
         message: messageEvent.message,
+        common: { parameters: {} },
         action: {
           actionMethodName: "approve",
           parameters: [{ key: "value", value: "invoice-42" }],
         },
       }),
     );
-    await Bun.sleep(10);
+    await waitForDelivery(completion.promise);
 
     expect(response.status).toBe(200);
     expect(delivered).toEqual([{ actionId: "approve", value: "invoice-42" }]);

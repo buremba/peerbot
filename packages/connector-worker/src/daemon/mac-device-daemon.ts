@@ -5,7 +5,12 @@ import {
 } from '@lobu/core/contracts/worker/device-automation';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 import { executeAutomationRun, type AutomationExecutorConfig } from './automation.js';
-import { locateBinary, resolveRunnableAgentKinds } from './agent-binaries.js';
+import type { AutomationAcpAdapters } from './automation-acp.js';
+import {
+  locateBinary,
+  resolveRunnableAgentKinds,
+  supportsOpenCodeAcp,
+} from './agent-binaries.js';
 import {
   MutableWorkerAdvertisementProvider,
   WorkerClient,
@@ -24,7 +29,7 @@ const WORKER_PAT_PATTERN = /^owl_pat_[A-Za-z0-9_-]{32}$/;
 const DEFAULT_POLL_INTERVAL_MS = 10000;
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
 const NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS = 5000;
-export const INTERNAL_CODEX_ACP_ARG = '--internal-codex-acp';
+export const INTERNAL_ACP_ADAPTER_ARG = '--internal-acp-adapter';
 
 export interface MacDeviceDaemonOptions {
   apiUrl?: string;
@@ -60,6 +65,13 @@ export function macDeviceDaemonMetadata(version: string): MacDeviceDaemonMetadat
 function defaultWorkerId(): string {
   const shortHostname = hostname().split('.')[0] || hostname();
   return `${MAC_DEVICE_PLATFORM}:${shortHostname}`;
+}
+
+function packagedAcpAdapterArgs(agentKind: 'claude-code' | 'codex'): string[] {
+  const args = [INTERNAL_ACP_ADAPTER_ARG, agentKind];
+  return process.argv[1] && /\.[cm]?[jt]s$/.test(process.argv[1])
+    ? [process.argv[1], ...args]
+    : args;
 }
 
 function validateNumber(value: number | undefined, name: string): number | undefined {
@@ -220,8 +232,19 @@ export function createMacDeviceDaemon(
   const validated = validateMacDeviceDaemonOptions(options);
   if (validated.noPoll) throw new Error('cannot create a polling daemon with --no-poll');
 
-  const runnableAgentKinds = resolveRunnableAgentKinds();
-  const codexPath = runnableAgentKinds.includes('codex') ? locateBinary('codex') : null;
+  const discoveredAgentKinds = resolveRunnableAgentKinds();
+  const codexPath = discoveredAgentKinds.includes('codex') ? locateBinary('codex') : null;
+  const claudePath = discoveredAgentKinds.includes('claude-code') ? locateBinary('claude') : null;
+  const discoveredOpenCodePath = discoveredAgentKinds.includes('opencode')
+    ? locateBinary('opencode')
+    : null;
+  const openCodePath =
+    discoveredOpenCodePath && supportsOpenCodeAcp(discoveredOpenCodePath)
+      ? discoveredOpenCodePath
+      : null;
+  const runnableAgentKinds = discoveredAgentKinds.filter(
+    (kind) => kind !== 'opencode' || openCodePath !== null
+  );
   const defaultAgentKind = selectMacDeviceDaemonAgentKind(
     runnableAgentKinds,
     validated.defaultAgentKind
@@ -241,30 +264,57 @@ export function createMacDeviceDaemon(
       ? { advertisementProvider: dependencies.advertisementProvider }
       : {}),
   });
+  const acpAdapters: AutomationAcpAdapters = {};
+  if (codexPath) {
+    acpAdapters.codex = {
+      command: process.execPath,
+      args: packagedAcpAdapterArgs('codex'),
+      env: { CODEX_PATH: codexPath },
+      defaultMode: 'agent',
+      effortConfigId: 'reasoning_effort',
+    };
+  }
+  if (claudePath) {
+    acpAdapters['claude-code'] = {
+      command: process.execPath,
+      args: packagedAcpAdapterArgs('claude-code'),
+      env: {
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_EXECUTABLE: claudePath,
+      },
+      effortConfigId: 'effort',
+      mcpServerName: 'lobu',
+      sessionMeta: {
+        claudeCode: {
+          options: {
+            allowedTools: ['mcp__lobu__query_sdk', 'mcp__lobu__run_sdk'],
+            settingSources: [],
+          },
+        },
+      },
+    };
+  }
+  if (openCodePath) {
+    acpAdapters.opencode = {
+      command: openCodePath,
+      args: ['acp', '--pure'],
+      env: {
+        OPENCODE_DISABLE_AUTOUPDATE: '1',
+        OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      },
+      autoApprovePermissions: true,
+      effortConfigId: 'effort',
+      isolateXdgConfig: true,
+      mcpServerName: 'lobu',
+    };
+  }
   const automationConfig: AutomationExecutorConfig = {
     heartbeatIntervalMs: 30000,
     timeoutMs: 600000,
     ...(defaultAgentKind ? { defaultAgentKind } : {}),
     requireRunScopedSession: true,
     shutdownSignal: shutdownController.signal,
-    ...(codexPath
-      ? {
-          codexAcp: {
-            // Re-exec this same entrypoint so the adapter is the artifact we
-            // shipped. Run from source (`bun src/...ts`, `node dist/...js`),
-            // argv[1] is the script the runtime needs handed back to it; in the
-            // `bun build --compile` binary argv[1] is the extensionless in-bundle
-            // path (`/$bunfs/root/...`) and execPath is the binary itself, which
-            // already knows its own entry.
-            adapterCommand: process.execPath,
-            adapterArgs:
-              process.argv[1] && /\.[cm]?[jt]s$/.test(process.argv[1])
-                ? [process.argv[1], INTERNAL_CODEX_ACP_ARG]
-                : [INTERNAL_CODEX_ACP_ARG],
-            codexPath,
-          },
-        }
-      : {}),
+    acpAdapters,
   };
   const loop = new WorkerPollLoop({
     client,

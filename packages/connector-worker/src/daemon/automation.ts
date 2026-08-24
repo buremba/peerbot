@@ -61,9 +61,11 @@ import {
   type InteractiveSession,
 } from './interactive-session.js';
 import {
-  CodexAcpTranscript,
-  runCodexAcpTurn,
-} from './codex-acp.js';
+  AcpTranscript,
+  type AcpAgentKind,
+  type AutomationAcpAdapters,
+  runAcpTurn,
+} from './automation-acp.js';
 
 /**
  * The slice of the daemon's `ExecutorConfig` the automation arm reads.
@@ -100,13 +102,8 @@ export interface AutomationExecutorConfig {
    * use to drive a fake binary.
    */
   binaryOverrides?: Partial<Record<AgentKind, string>>;
-  /** Mac-only packaged ACP adapter route for Codex Automations. */
-  codexAcp?: {
-    adapterCommand: string;
-    adapterArgs: string[];
-    adapterEnv?: NodeJS.ProcessEnv;
-    codexPath: string;
-  };
+  /** Maintained ACP entrypoints keyed by the local agent kind they drive. */
+  acpAdapters?: AutomationAcpAdapters;
 }
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
@@ -117,7 +114,7 @@ export interface ExecutorResult {
   exitSignal: string | null;
   exitReason: WorkerExitReason;
   durationMs: number;
-  /** Present only for a Codex ACP turn; cumulative across finalize rounds. */
+  /** Present for an ACP turn; cumulative across finalize rounds. */
   transcriptJsonl?: string;
 }
 
@@ -341,6 +338,31 @@ export interface AutomationRunAccess {
   wiring: { url: string; bearer?: string } | undefined;
   /** Extra env for the child process (LOBU_API_TOKEN / LOBU_MEMORY_URL). */
   env: Record<string, string>;
+}
+
+function claudeSessionMeta(
+  base: Record<string, unknown> | undefined,
+  maxBudgetUsd: number | undefined
+): Record<string, unknown> | undefined {
+  if (!base && !(maxBudgetUsd != null && maxBudgetUsd > 0)) return undefined;
+  const claudeCode =
+    base?.claudeCode != null && typeof base.claudeCode === 'object'
+      ? (base.claudeCode as Record<string, unknown>)
+      : {};
+  const options =
+    claudeCode.options != null && typeof claudeCode.options === 'object'
+      ? (claudeCode.options as Record<string, unknown>)
+      : {};
+  return {
+    ...base,
+    claudeCode: {
+      ...claudeCode,
+      options: {
+        ...options,
+        ...(maxBudgetUsd != null && maxBudgetUsd > 0 ? { maxBudgetUsd } : {}),
+      },
+    },
+  };
 }
 
 /**
@@ -714,9 +736,9 @@ export async function executeAutomationRun(
   // internally; per-run detection is not repeated here.
   const interactiveSession = attachedInteractiveSession(cfg);
   const agentSession = payload.context.agent_session;
-  const codexAcp = spec.kind === 'codex' ? cfg.codexAcp : undefined;
+  const acpAdapter = cfg.acpAdapters?.[spec.kind as AcpAgentKind];
   let acpSessionId = agentSession?.resume_session_id;
-  const acpTranscript = codexAcp ? new CodexAcpTranscript(process.cwd()) : undefined;
+  const acpTranscript = acpAdapter ? new AcpTranscript(process.cwd()) : undefined;
   const selectedSession = isInteractiveSessionEligible(spec.kind, interactiveSession, payload)
     ? interactiveSession
     : undefined;
@@ -827,29 +849,36 @@ export async function executeAutomationRun(
           `[executor] Automation run ${runId}: interactive ${selectedSession.kind} unavailable before delivery; using subprocess`
         );
       }
-      if (codexAcp && agentSession && acpTranscript) {
-        const result = await runCodexAcpTurn({
-          adapterCommand: codexAcp.adapterCommand,
-          adapterArgs: codexAcp.adapterArgs,
-          ...(codexAcp.adapterEnv ? { adapterEnv: codexAcp.adapterEnv } : {}),
-          codexPath: codexAcp.codexPath,
+      if (acpAdapter && agentSession && acpTranscript) {
+        const executionConfig = payload.automation.execution_config;
+        const sessionMeta =
+          spec.kind === 'claude-code'
+            ? claudeSessionMeta(acpAdapter.sessionMeta, executionConfig?.max_budget_usd)
+            : acpAdapter.sessionMeta;
+        const result = await runAcpTurn({
+          agentKind: spec.kind as AcpAgentKind,
+          adapter: acpAdapter,
           cwd: process.cwd(),
           prompt,
           mcp: { url: agentSession.mcp_url, bearer: agentSession.token },
           ...(acpSessionId ? { resumeSessionId: acpSessionId } : {}),
-          ...(payload.automation.execution_config?.model
-            ? { model: payload.automation.execution_config.model }
+          ...(spec.kind === 'claude-code' && executionConfig?.permission_mode
+            ? { mode: executionConfig.permission_mode }
             : {}),
-          ...(payload.automation.execution_config?.effort
-            ? { effort: payload.automation.execution_config.effort }
+          ...(executionConfig?.model
+            ? { model: executionConfig.model }
             : {}),
+          ...(executionConfig?.effort
+            ? { effort: executionConfig.effort }
+            : {}),
+          ...(sessionMeta ? { sessionMeta } : {}),
           timeoutMs,
           abortSignal: runAbort.signal,
           transcript: acpTranscript,
           onSessionReady: async (sessionId) => {
             await client.heartbeat(runId, undefined, {
               protocol: 'acp',
-              agent_kind: 'codex',
+              agent_kind: spec.kind as AcpAgentKind,
               session_id: sessionId,
             });
           },

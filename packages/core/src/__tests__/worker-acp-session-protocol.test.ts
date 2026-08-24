@@ -30,19 +30,21 @@ describe("device Automation ACP session protocol", () => {
     ).toBe(true);
   });
 
-  test("accepts a run-bound ACP session checkpoint on heartbeat", () => {
+  test("accepts a run-bound ACP session checkpoint for every ACP-backed agent", () => {
     expect(HeartbeatRequestSchema.properties.agent_session).toBeDefined();
-    expect(
-      Value.Check(HeartbeatRequestSchema, {
-        run_id: 99,
-        worker_id: "macos:test",
-        agent_session: {
-          protocol: "acp",
-          agent_kind: "codex",
-          session_id: "acp-session-99",
-        },
-      })
-    ).toBe(true);
+    for (const agentKind of ["codex", "claude-code", "opencode"]) {
+      expect(
+        Value.Check(HeartbeatRequestSchema, {
+          run_id: 99,
+          worker_id: "macos:test",
+          agent_session: {
+            protocol: "acp",
+            agent_kind: agentKind,
+            session_id: "acp-session-99",
+          },
+        })
+      ).toBe(true);
+    }
     expect(
       Value.Check(HeartbeatRequestSchema, {
         run_id: 99,

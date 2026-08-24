@@ -14,7 +14,10 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import * as agentBinaries from "../daemon/agent-binaries";
-import { resolveRunnableAgentKinds } from "../daemon/agent-binaries";
+import {
+  resolveRunnableAgentKinds,
+  supportsOpenCodeAcp,
+} from "../daemon/agent-binaries";
 
 const tempDirs: string[] = [];
 
@@ -62,6 +65,52 @@ describe("resolveRunnableAgentKinds", () => {
     expect(
       resolveRunnableAgentKinds({ codex: path.join(dir, "gone") }, [binDirWith([])])
     ).toEqual([]);
+  });
+});
+
+describe("supportsOpenCodeAcp", () => {
+  test("accepts an installed OpenCode binary only when its ACP entrypoint starts", () => {
+    const dir = binDirWith([]);
+    const supported = path.join(dir, "supported-opencode");
+    writeFileSync(
+      supported,
+      "#!/bin/sh\n[ \"$1\" = acp ] && [ \"$2\" = --pure ] && [ \"$3\" = --help ]\n"
+    );
+    chmodSync(supported, 0o755);
+    const unsupported = path.join(dir, "unsupported-opencode");
+    writeFileSync(unsupported, "#!/bin/sh\nexit 64\n");
+    chmodSync(unsupported, 0o755);
+
+    expect(supportsOpenCodeAcp(supported)).toBe(true);
+    expect(supportsOpenCodeAcp(unsupported)).toBe(false);
+  });
+
+  test("does not expose daemon credentials to the OpenCode capability probe", () => {
+    const dir = binDirWith([]);
+    const binary = path.join(dir, "opencode-env-probe");
+    writeFileSync(
+      binary,
+      "#!/bin/sh\n[ -z \"$WORKER_API_TOKEN\" ] && [ -z \"$LOBU_API_TOKEN\" ] && [ -z \"$LOBU_MEMORY_URL\" ]\n"
+    );
+    chmodSync(binary, 0o755);
+    const previous = {
+      worker: process.env.WORKER_API_TOKEN,
+      api: process.env.LOBU_API_TOKEN,
+      memory: process.env.LOBU_MEMORY_URL,
+    };
+    process.env.WORKER_API_TOKEN = "device-secret";
+    process.env.LOBU_API_TOKEN = "run-secret";
+    process.env.LOBU_MEMORY_URL = "https://lobu.test/mcp";
+    try {
+      expect(supportsOpenCodeAcp(binary)).toBe(true);
+    } finally {
+      if (previous.worker === undefined) delete process.env.WORKER_API_TOKEN;
+      else process.env.WORKER_API_TOKEN = previous.worker;
+      if (previous.api === undefined) delete process.env.LOBU_API_TOKEN;
+      else process.env.LOBU_API_TOKEN = previous.api;
+      if (previous.memory === undefined) delete process.env.LOBU_MEMORY_URL;
+      else process.env.LOBU_MEMORY_URL = previous.memory;
+    }
   });
 });
 

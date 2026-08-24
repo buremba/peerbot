@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import * as acp from '@agentclientprotocol/sdk';
 import type {
@@ -7,6 +10,7 @@ import type {
   ToolCall,
   Usage,
 } from '@agentclientprotocol/sdk';
+import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import {
   releaseSupervisor,
   spawnSupervisedCli,
@@ -20,24 +24,47 @@ const CANCEL_GRACE_MS = 2_000;
 const ADAPTER_EXIT_GRACE_MS = 3_000;
 const TRANSCRIPT_VALUE_CAP = 64 * 1024;
 
-export interface CodexAcpTurnOptions {
-  adapterCommand: string;
-  adapterArgs?: string[];
-  adapterEnv?: NodeJS.ProcessEnv;
-  codexPath: string;
+export type AcpAgentKind = Extract<AgentKind, 'claude-code' | 'codex' | 'opencode'>;
+
+/** Configuration for one installed or packaged ACP agent entrypoint. */
+export interface AutomationAcpAdapter {
+  command: string;
+  args?: string[];
+  env?: NodeJS.ProcessEnv;
+  /** Mode applied before each prompt (Codex uses `agent`). */
+  defaultMode?: string;
+  /** ACP config-option id for effort; providers do not use one common id. */
+  effortConfigId?: string;
+  /** Preserve OpenCode's existing unattended `--auto` permission semantics. */
+  autoApprovePermissions?: boolean;
+  /** Hide ambient global/project configuration while keeping provider auth data. */
+  isolateXdgConfig?: boolean;
+  /** Provider extension metadata forwarded on both session/new and session/resume. */
+  sessionMeta?: Record<string, unknown>;
+  /** ACP MCP server name; controls provider-visible tool prefixes. */
+  mcpServerName?: string;
+}
+
+export type AutomationAcpAdapters = Partial<Record<AcpAgentKind, AutomationAcpAdapter>>;
+
+export interface AcpTurnOptions {
+  agentKind: AcpAgentKind;
+  adapter: AutomationAcpAdapter;
   cwd: string;
   prompt: string;
   mcp: { url: string; bearer: string };
   resumeSessionId?: string;
+  mode?: string;
   model?: string;
   effort?: string;
+  sessionMeta?: Record<string, unknown>;
   timeoutMs: number;
   abortSignal?: AbortSignal;
   onSessionReady: (sessionId: string) => Promise<void>;
-  transcript?: CodexAcpTranscript;
+  transcript?: AcpTranscript;
 }
 
-export interface CodexAcpTurnResult extends ExecutorResult {
+export interface AcpTurnResult extends ExecutorResult {
   sessionId: string;
   transcriptJsonl: string;
 }
@@ -77,7 +104,7 @@ function contentText(update: SessionUpdate): string | null {
 }
 
 /** Builds the existing Lobu session JSONL shape from public ACP updates. */
-export class CodexAcpTranscript {
+export class AcpTranscript {
   private sessionId: string | null = null;
   private startedAt: string | null = null;
   private readonly entries: Array<Record<string, unknown>> = [];
@@ -201,30 +228,41 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-/** Run one Automation prompt through Codex's stable ACP v1 adapter. */
-export async function runCodexAcpTurn(
-  options: CodexAcpTurnOptions
-): Promise<CodexAcpTurnResult> {
+/** Run one Automation prompt through a provider's stable ACP v1 entrypoint. */
+export async function runAcpTurn(
+  options: AcpTurnOptions
+): Promise<AcpTurnResult> {
   const started = Date.now();
-  const env: NodeJS.ProcessEnv = { ...process.env, ...options.adapterEnv };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...options.adapter.env };
   delete env.WORKER_API_TOKEN;
   delete env.LOBU_API_TOKEN;
   delete env.LOBU_MEMORY_URL;
-  env.CODEX_PATH = options.codexPath;
+  let isolatedConfigDir: string | undefined;
+  if (options.adapter.isolateXdgConfig) {
+    isolatedConfigDir = mkdtempSync(path.join(tmpdir(), 'lobu-acp-config-'));
+    env.XDG_CONFIG_HOME = isolatedConfigDir;
+  }
 
-  const supervised = spawnSupervisedCli(
-    options.adapterCommand,
-    options.adapterArgs ?? [],
-    env,
-    { stdin: 'pipe' }
-  );
+  let supervised: ReturnType<typeof spawnSupervisedCli>;
+  try {
+    supervised = spawnSupervisedCli(
+      options.adapter.command,
+      options.adapter.args ?? [],
+      env,
+      { stdin: 'pipe' }
+    );
+  } catch (error) {
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
+    throw error;
+  }
   const proc = supervised.supervisor;
   if (!proc.stdin || !proc.stdout || !proc.stderr) {
     await terminateChild(proc);
-    throw new Error('Codex ACP supervisor spawned without bidirectional stdio');
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
+    throw new Error(`${options.agentKind} ACP supervisor spawned without bidirectional stdio`);
   }
   const stderrPromise = collectStderr(proc.stderr);
-  const transcript = options.transcript ?? new CodexAcpTranscript(options.cwd);
+  const transcript = options.transcript ?? new AcpTranscript(options.cwd);
   const events: TranscriptEvent[] = [];
   const tools = new Map<string, ToolCall>();
   let assistantOutput = '';
@@ -238,11 +276,13 @@ export async function runCodexAcpTurn(
   const app = acp
     .client({ name: 'lobu-device-daemon' })
     .onRequest(acp.methods.client.session.requestPermission, ({ params }) => {
-      const rejected =
-        params.options.find((option) => option.kind === 'reject_once') ??
-        params.options.find((option) => option.kind === 'reject_always');
-      return rejected
-        ? { outcome: { outcome: 'selected' as const, optionId: rejected.optionId } }
+      const selected = options.adapter.autoApprovePermissions
+        ? params.options.find((option) => option.kind === 'allow_always') ??
+          params.options.find((option) => option.kind === 'allow_once')
+        : params.options.find((option) => option.kind === 'reject_once') ??
+          params.options.find((option) => option.kind === 'reject_always');
+      return selected
+        ? { outcome: { outcome: 'selected' as const, optionId: selected.optionId } }
         : { outcome: { outcome: 'cancelled' as const } };
     })
     .onNotification(acp.methods.client.session.update, ({ params }) => {
@@ -286,34 +326,39 @@ export async function runCodexAcpTurn(
       clientInfo: { name: 'lobu-device-daemon', version: '1' },
     });
     if (initialized.protocolVersion !== acp.PROTOCOL_VERSION) {
-      throw new Error(`Codex ACP negotiated unsupported protocol ${initialized.protocolVersion}`);
+      throw new Error(
+        `${options.agentKind} ACP negotiated unsupported protocol ${initialized.protocolVersion}`
+      );
     }
     if (initialized.agentCapabilities?.mcpCapabilities?.http !== true) {
-      throw new Error('Codex ACP adapter does not support HTTP MCP servers');
+      throw new Error(`${options.agentKind} ACP adapter does not support HTTP MCP servers`);
     }
 
+    const sessionMeta = options.sessionMeta ?? options.adapter.sessionMeta;
     const mcpServers = [
       {
         type: 'http' as const,
-        name: 'lobu-memory',
+        name: options.adapter.mcpServerName ?? 'lobu-memory',
         url: options.mcp.url,
         headers: [{ name: 'Authorization', value: `Bearer ${options.mcp.bearer}` }],
       },
     ];
     if (options.resumeSessionId) {
       if (initialized.agentCapabilities?.sessionCapabilities?.resume == null) {
-        throw new Error('Codex ACP adapter does not support session/resume');
+        throw new Error(`${options.agentKind} ACP adapter does not support session/resume`);
       }
       await ctx.request(acp.methods.agent.session.resume, {
         sessionId: options.resumeSessionId,
         cwd: options.cwd,
         mcpServers,
+        ...(sessionMeta ? { _meta: sessionMeta } : {}),
       });
       sessionId = options.resumeSessionId;
     } else {
       const created = (await ctx.request(acp.methods.agent.session.new, {
         cwd: options.cwd,
         mcpServers,
+        ...(sessionMeta ? { _meta: sessionMeta } : {}),
       })) as NewSessionResponse;
       sessionId = created.sessionId;
     }
@@ -322,7 +367,6 @@ export async function runCodexAcpTurn(
     // Persist the exact id before the prompt can mutate the workspace. A failed
     // checkpoint aborts the turn instead of creating an unresumable session.
     await options.onSessionReady(sessionId);
-    await ctx.request(acp.methods.agent.session.setMode, { sessionId, modeId: 'agent' });
     if (options.model) {
       await ctx.request(acp.methods.agent.session.setConfigOption, {
         sessionId,
@@ -330,10 +374,14 @@ export async function runCodexAcpTurn(
         value: options.model,
       });
     }
-    if (options.effort) {
+    const mode = options.mode ?? options.adapter.defaultMode;
+    if (mode) {
+      await ctx.request(acp.methods.agent.session.setMode, { sessionId, modeId: mode });
+    }
+    if (options.effort && options.adapter.effortConfigId) {
       await ctx.request(acp.methods.agent.session.setConfigOption, {
         sessionId,
-        configId: 'reasoning_effort',
+        configId: options.adapter.effortConfigId,
         value: options.effort,
       });
     }
@@ -376,8 +424,8 @@ export async function runCodexAcpTurn(
       promptResponse = cancelledResponse;
     } else {
       throw new Error(
-        outcome.target.error ??
-          `Codex ACP adapter exited before the prompt completed (status=${outcome.target.exitCode}, signal=${outcome.target.signalCode ?? 'none'})`
+        outcome.target.error ?? `${options.agentKind} ACP adapter exited before the prompt completed ` +
+          `(status=${outcome.target.exitCode}, signal=${outcome.target.signalCode ?? 'none'})`
       );
     }
 
@@ -392,6 +440,7 @@ export async function runCodexAcpTurn(
     const graceful = await waitForTargetExit(supervised.targetExit, ADAPTER_EXIT_GRACE_MS);
     if (graceful.target) await releaseSupervisor(proc);
     else await terminateChild(proc);
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
   }
 
   const stderr = await Promise.race([
@@ -425,9 +474,9 @@ export async function runCodexAcpTurn(
         : 'error_message';
   const error =
     exitReason === 'timeout'
-      ? `Codex ACP prompt timed out after ${Math.trunc(options.timeoutMs / 1000)}s`
+      ? `${options.agentKind} ACP prompt timed out after ${Math.trunc(options.timeoutMs / 1000)}s`
       : exitReason === 'error_message'
-        ? `Codex ACP stopped with reason ${promptResponse?.stopReason ?? 'unknown'}`
+        ? `${options.agentKind} ACP stopped with reason ${promptResponse?.stopReason ?? 'unknown'}`
         : null;
   return {
     output: assistantOutput,

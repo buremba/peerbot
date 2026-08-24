@@ -1,20 +1,20 @@
 // biome-ignore-all format: stays compact for the landing-page code panel
-import { ConnectorRuntime, type ConnectorDefinition, type EventEnvelope, type SyncContext, type SyncResult } from "@lobu/connector-sdk";
+import { ConnectorRuntime, type RuntimeConnectorDefinition, type EventEnvelope, type SyncContext, type SyncResult } from "@lobu/connector-sdk";
 
 interface StripeCharge { id: string; amount: number; currency: string; created: number; refunded: boolean }
 interface Checkpoint { last_created: number }
 
 export default class StripeChargesConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "stripe-charges",
     name: "Stripe charges",
     version: "1.0.0",
     // Stripe secret key collected per connection; exposed to sync() as ctx.config.secret_key.
     authSchema: { methods: [{ type: "env_keys", fields: [{ key: "secret_key", label: "Stripe secret key", secret: true, required: true }] }] },
-    feeds: { charges: { key: "charges", name: "Charges" } },
+    feeds: { charges: { key: "charges", name: "Charges", sync: (ctx) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const cursor = ((ctx.checkpoint ?? {}) as Partial<Checkpoint>).last_created ?? 0;
     const secretKey = String(ctx.config.secret_key ?? "");
     const r = await fetch(`https://api.stripe.com/v1/charges?limit=100&created[gt]=${cursor}`, {

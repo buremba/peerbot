@@ -1,7 +1,7 @@
 /**
  * Streaming chat feeds leaked onto retired connections.
  *
- * Before the connection-retirement trigger, a streaming feed was keyed by the
+ * Before the connection-retirement trigger, a channel feed was keyed by the
  * numeric `connections.id` but soft-deleted only on an explicit unlink. A
  * workspace re-installed under a different tenant key could therefore leave the
  * previous generation's feeds LIVE on a dead connection.
@@ -81,7 +81,7 @@ async function insertFeed(
       // This suite replays the earlier cleanup against its historical input.
       // Disable the later invariant only inside this seed transaction.
       await tx.unsafe(
-        "ALTER TABLE feeds DISABLE TRIGGER guard_streaming_feed_connection",
+		"ALTER TABLE feeds DISABLE TRIGGER guard_channel_feed_connection",
       );
     }
     const rows = await tx`
@@ -90,13 +90,14 @@ async function insertFeed(
         status, kind, virtual, config
       ) VALUES (
         ${organizationId}, ${connectionId}, ${feedKey}, ${feedKey},
-        'active', ${kind}, false, '{"store":"channel_messages"}'
+        'active', ${kind}, false,
+        ${getDb().json({ store: kind === "streaming" ? "channel_messages" : "events" })}
       )
       RETURNING id
     `;
     if (kind === "streaming") {
       await tx.unsafe(
-        "ALTER TABLE feeds ENABLE TRIGGER guard_streaming_feed_connection",
+		"ALTER TABLE feeds ENABLE TRIGGER guard_channel_feed_connection",
       );
     }
     return Number(rows[0].id);
@@ -224,7 +225,7 @@ describe("retiring leaked chat feeds", () => {
     expect(await feedIsLive(orphanOther)).toBe(true);
   });
 
-  test("never retires a non-streaming feed that shares a feed key", async () => {
+  test("never retires an event-store feed that shares a feed key", async () => {
     // Unrelated connectors reuse feed keys (`reviews`, `content`, `home_feed`
     // all collide in prod); retiring those would stop their ingestion.
     const dead = await insertConnection({

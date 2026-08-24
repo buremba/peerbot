@@ -1126,8 +1126,8 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 				organizationId: org.id,
 				principal: "intruder-user-id",
 				agentId: agent.agentId,
-      },
-      ctx,
+			},
+			ctx,
     );
     expect(asNonMember.conversation_messages ?? []).toHaveLength(0);
   });

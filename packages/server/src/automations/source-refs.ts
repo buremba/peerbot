@@ -43,7 +43,7 @@ async function validateCustomSqlSource(
   );
 }
 
-// 'channel' is a chat-transcript source (streaming feed → channel_messages). It
+// 'channel' is a chat-transcript source (channel feed → channel_messages). It
 // is prompt CONTEXT, not events: its rows must never be signed as event
 // content_ids (channel_messages.id is not an events.id — complete_window links
 // content_ids into automation_run_events.event_id, an FK to events).
@@ -196,7 +196,7 @@ function numericRef(value: string): number | null {
 
 interface ResolvedFeed {
   id: number;
-  kind: string;
+  store: 'events' | 'channel_messages';
   /** `connections.slug` of the feed's connection (for the channel-messages path). */
   connectionSlug: string;
   feedKey: string;
@@ -210,11 +210,11 @@ async function resolveFeeds(
   const id = numericRef(value);
   const rows = await sql<{
     id: number | string;
-    kind: string | null;
+    store: string | null;
     feed_key: string;
     connection_slug: string;
   }>`
-    SELECT f.id, f.kind, f.feed_key, c.slug AS connection_slug
+    SELECT f.id, f.config ->> 'store' AS store, f.feed_key, c.slug AS connection_slug
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE f.organization_id = ${organizationId}
@@ -231,14 +231,14 @@ async function resolveFeeds(
   return rows
     .map((r) => ({
       id: Number(r.id),
-      kind: r.kind ?? 'collected',
+      store: (r.store === 'channel_messages' ? 'channel_messages' : 'events') as ResolvedFeed['store'],
       connectionSlug: String(r.connection_slug),
       feedKey: String(r.feed_key),
     }))
     .filter((r) => Number.isSafeInteger(r.id) && r.id > 0);
 }
 
-/** Strip a `platform:` prefix off a streaming feed_key to the bare channel id
+/** Strip a `platform:` prefix off a channel feed_key to the bare channel id
  *  that `channel_messages.channel_id` stores (mirror of read_feed). */
 function bareChannelId(feedKey: string): string {
   return feedKey.includes(':') ? feedKey.slice(feedKey.indexOf(':') + 1) : feedKey;
@@ -299,29 +299,21 @@ async function compileRefToQuery(
     case 'feed': {
       const feeds = await resolveFeeds(sql, organizationId, ref.value);
       if (feeds.length === 0) throw new Error(`@feed:${ref.value} did not match any feed`);
-      const collected = feeds.filter((f) => f.kind === 'collected');
-      const streaming = feeds.filter((f) => f.kind === 'streaming');
-      // A `virtual` feed is an external live query with no stored rows — it has no
-      // read seam here, so reject it (loud) rather than compile to empty.
-      const other = feeds.find((f) => f.kind !== 'collected' && f.kind !== 'streaming');
-      if (collected.length === 0 && streaming.length === 0 && other) {
+      const eventFeeds = feeds.filter((f) => f.store === 'events');
+      const channelFeeds = feeds.filter((f) => f.store === 'channel_messages');
+      // Don't mix storage planes in one source: a single SELECT cannot span
+      // both `events` and `channel_messages`.
+      if (eventFeeds.length > 0 && channelFeeds.length > 0) {
         throw new Error(
-          `@feed:${ref.value} is a ${other.kind} feed; only collected or streaming feeds can be an @feed source`
+          `@feed:${ref.value} matched both event and channel-message stores; reference one feed`
         );
       }
-      // Don't mix data planes in one source — a collected feed reads `events`, a
-      // streaming feed reads `channel_messages`; a single SELECT can't span both.
-      if (collected.length > 0 && streaming.length > 0) {
-        throw new Error(
-          `@feed:${ref.value} matched both collected and streaming feeds; reference one kind`
-        );
-      }
-      if (streaming.length > 0) {
+      if (channelFeeds.length > 0) {
         // 'channel' kind → prompt context only, NOT event-id-signed (see the type).
-        return { query: channelMessagesSelect(streaming), kind: 'channel' };
+        return { query: channelMessagesSelect(channelFeeds), kind: 'channel' };
       }
       return {
-        query: eventSelect(`feed_id IN (${collected.map((f) => f.id).join(',')})`),
+        query: eventSelect(`feed_id IN (${eventFeeds.map((f) => f.id).join(',')})`),
         kind: 'event',
       };
     }

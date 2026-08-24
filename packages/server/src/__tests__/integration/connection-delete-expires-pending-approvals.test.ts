@@ -79,10 +79,10 @@ describe("connection delete expires pending approvals", () => {
 		const [feed] = await sql`
 			INSERT INTO feeds (
 				organization_id, connection_id, feed_key, display_name,
-				status, kind, schedule, next_run_at, created_at, updated_at
+					status, schedule, next_run_at, created_at, updated_at
 			) VALUES (
 				${org.id}, ${conn.id}, 'pending-work', 'Pending work',
-				'active', 'collected', '0 * * * *', NOW() + INTERVAL '30 minutes',
+					'active', '0 * * * *', NOW() + INTERVAL '30 minutes',
 				NOW(), NOW()
 			)
 			RETURNING id

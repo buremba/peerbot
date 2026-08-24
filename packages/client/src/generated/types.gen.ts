@@ -3155,9 +3155,16 @@ export type ManageFeedsData = {
            */
           limit?: number;
           /**
-           * Opaque continuation cursor returned by a previous read of this feed/query.
+           * Opaque continuation cursor returned by a previous read of this feed/query/sort.
            */
           cursor?: string;
+          /**
+           * Source-native sort pushed into the connector.
+           */
+          sort?: {
+            column: string;
+            order: "asc" | "desc";
+          };
         }>;
         /**
          * Per-feed timeout in milliseconds (default 10000, max 30000).
@@ -3199,10 +3206,6 @@ export type ManageFeedsData = {
          * IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).
          */
         timezone?: string;
-        /**
-         * When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow with the per-feed query in feeds.readMany.
-         */
-        virtual?: boolean;
       }
     | {
         /**
@@ -3306,7 +3309,6 @@ export type ManageFeedsResponses = {
       }
     | {
         action: "read_feed";
-        kind: string;
         feed: {
           [key: string]: unknown;
         };

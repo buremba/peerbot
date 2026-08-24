@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type SyncContext,
@@ -59,7 +59,10 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
   GoogleTakeoutCheckpoint,
   LocalTakeoutConfig
 > {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<
+    GoogleTakeoutCheckpoint,
+    LocalTakeoutConfig
+  > = {
     key: "google.takeout",
     name: "Google Takeout",
     // Minor bump for the added `maps` feed. Connector source is retained per
@@ -78,16 +81,19 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
     runtime: { platforms: ["macos"] },
     feeds: {
       youtube: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "youtube",
         name: "YouTube Watch History",
         configSchema: localTakeoutSchema("Path to a Google Takeout folder."),
       },
       keep: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "keep",
         name: "Google Keep Notes",
         configSchema: localTakeoutSchema("Path to a Google Takeout folder."),
       },
       maps: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "maps",
         name: "Maps Saved Places and Reviews",
         configSchema: localTakeoutSchema("Path to a Google Takeout folder."),
@@ -95,7 +101,7 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
     },
   };
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<GoogleTakeoutCheckpoint, LocalTakeoutConfig>
   ): Promise<SyncResult<GoogleTakeoutCheckpoint>> {
     const takeoutDir = assertDirectory(ctx.config, "Google");

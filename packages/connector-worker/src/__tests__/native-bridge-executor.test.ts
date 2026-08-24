@@ -177,7 +177,7 @@ describe('native bridge run forwarding', () => {
     ]);
   });
 
-  test('uses explicit query and search operations for virtual feed reads', async () => {
+  test('uses one explicit read operation for filtered and unfiltered feed reads', async () => {
     const operations: string[] = [];
     const client = fakeClient();
     const bridge = {
@@ -187,16 +187,16 @@ describe('native bridge run forwarding', () => {
       },
     } as never;
 
-    for (const actionInput of [{}, { terms: ['ada'] }]) {
+    for (const actionInput of [{}, { query: 'ada' }]) {
       await executeNativeBridgeRun(client as never, bridge, {
-        run_id: actionInput.terms ? 14 : 13,
+        run_id: actionInput.query ? 14 : 13,
         run_type: 'action',
-        action_key: '__lobu_virtual_feed_read',
+        action_key: '__lobu_feed_read',
         action_input: actionInput,
       } as never);
     }
 
-    expect(operations).toEqual(['query', 'search']);
+    expect(operations).toEqual(['read', 'read']);
   });
 
   test('rejects automation and embed_backfill runs without using completeAction', async () => {

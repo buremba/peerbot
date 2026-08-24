@@ -33,7 +33,7 @@ async function seedFeed(opts: {
 	orgId: string;
 	connectionId: number;
 	feedKey: string;
-	kind: "collected" | "streaming" | "virtual";
+	store?: "events" | "channel_messages";
 	displayName?: string | null;
 	itemsCollected?: number;
 	deletedAt?: Date | null;
@@ -41,10 +41,11 @@ async function seedFeed(opts: {
 	const sql = getTestDb();
 	await sql`
 		INSERT INTO feeds (
-			organization_id, connection_id, feed_key, kind, display_name,
+			organization_id, connection_id, feed_key, config, display_name,
 			status, items_collected, last_sync_at, deleted_at, created_at, updated_at
 		) VALUES (
-			${opts.orgId}, ${opts.connectionId}, ${opts.feedKey}, ${opts.kind},
+			${opts.orgId}, ${opts.connectionId}, ${opts.feedKey},
+			${sql.json({ store: opts.store ?? "events" })},
 			${opts.displayName ?? null}, 'active', ${opts.itemsCollected ?? 0},
 			NOW(), ${opts.deletedAt ?? null}, NOW(), NOW()
 		)
@@ -73,19 +74,30 @@ describe("listConnectionFeeds", () => {
 			userId: user.id,
 			slug: runtimeConnId,
 		});
+		await getTestDb()`
+			INSERT INTO connector_definitions (
+				organization_id, key, name, version, status, feeds_schema
+			) VALUES (
+				${orgId}, 'slack', 'Slack', '1.0.0', 'active',
+				${getTestDb().json({
+					"slack:C123": { key: "slack:C123", operations: [] },
+					inbox: { key: "inbox", operations: ["sync"] },
+					gone: { key: "gone", operations: ["sync"] },
+				})}
+			)
+		`;
 
 		await seedFeed({
 			orgId,
 			connectionId,
 			feedKey: "slack:C123",
-			kind: "streaming",
+			store: "channel_messages",
 			itemsCollected: 5,
 		});
 		await seedFeed({
 			orgId,
 			connectionId,
 			feedKey: "inbox",
-			kind: "collected",
 			displayName: "Inbox",
 		});
 		// A soft-deleted feed must be excluded.
@@ -93,11 +105,10 @@ describe("listConnectionFeeds", () => {
 			orgId,
 			connectionId,
 			feedKey: "gone",
-			kind: "collected",
 			deletedAt: new Date(),
 		});
 
-		// Bind the streaming channel to the agent so `target_agent_id` populates.
+		// Bind the channel to the agent so `target_agent_id` populates.
 		await createTestAutomationSubscription({
 			organizationId: orgId,
 			agentId,
@@ -112,21 +123,22 @@ describe("listConnectionFeeds", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("resolves a non-numeric runtime id via slug, excludes soft-deleted, and decorates the streaming feed with its bound agent", async () => {
+	it("resolves a non-numeric runtime id via slug, excludes soft-deleted, and decorates the channel feed with its bound agent", async () => {
 		const feeds = await listConnectionFeeds(orgId, runtimeConnId);
 
 		expect(feeds).toHaveLength(2);
-		const byKind = Object.fromEntries(feeds.map((f) => [f.kind, f]));
+		const byStore = Object.fromEntries(feeds.map((feed) => [feed.store, feed]));
 
-		expect(byKind.streaming?.feedKey).toBe("slack:C123");
-		expect(byKind.streaming?.label).toBe("slack:C123"); // falls back to feed_key
-		expect(byKind.streaming?.itemsCollected).toBe(5);
-		expect(byKind.streaming?.targetAgentId).toBe(agentId);
-		expect(byKind.streaming?.lastSyncAt).not.toBeNull();
+		expect(byStore.channel_messages?.feedKey).toBe("slack:C123");
+		expect(byStore.channel_messages?.label).toBe("slack:C123"); // falls back to feed_key
+		expect(byStore.channel_messages?.itemsCollected).toBe(5);
+		expect(byStore.channel_messages?.targetAgentId).toBe(agentId);
+		expect(byStore.channel_messages?.lastSyncAt).not.toBeNull();
 
-		expect(byKind.collected?.feedKey).toBe("inbox");
-		expect(byKind.collected?.label).toBe("Inbox");
-		expect(byKind.collected?.targetAgentId ?? null).toBeNull();
+		expect(byStore.events?.feedKey).toBe("inbox");
+		expect(byStore.events?.label).toBe("Inbox");
+		expect(byStore.events?.operations).toEqual(["sync"]);
+		expect(byStore.events?.targetAgentId ?? null).toBeNull();
 	});
 
 	it("returns nothing for a connection in a different org scope", async () => {

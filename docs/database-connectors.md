@@ -8,15 +8,16 @@ entities. V1 ships **Postgres**; Snowflake/BigQuery are additive (see end).
 The connector owns the DB connection — for *both* indexing and live reads. The
 gateway never opens an external pool.
 
-- **Memory feed (indexed)** — a `postgres` connection + a `query` feed runs a
+- **Sync** — a `postgres` connection + a `query` feed runs a
   read-only `SELECT` on a schedule, keyset-incremental, and emits one event per
   row → embedded, searchable memory. (`packages/connectors/src/postgres.ts`)
-- **Live read (no copy)** — the connector's `query()` runs SQL live against the
-  source and returns rows, persisting nothing. The platform reaches it through one
-  primitive: `runConnectorQuery` (`packages/server/src/lib/connector-pushdown.ts`),
-  which invokes the connector in the worker `query` run-mode (the same inline-run
-  path as `operations.execute`). Virtual feeds use the same connector pushdown via
-  `readVirtualFeed`: a stored feed query is read live and still persists nothing.
+- **Feed source read (no copy)** — that same feed implements `read`, so its stored
+  query can run live and return rows without persisting them. The platform invokes
+  the per-feed handler through `readSourceFeed`; this is independent of whether
+  the same feed is scheduled or manually synced.
+- **Connection query (no copy)** — the connector's connection-level `query()`
+  supports ad-hoc governed SQL through `runConnectorQuery`. This is deliberately
+  separate from configured feed reads.
 - **`query_sql({ connection })`** is the single door: with a `connection` slug it
   pushes the SQL down via `runConnectorQuery` (internal org-scoping skipped — it's
   the org's own DB); without, it runs the internal org-scoped path. There is no
@@ -35,10 +36,12 @@ gateway never opens an external pool.
 Single-database only: every query targets one database; no cross-source joins
 (that's a later DuckDB-class engine).
 
-Source-backed feeds currently use `feeds.kind = 'virtual'` / `virtual = true` and
-persist no events. Transparent SQL federation and ambient cross-source fan-out
-are intentionally absent. Agents decompose explicitly: search local knowledge,
-inspect its coverage, then query selected sources with `client.feeds.readMany`.
+Feed capability comes from its connector definition: `operations: ['sync']`,
+`['read']`, or both. Storage is not a mode choice. `sync` may materialize events;
+`read` always queries the source and persists no result. Transparent SQL
+federation and ambient cross-source fan-out are intentionally absent. Agents
+decompose explicitly: search local knowledge, inspect its coverage, then query
+selected sources with `client.feeds.readMany`.
 
 ## Agent-facing live feed reads
 
@@ -85,7 +88,7 @@ scrapers' block-all-private-IPs rule can't be reused.
   sit in it until they ship equivalent hardening.
 
 **Egress guard (`packages/connectors/src/db-egress-guard.ts`).** The connector
-runs a pre-connect host check on `sync()`, `query()`, and `search()`. Policy comes from
+runs a pre-connect host check on `sync()`, `read()`, and `query()`. Policy comes from
 `ctx.config.LOBU_DB_EGRESS_POLICY`, injected by the server from cloud mode:
 
 - `allow-private` (self-hosted, the default) — allows loopback / RFC1918 / CGNAT
@@ -135,15 +138,15 @@ Gate advanced database connectivity behind a paid tier. Seam: `organization.plan
 | Postgres connector + memory feeds | free / pro |
 | Internal derived entities | free / pro |
 | External-backed (live) derived entities — `backing.connection` set | pro / enterprise |
-| Warehouse connectors (Snowflake, BigQuery), virtual feeds + federated search | enterprise |
+| Warehouse connectors (Snowflake, BigQuery), source reads + federated search | enterprise |
 
 Enforcement points when built: connector install, connection count, and presence
 of `backing.connection`.
 
 ## Snowflake / BigQuery forward-compat
 
-No redesign needed: each is a new bundled connector implementing `sync()` +
-`query()` (+ later `search()`), with `env_keys` carrying its credentials
+No redesign needed: each is a new bundled connector implementing per-feed
+`sync` + `read`, plus connection-level `query`, with `env_keys` carrying its credentials
 (Snowflake account/user/keypair/warehouse/role; BigQuery service-account JSON).
 The pushdown plumbing (`runConnectorQuery`, the `query` run-mode, `query_sql`'s
 `connection`) is dialect-agnostic — only the connector's own `query()` differs.

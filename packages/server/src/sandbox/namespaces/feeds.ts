@@ -19,8 +19,6 @@ export interface FeedsCreateInput {
 	schedule?: string | null;
 	/** IANA zone the schedule is evaluated in; omit for server time (UTC). */
 	timezone?: string;
-	/** Read live through connector query/search instead of scheduling collection. */
-	virtual?: boolean;
 }
 
 export interface FeedsNamespace {
@@ -41,6 +39,7 @@ export interface FeedsNamespace {
 			query?: string;
 			limit?: number;
 			cursor?: string;
+			sort?: { column: string; order: "asc" | "desc" };
 		}>;
 		timeout_ms?: number;
 	}): Promise<unknown>;

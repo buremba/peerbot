@@ -28,6 +28,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       daily_app_usage: {
         key: "daily_app_usage",
         name: "Daily app usage",
+        operations: ["sync", "read"],
         description:
           "Per-day total foreground time for each application (identified by bundle id).",
         configSchema: {
@@ -99,6 +100,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       files: {
         key: "files",
         name: "Files",
+        operations: ["sync", "read"],
         description:
           "Text files from one local folder on the user's Mac. One feed per folder — folder_id is an opaque stable id minted by the Mac app (the security-scoped bookmark is held device-side; the server never sees the absolute path).",
         userManaged: true,
@@ -188,6 +190,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       daily_summaries: {
         key: "daily_summaries",
         name: "Daily summaries",
+        operations: ["sync", "read"],
         description:
           "Daily Apple Health activity summaries: steps, distance, active energy, exercise minutes, and resting heart rate.",
         configSchema: {
@@ -244,6 +247,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       workouts: {
         key: "workouts",
         name: "Workouts",
+        operations: ["sync", "read"],
         description: "Workout sessions recorded in Apple Health.",
         configSchema: {
           type: "object",
@@ -326,6 +330,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       library: {
         key: "library",
         name: "Library",
+        operations: ["sync", "read"],
         description:
           "Every photo in your library. Each event carries the photo's metadata (date taken, location, people, albums, captions, OCR text) plus stable asset identifiers so agents can fetch the image bytes on demand.",
         configSchema: {
@@ -481,6 +486,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       recordings: {
         key: "recordings",
         name: "Recordings",
+        operations: ["sync", "read"],
         description:
           "System-audio segments captured while recording; transcribed server-side.",
         configSchema: {
@@ -538,6 +544,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       events: {
         key: "events",
         name: "Events",
+        operations: ["sync", "read"],
         description:
           "Calendar events from the Mac, in a rolling window around now.",
         configSchema: {
@@ -609,6 +616,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       reminders: {
         key: "reminders",
         name: "Reminders",
+        operations: ["sync", "read"],
         description:
           "Reminders from the Mac — incomplete plus recently completed.",
         configSchema: {

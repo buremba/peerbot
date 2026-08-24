@@ -38,12 +38,10 @@
  * the connection is waiting on human sign-in:
  *
  * - **Expected feeds** (the denominator every rule is measured against) are the
- *   feeds that CAN sync: `execution_mode` is neither `virtual` (evaluated live
- *   at request time) nor `streaming` (chat channels pushed into
- *   `channel_messages`) — minus operator-paused-clean feeds and feeds whose
- *   connection is waiting on auth. A virtual or streaming feed never syncs, so
- *   counting it as a live capability dilutes the degraded ratio and can distort
- *   `no_recent_sync` for connections that mix kinds.
+ *   feeds whose selected definition declares `sync`, excluding chat feeds
+ *   stored in `channel_messages`, operator-paused-clean feeds, and feeds whose
+ *   connection is waiting on auth. Counting non-sync feeds as live collector
+ *   capabilities dilutes the degraded ratio and distorts `no_recent_sync`.
  * - **`needs_auth` feeds are excluded**: the user must sign in, which is not an
  *   infra incident, and the user-facing notification for that transition
  *   already fires from `worker-api/run-lifecycle` when the browser session goes
@@ -60,7 +58,7 @@
  *
  * ## Why `execution_mode === 'scheduled'` is NOT the expected predicate
  *
- * `deriveFeedHealthSemantics` calls a non-virtual feed without a cron in
+ * `deriveFeedHealthSemantics` calls a sync-capable feed without a cron in
  * `feeds.schedule` `no_schedule`, and that label carries no dispatch meaning.
  * It is tempting to read "no cron" as "human-triggered, so a failure is
  * user-visible and never an unattended incident" — which holds for Midas but
@@ -261,7 +259,7 @@ interface FeedHealthRow {
   connection_created_at: Date | string;
   connection_status: string | null;
   credential_mode: string | null;
-  /** Whether the installed definition declares a non-virtual feed that Lobu
+  /** Whether the installed definition declares a sync operation that Lobu
    *  can create without user-supplied instance config. NULL means no active
    *  definition was found, preserving the fail-closed zero-feed alert. */
   connector_has_auto_syncable_feeds: boolean | null;
@@ -270,8 +268,8 @@ interface FeedHealthRow {
    *  worker row is gone entirely. */
   device_stale: boolean | null;
   feed_id: string | null;
-  kind: string | null;
-  virtual: boolean | null;
+  operations: Array<'sync' | 'read'> | null;
+  store: 'events' | 'channel_messages' | null;
   feed_status: string | null;
   schedule: string | null;
   last_sync_status: string | null;
@@ -320,8 +318,8 @@ async function loadConnectionHealthRows(
         )
       ) AS device_stale,
       f.id AS feed_id,
-      f.kind,
-      f.virtual,
+      cd.feed_operations AS operations,
+      CASE WHEN f.config ->> 'store' = 'channel_messages' THEN 'channel_messages' ELSE 'events' END AS store,
       f.status AS feed_status,
       f.schedule,
       f.last_sync_status,
@@ -347,10 +345,13 @@ async function loadConnectionHealthRows(
       ON f.connection_id = c.id
      AND f.deleted_at IS NULL
     LEFT JOIN LATERAL (
-      SELECT EXISTS (
+      SELECT
+        COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
+          AS feed_operations,
+        EXISTS (
         SELECT 1
         FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)
-        WHERE COALESCE((declared.config ->> 'virtual')::boolean, false) = false
+        WHERE COALESCE(declared.config -> 'operations', '[]'::jsonb) @> '["sync"]'::jsonb
           AND COALESCE((declared.config ->> 'userManaged')::boolean, false) = false
       ) AS has_auto_syncable_feeds
       FROM connector_definitions definition
@@ -372,7 +373,7 @@ async function loadConnectionHealthRows(
 /**
  * Per-feed classification consumed by the connection-level rules. WHICH feeds
  * count comes from the shared semantics module — a feed that cannot run a
- * collector sync (`virtual`/`streaming`) or whose connection is waiting on
+ * collector sync or whose connection is waiting on
  * sign-in (`needs_auth`) is not a live capability, so it cannot be part of any
  * numerator or denominator here.
  *
@@ -383,8 +384,8 @@ async function loadConnectionHealthRows(
  * the row here rather than from `attention`.
  */
 interface ClassifiedFeed {
-  /** A live capability: a feed that can actually sync (not virtual, not
-   *  streaming), is not operator-paused-clean, and is not waiting on human
+  /** A live capability: a feed that can actually sync, is not a chat store,
+   *  is not operator-paused-clean, and is not waiting on human
    *  sign-in. Only these count toward the expected denominator and Rules A/C. */
   expected: boolean;
   /** Expected feed that is currently failing: last attempt failed, a failure
@@ -400,8 +401,8 @@ interface ClassifiedFeed {
 function classifyFeed(row: FeedHealthRow, cfg: ConnectorHealthConfig): ClassifiedFeed {
   const cf = Number(row.consecutive_failures ?? 0);
   const semantics = deriveFeedHealthSemantics({
-    kind: row.kind,
-    virtual: row.virtual,
+    operations: row.operations,
+    store: row.store,
     status: row.feed_status,
     schedule: row.schedule,
     last_sync_status: row.last_sync_status,
@@ -412,8 +413,7 @@ function classifyFeed(row: FeedHealthRow, cfg: ConnectorHealthConfig): Classifie
   });
 
   const operatorPausedClean = row.feed_status === 'paused' && cf === 0;
-  const syncable =
-    semantics.executionMode !== 'virtual' && semantics.executionMode !== 'streaming';
+  const syncable = row.operations?.includes('sync') === true;
   const expected =
     syncable && semantics.attention !== 'needs_auth' && !operatorPausedClean;
 
@@ -476,7 +476,7 @@ function classify(
     // Chat rows are transports, not collectors. A channel-less chat connection
     // must not trip the collector-only zero-feed rule.
     if (rows[0]?.credential_mode != null) return null;
-    // Operation-only, virtual-only, and user-managed-only connectors
+    // Operation-only, source-only, and user-managed-only connectors
     // legitimately have no automatic collector rows. If the definition is
     // missing, keep the alert fail-closed instead of hiding an install problem.
     if (rows[0]?.connector_has_auto_syncable_feeds === false) return null;
@@ -525,7 +525,7 @@ function classify(
 
   const lastError = failingError ?? expectedError;
 
-  // A connection whose only feeds are deliberately paused (cf=0), virtual,
+  // A connection whose only feeds are deliberately paused (cf=0), read-only,
   // streaming, or auth-waiting is NOT unhealthy — operator intent, on-demand
   // evaluation, or a sign-in the user must complete, none of which is a dead
   // collector.

@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
@@ -62,7 +62,7 @@ interface GlassdoorConfig {
 }
 
 export default class GlassdoorConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "glassdoor",
     name: "Glassdoor",
     description: "Scrapes employee reviews from Glassdoor.",
@@ -73,6 +73,7 @@ export default class GlassdoorConnector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "Employee Reviews",
         description: "Scrapes employee reviews for a given company.",
@@ -117,7 +118,7 @@ export default class GlassdoorConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const config = ctx.config as unknown as GlassdoorConfig;
     const { company_name, company_id } = config;
 

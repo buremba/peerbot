@@ -171,12 +171,10 @@ export interface DesiredFeed {
   name?: string;
   /**
    * Cron for automatic sync. `null` / omitted after map-config means manual-only
-   * (no platform default). Virtual feeds always null.
+   * (no platform default).
    */
   schedule?: string | null;
   config?: Record<string, unknown>;
-  /** Federated (live-pushdown, no-copy) feed — never synced; schedule is NULL. */
-  virtual?: boolean;
 }
 
 export interface DesiredConnection {

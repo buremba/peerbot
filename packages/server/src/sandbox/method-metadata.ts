@@ -903,19 +903,19 @@ export default async (_ctx, client) => {
 	},
 	"feeds.readMany": {
 		summary:
-			"Explicitly query several source-backed feeds in parallel. Each read has its own query, limit, and opaque cursor; sources are deadline-bounded and fail independently.",
+			"Explicitly query several source-backed feeds in parallel. Each read has its own query, sort, limit, and opaque cursor; sources are deadline-bounded and fail independently.",
 		access: "read",
 		signature:
-			"feeds.readMany(input: { reads: Array<{ feed_id: number; query?: string; limit?: number; cursor?: string }>; timeout_ms?: number }): Promise<unknown>",
+			"feeds.readMany(input: { reads: Array<{ feed_id: number; query?: string; sort?: { column: string; order: 'asc' | 'desc' }; limit?: number; cursor?: string }>; timeout_ms?: number }): Promise<unknown>",
 		example:
 			"const feeds = await client.feeds.readMany({ reads: [{ feed_id: 42, query: 'urgent', limit: 25 }, { feed_id: 43 }] });",
 	},
 	"feeds.create": {
 		summary:
-			"Create a collected or virtual feed for a connection. A collected feed is manual-only unless `schedule` is set; call feeds.trigger to collect immediately. A virtual feed reads live and never syncs. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like feed URLs) in `config`.",
+			"Create a configured feed for a connection. Its connector-declared operations decide whether it can sync, read from the source, or do both. A syncable feed has no cron unless `schedule` is set; call feeds.trigger to sync immediately. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings in `config`.",
 		access: "admin",
 		signature:
-			"feeds.create(input: { connection_id: number; feed_key: string; display_name?: string; entity_ids?: number[]; config?: object; schedule?: string | null; timezone?: string; virtual?: boolean }): Promise<unknown>",
+			"feeds.create(input: { connection_id: number; feed_key: string; display_name?: string; entity_ids?: number[]; config?: object; schedule?: string | null; timezone?: string }): Promise<unknown>",
 		example:
 			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},

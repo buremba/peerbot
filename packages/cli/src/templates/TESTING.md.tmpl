@@ -83,9 +83,9 @@ the dry-run is healthy and the user approves a real collection, trigger without
 `dry_run`, then read the feed again and verify the expected event or entity
 exists.
 
-Virtual feeds are read live rather than triggered. Verify those with
+Source-readable feeds can be queried live independently of sync. Verify those with
 `client.feeds.readMany({ feed_ids: [Number("<feed-id>")] })`.
-If the connector declares no collected or virtual feed, as with some chat
+If the connector declares no feeds, as with some chat
 integrations, skip feed verification and prove its inbound message path instead.
 
 ## Automations and resulting data

@@ -613,8 +613,8 @@ export const QUERYABLE_SCHEMA = {
         'principal_kind'
       ),
     },
-    // feeds (excludes: checkpoint; `config` is REDACTED, not excluded — see
-    // redactedConfigColumn)
+    // feeds (`config` is REDACTED, not excluded — see redactedConfigColumn).
+    // Internal sync cursors and transitional physical columns are excluded.
     {
       name: 'feeds',
       columns: [
@@ -641,13 +641,11 @@ export const QUERYABLE_SCHEMA = {
           'pinned_version',
           'display_name',
           'deleted_at',
-          'first_failure_at',
-          'virtual',
-          'kind'
+          'first_failure_at'
         ),
       ],
     },
-    // channel_messages — chat-channel transcripts (streaming feeds). Content is
+    // channel_messages — chat-channel transcripts (channel feeds). Content is
     // membership-gated per row by the channel_messages CTE in execute-data-sources
     // (compileChannelMessagesVisibility): a row on an ACL-enforced Slack
     // connection is visible only to a channel member; a headless reader (null

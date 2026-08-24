@@ -36,7 +36,7 @@ import {
   type ActionContext,
   type ActionResult,
   type ChromeActionDispatcher,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventAttributionRule,
@@ -2515,7 +2515,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
   LinkedInCheckpoint,
   LinkedInConfig
 > {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<
+    LinkedInCheckpoint,
+    LinkedInConfig
+  > = {
     key: "linkedin",
     name: "LinkedIn",
     description:
@@ -2542,6 +2545,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     feeds: {
       // ── Live (Chrome-extension) feeds ──────────────────────────
       home_feed: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "home_feed",
         name: "Home Feed",
         description: "Your personalized LinkedIn home feed.",
@@ -2600,6 +2604,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         },
       },
       company_updates: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "company_updates",
         name: "Company Updates",
         description: "Posts and updates from the company LinkedIn page.",
@@ -2623,6 +2628,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         },
       },
       jobs: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "jobs",
         name: "Job Listings",
         description: "Open job positions (hiring velocity signal).",
@@ -2641,6 +2647,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
       },
       // ── Takeout (local CSV) feeds ──────────────────────────────
       messages: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "messages",
         name: "Messages",
         configSchema: localTakeoutSchema(
@@ -2654,6 +2661,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         },
       },
       connections: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "connections",
         name: "Connections",
         configSchema: localTakeoutSchema(
@@ -2667,6 +2675,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         },
       },
       invitations: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "invitations",
         name: "Invitations",
         configSchema: localTakeoutSchema(
@@ -2674,6 +2683,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       applied_jobs: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "applied_jobs",
         name: "Applied Jobs",
         description:
@@ -2683,6 +2693,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       profile: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "profile",
         name: "Profile",
         configSchema: localTakeoutSchema(
@@ -2690,6 +2701,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       companies: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "companies",
         name: "Company Follows",
         configSchema: localTakeoutSchema(
@@ -2697,6 +2709,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       learning: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "learning",
         name: "Learning",
         configSchema: localTakeoutSchema(
@@ -2704,6 +2717,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       events: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "events",
         name: "Events",
         configSchema: localTakeoutSchema(
@@ -2711,6 +2725,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       endorsements: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "endorsements",
         name: "Endorsements and Recommendations",
         configSchema: localTakeoutSchema(
@@ -2718,6 +2733,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
       media: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "media",
         name: "Rich Media",
         configSchema: localTakeoutSchema(
@@ -2963,7 +2979,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     }
   }
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<LinkedInCheckpoint, LinkedInConfig>
   ): Promise<SyncResult<LinkedInCheckpoint>> {
     const feedKey = ctx.feedKey;

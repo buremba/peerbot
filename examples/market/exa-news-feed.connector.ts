@@ -7,10 +7,10 @@ export default class ExaNewsFeedConnector extends ConnectorRuntime {
     name: "Exa news feed",
     version: "1.0.0",
     authSchema: { methods: [{ type: "env_keys" as const, fields: [{ key: "api_key", secret: true }] }] },
-    feeds: { articles: { key: "articles", name: "Articles" } },
+    feeds: { articles: { key: "articles", name: "Articles", sync: (ctx: SyncContext) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext) {
+  private async syncFeed(ctx: SyncContext) {
     const seen = new Set<string>((ctx.checkpoint as any)?.seen_ids ?? []);
     const r = await fetch("https://api.exa.ai/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: ctx.config.query, numResults: ctx.config.num_results ?? 20 }) });
     const fresh: any[] = ((await r.json() as any).results ?? []).filter((x: any) => x.id && !seen.has(x.id));

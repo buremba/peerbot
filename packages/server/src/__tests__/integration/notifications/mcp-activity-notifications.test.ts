@@ -379,8 +379,8 @@ describe('notification list > source attribution', () => {
     `;
 
     const [feed] = await sql`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, display_name, created_at)
-      VALUES (${org.id}, ${conn.id}, 'home_feed', 'active', 'collected', 'Attr Notif Feed', NOW())
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, display_name, created_at)
+      VALUES (${org.id}, ${conn.id}, 'home_feed', 'active', 'Attr Notif Feed', NOW())
       RETURNING id
     `;
 

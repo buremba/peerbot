@@ -73,12 +73,17 @@ describe('explicit feed source reads', () => {
     await db`
       INSERT INTO connector_definitions
         (key, name, version, feeds_schema, auth_schema, organization_id, status, created_at, updated_at)
-      VALUES ('postgres', 'PostgreSQL', '1.0.0', ${db.json({})}, ${db.json({})}, ${orgId}, 'active', NOW(), NOW())
+      VALUES ('postgres', 'PostgreSQL', '1.0.1',
+        ${db.json({
+          query: { key: 'query', operations: ['sync', 'read'] },
+          collected: { key: 'collected', operations: ['sync'] },
+        })},
+        ${db.json({})}, ${orgId}, 'active', NOW(), NOW())
       ON CONFLICT DO NOTHING
     `;
     await db`
       INSERT INTO connector_versions (connector_key, version, compiled_code, source_path, created_at)
-      VALUES ('postgres', '1.0.0', NULL, NULL, NOW())
+      VALUES ('postgres', '1.0.1', NULL, NULL, NOW())
       ON CONFLICT DO NOTHING
     `;
 
@@ -94,20 +99,19 @@ describe('explicit feed source reads', () => {
     const publicConnectionId = await createConnection('explicit-public', 'org');
     const privateConnectionId = await createConnection('explicit-private', 'private');
 
-    const createFeed = async (connectionId: number, feedKey: string, virtual: boolean) => {
+    const createFeed = async (connectionId: number, feedKey: string) => {
       const [row] = await db`
         INSERT INTO feeds
-          (organization_id, connection_id, feed_key, display_name, status, kind, virtual, config, created_at, updated_at)
+          (organization_id, connection_id, feed_key, display_name, status, config, created_at, updated_at)
         VALUES (${orgId}, ${connectionId}, ${feedKey}, ${feedKey}, 'active',
-          ${virtual ? 'virtual' : 'collected'}, ${virtual},
           ${db.json({ query: SOURCE_SQL, primary_key: 'id', cursor_column: 'id' })}, NOW(), NOW())
         RETURNING id
       `;
       return Number((row as { id: number }).id);
     };
-    publicFeedId = await createFeed(publicConnectionId, 'public-source', true);
-    privateFeedId = await createFeed(privateConnectionId, 'private-source', true);
-    collectedFeedId = await createFeed(publicConnectionId, 'collected', false);
+    publicFeedId = await createFeed(publicConnectionId, 'query');
+    privateFeedId = await createFeed(privateConnectionId, 'query');
+    collectedFeedId = await createFeed(publicConnectionId, 'collected');
   }, 120_000);
 
   afterAll(async () => {
@@ -135,7 +139,11 @@ describe('explicit feed source reads', () => {
       {},
       ownerCtx
     );
-    expect(result).toMatchObject({ action: 'read_feed', kind: 'virtual' });
+    expect(result).toMatchObject({
+      action: 'read_feed',
+      feed: { operations: ['sync', 'read'], store: 'events' },
+    });
+    expect(result).not.toHaveProperty('kind');
     expect(result).toHaveProperty('recent_runs');
     expect(result).not.toHaveProperty('rows');
   });
@@ -174,9 +182,12 @@ describe('explicit feed source reads', () => {
     });
   }, 60_000);
 
-  it('supports per-feed query and opaque query-bound pagination cursors', async () => {
+  it('supports source-native sort and opaque request-bound pagination cursors', async () => {
     const first = await manageFeeds(
-      { action: 'read_feeds', reads: [{ feed_id: publicFeedId, query: 'ap', limit: 1 }] },
+      {
+        action: 'read_feeds',
+        reads: [{ feed_id: publicFeedId, query: 'ap', limit: 1, sort: { column: 'id', order: 'asc' } }],
+      },
       {},
       ownerCtx
     );
@@ -194,6 +205,7 @@ describe('explicit feed source reads', () => {
             query: 'ap',
             limit: 1,
             cursor: firstRead.next_cursor,
+            sort: { column: 'id', order: 'asc' },
           },
         ],
       },
@@ -216,6 +228,24 @@ describe('explicit feed source reads', () => {
     );
     if (mismatched.action !== 'read_feeds') throw new Error('expected read_feeds result');
     expect(mismatched.results[0]).toMatchObject({ ok: false, error_code: 'VALIDATION' });
+
+    const mismatchedSort = await manageFeeds(
+      {
+        action: 'read_feeds',
+        reads: [
+          {
+            feed_id: publicFeedId,
+            query: 'ap',
+            cursor: firstRead.next_cursor,
+            sort: { column: 'id', order: 'desc' },
+          },
+        ],
+      },
+      {},
+      ownerCtx
+    );
+    if (mismatchedSort.action !== 'read_feeds') throw new Error('expected read_feeds result');
+    expect(mismatchedSort.results[0]).toMatchObject({ ok: false, error_code: 'VALIDATION' });
   }, 60_000);
 
   it('keeps each explicit source read visibility-fenced', async () => {

@@ -38,6 +38,7 @@ async function seedFeed(opts: { orgScopedDefinition: boolean }) {
   await createTestConnectorDefinition({
     key: 'rss',
     name: 'RSS',
+    feeds_schema: { items: {} },
     // The switch under test. Org-scoped resolves and the run queues; global-only
     // is invisible to resolveActiveConnectorVersion, which retires the feed as
     // an orphan and declines — the case that used to report "already pending".
@@ -46,7 +47,7 @@ async function seedFeed(opts: { orgScopedDefinition: boolean }) {
   const conn = await createTestConnection({
     organization_id: org.id,
     connector_key: 'rss',
-    slug: `rss-skip-${opts.orgScopedDefinition ? 'ok' : 'orphan'}`,
+    slug: `rss-skip-${opts.orgScopedDefinition ? "ok" : "orphan"}`,
   });
 
   const feed = (await sql`
@@ -71,7 +72,7 @@ describe('trigger_feed skip reasons', () => {
     const res = (await manageFeeds(
       { action: 'trigger_feed', feed_id: feedId },
       {} as Env,
-      ctx
+      ctx,
     )) as { action?: string; message?: string; triggered?: boolean };
 
     expect(res.triggered).toBeUndefined();
@@ -88,7 +89,7 @@ describe('trigger_feed skip reasons', () => {
     const first = (await manageFeeds(
       { action: 'trigger_feed', feed_id: feedId },
       {} as Env,
-      ctx
+      ctx,
     )) as { triggered?: boolean; run_id?: number };
     expect(first.triggered).toBe(true);
 
@@ -97,7 +98,7 @@ describe('trigger_feed skip reasons', () => {
     const second = (await manageFeeds(
       { action: 'trigger_feed', feed_id: feedId },
       {} as Env,
-      ctx
+      ctx,
     )) as { message?: string; triggered?: boolean };
 
     expect(second.triggered).toBeUndefined();

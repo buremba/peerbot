@@ -51,10 +51,10 @@ async function seedAclFailedConnection(opts: {
 	// fail-closed ACL state may.
 	await sql`
     INSERT INTO feeds (
-      organization_id, connection_id, feed_key, status, kind, virtual,
+      organization_id, connection_id, feed_key, status,
       last_sync_status, last_sync_at, consecutive_failures, created_at, updated_at
     ) VALUES (
-      ${opts.orgId}, ${conn.id}, 'ok', 'active', 'collected', false,
+      ${opts.orgId}, ${conn.id}, 'ok', 'active',
       'success', now(), 0, now(), now()
     )
   `;
@@ -435,10 +435,10 @@ describe("acl observability", () => {
       `;
 			await sql`
         INSERT INTO feeds (
-          organization_id, connection_id, feed_key, status, kind, virtual,
+          organization_id, connection_id, feed_key, status,
           last_sync_status, last_sync_at, consecutive_failures, created_at, updated_at
         ) VALUES (
-          ${org.id}, ${data.id}, 'ok', 'active', 'collected', false,
+          ${org.id}, ${data.id}, 'ok', 'active',
           'success', now(), 0, now(), now()
         )
       `;

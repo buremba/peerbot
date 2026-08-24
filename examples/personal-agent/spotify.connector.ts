@@ -6,7 +6,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type HttpClient,
@@ -142,7 +142,7 @@ function albumArt(images: SpotifyImage[]): string | undefined {
 // ---------------------------------------------------------------------------
 
 export default class SpotifyConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "spotify",
     name: "Spotify",
     description:
@@ -179,6 +179,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
     },
     feeds: {
       saved_tracks: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "saved_tracks",
         name: "Saved Tracks",
         description: "Your liked/saved tracks on Spotify.",
@@ -203,6 +204,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
         },
       },
       playlists: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "playlists",
         name: "Playlists",
         description: "Your playlists and their tracks.",
@@ -238,6 +240,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
         },
       },
       recently_played: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "recently_played",
         name: "Recently Played",
         description: "Your recently played tracks.",
@@ -260,6 +263,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
         },
       },
       top_tracks: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "top_tracks",
         name: "Top Tracks",
         description: "Your top tracks by listening frequency.",
@@ -304,7 +308,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const http = requireBearerClient(ctx.credentials, {
       errorPrefix: "Spotify API",
       label: "Spotify",

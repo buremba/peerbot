@@ -77,8 +77,19 @@ const FeedSourceRead = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        "Opaque continuation cursor returned by a previous read of this feed/query.",
+        "Opaque continuation cursor returned by a previous read of this feed/query/sort.",
     })
+  ),
+  sort: Type.Optional(
+    Type.Object(
+      {
+        column: Type.String({ minLength: 1 }),
+        order: Type.Union([Type.Literal("asc"), Type.Literal("desc")]),
+      },
+      {
+        description: "Source-native sort pushed into the connector.",
+      }
+    )
   ),
 });
 
@@ -135,12 +146,6 @@ export const CreateFeedAction = Type.Object({
       maxLength: 64,
       description:
         "IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).",
-    })
-  ),
-  virtual: Type.Optional(
-    Type.Boolean({
-      description:
-        "When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow with the per-feed query in feeds.readMany.",
     })
   ),
 });
@@ -230,7 +235,6 @@ export const ManageFeedsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("read_feed"),
-    kind: Type.String(),
     feed: Type.Record(Type.String(), Type.Unknown()),
     recent_runs: Type.Array(Type.Record(Type.String(), Type.Unknown())),
   }),

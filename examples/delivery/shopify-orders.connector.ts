@@ -7,10 +7,10 @@ export default class ShopifyOrdersConnector extends ConnectorRuntime {
     name: "Shopify orders",
     version: "1.0.0",
     authSchema: { methods: [{ type: "env_keys" as const, fields: [{ key: "access_token", secret: true }] }] },
-    feeds: { orders: { key: "orders", name: "Order updates" } },
+    feeds: { orders: { key: "orders", name: "Order updates", sync: (ctx: SyncContext) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext) {
+  private async syncFeed(ctx: SyncContext) {
     const since = (ctx.checkpoint as any)?.updated_at_min ?? "2000-01-01T00:00:00Z";
     const r = await fetch(`https://${ctx.config.shop}/admin/api/2024-10/orders.json?status=any&updated_at_min=${encodeURIComponent(since)}&limit=100`);
     const orders: any[] = ((await r.json() as any).orders ?? []).sort((a: any, b: any) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());

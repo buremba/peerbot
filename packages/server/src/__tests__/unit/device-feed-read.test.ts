@@ -1,5 +1,5 @@
 /**
- * Pure helpers of the device-backed virtual-feed seam.
+ * Pure helpers of the device-backed feed source-read seam.
  *
  * These are the parts that decide what a caller GETS, with no database in the
  * way: the row-window clamp (a live read must never become an unbounded scan on
@@ -10,23 +10,23 @@
 
 import { describe, expect, it } from 'bun:test';
 import {
-  DEVICE_VIRTUAL_FEED_DEFAULT_LIMIT,
-  DEVICE_VIRTUAL_FEED_MAX_LIMIT,
-  DEVICE_VIRTUAL_FEED_MAX_OFFSET,
-  clampDeviceVirtualFeedWindow,
+  DEVICE_FEED_READ_DEFAULT_LIMIT,
+  DEVICE_FEED_READ_MAX_LIMIT,
+  DEVICE_FEED_READ_MAX_OFFSET,
+  clampDeviceFeedReadWindow,
   deliver,
   isMetadataOnlyDeviceConnector,
-  normalizeDeviceVirtualFeedOutput,
-} from '../../lib/device-virtual-feed';
-import { DEVICE_VIRTUAL_FEED_ACTION_KEY } from '../../lib/device-virtual-feed-protocol';
+  normalizeDeviceFeedReadOutput,
+} from '../../lib/device-feed-read';
+import { DEVICE_FEED_READ_ACTION_KEY } from '../../lib/device-feed-read-protocol';
 import {
   RESERVED_ACTION_KEY_PREFIX,
   validateDeviceConnectorManifests,
 } from '../../worker-api/device-manifests';
 
-describe('device virtual feed — reserved action key', () => {
+describe('device feed read — reserved action key', () => {
   it('lives in the gateway-reserved namespace so a manifest can never claim it', () => {
-    expect(DEVICE_VIRTUAL_FEED_ACTION_KEY.startsWith(RESERVED_ACTION_KEY_PREFIX)).toBe(true);
+    expect(DEVICE_FEED_READ_ACTION_KEY.startsWith(RESERVED_ACTION_KEY_PREFIX)).toBe(true);
   });
 
   // The collision this closes: the gateway dispatches the reserved key itself,
@@ -44,7 +44,7 @@ describe('device virtual feed — reserved action key', () => {
           name: 'Impostor',
           required_capability: 'whatsapp_local',
           runtime: { platforms: ['macos'] },
-          actions_schema: { [DEVICE_VIRTUAL_FEED_ACTION_KEY]: { key: DEVICE_VIRTUAL_FEED_ACTION_KEY } },
+          actions_schema: { [DEVICE_FEED_READ_ACTION_KEY]: { key: DEVICE_FEED_READ_ACTION_KEY } },
         },
       ],
     });
@@ -80,12 +80,11 @@ describe('WhatsApp Browser manifest compatibility', () => {
     required_capability: 'browser.scripting',
     runtime: { platforms: ['chrome-extension'] },
     feeds_schema: {
-      messages: { key: 'messages', name: 'Messages' },
-      messages_live: { key: 'messages_live', name: 'Messages (live)', virtual: true },
+      messages: { key: 'messages', name: 'Messages', operations: ['sync', 'read'] },
     },
   };
 
-  it('accepts the legacy whatsapp.local key from Chrome with browser.scripting', () => {
+  it('accepts whatsapp.local from Chrome with browser.scripting', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',
       capabilities: ['browser.scripting'],
@@ -120,11 +119,11 @@ describe('WhatsApp Browser manifest compatibility', () => {
   });
 });
 
-describe('device virtual feed — outcome mapping', () => {
+describe('device feed read — outcome mapping', () => {
   const params = {
     organizationId: 'org-1',
     feedId: 7,
-    feedKey: 'messages_live',
+    feedKey: 'messages',
     feedConfig: {},
     connectionId: 3,
     connectorKey: 'whatsapp.local',
@@ -141,7 +140,7 @@ describe('device virtual feed — outcome mapping', () => {
   it('names the feed and the device in a failure', () => {
     expect(() =>
       deliver(params, { status: 'failed', error_message: 'Full Disk Access denied' })
-    ).toThrow(/feed 'messages_live' failed on the paired device: Full Disk Access denied/);
+    ).toThrow(/feed 'messages' failed on the paired device: Full Disk Access denied/);
   });
 
   // Only reachable in production after the full 60s queue budget, so it is
@@ -154,7 +153,7 @@ describe('device virtual feed — outcome mapping', () => {
   });
 });
 
-describe('device virtual feed — connector routing', () => {
+describe('device feed read — connector routing', () => {
   it('routes a METADATA-ONLY native connector to the device', () => {
     expect(isMetadataOnlyDeviceConnector({ platforms: ['macos'] }, false)).toBe(true);
   });
@@ -166,7 +165,7 @@ describe('device virtual feed — connector routing', () => {
 
   // `runtime` is descriptive metadata (platforms, nix inputs), not a durable
   // "device-only" claim. A connector that carries it AND ships a bundle has a
-  // real `query()`/`search()` on the server, which is a strictly better read
+  // real `read()` on the server, which is a strictly better read
   // path than a device round-trip — routing it to a device would demote it and
   // fail outright wherever no device is paired.
   it('keeps a COMPILED connector on the pushdown even when it declares a runtime', () => {
@@ -175,38 +174,38 @@ describe('device virtual feed — connector routing', () => {
   });
 });
 
-describe('device virtual feed — row window', () => {
+describe('device feed read — row window', () => {
   it('defaults when the caller names no window', () => {
-    expect(clampDeviceVirtualFeedWindow(undefined, undefined)).toEqual({
-      limit: DEVICE_VIRTUAL_FEED_DEFAULT_LIMIT,
+    expect(clampDeviceFeedReadWindow(undefined, undefined)).toEqual({
+      limit: DEVICE_FEED_READ_DEFAULT_LIMIT,
       offset: 0,
     });
   });
 
   it('caps limit AND offset — an unbounded offset is a full archive scan per request', () => {
-    expect(clampDeviceVirtualFeedWindow(10_000, 10_000_000)).toEqual({
-      limit: DEVICE_VIRTUAL_FEED_MAX_LIMIT,
-      offset: DEVICE_VIRTUAL_FEED_MAX_OFFSET,
+    expect(clampDeviceFeedReadWindow(10_000, 10_000_000)).toEqual({
+      limit: DEVICE_FEED_READ_MAX_LIMIT,
+      offset: DEVICE_FEED_READ_MAX_OFFSET,
     });
   });
 
   it('floors a nonsensical window instead of passing it through', () => {
-    expect(clampDeviceVirtualFeedWindow(0, -5)).toEqual({ limit: 1, offset: 0 });
-    expect(clampDeviceVirtualFeedWindow(Number.NaN, Number.NaN)).toEqual({
-      limit: DEVICE_VIRTUAL_FEED_DEFAULT_LIMIT,
+    expect(clampDeviceFeedReadWindow(0, -5)).toEqual({ limit: 1, offset: 0 });
+    expect(clampDeviceFeedReadWindow(Number.NaN, Number.NaN)).toEqual({
+      limit: DEVICE_FEED_READ_DEFAULT_LIMIT,
       offset: 0,
     });
   });
 
   it('truncates a fractional window rather than sending a float to the device', () => {
-    expect(clampDeviceVirtualFeedWindow(10.9, 3.7)).toEqual({ limit: 10, offset: 3 });
+    expect(clampDeviceFeedReadWindow(10.9, 3.7)).toEqual({ limit: 10, offset: 3 });
   });
 });
 
-describe('device virtual feed — device reply normalization', () => {
+describe('device feed read — device reply normalization', () => {
   it('passes through rows, columns and total', () => {
     expect(
-      normalizeDeviceVirtualFeedOutput({
+      normalizeDeviceFeedReadOutput({
         rows: [{ id: 'wa-1', text: 'hi' }],
         columns: [{ name: 'id', type: 'text' }],
         total: 42,
@@ -219,19 +218,19 @@ describe('device virtual feed — device reply normalization', () => {
   });
 
   it('defaults a column with no declared type instead of dropping the column', () => {
-    expect(normalizeDeviceVirtualFeedOutput({ rows: [], columns: [{ name: 'id' }] }).columns).toEqual(
+    expect(normalizeDeviceFeedReadOutput({ rows: [], columns: [{ name: 'id' }] }).columns).toEqual(
       [{ name: 'id', type: 'text' }]
     );
   });
 
   it('drops a column entry that names nothing', () => {
     expect(
-      normalizeDeviceVirtualFeedOutput({ rows: [], columns: [{ type: 'text' }, 'nope', null] }).columns
+      normalizeDeviceFeedReadOutput({ rows: [], columns: [{ type: 'text' }, 'nope', null] }).columns
     ).toEqual([]);
   });
 
   it('omits a non-numeric total rather than coercing it', () => {
-    expect(normalizeDeviceVirtualFeedOutput({ rows: [], total: 'lots' }).total).toBeUndefined();
+    expect(normalizeDeviceFeedReadOutput({ rows: [], total: 'lots' }).total).toBeUndefined();
   });
 
   // The failure this prevents: a device that replies `{}` or `{rows: null}`
@@ -246,6 +245,6 @@ describe('device virtual feed — device reply normalization', () => {
     ['an object whose rows is not an array', { rows: 'nope' }],
     ['an object with a non-object row', { rows: [{ id: 1 }, 'nope'] }],
   ])('throws on %s instead of reporting an empty result', (_label, output) => {
-    expect(() => normalizeDeviceVirtualFeedOutput(output)).toThrow(/malformed/);
+    expect(() => normalizeDeviceFeedReadOutput(output)).toThrow(/malformed/);
   });
 });

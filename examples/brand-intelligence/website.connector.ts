@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import TurndownService from "turndown";
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   launchBrowser,
@@ -54,7 +54,7 @@ function shouldSkipCookieBannerText(text: string): boolean {
 }
 
 export default class WebsiteConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "website",
     name: "Website",
     description:
@@ -66,6 +66,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
     },
     feeds: {
       pages: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "pages",
         name: "Web Pages",
         description: "Scrape and parse web pages into structured content.",
@@ -150,7 +151,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
     });
   }
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const sitemapUrl = ctx.config.sitemap_url as string | undefined;
     const explicitUrls = ctx.config.urls as string[] | undefined;
     const maxPages = (ctx.config.max_pages as number) ?? 20;

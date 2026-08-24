@@ -111,8 +111,7 @@ async function seedFeed(opts: {
   connectionId: number;
   feedKey: string;
   status?: string;
-  /** 'collected' (default) | 'streaming' | 'virtual'. */
-  kind?: string;
+  store?: 'events' | 'channel_messages';
   lastSyncStatus?: string | null;
   lastSyncAt?: Date | null;
   consecutiveFailures?: number;
@@ -120,15 +119,14 @@ async function seedFeed(opts: {
   deletedAt?: Date | null;
 }): Promise<void> {
   const sql = getTestDb();
-  const kind = opts.kind ?? 'collected';
   await sql`
     INSERT INTO feeds (
-      organization_id, connection_id, feed_key, status, kind, virtual,
+      organization_id, connection_id, feed_key, status, config,
       last_sync_status, last_sync_at, consecutive_failures, last_error,
       deleted_at, created_at, updated_at
     ) VALUES (
       ${opts.orgId}, ${opts.connectionId}, ${opts.feedKey},
-      ${opts.status ?? 'active'}, ${kind}, ${kind === 'virtual'},
+      ${opts.status ?? 'active'}, ${sql.json({ store: opts.store ?? 'events' })},
       ${opts.lastSyncStatus ?? null}, ${opts.lastSyncAt ?? null},
       ${opts.consecutiveFailures ?? 0}, ${opts.lastError ?? null},
       ${opts.deletedAt ?? null}, NOW(), NOW()
@@ -152,11 +150,56 @@ describe('connector-health alerter', () => {
     const user = await createTestUser({ email: 'health-owner@test.com' });
     userId = user.id;
 
+    const syncFeeds = (keys: string[]) =>
+      Object.fromEntries(keys.map((key) => [key, { key, operations: ['sync'] }]));
+    const definitions = [
+      { key: 'revolut', feeds: syncFeeds(['a', 'b', 'deleted-ok']) },
+      {
+        key: 'linkedin',
+        feeds: syncFeeds([
+          'posts',
+          'gone',
+          ...Array.from({ length: 10 }, (_, index) => `dead-${index}`),
+          'home_feed',
+        ]),
+      },
+      { key: 'github', feeds: syncFeeds(['a', 'b']) },
+      { key: 'gmail', feeds: syncFeeds(['a']) },
+      {
+        key: 'notion',
+        feeds: syncFeeds([
+          ...Array.from({ length: 8 }, (_, index) => `off-${index}`),
+          'on-a', 'on-b', 'broken-a', 'broken-b', 'broken-c',
+          'bad', 'good', 'bad-a', 'bad-b', 'a', 'b',
+        ]),
+      },
+      { key: 'apple.reminders', feeds: syncFeeds(['reminders', 'a']) },
+      { key: 'apple.photos', feeds: syncFeeds(['photos']) },
+      { key: 'spotify', feeds: syncFeeds(['a']) },
+    ];
+    for (const definition of definitions) {
+      await createTestConnectorDefinition({
+        key: definition.key,
+        name: definition.key,
+        organization_id: orgId,
+        feeds_schema: definition.feeds,
+      });
+    }
     await createTestConnectorDefinition({
-      key: 'linkedin',
-      name: 'LinkedIn',
+      key: 'slack',
+      name: 'Slack',
       organization_id: orgId,
-      feeds_schema: { posts: {} },
+      feeds_schema: {
+        '#general': { key: '#general', operations: [] },
+        '#random': { key: '#random', operations: [] },
+        files: { key: 'files', operations: ['sync'] },
+      },
+    });
+    await createTestConnectorDefinition({
+      key: 'postgres',
+      name: 'Postgres',
+      organization_id: orgId,
+      feeds_schema: { live_query: { key: 'live_query', operations: ['read'] } },
     });
     await createTestConnectorDefinition({
       key: 'market.quotes',
@@ -165,16 +208,16 @@ describe('connector-health alerter', () => {
       feeds_schema: {},
     });
     await createTestConnectorDefinition({
-      key: 'health.virtual-only',
-      name: 'Virtual-only Health Fixture',
+      key: 'health.source-only',
+      name: 'Source-only Health Fixture',
       organization_id: orgId,
-      feeds_schema: { live_query: { virtual: true } },
+      feeds_schema: { live_query: { key: 'live_query', operations: ['read'] } },
     });
     await createTestConnectorDefinition({
       key: 'health.user-managed-only',
       name: 'User-managed Health Fixture',
       organization_id: orgId,
-      feeds_schema: { folder: { userManaged: true } },
+      feeds_schema: { folder: { key: 'folder', operations: ['sync'], userManaged: true } },
     });
 
     // 1. all-feeds-failing: two feeds, both last_sync_status='failed'.
@@ -711,7 +754,7 @@ describe('connector-health alerter', () => {
   // ONLY syncing feed was dead reported healthy: 1 failing of 3 is neither
   // "all feeds" nor past the degraded ratio. The channels are not capabilities
   // that can fail — they must not dilute the ones that can.
-  it('excludes streaming feeds from the expected set', async () => {
+  it('excludes channel-message feeds from the expected set', async () => {
     const mixed = await seedConnection({
       orgId,
       userId,
@@ -724,7 +767,7 @@ describe('connector-health alerter', () => {
         orgId,
         connectionId: mixed.id,
         feedKey: key,
-        kind: 'streaming',
+        store: 'channel_messages',
         lastSyncStatus: null,
         lastSyncAt: null,
         consecutiveFailures: 0,
@@ -735,7 +778,6 @@ describe('connector-health alerter', () => {
       orgId,
       connectionId: mixed.id,
       feedKey: 'files',
-      kind: 'collected',
       lastSyncStatus: 'failed',
       lastSyncAt: new Date(),
       consecutiveFailures: cfg.failureThreshold,
@@ -753,33 +795,31 @@ describe('connector-health alerter', () => {
     expect(detail?.lastError).toBe('worker_claim_timeout');
   });
 
-  // The mirror: a virtual feed is evaluated live at request time and never
-  // syncs, so its ancient `last_sync_at` is not evidence that anything stopped
-  // collecting. Rule C used to read it and flag the connection.
-  it('does not flag a connection whose only feed is virtual', async () => {
+  // A read-only feed never syncs, so its ancient `last_sync_at` is not evidence
+  // that collection stopped. Rule C must ignore it.
+  it('does not flag a connection whose only feed is source-readable', async () => {
     const sql = getTestDb();
-    const virtualOnly = await seedConnection({
+    const sourceOnly = await seedConnection({
       orgId,
       userId,
       connectorKey: 'postgres',
-      slug: 'virtual-only',
+      slug: 'source-only',
       createdAt: OLD,
     });
     await seedFeed({
       orgId,
-      connectionId: virtualOnly.id,
+      connectionId: sourceOnly.id,
       feedKey: 'live_query',
-      kind: 'virtual',
       lastSyncStatus: 'success',
       lastSyncAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
       consecutiveFailures: 0,
     });
 
     const res = await runConnectorHealthCheck();
-    expect(res.details.some((d) => d.connectionId === virtualOnly.id)).toBe(false);
+    expect(res.details.some((d) => d.connectionId === sourceOnly.id)).toBe(false);
 
     const [row] = (await sql`
-      SELECT unhealthy_alerted_at FROM connections WHERE id = ${virtualOnly.id}
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${sourceOnly.id}
     `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
     expect(row.unhealthy_alerted_at).toBeNull();
   });
@@ -816,11 +856,11 @@ describe('connector-health alerter', () => {
       slug: 'operation-only',
       createdAt: OLD,
     });
-    const virtualOnly = await seedConnection({
+    const sourceOnly = await seedConnection({
       orgId,
       userId,
-      connectorKey: 'health.virtual-only',
-      slug: 'definition-virtual-only',
+      connectorKey: 'health.source-only',
+      slug: 'definition-source-only',
       createdAt: OLD,
     });
     const userManagedOnly = await seedConnection({
@@ -833,7 +873,7 @@ describe('connector-health alerter', () => {
     await sql`
       UPDATE connections
       SET unhealthy_alerted_at = NOW()
-      WHERE id IN (${operationOnly.id}, ${virtualOnly.id}, ${userManagedOnly.id})
+      WHERE id IN (${operationOnly.id}, ${sourceOnly.id}, ${userManagedOnly.id})
     `;
 
     const res = await runConnectorHealthCheck();
@@ -841,7 +881,7 @@ describe('connector-health alerter', () => {
       res.details.some(
         (detail) =>
           detail.connectionId === operationOnly.id ||
-          detail.connectionId === virtualOnly.id ||
+          detail.connectionId === sourceOnly.id ||
           detail.connectionId === userManagedOnly.id,
       ),
     ).toBe(false);
@@ -849,7 +889,7 @@ describe('connector-health alerter', () => {
     const rows = (await sql`
       SELECT id, unhealthy_alerted_at
       FROM connections
-      WHERE id IN (${operationOnly.id}, ${virtualOnly.id}, ${userManagedOnly.id})
+      WHERE id IN (${operationOnly.id}, ${sourceOnly.id}, ${userManagedOnly.id})
       ORDER BY id
     `) as unknown as Array<{ id: string; unhealthy_alerted_at: Date | null }>;
     expect(rows).toHaveLength(3);

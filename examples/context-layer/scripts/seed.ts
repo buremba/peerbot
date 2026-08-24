@@ -2,7 +2,7 @@
  * Seed the CONTEXT LAYER itself — the org data that explains the warehouse:
  *
  *  1. (declared in lobu.config.ts, not here) A `postgres` connection to the
- *     Kelder warehouse (env auth profile) and a VIRTUAL feed on it: the monthly
+ *     Kelder warehouse (env auth profile) and a source-readable feed on it: the monthly
  *     churn rollup, read LIVE at request time through the connector pushdown.
  *     Nothing is copied into Lobu. `lobu run` creates both.
  *  2. The `churn_rate` metric-definition entity, with its definition history
@@ -42,7 +42,7 @@ if ((existing.entities ?? []).length > 0) {
 }
 
 // ── 1. Metric definition entity + versioned definition chain ───────────────
-// (The warehouse connection + its VIRTUAL churn-rollup feed are declared in
+// (The warehouse connection + its source-readable churn-rollup feed are declared in
 // lobu.config.ts and created by `lobu run` — see the file header.)
 const metricRes = await callTool<{ entity?: { id?: number } }>(
   gw,

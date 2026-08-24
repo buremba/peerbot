@@ -16,7 +16,7 @@ export const WAREHOUSE_URL =
  *  `lobu run`. `query_sql`/`compose.ts` push governed SQL down through it. */
 export const WAREHOUSE_CONNECTION_SLUG = "kelder-warehouse";
 
-/** The one governed rollup — the virtual feed's live query AND the pinned
+/** The one governed rollup — the feed's live query AND the pinned
  *  verified query are this exact SQL. */
 export const CHURN_ROLLUP_SQL = `SELECT to_char(date_trunc('month', cancelled_at), 'YYYY-MM') AS month,
        count(*)::int AS cancellations

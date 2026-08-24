@@ -1,5 +1,5 @@
 /**
- * A streaming (chat) feed must not outlive its connection.
+ * A channel-message feed must not outlive its connection.
  *
  * The trigger tests exercise the wiring installed by the migration through a
  * real connection tombstone. The backfill test replays the shipped migration
@@ -27,7 +27,7 @@ const CHANNEL = "slack:D_RETIRE";
 async function runMigrationUp(): Promise<void> {
   const sql = await readFile(
     new URL(
-      "../../../../../../db/migrations/20260723190000_retire_streaming_feeds_on_connection_delete.sql",
+      "../../../../../../db/migrations/20260824120000_channel_feed_storage_guard.sql",
       import.meta.url,
     ),
     "utf8",
@@ -60,15 +60,15 @@ async function insertConnection(opts: {
 async function insertFeed(
   connectionId: number,
   feedKey: string,
-  kind = "streaming",
+  store: "channel_messages" | "events" = "channel_messages",
 ): Promise<number> {
   const rows = await getDb()`
     INSERT INTO feeds (
       organization_id, connection_id, feed_key, display_name,
-      status, kind, virtual, config
+      status, config
     ) VALUES (
       ${ORG}, ${connectionId}, ${feedKey}, ${feedKey},
-      'active', ${kind}, false, '{"store":"channel_messages"}'
+      'active', ${getDb().json({ store })}
     )
     RETURNING id
   `;
@@ -101,7 +101,7 @@ async function feedStatus(feedId: number): Promise<string | null> {
 async function reviveFeedWithoutGuard(feedId: number): Promise<void> {
   await getDb().begin(async (tx) => {
     await tx.unsafe(
-      "ALTER TABLE feeds DISABLE TRIGGER guard_streaming_feed_connection",
+		"ALTER TABLE feeds DISABLE TRIGGER guard_channel_feed_connection",
     );
     await tx`
       UPDATE feeds
@@ -109,12 +109,12 @@ async function reviveFeedWithoutGuard(feedId: number): Promise<void> {
       WHERE id = ${feedId}
     `;
     await tx.unsafe(
-      "ALTER TABLE feeds ENABLE TRIGGER guard_streaming_feed_connection",
+		"ALTER TABLE feeds ENABLE TRIGGER guard_channel_feed_connection",
     );
   });
 }
 
-describe("retiring streaming feeds with dead connections", () => {
+describe("retiring channel feeds with dead connections", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
   });
@@ -128,7 +128,7 @@ describe("retiring streaming feeds with dead connections", () => {
     await resetTestDatabase();
   });
 
-  test("tombstoning a connection retires only its streaming feeds", async () => {
+  test("tombstoning a connection retires only its channel-message feeds", async () => {
     const dying = await insertConnection({
       slug: "slackinst-dying",
       live: true,
@@ -141,7 +141,7 @@ describe("retiring streaming feeds with dead connections", () => {
       await insertFeed(dying, CHANNEL),
       await insertFeed(dying, "slack:C_OTHER"),
     ];
-    const collected = await insertFeed(dying, "reviews", "collected");
+    const eventFeed = await insertFeed(dying, "reviews", "events");
     const kept = await insertFeed(survivor, CHANNEL);
 
     await tombstoneConnection(dying);
@@ -150,40 +150,40 @@ describe("retiring streaming feeds with dead connections", () => {
       expect(await feedIsLive(feed)).toBe(false);
       expect(await feedStatus(feed)).toBe("paused");
     }
-    expect(await feedIsLive(collected)).toBe(true);
+    expect(await feedIsLive(eventFeed)).toBe(true);
     expect(await feedIsLive(kept)).toBe(true);
   });
 
-  test("retires a streaming feed written after its connection is tombstoned", async () => {
+  test("retires a channel feed written after its connection is tombstoned", async () => {
     const dead = await insertConnection({
       slug: "slackinst-late-feed",
       live: false,
     });
 
-    const streaming = await insertFeed(dead, CHANNEL);
-    const collected = await insertFeed(dead, "reviews", "collected");
+    const channelFeed = await insertFeed(dead, CHANNEL);
+    const eventFeed = await insertFeed(dead, "reviews", "events");
 
-    expect(await feedIsLive(streaming)).toBe(false);
-    expect(await feedStatus(streaming)).toBe("paused");
-    expect(await feedIsLive(collected)).toBe(true);
+    expect(await feedIsLive(channelFeed)).toBe(false);
+    expect(await feedStatus(channelFeed)).toBe("paused");
+    expect(await feedIsLive(eventFeed)).toBe(true);
   });
 
-  test("backfills live streaming feeds on already-tombstoned connections", async () => {
+  test("backfills live channel feeds on already-tombstoned connections", async () => {
     const dead = await insertConnection({
       slug: "slackinst-backfill",
       live: false,
     });
-    const streaming = await insertFeed(dead, CHANNEL);
-    const collected = await insertFeed(dead, "reviews", "collected");
-    await reviveFeedWithoutGuard(streaming);
-    expect(await feedIsLive(streaming)).toBe(true);
+    const channelFeed = await insertFeed(dead, CHANNEL);
+    const eventFeed = await insertFeed(dead, "reviews", "events");
+    await reviveFeedWithoutGuard(channelFeed);
+    expect(await feedIsLive(channelFeed)).toBe(true);
 
     await runMigrationUp();
     await runMigrationUp();
 
-    expect(await feedIsLive(streaming)).toBe(false);
-    expect(await feedStatus(streaming)).toBe("paused");
-    expect(await feedIsLive(collected)).toBe(true);
-    expect(await feedStatus(collected)).toBe("active");
+    expect(await feedIsLive(channelFeed)).toBe(false);
+    expect(await feedStatus(channelFeed)).toBe("paused");
+    expect(await feedIsLive(eventFeed)).toBe(true);
+    expect(await feedStatus(eventFeed)).toBe("active");
   });
 });

@@ -6,7 +6,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   createHttpClient,
@@ -185,7 +185,7 @@ interface GooglePlayCheckpoint {
 }
 
 export default class GooglePlayConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "google_play",
     name: "Google Play Store",
     description: "Fetches app reviews from the Google Play Store.",
@@ -196,6 +196,7 @@ export default class GooglePlayConnector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "App Reviews",
         description: "Fetch reviews for an Android app.",
@@ -250,7 +251,7 @@ export default class GooglePlayConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const app_id = ctx.config.app_id as string;
     const country = (ctx.config.country as string) || "us";
     const lang = (ctx.config.lang as string) || "en";

@@ -23,7 +23,7 @@ import {
   type ActionContext,
   type ActionResult,
   type ChromeActionDispatcher,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
@@ -239,7 +239,7 @@ export async function prepareHnComment(
 // ---------------------------------------------------------------------------
 
 export default class HackerNewsConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "hackernews",
     name: "Hacker News",
     description:
@@ -251,6 +251,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     },
     feeds: {
       stories: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "stories",
         name: "Stories",
         description: "Search HN for stories, Ask HN, and Show HN posts.",
@@ -333,6 +334,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
         },
       },
       front_page: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "front_page",
         name: "Front Page",
         description:
@@ -394,6 +396,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
         },
       },
       comments: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "comments",
         name: "Comments",
         description: "Search HN for comments.",
@@ -516,7 +519,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const isFrontPage = ctx.feedKey === "front_page";
     const searchQuery = ctx.config.search_query as string;
     const contentType =

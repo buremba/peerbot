@@ -602,7 +602,7 @@ export function createGatewayApp(
     }
 
     // Agent routes still use the Automation-backed channel projection for recall
-    // and streaming-feed materialization. Subscription configuration itself is
+    // and channel-feed materialization. Subscription configuration itself is
     // owned by manage_automations.
     {
       const userAgentsStore = coreServices.getUserAgentsStore();

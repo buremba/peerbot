@@ -2,8 +2,8 @@ import { createLogger, getErrorMessage } from "@lobu/core";
 import type { AutomationTrigger } from "@lobu/core/contracts/tools/manage-automations";
 import type { DbClient } from "../db/client";
 import {
-	resolveStreamingChannelFeedId,
-	softDeleteStreamingChannelFeed,
+	resolveChannelFeedId,
+	softDeleteChannelFeed,
 } from "../gateway/channels/channel-feed";
 
 const logger = createLogger("automation-channel-feeds");
@@ -40,7 +40,7 @@ function key(ref: ChannelSubscriptionRef): string {
 	return `${ref.connectionId}:${ref.channelKey}`;
 }
 
-/** Keep streaming-feed projections aligned with canonical Automation triggers. */
+/** Keep channel-feed projections aligned with canonical Automation triggers. */
 export async function syncAutomationChannelFeeds(args: {
 	organizationId: string;
 	before?: AutomationTrigger[];
@@ -54,7 +54,7 @@ export async function syncAutomationChannelFeeds(args: {
 
 	for (const ref of after) {
 		if (beforeKeys.has(key(ref))) continue;
-		await resolveStreamingChannelFeedId({
+		await resolveChannelFeedId({
 			connectionId: String(ref.connectionId),
 			organizationId: args.organizationId,
 			channelKey: ref.channelKey,
@@ -72,7 +72,7 @@ export async function syncAutomationChannelFeeds(args: {
 			LIMIT 1
 		`;
 		if (remaining.length > 0) continue;
-		await softDeleteStreamingChannelFeed({
+		await softDeleteChannelFeed({
 			connectionId: String(ref.connectionId),
 			channelKey: ref.channelKey,
 			sql: args.sql,
@@ -89,7 +89,7 @@ export async function syncAutomationChannelFeedsBestEffort(
 	} catch (error) {
 		logger.warn(
 			{ error: getErrorMessage(error) },
-			"Failed to reconcile derived streaming feeds",
+			"Failed to reconcile channel feeds",
 		);
 	}
 }

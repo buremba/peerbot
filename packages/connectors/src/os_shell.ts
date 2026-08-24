@@ -182,11 +182,6 @@ export default class OsShellConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(): Promise<{ events: []; checkpoint: null }> {
-    // No feeds - this connector only serves action runs.
-    return { events: [], checkpoint: null };
-  }
-
   async execute(ctx: ActionContext): Promise<ActionResult> {
     if (ctx.actionKey !== 'run') {
       return { success: false, error: `Unknown action '${ctx.actionKey}'` };

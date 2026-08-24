@@ -11,7 +11,8 @@
 
 Status: design / RFC. Builds on `authz-acl-permission-program.md` (the access-graph
 engine + fail-closed resource-visibility gate, already live for Slack + GitHub) and
-`feeds-and-connections-model.md`.
+the feeds/connections model now documented in
+[`../database-connectors.md`](../database-connectors.md).
 
 ## Problem
 

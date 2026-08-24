@@ -14,7 +14,7 @@
 import {
   type AuthContext,
   type AuthResult,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type SyncContext,
@@ -82,7 +82,7 @@ interface WhatsAppCheckpoint {
 // ---------------------------------------------------------------------------
 
 export default class WhatsAppConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "whatsapp.cloud",
     name: "WhatsApp (cloud)",
     description:
@@ -104,6 +104,7 @@ export default class WhatsAppConnector extends ConnectorRuntime {
     },
     feeds: {
       messages: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "messages",
         name: "Messages",
         description: "Personal WhatsApp messages from 1:1 and group chats.",
@@ -289,7 +290,7 @@ export default class WhatsAppConnector extends ConnectorRuntime {
     };
   }
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const session = (ctx.sessionState ?? {}) as SerializedSession;
     if (!session.creds) {
       throw new Error("WhatsApp auth profile missing — re-pair required.");

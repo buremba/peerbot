@@ -1,6 +1,6 @@
 import {
   type ChromeActionDispatcher,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type SyncContext,
@@ -524,7 +524,7 @@ async function notifyMidasAuthWall(
 }
 
 export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<MidasCheckpoint> = {
     key: "midas",
     name: "Midas",
     description:
@@ -536,6 +536,7 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
     },
     feeds: {
       assets: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "assets",
         name: "Midas Holdings",
         description:
@@ -575,7 +576,7 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
     optionsSchema: { type: "object", properties: {} },
   };
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<MidasCheckpoint>
   ): Promise<SyncResult<MidasCheckpoint>> {
     if (ctx.feedKey !== "assets") {

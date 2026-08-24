@@ -24,36 +24,9 @@ conclude "no integration exists" — author a custom connector in the project.
 
 ## The contract
 
-A connector is a default-exported class extending `ConnectorRuntime` from
-`@lobu/connector-sdk` — or the functional `defineConnector({ ... })` sugar,
-which lowers to the same class:
-
-```ts
-export default class MyConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
-    key: "my_connector",          // catalog id; feed/action keys come from the records below
-    name: "My Connector",
-    version: "1.0.0",
-    faviconDomain: "example.com",
-    authSchema: { methods: [{ type: "none" }] },
-    feeds: {
-      items: {
-        key: "items",
-        name: "Items",
-        eventKinds: { item: { description: "An item from the service" } },
-      },
-    },
-  };
-
-  async sync(ctx: SyncContext): Promise<SyncResult> {
-    const events: EventEnvelope[] = [];
-    return { events, checkpoint: { last_sync_at: new Date().toISOString() } };
-  }
-}
-```
-
-The functional `defineConnector` form derives feed/action keys from the record
-keys and dispatches each call to the handler declared on that entry:
+A connector default-exports `defineConnector({ ... })` from
+`@lobu/connector-sdk`. Feed and action keys come from their record keys, and
+each feed declares its own `sync` and/or `read` handler:
 
 ```ts
 import { defineConnector } from "@lobu/connector-sdk";
@@ -92,7 +65,7 @@ export default defineConnector({
 });
 ```
 
-Optional top-level handlers (`authenticate`, `query`, `search`,
+Optional top-level handlers (`authenticate`, `query`,
 `reflectMetrics`, `registerWebhook`, `unregisterWebhook`) dispatch through the
 corresponding `ConnectorRuntime` methods.
 

@@ -8,15 +8,14 @@
 import {
   type ActionContext,
   type ActionResult,
-  type ConnectorDefinition,
   ConnectorRuntime,
   createHttpClient,
   type EventEnvelope,
   type HttpClient,
   paginateByCursor,
-  type QueryContext,
-  type QueryResult,
-  type SearchContext,
+  type FeedReadContext,
+  type FeedReadResult,
+  type RuntimeConnectorDefinition,
   sleep,
   type SyncContext,
   type SyncResult,
@@ -68,6 +67,8 @@ interface GmailCheckpoint {
 }
 
 interface GmailConfig {
+  /** Gmail search scope shared by sync and direct source reads. */
+  query?: string;
   label?: string;
   /** Non-empty labels to union in the sync query. Overrides `label`. */
   labels?: string[];
@@ -82,7 +83,7 @@ interface GmailConfig {
   human_senders_only?: boolean;
 }
 
-/** Stable column set returned by live `query()`/`search()` pushdown reads. */
+/** Stable column set returned by direct source reads. */
 const GMAIL_SEARCH_COLUMNS = [
   { name: 'id', type: 'string' },
   { name: 'thread_id', type: 'string' },
@@ -100,7 +101,7 @@ const GMAIL_SEARCH_COLUMNS = [
 // ---------------------------------------------------------------------------
 
 export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, GmailConfig> {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<GmailCheckpoint, GmailConfig> = {
     key: 'google.gmail',
     name: 'Gmail',
     description:
@@ -138,17 +139,16 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         name: 'Threads',
         requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         description:
-          'Collected feeds sync Gmail threads; virtual feeds return live matching messages. Collected sync powers person attribution.',
-        // Collected remains the default: contact promotion + Automations need
-        // durable events. Virtual is fully supported when the caller sets
-        // virtual:true (query() / search() already implemented).
+          'Gmail threads can sync into memory for attribution and Automations, and be read directly from Gmail.',
+        sync: (ctx) => this.syncFeed(ctx),
+        read: (ctx) => this.readFeed(ctx),
         configSchema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
               description:
-                'Optional Gmail search scope for virtual-feed reads (platform config.query), e.g. "label:INBOX newer_than:30d".',
+                'Optional Gmail search scope for sync and source reads, e.g. "label:INBOX newer_than:30d".',
             },
             label: {
               type: 'string',
@@ -166,7 +166,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               minimum: 1,
               maximum: 500,
               default: 50,
-              description: 'Maximum threads per sync; maximum messages per virtual page.',
+              description: 'Maximum threads per sync or source-read page.',
             },
             lookback_days: {
               type: 'integer',
@@ -289,6 +289,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         key: 'create_draft',
         name: 'Create Draft',
         description: 'Create a draft email in Gmail.',
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['to', 'subject', 'body'],
@@ -329,6 +330,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
 		kind: 'read',
         name: 'Search Emails',
         description: 'Search emails by query.',
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['query'],
@@ -349,6 +351,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
 		kind: 'read',
         name: 'Get Thread',
         description: 'Read full thread content.',
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['thread_id'],
@@ -367,7 +370,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext<GmailCheckpoint, GmailConfig>): Promise<SyncResult<GmailCheckpoint>> {
     const syncStartedAt = new Date();
     const token = ctx.credentials?.accessToken;
     if (!token) {
@@ -563,93 +566,77 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   }
 
   // -------------------------------------------------------------------------
-  // Live pushdown (virtual feeds) — read-only, never persisted.
-  // `query()` runs the feed's configured Gmail search string; `search()` adds
-  // keyword `terms` as an AND predicate (Gmail's `q` is space-separated = AND).
-  // Both return the same row shape so a virtual `threads` feed is consistent
-  // whether read bare or with recall terms pushed down.
+  // Direct source read — read-only, never persisted.
   // -------------------------------------------------------------------------
-
-  async query(ctx: QueryContext<GmailConfig>): Promise<QueryResult> {
-    return this.liveSearch(ctx, ctx.query, []);
-  }
-
-  async search(ctx: SearchContext<GmailConfig>): Promise<QueryResult> {
-    return this.liveSearch(ctx, ctx.query, ctx.terms ?? []);
-  }
 
   /**
    * Shared live read: build a Gmail `q` from the base predicate plus optional
    * keyword terms, list matching messages, then fetch each message's metadata
    * (Subject/From/Date) + snippet. Returns rows + a stable column set.
    */
-  private async liveSearch(
-    ctx: QueryContext<GmailConfig>,
-    baseQuery: string,
-    terms: string[]
-  ): Promise<QueryResult> {
+  private async readFeed(ctx: FeedReadContext<GmailConfig>): Promise<FeedReadResult> {
     const token = ctx.credentials?.accessToken;
     if (!token) {
-      throw new Error('Gmail virtual-feed reads require Google OAuth credentials.');
+      throw new Error('Gmail source reads require Google OAuth credentials.');
     }
 
     // Gmail's `q` is space-separated = AND. Compose the feed's optional scope
     // (config.query) with the caller's terms as raw Gmail search syntax — each
-    // connector interprets search() terms; we do not escape operators here.
+    // feed read owns its query semantics; we do not escape Gmail operators here.
     // An empty string means no `q` filter — list the authenticated mailbox.
-    const parts = [baseQuery.trim(), ...terms.map((t) => t.trim())].filter(Boolean);
+    const parts = [ctx.config.query, ctx.query].map((part) => part?.trim()).filter(Boolean);
     const q = parts.join(' ');
 
     // Gmail search has no arbitrary sort — results are always reverse-chronological
     // (newest first). Reject a sort we can't honor rather than silently ignore it.
     if (ctx.sort && !(ctx.sort.column === 'date' && ctx.sort.order === 'desc')) {
       throw new Error(
-        `Gmail virtual feed only supports sort {column:'date', order:'desc'} (newest first); got ${JSON.stringify(ctx.sort)}.`
+        `Gmail source reads only support sort {column:'date', order:'desc'} (newest first); got ${JSON.stringify(ctx.sort)}.`
       );
     }
 
     const limit = Math.min(Math.max(Math.trunc(ctx.limit ?? ctx.config.max_results ?? 25), 1), 100);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
+    if (offset > 0) {
+      throw new Error('Gmail source reads paginate with the returned cursor, not an offset.');
+    }
 
-    // Apply offset by listing offset+limit ids then dropping the leading `offset`.
-    // Gmail's list endpoint has no offset param, only forward pagination.
     const http = this.createClient(token);
-    const ids = (await this.listMessageIds(http, q, offset + limit)).slice(offset, offset + limit);
-    const rows = await this.fetchMessageRows(http, ids);
+    const page = await this.listMessagePage(http, q, limit, ctx.cursor);
+    const rows = await this.fetchMessageRows(http, page.messages);
 
     // No `total`: Gmail's list endpoint returns no reliable match count, and
     // `resultSizeEstimate` is a coarse estimate — reporting the page length as a
     // total would be wrong. Callers page until a short page.
-    return { rows, columns: GMAIL_SEARCH_COLUMNS };
+    return {
+      rows,
+      columns: GMAIL_SEARCH_COLUMNS,
+      nextCursor: page.nextPageToken,
+      hasMore: Boolean(page.nextPageToken),
+    };
   }
 
-  private async listMessageIds(
+  private async listMessagePage(
     http: HttpClient,
     q: string,
-    want: number
-  ): Promise<Array<{ id: string; threadId: string }>> {
-    const out: Array<{ id: string; threadId: string }> = [];
-    let pageToken: string | undefined;
-    do {
-      const remaining = want - out.length;
-      if (remaining <= 0) break;
-      const params = new URLSearchParams({
-        maxResults: String(Math.min(100, remaining)),
-      });
-      if (q) params.set('q', q);
-      if (pageToken) params.set('pageToken', pageToken);
-      const res = await http.raw(`${this.BASE_URL}/messages?${params.toString()}`);
-      if (!res.ok) {
-        throw new Error(`Gmail messages.list error (${res.status}): ${await res.text()}`);
-      }
-      const data = (await res.json()) as {
-        messages?: Array<{ id: string; threadId: string }>;
-        nextPageToken?: string;
-      };
-      for (const m of data.messages ?? []) out.push({ id: m.id, threadId: m.threadId });
-      pageToken = data.nextPageToken;
-    } while (pageToken && out.length < want);
-    return out.slice(0, want);
+    limit: number,
+    pageToken?: string
+  ): Promise<{
+    messages: Array<{ id: string; threadId: string }>;
+    nextPageToken?: string;
+  }> {
+    const params = new URLSearchParams({ maxResults: String(Math.min(100, limit)) });
+    if (q) params.set('q', q);
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await http.raw(`${this.BASE_URL}/messages?${params.toString()}`);
+    if (!res.ok) {
+      throw new Error(`Gmail messages.list error (${res.status}): ${await res.text()}`);
+    }
+    const data = (await res.json()) as {
+      messages?: Array<{ id: string; threadId: string }>;
+      nextPageToken?: string;
+    };
+    return { messages: data.messages ?? [], nextPageToken: data.nextPageToken };
   }
 
   private async fetchMessageRows(

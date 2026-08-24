@@ -100,6 +100,7 @@ describe('GoogleCalendarConnector full sync', () => {
     connector.client = () => client;
 
     const result = await connector.sync({
+      feedKey: 'events',
       config: { calendar_id: 'primary', max_results: 100 },
       credentials: { accessToken: 'tok' },
       checkpoint: {},
@@ -119,6 +120,7 @@ describe('GoogleCalendarConnector full sync', () => {
     connector.client = () => client;
 
     const result = await connector.sync({
+      feedKey: 'events',
       config: { calendar_id: 'primary', max_results: 1 }, // cap at 1 stored event
       credentials: { accessToken: 'tok' },
       checkpoint: {},
@@ -194,6 +196,7 @@ describe('GoogleCalendarConnector event kind', () => {
     connector.client = () => client;
 
     const result = await connector.sync({
+      feedKey: 'events',
       config: { calendar_id: 'primary', max_results: 100 },
       credentials: { accessToken: 'tok' },
       checkpoint: {},
@@ -213,6 +216,7 @@ describe('GoogleCalendarConnector event kind', () => {
     connector.client = () => client;
 
     const result = await connector.sync({
+      feedKey: 'events',
       config: { calendar_id: 'primary', max_results: 100 },
       credentials: { accessToken: 'tok' },
       checkpoint: {},
@@ -237,6 +241,7 @@ describe('GoogleCalendarConnector poisoned sync token recovery', () => {
     connector.client = () => client;
 
     const result = await connector.sync({
+      feedKey: 'events',
       config: { calendar_id: 'primary', max_results: 100 },
       credentials: { accessToken: 'tok' },
       checkpoint: { sync_token: 'POISONED' },
@@ -271,6 +276,7 @@ describe('GoogleCalendarConnector poisoned sync token recovery', () => {
 
     await expect(
       connector.sync({
+        feedKey: 'events',
         config: { calendar_id: 'primary', max_results: 100 },
         credentials: { accessToken: 'tok' },
         checkpoint: { sync_token: 'POISONED' },
@@ -288,6 +294,7 @@ describe('GoogleCalendarConnector poisoned sync token recovery', () => {
 
     await expect(
       connector.sync({
+        feedKey: 'events',
         config: { calendar_id: 'primary', max_results: 100 },
         credentials: { accessToken: 'tok' },
         checkpoint: { sync_token: 'GOOD' },
@@ -331,6 +338,7 @@ describe('GoogleCalendarConnector incremental sync', () => {
     });
 
     const result = await connector.sync({
+      feedKey: 'events',
       config: { calendar_id: 'primary', max_results: 100 },
       credentials: { accessToken: 'tok' },
       checkpoint: { sync_token: 'STALE' },
@@ -344,16 +352,18 @@ describe('GoogleCalendarConnector incremental sync', () => {
   });
 });
 
-describe('GoogleCalendarConnector virtual events feed', () => {
-  test('events is virtual by default while changes remains collected', () => {
+describe('GoogleCalendarConnector source-readable events feed', () => {
+  test('events supports sync and read while changes supports sync only', () => {
     const connector = new GoogleCalendarConnector();
     expect(connector.definition.version).toBe('1.1.1');
-    expect(connector.definition.feeds.events.virtual).toBe(true);
-    expect(connector.definition.feeds.changes.virtual ?? false).toBe(false);
+    expect(typeof connector.definition.feeds.events.sync).toBe('function');
+    expect(typeof connector.definition.feeds.events.read).toBe('function');
+    expect(typeof connector.definition.feeds.changes.sync).toBe('function');
+    expect(connector.definition.feeds.changes.read).toBeUndefined();
     expect(Object.keys(connector.definition.feeds.changes.eventKinds)).toContain('calendar_event');
   });
 
-  test('query reads live state with Calendar-native time window, q, pagination and offset', async () => {
+  test('read uses Calendar-native time window, q, and continuation cursor', async () => {
     const connector = new GoogleCalendarConnector();
     const { client, calls, urls } = fakeHttp([
       {
@@ -367,7 +377,7 @@ describe('GoogleCalendarConnector virtual events feed', () => {
     ]);
     connector.client = () => client;
 
-    const result = await connector.query({
+    const firstPage = await connector.read({
       feedKey: 'events',
       query: 'project alpha',
       config: {
@@ -378,11 +388,27 @@ describe('GoogleCalendarConnector virtual events feed', () => {
       },
       credentials: { accessToken: 'tok' },
       limit: 2,
-      offset: 1,
       sort: { column: 'start_time', order: 'asc' },
     });
 
-    expect(result.rows.map((row: Record<string, unknown>) => row.id)).toEqual(['b', 'c']);
+    expect(firstPage.rows.map((row: Record<string, unknown>) => row.id)).toEqual(['a', 'b']);
+    expect(firstPage.nextCursor).toBe('p2');
+    const secondPage = await connector.read({
+      feedKey: 'events',
+      query: 'project alpha',
+      cursor: firstPage.nextCursor,
+      config: {
+        calendar_id: 'team@example.com',
+        lookback_days: 7,
+        lookahead_days: 14,
+        max_results: 10,
+      },
+      credentials: { accessToken: 'tok' },
+      limit: 2,
+      sort: { column: 'start_time', order: 'asc' },
+    });
+    expect(secondPage.rows.map((row: Record<string, unknown>) => row.id)).toEqual(['c']);
+    expect(secondPage.hasMore).toBe(false);
     expect(calls).toEqual([null, 'p2']);
     const first = new URL(urls[0]);
     expect(first.pathname).toContain('/calendars/team%40example.com/events');
@@ -393,14 +419,14 @@ describe('GoogleCalendarConnector virtual events feed', () => {
     expect(first.searchParams.get('timeMax')).toBeTruthy();
   });
 
-  test('search composes the stored feed query with recall terms', async () => {
+  test('read composes the stored feed query with the caller query', async () => {
     const connector = new GoogleCalendarConnector();
     const { client, urls } = fakeHttp([{ items: [calEvent('a', '2026-01-01T10:00:00Z')] }]);
     connector.client = () => client;
 
-    await connector.search({
+    await connector.read({
       feedKey: 'events',
-      terms: ['alice', 'design'],
+      query: 'alice design',
       config: { query: 'team', max_results: 10 },
       credentials: { accessToken: 'tok' },
       limit: 5,

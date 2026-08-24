@@ -4,7 +4,7 @@ import type { WorkerClient } from '../client.js';
 import { log } from '../log.js';
 import { NativeBridgeClient, type NativeBridgeRunResult } from './client.js';
 
-const VIRTUAL_FEED_ACTION = '__lobu_virtual_feed_read';
+const FEED_READ_ACTION = '__lobu_feed_read';
 const NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
 export const NATIVE_BRIDGE_EXECUTION_TIMEOUT_MS = 600_000;
 
@@ -174,18 +174,13 @@ async function runWithTimeout(
   }
 }
 
-function nativeOperation(job: PollResponse): 'sync' | 'action' | 'query' | 'search' | 'auth' {
+function nativeOperation(job: PollResponse): 'sync' | 'action' | 'read' | 'auth' {
   if (job.run_type === 'automation' || job.run_type === 'embed_backfill') {
     throw new Error('native bridge does not execute run_type ' + String(job.run_type));
   }
   if (job.run_type === 'sync') return 'sync';
   if (job.run_type === 'auth') return 'auth';
-  if (job.action_key === VIRTUAL_FEED_ACTION) {
-    const input = asRecord(job.action_input);
-    return Array.isArray(input?.terms) && input.terms.some((term) => typeof term === 'string' && term.trim())
-      ? 'search'
-      : 'query';
-  }
+  if (job.action_key === FEED_READ_ACTION) return 'read';
   return 'action';
 }
 

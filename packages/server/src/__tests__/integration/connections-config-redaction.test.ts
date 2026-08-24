@@ -6,6 +6,7 @@ import { search } from "../../tools/search";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
+	createTestConnectorDefinition,
 	createTestEntity,
 	seedSystemEntityTypes,
 } from "../setup/test-fixtures";
@@ -524,6 +525,12 @@ describe("feed config redaction", () => {
 			name: "Feed Redaction Org",
 			visibility: "public",
 		});
+		await createTestConnectorDefinition({
+			key: "postgres",
+			name: "Postgres",
+			organization_id: workspace.org.id,
+			feeds_schema: { default: {} },
+		});
 
 		const connection = await createTestConnection({
 			organization_id: workspace.org.id,
@@ -564,7 +571,9 @@ describe("feed config redaction", () => {
 	});
 
 	it("does not leak feed secrets or checkpoint through feeds.readMany()", async () => {
-		const result = await workspace.owner.feeds.readMany({ reads: [{ feed_id: feedId }] });
+		const result = await workspace.owner.feeds.readMany({
+			reads: [{ feed_id: feedId }],
+		});
 		assertNoSecrets(result, "feeds.readMany()");
 		expect(JSON.stringify(result)).not.toContain("pw-LEAK-checkpoint");
 	});

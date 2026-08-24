@@ -40,10 +40,14 @@ export default class ManagedConnector extends ConnectorRuntime<Checkpoint> {
         },
       ],
     },
-    feeds: { pulse: { key: "pulse", name: "Pulse" } },
+    feeds: {
+      pulse: { key: "pulse", name: "Pulse", sync: this.syncPulse },
+    },
   };
 
-  async sync(ctx: SyncContext<Checkpoint>): Promise<SyncResult<Checkpoint>> {
+  private async syncPulse(
+    ctx: SyncContext<Checkpoint>
+  ): Promise<SyncResult<Checkpoint>> {
     const seq = (ctx.checkpoint?.seq ?? 0) + 1;
 
     // The managed access token the LOCAL resolver fetched from the cloud.

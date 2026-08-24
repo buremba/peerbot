@@ -7,10 +7,10 @@ export default class DocuSignEnvelopesConnector extends ConnectorRuntime {
     name: "DocuSign envelopes",
     version: "1.0.0",
     authSchema: { methods: [{ type: "oauth" as const, provider: "docusign", requiredScopes: ["signature"] }] },
-    feeds: { envelopes: { key: "envelopes", name: "Envelope status changes" } },
+    feeds: { envelopes: { key: "envelopes", name: "Envelope status changes", sync: (ctx: SyncContext) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext) {
+  private async syncFeed(ctx: SyncContext) {
     const since = (ctx.checkpoint as any)?.last_status_changed ?? "2000-01-01T00:00:00Z";
     const base = String(ctx.config.base_path ?? "https://www.docusign.net/restapi").replace(/\/$/, "");
     const r = await fetch(`${base}/v2.1/accounts/${ctx.config.account_id}/envelopes?from_date=${encodeURIComponent(since)}&count=100`);

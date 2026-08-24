@@ -1,67 +1,58 @@
 # Connector SDK
 
-Connectors are TypeScript modules that sync data from external services into Lobu and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is a class extending `ConnectorRuntime` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. The functional `defineConnector({ ... })` helper lowers to the same class shape. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
+Connectors are TypeScript modules that sync data from external services into Lobu, read configured feeds directly from their source, and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is created with `defineConnector({ ... })` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
 
 ## Quick Start
 
 ```typescript
 import {
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  type SyncContext,
-  type SyncResult,
+  defineConnector,
   type EventEnvelope,
 } from '@lobu/connector-sdk';
 
-export default class MyConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
-    key: 'my_connector',
-    name: 'My Connector',
-    description: 'Fetches data from My Service.',
-    version: '1.0.0',
-    faviconDomain: 'example.com',
-    authSchema: {
-      methods: [{ type: 'none' }],
-    },
-    feeds: {
-      items: {
-        key: 'items',
-        name: 'Items',
-        description: 'Sync items from the service.',
-        configSchema: {
-          type: 'object',
-          required: ['query'],
-          properties: {
-            query: { type: 'string', description: 'Search query' },
-          },
+export default defineConnector({
+  key: 'my_connector',
+  name: 'My Connector',
+  description: 'Fetches data from My Service.',
+  version: '1.0.0',
+  faviconDomain: 'example.com',
+  authSchema: { methods: [{ type: 'none' }] },
+  feeds: {
+    items: {
+      name: 'Items',
+      description: 'Sync items from the service.',
+      configSchema: {
+        type: 'object',
+        required: ['query'],
+        properties: {
+          query: { type: 'string', description: 'Search query' },
         },
-        eventKinds: {
-          item: {
-            description: 'An item from the service',
-            metadataSchema: {
-              type: 'object',
-              properties: {
-                score: { type: 'number' },
-              },
+      },
+      eventKinds: {
+        item: {
+          description: 'An item from the service',
+          metadataSchema: {
+            type: 'object',
+            properties: {
+              score: { type: 'number' },
             },
           },
         },
       },
+      sync: async (ctx) => {
+        const query = ctx.config.query as string;
+        // Fetch data, transform to events...
+        const events: EventEnvelope[] = [];
+
+        return {
+          events,
+          checkpoint: { last_sync_at: new Date().toISOString() },
+          metadata: { query, items_found: events.length },
+        };
+      },
     },
-  };
-
-  async sync(ctx: SyncContext): Promise<SyncResult> {
-    const query = ctx.config.query as string;
-    // Fetch data, transform to events...
-    const events: EventEnvelope[] = [];
-
-    return {
-      events,
-      checkpoint: { last_sync_at: new Date().toISOString() },
-      metadata: { items_found: events.length },
-    };
-  }
-}
+  },
+});
 ```
 
 ## Connector Definition
@@ -414,10 +405,9 @@ Review-site scrapers (Trustpilot, G2, etc.) live in `examples/brand-intelligence
 not bundled because scraping may violate third-party terms of service.
 
 ```typescript
-import { launchBrowser, runReviewScrape } from '@lobu/connector-sdk';
+import { runReviewScrape, type SyncContext } from '@lobu/connector-sdk';
 
-async sync(ctx: SyncContext): Promise<SyncResult> {
-  return runReviewScrape(ctx, {
+const syncReviews = (ctx: SyncContext) => runReviewScrape(ctx, {
     connectorKey: 'my-connector-sync',
     baseUrl: 'https://www.example.com/reviews',
     expectedDomain: 'example.com',
@@ -426,7 +416,6 @@ async sync(ctx: SyncContext): Promise<SyncResult> {
     gotoTimeoutMs: 30000,
     extract: async (page, cardsFound) => ({ /* ... */ }),
   });
-}
 ```
 
 For user-session scraping (logged-in sites), use the Chrome extension bridge

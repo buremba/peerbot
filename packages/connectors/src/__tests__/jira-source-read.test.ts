@@ -1,17 +1,15 @@
 /**
- * Jira virtual-feed pushdown — connector half of the live JQL seam.
+ * Jira feed source reads — connector half of the live JQL seam.
  *
- * Mirrors gmail-virtual-pushdown.test.ts: stub the HTTP boundary, exercise
- * query()/search() → liveSearch → /search/jql. No network, no DB.
+ * Stub the HTTP boundary and exercise read() → /search/jql. No network, no DB.
  *
  * Verifies:
- *  - query() builds JQL from ctx.query (platform config.query);
- *  - search() AND-composes text ~ "term" for each recall term;
+ *  - configured JQL and caller JQL are AND-composed;
  *  - stable column set + row shape;
- *  - limit clamp + offset paging via opaque nextPageToken;
+ *  - limit clamp + provider-native paging via opaque nextPageToken;
  *  - unsupported sort rejected; total omitted;
  *  - missing credentials throw;
- *  - legacy config.jql falls back when query is empty.
+ *  - config.jql remains an accepted connector-native config field.
  */
 
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
@@ -136,8 +134,7 @@ function toApiIssue(i: FakeIssue) {
 
 /**
  * Fake HTTP client for /search/jql (+ optional accessible-resources).
- * Honors maxResults + nextPageToken as a numeric cursor into the corpus so
- * offset/limit is end-to-end.
+ * Honors maxResults + nextPageToken as a numeric cursor into the corpus.
  */
 function fakeHttp(
   capture: Capture,
@@ -200,17 +197,23 @@ const BASE_CTX = {
   sessionState: null,
 };
 
-describe('Jira virtual-feed pushdown', () => {
-  test('query() builds JQL from ctx.query and returns stable row shape', async () => {
+function readIssues(connector: any, context: Record<string, unknown>) {
+  return connector.read({ feedKey: 'issues', ...context });
+}
+
+describe('Jira feed source read', () => {
+  test('combines caller JQL with the default bound and returns a stable row shape', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    const res = await c.query({
+    const res = await readIssues(c, {
       ...BASE_CTX,
       query: 'project = SUPP',
       limit: 10,
     });
 
-    expect(cap.jqls).toEqual(['project = SUPP ORDER BY updated DESC']);
+    expect(cap.jqls).toEqual([
+      '(updated >= -90d) AND (project = SUPP) ORDER BY updated DESC',
+    ]);
     expect(res.columns.map((col: { name: string }) => col.name)).toEqual([
       'id',
       'key',
@@ -268,7 +271,7 @@ describe('Jira virtual-feed pushdown', () => {
         self: 'https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/issue/30001',
       },
     ]);
-    const res = await c.query({
+    const res = await readIssues(c, {
       ...BASE_CTX,
       query: 'project = BRK',
       limit: 5,
@@ -279,7 +282,7 @@ describe('Jira virtual-feed pushdown', () => {
   test('falls back to config.jql when ctx.query is empty', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    await c.query({
+    await readIssues(c, {
       credentials: { accessToken: 'tok' },
       query: '',
       config: { cloud_id: 'cloud-1', jql: 'assignee = currentUser()' },
@@ -289,13 +292,13 @@ describe('Jira virtual-feed pushdown', () => {
     expect(cap.jqls[0]).toBe('assignee = currentUser() ORDER BY updated DESC');
   });
 
-  test('search() AND-composes text ~ terms onto the base JQL', async () => {
+  test('AND-composes caller JQL onto configured JQL', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    await c.search({
+    await readIssues(c, {
       ...BASE_CTX,
-      query: 'project = SUPP ORDER BY updated DESC',
-      terms: ['auth', 'timeout'],
+      config: { ...BASE_CTX.config, query: 'project = SUPP ORDER BY updated DESC' },
+      query: 'text ~ "auth" AND text ~ "timeout"',
       limit: 5,
     });
     expect(cap.jqls[0]).toBe(
@@ -303,13 +306,12 @@ describe('Jira virtual-feed pushdown', () => {
     );
   });
 
-  test('search() escapes quoted terms', async () => {
+  test('preserves quoted caller JQL', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    await c.search({
+    await readIssues(c, {
       ...BASE_CTX,
-      query: '',
-      terms: ['say "hi"'],
+      query: 'text ~ "say \\"hi\\""',
       limit: 5,
     });
     expect(cap.jqls[0]).toBe(
@@ -320,30 +322,38 @@ describe('Jira virtual-feed pushdown', () => {
   test('does not treat ORDER BY text inside a quoted value as a sort clause', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    await c.query({
+    await readIssues(c, {
       ...BASE_CTX,
       query: 'text ~ "order by updated"',
       limit: 5,
     });
-    expect(cap.jqls[0]).toBe('text ~ "order by updated" ORDER BY updated DESC');
+    expect(cap.jqls[0]).toBe(
+      '(updated >= -90d) AND (text ~ "order by updated") ORDER BY updated DESC',
+    );
   });
 
-  test('clamps limit and pages with nextPageToken for offset', async () => {
+  test('passes the returned nextPageToken into the next source request', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    // want offset 1 + limit 1 → need 2 issues; first page may fetch 2
-    const res = await c.query({
+    const first = await readIssues(c, {
       ...BASE_CTX,
       query: 'project = SUPP',
       limit: 1,
-      offset: 1,
     });
-    expect(res.rows).toHaveLength(1);
-    expect(res.rows[0].key).toBe('SUPP-2');
-    expect(cap.maxResults[0]).toBe(2);
+    expect(first.rows[0].key).toBe('SUPP-1');
+    expect(first.nextCursor).toBe('1');
+    const second = await readIssues(c, {
+      ...BASE_CTX,
+      query: 'project = SUPP',
+      cursor: first.nextCursor,
+      limit: 1,
+    });
+    expect(second.rows[0].key).toBe('SUPP-2');
+    expect(cap.maxResults).toEqual([1, 1]);
+    expect(cap.tokens).toEqual([null, '1']);
   });
 
-  test('pages beyond Jira per-request limits to honor the caller limit', async () => {
+  test('returns a provider cursor instead of re-walking beyond one Jira page', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const corpus = Array.from({ length: 150 }, (_, index) => ({
       id: String(20_000 + index),
@@ -352,35 +362,35 @@ describe('Jira virtual-feed pushdown', () => {
       status: 'Open',
     }));
     const c = connectorWith(cap, corpus);
-    const res = await c.query({
+    const first = await readIssues(c, {
       ...BASE_CTX,
       query: 'project = BIG',
       limit: 150,
     });
-    expect(res.rows).toHaveLength(150);
-    expect(cap.maxResults).toEqual([100, 50]);
-    expect(cap.tokens).toEqual([null, '100']);
+    expect(first.rows).toHaveLength(100);
+    expect(first.nextCursor).toBe('100');
+    expect(cap.maxResults).toEqual([100]);
+    expect(cap.tokens).toEqual([null]);
   });
 
-  test('rejects offset+limit beyond max reachable pagination depth', async () => {
+  test('rejects offsets so callers cannot force a provider page re-walk', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    // PAGE_SIZE=100 × MAX_PAGES=50 → 5000 max. offset=5000 limit=1 ⇒ 5001.
     await expect(
-      c.query({
+      readIssues(c, {
         ...BASE_CTX,
         query: 'project = SUPP',
         limit: 1,
         offset: 5000,
       }),
-    ).rejects.toThrow(/max reachable depth/);
+    ).rejects.toThrow(/returned cursor/);
     expect(cap.jqls).toHaveLength(0);
   });
 
   test('uses max_results as an optional feed cap', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    const res = await c.query({
+    const res = await readIssues(c, {
       ...BASE_CTX,
       config: { ...BASE_CTX.config, max_results: 2 },
       query: 'project = SUPP',
@@ -394,7 +404,7 @@ describe('Jira virtual-feed pushdown', () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
     await expect(
-      c.query({
+      readIssues(c, {
         ...BASE_CTX,
         query: 'project = SUPP',
         sort: { column: 'not_a_field', order: 'desc' },
@@ -406,7 +416,7 @@ describe('Jira virtual-feed pushdown', () => {
   test('rejects caller sort when the JQL already contains ORDER BY', async () => {
     const c = connectorWith({ jqls: [], maxResults: [], tokens: [], urls: [] });
     await expect(
-      c.query({
+      readIssues(c, {
         ...BASE_CTX,
         query: 'project = SUPP ORDER BY key ASC',
         sort: { column: 'updated_at', order: 'desc' },
@@ -418,19 +428,21 @@ describe('Jira virtual-feed pushdown', () => {
   test('applies supported sort columns', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
-    await c.query({
+    await readIssues(c, {
       ...BASE_CTX,
       query: 'project = SUPP',
       sort: { column: 'created_at', order: 'asc' },
       limit: 5,
     });
-    expect(cap.jqls[0]).toBe('project = SUPP ORDER BY created ASC');
+    expect(cap.jqls[0]).toBe(
+      '(updated >= -90d) AND (project = SUPP) ORDER BY created ASC',
+    );
   });
 
   test('throws without credentials', async () => {
     const c = new JiraConnector();
     await expect(
-      c.query({
+      readIssues(c, {
         credentials: null,
         query: 'project = X',
         config: { cloud_id: 'cloud-1' },
@@ -438,9 +450,10 @@ describe('Jira virtual-feed pushdown', () => {
     ).rejects.toThrow(/OAuth credentials/);
   });
 
-  test('feed definition defaults issues to virtual', () => {
+  test('issues supports both sync and source read on one feed', () => {
     const c = new JiraConnector();
-    expect(c.definition.feeds?.issues?.virtual).toBe(true);
+    expect(typeof c.definition.feeds?.issues?.sync).toBe('function');
+    expect(typeof c.definition.feeds?.issues?.read).toBe('function');
     expect(c.definition.version).toBe('1.1.3');
   });
 
@@ -473,7 +486,7 @@ describe('Jira virtual-feed pushdown', () => {
         },
       ],
     });
-    const res = await c.query({
+    const res = await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config: {},
       sessionState: null,
@@ -503,7 +516,7 @@ describe('Jira virtual-feed pushdown', () => {
       ],
     });
     const config: Record<string, unknown> = {};
-    const res = await c.query({
+    const res = await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config,
       sessionState: null,
@@ -528,7 +541,7 @@ describe('Jira virtual-feed pushdown', () => {
       site_url: 'https://stale.atlassian.net',
       site_name: 'Stale',
     };
-    await c.query({
+    await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config,
       sessionState: null,
@@ -549,7 +562,7 @@ describe('Jira virtual-feed pushdown', () => {
         self: 'https://api.atlassian.com/ex/jira/cloud-b/rest/api/3/issue/20001',
       },
     ]);
-    const res = await c.query({
+    const res = await readIssues(c, {
       credentials: { accessToken: 'tok' },
       // Connection had site A; feed overrides to cloud B without a matching site_url.
       config: {
@@ -573,7 +586,7 @@ describe('Jira virtual-feed pushdown', () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap, undefined, { accessibleResources: [] });
     await expect(
-      c.query({
+      readIssues(c, {
         credentials: { accessToken: 'tok' },
         config: {},
         sessionState: null,
@@ -592,7 +605,7 @@ describe('Jira virtual-feed pushdown', () => {
       ],
     });
     await expect(
-      c.query({
+      readIssues(c, {
         credentials: { accessToken: 'tok' },
         config: {},
         sessionState: null,

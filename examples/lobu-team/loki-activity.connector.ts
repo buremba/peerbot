@@ -1,5 +1,5 @@
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type SyncContext,
@@ -240,7 +240,10 @@ export default class LokiActivityConnector extends ConnectorRuntime<
   LokiActivityCheckpoint,
   LokiActivityConfig
 > {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<
+    LokiActivityCheckpoint,
+    LokiActivityConfig
+  > = {
     key: "loki.activity",
     name: "Kubernetes logs",
     description:
@@ -265,6 +268,7 @@ export default class LokiActivityConnector extends ConnectorRuntime<
     },
     feeds: {
       activity: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "activity",
         name: "Production log activity",
         configSchema: {
@@ -291,7 +295,7 @@ export default class LokiActivityConnector extends ConnectorRuntime<
     },
   };
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<LokiActivityCheckpoint, LokiActivityConfig>
   ): Promise<SyncResult<LokiActivityCheckpoint>> {
     if (!ctx.config.LOKI_URL?.trim()) throw new Error("LOKI_URL is required");

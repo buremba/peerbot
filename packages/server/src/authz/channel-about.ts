@@ -421,7 +421,7 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 	}));
 }
 
-/** Channel key stored on `about` edge metadata for a streaming feed row.
+/** Channel key stored on `about` edge metadata for a channel feed row.
  *
  * The team half is the channel's CONCRETE workspace, taken from the streaming
  * feed's Automation subscription team — the SAME real team the
@@ -431,7 +431,7 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
  * supports connectors whose tenant identity is their workspace. A not-yet-healed
  * Grid subscription has no matching about edge until its concrete team is known.
  * The subscription channel id equals feed_key, so the correlation is exact. */
-export function streamingFeedChannelKeyExpr(
+export function channelFeedChannelKeyExpr(
 	feedAlias = "f",
 	connectionAlias = "c",
 ): string {
@@ -470,7 +470,7 @@ export function feedLinkedToBusinessEntitySql(
 	const org = orgIdExpr ?? `${feedAlias}.organization_id`;
 	const tagMatch = `${entityIdExpr} = ANY(${feedAlias}.entity_ids)`;
 	const aboutMatch = `(
-    ${feedAlias}.kind = 'streaming'
+    ${feedAlias}.config ->> 'store' = 'channel_messages'
     AND EXISTS (
       SELECT 1
       FROM entity_relationships r
@@ -483,7 +483,7 @@ export function feedLinkedToBusinessEntitySql(
         AND r.to_entity_id = ${entityIdExpr}
         AND r.deleted_at IS NULL
         AND r.metadata->>'connection_id' = ${feedAlias}.connection_id::text
-        AND r.metadata->>'channel_key' = ${streamingFeedChannelKeyExpr(feedAlias, connectionAlias)}
+        AND r.metadata->>'channel_key' = ${channelFeedChannelKeyExpr(feedAlias, connectionAlias)}
     )
   )`;
 	return `(${tagMatch} OR ${aboutMatch})`;
@@ -570,10 +570,10 @@ export function feedLinkedEntityIdsSql(
      AND rt.organization_id = r.organization_id
      AND rt.slug = '${ABOUT_RELATIONSHIP_SLUG}'
      AND rt.status = 'active'
-    WHERE ${feedAlias}.kind = 'streaming'
+    WHERE ${feedAlias}.config ->> 'store' = 'channel_messages'
       AND r.organization_id = ${feedAlias}.organization_id
       AND r.deleted_at IS NULL
       AND r.metadata->>'connection_id' = ${feedAlias}.connection_id::text
-      AND r.metadata->>'channel_key' = ${streamingFeedChannelKeyExpr(feedAlias, connectionAlias)}
+      AND r.metadata->>'channel_key' = ${channelFeedChannelKeyExpr(feedAlias, connectionAlias)}
   )`;
 }

@@ -2,7 +2,7 @@
  * Connector Runtime
  *
  * Abstract base class that all connectors must implement.
- * Provides the contract for sync (read) and execute (write) operations.
+ * Provides the contract for feed sync, source reads, and connector actions.
  */
 
 import type {
@@ -10,12 +10,13 @@ import type {
   ActionResult,
   AuthContext,
   AuthResult,
-  ConnectorDefinition,
+  FeedReadContext,
+  FeedReadResult,
   QueryContext,
   QueryResult,
   ReflectContext,
   ReflectResult,
-  SearchContext,
+  RuntimeConnectorDefinition,
   SyncContext,
   SyncResult,
   WebhookRegistration,
@@ -29,9 +30,7 @@ import type {
  * - `C` — checkpoint shape (defaults to `Record<string, unknown>`)
  * - `F` — feed config shape (defaults to `Record<string, unknown>`)
  *
- * Subclasses must:
- * - Set `definition` with connector metadata
- * - Implement `sync()` for feed data ingestion
+ * Subclasses set `definition` with connector metadata and per-feed handlers.
  *
  * Subclasses may optionally override `execute()` and `authenticate()`; both
  * have safe defaults (action rejected with `{ success: false, ... }`, auth
@@ -44,18 +43,16 @@ import type {
  * interface MyConfig { label?: string }
  *
  * class GmailConnector extends ConnectorRuntime<MyCheckpoint, MyConfig> {
- *   definition = { key: 'google.gmail', name: 'Gmail', version: '1.0.0', ... };
- *
- *   async sync(ctx: SyncContext<MyCheckpoint, MyConfig>): Promise<SyncResult<MyCheckpoint>> {
- *     // ctx.checkpoint is typed as MyCheckpoint | null — no casts needed
- *     // ctx.config is typed as MyConfig — no casts needed
- *   }
+ *   definition = {
+ *     key: 'google.gmail', name: 'Gmail', version: '1.0.0',
+ *     feeds: { threads: { key: 'threads', name: 'Threads', sync: syncThreads, read: readThreads } }
+ *   };
  * }
  * ```
  */
 export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<string, unknown>> {
-  /** Connector definition with metadata, feed schemas, and action schemas */
-  abstract readonly definition: ConnectorDefinition;
+  /** Connector definition with metadata, feed handlers, and action schemas. */
+  abstract readonly definition: RuntimeConnectorDefinition<C, F>;
 
   /**
    * Sync data from the connected service.
@@ -68,7 +65,30 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
    * @param ctx - Sync context with feed config, checkpoint, and credentials
    * @returns Events and updated checkpoint
    */
-  abstract sync(ctx: SyncContext<C, F>): Promise<SyncResult<C>>;
+  async sync(ctx: SyncContext<C, F>): Promise<SyncResult<C>> {
+    const handler = this.definition.feeds?.[ctx.feedKey]?.sync;
+    if (!handler) {
+      throw new Error(
+        `${this.definition.key} feed '${ctx.feedKey}' does not support sync`
+      );
+    }
+    return handler(ctx);
+  }
+
+  /**
+   * Read one configured feed directly from its source. Feed handlers own native
+   * filtering and pagination; the platform never infers semantics from a feed
+   * kind or persistence flag.
+   */
+  async read(ctx: FeedReadContext<F>): Promise<FeedReadResult> {
+    const handler = this.definition.feeds?.[ctx.feedKey]?.read;
+    if (!handler) {
+      throw new Error(
+        `${this.definition.key} feed '${ctx.feedKey}' does not support source reads`
+      );
+    }
+    return handler(ctx);
+  }
 
   /**
    * Execute an action on the connected service.
@@ -88,27 +108,13 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
   }
 
   /**
-   * Run a read-only query LIVE against the source and return rows — without
-   * persisting anything (contrast `sync()`, which emits events). The platform
-   * calls this for virtual-feed reads and external-backed derived entities; the
-   * connector pushes pagination/sort down. Default implementation throws —
-   * connectors that don't serve live reads need not override.
+   * Run a governed read-only query against the connection. This is intentionally
+   * separate from feed source reads: SQL/warehouse connections use it for ad-hoc
+   * pushdown and externally backed derived entities.
    */
   // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full QueryContext
   async query(ctx: QueryContext<F>): Promise<QueryResult> {
     throw new Error(`${this.definition.key} does not support live queries`);
-  }
-
-  /**
-   * Keyword RECALL over a virtual feed: read LIVE against the source pushing the
-   * caller's `ctx.terms` DOWN as a source-side predicate (no copy, no events).
-   * Same read-only contract as {@link query}. Default implementation throws —
-   * a connector that doesn't override signals "recall over virtual unsupported"
-   * (a capability gap surfaced to the caller, not a runtime branch).
-   */
-  // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full SearchContext
-  async search(ctx: SearchContext<F>): Promise<QueryResult> {
-    throw new Error(`${this.definition.key} does not support recall over virtual feeds`);
   }
 
   /**
@@ -178,7 +184,7 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
  *   constructor() {
  *     super('chrome.history runs only on a worker advertising capability "browser.history".');
  *   }
- *   readonly definition: ConnectorDefinition = { ... };
+ *   readonly definition: RuntimeConnectorDefinition = { ... };
  * }
  * ```
  */
@@ -208,7 +214,7 @@ export abstract class BridgeOnlyConnector extends ConnectorRuntime {
  * @example
  * ```ts
  * export default class SlackConnector extends IntegrationConnector {
- *   readonly definition: ConnectorDefinition = { key: 'slack', kind: 'integration', ... };
+ *   readonly definition: RuntimeConnectorDefinition = { key: 'slack', kind: 'integration', ... };
  * }
  * ```
  */

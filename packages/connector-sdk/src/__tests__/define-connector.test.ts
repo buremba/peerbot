@@ -21,6 +21,7 @@ const Github = defineConnector({
 	feeds: {
 		stars: {
 			name: "Stars",
+			read: async (ctx) => ({ rows: [{ query: ctx.query ?? null }] }),
 			sync: async (ctx) => ({
 				events: [
 					{
@@ -67,10 +68,10 @@ describe("defineConnector", () => {
 		expect(definition.actions?.star_repo?.requiredScopes).toEqual([
 			"public_repo",
 		]);
-		// handler closures must NOT leak into the serializable definition
-		expect(
-			(definition.feeds?.stars as Record<string, unknown>).sync,
-		).toBeUndefined();
+		// Runtime feed definitions retain handlers; metadata extraction owns the
+		// serialization boundary and derives operations from them.
+		expect(typeof definition.feeds?.stars?.sync).toBe("function");
+		expect(typeof definition.feeds?.stars?.read).toBe("function");
 		expect(
 			(definition.actions?.star_repo as Record<string, unknown>).execute,
 		).toBeUndefined();
@@ -97,7 +98,17 @@ describe("defineConnector", () => {
 				credentials: null,
 				entityIds: [],
 			}),
-		).rejects.toThrow(/no sync handler for feed 'nope'/);
+		).rejects.toThrow(/feed 'nope' does not support sync/);
+	});
+
+	test("the same feed dispatches source reads independently of sync", async () => {
+		const res = await new Github().read({
+			feedKey: "stars",
+			config: {},
+			query: "lobu",
+			credentials: null,
+		});
+		expect(res.rows).toEqual([{ query: "lobu" }]);
 	});
 
 	test("execute dispatches to the matching action handler", async () => {

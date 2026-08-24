@@ -25,7 +25,7 @@ import {
   slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../../authz/access-graph";
-import { ensureStreamingChannelFeed } from "../../../gateway/channels/channel-feed";
+import { ensureChannelFeed } from "../../../gateway/channels/channel-feed";
 import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { normalizeAutomationSources } from "../../../automations/source-refs";
 import { executeDataSources } from "../../../utils/execute-data-sources";
@@ -38,7 +38,7 @@ const FEED_KEY = `slack:${CHANNEL}`;
 
 let chatConnectionSeq = 0;
 
-describe("streaming feed as an automation @feed source", () => {
+describe("channel feed as an automation @feed source", () => {
   let workspace: TestWorkspace;
   let orgId: string;
 
@@ -135,14 +135,14 @@ describe("streaming feed as an automation @feed source", () => {
     return out.chat ?? [];
   }
 
-  it("a streaming @feed compiles to kind 'channel' (prompt context, not event-signed)", async () => {
+  it("a channel-message @feed compiles to source kind 'channel' (prompt context, not event-signed)", async () => {
     // Regression for the complete_window FK: a channel source's rows carry
     // channel_messages.id, which is NOT an events.id. If the source were kind
     // 'event' its ids would be signed into the window_token content_ids and
     // complete_window would insert them into automation_run_events.event_id (FK
     // to events) → break. kind 'channel' keeps them out of eventSourceNames.
     const conn = await makeChatConnection();
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: FEED_KEY,
@@ -157,7 +157,7 @@ describe("streaming feed as an automation @feed source", () => {
 
   it("a headless automation reads a NON-enforced channel's transcript", async () => {
     const conn = await makeChatConnection();
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: FEED_KEY,
@@ -175,7 +175,7 @@ describe("streaming feed as an automation @feed source", () => {
 
   it("a headless automation reads NOTHING from an ACL-enforced channel (no leak)", async () => {
     const conn = await makeChatConnection();
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: FEED_KEY,
@@ -201,7 +201,7 @@ describe("streaming feed as an automation @feed source", () => {
 
   it("reads NOTHING from a connection whose ACL snapshot went STALE (fail closed)", async () => {
     const conn = await makeChatConnection();
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: FEED_KEY,
@@ -225,7 +225,7 @@ describe("streaming feed as an automation @feed source", () => {
 
   it("a channel MEMBER reads the enforced channel (gate is membership, not denial)", async () => {
     const conn = await makeChatConnection();
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: FEED_KEY,
@@ -317,7 +317,7 @@ describe("streaming feed as an automation @feed source", () => {
     `;
     const [row] = await sql`SELECT slug FROM connections WHERE id = ${priv.id}`;
     const runtimeId = slugToRuntimeConnectionId(String(row.slug));
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: priv.id,
       organizationId: orgId,
       channelKey: FEED_KEY,
@@ -334,7 +334,7 @@ describe("streaming feed as an automation @feed source", () => {
 
   it("a channel @feed source respects the automation window bounds", async () => {
     const conn = await makeChatConnection();
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: FEED_KEY,

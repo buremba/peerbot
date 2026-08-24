@@ -9,10 +9,10 @@ export default class LinearCyclesConnector extends ConnectorRuntime {
     name: "Linear cycles",
     version: "1.0.0",
     authSchema: { methods: [{ type: "oauth" as const, provider: "linear", requiredScopes: ["read"] }] },
-    feeds: { cycle_issues: { key: "cycle_issues", name: "Cycle issues" } },
+    feeds: { cycle_issues: { key: "cycle_issues", name: "Cycle issues", sync: (ctx: SyncContext) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext) {
+  private async syncFeed(ctx: SyncContext) {
     const since = (ctx.checkpoint as any)?.updated_at ?? "2000-01-01T00:00:00Z";
     const r = await fetch("https://api.linear.app/graphql", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: QUERY, variables: { t: ctx.config.team_id, a: since } }) });
     const issues: any[] = ((await r.json()) as any).data?.issues?.nodes ?? [];

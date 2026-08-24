@@ -10,6 +10,17 @@ export interface FeedDefinition {
     properties?: Record<string, unknown>;
     [keyword: string]: unknown;
   } | null;
+  operations?: Array<'sync' | 'read'>;
+}
+
+export function feedOperations(
+  feedsSchema: Record<string, FeedDefinition> | null,
+  feedKey: string
+): Array<'sync' | 'read'> {
+  const definition =
+    feedsSchema?.[feedKey] ??
+    Object.values(feedsSchema ?? {}).find((candidate) => candidate?.key === feedKey);
+  return Array.isArray(definition?.operations) ? definition.operations : [];
 }
 
 /**
@@ -23,12 +34,9 @@ export interface FeedDefinition {
  * `feed_urls`) is persisted "successfully" and only fails at sync time, giving
  * an MCP caller zero upfront signal.
  *
- * `ignoreRequired` drops the schema's top-level `required` list. That list is
- * the SYNC-config contract (rss `articles` cannot sync without `feed_urls`), and
- * a virtual/streaming feed is never synced; its config is a read-time scope
- * fence, so a missing sync field must not gate it. Everything else still
- * applies, so a wrong type or an unknown property in what the caller DID pass is
- * still rejected upfront.
+ * `ignoreRequired` is reserved for callers validating a partial patch rather
+ * than a concrete feed configuration. Create/update validate the effective
+ * stored config, so they do not use it.
  */
 export function validateFeedConfig(
   feedsSchema: Record<string, FeedDefinition> | null,

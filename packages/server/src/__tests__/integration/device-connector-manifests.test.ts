@@ -60,6 +60,7 @@ function manifest(overrides: Record<string, unknown> = {}) {
       snapshots: {
         key: 'snapshots',
         name: 'Snapshots',
+				operations: ['sync'],
         configSchema: { type: 'object', properties: {} },
         eventKinds: {
           snapshot: {
@@ -92,8 +93,7 @@ function whatsappManifest(
     runtime: { platforms: [platform] },
     auth_schema: { methods: [{ type: 'none' }] },
     feeds_schema: {
-      messages: { key: 'messages', name: 'Messages' },
-      messages_live: { key: 'messages_live', name: 'Messages (live)', virtual: true },
+      messages: { key: 'messages', name: 'Messages', operations: ['sync', 'read'] },
     },
     ...overrides,
   };
@@ -129,7 +129,7 @@ async function readWhatsAppRows(orgId: string) {
     ORDER BY id
   `) as unknown as Array<{ id: number; device_worker_id: string | null }>;
   const feeds = (await sql`
-    SELECT f.id, f.connection_id, f.feed_key, f.kind, f.virtual
+    SELECT f.id, f.connection_id, f.feed_key, f.next_run_at
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE c.organization_id = ${orgId}
@@ -140,8 +140,7 @@ async function readWhatsAppRows(orgId: string) {
     id: number;
     connection_id: number;
     feed_key: string;
-    kind: string;
-    virtual: boolean;
+    next_run_at: Date | string | null;
   }>;
   return { connections, feeds };
 }
@@ -228,7 +227,7 @@ async function settleRunsAndFeeds(orgId: string) {
   `;
   await sql`
     UPDATE feeds SET next_run_at = '2099-01-01T00:00:00Z'
-    WHERE organization_id = ${orgId} AND kind = 'collected'
+    WHERE organization_id = ${orgId} AND feed_key = 'messages'
   `;
 }
 
@@ -1175,10 +1174,7 @@ describe('device connector manifests', () => {
     ).toBe(200);
     const before = await readWhatsAppRows(orgId);
     expect(before.connections).toHaveLength(1);
-    expect(before.feeds.map((feed) => [feed.feed_key, feed.kind, feed.virtual])).toEqual([
-      ['messages', 'collected', false],
-      ['messages_live', 'virtual', true],
-    ]);
+    expect(before.feeds.map((feed) => feed.feed_key)).toEqual(['messages']);
     const existingMessagesFeed = before.feeds.find((feed) => feed.feed_key === 'messages');
     expect(existingMessagesFeed).toBeDefined();
     const durableEvent = await createTestEvent({
@@ -1199,7 +1195,7 @@ describe('device connector manifests', () => {
     `;
     await sql`
       UPDATE feeds SET next_run_at = '2099-01-01T00:00:00Z'
-      WHERE organization_id = ${orgId} AND kind = 'collected'
+      WHERE organization_id = ${orgId} AND feed_key = 'messages'
     `;
 
     const genericWorkerId = `chrome-generic-${generateSecureToken(4)}`;
@@ -1235,10 +1231,7 @@ describe('device connector manifests', () => {
     expect(after.feeds.map((feed) => Number(feed.id))).toEqual(
       before.feeds.map((feed) => Number(feed.id))
     );
-    expect(after.feeds.map((feed) => [feed.feed_key, feed.kind, feed.virtual])).toEqual([
-      ['messages', 'collected', false],
-      ['messages_live', 'virtual', true],
-    ]);
+    expect(after.feeds.map((feed) => feed.feed_key)).toEqual(['messages']);
     const [preservedEvent] = (await sql`
       SELECT id, connection_id, feed_id, origin_id
       FROM events
@@ -1360,7 +1353,7 @@ describe('device connector manifests', () => {
     `;
     await sql`
       UPDATE feeds SET next_run_at = '2099-01-01T00:00:00Z'
-      WHERE organization_id = ${orgId} AND kind = 'collected'
+      WHERE organization_id = ${orgId} AND feed_key = 'messages'
     `;
     const messagesFeed = initial.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();

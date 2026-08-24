@@ -6,6 +6,10 @@ import {
   hasAllScopes,
   normalizeScopeList,
 } from '../auth/oauth/scopes';
+import {
+  feedOperations,
+  type FeedDefinition,
+} from '../tools/admin/helpers/feed-helpers';
 
 export const OAUTH_SCOPE_PAUSE_LAST_ERROR =
   'Required OAuth scopes are missing; reconnect the connection to grant access.';
@@ -122,6 +126,10 @@ export async function syncOAuthConnectionsForAuthProfile(
       getFeedRequiredScopes(feedsSchema, row.feed_key)
     );
     const feedEligible = connectorScopesOk && feedScopesOk;
+    const canSync = feedOperations(
+      feedsSchema as Record<string, FeedDefinition> | null,
+      row.feed_key
+    ).includes('sync');
     if (feedEligible) {
       connectionEligibleIds.add(row.connection_id);
     }
@@ -141,7 +149,7 @@ export async function syncOAuthConnectionsForAuthProfile(
         UPDATE feeds
         SET status = 'active',
             next_run_at = CASE
-              WHEN kind = 'collected' AND schedule IS NOT NULL THEN NOW()
+              WHEN ${canSync} AND schedule IS NOT NULL THEN NOW()
               ELSE NULL
             END,
             last_error = NULL,

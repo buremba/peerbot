@@ -449,7 +449,6 @@ function formatSearchCoverage(coverage: any): string {
   const sourceFeeds = Array.isArray(coverage.source_feeds) ? coverage.source_feeds : [];
   let md = '## Search Coverage\n\n';
   md += `Local stores searched: ${localSources.length > 0 ? localSources.join(', ') : 'none completed'}.\n\n`;
-  md += 'Connected source feeds were not queried. Use `client.feeds.readMany` through `query_sdk` to read selected sources explicitly.\n\n';
   if (coverage.source_feed_discovery === 'unavailable') {
     md += 'Source feed discovery was unavailable for this search.\n\n';
     return md;
@@ -458,6 +457,7 @@ function formatSearchCoverage(coverage: any): string {
     md += 'No accessible source-backed feeds were found.\n\n';
     return md;
   }
+  md += 'Connected source feeds were not queried. Use `client.feeds.readMany` through `query_sdk` to read selected sources explicitly.\n\n';
   md += 'Accessible source feeds:\n\n';
   for (const feed of sourceFeeds) {
     const label = `${feed.connection_slug}/${feed.feed_key}`;

@@ -13,6 +13,7 @@ import { ClientSdkActionError } from "../../sandbox/namespaces/action-call";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
+	createTestConnectorDefinition,
 	createTestEntity,
 	createTestOrganization,
 	createTestUser,
@@ -36,6 +37,12 @@ describe("manage_feeds cross-org entity_ids", () => {
 			organizationId: org.id,
 			userId: user.id,
 			memberRole: "owner",
+		});
+		await createTestConnectorDefinition({
+			key: "github",
+			name: "GitHub",
+			organization_id: org.id,
+			feeds_schema: { default: {} },
 		});
 
 		const conn = await createTestConnection({

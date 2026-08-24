@@ -3,7 +3,7 @@
  *
  * A `verified-query` entity pins a human-approved answer: the exact rollup SQL
  * plus the result rows it produced at approval time. This script re-reads the
- * SAME rollup LIVE from the warehouse (through the virtual-feed pushdown — the
+ * SAME rollup LIVE from the warehouse (through the feed source-read path — the
  * path an analyst would actually use) and diffs it against the pinned
  * `approved_answer`.
  *
@@ -30,15 +30,15 @@ export default async (_ctx, client) => {
     cancellations: Number(r.cancellations),
   }));
 
-  // ── The LIVE answer, re-read through the same virtual-feed pushdown ──────
+  // ── The LIVE answer, re-read through the same source-read path ───────────
   const feedList = await client.feeds.list({});
   const churnFeed = (feedList.feeds ?? []).find(
-    (f) => f.kind === "virtual" && f.feed_key === "query",
+    (f) => (f.operations ?? []).includes("read") && f.feed_key === "query",
   );
-  if (!churnFeed) throw new Error("virtual churn feed not found — run seed first");
+  if (!churnFeed) throw new Error("source-readable churn feed not found — run seed first");
   const feedRead = await client.feeds.readMany({ reads: [{ feed_id: churnFeed.id }] });
   const feedResult = (feedRead.results ?? []).find((r) => r.ok);
-  if (!feedResult) throw new Error("virtual feed read failed: " + JSON.stringify(feedRead));
+  if (!feedResult) throw new Error("source feed read failed: " + JSON.stringify(feedRead));
   const live = (feedResult.rows ?? []).map((r) => ({
     month: String(r.month),
     cancellations: Number(r.cancellations),

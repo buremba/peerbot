@@ -264,7 +264,7 @@ type ContentSnippet = Static<typeof ContentSnippetSchema>;
 // from ContentSnippet on purpose: these are NOT `events`, so they carry no
 // event id (their `id` would mislead a get_content follow-up) and no embedding
 // similarity. They let search_memory surface past channel conversation without
-// a separate get_channel_history tool — see project_conversation_feeds_virtual.
+// a separate get_channel_history tool.
 const ConversationSnippetSchema = Type.Object({
   platform: Type.String(),
   channel_id: Type.String(),
@@ -694,7 +694,24 @@ async function discoverSourceFeeds(gate: AuthzScope) {
        AND f.status = 'active'
        AND c.deleted_at IS NULL
        AND c.status = 'active'
-       AND (f.kind = 'virtual' OR f.virtual IS TRUE)
+       AND EXISTS (
+         SELECT 1
+         FROM connector_definitions definition
+         WHERE definition.key = c.connector_key
+           AND definition.organization_id = f.organization_id
+           -- Same definition selection as readSourceFeed: a pinned artifact may
+           -- have no matching definition row after a device-manifest upgrade, so
+           -- the active definition for the key remains capability truth.
+           AND (
+             (f.pinned_version IS NULL AND definition.status = 'active')
+             OR (
+               f.pinned_version IS NOT NULL
+               AND (definition.version = f.pinned_version OR definition.status = 'active')
+             )
+           )
+           AND COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
+             @> '["read"]'::jsonb
+       )
        ${vis}
      ORDER BY f.id
      LIMIT ${MAX_SOURCE_FEEDS_IN_COVERAGE + 1}`,

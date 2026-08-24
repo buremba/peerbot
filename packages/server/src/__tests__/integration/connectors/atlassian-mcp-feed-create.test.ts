@@ -115,7 +115,7 @@ describe("Atlassian MCP feed creation", () => {
         ${sql.json({
 					issues: {
 						key: "issues",
-						virtual: true,
+						operations: ["read"],
 						configSchema: {
 							type: "object",
 							properties: { query: { type: "string" } },

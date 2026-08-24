@@ -360,6 +360,7 @@ function normalizeManifest(raw: unknown): DeviceConnectorManifest {
   const platforms = runtime.platforms.filter((v): v is string => typeof v === 'string');
   if (platforms.length === 0) throw new Error('runtime.platforms cannot be empty');
   const feedsSchema = optionalRecord(raw, 'feeds_schema') ?? {};
+  validateFeedOperations(feedsSchema);
   rejectRemovedEntityLinks(feedsSchema);
   const actionsSchema = optionalRecord(raw, 'actions_schema');
   rejectReservedActionKeys(actionsSchema);
@@ -382,9 +383,24 @@ function normalizeManifest(raw: unknown): DeviceConnectorManifest {
   };
 }
 
+function validateFeedOperations(feedsSchema: Record<string, unknown>): void {
+  for (const [feedKey, feedDefinition] of Object.entries(feedsSchema)) {
+    if (!isRecord(feedDefinition)) throw new Error(`feeds_schema.${feedKey} must be an object`);
+    const operations = feedDefinition.operations;
+    if (
+      !Array.isArray(operations) ||
+      operations.length === 0 ||
+      !operations.every((operation) => operation === 'sync' || operation === 'read') ||
+      new Set(operations).size !== operations.length
+    ) {
+      throw new Error(`feeds_schema.${feedKey}.operations must contain unique sync/read values`);
+    }
+  }
+}
+
 /**
  * Namespace the gateway reserves for its own device-protocol action keys (e.g.
- * the virtual-feed live read). A manifest may not claim one: the server
+ * a source read). A manifest may not claim one: the server
  * dispatches these keys itself, so a connector declaring the same string would
  * shadow a protocol seam with a public operation.
  */

@@ -121,7 +121,7 @@ describe("market quote action", () => {
     expect(rows[1]).not.toHaveProperty("price");
   });
 
-  test("exposes a read-only, approval-free action and refuses sync", async () => {
+  test("exposes a read-only, approval-free action and declares no feeds", () => {
     const connector = new MarketQuotesConnector();
     const action = connector.definition.actions?.quote;
     expect(action?.requiresApproval).toBe(false);
@@ -130,6 +130,6 @@ describe("market quote action", () => {
       idempotentHint: true,
       openWorldHint: true,
     });
-    await expect(connector.sync()).rejects.toThrow(/no feeds/i);
+    expect(connector.definition.feeds).toBeUndefined();
   });
 });

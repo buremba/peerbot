@@ -1,10 +1,9 @@
 /**
  * Far-end of the connector-side taxonomy pipe (lobu#2051 Item 2): when a connector
- * subprocess fails, query_sql re-throws with a code derived from the structured
- * `httpStatus` the executor propagates (from the SDK's HttpStatusError) — not from
- * keyword-matching the redacted message. This pins that classification.
- *
- * `classifyPushdownFailure` is the exact function query_sql's 502 throw sites call.
+ * subprocess fails, query_sql and manage_feeds re-throw with a code derived from
+ * the structured `httpStatus` the executor propagates (from the SDK's
+ * HttpStatusError) — not from keyword-matching the redacted message. This pins
+ * that classification.
  */
 
 import { describe, expect, it } from 'bun:test';

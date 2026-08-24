@@ -395,7 +395,7 @@ describe('OAuth-protected MCP connector installation', () => {
     ).toBe(true);
   });
 
-  it('stamps the Jira virtual issues feed onto an Atlassian Rovo MCP install', async () => {
+  it('stamps the source-readable Jira issues feed onto an Atlassian Rovo MCP install', async () => {
     const atlassianUrl = 'https://mcp.atlassian.com/v1/mcp';
     globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
@@ -469,7 +469,7 @@ describe('OAuth-protected MCP connector installation', () => {
       tool_prefix: 'mcp_atlassian_com',
     });
     expect(definition.feeds_schema).toMatchObject({
-      issues: { key: 'issues', virtual: true },
+      issues: { key: 'issues', operations: ['read'] },
     });
   });
 

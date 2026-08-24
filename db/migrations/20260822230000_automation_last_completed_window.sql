@@ -1,14 +1,19 @@
 -- migrate:up transaction:false
 
+-- Operational cost: the nullable column add is metadata-only. The backfill
+-- scans runs once and updates at most one row per Automation; it was not timed
+-- against production-sized data in this worktree.
+
 ALTER TABLE automations
   ADD COLUMN IF NOT EXISTS last_completed_window_start timestamptz;
 
 COMMENT ON COLUMN automations.last_completed_window_start IS
-  'Latest completed scheduled logical period; event-triggered runs are excluded.';
+  'Latest completed non-event Automation window period.';
 
--- Keep the scalar projection current for replicas running the previous server
--- build. This trigger sorts after advance_automation_window_projection_from_run,
--- so a legacy NULL projection is initialized before its granularity is checked.
+-- Keep the scalar projection current for every qualifying completed Automation
+-- run-row write. This trigger sorts after
+-- advance_automation_window_projection_from_run, so a legacy NULL projection is
+-- initialized before its granularity is checked.
 CREATE OR REPLACE FUNCTION public.record_automation_last_completed_window_from_run()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -115,6 +120,11 @@ WITH automation_granularity AS (
     AND r.action_output IS NOT NULL
     AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'event'
     AND r.approved_input->>'window_start' IS NOT NULL
+    AND (
+      r.approved_input->>'granularity' IS NULL
+      OR r.approved_input->>'granularity' NOT IN ('daily', 'weekly', 'monthly', 'quarterly')
+      OR r.approved_input->>'granularity' = granularity.granularity
+    )
 ), latest_completion AS (
   SELECT automation_id, max(period_start) AS period_start
   FROM completed_periods

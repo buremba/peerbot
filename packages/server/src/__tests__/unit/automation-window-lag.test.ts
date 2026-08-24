@@ -139,12 +139,9 @@ describe("nextAutomationWindowStart — sequential recovery", () => {
 });
 
 describe("computeWindowLag", () => {
-	// THE FALSE POSITIVE this measurement was rewritten to kill. Measured against
-	// the CURSOR, a perfectly healthy daily Automation reads as two periods behind
-	// at the moment its run calls read_knowledge — the cursor is the period the
-	// PREVIOUS run completed. Prod Automation 79 (`0 4 * * *`) sits exactly here
-	// every day, so any cursor-based threshold fires on healthy runs. Measured
-	// against the WINDOW being handed out, it is one.
+	// A healthy daily Automation has completed the period before the one it is
+	// about to read. Lag is the age of the handed-out window, not the age of that
+	// latest completion, so this is one period behind rather than two.
 	test("a healthy daily Automation is one period behind, not two", () => {
 		const lag = computeWindowLag(
 			new Date("2026-08-04T00:00:00.000Z"),
@@ -196,8 +193,8 @@ describe("computeWindowLag", () => {
 		expect(lag.periodsSkipped).toBe(0);
 	});
 
-	// Prod holds windows stored with misaligned starts; the count must not shift.
-	test("aligns a misaligned stored cursor before counting the skip", () => {
+	// Historical completions may have misaligned starts; the count must not shift.
+	test("aligns a misaligned completed window before counting the skip", () => {
 		const lag = computeWindowLag(
 			new Date("2026-06-17T23:59:59.999Z"),
 			new Date("2026-08-05T00:00:00.000Z"),
@@ -235,7 +232,7 @@ describe("computeWindowLag", () => {
 	});
 
 	// An Automation that has never completed a window skipped nothing — there is no
-	// cursor to have jumped away from.
+	// completed period to have jumped away from.
 	test("an Automation with no windows yet has skipped nothing", () => {
 		const lag = computeWindowLag(
 			null,
@@ -374,8 +371,8 @@ describe("read_knowledge markdown — skipped periods", () => {
 			window_lag: lagFor(periodsSkipped),
 		});
 
-	// Silent on every healthy run — nothing is skipped when the window chains
-	// straight off the cursor, so there is no threshold here to tune and nothing
+	// Silent on every healthy run — nothing is skipped when the window follows
+	// the latest completion, so there is no threshold here to tune and nothing
 	// training a model to scroll past a notice it sees every time.
 	test("says nothing when no periods were skipped", () => {
 		expect(render(0)).not.toContain("Skipped Periods");

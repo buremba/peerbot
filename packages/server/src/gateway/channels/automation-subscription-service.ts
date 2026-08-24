@@ -518,8 +518,7 @@ export class AutomationSubscriptionService {
 					schedule, next_run_at, triggers, agent_id, model_config,
 					execution_config, sources, version, current_version_id, tags,
 					status, created_by, created_at, updated_at, automation_group_id,
-					next_window_start, completed_window_coverage, window_projection_granularity,
-					last_completed_window_start
+					next_window_start, completed_window_coverage, window_projection_granularity
 				) VALUES (
 					${automationId}, ${`Messages in ${channelId}`}, ${`chat-${platform}-${automationId}`},
 					'Chat subscription', ${organizationId}, '{}'::bigint[],
@@ -528,7 +527,7 @@ export class AutomationSubscriptionService {
 					ARRAY[${CHAT_LINK_TAG}]::text[], 'active', ${createdBy},
 					current_timestamp, current_timestamp, ${automationId},
 					${nextWindowStart.toISOString()}::timestamptz,
-					'{}'::tstzmultirange, ${projectionGranularity}, NULL
+					'{}'::tstzmultirange, ${projectionGranularity}
 				)
 			`;
 			await tx`

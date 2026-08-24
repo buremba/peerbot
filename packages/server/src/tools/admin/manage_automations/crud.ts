@@ -341,8 +341,7 @@ export async function handleCreate(
         min_cooldown_seconds,
         delivery_target, execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema,
-        next_window_start, completed_window_coverage, window_projection_granularity,
-        last_completed_window_start
+        next_window_start, completed_window_coverage, window_projection_granularity
       ) VALUES (
         ${automationId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -359,7 +358,7 @@ export async function handleCreate(
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
         ${nextWindowStart.toISOString()}::timestamptz,
-        '{}'::tstzmultirange, ${projectionGranularity}, NULL
+        '{}'::tstzmultirange, ${projectionGranularity}
       )
     `;
 
@@ -1045,8 +1044,7 @@ export async function handleCreateFromVersion(
             current_version_id, tags, status, created_by, created_at, updated_at,
             automation_group_id, source_automation_id,
             reaction_script, reaction_script_compiled, reaction_input_schema,
-            next_window_start, completed_window_coverage, window_projection_granularity,
-            last_completed_window_start
+            next_window_start, completed_window_coverage, window_projection_granularity
           ) VALUES (
             ${automationId}, ${automationName}, ${automationSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
@@ -1062,7 +1060,7 @@ export async function handleCreateFromVersion(
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)},
             ${nextWindowStart.toISOString()}::timestamptz,
-            '{}'::tstzmultirange, ${projectionGranularity}, NULL
+            '{}'::tstzmultirange, ${projectionGranularity}
           )
         `;
 

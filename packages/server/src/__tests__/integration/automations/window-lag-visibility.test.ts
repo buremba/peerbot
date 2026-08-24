@@ -158,7 +158,11 @@ describe("Automation window lag is visible and actionable", () => {
 			windowEnd: selected.window_end,
 			dispatchSource: "manual",
 		});
-		await sql`UPDATE runs SET status = 'running', claimed_at = NOW() WHERE id = ${run.runId}`;
+		await sql`
+			UPDATE runs
+			SET status = 'running', claimed_at = NOW(), claimed_by = ${`user:${userId}`}
+			WHERE id = ${run.runId}
+		`;
 		await manageAutomations(
 			{
 				action: "complete_window",
@@ -176,7 +180,7 @@ describe("Automation window lag is visible and actionable", () => {
 		expect((await read()).window_lag?.last_window_start).toBeNull();
 	});
 
-	it("reports the latest completion when scheduled periods finish out of order", async () => {
+	it("reports the latest non-event period when windows finish out of order", async () => {
 		const later = dayStart(3);
 		await completeSelectedDay(later);
 		await completeSelectedDay(dayStart(5));

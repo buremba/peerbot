@@ -83,6 +83,7 @@ describe('Automation latest-completed-window projection migration', () => {
     start: string;
     end: string;
     status: 'completed' | 'failed';
+    granularity?: 'daily' | 'weekly' | 'monthly' | 'quarterly';
   }): Promise<void> {
     const sql = getDb();
     await sql`
@@ -94,7 +95,7 @@ describe('Automation latest-completed-window projection migration', () => {
         ${options.status === 'completed' ? 'scoreable' : 'agent_error'},
         ${sql.json({
           dispatch_source: 'scheduled',
-          granularity: 'daily',
+          granularity: options.granularity ?? 'daily',
           window_start: options.start,
           window_end: options.end,
         })},
@@ -165,6 +166,21 @@ describe('Automation latest-completed-window projection migration', () => {
     await runMigration();
 
     expect(await readLastCompleted(9853)).toBeNull();
+  });
+
+  it('does not backfill a prior weekly completion after a reset to daily', async () => {
+    await seedAutomation(9855);
+    await seedRun({
+      automationId: 9855,
+      start: '2025-12-29T00:00:00.000Z',
+      end: '2026-01-05T00:00:00.000Z',
+      status: 'completed',
+      granularity: 'weekly',
+    });
+
+    await runMigration();
+
+    expect(await readLastCompleted(9855)).toBeNull();
   });
 
   it('normalizes a legacy inclusive end from the scheduled period start', async () => {

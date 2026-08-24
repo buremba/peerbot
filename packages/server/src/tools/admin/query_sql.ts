@@ -7,10 +7,9 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
-import { type AuthzScope, authzScopeFromToolContext } from '../../authz/scope';
-import { compileConnectionRowVisibility } from '../../authz/connection-visibility';
+import { authzScopeFromToolContext } from '../../authz/scope';
 import { getDb } from '../../db/client';
-import { readVirtualFeed, runConnectorQuery } from '../../lib/connector-pushdown';
+import { classifyPushdownFailure, runConnectorQuery } from '../../lib/connector-pushdown';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
@@ -31,22 +30,15 @@ export const QuerySqlSchema = Type.Object({
       maxLength: 200,
     })
   ),
-  sql: Type.Optional(
-    Type.String({
-      description:
-        'Base SELECT query. Required unless `feed` is set. Table references are auto-scoped to your organization. `SELECT FROM events` reads persisted/synced content only; virtual feeds are live-only and are not included. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
-    })
-  ),
+  sql: Type.String({
+    minLength: 1,
+    description:
+      'Base SELECT query. Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
+  }),
   connection: Type.Optional(
     Type.String({
       description:
         'Optional connection slug. When set, `sql` runs LIVE (read-only) against that connection’s external database via its connector (pushdown), and the internal org-scoping is skipped. When unset, the query runs over your org’s internal tables.',
-    })
-  ),
-  feed: Type.Optional(
-    Type.String({
-      description:
-        'Optional virtual-feed reference (numeric feed id, or "connection_slug/feed_key"). When set, the feed’s STORED config.query runs LIVE against its source (no `sql` needed — it is ignored). `search_term` is forwarded to the connector search() pushdown (each connector interprets it — e.g. Gmail query syntax AND-composed with config.query). Mutually exclusive with `connection`.',
     })
   ),
   org_slug: Type.Optional(
@@ -76,8 +68,7 @@ export const QuerySqlSchema = Type.Object({
   ),
   search_term: Type.Optional(
     Type.String({
-      description:
-        'Internal SQL: ILIKE search value. Virtual feeds: forwarded to connector search() — interpretation is connector-specific (Gmail: search syntax merged with config.query).',
+      description: 'ILIKE search value for an internal SQL query.',
     })
   ),
   search_columns: Type.Optional(
@@ -129,7 +120,7 @@ export const QuerySqlResultSchema = Type.Object({
   sql: Type.Optional(
     Type.String({
       description:
-        'The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu and is absent for stored virtual-feed queries.',
+        'The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu.',
     })
   ),
   rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
@@ -142,7 +133,6 @@ export const QuerySqlResultSchema = Type.Object({
   total_count: Type.Integer(),
   has_more: Type.Boolean(),
   execution_time_ms: Type.Number(),
-  coverage: Type.Optional(Type.Unknown()),
   error: Type.Optional(Type.String()),
   error_code: Type.Optional(Type.String()),
   retryable: Type.Optional(Type.Boolean()),
@@ -156,39 +146,12 @@ interface QuerySqlResult {
   total_count: number;
   has_more: boolean;
   execution_time_ms: number;
-  coverage?: QuerySqlCoverage;
   error?: string;
   /** Structured error code (lobu#2051 Item 2), set alongside `error`. */
   error_code?: ToolErrorCode;
   /** Whether retrying the identical query may succeed. Advisory for the agent. */
   retryable?: boolean;
 }
-
-interface SuggestedVirtualFeed {
-  feed_id: number;
-  feed: string;
-  connection_slug: string;
-  feed_key: string;
-  display_name: string | null;
-  connector_key: string;
-  suggested_limit: number;
-}
-
-interface QuerySqlCoverage {
-  source: 'persisted_events_only';
-  warning: string;
-  suggested_virtual_feeds: SuggestedVirtualFeed[];
-  more_available: boolean;
-  suggested_execution: {
-    tool: 'query_sdk';
-    method: 'client.feeds.readMany';
-    latency_note: string;
-    example: string;
-  };
-}
-
-const MAX_SUGGESTED_VIRTUAL_FEEDS = 5;
-const VIRTUAL_FEED_SUGGESTED_LIMIT = 25;
 
 // Cost-attribution ledger: a single expensive user/derived query is how an org
 // degrades the shared DB for everyone (precedent: the 3.5s subscription view).
@@ -218,64 +181,6 @@ function coercePageBounds(
 }
 
 /**
- * Resolve a `feed` reference to a numeric virtual-feed id under `scope`. Accepts
- * a bare numeric id or "connection_slug/feed_key". Applies the SAME
- * connection-visibility gate every read seam uses, so a member can only address a
- * feed on an org-visible or self-owned connection. readVirtualFeed re-checks
- * visibility + asserts virtual=true, so this only needs to disambiguate the ref.
- */
-async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<number> {
-  const trimmed = ref.trim();
-  if (/^\d+$/.test(trimmed)) return Number(trimmed);
-
-  const slash = trimmed.indexOf('/');
-  if (slash <= 0 || slash === trimmed.length - 1) {
-    throw new ToolUserError(
-      `invalid feed reference '${ref}' — use a numeric feed id or "connection_slug/feed_key"`,
-      400
-    );
-  }
-  const connectionSlug = trimmed.slice(0, slash);
-  const feedKey = trimmed.slice(slash + 1);
-
-  const sql = getDb();
-  const vis = compileConnectionRowVisibility(scope, 'c');
-  const rows = (await sql.unsafe(
-    `SELECT f.id
-     FROM feeds f
-     JOIN connections c ON c.id = f.connection_id
-     WHERE f.organization_id = $1
-       AND c.slug = $2
-       AND f.feed_key = $3
-       AND f.deleted_at IS NULL
-       AND c.deleted_at IS NULL
-       ${vis}
-     LIMIT 1`,
-    [scope.organizationId, connectionSlug, feedKey],
-  )) as unknown as Array<{ id: number }>;
-  if (rows.length === 0) {
-    throw new ToolUserError(`virtual feed '${ref}' not found or not accessible`, 404);
-  }
-  return rows[0].id;
-}
-
-/**
- * Classify a connector/pushdown failure for a hard (thrown) error. Prefers the
- * structured `httpStatus` the connector executor propagates (from the SDK's
- * HttpStatusError, lobu#2051 Item 2) over message matching, so a 429/5xx is
- * honestly retryable. Falls back to the message; an otherwise-unclassifiable
- * broken feed/connector run is UPSTREAM_5XX by default.
- */
-export function classifyPushdownFailure(err: unknown): ToolErrorCode {
-  const httpStatus =
-    err && typeof err === 'object' && typeof (err as { httpStatus?: unknown }).httpStatus === 'number'
-      ? (err as { httpStatus: number }).httpStatus
-      : undefined;
-  const code = classifyToolError({ httpStatus, message: getErrorMessage(err) });
-  return code === 'INTERNAL' ? 'UPSTREAM_5XX' : code;
-}
-
-/**
  * A soft-error result (lobu#2051 Item 2). `code` defaults to `VALIDATION` because
  * every non-DB-catch call site here is an argument/scope fault (bad column, unknown
  * org, malformed query) — none of those are retryable. The DB catch and the
@@ -298,81 +203,6 @@ function errorResult(
   };
 }
 
-function querySdkExample(feeds: SuggestedVirtualFeed[]): string {
-  const ids = feeds.map((feed) => feed.feed_id).join(', ');
-  // Keep this shape in sync with FeedsNamespace.readMany.
-  return `export default async (_ctx, client) => {
-  return client.feeds.readMany({ feed_ids: [${ids}], limit: ${VIRTUAL_FEED_SUGGESTED_LIMIT} });
-};`;
-}
-
-async function virtualFeedCoverageForEventsQuery(
-  tableRefs: string[],
-  scope: AuthzScope
-): Promise<QuerySqlCoverage | undefined> {
-  if (!tableRefs.includes('events')) return undefined;
-
-  try {
-    const sql = getDb();
-    const vis = compileConnectionRowVisibility(scope, 'c');
-    const rows = (await sql.unsafe(
-      `SELECT
-         f.id AS feed_id,
-         f.feed_key,
-         f.display_name,
-         c.slug AS connection_slug,
-         c.connector_key
-       FROM feeds f
-       JOIN connections c ON c.id = f.connection_id
-       WHERE f.organization_id = $1
-         AND f.deleted_at IS NULL
-         AND c.deleted_at IS NULL
-         AND f.status = 'active'
-         AND c.status = 'active'
-         AND (f.kind = 'virtual' OR f.virtual IS TRUE)
-         ${vis}
-       ORDER BY f.id ASC
-       LIMIT ${MAX_SUGGESTED_VIRTUAL_FEEDS + 1}`,
-      [scope.organizationId],
-    )) as unknown as Array<{
-      feed_id: number;
-      feed_key: string;
-      display_name: string | null;
-      connection_slug: string;
-      connector_key: string;
-    }>;
-
-    if (rows.length === 0) return undefined;
-    const suggested = rows.slice(0, MAX_SUGGESTED_VIRTUAL_FEEDS).map((row) => ({
-      feed_id: Number(row.feed_id),
-      feed: `${row.connection_slug}/${row.feed_key}`,
-      connection_slug: row.connection_slug,
-      feed_key: row.feed_key,
-      display_name: row.display_name,
-      connector_key: row.connector_key,
-      suggested_limit: VIRTUAL_FEED_SUGGESTED_LIMIT,
-    }));
-
-    return {
-      source: 'persisted_events_only',
-      warning:
-        'SELECT FROM events reads persisted/synced content only. Virtual feeds are live-only and are not included.',
-      suggested_virtual_feeds: suggested,
-      more_available: rows.length > MAX_SUGGESTED_VIRTUAL_FEEDS,
-      suggested_execution: {
-        tool: 'query_sdk',
-        method: 'client.feeds.readMany',
-        latency_note:
-          'Live feed reads are network-bound; run independent feeds in parallel and keep per-feed limits small.',
-        example: querySdkExample(suggested),
-      },
-    };
-  } catch (err) {
-    logger.warn({ err }, 'query_sql virtual feed coverage lookup failed');
-    return undefined;
-  }
-}
-
 export const querySql = withValidatedArgs('query_sql', QuerySqlSchema, querySqlImpl);
 
 export async function querySqlImpl(
@@ -387,15 +217,7 @@ export async function querySqlImpl(
     ...errorResult(message, startTime, code),
   });
 
-  const baseSql = (args.sql ?? '').trim();
-  // `feed` runs a STORED query, so caller `sql` is optional there; every other
-  // path requires it. `sql` is optional at the SCHEMA level (so a feed call needs
-  // no dummy sql), so this presence check moved here from the typebox boundary —
-  // but it stays a hard REJECT (throw), not a structured { error }, preserving the
-  // "missing sql rejects at the tool boundary, naming the field" contract.
-  if (!baseSql && !args.feed) {
-    throw new ToolUserError('query_sql requires `sql` (or a `feed` to read).', 400, 'VALIDATION');
-  }
+  const baseSql = args.sql.trim();
 
   // The base query is wrapped as `SELECT * FROM (<sql>) _t [ORDER BY …] LIMIT …`,
   // so an ORDER BY / LIMIT / window inside the caller's SQL is valid (it sits in
@@ -462,59 +284,6 @@ export async function querySqlImpl(
     }
   }
 
-  if (args.feed && args.connection) {
-    return fail('Pass either `feed` or `connection`, not both.');
-  }
-
-  // Virtual-feed pushdown: `feed` names a virtual feed whose STORED query runs
-  // LIVE against its source (caller `sql` is ignored — the query is authored on
-  // the feed). `search_term` narrows via the connector's search(). Same
-  // AuthzScope connection-visibility gate readVirtualFeed re-checks; the feed-ref
-  // resolution below applies it too. This is strictly tighter than the
-  // `connection` pushdown — no arbitrary caller SQL.
-  if (args.feed) {
-    const bounds = coercePageBounds(args);
-    if ('error' in bounds) return fail(bounds.error);
-    const { limit, offset } = bounds;
-    const scope = authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId });
-    let feedId: number;
-    try {
-      feedId = await resolveVirtualFeedId(args.feed, scope);
-    } catch (err) {
-      throw new ToolUserError(getErrorMessage(err), 404, 'NOT_FOUND');
-    }
-    try {
-      const r = await readVirtualFeed({
-        scope,
-        feedId,
-        terms: args.search_term ? [args.search_term] : undefined,
-        limit,
-        offset,
-        sort: args.sort_by
-          ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
-          : undefined,
-      });
-      return {
-        ...(title ? { title } : {}),
-        rows: r.rows,
-        columns: r.columns,
-        total_count: r.total ?? r.rows.length,
-        has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
-        execution_time_ms: Date.now() - startTime,
-      };
-    } catch (err) {
-      // A broken feed must surface as a hard tool error (MCP isError), never a
-      // success-shaped empty table an agent could read as "no data" (#2042).
-      throw new ToolUserError(
-        `virtual feed read failed (feed=${args.feed}): ${getErrorMessage(err)}. ` +
-          'The feed itself is broken or its connector cannot run — this is not an empty result. ' +
-          'Check the connector with client.connections.test, or client.feeds.get for feed config.',
-        502,
-        classifyPushdownFailure(err)
-      );
-    }
-  }
-
   // External pushdown: when a connection is named, the SQL runs LIVE against that
   // connection's database via its connector (no internal org-scoping — it's the
   // org's own DB, read-only). The connection is resolved org-scoped inside
@@ -550,7 +319,7 @@ export async function querySqlImpl(
         execution_time_ms: Date.now() - startTime,
       };
     } catch (err) {
-      // Same contract as the feed branch: a pushdown failure is a hard tool
+      // A pushdown failure is a hard tool
       // error, never a success-shaped empty table (#2042).
       throw new ToolUserError(
         `connection pushdown failed (connection=${args.connection}): ${getErrorMessage(err)}. ` +
@@ -704,10 +473,6 @@ export async function querySqlImpl(
       total_count: totalCount,
       has_more: offset + limit < totalCount,
       execution_time_ms: executionTimeMs,
-      coverage: await virtualFeedCoverageForEventsQuery(
-        tableRefs,
-        authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId }),
-      ),
     };
   } catch (error) {
     const msg = getErrorMessage(error);

@@ -18,6 +18,21 @@ import {
 
 export const ATLASSIAN_JIRA_ISSUES_FEED_KEY = "issues";
 
+function sourceCallOptions(params: {
+	signal?: AbortSignal;
+	deadlineAt?: number;
+}): { signal?: AbortSignal; timeoutMs?: number } {
+	const timedOut = (): Error & { exitReason: "timeout" } =>
+		Object.assign(new Error("Atlassian source read timed out"), {
+			exitReason: "timeout" as const,
+		});
+	if (params.signal?.aborted) throw timedOut();
+	if (params.deadlineAt === undefined) return { signal: params.signal };
+	const timeoutMs = Math.trunc(params.deadlineAt - Date.now());
+	if (timeoutMs <= 0) throw timedOut();
+	return { signal: params.signal, timeoutMs };
+}
+
 export const ATLASSIAN_JIRA_ISSUE_COLUMNS = [
 	{ name: "id", type: "string" },
 	{ name: "key", type: "string" },
@@ -502,6 +517,8 @@ export async function resolveAtlassianMcpJiraSite(params: {
 	connectorKey: string;
 	mcpConfig: McpProxyConfig;
 	preferredCloudId?: string;
+	signal?: AbortSignal;
+	deadlineAt?: number;
 }): Promise<JiraCloudSite> {
 	const result = await callTool(
 		params.connectorKey,
@@ -510,6 +527,7 @@ export async function resolveAtlassianMcpJiraSite(params: {
 		"getAccessibleAtlassianResources",
 		{},
 		params.connectionId,
+		sourceCallOptions(params),
 	);
 	if (result.isError) {
 		throw new Error(
@@ -552,6 +570,8 @@ export async function readAtlassianMcpVirtualFeed(params: {
 	limit?: number;
 	offset?: number;
 	sort?: { column: string; order: "asc" | "desc" };
+	signal?: AbortSignal;
+	deadlineAt?: number;
 }): Promise<{
 	rows: Record<string, unknown>[];
 	columns: { name: string; type: string }[];
@@ -566,6 +586,8 @@ export async function readAtlassianMcpVirtualFeed(params: {
 				connectionId: params.connectionId,
 				connectorKey: params.connectorKey,
 				mcpConfig: params.mcpConfig,
+				signal: params.signal,
+				deadlineAt: params.deadlineAt,
 			})
 		).cloudId;
 	}
@@ -607,6 +629,7 @@ export async function readAtlassianMcpVirtualFeed(params: {
 				...(nextPageToken ? { nextPageToken } : {}),
 			},
 			params.connectionId,
+			sourceCallOptions(params),
 		);
 		if (result.isError) {
 			throw new Error(mcpTextError(result.content, "searchJiraIssuesUsingJql failed"));

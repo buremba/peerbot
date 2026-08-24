@@ -36,10 +36,10 @@ export default async (_ctx, client) => {
     (f) => f.kind === "virtual" && f.feed_key === "query",
   );
   if (!churnFeed) throw new Error("virtual churn feed not found — run seed first");
-  const feedRead = await client.feeds.readMany({ feed_ids: [churnFeed.id] });
+  const feedRead = await client.feeds.readMany({ reads: [{ feed_id: churnFeed.id }] });
   const feedResult = (feedRead.results ?? []).find((r) => r.ok);
   if (!feedResult) throw new Error("virtual feed read failed: " + JSON.stringify(feedRead));
-  const live = (feedResult.result.rows ?? []).map((r) => ({
+  const live = (feedResult.rows ?? []).map((r) => ({
     month: String(r.month),
     cancellations: Number(r.cancellations),
   }));

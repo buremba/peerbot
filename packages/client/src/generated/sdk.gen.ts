@@ -175,9 +175,9 @@ export type Options<
 };
 
 /**
- * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes
+ * Search local saved workspace memory: entities, facts, decisions, preferences, observations, notes, and authorized channel transcripts
  *
- * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” A query such as `memory 4939822` performs an exact permission-checked content read.
+ * Search local saved workspace memory: entities, facts, decisions, preferences, observations, notes, and authorized channel transcripts.
  */
 export const searchMemory = <ThrowOnError extends boolean = false>(
   options: Options<SearchMemoryData, ThrowOnError>,
@@ -261,7 +261,7 @@ export const querySdk = <ThrowOnError extends boolean = false>(
 /**
  * Run a paginated, sortable, searchable read-only SQL query (member-safe)
  *
- * Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany.
+ * Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org, or pass `connection` to push read-only SQL fully into an external database connector. Source-backed feeds are queried explicitly with query_sdk client.feeds.readMany. Prefer client.
  */
 export const querySql = <ThrowOnError extends boolean = false>(
   options: Options<QuerySqlData, ThrowOnError>,

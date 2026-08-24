@@ -101,9 +101,10 @@ export interface DeviceVirtualFeedParams {
   offset?: number;
   sort?: { column: string; order: 'asc' | 'desc' };
   /**
-   * Caller's deadline. Ambient recall (`search_memory`) gives a live feed a few
-   * seconds, not the 60s pre-claim + 95s post-claim device budget — a question
-   * asked in chat cannot wait on a sleeping laptop. Aborting is not the same as
+   * Caller's deadline. An explicit source read (`read_feeds` /
+   * `client.feeds.readMany`) bounds each feed at its own timeout — 10s by
+   * default, 30s max — not the 60s pre-claim + 95s post-claim device budget, so
+   * one sleeping laptop cannot hold the batch open. Aborting is not the same as
    * abandoning: the waiter stops polling, finalizes the run as `timeout`, and
    * the cleanup in {@link readDeviceVirtualFeed} still scrubs it, so no work is
    * left orphaned behind a `Promise.race` the caller walked away from.
@@ -329,8 +330,8 @@ export async function readDeviceVirtualFeed(
     );
   }
 
-  // The preflight is two DB round-trips against a laptop-liveness window. An
-  // ambient read on a 5s budget can genuinely spend its deadline in there, and
+  // The preflight is two DB round-trips against a laptop-liveness window. A
+  // tightly-bounded read can genuinely spend its deadline in there, and
   // enqueueing after that creates a transport run whose only future is to be
   // cancelled — a row holding the caller's terms, briefly claimable, for a read
   // nobody is waiting on. Check here, where the cheapest correct answer is to
@@ -365,7 +366,7 @@ export async function readDeviceVirtualFeed(
 
   // The run row is the TRANSPORT, not a record. `complete-action` persists the
   // device's rows into `runs.action_output`, and `action_input` holds the
-  // caller's recall terms and filters — both would then sit in Postgres for the
+  // caller's search terms and filters — both would then sit in Postgres for the
   // run-retention window, which is exactly the durable copy a virtual feed
   // promises not to make.
   //

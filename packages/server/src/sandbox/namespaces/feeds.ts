@@ -34,17 +34,15 @@ export interface FeedsNamespace {
 		limit?: number;
 		offset?: number;
 	}): Promise<unknown>;
-	get(input: {
-		feed_id: number;
-		limit?: number;
-		search_term?: string;
-	}): Promise<unknown>;
+	get(input: { feed_id: number }): Promise<unknown>;
 	readMany(input: {
-		feed_ids: number[];
-		limit?: number;
+		reads: Array<{
+			feed_id: number;
+			query?: string;
+			limit?: number;
+			cursor?: string;
+		}>;
 		timeout_ms?: number;
-		/** For VIRTUAL feeds: term pushed to each connector's search() pushdown. */
-		search_term?: string;
 	}): Promise<unknown>;
 	create(input: FeedsCreateInput): Promise<unknown>;
 	update(input: {

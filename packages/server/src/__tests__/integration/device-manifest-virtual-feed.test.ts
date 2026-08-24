@@ -8,14 +8,8 @@
  * due time, so a virtual feed would have been scheduled for syncs no device can
  * serve while its live-read path stayed unreachable.
  *
- * The second thing pinned here is the `recall` seed. A JSON Schema `default` is
- * documentation: validation never writes it back, so `feeds.config` stays NULL —
- * and `search_memory`'s virtual fan-out selects on `config->>'recall' = 'true'`
- * off the COLUMN. Without materializing the default at create, ambient recall
- * would silently never reach the Mac, however the manifest advertises itself.
- *
  * Driven through the real `/api/workers/poll` with the SHIPPING manifest, so a
- * manifest edit that drops `virtual` or the `recall` default fails here.
+ * manifest edit that drops `virtual` fails here.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -43,10 +37,6 @@ function virtualFeedManifest(): Record<string, unknown> {
         key: VIRTUAL_FEED,
         name: 'Messages (live)',
         virtual: true,
-        configSchema: {
-          type: 'object',
-          properties: { recall: { type: 'boolean', default: true } },
-        },
       },
     },
   };
@@ -99,13 +89,12 @@ interface FeedRow {
   virtual: boolean;
   schedule: string | null;
   next_run_at: Date | string | null;
-  config: Record<string, unknown> | null;
 }
 
 async function readFeeds(orgId: string): Promise<Record<string, FeedRow>> {
   const sql = getTestDb();
   const rows = (await sql`
-    SELECT f.feed_key, f.display_name, f.kind, f.virtual, f.schedule, f.next_run_at, f.config
+    SELECT f.feed_key, f.display_name, f.kind, f.virtual, f.schedule, f.next_run_at
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE c.organization_id = ${orgId} AND c.connector_key = ${CONNECTOR_KEY}
@@ -139,7 +128,7 @@ describe('device manifest auto-wire — virtual feeds', () => {
   });
 
   it(
-    'wires a declared manifest into a collected feed AND a virtual feed opted into recall',
+    'wires a declared manifest into a collected feed and a virtual feed',
     async () => {
       const { orgId, workerId } = await seedDeviceOwner();
       await pollWithManifest(workerId, [virtualFeedManifest()]);
@@ -152,11 +141,6 @@ describe('device manifest auto-wire — virtual feeds', () => {
       const collected = feeds[COLLECTED_FEED];
       expect(collected.kind).toBe('collected');
       expect(collected.virtual).toBe(false);
-      // `recall` is seeded for the LIVE feed only — turning ambient recall on
-      // for a collected feed would mean nothing (it is already indexed) and the
-      // seed must not leak across feed keys.
-      expect(collected.config ?? {}).not.toHaveProperty('recall');
-
       // Two feeds on one connector need two LEGIBLE names. Falling back to the
       // connector's own name (`WhatsApp (this Mac)`) for both would leave the
       // user two identical rows and no way to tell which one is live — and the
@@ -169,9 +153,6 @@ describe('device manifest auto-wire — virtual feeds', () => {
       expect(live.virtual).toBe(true);
       expect(live.schedule).toBeNull();
       expect(live.next_run_at).toBeNull();
-      // The gate search_memory actually reads, materialized onto the column.
-      expect(live.config?.recall).toBe(true);
-
       // The property the NULL due time exists for: the scheduler picks up the
       // collected feed and never the virtual one. A virtual feed with a due
       // time would mint sync runs no device can serve, failing the feed on
@@ -189,19 +170,6 @@ describe('device manifest auto-wire — virtual feeds', () => {
     const feeds = await readFeeds(orgId);
     expect(feeds[VIRTUAL_FEED].next_run_at).toBeNull();
     expect(feeds[VIRTUAL_FEED].kind).toBe('virtual');
-    expect(feeds[VIRTUAL_FEED].config?.recall).toBe(true);
-    // The seed is CREATE-only: a user who turns recall off keeps it off.
-    const sql = getTestDb();
-    await sql`
-      UPDATE feeds SET config = ${sql.json({ recall: false })}
-      WHERE feed_key = ${VIRTUAL_FEED}
-        AND connection_id IN (
-          SELECT id FROM connections
-          WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
-        )
-    `;
-    await pollWithManifest(workerId, [virtualFeedManifest()]);
-    expect((await readFeeds(orgId))[VIRTUAL_FEED].config?.recall).toBe(false);
   });
 
   it(

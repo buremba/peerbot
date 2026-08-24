@@ -564,7 +564,7 @@ describe("feed config redaction", () => {
 	});
 
 	it("does not leak feed secrets or checkpoint through feeds.readMany()", async () => {
-		const result = await workspace.owner.feeds.readMany({ feed_ids: [feedId] });
+		const result = await workspace.owner.feeds.readMany({ reads: [{ feed_id: feedId }] });
 		assertNoSecrets(result, "feeds.readMany()");
 		expect(JSON.stringify(result)).not.toContain("pw-LEAK-checkpoint");
 	});

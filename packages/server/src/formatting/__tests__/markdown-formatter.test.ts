@@ -91,33 +91,36 @@ describe('formatToolResult', () => {
       expect(md).toContain('Lobu event ID**: 66');
     });
 
-    it('renders virtual-feed rows as a table and escapes cell delimiters', () => {
+    it('renders the local/source boundary and explicit feed IDs', () => {
       const result = {
         entity: null,
         matches: [],
-        virtual_feeds: [
-          {
-            feed_id: 7,
-            feed_key: 'inbox',
-            columns: [
-              { name: 'subject', type: 'text' },
-              { name: 'from', type: 'text' },
-            ],
-            // A subject with a literal pipe AND a backslash must not break the
-            // table row and must be escaped completely (backslash + pipe).
-            rows: [{ subject: 'a | b \\ c', from: 'alice@x.com' }],
-          },
-        ],
+        coverage: {
+          local_sources: ['events', 'channel_messages'],
+          source_queried: false,
+          source_feed_discovery: 'complete',
+          source_feeds: [
+            {
+              feed_id: 42,
+              feed_key: 'messages',
+              connection_slug: 'whatsapp-personal',
+              connector_key: 'whatsapp.local',
+              display_name: 'WhatsApp messages',
+              status: 'not_queried',
+            },
+          ],
+          more_source_feeds: false,
+        },
       };
+
       const md = formatToolResult('search_memory', result);
-      expect(md).not.toContain('No Results Found');
-      expect(md).toContain('inbox (live) (1)');
-      expect(md).toContain('| subject | from |');
-      // backslash escaped to `\\`, pipe escaped to `\|` — the raw ` | ` delimiter
-      // never leaks into the cell.
-      expect(md).toContain('a \\| b \\\\ c');
-      expect(md).toContain('alice@x.com');
+      expect(md).toContain('Search Coverage');
+      expect(md).toContain('Local stores searched: events, channel_messages');
+      expect(md).toContain('Connected source feeds were not queried');
+      expect(md).toContain('Feed 42: `whatsapp-personal/messages`');
+      expect(md).toContain('client.feeds.readMany');
     });
+
   });
 
   describe('query_sql tool', () => {

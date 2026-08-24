@@ -35,25 +35,6 @@ function parseEnvInterval(name: string, fallback: string): string {
 /** How long an unclaimed device action remains eligible for worker pickup. */
 export const DEVICE_ACTION_QUEUE_BUDGET_MS = 60_000;
 
-/**
- * Wall-clock a SINGLE virtual feed gets during AMBIENT recall (`search_memory`'s
- * opt-in virtual fan-out).
- *
- * Ambient recall is a side dish: it runs on every search_memory call, alongside
- * knowledge and conversation recall, to add rows if they are cheaply available.
- * It must never inherit an execution budget sized for a DELIBERATE read — the
- * device queue alone allows 60s pre-claim plus 95s post-claim, so one sleeping
- * laptop would stall every chat turn for over two minutes to contribute
- * nothing.
- *
- * 5s is the same order as the other recall readers' Postgres queries and above
- * the ~1s a warm local read costs (a real 47MB WhatsApp archive answers in tens
- * of milliseconds; the round trip is dominated by the device's 500ms poll
- * granularity). Deliberate reads — manage_feeds, query_sql — pass no deadline
- * and keep the full device budget.
- */
-export const VIRTUAL_FEED_RECALL_BUDGET_MS = 5_000;
-
 export const intervals = {
   /** Stale threshold (seconds) for the connector-lane run reaper.
    *  120s leaves room for the 30s worker heartbeat to miss ~3 ticks before

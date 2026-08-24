@@ -8,6 +8,11 @@
  */
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
+import {
+  classifyToolError,
+  getErrorMessage,
+  type ToolErrorCode,
+} from '@lobu/core';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
@@ -157,14 +162,10 @@ export interface ReadVirtualFeedParams {
   limit?: number;
   offset?: number;
   sort?: { column: string; order: 'asc' | 'desc' };
-  /**
-   * Caller's deadline for this read. Honoured by the device seam, which stops
-   * waiting AND terminalizes + scrubs its transport run rather than leaving it
-   * in flight. The compiled path has no in-subprocess cancellation, so a caller
-   * that must bound wall clock (ambient recall) races this promise too — see
-   * `readVirtualFeedWithinRecallBudget` in tools/search.ts.
-   */
+  /** Caller cancellation, threaded into device and HTTP transports. */
   signal?: AbortSignal;
+  /** Absolute wall-clock deadline. Compiled connectors are killed at this deadline. */
+  deadlineAt?: number;
 }
 
 /** Result from {@link readVirtualFeed} — live rows, never persisted. */
@@ -172,6 +173,38 @@ export interface ReadVirtualFeedResult {
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
   total?: number;
+}
+
+function deadlineError(feedId: number): Error & { exitReason: 'timeout' } {
+  return Object.assign(new Error(`source read for feed '${feedId}' timed out`), {
+    exitReason: 'timeout' as const,
+  });
+}
+
+function remainingReadMs(p: ReadVirtualFeedParams): number | undefined {
+  if (p.signal?.aborted) throw deadlineError(p.feedId);
+  if (p.deadlineAt === undefined) return undefined;
+  const remaining = Math.trunc(p.deadlineAt - Date.now());
+  if (remaining <= 0) throw deadlineError(p.feedId);
+  return remaining;
+}
+
+/** Classify a thrown connector/source failure using structured diagnostics first. */
+export function classifyPushdownFailure(err: unknown): ToolErrorCode {
+  const diagnostic = err as {
+    httpStatus?: unknown;
+    exitReason?: unknown;
+  } | null;
+  const httpStatus = typeof diagnostic?.httpStatus === 'number' ? diagnostic.httpStatus : undefined;
+  const exitReason =
+    diagnostic?.exitReason === 'timeout' ||
+    diagnostic?.exitReason === 'oom' ||
+    diagnostic?.exitReason === 'crash' ||
+    diagnostic?.exitReason === 'error_message'
+      ? diagnostic.exitReason
+      : undefined;
+  const code = classifyToolError({ httpStatus, exitReason, message: getErrorMessage(err) });
+  return code === 'INTERNAL' ? 'UPSTREAM_5XX' : code;
 }
 
 /**
@@ -187,6 +220,7 @@ export interface ReadVirtualFeedResult {
  * shape sync uses), so a connector author keeps one query authoring surface.
  */
 export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVirtualFeedResult> {
+  remainingReadMs(p);
   const sql = getDb();
 
   // Resolve the feed + connection, fenced by the SAME visibility compiler the
@@ -270,6 +304,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
 
   const feedConfig = (feed.config ?? {}) as Record<string, unknown>;
   const storedQuery = typeof feedConfig.query === 'string' ? feedConfig.query : '';
+  remainingReadMs(p);
 
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
@@ -295,6 +330,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
       limit: p.limit,
       offset: p.offset,
       sort: p.sort,
+      signal: p.signal,
+      deadlineAt: p.deadlineAt,
     });
   }
 
@@ -319,6 +356,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   const hasConnectorCode =
     feed.has_compiled_code === true || findBundledConnectorFile(feed.connector_key) !== null;
   if (isMetadataOnlyDeviceConnector(feed.runtime, hasConnectorCode)) {
+    remainingReadMs(p);
     return readDeviceVirtualFeed({
       organizationId: p.scope.organizationId,
       feedId: Number(feed.id),
@@ -363,6 +401,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   };
 
   const terms = (p.terms ?? []).map((t) => t.trim()).filter(Boolean);
+  const timeoutMs = remainingReadMs(p);
   const result = await executeCompiledConnector({
     compiledCode,
     job:
@@ -392,6 +431,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
             offset: p.offset,
             sort: p.sort,
           },
+    timeoutMs,
   });
 
   if (result.mode !== 'query' && result.mode !== 'search') {

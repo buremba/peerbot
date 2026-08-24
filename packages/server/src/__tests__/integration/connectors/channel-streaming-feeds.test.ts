@@ -9,19 +9,12 @@
  *      with next_run_at in the past — kind is the discriminator.
  *   3. A chat-link Automation materializes the channel's feed under its
  *      connection; archiving it soft-deletes the feed.
- *   4. manage_feeds read_feed dispatches on kind: a streaming feed returns its
- *      channel transcript, a collected feed returns metadata + recent runs.
+ *   4. manage_feeds read_feed is metadata-only for every feed kind.
  *   5. facet derivation: a chat-only connection whose channels are streaming
  *      feeds is NOT mislabeled a data connection.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import {
-  slackAclSource,
-  slackChannelKey,
-  slackChannelsToResources,
-} from "@lobu/connectors/slack-identity";
-import { buildAccessGraph } from "../../../authz/access-graph";
 import { getDb } from "../../../db/client";
 import { AutomationSubscriptionService } from "../../../gateway/channels/automation-subscription-service";
 import {
@@ -29,9 +22,7 @@ import {
   softDeleteStreamingChannelFeed,
 } from "../../../gateway/channels/channel-feed";
 import type { Env } from "../../../index";
-import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
-import { ensureMemberEntity } from "../../../utils/member-entity";
 import { withAclEdgeWrite } from "../../../utils/relationship-validation";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestConnection } from "../../setup/test-fixtures";
@@ -263,7 +254,7 @@ describe("channel streaming feeds", () => {
     expect(removed.deleted_at).not.toBeNull();
   });
 
-  it("read_feed returns a streaming feed's transcript (kind dispatch)", async () => {
+  it("read_feed returns streaming feed metadata without its transcript", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     const feedId = await ensureStreamingChannelFeed({
       connectionId: conn.id,
@@ -300,14 +291,18 @@ describe("channel streaming feeds", () => {
       action: "read_feed",
       feed_id: feedId,
     })) as {
+      action: string;
       kind: string;
-      messages: Array<{ user: string; text: string; isBot: boolean }>;
+      feed?: { id: number };
+      recent_runs?: unknown[];
+      messages?: unknown[];
     };
 
+    expect(result.action).toBe("read_feed");
     expect(result.kind).toBe("streaming");
-    expect(result.messages.length).toBe(2);
-    expect(result.messages[0]).toMatchObject({ user: "Alice", text: "hello team", isBot: false });
-    expect(result.messages[1]).toMatchObject({ user: "assistant", text: "hi Alice", isBot: true });
+    expect(result.feed?.id).toBe(feedId);
+    expect(result.recent_runs).toEqual([]);
+    expect(result.messages).toBeUndefined();
   });
 
   it("trigger_feed rejects a streaming feed (only collected feeds sync)", async () => {
@@ -343,8 +338,8 @@ describe("channel streaming feeds", () => {
     `) as Array<{ id: number; kind: string }>;
     expect(feedRow[0]?.kind).toBe("collected");
 
-    // read_feed dispatches on kind: a collected feed resolves to its metadata +
-    // recent sync runs, NEVER a channel_messages transcript.
+    // Every feed kind resolves to metadata + recent sync runs, never a
+    // channel_messages transcript.
     const res = (await workspace.owner.feeds.manage({
       action: "read_feed",
       feed_id: feedRow[0].id,
@@ -415,99 +410,7 @@ describe("channel streaming feeds", () => {
     expect(result.connection.facets.chat).toBe(true);
   });
 
-  it("read_feed gates an ACL-enforced channel by membership, not just connection visibility", async () => {
-    // The owner can SEE any connection (no visibility filter), but must not read
-    // an enforced Slack channel's transcript unless they're a channel member.
-    const conn = await makeChatConnection({ orgId, teamId: "TENF" });
-    const feedId = await ensureStreamingChannelFeed({
-      connectionId: conn.id,
-      organizationId: orgId,
-      channelKey: "slack:CENF",
-    });
-    const runtimeConnId = slugToRuntimeConnectionId(conn.slug);
-    const sql = getTestDb();
-    await sql`
-      INSERT INTO channel_messages (
-        organization_id, connection_id, platform, channel_id,
-        platform_message_id, author_name, is_bot, text, occurred_at
-      ) VALUES (
-        ${orgId}, ${runtimeConnId}, 'slack', 'CENF',
-        'me1', 'Insider', false, 'enforced channel secret', NOW()
-      )
-    `;
-
-    // Not enforced yet → owner reads it.
-    const before = (await workspace.owner.feeds.manage({
-      action: "read_feed",
-      feed_id: feedId,
-    })) as { messages?: unknown[] };
-    expect(before.messages?.length).toBe(1);
-
-    // Enforce the connection's ACL; owner is NOT a channel member.
-    const graph = await buildAccessGraph({
-      organizationId: orgId,
-      connectionId: runtimeConnId,
-      connectorKey: slackAclSource.key,
-      resourceNamespace: slackAclSource.resourceNamespace,
-      memberIdentities: slackAclSource.memberIdentities,
-      resources: slackChannelsToResources("TENF", [
-        { channelId: "CENF", name: "secret", memberSlackUserIds: [] },
-      ]),
-    });
-
-    const blocked = (await workspace.owner.feeds.manage({
-      action: "read_feed",
-      feed_id: feedId,
-    })) as { messages?: unknown[] };
-    expect(blocked.messages?.length).toBe(0); // membership gate fires
-
-    // Make the owner a channel member → they can read it again.
-    const channelEntityId =
-      graph.resourceEntityIds[slackChannelKey("TENF", "CENF")];
-    // ensureMemberEntity enforces userId-owns-email: the auth_user_id/auth:signup
-    // claim (which the gate resolves on) is only written when the userId owns the
-    // email the $member is provisioned under. The real sign-in path always passes
-    // the signed-in user's own email, so seed with it here — a constructed
-    // owner-<id>@example.com would mismatch the user row and be refused.
-    await ensureMemberEntity({
-      organizationId: orgId,
-      userId: workspace.users.owner.id,
-      name: "Owner",
-      email: workspace.users.owner.email,
-    });
-    const [member] = await sql`
-      SELECT e.id FROM entities e
-      JOIN entity_types et ON et.id = e.entity_type_id AND et.slug = '$member'
-      JOIN entity_identities ei ON ei.entity_id = e.id
-        AND ei.namespace = 'auth_user_id' AND ei.identifier = ${workspace.users.owner.id}
-        AND ei.source_connector = 'auth:signup'
-      WHERE e.organization_id = ${orgId} AND e.deleted_at IS NULL
-      LIMIT 1
-    `;
-    const [mot] = await sql`
-      SELECT id FROM entity_relationship_types
-      WHERE organization_id = ${orgId} AND slug = 'member_of' AND status = 'active'
-      LIMIT 1
-    `;
-    // Seeded under the ACL-write privilege because `member_of` is classified
-    // authorization-bearing: the chokepoint trigger refuses a grant minted
-    // outside a sync, which is the property this fixture is standing in for.
-    await withAclEdgeWrite(sql, async (tx) => {
-      await tx`
-        INSERT INTO entity_relationships (
-          organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
-        ) VALUES (${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW())
-      `;
-    });
-
-    const allowed = (await workspace.owner.feeds.manage({
-      action: "read_feed",
-      feed_id: feedId,
-    })) as { messages?: unknown[] };
-    expect(allowed.messages?.length).toBe(1);
-  });
-
-  it("does not leak a PRIVATE connection's transcript to an anonymous caller", async () => {
+  it("does not expose a private connection's feed metadata to an anonymous caller", async () => {
     // A private chat connection: visible only to its creator / org admins.
     chatConnectionSeq += 1;
     const priv = await createTestConnection({
@@ -544,15 +447,16 @@ describe("channel streaming feeds", () => {
       )
     `;
 
-    // Owner (creator) CAN read it.
+    // Owner (creator) can inspect metadata, but even the owner gets no content.
     const ownerRes = (await workspace.owner.feeds.manage({
       action: "read_feed",
       feed_id: feedId,
-    })) as { messages?: unknown[]; error?: string };
-    expect(ownerRes.messages?.length).toBe(1);
+    })) as { feed?: { id: number }; messages?: unknown[]; error?: string };
+    expect(ownerRes.feed?.id).toBe(feedId);
+    expect(ownerRes.messages).toBeUndefined();
 
-    // Anonymous reader of the public org must NOT — the gate hides the private
-    // connection's feed, so the transcript is never resolved.
+    // Anonymous reader of the public org cannot see the private connection's
+    // feed metadata.
     const anonRes = (await workspace.asAnonymous().feeds.manage({
       action: "read_feed",
       feed_id: feedId,

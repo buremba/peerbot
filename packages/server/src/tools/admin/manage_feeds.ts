@@ -5,19 +5,17 @@
  *
  * Actions:
  * - list_feeds: List feeds with optional filters
- * - read_feed: Read one feed by id, dispatching on kind — a collected feed
- *   returns its metadata + recent sync runs; a virtual feed returns LIVE rows
- *   via the connector query()/search() pushdown (never synced); a streaming
- *   (chat-channel) feed returns its live transcript from channel_messages.
- * - read_feeds: Read several feeds in parallel with per-feed failures.
+ * - read_feed: Read metadata + recent sync runs without touching the source.
+ * - read_feeds: Explicitly query several source-backed feeds in parallel.
  * - create_feed: Create a new feed for a connection
  * - update_feed: Update feed settings
  * - delete_feed: Delete a feed
  * - trigger_feed: Trigger an immediate sync for a feed
  */
 
+import { createHash } from 'node:crypto';
 import { type Static } from '@sinclair/typebox';
-import { getErrorMessage, parseJsonObject } from '@lobu/core';
+import { getErrorMessage, isRetryable, parseJsonObject, type ToolErrorCode } from '@lobu/core';
 import {
   CreateFeedAction,
   DeleteFeedAction,
@@ -36,17 +34,14 @@ import { authzScopeFromToolContext } from '../../authz/scope';
 import {
   feedLinkedEntityIdsSql,
   feedLinkedToBusinessEntitySql,
-  listChannelAboutEntities,
 } from '../../authz/channel-about';
-import { filterChannelsForRequester } from '../../authz/channel-visibility';
-import { readVirtualFeed } from '../../lib/connector-pushdown';
+import { classifyPushdownFailure, readVirtualFeed } from '../../lib/connector-pushdown';
 import {
   ATLASSIAN_JIRA_ISSUES_FEED_KEY,
   isAtlassianMcpConfig,
   normalizeMcpProxyConfig,
 } from '../../operations/atlassian-mcp-feed';
 import { reconcileAtlassianMcpJiraSite } from '../../connect/atlassian-mcp-site';
-import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
 import { nextRunAt, validateSchedule, validateTimezone } from '../../utils/cron';
@@ -371,10 +366,10 @@ async function handleReadFeed(
   ctx: ToolContext
 ): Promise<ManageFeedsResult> {
   const sql = getDb();
-  const { organizationId, userId } = ctx;
+  const { organizationId } = ctx;
   // Connection-visibility gate (mirrors manage_connections crud handleList/Get):
-  // read_feed is in PUBLIC_READ_ACTIONS, so a feed's config/transcript is content
-  // an anonymous caller could otherwise pull by guessing a feed_id. Owners/admins
+  // read_feed is in PUBLIC_READ_ACTIONS, so feed metadata is content an
+  // anonymous caller could otherwise pull by guessing a feed_id. Owners/admins
   // see all; everyone else gets the shared connection-visibility predicate
   // (anonymous → org-only).
   const visibilityFilter = (await callerIsAdmin(sql, ctx))
@@ -385,19 +380,7 @@ async function handleReadFeed(
     SELECT f.*,
            c.slug,
            c.connector_key,
-           c.external_tenant_id,
            c.display_name AS connection_name,
-           -- The channel's CONCRETE workspace, from its Automation trigger: the
-           -- SAME real team the about-edge writer keyed on. For a Grid org-wide install the
-           -- connection tenant is the enterprise E-id, so the about lookup must
-           -- NOT fall back to it; the trigger holds the real T-id.
-           (SELECT subscription.trigger_team_id
-             FROM automation_message_subscriptions subscription
-             WHERE subscription.organization_id = f.organization_id
-               AND subscription.connection_id = f.connection_id
-               AND subscription.channel_id = f.feed_key
-               AND subscription.trigger_team_id IS NOT NULL
-             LIMIT 1) AS automation_team_id,
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
@@ -415,83 +398,6 @@ async function handleReadFeed(
   if (rows.length === 0) return { error: 'Feed not found' };
   const [feed] = await toPublicFeeds(organizationId, [rows[0]]);
 
-  // A streaming (chat-channel) feed has no sync runs — its content is the live
-  // transcript in `channel_messages`. Map the connection slug + feed_key to the
-  // runtime ids channel_messages is keyed by: the BYO namespace is stripped off
-  // the slug (mirror of resolveBoundChannelRows), and the platform prefix
-  // (`slack:`) is stripped off feed_key to the bare channel id capture stores.
-  if (feed.kind === 'streaming') {
-    const slug = String(feed.slug);
-    const feedKey = String(feed.feed_key);
-    const connectionId = slug.startsWith('agentconn-') ? slug.slice(10) : slug;
-    const channelId = feedKey.includes(':')
-      ? feedKey.slice(feedKey.indexOf(':') + 1)
-      : feedKey;
-    // The connection-visibility gate above only decides who can see the
-    // CONNECTION. For an ACL-enforced Slack channel the transcript is further
-    // gated to channel members — a user who can see the connection but isn't in
-    // the channel must NOT read its messages. Non-enforced channels pass through
-    // (same posture as search_memory). Fail-closed: a dropped row → no transcript.
-    const visible = await filterChannelsForRequester(sql, {
-      organizationId,
-      userId: userId ?? null,
-      rows: [
-        {
-          id: connectionId,
-          platform: String(feed.connector_key ?? 'slack'),
-          channel_id: channelId,
-          team_id: (feed.external_tenant_id as string | null) ?? null,
-        },
-      ],
-    });
-    if (visible.length === 0) {
-      return { action: 'read_feed', kind: 'streaming', feed, messages: [] };
-    }
-    const messages = await readChannelTranscript(
-      organizationId,
-      connectionId,
-      channelId,
-      args.limit ?? 50
-    );
-    const aboutEntities = await listChannelAboutEntities({
-      organizationId,
-      connectionId: feed.connection_id,
-      connectorKey: String(feed.connector_key ?? 'slack'),
-      // The Automation trigger's real workspace (`T…`) — NOT the connection tenant,
-      // which is the enterprise `E…` on a Grid org-wide install. Falls back to the tenant
-      // only for a non-team-scoped connector / not-yet-healed trigger, matching
-      // the writer.
-      teamId:
-        (feed.automation_team_id as string | null) ??
-        (feed.external_tenant_id as string | null) ??
-        null,
-      channelId: feedKey,
-    });
-    return {
-      action: 'read_feed',
-      kind: 'streaming',
-      feed,
-      messages,
-      team_id: (feed.external_tenant_id as string | null) ?? null,
-      about_entities: aboutEntities,
-    };
-  }
-
-  // A virtual feed is never synced — its content is read LIVE at request time
-  // via the connector's query()/search() pushdown (no events written). Same
-  // AuthzScope connection-visibility gate as the query_sql pushdown: a member
-  // only reaches org-visible or own connections; the feed's connection is the
-  // ACL boundary.
-  if (feed.kind === 'virtual') {
-    const live = await readVirtualFeed({
-      scope: authzScopeFromToolContext({ organizationId, userId: userId ?? null }),
-      feedId: args.feed_id,
-      limit: args.limit,
-      terms: args.search_term ? [args.search_term] : undefined,
-    });
-    return { action: 'read_feed', kind: 'virtual', feed, ...live };
-  }
-
   const runs = await sql`
     SELECT id, status, items_collected, error_message, created_at, completed_at, checkpoint, connector_version,
            dry_run, dry_run_preview
@@ -504,19 +410,125 @@ async function handleReadFeed(
   return { action: 'read_feed', kind: String(feed.kind), feed, recent_runs: runs };
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
+interface SourceCursor {
+  v: 1;
+  feed_id: number;
+  offset: number;
+  query_hash: string;
+}
+
+function sourceQueryHash(query: string | undefined): string {
+  return createHash('sha256').update(query?.trim() ?? '').digest('base64url').slice(0, 16);
+}
+
+/**
+ * A caller-supplied cursor that does not decode, or does not belong to this
+ * (feed, query) pair. Marked structurally rather than by message text so the
+ * classifier never confuses it with a connector error that merely mentions a
+ * cursor.
+ */
+class SourceCursorError extends Error {
+  readonly isCursorError = true as const;
+}
+
+function decodeSourceCursor(
+  cursor: string | undefined,
+  feedId: number,
+  query: string | undefined
+): number {
+  if (!cursor) return 0;
+  let parsed: SourceCursor;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as SourceCursor;
+  } catch {
+    throw new SourceCursorError('Invalid source cursor');
+  }
+  if (
+    parsed.v !== 1 ||
+    parsed.feed_id !== feedId ||
+    !Number.isSafeInteger(parsed.offset) ||
+    parsed.offset < 0 ||
+    parsed.query_hash !== sourceQueryHash(query)
+  ) {
+    throw new SourceCursorError('Source cursor does not match this feed and query');
+  }
+  return parsed.offset;
+}
+
+function encodeSourceCursor(feedId: number, offset: number, query: string | undefined): string {
+  const payload: SourceCursor = {
+    v: 1,
+    feed_id: feedId,
+    offset,
+    query_hash: sourceQueryHash(query),
+  };
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function sourceReadError(message: string): Error & { exitReason: 'timeout' } {
+  return Object.assign(new Error(message), { exitReason: 'timeout' as const });
+}
+
+/**
+ * Faults this handler owns are recognised structurally; everything else is a
+ * connector/source failure and goes to the shared pushdown classifier. The two
+ * message probes below match readVirtualFeed's own resolution errors (feed
+ * missing / not virtual), which are argument faults, not upstream ones.
+ */
+function sourceErrorCode(err: unknown): ToolErrorCode {
+  if (err instanceof SourceCursorError) return 'VALIDATION';
+  const message = getErrorMessage(err).toLowerCase();
+  if (message.includes('is not a virtual feed')) return 'VALIDATION';
+  if (message.includes('not found or not accessible')) return 'NOT_FOUND';
+  return classifyPushdownFailure(err);
+}
+
+async function readSourceWithinDeadline(
+  read: Static<typeof ReadFeedsAction>['reads'][number],
   timeoutMs: number,
-  message: string
-): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  ctx: ToolContext
+) {
+  const controller = new AbortController();
+  const deadlineAt = Date.now() + timeoutMs;
+  const onCallerAbort = () => controller.abort(ctx.abortSignal?.reason);
+  ctx.abortSignal?.addEventListener('abort', onCallerAbort, { once: true });
+  if (ctx.abortSignal?.aborted) onCallerAbort();
+  const offset = decodeSourceCursor(read.cursor, read.feed_id, read.query);
+  const limit = Math.max(1, Math.min(500, Math.trunc(read.limit ?? 50)));
+  const pending = readVirtualFeed({
+    scope: authzScopeFromToolContext(ctx),
+    feedId: read.feed_id,
+    terms: read.query ? [read.query] : undefined,
+    limit,
+    offset,
+    signal: controller.signal,
+    deadlineAt,
+  });
+  pending.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(sourceReadError(`source read ${read.feed_id} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
   });
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    const result = await Promise.race([pending, deadline]);
+    const hasMore =
+      result.total !== undefined ? offset + result.rows.length < result.total : result.rows.length >= limit;
+    return {
+      feed_id: read.feed_id,
+      ok: true as const,
+      rows: result.rows,
+      columns: result.columns,
+      ...(result.total === undefined ? {} : { total: result.total }),
+      ...(hasMore
+        ? { next_cursor: encodeSourceCursor(read.feed_id, offset + result.rows.length, read.query) }
+        : {}),
+    };
   } finally {
-    if (timeout) clearTimeout(timeout);
+    if (timer) clearTimeout(timer);
+    ctx.abortSignal?.removeEventListener('abort', onCallerAbort);
   }
 }
 
@@ -528,24 +540,19 @@ async function handleReadFeeds(
   const timeoutMs = Number.isFinite(rawTimeoutMs)
     ? Math.max(1000, Math.min(MAX_BATCH_READ_TIMEOUT_MS, Math.trunc(rawTimeoutMs)))
     : DEFAULT_BATCH_READ_TIMEOUT_MS;
-  const feedIds = [...new Set(args.feed_ids.map((id) => Number(id)))].slice(0, 10);
   const results = await Promise.all(
-    feedIds.map(async (feedId) => {
+    args.reads.slice(0, 10).map(async (read) => {
       try {
-        const result = await withTimeout(
-          handleReadFeed(
-            { action: 'read_feed', feed_id: feedId, limit: args.limit, search_term: args.search_term },
-            ctx
-          ),
-          timeoutMs,
-          `read_feed ${feedId} timed out after ${timeoutMs}ms`
-        );
-        if ('error' in result) {
-          return { feed_id: feedId, ok: false, error: result.error };
-        }
-        return { feed_id: feedId, ok: true, result };
+        return await readSourceWithinDeadline(read, timeoutMs, ctx);
       } catch (err) {
-        return { feed_id: feedId, ok: false, error: getErrorMessage(err) };
+        const error_code = sourceErrorCode(err);
+        return {
+          feed_id: read.feed_id,
+          ok: false as const,
+          error: getErrorMessage(err),
+          error_code,
+          retryable: isRetryable(error_code),
+        };
       }
     })
   );
@@ -615,7 +622,7 @@ async function handleCreateFeed(
 
   // A virtual feed is read LIVE at request time and never synced, so it has no
   // schedule. config.query is an optional scope fence; agents can compose further
-  // filters at read time (query_sql feed_query) or pass recall terms.
+  // filters through an explicit feeds.readMany source query.
   // Default from the connector feed definition (`feeds_schema[key].virtual`) when
   // the caller omits `virtual`. Explicit `args.virtual` always wins (true or false).
   const schemaDefaultVirtual = feedsSchema?.[args.feed_key]?.virtual === true;

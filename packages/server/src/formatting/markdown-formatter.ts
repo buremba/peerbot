@@ -387,11 +387,10 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
   const { entity, matches, suggestion } = result;
   const hasContent = result.content?.length > 0;
   const hasConversation = result.conversation_messages?.length > 0;
-  const hasVirtual = result.virtual_feeds?.length > 0;
 
   let md: string;
 
-  if (!entity && matches.length === 0 && (hasContent || hasConversation || hasVirtual)) {
+  if (!entity && matches.length === 0 && (hasContent || hasConversation)) {
     // Recall hits with no entity match — don't claim "No Results"; the content
     // and channel-conversation sections appended below carry the answer.
     md = '# 🔍 Search Results\n\n';
@@ -439,42 +438,34 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
   if (hasConversation) {
     md += formatConversationMessages(result.conversation_messages);
   }
-  if (hasVirtual) {
-    md += formatVirtualFeeds(result.virtual_feeds);
+  if (result.coverage) {
+    md += formatSearchCoverage(result.coverage);
   }
-
   return md;
 }
 
-/** Render live virtual-feed recall blocks (one per opt-in feed). Rows are
- * arbitrary connector columns, so each feed prints its own compact table under a
- * feed-keyed heading — keeps default (non-JSON) MCP clients from seeing "No
- * Results" when search_memory matched only a live source. */
-function formatVirtualFeeds(feeds: any[]): string {
-  let md = '';
-  for (const feed of feeds) {
-    const cols: { name: string }[] = feed.columns ?? [];
-    const rows: Record<string, unknown>[] = feed.rows ?? [];
-    const heading = feed.feed_key ? `${feed.feed_key} (live)` : 'Live Feed';
-    md += `## ${heading} (${rows.length})\n\n`;
-    if (cols.length === 0 || rows.length === 0) continue;
-    const names = cols.map((c) => c.name);
-    md += `| ${names.join(' | ')} |\n`;
-    md += `| ${names.map(() => '---').join(' | ')} |\n`;
-    for (const row of rows) {
-      const cells = names.map((n) => {
-        const v = row[n];
-        const s = v == null ? '' : String(v);
-        // Escape backslash FIRST (so the escaping we add for `|` isn't itself
-        // re-escaped), then the cell delimiter, then flatten newlines.
-        const flat = s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-        return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
-      });
-      md += `| ${cells.join(' | ')} |\n`;
-    }
-    md += '\n';
+function formatSearchCoverage(coverage: any): string {
+  const localSources = Array.isArray(coverage.local_sources) ? coverage.local_sources : [];
+  const sourceFeeds = Array.isArray(coverage.source_feeds) ? coverage.source_feeds : [];
+  let md = '## Search Coverage\n\n';
+  md += `Local stores searched: ${localSources.length > 0 ? localSources.join(', ') : 'none completed'}.\n\n`;
+  md += 'Connected source feeds were not queried. Use `client.feeds.readMany` through `query_sdk` to read selected sources explicitly.\n\n';
+  if (coverage.source_feed_discovery === 'unavailable') {
+    md += 'Source feed discovery was unavailable for this search.\n\n';
+    return md;
   }
-  return md;
+  if (sourceFeeds.length === 0) {
+    md += 'No accessible source-backed feeds were found.\n\n';
+    return md;
+  }
+  md += 'Accessible source feeds:\n\n';
+  for (const feed of sourceFeeds) {
+    const label = `${feed.connection_slug}/${feed.feed_key}`;
+    const displayName = feed.display_name ? ` (${feed.display_name})` : '';
+    md += `- Feed ${feed.feed_id}: \`${label}\`${displayName}, ${feed.connector_key}, not queried\n`;
+  }
+  if (coverage.more_source_feeds) md += '- More accessible source feeds are available\n';
+  return `${md}\n`;
 }
 
 /** Render channel-conversation recall hits (`channel_messages`) — keeps default

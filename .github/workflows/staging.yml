@@ -1,77 +1,112 @@
 name: Staging lock
 
-# The 'staging' label pins the rolling staging URL (STAGING_HOST, public) to one PR.
-# Adding the label acquires the lock (strips it from other open PRs, moves the
-# staging ingress to this PR's namespace); removing it releases the lock.
-# Also dispatchable manually (workflow_dispatch) for manual lock control.
+# A staging label routes the public staging host to that PR preview. Manual
+# dispatch can instead route to the allowlisted local Tailscale endpoint or the
+# permanent offline sink. The exact-host Ingress is never deleted: without it,
+# production's *.lobu.ai Ingress accepts staging.lobu.ai.
 on:
   pull_request:
-    types: [labeled, unlabeled]
+    # Closing a PR fires no `unlabeled` event, so a merged or abandoned holder
+    # would keep the public host pointed at the namespace preview.yml deletes on
+    # that same event.
+    types: [labeled, unlabeled, closed]
+  # A TLS secret is only readable from its own namespace, so the *.lobu.ai
+  # wildcard is copied out of the production namespace into lobu-staging. It is
+  # copied, not watched — re-run daily so a renewed certificate lands even while
+  # nobody changes a staging route.
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: 'PR to lock/unlock the staging URL'
-        required: true
-        type: string
-      action:
-        description: 'labeled = acquire the lock, unlabeled = release'
+      target:
+        description: Route staging to the configured local tailnet endpoint or offline
         required: true
         type: choice
-        options: [labeled, unlabeled]
+        options: [local-tailnet, offline]
+      pr_number:
+        description: Optional current-owner PR number for an offline release
+        required: false
+        type: string
 
 permissions:
   contents: read
   pull-requests: write
 
-# Global: serializes all staging-lock operations so concurrent label changes
-# converge instead of racing.
+# Global, and deliberately non-cancelling: a queued release must not kill the
+# acquire still in flight, or it would take the host away from whoever had just
+# been given it. GitHub still keeps only one *pending* run per group, so a
+# dropped release is survivable only because every release is owner-scoped.
 concurrency:
   group: staging-lock
+  cancel-in-progress: false
 
 jobs:
   reconcile:
     runs-on: ubuntu-24.04
     # Fork guard (same shape as preview.yml): a 'staging' label on a fork PR
     # would run this job without secrets - empty kubeconfig, noisy failures.
-    if: (github.event.label.name == 'staging' || github.event_name == 'workflow_dispatch') && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    #
+    # `closed` is gated on the label as well. The concurrency group is global
+    # and GitHub keeps only one pending run in a group, so a run queued by an
+    # unrelated PR closing would cancel a release already waiting behind the
+    # run in flight - and then no-op, because it does not own the lock.
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'staging')) || github.event.label.name == 'staging') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     env:
-      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
-      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
-      STAGING_INGRESS: lobu-staging
-      # Public DNS, not the tailnet name: an MCP host (claude.ai, ChatGPT)
-      # resolves and calls /mcp from its own backend, so a tailnet-only name
-      # is unreachable to it and the connector fails at discovery.
+      PR_NUM: ${{ github.event.pull_request.number || inputs.pr_number }}
+      # A label event is the two-value case: adding it acquires, removing it
+      # releases. Manual dispatch is the only way to reach local-tailnet.
+      STAGING_TARGET: ${{ github.event_name == 'schedule' && 'refresh-tls' || github.event_name == 'workflow_dispatch' && inputs.target || (github.event.action == 'labeled' && 'preview' || 'offline') }}
+      # Only the operator-configurable knobs are set here; the namespace,
+      # Ingress, router, egress Service and wildcard-secret names all default
+      # to the same literals inside scripts/staging-route.sh.
       STAGING_HOST: ${{ vars.STAGING_HOST || 'staging.lobu.ai' }}
-      # cert-manager issues the *.lobu.ai wildcard into the prod namespace;
-      # the staging ingress lives in the preview namespace and needs its own
-      # copy of that secret.
-      WILDCARD_TLS_NS: summaries-prod
-      WILDCARD_TLS_SECRET: wildcard-lobu-ai-tls
+      STAGING_LOCAL_TAILNET_FQDN: ${{ vars.STAGING_LOCAL_TAILNET_FQDN }}
+      STAGING_LOCAL_TAILNET_PORT: ${{ vars.STAGING_LOCAL_TAILNET_PORT || '10080' }}
+      TAILNET_DOMAIN: ${{ vars.TAILNET_DOMAIN }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      # Deploy identity, checked before the first cluster write. KUBE_SERVER
-      # and KUBE_CLUSTER_UID have no default: until an operator sets both repo
-      # variables this job stops at the preflight (see the script's header).
+      # Deploy identity is pinned before any cluster read or write. The route
+      # script owns a permanent system namespace and may restore the displaced
+      # preview holder, so the preflight covers both those bounded resources
+      # and the cross-namespace preview operations it can perform.
       KUBE_EXPECTED_CONTEXT: ${{ vars.KUBE_CONTEXT || 'lobu-prod' }}
       KUBE_EXPECTED_SERVER: ${{ vars.KUBE_SERVER }}
       KUBE_EXPECTED_CLUSTER_UID: ${{ vars.KUBE_CLUSTER_UID }}
+      WILDCARD_TLS_NS: summaries-prod
       KUBE_REQUIRED_CAPABILITIES: |
         get|namespaces|
+        create|namespaces|
+        patch|namespaces|
         list|ingresses.networking.k8s.io|@ALL_NAMESPACES
         delete|ingresses.networking.k8s.io|@ALL_NAMESPACES
-        get|ingresses.networking.k8s.io|@PREVIEW_NS
-        create|ingresses.networking.k8s.io|@PREVIEW_NS
-        patch|ingresses.networking.k8s.io|@PREVIEW_NS
-        get|services|@PREVIEW_NS
-        get|deployments.apps|@PREVIEW_NS
-        patch|deployments.apps|@PREVIEW_NS
-        watch|deployments.apps|@PREVIEW_NS
+        get|services|@ALL_NAMESPACES
+        get|deployments.apps|@ALL_NAMESPACES
+        patch|deployments.apps|@ALL_NAMESPACES
+        watch|deployments.apps|@ALL_NAMESPACES
+        get|configmaps|lobu-staging
+        create|configmaps|lobu-staging
+        patch|configmaps|lobu-staging
+        get|deployments.apps|lobu-staging
+        create|deployments.apps|lobu-staging
+        patch|deployments.apps|lobu-staging
+        watch|deployments.apps|lobu-staging
+        get|services|lobu-staging
+        create|services|lobu-staging
+        patch|services|lobu-staging
+        delete|services|lobu-staging
+        watch|services|lobu-staging
+        get|pods|lobu-staging
+        create|pods|lobu-staging
+        delete|pods|lobu-staging
+        watch|pods|lobu-staging
+        get|pods/log|lobu-staging
+        get|ingresses.networking.k8s.io|lobu-staging
+        create|ingresses.networking.k8s.io|lobu-staging
+        patch|ingresses.networking.k8s.io|lobu-staging
         get|secrets|@WILDCARD_TLS_NS
-        get|secrets|@PREVIEW_NS
-        create|secrets|@PREVIEW_NS
-        patch|secrets|@PREVIEW_NS
-      # labeled = acquire, unlabeled = release (label event or manual dispatch)
-      STAGING_ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || github.event.action }}
+        get|secrets|lobu-staging
+        create|secrets|lobu-staging
+        patch|secrets|lobu-staging
     steps:
       - uses: actions/checkout@v7
 
@@ -81,119 +116,8 @@ jobs:
         run: |
           ./scripts/lib/kubeconfig-preflight.sh setup
 
-      - name: Release lock (unlabeled)
-        if: env.STAGING_ACTION == 'unlabeled'
-        run: |
-          # Only release if THIS PR holds the lock (scoped to this namespace).
-          kubectl delete ingress "$STAGING_INGRESS" -n "$PREVIEW_NS" --ignore-not-found
-          # The preview keeps running on its own private host; hand back the
-          # settings the public host required.
-          kubectl -n "$PREVIEW_NS" set env "deploy/$PREVIEW_NAME" \
-            PUBLIC_GATEWAY_URL- LOBU_LOCAL_INIT_ALLOW_PROXY=1 2>/dev/null || true
-          echo "staging lock released ($STAGING_HOST no longer mapped)"
-
-      - name: Acquire lock (labeled)
-        if: env.STAGING_ACTION == 'labeled'
-        run: |
-          set -euo pipefail
-          PR_NUM="${{ github.event.pull_request.number || inputs.pr_number }}"
-
-          # Single-holder enforcement: strip the label from every other open PR.
-          for n in $(gh pr list --state open --limit 200 --json number --jq '.[].number'); do
-            if [ "$n" != "$PR_NUM" ] \
-              && gh pr view "$n" --json labels --jq '.labels[].name' | grep -qx staging; then
-              gh pr edit "$n" --remove-label staging
-              echo "stripped staging label from PR #$n"
-            fi
-          done
-
-          # Wait for the preview namespace + service (the preview workflow may
-          # still be building when the label lands).
-          for i in $(seq 1 36); do
-            kubectl get svc "$PREVIEW_NAME" -n "$PREVIEW_NS" >/dev/null 2>&1 && break
-            echo "waiting for $PREVIEW_NAME service... ($i)"
-            sleep 10
-          done
-          kubectl get svc "$PREVIEW_NAME" -n "$PREVIEW_NS" >/dev/null 2>&1 || {
-            echo "preview service $PREVIEW_NAME not found in $PREVIEW_NS" >&2
-            exit 1
-          }
-
-          # Move the staging ingress: delete it from any other namespace.
-          for ns in $(kubectl get ingress "$STAGING_INGRESS" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null); do
-            if [ "$ns" != "$PREVIEW_NS" ]; then
-              kubectl delete ingress "$STAGING_INGRESS" -n "$ns" --ignore-not-found
-              echo "moved staging ingress out of $ns"
-            fi
-          done
-
-          # Staging is PUBLIC (the ingress below), so the passwordless bootstrap
-          # endpoint must not be reachable through it. preview.yml sets
-          # LOBU_LOCAL_INIT_ALLOW_PROXY=1 because a plain preview is
-          # tailnet-only; on a public host that same setting would let anyone on
-          # the internet mint an owner session (auth/routes.ts names public
-          # tunnels as the case it refuses by default). Strip it before the host
-          # goes public. The rollout restarts the pod, and the preview's data volume
-          # is an emptyDir — so bootstrap AFTER the lock, from inside the pod
-          # where the peer really is loopback:
-          #   kubectl -n $PREVIEW_NS exec deploy/$PREVIEW_NAME -- \
-          #     curl -sS -X POST -H 'X-Lobu-Client: staging-bootstrap' \
-          #     http://127.0.0.1:8787/api/local-init
-          # PUBLIC_GATEWAY_URL: resolvePublicOrigin otherwise falls back to the
-          # request URL, which behind the ingress reads as http://<host>; OAuth
-          # metadata and the MCP App asset URLs would both be stamped http.
-          kubectl -n "$PREVIEW_NS" set env "deploy/$PREVIEW_NAME" \
-            LOBU_LOCAL_INIT_ALLOW_PROXY- \
-            "PUBLIC_GATEWAY_URL=https://$STAGING_HOST/lobu"
-          kubectl -n "$PREVIEW_NS" rollout status "deploy/$PREVIEW_NAME" --timeout=600s
-
-          # The wildcard cert lives in the prod namespace; a TLS secret is only
-          # readable from its own namespace, so copy it next to the ingress.
-          kubectl -n "$WILDCARD_TLS_NS" get secret "$WILDCARD_TLS_SECRET" -o json \
-            | jq --arg ns "$PREVIEW_NS" \
-                '{apiVersion, kind, type, data, metadata: {name: .metadata.name, namespace: $ns}}' \
-            | kubectl apply -f -
-
-          # Pin the staging ingress to this PR's preview, on the public
-          # (traefik) class rather than the tailnet one.
-          kubectl apply -f - <<EOF
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: $STAGING_INGRESS
-            namespace: $PREVIEW_NS
-          spec:
-            ingressClassName: traefik
-            tls:
-              - hosts: ["$STAGING_HOST"]
-                secretName: $WILDCARD_TLS_SECRET
-            rules:
-              - host: $STAGING_HOST
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: $PREVIEW_NAME
-                          port: { number: 80 }
-          EOF
-
-          STAGING_BODY=$(printf "%s\n" \
-            "## Staging URL locked to this PR" \
-            "- **App**: https://$STAGING_HOST" \
-            "- **MCP endpoint**: https://$STAGING_HOST/mcp" \
-            "" \
-            "This host is publicly reachable, so a cloud MCP host can call it. Passwordless bootstrap is disabled on it; sign in once from inside the pod:" \
-            "" \
-            "\`\`\`" \
-            "kubectl -n $PREVIEW_NS exec deploy/$PREVIEW_NAME -- \\" \
-            "  curl -sS -X POST -H 'X-Lobu-Client: staging-bootstrap' http://127.0.0.1:8787/api/local-init" \
-            "\`\`\`" \
-            "" \
-            "Removing the \`staging\` label releases the lock and takes the public host down.")
-          gh pr comment "$PR_NUM" --body "$STAGING_BODY"
-          echo "staging locked to PR #$PR_NUM at https://$STAGING_HOST"
+      - name: Reconcile staging target
+        run: bash scripts/staging-route.sh "$STAGING_TARGET" "$PR_NUM"
 
       - name: Remove kubeconfig
         if: always()

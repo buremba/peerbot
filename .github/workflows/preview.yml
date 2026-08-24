@@ -32,6 +32,8 @@ jobs:
   preview:
     runs-on: ubuntu-24.04
     if: github.event.action != 'closed' && (github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'preview')))
+    outputs:
+      preview_wanted: ${{ steps.preview-wanted.outputs.wanted }}
     concurrency:
       group: preview-deploy-${{ github.event.pull_request.number || inputs.pr_number }}
       cancel-in-progress: true
@@ -374,6 +376,79 @@ jobs:
                 body,
               });
             }
+
+      - name: Remove kubeconfig
+        if: always()
+        run: ./scripts/lib/kubeconfig-preflight.sh cleanup
+
+  # nginx resolves the preview Service name when the router config loads, while
+  # this workflow recreates that ClusterIP Service on every deploy. Reconcile
+  # only after the replacement is ready, under the same global lock used by
+  # label and manual staging changes.
+  reconcile-staging:
+    needs: preview
+    runs-on: ubuntu-24.04
+    if: needs.preview.result == 'success' && needs.preview.outputs.preview_wanted != 'false' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'staging')
+    concurrency:
+      group: staging-lock
+      cancel-in-progress: false
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      STAGING_HOST: ${{ vars.STAGING_HOST || 'staging.lobu.ai' }}
+      # No tailnet knobs: this job only reconciles the `preview` target, and
+      # those are read solely by staging-route.sh's local-tailnet path.
+      STAGING_SKIP_COMMENT: '1'
+      WILDCARD_TLS_NS: summaries-prod
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      KUBE_EXPECTED_CONTEXT: ${{ vars.KUBE_CONTEXT || 'lobu-prod' }}
+      KUBE_EXPECTED_SERVER: ${{ vars.KUBE_SERVER }}
+      KUBE_EXPECTED_CLUSTER_UID: ${{ vars.KUBE_CLUSTER_UID }}
+      KUBE_REQUIRED_CAPABILITIES: |
+        get|namespaces|
+        create|namespaces|
+        patch|namespaces|
+        list|ingresses.networking.k8s.io|@ALL_NAMESPACES
+        delete|ingresses.networking.k8s.io|@ALL_NAMESPACES
+        get|services|@ALL_NAMESPACES
+        get|deployments.apps|@ALL_NAMESPACES
+        patch|deployments.apps|@ALL_NAMESPACES
+        watch|deployments.apps|@ALL_NAMESPACES
+        get|configmaps|lobu-staging
+        create|configmaps|lobu-staging
+        patch|configmaps|lobu-staging
+        get|deployments.apps|lobu-staging
+        create|deployments.apps|lobu-staging
+        patch|deployments.apps|lobu-staging
+        watch|deployments.apps|lobu-staging
+        get|services|lobu-staging
+        create|services|lobu-staging
+        patch|services|lobu-staging
+        delete|services|lobu-staging
+        watch|services|lobu-staging
+        get|pods|lobu-staging
+        create|pods|lobu-staging
+        delete|pods|lobu-staging
+        watch|pods|lobu-staging
+        get|pods/log|lobu-staging
+        get|ingresses.networking.k8s.io|lobu-staging
+        create|ingresses.networking.k8s.io|lobu-staging
+        patch|ingresses.networking.k8s.io|lobu-staging
+        get|secrets|@WILDCARD_TLS_NS
+        get|secrets|lobu-staging
+        create|secrets|lobu-staging
+        patch|secrets|lobu-staging
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup and preflight kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+        run: |
+          ./scripts/lib/kubeconfig-preflight.sh setup
+
+      - name: Reconcile staging to the recreated preview Service
+        run: bash scripts/staging-route.sh preview "$PR_NUMBER"
 
       - name: Remove kubeconfig
         if: always()

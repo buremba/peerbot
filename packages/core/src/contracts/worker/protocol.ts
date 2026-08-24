@@ -485,7 +485,11 @@ export const HeartbeatRequestSchema = Type.Object({
   agent_session: Type.Optional(
     Type.Object({
       protocol: Type.Literal("acp"),
-      agent_kind: Type.Literal("codex"),
+      agent_kind: Type.Union([
+        Type.Literal("claude-code"),
+        Type.Literal("codex"),
+        Type.Literal("opencode"),
+      ]),
       session_id: Type.String({ minLength: 1, maxLength: 512 }),
     })
   ),

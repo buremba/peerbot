@@ -6,7 +6,7 @@ import { parseSessionEntries } from '@lobu/core';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 import { executeAutomationRun } from '../daemon/automation.js';
 import { type ExecutorClient, WorkerClient } from '../daemon/client.js';
-import { CodexAcpTranscript, runCodexAcpTurn } from '../daemon/codex-acp.js';
+import { AcpTranscript, runAcpTurn } from '../daemon/automation-acp.js';
 
 function fakeAcpAgent(dir: string): { script: string; trace: string } {
   const script = path.join(dir, 'fake-acp-agent.mjs');
@@ -21,6 +21,10 @@ const record = (value) => fs.appendFileSync(trace, JSON.stringify(value) + '\\n'
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
 const response = (id, result) => send({ jsonrpc: '2.0', id, result });
 const update = (sessionId, value) => send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: value } });
+record({ environment: {
+  OPENCODE_DISABLE_PROJECT_CONFIG: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
+  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME
+} });
 const input = readline.createInterface({ input: process.stdin });
 for await (const line of input) {
   if (!line.trim()) continue;
@@ -92,7 +96,51 @@ function traceLines(trace: string): Array<Record<string, unknown>> {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-describe('Codex ACP Automation turn', () => {
+function permissionAcpAgent(dir: string): { script: string; trace: string } {
+  const script = path.join(dir, 'permission-acp-agent.mjs');
+  const trace = path.join(dir, 'permission-trace.jsonl');
+  writeFileSync(
+    script,
+    `import fs from 'node:fs';
+import readline from 'node:readline';
+const trace = process.env.FAKE_ACP_TRACE;
+const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+let promptId;
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  if (!line.trim()) continue;
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {
+      protocolVersion: 1,
+      agentCapabilities: { mcpCapabilities: { http: true }, sessionCapabilities: { close: {} } },
+      agentInfo: { name: 'permission-agent', version: '1' }
+    } });
+  } else if (message.method === 'session/new') {
+    send({ id: message.id, result: { sessionId: 'permission-session' } });
+  } else if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({ id: 700, method: 'session/request_permission', params: {
+      sessionId: 'permission-session',
+      toolCall: { toolCallId: 'tool-1', title: 'Run command' },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Reject', kind: 'reject_once' }
+      ]
+    } });
+  } else if (message.id === 700) {
+    fs.writeFileSync(trace, JSON.stringify(message.result));
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  } else if (message.method === 'session/close') {
+    send({ id: message.id, result: {} });
+  }
+}
+`,
+    'utf8'
+  );
+  return { script, trace };
+}
+
+describe('Automation ACP turn', () => {
   test('routes the Mac Automation through ACP and uploads its terminal transcript', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'lobu-codex-acp-automation-'));
     const { script, trace } = fakeAcpAgent(dir);
@@ -142,11 +190,14 @@ describe('Codex ACP Automation turn', () => {
       const outcome = await executeAutomationRun(client, job, {
         requireRunScopedSession: true,
         timeoutMs: 5_000,
-        codexAcp: {
-          adapterCommand: process.execPath,
-          adapterArgs: [script],
-          adapterEnv: { FAKE_ACP_TRACE: trace },
-          codexPath: '/usr/local/bin/codex',
+        acpAdapters: {
+          codex: {
+            command: process.execPath,
+            args: [script],
+            env: { FAKE_ACP_TRACE: trace },
+            defaultMode: 'agent',
+            effortConfigId: 'reasoning_effort',
+          },
         },
       });
 
@@ -164,16 +215,134 @@ describe('Codex ACP Automation turn', () => {
     }
   }, 15_000);
 
+  for (const agentKind of ['claude-code', 'opencode'] as const) {
+    test(`checkpoints and uploads a ${agentKind} ACP Automation`, async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), `lobu-${agentKind}-acp-automation-`));
+      const { script, trace } = fakeAcpAgent(dir);
+      const checkpoints: unknown[] = [];
+      const snapshots: string[] = [];
+      const client = {
+        id: 'macos:test',
+        async heartbeat(_runId: number, _progress: unknown, session: unknown) {
+          if (session) checkpoints.push(session);
+        },
+        async completeAutomation() {
+          return { ok: true, status: 'completed', run_id: 99 };
+        },
+        async writeAutomationTranscript(
+          _runId: number,
+          _bearer: string,
+          _status: string,
+          jsonl: string
+        ) {
+          snapshots.push(jsonl);
+        },
+      } as unknown as ExecutorClient;
+      const job = {
+        run_id: 99,
+        run_type: 'automation',
+        payload: {
+          automation: {
+            id: '42',
+            agent_kind: agentKind,
+            prompt: 'Do the work.',
+            execution_config: {
+              effort: 'high',
+              ...(agentKind === 'claude-code'
+                ? { max_budget_usd: 1, model: 'claude-test', permission_mode: 'acceptEdits' }
+                : {}),
+            },
+          },
+          event: { fired_at: new Date().toISOString(), payload: {} },
+          context: {
+            device: { worker_id: 'macos:test' },
+            user: {},
+            agent_session: {
+              conversation_id: 'agent_automation_42_run_99',
+              mcp_url: 'https://lobu.test/mcp/team',
+              token: 'run-scoped-token',
+              expires_at: Date.now() + 60_000,
+            },
+          },
+        },
+      } as PollResponse;
+      try {
+        await executeAutomationRun(client, job, {
+          requireRunScopedSession: true,
+          timeoutMs: 5_000,
+          acpAdapters: {
+            [agentKind]: {
+              command: process.execPath,
+              args: [script],
+              env: { FAKE_ACP_TRACE: trace },
+              effortConfigId: 'effort',
+              ...(agentKind === 'claude-code'
+                ? {
+                    mcpServerName: 'lobu',
+                    sessionMeta: {
+                      claudeCode: { options: { settingSources: [] } },
+                    },
+                  }
+                : {}),
+            },
+          },
+        });
+
+        expect(checkpoints).toEqual([
+          { protocol: 'acp', agent_kind: agentKind, session_id: 'acp-new-session' },
+        ]);
+        expect(snapshots).toHaveLength(1);
+        expect(snapshots[0]).toContain('ACP finished');
+        const calls = traceLines(trace);
+        expect(calls).toContainEqual(
+          expect.objectContaining({
+            method: 'session/set_config_option',
+            params: { sessionId: 'acp-new-session', configId: 'effort', value: 'high' },
+          })
+        );
+        if (agentKind === 'claude-code') {
+          const modelIndex = calls.findIndex(
+            (call) =>
+              call.method === 'session/set_config_option' &&
+              (call.params as { configId?: string } | undefined)?.configId === 'model'
+          );
+          const modeIndex = calls.findIndex((call) => call.method === 'session/set_mode');
+          expect(modelIndex).toBeGreaterThanOrEqual(0);
+          expect(modelIndex).toBeLessThan(modeIndex);
+          expect(calls).toContainEqual(
+            expect.objectContaining({
+              method: 'session/set_mode',
+              params: { sessionId: 'acp-new-session', modeId: 'acceptEdits' },
+            })
+          );
+          const created = calls.find((line) => line.method === 'session/new') as {
+            params: { _meta: { claudeCode: { options: Record<string, unknown> } } };
+          };
+          expect(created.params._meta.claudeCode.options).toMatchObject({
+            maxBudgetUsd: 1,
+            settingSources: [],
+          });
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 15_000);
+  }
+
   test('creates a workspace-write session with HTTP MCP, model parity, and a safe transcript', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'lobu-codex-acp-'));
     const { script, trace } = fakeAcpAgent(dir);
     const ready: string[] = [];
     try {
-      const result = await runCodexAcpTurn({
-        adapterCommand: process.execPath,
-        adapterArgs: [script],
-        adapterEnv: { FAKE_ACP_TRACE: trace },
-        codexPath: '/usr/local/bin/codex',
+      const result = await runAcpTurn({
+        agentKind: 'codex',
+        adapter: {
+          command: process.execPath,
+          args: [script],
+          env: { FAKE_ACP_TRACE: trace },
+          defaultMode: 'agent',
+          effortConfigId: 'reasoning_effort',
+        },
         cwd: dir,
         prompt: 'Finish Automation 99',
         mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },
@@ -224,15 +393,95 @@ describe('Codex ACP Automation turn', () => {
     }
   }, 15_000);
 
+  test('isolates OpenCode project/global settings while preserving its explicit adapter env', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'lobu-opencode-acp-isolation-'));
+    const { script, trace } = fakeAcpAgent(dir);
+    try {
+      const result = await runAcpTurn({
+        agentKind: 'opencode',
+        adapter: {
+          command: process.execPath,
+          args: [script],
+          env: {
+            FAKE_ACP_TRACE: trace,
+            OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+          },
+          effortConfigId: 'effort',
+          isolateXdgConfig: true,
+          mcpServerName: 'lobu',
+        },
+        cwd: dir,
+        prompt: 'Finish Automation 99',
+        mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },
+        timeoutMs: 5_000,
+        onSessionReady: async () => {},
+      });
+
+      expect(result.exitReason).toBe('ok');
+      const environment = traceLines(trace)[0] as {
+        environment: {
+          OPENCODE_DISABLE_PROJECT_CONFIG?: string;
+          XDG_CONFIG_HOME?: string;
+        };
+      };
+      expect(environment.environment.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('1');
+      expect(environment.environment.XDG_CONFIG_HOME).toContain('lobu-acp-config-');
+      expect(existsSync(environment.environment.XDG_CONFIG_HOME!)).toBe(false);
+      const created = traceLines(trace).find((line) => line.method === 'session/new') as {
+        params: { mcpServers: Array<Record<string, unknown>> };
+      };
+      expect(created.params.mcpServers[0]?.name).toBe('lobu');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  for (const policy of [
+    { agentKind: 'opencode', autoApprovePermissions: true, optionId: 'allow' },
+    { agentKind: 'claude-code', autoApprovePermissions: false, optionId: 'reject' },
+  ] as const) {
+    test(`${policy.agentKind} ${policy.optionId}s ACP permission requests`, async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), `lobu-${policy.agentKind}-permission-`));
+      const { script, trace } = permissionAcpAgent(dir);
+      try {
+        const result = await runAcpTurn({
+          agentKind: policy.agentKind,
+          adapter: {
+            command: process.execPath,
+            args: [script],
+            env: { FAKE_ACP_TRACE: trace },
+            autoApprovePermissions: policy.autoApprovePermissions,
+          },
+          cwd: dir,
+          prompt: 'Use a tool',
+          mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },
+          timeoutMs: 5_000,
+          onSessionReady: async () => {},
+        });
+
+        expect(result.exitReason).toBe('ok');
+        expect(JSON.parse(readFileSync(trace, 'utf8'))).toEqual({
+          outcome: { outcome: 'selected', optionId: policy.optionId },
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 15_000);
+  }
+
   test('resumes the exact persisted session without listing local sessions', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'lobu-codex-acp-resume-'));
     const { script, trace } = fakeAcpAgent(dir);
     try {
-      const result = await runCodexAcpTurn({
-        adapterCommand: process.execPath,
-        adapterArgs: [script],
-        adapterEnv: { FAKE_ACP_TRACE: trace },
-        codexPath: '/usr/local/bin/codex',
+      const result = await runAcpTurn({
+        agentKind: 'codex',
+        adapter: {
+          command: process.execPath,
+          args: [script],
+          env: { FAKE_ACP_TRACE: trace },
+          defaultMode: 'agent',
+          effortConfigId: 'reasoning_effort',
+        },
         cwd: dir,
         prompt: 'Continue the run',
         mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },
@@ -259,11 +508,15 @@ describe('Codex ACP Automation turn', () => {
     const { script, trace } = fakeAcpAgent(dir);
     const controller = new AbortController();
     try {
-      const running = runCodexAcpTurn({
-        adapterCommand: process.execPath,
-        adapterArgs: [script],
-        adapterEnv: { FAKE_ACP_TRACE: trace, FAKE_ACP_WAIT_FOR_CANCEL: '1' },
-        codexPath: '/usr/local/bin/codex',
+      const running = runAcpTurn({
+        agentKind: 'codex',
+        adapter: {
+          command: process.execPath,
+          args: [script],
+          env: { FAKE_ACP_TRACE: trace, FAKE_ACP_WAIT_FOR_CANCEL: '1' },
+          defaultMode: 'agent',
+          effortConfigId: 'reasoning_effort',
+        },
         cwd: dir,
         prompt: 'Wait until cancelled',
         mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },
@@ -289,11 +542,15 @@ describe('Codex ACP Automation turn', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'lobu-codex-acp-timeout-'));
     const { script, trace } = fakeAcpAgent(dir);
     try {
-      const result = await runCodexAcpTurn({
-        adapterCommand: process.execPath,
-        adapterArgs: [script],
-        adapterEnv: { FAKE_ACP_TRACE: trace, FAKE_ACP_WAIT_FOR_CANCEL: '1' },
-        codexPath: '/usr/local/bin/codex',
+      const result = await runAcpTurn({
+        agentKind: 'codex',
+        adapter: {
+          command: process.execPath,
+          args: [script],
+          env: { FAKE_ACP_TRACE: trace, FAKE_ACP_WAIT_FOR_CANCEL: '1' },
+          defaultMode: 'agent',
+          effortConfigId: 'reasoning_effort',
+        },
         cwd: dir,
         prompt: 'Wait until the deadline',
         mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },
@@ -310,7 +567,7 @@ describe('Codex ACP Automation turn', () => {
   }, 15_000);
 
   test('each finalize round uploads a byte-exact prefix extension', async () => {
-    const transcript = new CodexAcpTranscript('/workspace');
+    const transcript = new AcpTranscript('/workspace');
     transcript.setSession('acp-multi-round');
     transcript.appendTurn('first prompt', [
       { kind: 'assistant', messageId: 'm1', text: 'round one' },
@@ -352,10 +609,14 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       'utf8'
     );
     try {
-      const result = await runCodexAcpTurn({
-        adapterCommand: process.execPath,
-        adapterArgs: [script],
-        codexPath: '/usr/local/bin/codex',
+      const result = await runAcpTurn({
+        agentKind: 'codex',
+        adapter: {
+          command: process.execPath,
+          args: [script],
+          defaultMode: 'agent',
+          effortConfigId: 'reasoning_effort',
+        },
         cwd: dir,
         prompt: 'Continue a session the agent lost',
         mcp: { url: 'https://lobu.test/mcp/team', bearer: 'run-token' },

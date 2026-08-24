@@ -12,6 +12,7 @@
  * which is exactly the outcome the gateway gate exists to prevent.
  */
 
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -47,6 +48,29 @@ export function locateBinary(name: string, dirs?: string[]): string | null {
     if (existsSync(candidate)) return candidate;
   }
   return null;
+}
+
+/**
+ * OpenCode must expose its ACP entrypoint before the device advertises it. An
+ * older binary can exist and still lack `acp`; claiming its runs would then
+ * fail only after the gateway assigned one.
+ */
+export function supportsOpenCodeAcp(binaryPath: string): boolean {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCODE_DISABLE_AUTOUPDATE: '1',
+    OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+  };
+  delete env.WORKER_API_TOKEN;
+  delete env.LOBU_API_TOKEN;
+  delete env.LOBU_MEMORY_URL;
+  const result = spawnSync(binaryPath, ['acp', '--pure', '--help'], {
+    encoding: 'utf8',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5_000,
+  });
+  return result.status === 0;
 }
 
 /**

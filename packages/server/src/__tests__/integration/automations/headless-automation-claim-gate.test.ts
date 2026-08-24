@@ -219,13 +219,16 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(String(run.status)).toBe('running');
   });
 
-  it('checkpoints a Codex ACP session and returns it only to the same device on reclaim', async () => {
-    const workerId = 'headless-codex-acp';
+  async function assertSameDeviceAcpReclaim(
+    agentKind: 'claude-code' | 'codex' | 'opencode'
+  ): Promise<void> {
+    const workerId = `headless-${agentKind}-acp`;
+    const sessionId = `${agentKind}-acp-session-99`;
     const ctx = await setupDevicePinnedAutomation({
       workerId,
       platform: 'headless',
       capabilities: { 'automations.execute': true },
-      agentKind: 'codex',
+      agentKind,
     });
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
@@ -237,7 +240,7 @@ describe('headless Automation claim gate (automations.execute)', () => {
     const pollBody = {
       worker_id: workerId,
       capabilities: { 'automations.execute': true },
-      agent_kinds: ['codex'],
+      agent_kinds: [agentKind],
     };
     const firstPoll = await post('/api/workers/poll', { token, body: pollBody });
     expect(firstPoll.status).toBe(200);
@@ -264,8 +267,8 @@ describe('headless Automation claim gate (automations.execute)', () => {
         worker_id: workerId,
         agent_session: {
           protocol: 'acp',
-          agent_kind: 'codex',
-          session_id: 'codex-acp-session-99',
+          agent_kind: agentKind,
+          session_id: sessionId,
         },
       },
     });
@@ -278,8 +281,8 @@ describe('headless Automation claim gate (automations.execute)', () => {
     expect(checkpointed.run_metadata?.device_agent_session).toEqual(
       expect.objectContaining({
         protocol: 'acp',
-        agent_kind: 'codex',
-        session_id: 'codex-acp-session-99',
+        agent_kind: agentKind,
+        session_id: sessionId,
         worker_id: workerId,
       })
     );
@@ -300,9 +303,14 @@ describe('headless Automation claim gate (automations.execute)', () => {
     };
     expect(secondJob.run_id).toBe(firstJob.run_id);
     expect(secondJob.payload.context.agent_session.resume_session_id).toBe(
-      'codex-acp-session-99'
+      sessionId
     );
-  });
+  }
+
+  it.each(['claude-code', 'codex', 'opencode'] as const)(
+    'checkpoints a %s ACP session and returns it only to the same device on reclaim',
+    assertSameDeviceAcpReclaim
+  );
 
   it('automation without an assigned agent still dispatches instructions-only (no run-scoped session)', async () => {
     const ctx = await setupDevicePinnedAutomation({

@@ -470,6 +470,68 @@ describe("buildHomeFeedEvents", () => {
     });
   });
 
+  test("links a nested reply to both its parent comment and the original post", () => {
+    const activityId = "3111111111111111111";
+    const parentCommentId = "3222222222222222222";
+    const replyId = "3333333333333333333";
+    const events = buildHomeFeedEvents(
+      [
+        {
+          id: "reply_parent_post",
+          body: "Feed post Parent Post Author • 1st A parent post with enough text to keep",
+          author_control_label:
+            "Open control menu for post by Parent Post Author",
+          post_identity: `urn:li:activity:${activityId}`,
+          links: [
+            {
+              href: "https://www.linkedin.com/in/parent-post-author/",
+              name: "View Parent Post Author’s profile",
+            },
+          ],
+        },
+        {
+          id: `replaceableComment_urn:li:comment:(urn:li:activity:${activityId},${parentCommentId})`,
+          body: "Parent comment body",
+          author: "Parent Commenter",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/parent-commenter/",
+              name: "View Parent Commenter’s profile",
+            },
+          ],
+        },
+        {
+          id: `replaceableComment_urn:li:comment:(urn:li:activity:${activityId},${replyId})`,
+          parent_comment_identity: `replaceableComment_urn:li:comment:(urn:li:activity:${activityId},${parentCommentId})`,
+          body: "Nested reply body",
+          author: "Reply Author",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/reply-author/",
+              name: "View Reply Author’s profile",
+            },
+          ],
+        },
+      ],
+      new Date("2026-08-24T12:00:00.000Z")
+    );
+
+    const reply = events.find(
+      (event: any) => event.origin_id === `li_comment_${replyId}`
+    );
+    expect(reply).toMatchObject({
+      origin_parent_id: `li_comment_${parentCommentId}`,
+      metadata: {
+        parent_post_origin_id: `li_home_activity_${activityId}`,
+        parent_comment_origin_id: `li_comment_${parentCommentId}`,
+        parent_comment_id: parentCommentId,
+        parent_comment_author: "Parent Commenter",
+        parent_comment_author_linkedin_slug: "parent-commenter",
+        is_reply: true,
+      },
+    });
+  });
+
   test("keeps content media while rejecting avatars, duplicates, and unsafe URLs", () => {
     const [event] = buildHomeFeedEvents(
       [
@@ -1609,13 +1671,13 @@ describe("LinkedInConnector home_feed", () => {
     ]);
   });
 
-  test("declares visible comments with commenter and post-author attributions", () => {
+  test("declares complete comments with commenter and post-author attributions", () => {
     const comment = new LinkedInConnector().definition.feeds.home_feed
       .eventKinds.comment;
     expect(comment).toBeDefined();
     expect(
       comment.attributions.map((rule: { name: string }) => rule.name)
-    ).toEqual(["commenter", "post_author"]);
+    ).toEqual(["commenter", "post_author", "parent_comment_author"]);
   });
 
   test("syncHomeFeed dispatches cs_scrape and maps rows to events", async () => {
@@ -1632,7 +1694,7 @@ describe("LinkedInConnector home_feed", () => {
         <p>A home-feed post with enough useful text to pass the noise filter</p>
         <div class="social-details-social-counts">
           <span class="social-details-social-counts__reactions-count">12</span>
-          <button aria-label="3 comments"></button>
+          <button aria-label="2 comments"></button>
           <button aria-label="2 reposts"></button>
         </div>
         <div componentkey="commentsSectionContainerparent_token">
@@ -1733,6 +1795,21 @@ describe("LinkedInConnector home_feed", () => {
     ).toBe(4);
     const cfg = calls[0].input.scrape_config as {
       rowSelector: string;
+      expandRows: {
+        rowSelector: string;
+        expected: { selector: string; textRegex: string };
+        items: { selector: string; idAttr: string };
+        open: { selector: string; textRegex: string };
+        sort: {
+          triggerSelector: string;
+          triggerTextRegex: string;
+          selectedTextRegex: string;
+          optionSelector: string;
+          optionTextRegex: string;
+        };
+        more: { selector: string; textRegex: string };
+        outputField: string;
+      };
       id: { name: string | string[]; regex: string; group: number };
       fields: {
         links: {
@@ -1750,11 +1827,33 @@ describe("LinkedInConnector home_feed", () => {
         post_media: { selector: string; take: string };
         comment_media: { selector: string; take: string };
         reaction_count_text: { selector: string; take: string };
+        comment_count_text: { selector: string; take: string };
         comment_count_label: { selector: string; attr: string };
         repost_count_label: { selector: string; attr: string };
       };
     };
     expect(cfg.rowSelector).toContain("replaceableComment_urn:li:comment");
+    expect(cfg.expandRows.rowSelector).toContain('[componentkey^="expanded"]');
+    expect(cfg.expandRows.expected.textRegex).toContain("comments?");
+    expect(cfg.expandRows.expected.selector).toContain(
+      cfg.fields.comment_count_text.selector
+    );
+    expect(cfg.expandRows.expected.selector).toContain(
+      cfg.fields.comment_count_label.selector
+    );
+    expect(cfg.expandRows.items).toEqual({
+      selector: '[id^="replaceableComment_urn:li:comment:"]',
+      idAttr: "id",
+    });
+    expect(cfg.expandRows.open.textRegex).toContain("comments?");
+    expect(cfg.expandRows.sort).toMatchObject({
+      triggerTextRegex: "^Most relevant$|^Most recent$",
+      selectedTextRegex: "^Most recent$",
+      optionSelector: '[role="menuitem"]',
+      optionTextRegex: "^Most recent\\b",
+    });
+    expect(cfg.expandRows.more.textRegex).toContain("replies");
+    expect(cfg.expandRows.outputField).toBe("comment_coverage");
     expect(cfg.id.name).toEqual(["componentkey", "id"]);
     expect(
       "expandedparent_tokenFeedType_MAIN_FEED_RELEVANCE".match(
@@ -1798,8 +1897,8 @@ describe("LinkedInConnector home_feed", () => {
     expect(res.events).toHaveLength(3);
     expect(res.events[0]).toMatchObject({
       origin_id: "li_home_activity_1111111111111111111",
-      score: 24,
-      metadata: { reactions: 12, comments: 3, reposts: 2 },
+      score: 22,
+      metadata: { reactions: 12, comments: 2, reposts: 2 },
     });
     expect(res.events[1]).toMatchObject({
       origin_id: "li_comment_2222222222222222222",
@@ -1836,6 +1935,7 @@ describe("LinkedInConnector home_feed", () => {
       (res.events[2].metadata as Record<string, unknown>).reactions
     ).toBeUndefined();
     expect(res.metadata.backend).toBe("extension-cs-scrape");
+    expect(res.metadata.comment_threads_complete).toBe(true);
     // These mock rows carry no links field, so support is assumed.
     expect(res.metadata.object_all_supported).toBe(true);
   });
@@ -1845,7 +1945,10 @@ describe("LinkedInConnector home_feed", () => {
    * config, so selector scoping is exercised end to end rather than asserted
    * as a string.
    */
-  const syncHomeFeedDom = async (body: string) => {
+  const syncHomeFeedDom = async (
+    body: string,
+    setup?: (dom: JSDOM) => void
+  ) => {
     const dom = new JSDOM(`<!doctype html><body>${body}</body>`, {
       url: "https://www.linkedin.com/feed/",
     });
@@ -1876,6 +1979,7 @@ describe("LinkedInConnector home_feed", () => {
         writable: true,
       },
     });
+    setup?.(dom);
     try {
       return await new LinkedInConnector().sync({
         feedKey: "home_feed",
@@ -1905,6 +2009,87 @@ describe("LinkedInConnector home_feed", () => {
       }
     }
   };
+
+  test("expands a 4-comment thread from 3 rendered comments and emits all durable comments", async () => {
+    const activityId = "8111111111111111111";
+    const comment = (id: string, name: string) => `
+      <div id="replaceableComment_urn:li:comment:(urn:li:activity:${activityId},${id})">
+        <a href="https://www.linkedin.com/in/${name.toLowerCase().replace(/ /g, "-")}/">
+          <span aria-hidden="true">${name}</span>
+          <span aria-label="View ${name}’s profile"></span>
+        </a>
+        <p>${name} • A complete fixture comment with enough text for collection</p>
+      </div>`;
+    const res = await syncHomeFeedDom(
+      `
+      <div componentkey="expandedcomplete_threadFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Complete Thread Author"></button>
+        <span id="translatable-commentary-urn:li:activity:${activityId}"></span>
+        <p>A complete-thread home-feed post with enough useful text to pass the filter</p>
+        <div role="button" class="comment-count">4 comments</div>
+        <div role="button" class="comment-sort">Most relevant</div>
+        ${comment("8222222222222222221", "Commenter One")}
+        ${comment("8222222222222222222", "Commenter Two")}
+        ${comment("8222222222222222223", "Commenter Three")}
+        <div role="button" class="more-comments">See 1 more comment</div>
+      </div>`,
+      (dom) => {
+        const document = dom.window.document;
+        document
+          .querySelector(".comment-sort")
+          ?.addEventListener("click", () => {
+            const option = document.createElement("div");
+            option.setAttribute("role", "menuitem");
+            option.textContent =
+              "Most recent See all comments, the most recent comments are first";
+            option.addEventListener("click", () => {
+              const sort = document.querySelector(".comment-sort");
+              if (sort) sort.textContent = "Most recent";
+              option.remove();
+            });
+            document.body.append(option);
+          });
+        document
+          .querySelector(".more-comments")
+          ?.addEventListener("click", () => {
+            const holder = document.createElement("div");
+            holder.innerHTML = comment("8222222222222222224", "Commenter Four");
+            const fourth = holder.firstElementChild;
+            if (fourth)
+              document.querySelector("[componentkey]")?.append(fourth);
+            document.querySelector(".more-comments")?.remove();
+          });
+      }
+    );
+
+    expect(res.events.map((event: any) => event.origin_id)).toEqual([
+      `li_home_activity_${activityId}`,
+      "li_comment_8222222222222222221",
+      "li_comment_8222222222222222222",
+      "li_comment_8222222222222222223",
+      "li_comment_8222222222222222224",
+    ]);
+    expect(res.metadata).toMatchObject({
+      comment_threads_complete: true,
+      comments_expected: 4,
+      comments_collected: 4,
+    });
+  });
+
+  test("fails the batch when an advertised comment thread remains incomplete", async () => {
+    await expect(
+      syncHomeFeedDom(`
+        <div componentkey="expandedincomplete_threadFeedType_MAIN_FEED_RELEVANCE">
+          <button aria-label="Open control menu for post by Incomplete Thread Author"></button>
+          <span id="translatable-commentary-urn:li:activity:8333333333333333333"></span>
+          <p>An incomplete-thread home-feed post with enough useful text to pass the filter</p>
+          <div role="button" class="comment-count">4 comments</div>
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444441)"><p>Commenter One • First rendered fixture comment</p></div>
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444442)"><p>Commenter Two • Second rendered fixture comment</p></div>
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444443)"><p>Commenter Three • Third rendered fixture comment</p></div>
+        </div>`)
+    ).rejects.toThrow(/captured 3 of 4 advertised comments/i);
+  });
 
   test("a post does not inherit reactions from a comment rendered above its own counts", async () => {
     // Ordering matters: `querySelector` returns the first match in DOCUMENT
@@ -1968,6 +2153,13 @@ describe("LinkedInConnector home_feed", () => {
         <span aria-label="140 reactions"></span>
         <span aria-label="65 comments"></span>
         <span aria-label="49 reposts"></span>
+        ${Array.from(
+          { length: 64 },
+          (_, index) => `
+            <div id="replaceableComment_urn:li:comment:(urn:li:activity:6666666666666666666,${8800000000000000000n + BigInt(index)})">
+              <p>Additional complete fixture comment ${index + 1} with enough text to collect</p>
+            </div>`
+        ).join("")}
       </div>`);
 
     const post = res.events.find((event: any) => event.origin_type === "post");
@@ -1978,6 +2170,11 @@ describe("LinkedInConnector home_feed", () => {
       reactions: 140,
       comments: 65,
       reposts: 49,
+    });
+    expect(res.metadata).toMatchObject({
+      comment_threads_complete: true,
+      comments_expected: 65,
+      comments_collected: 65,
     });
     // The comment scores from its own reactions only; reply and repost counts
     // stay post-only quantities.
@@ -2012,10 +2209,17 @@ describe("LinkedInConnector home_feed", () => {
           <button>Comment</button>
           <button>Repost</button>
         </div>
+        ${Array.from(
+          { length: 15 },
+          (_, index) => `
+            <div id="replaceableComment_urn:li:comment:(urn:li:activity:8888888888888888888,${8900000000000000000n + BigInt(index)})">
+              <p>Complete counter fixture comment ${index + 1} with enough text to collect</p>
+            </div>`
+        ).join("")}
       </div>`);
 
-    expect(res.events).toHaveLength(1);
-    expect(res.events[0]).toMatchObject({
+    const post = res.events.find((event: any) => event.origin_type === "post");
+    expect(post).toMatchObject({
       origin_id: "li_home_activity_8888888888888888888",
       score: 100,
       metadata: { reactions: 237, comments: 15, reposts: 2 },
@@ -2039,15 +2243,21 @@ describe("LinkedInConnector home_feed", () => {
         <div><div><div><p><span>1 comment</span><span>1 comment</span></p></div></div></div>
         <hr />
         <div><div><button aria-label="Reaction button state: no reaction">Like</button><button aria-label="Open reactions menu"></button></div></div>
+        <div id="replaceableComment_urn:li:comment:(urn:li:activity:9000000000000000002,9000000000000000003)">
+          <p>A complete single-kind fixture comment with enough text to collect</p>
+        </div>
       </div>`);
 
-    expect(res.events).toHaveLength(2);
-    expect(res.events[0].metadata).toMatchObject({ reactions: 4 });
-    expect(res.events[0].metadata.comments).toBeUndefined();
-    expect(res.events[0].metadata.reposts).toBeUndefined();
-    expect(res.events[1].metadata).toMatchObject({ comments: 1 });
-    expect(res.events[1].metadata.reactions).toBeUndefined();
-    expect(res.events[1].metadata.reposts).toBeUndefined();
+    const posts = res.events.filter(
+      (event: any) => event.origin_type === "post"
+    );
+    expect(posts).toHaveLength(2);
+    expect(posts[0].metadata).toMatchObject({ reactions: 4 });
+    expect(posts[0].metadata.comments).toBeUndefined();
+    expect(posts[0].metadata.reposts).toBeUndefined();
+    expect(posts[1].metadata).toMatchObject({ comments: 1 });
+    expect(posts[1].metadata.reactions).toBeUndefined();
+    expect(posts[1].metadata.reposts).toBeUndefined();
   });
 
   test("min_scrolls/max_scrolls pick a scroll budget in range each run", async () => {
@@ -2808,7 +3018,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.4");
+    expect(c.definition.version).toBe("3.11.5");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

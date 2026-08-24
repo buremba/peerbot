@@ -442,6 +442,7 @@ interface HomeFeedCommentCoverage {
   expected: number;
   collected: number;
   complete: boolean;
+  timedOut?: boolean;
 }
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
@@ -506,6 +507,10 @@ const HOME_FEED_SCRAPE_CONFIG = {
       textRegexFlags: "i",
     },
     maxPasses: 40,
+    // Return explicit incomplete coverage before the extension's 90-second
+    // watchdog. This leaves time for row harvesting and guarantees that a
+    // large thread cannot strand a content script in the user's tab.
+    maxDurationMs: 55_000,
     stall: 2,
     waitMs: 350,
     outputField: "comment_coverage",
@@ -1020,6 +1025,7 @@ interface HomeFeedCommentCoverageSummary {
   collected: number;
   incomplete: number;
   unsupported: number;
+  timedOut: number;
   details: string[];
 }
 
@@ -1058,6 +1064,7 @@ function summarizeHomeFeedCommentCoverage(
   let collected = 0;
   let incomplete = 0;
   let unsupported = 0;
+  let timedOut = 0;
   const details: string[] = [];
   for (const thread of byPost.values()) {
     expected += thread.advertised;
@@ -1074,6 +1081,7 @@ function summarizeHomeFeedCommentCoverage(
       thread.coverage.collected < thread.advertised
     ) {
       incomplete++;
+      if (thread.coverage.timedOut) timedOut++;
       details.push(
         `${thread.advertised}/${thread.coverage.expected}/${thread.coverage.collected}`
       );
@@ -1085,6 +1093,7 @@ function summarizeHomeFeedCommentCoverage(
     collected,
     incomplete,
     unsupported,
+    timedOut,
     details,
   };
 }
@@ -2850,7 +2859,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.5",
+    version: "3.11.6",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -3506,9 +3515,16 @@ export default class LinkedInConnector extends ConnectorRuntime<
 
     const commentCoverage = summarizeHomeFeedCommentCoverage(resolvedRows);
     if (commentCoverage.incomplete > 0) {
-      const runtimeHint = commentCoverage.unsupported
-        ? ` The paired Owletto extension omitted expansion coverage for ${commentCoverage.unsupported} thread${commentCoverage.unsupported === 1 ? "" : "s"}; reload the current extension build.`
-        : "";
+      const hints: string[] = [];
+      if (commentCoverage.unsupported)
+        hints.push(
+          `The paired Owletto extension omitted expansion coverage for ${commentCoverage.unsupported} thread${commentCoverage.unsupported === 1 ? "" : "s"}; reload the current extension build.`
+        );
+      if (commentCoverage.timedOut)
+        hints.push(
+          `Expansion hit its ${HOME_FEED_SCRAPE_CONFIG.expandRows.maxDurationMs / 1000}s budget on ${commentCoverage.timedOut} thread${commentCoverage.timedOut === 1 ? "" : "s"}; retry with fewer scrolls so each thread gets more of the run.`
+        );
+      const runtimeHint = hints.length ? ` ${hints.join(" ")}` : "";
       throw new Error(
         `LinkedIn captured ${commentCoverage.collected} of ${commentCoverage.expected} advertised comments across ${commentCoverage.incomplete} incomplete post thread${commentCoverage.incomplete === 1 ? "" : "s"} (advertised/runtime/collected: ${commentCoverage.details.join(", ")}).${runtimeHint} No partial home-feed batch was persisted.`
       );

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Chat } from "chat";
 import { InMemoryStateAdapter } from "../../../__tests__/fixtures/in-memory-state-adapter.js";
+import { ChatInstanceManager } from "../../chat-instance-manager.js";
 import { parseConfig } from "../../chat-connection-service.js";
 import { gchatPlatform } from "../gchat.js";
 
@@ -69,6 +70,81 @@ async function waitForDelivery(promise: Promise<void>): Promise<void> {
 }
 
 describe("Google Chat platform compatibility", () => {
+  test("accepts only this project's Workspace Add-on token at the canonical connection webhook", async () => {
+    const endpointUrl =
+      "https://gateway.test/api/v1/webhooks/gchat-addon-test";
+    const manager = new ChatInstanceManager() as any;
+    manager.publicGatewayUrl = "https://gateway.test";
+    const adapter = (await manager.createAdapter({
+      id: "gchat-addon-test",
+      platform: "gchat",
+      config: {
+        platform: "gchat",
+        credentials,
+        googleChatProjectNumber: "123456789",
+        endpointUrl: "https://stale.example.test/wrong-connection",
+      },
+    })) as any;
+    let verifiedAudience: string | string[] | undefined;
+    let tokenEmail =
+      "service-123456789@gcp-sa-gsuiteaddons.iam.gserviceaccount.com";
+    adapter.oauth2Client.verifyIdToken = async ({ audience }: any) => {
+      verifiedAudience = audience;
+      return {
+        getPayload: () => ({
+          iss: "https://accounts.google.com",
+          aud: endpointUrl,
+          email_verified: true,
+          email: tokenEmail,
+        }),
+      };
+    };
+    adapter.verifyProjectNumberToken = async () => false;
+
+    const chat = new Chat({
+      userName: "lobu",
+      adapters: { gchat: adapter },
+      state: new InMemoryStateAdapter(),
+    });
+    const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
+    chat.onDirectMessage(async (_thread, message) => {
+      delivered.push(message.text);
+      completion.resolve();
+    });
+
+    const response = await chat.webhooks.gchat(
+      new Request(endpointUrl, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer signed-by-google",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(standardDirectMessage()),
+      })
+    );
+    await waitForDelivery(completion.promise);
+
+    expect(response.status).toBe(200);
+    expect(verifiedAudience).toBe(endpointUrl);
+    expect(delivered).toEqual(["hello Lobu"]);
+
+    tokenEmail =
+      "service-987654321@gcp-sa-gsuiteaddons.iam.gserviceaccount.com";
+    const wrongProjectResponse = await chat.webhooks.gchat(
+      new Request(endpointUrl, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer signed-by-another-google-project",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(standardDirectMessage("wrong project")),
+      })
+    );
+    expect(wrongProjectResponse.status).toBe(401);
+    expect(delivered).toEqual(["hello Lobu"]);
+  });
+
   test("dispatches Google's standalone MESSAGE payload to the DM handler", async () => {
     const chat = await createTestChat();
     const delivered: string[] = [];

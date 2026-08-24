@@ -49,6 +49,12 @@ export interface WebhookSecretDeps {
   getStoredConnection(id: string): Promise<StoredConnection | null>;
 }
 
+/** Manager-owned values that are known only once a connection is hydrated. */
+export interface AdapterCreationContext {
+  /** Canonical public URL that receives this connection's webhooks. */
+  webhookUrl?: string;
+}
+
 /**
  * Capability descriptor for one chat platform. `createAdapter` is required
  * (it's the old `ADAPTER_FACTORIES` entry); everything else is optional and
@@ -56,7 +62,7 @@ export interface WebhookSecretDeps {
  */
 export interface ChatPlatformDescriptor {
   /** Lazily construct the `@chat-adapter/*` adapter for a resolved config. */
-  createAdapter(config: any): Promise<any>;
+  createAdapter(config: any, context?: AdapterCreationContext): Promise<any>;
 
   /**
    * Parse platform-specific routing fields out of a messaging-API request

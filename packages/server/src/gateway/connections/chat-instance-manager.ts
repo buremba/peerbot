@@ -1797,7 +1797,12 @@ export class ChatInstanceManager {
     if (!descriptor) {
       throw new Error(`No adapter factory for: ${connection.platform}`);
     }
-    const adapter = await descriptor.createAdapter(connection.config);
+    const webhookUrl = this.publicGatewayUrl
+      ? `${this.publicGatewayUrl}/api/v1/webhooks/${connection.id}`
+      : undefined;
+    const adapter = await descriptor.createAdapter(connection.config, {
+      webhookUrl,
+    });
     return disableSdkMessageHistory(adapter);
   }
 

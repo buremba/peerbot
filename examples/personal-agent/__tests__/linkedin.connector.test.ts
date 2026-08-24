@@ -2137,6 +2137,23 @@ describe("LinkedInConnector home_feed", () => {
     ).rejects.toThrow(/Expansion hit its 55s budget on 1 thread/i);
   });
 
+  test("ignores FeedType helper rows nested inside a real post", async () => {
+    const activityId = "8777777777777777777";
+    const res = await syncHomeFeedDom(`
+      <div componentkey="expandedhelper_rowFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Real Post Author"></button>
+        <span id="translatable-commentary-urn:li:activity:${activityId}"></span>
+        <p>A real home-feed post with enough useful text to pass the filter</p>
+        <div componentkey="commentsSectionContainerhelper_rowFeedType_MAIN_FEED_RELEVANCE">
+          <p>Helper Row Person • This nested comment-section helper has author-like text but is not a post</p>
+        </div>
+      </div>`);
+
+    expect(res.events.map((event: any) => event.origin_id)).toEqual([
+      `li_home_activity_${activityId}`,
+    ]);
+  });
+
   test("a post does not inherit reactions from a comment rendered above its own counts", async () => {
     // Ordering matters: `querySelector` returns the first match in DOCUMENT
     // order across the whole selector list, not the first branch that matches.
@@ -3064,7 +3081,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.6");
+    expect(c.definition.version).toBe("3.11.7");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

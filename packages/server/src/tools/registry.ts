@@ -255,7 +255,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_memory',
     description:
-      'Search local saved workspace memory: entities, facts, decisions, preferences, observations, notes, and authorized channel transcripts. Source-backed feeds are never queried implicitly; `coverage` reports local stores searched and visible source feeds with status `not_queried`, which agents can read explicitly through query_sdk client.feeds.readMany. A query such as `memory 4939822` performs an exact permission-checked content read. Pair writes with `save_memory`. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+      'Search local saved workspace memory: entities, facts, decisions, preferences, observations, notes, and authorized channel transcripts. Source-backed feeds are never queried implicitly; `coverage` reports local stores searched and visible source feeds with status `not_queried`, which agents can read explicitly through query_sdk client.feeds.readMany. A query such as `memory 1234` performs an exact permission-checked content read. Pair writes with `save_memory`. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: SearchSchema,
     // Advertise the narrower public schema: query_embedding (server pre-compute
     // optimization) and agent_id (auth-bound) are server-internal, not client

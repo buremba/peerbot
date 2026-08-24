@@ -137,6 +137,11 @@ export default class OsShellConnector extends ConnectorRuntime {
         description:
           'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash -lc`, so pipes, redirects, and && chains work. Prefer one focused command per call.',
         requiresApproval: true,
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
         inputSchema: {
           type: 'object',
           required: ['command'],

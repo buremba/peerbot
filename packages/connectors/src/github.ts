@@ -847,6 +847,9 @@ export default class GitHubConnector extends ConnectorRuntime {
         name: 'Merge Pull Request',
         description: 'Merge a pull request by number.',
         requiresApproval: true,
+        annotations: {
+          destructiveHint: true,
+        },
         inputSchema: {
           type: 'object',
           required: ['pull_number'],

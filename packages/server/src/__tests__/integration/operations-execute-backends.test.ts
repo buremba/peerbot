@@ -1,9 +1,10 @@
+import GoogleCalendarConnector from "@lobu/connectors/google_calendar";
 import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../index";
+import { createAutomationRun } from "../../runs/queue-service";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
-import { createAutomationRun } from "../../runs/queue-service";
 import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -19,6 +20,12 @@ import {
 const LOCAL = "demo.ops.backend.local";
 const MCP = "demo.ops.backend.mcp";
 const HTTP = "demo.ops.backend.http";
+const GOOGLE_CALENDAR_DELETE_ACTION = new GoogleCalendarConnector().definition
+	.actions?.delete_event;
+
+if (!GOOGLE_CALENDAR_DELETE_ACTION) {
+	throw new Error("Google Calendar delete_event action is missing");
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -110,12 +117,7 @@ describe("operations.execute backend lifecycle", () => {
 					kind: "write",
 					requiresApproval: true,
 				},
-				destructive_action: {
-					name: "Delete remote record",
-					kind: "write",
-					requiresApproval: true,
-					annotations: { destructiveHint: true },
-				},
+				delete_event: GOOGLE_CALENDAR_DELETE_ACTION,
 				stage_browser: {
 					name: "Stage browser",
 					kind: "write",
@@ -895,13 +897,13 @@ describe("operations.execute backend lifecycle", () => {
 		]);
 	});
 
-	it("marks only explicitly destructive connector actions as high impact", async () => {
+	it("marks a real destructive connector action as high impact", async () => {
 		const result = await manageOperations(
 			{
 				action: "execute",
 				connection_id: localConnectionId,
-				operation_key: "destructive_action",
-				input: {},
+				operation_key: "delete_event",
+				input: { event_id: "calendar-event-123" },
 			},
 			{} as Env,
 			ctx,

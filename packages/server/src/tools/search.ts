@@ -13,12 +13,9 @@ import { isInProcessSystemCall } from './access-control';
 import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
-import { VIRTUAL_FEED_RECALL_BUDGET_MS } from '../config/intervals';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import type { ContentItem } from '@lobu/connector-sdk';
-import type { FeedReader, SourceKind } from '../lib/feed-reader';
-import { readVirtualFeed, type ReadVirtualFeedResult } from '../lib/connector-pushdown';
 import {
   connectionLinkedEntityIdsSql,
   connectionLinkedToBusinessEntitySql,
@@ -281,25 +278,31 @@ const ConversationSnippetSchema = Type.Object({
 });
 type ConversationSnippet = Static<typeof ConversationSnippetSchema>;
 
-// A live block of rows recalled from ONE virtual feed (read via readVirtualFeed's
-// search() pushdown). Distinct from ContentSnippet/ConversationSnippet on purpose:
-// virtual rows are arbitrary connector columns (Gmail: id/subject/from/date/…),
-// so they carry their own `columns` header rather than being coerced into a fixed
-// snippet shape that would drop or mislabel columns. Nothing is persisted — these
-// are read live from the source at recall time. See project_conversation_feeds_virtual.
-const VirtualFeedRowsSchema = Type.Object({
+const SourceFeedCoverageSchema = Type.Object({
   feed_id: Type.Integer(),
   feed_key: Type.String(),
-  columns: Type.Array(Type.Object({ name: Type.String(), type: Type.String() })),
-  rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+  connection_slug: Type.String(),
+  connector_key: Type.String(),
+  display_name: Type.Union([Type.String(), Type.Null()]),
+  status: Type.Literal('not_queried'),
 });
-type VirtualFeedRows = Static<typeof VirtualFeedRowsSchema>;
+
+const SearchCoverageSchema = Type.Object({
+  local_sources: Type.Array(
+    Type.Union([Type.Literal('events'), Type.Literal('channel_messages')])
+  ),
+  source_queried: Type.Literal(false),
+  source_feed_discovery: Type.Union([Type.Literal('complete'), Type.Literal('unavailable')]),
+  source_feeds: Type.Array(SourceFeedCoverageSchema),
+  more_source_feeds: Type.Boolean(),
+});
+type SearchCoverage = Static<typeof SearchCoverageSchema>;
 
 /**
  * Result of `search_memory`. TypeBox-first and the SINGLE source of truth:
  * `UnifiedSearchResult` is `Static<>`-derived from this schema, which is also
  * the tool's `outputSchema`. Every nested type (Entity, ConnectionInfo,
- * ContentSnippet, ConversationSnippet, VirtualFeedRows) is itself
+ * ContentSnippet, ConversationSnippet) is itself
  * schema-derived, so there is no hand-written interface that can drift.
  */
 export const UnifiedSearchResultSchema = Type.Object({
@@ -329,10 +332,9 @@ export const UnifiedSearchResultSchema = Type.Object({
    * bound channels. Replaces the get_channel_history tool — read past convos
    * through the same search call. */
   conversation_messages: Type.Optional(Type.Array(ConversationSnippetSchema)),
-  /** Live rows recalled from opt-in virtual feeds (`config.recall === true`) —
-   * one block per feed, read via the connector's `search()` pushdown at request
-   * time. Never persisted. */
-  virtual_feeds: Type.Optional(Type.Array(VirtualFeedRowsSchema)),
+  /** Honest search boundary: local stores searched and visible source feeds that
+   * were deliberately not queried. Use `feeds.readMany` for source access. */
+  coverage: Type.Optional(SearchCoverageSchema),
   discovery_status: Type.Optional(
     Type.Union([Type.Literal('not_found'), Type.Literal('complete'), Type.Literal('discovering')])
   ),
@@ -677,260 +679,130 @@ export interface RecallContext {
   excludeWorkspaceAudit?: boolean;
 }
 
-/**
- * The consolidated recall sources — the `lens = 'recall'` row of the feed matrix
- * (see `docs/plans/feeds-and-connections-model.md`), one entry per source KIND:
- * `knowledge` (the `events` store — where data feeds and promoted memory live,
- * source `collected`), `conversation` (the `channel_messages` chat transcript,
- * source `chat-channel`), and `virtual` (opt-in virtual feeds read LIVE at
- * request time, source `virtual-live-dataset`). All read through ONE abstraction
- * — add a kind here + a RECALL_SOURCES entry; nothing branches on the kind.
- */
-export type RecallKind = 'knowledge' | 'conversation' | 'virtual';
+const MAX_SOURCE_FEEDS_IN_COVERAGE = 10;
 
-/** Maps each recall source's human label to its {@link SourceKind} axis value. */
-const RECALL_SOURCE_KIND: Record<RecallKind, SourceKind> = {
-  knowledge: 'collected',
-  conversation: 'chat-channel',
-  virtual: 'virtual-live-dataset',
-};
-
-/**
- * Max virtual feeds fanned out on a single recall. Each virtual feed spawns a
- * connector subprocess + a live external API round-trip, so unlike the
- * single-query knowledge/conversation sources this one has real per-feed cost.
- * A org with more opt-in feeds than this gets the first N (by id) and a logged
- * truncation — never a silent drop.
- */
-const MAX_VIRTUAL_RECALL_FEEDS = 5;
-
-/**
- * A recall source is a {@link FeedReader} on the `(source, lens='recall')` tuple:
- * it owns exactly one source kind and contributes ONLY the result facet it
- * produces (or `{}` when it has none). `canRead(ctx)` lets a source decline a ctx
- * it can't serve (no query text, wrong signal) so `gatherRecall` skips it
- * BRANCH-FREE — the guard lives on the reader, not in a caller-side `if`. Each
- * reader receives the ACL gate ({@link AuthzScope}) as a REQUIRED, typed argument
- * supplied by `gatherRecall` — never buried in `ctx`, so it can't be dropped at
- * the call site. (The gate enforcing the scope is verified by the per-source ACL
- * tests, not by the type.) Readers fail independently.
- */
-export type RecallSource = FeedReader<
-  SourceKind,
-  'recall',
-  RecallContext,
-  Partial<UnifiedSearchResult>
-> & {
-  /** Human label for logs + the result facet it owns; maps to `source` via RECALL_SOURCE_KIND. */
-  readonly kind: RecallKind;
-};
-
-/** `knowledge` — semantic/keyword snippets from the `events` store. */
-const knowledgeSource: RecallSource = {
-  kind: 'knowledge',
-  source: RECALL_SOURCE_KIND.knowledge,
-  lens: 'recall',
-  // Reads via text OR a precomputed embedding; fetchContentSnippets tolerates a
-  // null query (embedding-only), so there is nothing to decline here.
-  canRead: () => true,
-  read: async (gate, ctx) => {
-    const content = await fetchContentSnippets(
-      gate,
-      ctx.query,
-      ctx.contentLimit,
-      ctx.env,
-      ctx.queryEmbedding,
-      ctx.contentAgentId,
-      ctx.minSimilarity,
-      ctx.excludeWorkspaceAudit
-    );
-    // ALWAYS emit the facet, even empty. An ABSENT `content` key and an empty
-    // one are indistinguishable to an agent reading raw JSON, so omitting it on
-    // zero hits reads as "content search never ran" — the agent then concludes
-    // the workspace knows nothing and answers from nothing. `[]` says "we
-    // looked and found nothing", which is the honest answer.
-    return { content };
-  },
-};
-
-/** `conversation` — keyword/recency hits from the `channel_messages` transcript. */
-const conversationSource: RecallSource = {
-  kind: 'conversation',
-  source: RECALL_SOURCE_KIND.conversation,
-  lens: 'recall',
-  // Keyword match has no embedding path, so a text query is required. (The
-  // calling-agent requirement is gate-dependent and stays in `read`.)
-  canRead: (ctx) => Boolean(ctx.query),
-  read: async (gate, ctx) => {
-    // Needs a calling agent (its bindings are the tenant fence, on the gate).
-    // `canRead` already guaranteed a text query. The requesting user
-    // (`gate.principal`) is the per-user side of the gate — see
-    // fetchConversationSnippets.
-    if (!ctx.query || !gate.agentId) return {};
-    const conversation_messages = await fetchConversationSnippets(
-      gate,
-      ctx.query,
-      ctx.contentLimit
-    );
-    return conversation_messages.length > 0 ? { conversation_messages } : {};
-  },
-};
-
-/**
- * Read one virtual feed under the AMBIENT recall deadline.
- *
- * Two mechanisms, because one is not enough:
- *
- *   - the ABORT tells the reader to stop. The device seam threads it into
- *     `waitForDeviceActionRun`, which stops polling and finalizes its transport
- *     run as `timeout`, and `readDeviceVirtualFeed`'s cleanup then scrubs it.
- *     Without this, walking away from the promise would leave a live run
- *     holding a page of the user's messages until the 60s queue budget lapsed.
- *   - the RACE bounds wall clock regardless. A compiled connector's `search()`
- *     runs in a subprocess with no cancellation seam, so the abort alone cannot
- *     promise the caller anything; the race can.
- *
- * The underlying promise keeps running after a race loss (that is what lets the
- * abort-driven cleanup finish), so its eventual rejection is absorbed here —
- * the race below owns the verdict this caller sees.
- */
-async function readVirtualFeedWithinRecallBudget(
-  params: Parameters<typeof readVirtualFeed>[0]
-): Promise<ReadVirtualFeedResult> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const pending = readVirtualFeed({ ...params, signal: controller.signal });
-  pending.catch(() => {
-    // Owned by the race below; also absorbed so a post-deadline rejection is
-    // never an unhandled one.
-  });
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      controller.abort();
-      reject(
-        new Error(
-          `live recall exceeded its ${VIRTUAL_FEED_RECALL_BUDGET_MS}ms budget`
-        )
-      );
-    }, VIRTUAL_FEED_RECALL_BUDGET_MS);
-  });
-  try {
-    return await Promise.race([pending, deadline]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+async function discoverSourceFeeds(gate: AuthzScope) {
+  const sql = getDb();
+  const vis = compileConnectionRowVisibility(gate, 'c');
+  const rows = (await sql.unsafe(
+    `SELECT f.id AS feed_id, f.feed_key, f.display_name,
+            c.slug AS connection_slug, c.connector_key
+     FROM feeds f
+     JOIN connections c ON c.id = f.connection_id
+     WHERE f.organization_id = $1
+       AND f.deleted_at IS NULL
+       AND f.status = 'active'
+       AND c.deleted_at IS NULL
+       AND c.status = 'active'
+       AND (f.kind = 'virtual' OR f.virtual IS TRUE)
+       ${vis}
+     ORDER BY f.id
+     LIMIT ${MAX_SOURCE_FEEDS_IN_COVERAGE + 1}`,
+    [gate.organizationId]
+  )) as unknown as Array<{
+    feed_id: number;
+    feed_key: string;
+    display_name: string | null;
+    connection_slug: string;
+    connector_key: string;
+  }>;
+  return {
+    feeds: rows.slice(0, MAX_SOURCE_FEEDS_IN_COVERAGE).map((row) => ({
+      ...row,
+      feed_id: Number(row.feed_id),
+      status: 'not_queried' as const,
+    })),
+    more: rows.length > MAX_SOURCE_FEEDS_IN_COVERAGE,
+  };
 }
 
 /**
- * `virtual` — live rows from opt-in virtual feeds. A virtual feed participates
- * in ambient recall ONLY when its `config.recall === true`; most virtual feeds
- * exist to be SQL-addressable (query_sql) and must NOT tax every search_memory
- * call with a live external round-trip. For each opted-in feed we run
- * `readVirtualFeed` with the query as a recall term (its `search()` pushdown),
- * fenced by the SAME connection-visibility gate readVirtualFeed re-checks — the
- * enumeration below applies it too so we never spawn a subprocess for a feed the
- * caller can't see. Feeds fail INDEPENDENTLY: one feed's live error (expired
- * token, source down) never drops another's rows.
+ * Assemble the coverage facet. `discovered` is the settled result of
+ * {@link discoverSourceFeeds}: a rejection degrades discovery to `unavailable`
+ * rather than failing the search, since coverage is metadata about the answer,
+ * not the answer.
  */
-const virtualSource: RecallSource = {
-  kind: 'virtual',
-  source: RECALL_SOURCE_KIND.virtual,
-  lens: 'recall',
-  // Recall over a virtual feed is a keyword `search()` — it needs query text.
-  canRead: (ctx) => Boolean(ctx.query),
-  read: async (gate, ctx) => {
-    // `canRead` already guaranteed a text query.
-    if (!ctx.query) return {};
-
-    // Candidate opt-in feeds, gated by the same connection visibility every read
-    // seam uses. Ordered by id and capped so an org with many feeds gets a
-    // bounded, logged fan-out.
-    const sql = getDb();
-    const vis = compileConnectionRowVisibility(gate, 'c');
-    const feedRows = (await sql.unsafe(
-      `SELECT f.id, f.feed_key
-       FROM feeds f
-       JOIN connections c ON c.id = f.connection_id
-       WHERE f.organization_id = $1
-         AND f.virtual = true
-         AND f.status = 'active'
-         AND f.deleted_at IS NULL
-         AND (f.config->>'recall') = 'true'
-         AND c.deleted_at IS NULL
-         AND c.status = 'active'
-         ${vis}
-       ORDER BY f.id
-       LIMIT ${MAX_VIRTUAL_RECALL_FEEDS + 1}`,
-      [gate.organizationId]
-    )) as unknown as Array<{ id: number; feed_key: string }>;
-
-    if (feedRows.length === 0) return {};
-    let candidates = feedRows;
-    if (candidates.length > MAX_VIRTUAL_RECALL_FEEDS) {
-      candidates = candidates.slice(0, MAX_VIRTUAL_RECALL_FEEDS);
-      logger.warn(
-        `[search] virtual recall fan-out capped at ${MAX_VIRTUAL_RECALL_FEEDS} feeds ` +
-          `for org ${gate.organizationId}; ${feedRows.length - MAX_VIRTUAL_RECALL_FEEDS}+ opted-in feed(s) skipped`
-      );
-    }
-
-    const blocks = await Promise.all(
-      candidates.map(async (f): Promise<VirtualFeedRows | null> => {
-        try {
-          const live = await readVirtualFeedWithinRecallBudget({
-            scope: gate,
-            feedId: f.id,
-            terms: [ctx.query as string],
-            limit: ctx.contentLimit,
-          });
-          if (live.rows.length === 0) return null;
-          return {
-            feed_id: f.id,
-            feed_key: f.feed_key,
-            columns: live.columns,
-            rows: live.rows,
-          };
-        } catch (err) {
-          logger.warn(`[search] virtual feed ${f.id} recall failed: ${getErrorMessage(err)}`);
-          return null;
-        }
-      })
+function buildCoverage(
+  local_sources: SearchCoverage['local_sources'],
+  discovered: PromiseSettledResult<Awaited<ReturnType<typeof discoverSourceFeeds>>>
+): SearchCoverage {
+  if (discovered.status === 'rejected') {
+    logger.warn(
+      `[search] source feed coverage lookup failed: ${getErrorMessage(discovered.reason)}`
     );
-    const virtual_feeds = blocks.filter((b): b is VirtualFeedRows => b !== null);
-    return virtual_feeds.length > 0 ? { virtual_feeds } : {};
-  },
-};
+    return {
+      local_sources,
+      source_queried: false,
+      source_feed_discovery: 'unavailable',
+      source_feeds: [],
+      more_source_feeds: false,
+    };
+  }
+  return {
+    local_sources,
+    source_queried: false,
+    source_feed_discovery: 'complete',
+    source_feeds: discovered.value.feeds,
+    more_source_feeds: discovered.value.more,
+  };
+}
 
-export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSource, virtualSource];
-
-/** Run every recall reader that CAN serve `ctx` under `gate` and merge their
- * facets into one fragment. A source that returns `false` from `canRead` is
- * skipped BRANCH-FREE — the "needs query text" guard lives on the reader, not in
- * a caller-side type-switch. Readers fail INDEPENDENTLY: BOTH `canRead` and
- * `read` run inside the per-source isolation boundary, so a throw from either one
- * drops only that source's facet (logged), never another's. The `sources` param
- * is injectable so the registry can be tested generically. The gate is a
- * required, explicit argument: it is the ACL boundary every reader compiles
- * against, never buried in `ctx`. */
-export async function gatherRecall(
+async function coverageForLocalSources(
   gate: AuthzScope,
-  ctx: RecallContext,
-  sources: RecallSource[] = RECALL_SOURCES
+  local_sources: SearchCoverage['local_sources']
+): Promise<SearchCoverage> {
+  const [discovered] = await Promise.allSettled([discoverSourceFeeds(gate)]);
+  return buildCoverage(local_sources, discovered);
+}
+
+/** Search local stores only. Source-backed feeds are enumerated in coverage but
+ * never queried implicitly; each local store fails independently. */
+export async function gatherLocalRecall(
+  gate: AuthzScope,
+  ctx: RecallContext
 ): Promise<Partial<UnifiedSearchResult>> {
-  const fragments = await Promise.all(
-    sources.map(async (source) => {
-      try {
-        // canRead is inside the try so a throwing predicate isolates to this
-        // source (skipped + logged) instead of rejecting the whole gather.
-        if (!source.canRead(ctx)) return {} as Partial<UnifiedSearchResult>;
-        return await source.read(gate, ctx);
-      } catch (err) {
-        logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
-        return {} as Partial<UnifiedSearchResult>;
-      }
-    })
+  const shouldSearchConversation = Boolean(ctx.query && gate.agentId);
+  const contentPromise = fetchContentSnippets(
+    gate,
+    ctx.query,
+    ctx.contentLimit,
+    ctx.env,
+    ctx.queryEmbedding,
+    ctx.contentAgentId,
+    ctx.minSimilarity,
+    ctx.excludeWorkspaceAudit
   );
-  return Object.assign({}, ...fragments);
+  const conversationPromise = shouldSearchConversation
+    ? fetchConversationSnippets(gate, ctx.query as string, ctx.contentLimit)
+    : Promise.resolve(null);
+  const coveragePromise = discoverSourceFeeds(gate);
+  const [contentResult, conversationResult, sourceFeedsResult] = await Promise.allSettled([
+    contentPromise,
+    conversationPromise,
+    coveragePromise,
+  ]);
+
+  const result: Partial<UnifiedSearchResult> = {};
+  const local_sources: SearchCoverage['local_sources'] = [];
+  if (contentResult.status === 'fulfilled') {
+    result.content = contentResult.value;
+    local_sources.push('events');
+  } else {
+    logger.warn(`[search] local events recall failed: ${getErrorMessage(contentResult.reason)}`);
+  }
+  if (shouldSearchConversation && conversationResult.status === 'fulfilled') {
+    local_sources.push('channel_messages');
+    if (conversationResult.value && conversationResult.value.length > 0) {
+      result.conversation_messages = conversationResult.value;
+    }
+  } else if (conversationResult.status === 'rejected') {
+    logger.warn(
+      `[search] local conversation recall failed: ${getErrorMessage(conversationResult.reason)}`
+    );
+  }
+
+  result.coverage = buildCoverage(local_sources, sourceFeedsResult);
+  return result;
 }
 
 export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
@@ -1023,6 +895,12 @@ async function searchImpl(
     }
   }
 
+  const connectionScope: AuthzScope = authzScopeFromToolContext({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+  });
+
   // Preserve compatibility with reviewer prompts and user language such as
   // "open memory 4939822". The public schema already accepts a query string,
   // so this server-side exact-read fast path fixes existing clients without a
@@ -1032,9 +910,10 @@ async function searchImpl(
     ? await recallExactContentId(args.query, env, ctx)
     : null;
   if (exactContent) {
-    return title && !exactContent.title
-      ? { ...exactContent, title }
-      : exactContent;
+    const result = title && !exactContent.title ? { ...exactContent, title } : exactContent;
+    return withRecall(result, {
+      coverage: await coverageForLocalSources(connectionScope, ['events']),
+    });
   }
 
   // Helper to run content search in parallel. Runs when we have either a text
@@ -1050,15 +929,11 @@ async function searchImpl(
   const agentIdScope = args.agent_id ?? ctx.agentId ?? undefined;
   // Channel recall is fenced to the CALLING agent's own bindings (ctx.agentId),
   // never a caller-supplied filter — that's the tenant boundary for transcript
-  // rows, which have no agent_id of their own. gatherRecall catches per source.
+  // rows, which have no agent_id of their own. Local stores fail independently.
   const recallPromise: Promise<Partial<UnifiedSearchResult>> =
     includeContent && hasContentSignal
-      ? gatherRecall(
-          authzScopeFromToolContext({
-            organizationId: ctx.organizationId,
-            userId: ctx.userId,
-            agentId: ctx.agentId,
-          }),
+      ? gatherLocalRecall(
+          connectionScope,
           {
             query: args.query ?? null,
             contentAgentId: agentIdScope,
@@ -1078,14 +953,6 @@ async function searchImpl(
           }
         )
       : Promise.resolve({});
-  const connectionScope: AuthzScope = {
-    ...authzScopeFromToolContext({
-      organizationId: ctx.organizationId,
-      userId: ctx.userId,
-      agentId: ctx.agentId,
-    }),
-  };
-
   // ========================================
   // ID-BASED LOOKUP (highest priority)
   // ========================================

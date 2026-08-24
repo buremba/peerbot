@@ -220,7 +220,8 @@ async function sendRequest(
   connectorKey: string,
   body: string,
   timeoutMs: number = FETCH_TIMEOUT_TOOL_MS,
-  connectionId?: number
+  connectionId?: number,
+  callerSignal?: AbortSignal
 ): Promise<JsonRpcResponse> {
   // Re-validate on every outbound fetch — config may have been edited/imported
   // after the creation-time probe, so "validated at write time" is not enough.
@@ -232,7 +233,8 @@ async function sendRequest(
   const response = await fetchMcpResponse(
     upstreamUrl,
     { method: 'POST', headers, body },
-    timeoutMs
+    timeoutMs,
+    callerSignal
   );
 
   // Track session ID from response
@@ -272,7 +274,9 @@ async function initializeSession(
   credentials: ResolvedCredentials | null,
   orgId: string,
   connectorKey: string,
-  connectionId?: number
+  connectionId?: number,
+  callerSignal?: AbortSignal,
+  timeoutMs: number = FETCH_TIMEOUT_INIT_MS
 ): Promise<Record<string, unknown>> {
   // Clear existing session
   const key = sessionKey(orgId, connectorKey, connectionId);
@@ -294,8 +298,9 @@ async function initializeSession(
       },
       id: 0,
     }),
-    FETCH_TIMEOUT_INIT_MS,
-    connectionId
+    timeoutMs,
+    connectionId,
+    callerSignal
   );
 
   if (initResponse.error) {
@@ -322,8 +327,9 @@ async function initializeSession(
         jsonrpc: '2.0',
         method: 'notifications/initialized',
       }),
-      FETCH_TIMEOUT_INIT_MS,
-      connectionId
+      timeoutMs,
+      connectionId,
+      callerSignal
     );
   } catch {
     // Notification delivery is best-effort
@@ -464,7 +470,8 @@ export async function callTool(
   orgId: string,
   originalToolName: string,
   args: Record<string, unknown>,
-  connectionId: number
+  connectionId: number,
+  options?: { signal?: AbortSignal; timeoutMs?: number }
 ): Promise<{ content: unknown[]; isError: boolean }> {
   let credentials = await resolveCredentialsByConnectionId(connectionId, orgId);
   let canRefreshAfter401 = true;
@@ -482,7 +489,9 @@ export async function callTool(
         credentials,
         orgId,
         connectorKey,
-        connectionId
+        connectionId,
+        options?.signal,
+        options?.timeoutMs
       );
     } catch (error) {
       if (!(error instanceof McpAuthRejectedError)) throw error;
@@ -495,7 +504,9 @@ export async function callTool(
         credentials,
         orgId,
         connectorKey,
-        connectionId
+        connectionId,
+        options?.signal,
+        options?.timeoutMs
       );
     }
   }
@@ -514,8 +525,9 @@ export async function callTool(
       orgId,
       connectorKey,
       jsonRpcBody,
-      FETCH_TIMEOUT_TOOL_MS,
-      connectionId
+      options?.timeoutMs ?? FETCH_TIMEOUT_TOOL_MS,
+      connectionId,
+      options?.signal
     );
 
   // Only a credential rejection is retried: it is rejected before dispatch.

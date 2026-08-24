@@ -192,17 +192,20 @@ export type SearchMemoryResponses = {
       text: string;
       occurred_at: string | null;
     }>;
-    virtual_feeds?: Array<{
-      feed_id: number;
-      feed_key: string;
-      columns: Array<{
-        name: string;
-        type: string;
+    coverage?: {
+      local_sources: Array<"events" | "channel_messages">;
+      source_queried: false;
+      source_feed_discovery: "complete" | "unavailable";
+      source_feeds: Array<{
+        feed_id: number;
+        feed_key: string;
+        connection_slug: string;
+        connector_key: string;
+        display_name: string | null;
+        status: "not_queried";
       }>;
-      rows: Array<{
-        [key: string]: unknown;
-      }>;
-    }>;
+      more_source_feeds: boolean;
+    };
     discovery_status?: "not_found" | "complete" | "discovering";
     suggestion?: string;
     view_url?: string;
@@ -581,17 +584,13 @@ export type QuerySqlData = {
      */
     title?: string;
     /**
-     * Base SELECT query. Required unless `feed` is set. Table references are auto-scoped to your organization. `SELECT FROM events` reads persisted/synced content only; virtual feeds are live-only and are not included. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.
+     * Base SELECT query. Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.
      */
-    sql?: string;
+    sql: string;
     /**
      * Optional connection slug. When set, `sql` runs LIVE (read-only) against that connection’s external database via its connector (pushdown), and the internal org-scoping is skipped. When unset, the query runs over your org’s internal tables.
      */
     connection?: string;
-    /**
-     * Optional virtual-feed reference (numeric feed id, or "connection_slug/feed_key"). When set, the feed’s STORED config.query runs LIVE against its source (no `sql` needed — it is ignored). `search_term` is forwarded to the connector search() pushdown (each connector interprets it — e.g. Gmail query syntax AND-composed with config.query). Mutually exclusive with `connection`.
-     */
-    feed?: string;
     /**
      * Optional. Only honored on the unscoped `/mcp` endpoint with OAuth auth. Rejected for PAT auth, browser-session auth, and scoped `/mcp/{slug}` connections — re-connect to the target workspace instead.
      */
@@ -613,7 +612,7 @@ export type QuerySqlData = {
      */
     offset?: number;
     /**
-     * Internal SQL: ILIKE search value. Virtual feeds: forwarded to connector search() — interpretation is connector-specific (Gmail: search syntax merged with config.query).
+     * ILIKE search value for an internal SQL query.
      */
     search_term?: string;
     /**
@@ -658,7 +657,7 @@ export type QuerySqlResponses = {
      */
     title?: string;
     /**
-     * The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu and is absent for stored virtual-feed queries.
+     * The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu.
      */
     sql?: string;
     rows: Array<{
@@ -671,7 +670,6 @@ export type QuerySqlResponses = {
     total_count: number;
     has_more: boolean;
     execution_time_ms: number;
-    coverage?: unknown;
     error?: string;
     error_code?: string;
     retryable?: boolean;
@@ -3127,39 +3125,40 @@ export type ManageFeedsData = {
       }
     | {
         /**
-         * Read one feed (metadata + recent runs, or live transcript for streaming feeds).
+         * Read feed metadata and recent sync runs without querying its source.
          */
         action: "read_feed";
         /**
          * Feed ID
          */
         feed_id: number;
-        /**
-         * Max transcript messages for a streaming feed (default 50)
-         */
-        limit?: number;
-        /**
-         * For a VIRTUAL feed: term pushed to the connector's search() pushdown (e.g. Gmail query syntax AND-composed with the feed's config.query). Ignored for non-virtual feeds.
-         */
-        search_term?: string;
       }
     | {
         /**
-         * Read several feeds in parallel. Each feed returns independently as { ok, result } or { ok:false, error }.
+         * Explicitly query several source-backed feeds in parallel. Each source is bounded and fails independently.
          */
         action: "read_feeds";
         /**
-         * Feed IDs to read in parallel (max 10).
+         * Source reads to execute in parallel (max 10).
          */
-        feed_ids: Array<number>;
-        /**
-         * Per-feed row/message limit for live feed kinds (default 50)
-         */
-        limit?: number;
-        /**
-         * For VIRTUAL feeds: term pushed to each connector's search() pushdown (e.g. Gmail query syntax AND-composed with config.query). Applies to every virtual feed in the batch; ignored for non-virtual feeds.
-         */
-        search_term?: string;
+        reads: Array<{
+          /**
+           * Feed ID to query at its source.
+           */
+          feed_id: number;
+          /**
+           * Connector-native search query. Omit for an unfiltered source read.
+           */
+          query?: string;
+          /**
+           * Maximum source rows for this feed (default 50).
+           */
+          limit?: number;
+          /**
+           * Opaque continuation cursor returned by a previous read of this feed/query.
+           */
+          cursor?: string;
+        }>;
         /**
          * Per-feed timeout in milliseconds (default 10000, max 30000).
          */
@@ -3201,7 +3200,7 @@ export type ManageFeedsData = {
          */
         timezone?: string;
         /**
-         * When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow via query_sql search_term (connector interprets it).
+         * When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow with the per-feed query in feeds.readMany.
          */
         virtual?: boolean;
       }
@@ -3316,46 +3315,22 @@ export type ManageFeedsResponses = {
         }>;
       }
     | {
-        action: "read_feed";
-        kind: "streaming";
-        feed: {
-          [key: string]: unknown;
-        };
-        messages: Array<{
-          timestamp: string;
-          user: string;
-          text: string;
-          isBot: boolean;
-        }>;
-        team_id?: string | null;
-        about_entities?: Array<{
-          id: number;
-          name: string;
-          slug: string | null;
-        }>;
-      }
-    | {
-        action: "read_feed";
-        kind: "virtual";
-        feed: {
-          [key: string]: unknown;
-        };
-        rows: Array<{
-          [key: string]: unknown;
-        }>;
-        columns: Array<{
-          name: string;
-          type: string;
-        }>;
-        total?: number;
-      }
-    | {
         action: "read_feeds";
         results: Array<{
           feed_id: number;
           ok: boolean;
-          result?: unknown;
+          rows?: Array<{
+            [key: string]: unknown;
+          }>;
+          columns?: Array<{
+            name: string;
+            type: string;
+          }>;
+          total?: number;
+          next_cursor?: string;
           error?: string;
+          error_code?: string;
+          retryable?: boolean;
         }>;
         failures: number;
         timeout_ms: number;

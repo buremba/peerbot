@@ -4,14 +4,12 @@
  * The handler's resolved `{ rows: [], error }` result carries `error_code` and
  * `retryable`, while the MCP boundary marks it with `isError`. Agents can
  * distinguish a transient timeout from a permanent SQL fault without parsing
- * the message. The hard-throw path (missing feed) carries the code on its
- * ToolUserError.
+ * the message.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
-import { ToolUserError } from '../../../utils/errors';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -80,19 +78,6 @@ describe('query_sql error taxonomy', () => {
     // A rejected/unscopable table is the caller's problem — never retryable.
     expect(res.retryable).toBe(false);
     expect(res.error_code).toBeTruthy();
-  }, 60_000);
-
-  it('throws NOT_FOUND (with code) for an unknown feed reference', async () => {
-    let caught: unknown;
-    try {
-      await querySql({ feed: 'no-such-feed-xyz' }, {}, ctx);
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolUserError);
-    expect((caught as ToolUserError).code).toBe('NOT_FOUND');
-    expect((caught as ToolUserError).retryable).toBe(false);
-    expect((caught as ToolUserError).httpStatus).toBe(404);
   }, 60_000);
 
   it('a successful query carries no error_code/retryable', async () => {

@@ -43,26 +43,41 @@ export const ListFeedsAction = Type.Object({
   ...PaginationFields,
 });
 
-// One read action for any feed kind. A collected/virtual feed returns its
-// metadata + recent sync runs; a streaming (chat-channel) feed has no sync runs
-// — its content is the live transcript in `channel_messages` — so it returns
-// that instead, read through the same primitive read_conversation uses. The
-// caller never has to know the kind up front; the response carries it.
+// Metadata inspection is deliberately separate from source access. Reading one
+// feed never calls its connector; agents opt into source latency through
+// read_feeds instead.
 export const ReadFeedAction = Type.Object({
   action: Type.Literal("read_feed", {
     description:
-      "Read one feed (metadata + recent runs, or live transcript for streaming feeds).",
+      "Read feed metadata and recent sync runs without querying its source.",
   }),
   feed_id: Type.Number({ description: "Feed ID" }),
-  limit: Type.Optional(
-    Type.Number({
-      description: "Max transcript messages for a streaming feed (default 50)",
+});
+
+const FeedSourceRead = Type.Object({
+  feed_id: Type.Integer({
+    minimum: 1,
+    description: "Feed ID to query at its source.",
+  }),
+  query: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        "Connector-native search query. Omit for an unfiltered source read.",
     })
   ),
-  search_term: Type.Optional(
+  limit: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 500,
+      description: "Maximum source rows for this feed (default 50).",
+    })
+  ),
+  cursor: Type.Optional(
     Type.String({
+      minLength: 1,
       description:
-        "For a VIRTUAL feed: term pushed to the connector's search() pushdown (e.g. Gmail query syntax AND-composed with the feed's config.query). Ignored for non-virtual feeds.",
+        "Opaque continuation cursor returned by a previous read of this feed/query.",
     })
   ),
 });
@@ -70,27 +85,15 @@ export const ReadFeedAction = Type.Object({
 export const ReadFeedsAction = Type.Object({
   action: Type.Literal("read_feeds", {
     description:
-      "Read several feeds in parallel. Each feed returns independently as { ok, result } or { ok:false, error }.",
+      "Explicitly query several source-backed feeds in parallel. Each source is bounded and fails independently.",
   }),
-  feed_ids: Type.Array(Type.Integer({ minimum: 1 }), {
+  reads: Type.Array(FeedSourceRead, {
     minItems: 1,
     maxItems: 10,
-    description: "Feed IDs to read in parallel (max 10).",
+    description: "Source reads to execute in parallel (max 10).",
   }),
-  limit: Type.Optional(
-    Type.Number({
-      description:
-        "Per-feed row/message limit for live feed kinds (default 50)",
-    })
-  ),
-  search_term: Type.Optional(
-    Type.String({
-      description:
-        "For VIRTUAL feeds: term pushed to each connector's search() pushdown (e.g. Gmail query syntax AND-composed with config.query). Applies to every virtual feed in the batch; ignored for non-virtual feeds.",
-    })
-  ),
   timeout_ms: Type.Optional(
-    Type.Number({
+    Type.Integer({
       description:
         "Per-feed timeout in milliseconds (default 10000, max 30000).",
       minimum: 1000,
@@ -137,7 +140,7 @@ export const CreateFeedAction = Type.Object({
   virtual: Type.Optional(
     Type.Boolean({
       description:
-        "When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow via query_sql search_term (connector interprets it).",
+        "When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow with the per-feed query in feeds.readMany.",
     })
   ),
 });
@@ -232,46 +235,22 @@ export const ManageFeedsResultSchema = Type.Union([
     recent_runs: Type.Array(Type.Record(Type.String(), Type.Unknown())),
   }),
   Type.Object({
-    action: Type.Literal("read_feed"),
-    kind: Type.Literal("streaming"),
-    feed: Type.Record(Type.String(), Type.Unknown()),
-    messages: Type.Array(
-      Type.Object({
-        timestamp: Type.String(),
-        user: Type.String(),
-        text: Type.String(),
-        isBot: Type.Boolean(),
-      })
-    ),
-    team_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-    about_entities: Type.Optional(
-      Type.Array(
-        Type.Object({
-          id: Type.Integer(),
-          name: Type.String(),
-          slug: Type.Union([Type.String(), Type.Null()]),
-        })
-      )
-    ),
-  }),
-  Type.Object({
-    action: Type.Literal("read_feed"),
-    kind: Type.Literal("virtual"),
-    feed: Type.Record(Type.String(), Type.Unknown()),
-    rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
-    columns: Type.Array(
-      Type.Object({ name: Type.String(), type: Type.String() })
-    ),
-    total: Type.Optional(Type.Integer()),
-  }),
-  Type.Object({
     action: Type.Literal("read_feeds"),
     results: Type.Array(
       Type.Object({
         feed_id: Type.Integer(),
         ok: Type.Boolean(),
-        result: Type.Optional(Type.Unknown()),
+        rows: Type.Optional(
+          Type.Array(Type.Record(Type.String(), Type.Unknown()))
+        ),
+        columns: Type.Optional(
+          Type.Array(Type.Object({ name: Type.String(), type: Type.String() }))
+        ),
+        total: Type.Optional(Type.Integer()),
+        next_cursor: Type.Optional(Type.String()),
         error: Type.Optional(Type.String()),
+        error_code: Type.Optional(Type.String()),
+        retryable: Type.Optional(Type.Boolean()),
       })
     ),
     failures: Type.Integer(),

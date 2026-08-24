@@ -24,12 +24,7 @@ import {
 	slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../../authz/access-graph";
-import {
-	gatherRecall,
-	RECALL_SOURCES,
-	type RecallContext,
-	search,
-} from "../../../tools/search";
+import { gatherLocalRecall, type RecallContext, search } from "../../../tools/search";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { ensureMemberEntity } from "../../../utils/member-entity";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -1088,11 +1083,8 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		expect(channels).not.toContain("C01SEC");
   });
 
-  // Registry-seam regression: drive the REAL production `conversationSource`
-  // (via RECALL_SOURCES) through `gatherRecall` with the gate as the only ACL
-  // input — proving the gate, not a fake, denies a non-member. This is the
-  // direct-`gatherRecall` counterpart to the search()-level tests above.
-	it("gatherRecall denies a non-member principal but serves a member (real conversationSource)", async () => {
+  // Local-recall seam regression: the explicit gate is the only ACL input.
+	it("gatherLocalRecall denies a non-member principal but serves a member", async () => {
     const { org, alice, agent } = await setupWorkspace();
     await buildAccessGraph({
       organizationId: org.id,
@@ -1111,11 +1103,6 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       ]),
     });
 
-		const conversationOnly = RECALL_SOURCES.filter(
-			(s) => s.kind === "conversation",
-		);
-    // conversationSource reads only ctx.query + ctx.contentLimit; env/embedding
-    // are unused on this path.
     const ctx = {
 			query: "quarterly revenue",
       contentAgentId: undefined,
@@ -1123,10 +1110,9 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     } as unknown as RecallContext;
 
     // A member sees only her own channel (#eng), never #secret.
-    const asMember = await gatherRecall(
+    const asMember = await gatherLocalRecall(
       { organizationId: org.id, principal: alice.id, agentId: agent.agentId },
       ctx,
-      conversationOnly,
     );
 		const memberChannels = (asMember.conversation_messages ?? []).map(
 			(m) => m.channel_id,
@@ -1135,14 +1121,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		expect(memberChannels).not.toContain("C01SEC");
 
     // A principal with no $member in this org resolves to nothing → fail closed.
-    const asNonMember = await gatherRecall(
+    const asNonMember = await gatherLocalRecall(
 			{
 				organizationId: org.id,
 				principal: "intruder-user-id",
 				agentId: agent.agentId,
-			},
+      },
       ctx,
-      conversationOnly,
     );
     expect(asNonMember.conversation_messages ?? []).toHaveLength(0);
   });

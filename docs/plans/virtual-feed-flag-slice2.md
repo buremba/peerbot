@@ -1,15 +1,17 @@
 # Virtual feed flag — Slice 2
 
-> **Status (2026-07-15):** **Shipped** — `feeds_virtual_flag` migration + live virtual-feed reads in search/manage_feeds.
+> **Status (updated 2026-08-24):** The virtual-feed schema remains shipped, but
+> ambient search recall, live `feeds.get`, and `query_sql({ feed })` were removed.
+> Live feed access now has one explicit seam: `client.feeds.readMany`.
 
 Status: implemented (this PR). Conflict-safe slice of the larger "Conversation feeds
 / FeedReader registry" program. This slice ships the **capability layer + migration**
 that lets a feed be *read live* instead of synced; the FeedReader registry + feed
 enumeration that consume it land in a sibling stream (Stream A, owned separately).
 
-Follow-up shipped: `query_sql` now warns that `events` queries are persisted-only
-and suggests accessible live virtual feeds; `manage_feeds.read_feeds` /
-`client.feeds.readMany` batch those live reads with per-feed partial failures.
+Follow-up shipped: `search_memory` reports persisted/local coverage and accessible
+source feeds without querying them; `manage_feeds.read_feeds` /
+`client.feeds.readMany` batch explicit live reads with per-feed partial failures.
 See `docs/database-connectors.md` for the current agent-facing contract.
 
 ## Goal

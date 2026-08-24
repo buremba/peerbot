@@ -707,21 +707,12 @@ describe('unpinned device virtual-feed reads are a personal-org lane', () => {
  * Lifecycle of the transport run: DEADLINES and ORPHAN sweeping.
  *
  * The read seam's `finally` scrubs on every path the gateway process survives.
- * Two holes remain, and this block is about both:
- *
- *   (1) AMBIENT recall must not inherit the deliberate-read budget. A live feed
- *       opted into `search_memory` is a side dish — it runs on every call — so
- *       one sleeping laptop must not stall a chat turn for the device queue's
- *       60s pre-claim plus 95s post-claim. The deadline ABORTS rather than only
- *       racing: the waiter stops polling and terminalizes its run, and the
- *       cleanup scrubs it, so nothing is left holding a page of messages.
- *   (2) A gateway that DIES mid-read runs no `finally` at all. The retention
+ * A gateway that DIES mid-read runs no `finally` at all. The retention
  *       promise cannot rest on a process staying alive, so the reaper
  *       re-asserts it set-wise from whichever replica is up.
  */
 const LIFECYCLE_WORKER_ID = 'wk-wa-lifecycle';
 
-const { gatherRecall, RECALL_SOURCES } = await import('../../../tools/search');
 const { sweepAbandonedVirtualFeedReadRuns } = await import(
   '../../../scheduled/check-stalled-executions'
 );
@@ -738,44 +729,6 @@ let lifecycleUserId: string;
 let lifecycleDeviceId: string;
 let lifecycleConnectionId: number;
 let lifecycleFeedId: number;
-
-const virtualRecallSource = () => {
-  const source = RECALL_SOURCES.find((s) => s.kind === 'virtual');
-  if (!source) throw new Error('the virtual recall source is no longer registered');
-  return source;
-};
-
-/**
- * A second recall source that always succeeds fast. Its facet is how we tell
- * "the virtual feed was skipped" from "recall itself fell over" — the point of
- * a per-source deadline is that the other readers still answer.
- */
-const fastStubSource = {
-  kind: 'conversation' as const,
-  source: 'chat-channel' as never,
-  lens: 'recall' as const,
-  canRead: () => true,
-  read: async () => ({
-    conversation_messages: [
-      {
-        id: 1,
-        channel: 'stub',
-        text: 'other recall sources still answered',
-        author: null,
-        occurred_at: null,
-      },
-    ],
-  }),
-} as unknown as (typeof RECALL_SOURCES)[number];
-
-function lifecycleRecallContext(): Parameters<typeof gatherRecall>[1] {
-  return {
-    query: 'invoice',
-    contentAgentId: undefined,
-    contentLimit: 5,
-    env: {} as never,
-  };
-}
 
 async function lifecycleRuns(): Promise<
   Array<{
@@ -842,30 +795,6 @@ async function seedReservedRun(opts: {
     RETURNING id
   `) as Array<{ id: number }>;
   return row.id;
-}
-
-/**
- * Wait for the transport run to reach its terminal, scrubbed state.
- *
- * The recall deadline returns control to the CALLER first and lets the aborted
- * read finish tearing itself down behind it — that ordering is the point (the
- * caller is not made to wait on cleanup), so the assertion has to follow the
- * cleanup rather than assume it already ran. Bounded: if it never converges the
- * test fails on the assertions after this returns.
- */
-async function awaitScrubbedRun(timeoutMs = 5_000): Promise<
-  Array<{ id: number; status: string; action_input: unknown; action_output: unknown }>
-> {
-  const deadline = Date.now() + timeoutMs;
-  let runs = await lifecycleRuns();
-  while (Date.now() < deadline) {
-    if (runs.length > 0 && runs.every((r) => r.status === 'timeout' && r.action_output === null)) {
-      return runs;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    runs = await lifecycleRuns();
-  }
-  return runs;
 }
 
 async function readRunById(runId: number): Promise<{
@@ -1033,54 +962,6 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
     // Nothing enqueued at all — not enqueued-then-scrubbed.
     expect(await lifecycleRuns()).toHaveLength(0);
   });
-
-  it('bounds ambient recall to the per-feed budget while other sources still answer', async () => {
-    const startedAt = Date.now();
-    const recalled = await gatherRecall(
-      { organizationId: lifecycleOrgId, principal: lifecycleUserId },
-      lifecycleRecallContext(),
-      [virtualRecallSource(), fastStubSource]
-    );
-    const elapsedMs = Date.now() - startedAt;
-
-    // The budget bounded it. Without the deadline this is the device queue's
-    // 60s pre-claim wait, on every single search_memory call.
-    expect(elapsedMs).toBeLessThan(20_000);
-    // The live feed contributed nothing — correctly, no device answered.
-    expect(recalled.virtual_feeds).toBeUndefined();
-    // …and the other reader was untouched by it.
-    expect(recalled.conversation_messages).toHaveLength(1);
-
-    // The abandoned transport run was closed and emptied, not left in flight.
-    const runs = await awaitScrubbedRun();
-    expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe('timeout');
-    expect(runs[0].action_output).toBeNull();
-    expect(runs[0].action_input).toEqual({ scrubbed: true, feed_key: FEED_KEY });
-  }, 40_000);
-
-  it('still returns live rows when the device answers inside the budget', async () => {
-    // A device that answers immediately: the deadline exists to bound the slow
-    // case, and must not cost the fast one.
-    __setDeviceActionWaiterForTest(async () => ({
-      status: 'completed' as const,
-      output: { rows: DEVICE_ROWS, columns: DEVICE_COLUMNS },
-    }));
-
-    const recalled = await gatherRecall(
-      { organizationId: lifecycleOrgId, principal: lifecycleUserId },
-      lifecycleRecallContext(),
-      [virtualRecallSource(), fastStubSource]
-    );
-
-    expect(recalled.virtual_feeds).toHaveLength(1);
-    expect(recalled.virtual_feeds?.[0]).toMatchObject({
-      feed_id: lifecycleFeedId,
-      feed_key: FEED_KEY,
-      rows: DEVICE_ROWS,
-    });
-    expect(recalled.conversation_messages).toHaveLength(1);
-  }, 30_000);
 
   // Everything below is the CRASH path: rows the in-process `finally` never got
   // to, because the process that owned it is gone.

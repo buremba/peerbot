@@ -424,8 +424,8 @@ describe("sdkSearch", () => {
 	});
 
 	it.each([
-		["feeds.get", ["limit?: number", "search_term?: string"]],
-		["feeds.readMany", ["timeout_ms?: number", "search_term?: string"]],
+		["feeds.get", ["feed_id: number", "without querying its source"]],
+		["feeds.readMany", ["reads: Array", "cursor?: string"]],
 		[
 			"feeds.create",
 			[

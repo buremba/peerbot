@@ -43,49 +43,6 @@ import {
 interface ManifestFeed {
   name?: string;
   virtual?: boolean;
-  configSchema?: { properties?: Record<string, unknown> } | null;
-}
-
-/**
- * Feed config keys whose declared JSON Schema `default` must be MATERIALIZED
- * onto a newly auto-wired virtual feed rather than left as documentation.
- *
- * A JSON Schema default is not written back by validation, so `feeds.config`
- * stays NULL — invisible to anything that reads the COLUMN. `recall` is read
- * from the column (`search_memory`'s virtual fan-out selects
- * `f.config->>'recall' = 'true'`), so a virtual feed that declares
- * `recall.default = true` and is auto-wired with a NULL config would never
- * participate in ambient recall, however it advertises itself.
- *
- * Kept to an explicit allowlist rather than "materialize every default": the
- * rest of a feed's schema defaults are read through the schema at use time and
- * copying them would freeze today's value into every row.
- */
-const MATERIALIZED_VIRTUAL_FEED_DEFAULTS = ['recall'] as const;
-
-/**
- * Config to persist on a NEWLY created auto-wired feed. Seeded at CREATE only
- * — never re-applied on the re-activate path below, so a user who turns
- * `recall` off does not get it switched back on by the next poll.
- */
-function virtualFeedSeedConfig(
-  definition: ManifestFeed | undefined,
-  isVirtual: boolean
-): Record<string, unknown> | null {
-  if (!isVirtual || !definition) return null;
-  const properties = definition.configSchema?.properties ?? {};
-  const seed: Record<string, unknown> = {};
-  for (const key of MATERIALIZED_VIRTUAL_FEED_DEFAULTS) {
-    const property = properties[key];
-    if (
-      property != null &&
-      typeof property === 'object' &&
-      (property as { default?: unknown }).default === true
-    ) {
-      seed[key] = true;
-    }
-  }
-  return Object.keys(seed).length > 0 ? seed : null;
 }
 
 /** A device worker counts toward "serves capability X" only if seen this recently. */
@@ -730,7 +687,6 @@ async function ensureDeviceConnectorWired(
             WHERE id = ${existingFeed[0].id}
           `;
         } else {
-          const seedFeedConfig = virtualFeedSeedConfig(declaredFeeds?.[feedKey], isVirtual);
           // The manifest's per-feed `name` when it declares one, and only the
           // connector's own name as the fallback. A connector with several
           // feeds (`Messages` + `Messages (live)`) otherwise wires them all
@@ -743,11 +699,11 @@ async function ensureDeviceConnectorWired(
               : metadata.name;
           await tx`
             INSERT INTO feeds (
-              organization_id, connection_id, feed_key, display_name, status, config,
+              organization_id, connection_id, feed_key, display_name, status,
               next_run_at, kind, virtual
             ) VALUES (
               ${organizationId}, ${connectionId}, ${feedKey},
-              ${displayName}, 'active', ${seedFeedConfig ? tx.json(seedFeedConfig) : null},
+              ${displayName}, 'active',
               ${isVirtual ? null : new Date()},
               ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual}
             )

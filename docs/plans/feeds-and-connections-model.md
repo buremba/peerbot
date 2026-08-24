@@ -1,6 +1,9 @@
 # Feeds & Connections — the queryable-source model
 
-> **Status (2026-07-15):** **Partial** — recall lens live via `FeedReader`/`RECALL_SOURCES`; metric and raw-SQL lens folding still pending.
+> **Status (2026-08-24): Superseded.** The ambient `FeedReader`/`RECALL_SOURCES`
+> registry was removed. `search_memory` is local-only with coverage metadata;
+> source-backed feeds are read explicitly through `client.feeds.readMany`. The
+> material below records the earlier design, not the current API.
 
 **Status: PARTLY BUILT.** All three feed kinds already exist in some form (see
 the table). The `recall` lens now dispatches every source (`knowledge` = events,

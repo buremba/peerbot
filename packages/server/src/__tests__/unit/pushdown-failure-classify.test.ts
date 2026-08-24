@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { isRetryable } from '@lobu/core';
-import { classifyPushdownFailure } from '../../tools/admin/query_sql';
+import { classifyPushdownFailure } from '../../lib/connector-pushdown';
 
 // Mirror of SubprocessError's surface: a message plus the propagated httpStatus.
 class SubprocessErrorLike extends Error {
@@ -58,6 +58,13 @@ describe('classifyPushdownFailure', () => {
   it('still keyword-classifies a transient message when no status is present', () => {
     const code = classifyPushdownFailure(new SubprocessErrorLike('ECONNRESET', undefined));
     expect(code).toBe('NETWORK');
+    expect(isRetryable(code)).toBe(true);
+  });
+
+  it('classifies a structured subprocess deadline as UPSTREAM_TIMEOUT', () => {
+    const error = Object.assign(new Error('redacted'), { exitReason: 'timeout' });
+    const code = classifyPushdownFailure(error);
+    expect(code).toBe('UPSTREAM_TIMEOUT');
     expect(isRetryable(code)).toBe(true);
   });
 });

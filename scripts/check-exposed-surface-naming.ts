@@ -567,6 +567,11 @@ function scanCanonicalVocabulary(violations: Violation[]): void {
           )
           .replace(/\bbehavior\s*:\s*(?:default|merge)\b/g, "")
           .replace(/\bbehavior\s*=\s*["'`](?:instant|smooth)["'`]/g, "")
+          // AppKit owns these exact NSWindow names, in both their property
+          // (`collectionBehavior`) and type (`NSWindow.CollectionBehavior`)
+          // spellings. Match member access only, so an owned key or prose using
+          // the same words still fails the canonical vocabulary gate.
+          .replace(/\.(?:collectionBehavior|animationBehavior)\b/gi, "")
           .replace(/\bscroll-behavior\b/g, "");
         if (RETIRED_CANONICAL_VOCABULARY.test(canonicalLine)) {
           violations.push({

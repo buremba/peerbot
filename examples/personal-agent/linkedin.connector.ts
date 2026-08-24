@@ -431,13 +431,16 @@ const HOME_FEED_SCRAPE_CONFIG = {
     pathRegex: "/(login|authwall|uas/login|checkpoint|signup)\\b",
   },
   rowSelector:
-    'div[componentkey*="FeedType_MAIN_FEED_RELEVANCE"], div[componentkey^="commentsSectionContainer"]',
+    'div[componentkey*="FeedType_MAIN_FEED_RELEVANCE"], [id^="replaceableComment_urn:li:comment:"]',
   id: {
     source: "attr",
-    name: "componentkey",
-    // Post rows keep only the token before FeedType_. Comment rows have no
-    // FeedType_ suffix, so the end-of-string alternative preserves their full
-    // commentsSectionContainer<parent-token> identity.
+    // Posts identify themselves with componentkey; native comments use their
+    // replaceableComment id. Selecting comments individually keeps two visible
+    // comments (and their media) from collapsing into one container row.
+    name: ["componentkey", "id"],
+    // Post rows keep only the token before FeedType_. Comment ids have no
+    // FeedType_ suffix, so the end-of-string alternative preserves the full
+    // native comment identity.
     regex: "^(?:expanded)?(.+?)(?=FeedType_|$)",
     group: 1,
   },
@@ -482,15 +485,6 @@ const HOME_FEED_SCRAPE_CONFIG = {
       take: "attr",
       attr: "id",
     },
-    comment_identity: {
-      selector: '[id^="replaceableComment_urn:li:comment:"]',
-      take: "attr",
-      attr: "id",
-    },
-    comment_body: {
-      selector: '[id^="replaceableComment_urn:li:comment:"]',
-      take: "text",
-    },
     links: {
       // Every profile/company anchor with its accessible name, so
       // buildHomeFeedEvents can match the author/engager by NAME rather than by
@@ -509,7 +503,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
       // Profile photos and company logos are identities, not post attachments.
       // The final :not keeps media inside a nested visible comment off the post.
       selector:
-        ':scope:not([componentkey^="commentsSectionContainer"]) img[src*="media.licdn.com/dms/image/"]:not([src*="profile-displayphoto"]):not([src*="company-logo"]):not(div[componentkey^="commentsSectionContainer"] img)',
+        ':scope:not([id^="replaceableComment_"]) img[src*="media.licdn.com/dms/image/"]:not([src*="profile-displayphoto"]):not([src*="company-logo"]):not([id^="replaceableComment_"] img)',
       take: "objectAll",
       parts: {
         url: { take: "attr", attr: "src" },
@@ -518,7 +512,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
     },
     comment_media: {
       selector:
-        ':scope[componentkey^="commentsSectionContainer"] img[src*="media.licdn.com/dms/image/"]:not([src*="profile-displayphoto"]):not([src*="company-logo"])',
+        ':scope[id^="replaceableComment_"] img[src*="media.licdn.com/dms/image/"]:not([src*="profile-displayphoto"]):not([src*="company-logo"])',
       take: "objectAll",
       parts: {
         url: { take: "attr", attr: "src" },
@@ -828,6 +822,19 @@ function homeFeedCommentParentToken(id: string): string | undefined {
     : undefined;
 }
 
+function homeFeedPostIdentityKey(
+  row: HomeFeedRow,
+  context: HomeFeedRowContext
+): string | undefined {
+  const raw = row.post_identity ?? context.postUrl;
+  if (!raw) return undefined;
+  const match = raw.match(
+    /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
+  );
+  if (!match) return undefined;
+  return `${linkedInUrnNamespace(match[1] ?? match[2] ?? "")}:${match[3]}`;
+}
+
 function parseHomeFeedCommentIdentity(
   raw: string | undefined
 ): HomeFeedCommentIdentity | undefined {
@@ -1031,6 +1038,7 @@ export function buildHomeFeedEvents(
   const seen = new Set<string>();
   const events: EventEnvelope[] = [];
   const contexts = new Map<string, HomeFeedRowContext>();
+  const postRowsByIdentity = new Map<string, string>();
   for (const row of rows) {
     if (
       row?.id &&
@@ -1038,7 +1046,14 @@ export function buildHomeFeedEvents(
       !isHomeFeedNoise(row.body) &&
       !contexts.has(row.id)
     ) {
-      contexts.set(row.id, buildHomeFeedRowContext(row));
+      const context = buildHomeFeedRowContext(row);
+      contexts.set(row.id, context);
+      if (!parseHomeFeedCommentIdentity(row.comment_identity ?? row.id)) {
+        const identityKey = homeFeedPostIdentityKey(row, context);
+        if (identityKey && !postRowsByIdentity.has(identityKey)) {
+          postRowsByIdentity.set(identityKey, row.id);
+        }
+      }
     }
   }
   for (const row of rows) {
@@ -1046,15 +1061,26 @@ export function buildHomeFeedEvents(
     if (isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
     const context = contexts.get(row.id)!;
-    const parentToken = homeFeedCommentParentToken(row.id);
-    if (parentToken) {
-      const parent = contexts.get(parentToken);
-      const nativeIdentity = parseHomeFeedCommentIdentity(row.comment_identity);
+    const nativeIdentity = parseHomeFeedCommentIdentity(
+      row.comment_identity ?? row.id
+    );
+    const parentToken =
+      homeFeedCommentParentToken(row.id) ??
+      (nativeIdentity
+        ? postRowsByIdentity.get(
+            `${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
+          )
+        : undefined);
+    if (parentToken || nativeIdentity) {
+      const parentOriginToken =
+        parentToken ??
+        `${nativeIdentity!.parentNamespace}_${nativeIdentity!.parentId}`;
+      const parent = parentToken ? contexts.get(parentToken) : undefined;
       const payloadText = row.comment_body?.trim() || row.body;
       const originId = nativeIdentity
         ? `li_comment_${nativeIdentity.commentId}`
         : stableId("li_home_comment", [
-            parentToken,
+            parentOriginToken,
             context.authorSlug ?? context.author,
             payloadText,
           ]);
@@ -1069,7 +1095,7 @@ export function buildHomeFeedEvents(
       const commentMetadata: Record<string, unknown> = {
         ...context.metadata,
         ...homeFeedEngagementMetadata(counts),
-        parent_post_origin_id: `li_home_${parentToken}`,
+        parent_post_origin_id: `li_home_${parentOriginToken}`,
         ...(nativeIdentity
           ? {
               comment_urn: nativeIdentity.urn,
@@ -1088,7 +1114,7 @@ export function buildHomeFeedEvents(
       }
       events.push({
         origin_id: originId,
-        origin_parent_id: `li_home_${parentToken}`,
+        origin_parent_id: `li_home_${parentOriginToken}`,
         payload_text: payloadText,
         attachments: normalizeHomeFeedMedia(row.comment_media),
         author_name: context.author,
@@ -2528,9 +2554,6 @@ export default class LinkedInConnector extends ConnectorRuntime<
           post: {
             description: "A post from your personalized LinkedIn home feed",
             attributions: LINKEDIN_HOME_FEED_ATTRIBUTIONS,
-            relationships: [
-              { type: "engaged_with", from: "engager", to: "author" },
-            ],
             metadataSchema: {
               type: "object",
               properties: {
@@ -2558,9 +2581,6 @@ export default class LinkedInConnector extends ConnectorRuntime<
           comment: {
             description: "A visible comment on a personalized feed post",
             attributions: LINKEDIN_HOME_COMMENT_ATTRIBUTIONS,
-            relationships: [
-              { type: "engaged_with", from: "commenter", to: "post_author" },
-            ],
             metadataSchema: {
               type: "object",
               properties: {

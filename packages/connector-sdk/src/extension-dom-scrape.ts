@@ -21,7 +21,12 @@ export interface ExtensionScrapeConfig {
     rowSelector: string;
     labelFromFirstLine?: boolean;
   };
-  id?: { source: string; name?: string; regex?: string; group?: number };
+  id?: {
+    source: string;
+    name?: string | readonly string[];
+    regex?: string;
+    group?: number;
+  };
   requireFields?: readonly string[];
   fields?: Record<string, ExtensionScrapeField>;
   [k: string]: unknown;

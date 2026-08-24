@@ -249,29 +249,30 @@ describe("buildHomeFeedEvents", () => {
       [
         {
           id: "parent_token",
-          body: "Feed post Lorenzo Mangani • 1st CEO at QXIP 9h • A post with enough text to keep",
-          author_control_label: "Open control menu for post by Lorenzo Mangani",
+          body: "Feed post Fixture Post Author • 1st Fixture Role at Fixture Co 9h • A post with enough text to keep",
+          author_control_label:
+            "Open control menu for post by Fixture Post Author",
           post_url:
-            "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621697",
+            "https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111",
           links: [
             {
-              href: "https://www.linkedin.com/in/lmangani/",
-              name: "View Lorenzo Mangani’s profile",
+              href: "https://www.linkedin.com/in/fixture-post-author/",
+              name: "View Fixture Post Author’s profile",
             },
           ],
         },
         {
           id: "commentsSectionContainerparent_token",
-          body: "Nico Ritschel Verified Profile 1st Nico Ritschel • 1st Director of Engineering 9h 👀 0 See 1 more comment",
-          author: "Nico Ritschel",
+          body: "Fixture Commenter Verified Profile 1st Fixture Commenter • 1st Fixture Role 9h Fixture comment body",
+          author: "Fixture Commenter",
           comment_body:
-            "Nico Ritschel Verified Profile 1st Nico Ritschel • 1st Director of Engineering 9h 👀 0",
+            "Fixture Commenter • Fixture comment body long enough to retain",
           comment_identity:
-            "replaceableComment_urn:li:comment:(urn:li:activity:7496969365150621697,7496970800831295488)",
+            "replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,2222222222222222222)",
           links: [
             {
-              href: "https://www.linkedin.com/in/nicoritschel/",
-              name: "View Nico Ritschel’s profile",
+              href: "https://www.linkedin.com/in/fixture-commenter/",
+              name: "View Fixture Commenter’s profile",
             },
           ],
           comment_media: [
@@ -288,12 +289,12 @@ describe("buildHomeFeedEvents", () => {
     expect(events).toHaveLength(2);
     const comment = events[1];
     expect(comment).toMatchObject({
-      origin_id: "li_comment_7496970800831295488",
+      origin_id: "li_comment_2222222222222222222",
       origin_parent_id: "li_home_parent_token",
       origin_type: "comment",
-      author_name: "Nico Ritschel",
+      author_name: "Fixture Commenter",
       source_url:
-        "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621697",
+        "https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111",
       score: 0,
       attachments: [
         {
@@ -304,13 +305,13 @@ describe("buildHomeFeedEvents", () => {
       ],
     });
     expect(comment.metadata).toMatchObject({
-      author: "Nico Ritschel",
-      author_linkedin_slug: "nicoritschel",
+      author: "Fixture Commenter",
+      author_linkedin_slug: "fixture-commenter",
       parent_post_origin_id: "li_home_parent_token",
-      parent_author: "Lorenzo Mangani",
-      parent_author_linkedin_slug: "lmangani",
-      comment_id: "7496970800831295488",
-      parent_activity_id: "7496969365150621697",
+      parent_author: "Fixture Post Author",
+      parent_author_linkedin_slug: "fixture-post-author",
+      comment_id: "2222222222222222222",
+      parent_activity_id: "1111111111111111111",
       parent_activity_namespace: "activity",
     });
   });
@@ -320,8 +321,8 @@ describe("buildHomeFeedEvents", () => {
       [
         {
           id: "media_post",
-          body: "Feed post Ada Lovelace • 1st A post with a useful architecture image attached",
-          author: "Ada Lovelace",
+          body: "Feed post Fixture Media Author • 1st A post with a useful architecture image attached",
+          author: "Fixture Media Author",
           post_media: [
             {
               url: "https://media.licdn.com/dms/image/sync/v2/architecture",
@@ -351,9 +352,9 @@ describe("buildHomeFeedEvents", () => {
 
   test("parses engagement counts and scores every post", () => {
     const body =
-      "Feed post Ada Lovelace • 1st Build log Deb and 1,616 others reacted 65 comments • 49 reposts";
+      "Feed post Fixture Score Author • 1st Build log Fixture Reactor and 1,616 others reacted 65 comments • 49 reposts";
     const counters = {
-      reaction_count_label: "Deb and 1,616 others reacted",
+      reaction_count_label: "Fixture Reactor and 1,616 others reacted",
       comment_count_text: "65 comments",
       repost_count_label: "49 reposts",
     };
@@ -363,7 +364,7 @@ describe("buildHomeFeedEvents", () => {
       reposts: 49,
     });
     const [event] = buildHomeFeedEvents(
-      [{ id: "scored", body, author: "Ada Lovelace", ...counters }],
+      [{ id: "scored", body, author: "Fixture Score Author", ...counters }],
       new Date()
     );
     expect(event.score).toBe(100);
@@ -376,18 +377,18 @@ describe("buildHomeFeedEvents", () => {
 
   test("does not infer engagement from numbers in post prose", () => {
     const body =
-      "Feed post Ada Lovelace • 1st This launch got 1,000 likes in our internal user study";
+      "Feed post Fixture Prose Author • 1st This launch got 1,000 likes in our internal user study";
     expect(parseHomeFeedEngagement({ body })).toEqual({
       reactions: undefined,
       comments: undefined,
       reposts: undefined,
     });
     const [event] = buildHomeFeedEvents(
-      [{ id: "prose-only", body, author: "Ada Lovelace" }],
+      [{ id: "prose-only", body, author: "Fixture Prose Author" }],
       new Date()
     );
     expect(event.score).toBe(0);
-    expect(event.metadata).toEqual({ author: "Ada Lovelace" });
+    expect(event.metadata).toEqual({ author: "Fixture Prose Author" });
   });
 
   test("defaults author to empty string when no author and no parseable body", () => {
@@ -1116,7 +1117,7 @@ describe("buildHomeFeedEvents", () => {
           body: longBody,
           author: "First Author",
           post_url:
-            "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621000",
+            "https://www.linkedin.com/feed/update/urn:li:activity:4444444444444444444",
         },
         {
           id: "",
@@ -1128,7 +1129,7 @@ describe("buildHomeFeedEvents", () => {
           body: "dup id with a sufficiently long body to pass the noise filter",
           author: "Duplicate Author",
           post_url:
-            "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621999",
+            "https://www.linkedin.com/feed/update/urn:li:activity:5555555555555555555",
         },
       ],
       new Date()
@@ -1140,7 +1141,7 @@ describe("buildHomeFeedEvents", () => {
       payload_text: longBody,
       author_name: "First Author",
       source_url:
-        "https://www.linkedin.com/feed/update/urn:li:activity:7496969365150621000",
+        "https://www.linkedin.com/feed/update/urn:li:activity:4444444444444444444",
       metadata: { author: "First Author" },
     });
   });
@@ -1440,31 +1441,15 @@ describe("LinkedInConnector home_feed", () => {
         eventPath: "metadata.social_actor_slug",
       },
     ]);
-    expect(def.feeds.home_feed.eventKinds.post.relationships).toEqual([
-      { type: "engaged_with", from: "engager", to: "author" },
-    ]);
   });
 
-  test("declares visible comments with commenter-to-post-author relationships", () => {
+  test("declares visible comments with commenter and post-author attributions", () => {
     const comment = new LinkedInConnector().definition.feeds.home_feed
       .eventKinds.comment;
     expect(comment).toBeDefined();
     expect(
       comment.attributions.map((rule: { name: string }) => rule.name)
     ).toEqual(["commenter", "post_author"]);
-    expect(comment.relationships).toEqual([
-      { type: "engaged_with", from: "commenter", to: "post_author" },
-    ]);
-  });
-
-  test("configures the relationship type required by home-feed events", () => {
-    const engagedWith = personalAgentConfig.relationships.find(
-      (relationship: { key: string }) => relationship.key === "engaged_with"
-    );
-    expect(engagedWith).toMatchObject({
-      name: "Engaged With",
-      rules: [{ source: { key: "person" }, target: { key: "person" } }],
-    });
   });
 
   test("syncHomeFeed dispatches cs_scrape and maps rows to events", async () => {
@@ -1472,11 +1457,12 @@ describe("LinkedInConnector home_feed", () => {
     const dom = new JSDOM(
       `<!doctype html><body>
       <div componentkey="expandedparent_tokenFeedType_MAIN_FEED_RELEVANCE">
-        <button aria-label="Open control menu for post by Lorenzo Mangani"></button>
-        <a href="https://www.linkedin.com/in/lmangani/">
-          <span aria-hidden="true">Lorenzo Mangani</span>
-          <span aria-label="View Lorenzo Mangani’s profile"></span>
+        <button aria-label="Open control menu for post by Fixture Post Author"></button>
+        <a href="https://www.linkedin.com/in/fixture-post-author/">
+          <span aria-hidden="true">Fixture Post Author</span>
+          <span aria-label="View Fixture Post Author’s profile"></span>
         </a>
+        <span id="translatable-commentary-urn:li:activity:1111111111111111111"></span>
         <p>A home-feed post with enough useful text to pass the noise filter</p>
         <div class="social-details-social-counts">
           <span class="social-details-social-counts__reactions-count">12</span>
@@ -1484,14 +1470,22 @@ describe("LinkedInConnector home_feed", () => {
           <button aria-label="2 reposts"></button>
         </div>
         <div componentkey="commentsSectionContainerparent_token">
-          <a href="https://www.linkedin.com/in/nicoritschel/">
-            <span aria-hidden="true">Nico Ritschel</span>
-            <span aria-label="View Nico Ritschel’s profile"></span>
-          </a>
-          <div id="replaceableComment_urn:li:comment:(urn:li:activity:7496969365150621697,7496970800831295488)">
-            Nico Ritschel • This visible comment is long enough to pass the noise filter
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,2222222222222222222)">
+            <a href="https://www.linkedin.com/in/fixture-commenter-one/">
+              <span aria-hidden="true">Fixture Commenter One</span>
+              <span aria-label="View Fixture Commenter One’s profile"></span>
+            </a>
+            <p>Fixture Commenter One • This first visible comment is long enough to pass the noise filter</p>
+            <img src="https://media.licdn.com/dms/image/sync/v2/fixture-comment-one" alt="First fixture diagram" />
           </div>
-          <img src="https://media.licdn.com/dms/image/sync/v2/comment-image" alt="Comment diagram" />
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,3333333333333333333)">
+            <a href="https://www.linkedin.com/in/fixture-commenter-two/">
+              <span aria-hidden="true">Fixture Commenter Two</span>
+              <span aria-label="View Fixture Commenter Two’s profile"></span>
+            </a>
+            <p>Fixture Commenter Two • This second visible comment is long enough to pass the noise filter</p>
+            <img src="https://media.licdn.com/dms/image/sync/v2/fixture-comment-two" alt="Second fixture diagram" />
+          </div>
         </div>
       </div>
     </body>`,
@@ -1571,7 +1565,7 @@ describe("LinkedInConnector home_feed", () => {
     ).toBe(4);
     const cfg = calls[0].input.scrape_config as {
       rowSelector: string;
-      id: { regex: string; group: number };
+      id: { name: string | string[]; regex: string; group: number };
       fields: {
         links: {
           selector: string;
@@ -1585,8 +1579,6 @@ describe("LinkedInConnector home_feed", () => {
           actionSelector: string;
           actionText: string;
         };
-        comment_identity: { selector: string; attr: string };
-        comment_body: { selector: string; take: string };
         post_media: { selector: string; take: string };
         comment_media: { selector: string; take: string };
         reaction_count_text: { selector: string; take: string };
@@ -1594,17 +1586,18 @@ describe("LinkedInConnector home_feed", () => {
         repost_count_label: { selector: string; attr: string };
       };
     };
-    expect(cfg.rowSelector).toContain("commentsSectionContainer");
+    expect(cfg.rowSelector).toContain("replaceableComment_urn:li:comment");
+    expect(cfg.id.name).toEqual(["componentkey", "id"]);
     expect(
       "expandedparent_tokenFeedType_MAIN_FEED_RELEVANCE".match(
         new RegExp(cfg.id.regex)
       )?.[cfg.id.group]
     ).toBe("parent_token");
-    expect(
-      "commentsSectionContainerparent_token".match(new RegExp(cfg.id.regex))?.[
-        cfg.id.group
-      ]
-    ).toBe("commentsSectionContainerparent_token");
+    const firstCommentId =
+      "replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,2222222222222222222)";
+    expect(firstCommentId.match(new RegExp(cfg.id.regex))?.[cfg.id.group]).toBe(
+      firstCommentId
+    );
     // objectAll captures each anchor with its href + accessible name, so the
     // author/engager are matched by NAME rather than DOM position.
     expect(cfg.fields.links.take).toBe("objectAll");
@@ -1619,10 +1612,6 @@ describe("LinkedInConnector home_feed", () => {
       actionSelector: '[role="menuitem"]',
       actionTextRegex: "^Copy link(?: to post)?$",
     });
-    expect(cfg.fields.comment_identity.selector).toContain(
-      "replaceableComment_urn:li:comment"
-    );
-    expect(cfg.fields.comment_body.take).toBe("text");
     expect(cfg.fields.post_media.take).toBe("objectAll");
     expect(cfg.fields.post_media.selector).toContain("profile-displayphoto");
     expect(cfg.fields.comment_media.take).toBe("objectAll");
@@ -1632,21 +1621,35 @@ describe("LinkedInConnector home_feed", () => {
     expect(cfg.fields.comment_count_label.attr).toBe("aria-label");
     expect(cfg.fields.repost_count_label.attr).toBe("aria-label");
 
-    expect(res.events).toHaveLength(2);
+    expect(res.events).toHaveLength(3);
     expect(res.events[0]).toMatchObject({
       origin_id: "li_home_parent_token",
       score: 24,
       metadata: { reactions: 12, comments: 3, reposts: 2 },
     });
     expect(res.events[1]).toMatchObject({
-      origin_id: "li_comment_7496970800831295488",
+      origin_id: "li_comment_2222222222222222222",
       origin_parent_id: "li_home_parent_token",
       origin_type: "comment",
+      author_name: "Fixture Commenter One",
       attachments: [
         {
           kind: "image",
-          url: "https://media.licdn.com/dms/image/sync/v2/comment-image",
-          alt_text: "Comment diagram",
+          url: "https://media.licdn.com/dms/image/sync/v2/fixture-comment-one",
+          alt_text: "First fixture diagram",
+        },
+      ],
+    });
+    expect(res.events[2]).toMatchObject({
+      origin_id: "li_comment_3333333333333333333",
+      origin_parent_id: "li_home_parent_token",
+      origin_type: "comment",
+      author_name: "Fixture Commenter Two",
+      attachments: [
+        {
+          kind: "image",
+          url: "https://media.licdn.com/dms/image/sync/v2/fixture-comment-two",
+          alt_text: "Second fixture diagram",
         },
       ],
     });

@@ -2173,6 +2173,32 @@ describe("LinkedInConnector home_feed", () => {
     ).rejects.toThrow(/could not resolve.*No home-feed events were persisted/i);
   });
 
+  test("fails health checks when every scraped row is unusable", async () => {
+    const dispatcher = {
+      dispatch: async () => ({
+        result: {
+          loggedIn: true,
+          rows: [
+            {
+              id: "opaque_component_key",
+              body: "Promoted Try LinkedIn Ads for more leads today",
+              post_identity: "urn:li:activity:7111111111111111111",
+            },
+          ],
+        },
+      }),
+    };
+    const connector = new LinkedInConnector();
+    await expect(
+      connector.sync({
+        feedKey: "home_feed",
+        config: {},
+        checkpoint: {},
+        sessionState: { chrome_dispatcher: dispatcher },
+      })
+    ).rejects.toThrow(/usable content with a durable identity/i);
+  });
+
   test("throws a clear error when not logged into LinkedIn", async () => {
     const dispatcher = {
       dispatch: async () => ({ result: { loggedIn: false, rows: [] } }),

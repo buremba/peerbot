@@ -22,6 +22,7 @@ import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { insertEvent } from "../../../../utils/insert-event";
+import logger from "../../../../utils/logger";
 import { isAdminOrOwnerRole } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import {
@@ -965,6 +966,7 @@ async function tryApproveEntityChangeRun(
 		db: DbClient,
 		proposal: EntityChangeProposal,
 		mergeResolution?: MergeApprovalResolution,
+		postCommitEffects?: Array<() => Promise<void>>,
 	): Promise<ManageOperationsResult> => {
 		const operation = entityChangeOperation(proposal);
 		const description = describeEntityChange(proposal);
@@ -991,6 +993,7 @@ async function tryApproveEntityChangeRun(
 			db,
 			mergeResolution,
 			pending.parent_run_id == null ? null : Number(pending.parent_run_id),
+			postCommitEffects,
 		);
 		const staleFields =
 			operation === "update" &&
@@ -1262,11 +1265,12 @@ async function tryApproveEntityChangeRun(
 	try {
 		// The non-merge family runs claim + confirm + apply + terminal write +
 		// completed card in ONE transaction, exactly like the merge family
-		// above: `applyEntityChangeProposal` is DB-only (never network-bound),
-		// so no external work is held open across the tx. The claim inside the
-		// tx is authoritative — returning null falls through to the connector
-		// path, and a rollback leaves the run exactly as it was.
-		return await sql.begin(async (tx) => {
+		// above. Lifecycle hooks join that transaction; network effects are
+		// collected and run only after it commits. The claim inside the tx is
+		// authoritative — returning null falls through to the connector path,
+		// and a rollback leaves the run exactly as it was.
+		const postCommitEffects: Array<() => Promise<void>> = [];
+		const result = await sql.begin(async (tx) => {
 			await lockOrganizationForApproval(tx, ctx.organizationId);
 			const claimedInTx = await claimEntityChangeRun(
 				args.run_id,
@@ -1276,8 +1280,24 @@ async function tryApproveEntityChangeRun(
 				tx,
 			);
 			if (!claimedInTx) return null;
-			return await completeApproval(tx, claimedInTx.proposal);
+			return await completeApproval(
+				tx,
+				claimedInTx.proposal,
+				undefined,
+				postCommitEffects,
+			);
 		});
+		for (const effect of postCommitEffects) {
+			try {
+				await effect();
+			} catch (error) {
+				logger.error(
+					{ error, runId: args.run_id },
+					"Post-commit entity approval effect failed",
+				);
+			}
+		}
+		return result;
 	} catch (error) {
 		return applyFailure(error);
 	}

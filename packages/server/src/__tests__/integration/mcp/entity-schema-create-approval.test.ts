@@ -19,6 +19,7 @@ import { manageEntitySchema } from "../../../tools/admin/manage_entity_schema";
 import type { ToolContext } from "../../../tools/registry";
 import {
 	addUserToOrganization,
+	createTestAgent,
 	createTestAccessToken,
 	createTestOAuthClient,
 	createTestOrganization,
@@ -105,7 +106,24 @@ describe("MCP entitySchema.createType approval", () => {
 
 	beforeEach(async () => {
 		await getDb()`DELETE FROM write_approval_policies WHERE organization_id = ${org.id}`;
+		await getDb()`UPDATE automations SET agent_id = NULL, status = 'active' WHERE id = ${automationId}`;
 	});
+
+	function inProcessAgentCtx(agentId: string): ToolContext {
+		return {
+			organizationId: org.id,
+			userId: null,
+			memberRole: null,
+			isAuthenticated: true,
+			tokenType: "session",
+			scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
+			scopedToOrg: true,
+			allowCrossOrg: false,
+			clientId: null,
+			agentId,
+			sourceContext: { source: "automation-run" },
+		};
+	}
 
 	async function setCreatePolicy(effect: "auto" | "approval" | "deny") {
 		await upsertEntityApprovalPolicy(org.id, {
@@ -329,6 +347,82 @@ describe("MCP entitySchema.createType approval", () => {
 					AND r.deleted_at IS NULL
 			`,
 		).toHaveLength(1);
+	});
+
+	it("fails closed when the agent that proposed a pending schema mutation is deleted", async () => {
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: owner.id,
+		});
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "agent",
+			principalId: agent.agentId,
+			effects: { create_type: "approval" },
+		});
+		const pending = await manageEntitySchema(
+			{
+				schema_type: "entity_type",
+				action: "create",
+				slug: "deleted-agent-held-type",
+				name: "Deleted agent held type",
+			},
+			{} as Env,
+			inProcessAgentCtx(agent.agentId),
+		);
+		expect(pending).toMatchObject({ status: "pending_approval" });
+		await getDb()`DELETE FROM agents WHERE organization_id = ${org.id} AND id = ${agent.agentId}`;
+
+		const { response } = await resolveInApp(Number(pending.run_id), "approve");
+		expect(response.result?.isError).toBe(true);
+		expect(response.result?.content?.[0]?.text).toMatch(/denies|policy/i);
+		expect(await entityTypeExists("deleted-agent-held-type")).toBe(false);
+	});
+
+	it("uses the current Automation owner policy when a pending schema mutation is approved", async () => {
+		const originalOwner = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: owner.id,
+		});
+		const currentOwner = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: owner.id,
+		});
+		await getDb()`UPDATE automations SET agent_id = ${originalOwner.agentId} WHERE id = ${automationId}`;
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "automation",
+			principalId: `automation:${automationId}`,
+			effects: { create_type: "approval" },
+		});
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "agent",
+			principalId: currentOwner.agentId,
+			effects: { create_type: "deny" },
+		});
+		const pending = await manageEntitySchema(
+			{
+				schema_type: "entity_type",
+				action: "create",
+				slug: "reassigned-automation-held-type",
+				name: "Reassigned Automation held type",
+			},
+			{} as Env,
+			{
+				...inProcessAgentCtx(originalOwner.agentId),
+				agentId: null,
+				actingAutomationId: automationId,
+				actingRunId: 1,
+			},
+		);
+		expect(pending).toMatchObject({ status: "pending_approval" });
+		await getDb()`UPDATE automations SET agent_id = ${currentOwner.agentId} WHERE id = ${automationId}`;
+
+		const { response } = await resolveInApp(Number(pending.run_id), "approve");
+		expect(response.result?.isError).toBe(true);
+		expect(response.result?.content?.[0]?.text).toMatch(/denies|policy/i);
+		expect(await entityTypeExists("reassigned-automation-held-type")).toBe(false);
 	});
 
 	it("requires policy approval and applies only after embedded human approval", async () => {

@@ -24,7 +24,7 @@
  * newer human value stands and no fragment is written.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
@@ -38,6 +38,7 @@ import {
 import { manageOperations } from "../../../tools/admin/manage_operations";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
+import { ensureMemberEntityType } from "../../../utils/member-entity-type";
 import {
 	addUserToOrganization,
 	createTestAgent,
@@ -393,13 +394,14 @@ DROP FUNCTION IF EXISTS test_fail_entity_terminal_approval();
 async function approveWithTerminalFailure(
 	runId: number,
 	ctx: ToolContext,
+	env: Env = TEST_ENV,
 ): Promise<void> {
 	const sql = getTestDb();
 	await sql.unsafe(FAIL_TERMINAL_ENTITY_APPROVAL);
 	try {
 		const result = await manageOperations(
 			{ action: "approve", run_id: runId },
-			TEST_ENV,
+			env,
 			ctx,
 		);
 		expect(result).toMatchObject({
@@ -488,5 +490,119 @@ describe("entity approval apply shares the terminal approval transaction", () =>
 			SELECT deleted_at FROM entities WHERE id = ${invoice.id}
 		`;
 		expect(row.deleted_at).toBeNull();
+	}, 60_000);
+
+	it("rolls a $member entity, invitation, and workspace audit back together", async () => {
+		const sql = getTestDb();
+		const { org, user } = await seed();
+		await ensureMemberEntityType(org.id);
+		const email = "atomic-member-create@test.example.com";
+		const queued = await proposeEntityCreate(
+			ctxFor(org.id, { agentId: "atomic-member-create-agent" }),
+			{
+				entity_data: {
+					entity_type: "$member",
+					name: "Atomic Member Create",
+					organization_id: org.id,
+					created_by: user.id,
+					metadata: { email },
+				},
+				proposal: { entity_type: "$member", name: "Atomic Member Create" },
+				attribution: "agent",
+			},
+		);
+		const emailRequest = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(
+				new Response(JSON.stringify({ id: "should-not-send" }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			);
+		let emailRequestCount = 0;
+		try {
+			await approveWithTerminalFailure(
+				queued.runId,
+				ctxFor(org.id, { userId: user.id }),
+				{ RESEND_API_KEY: "re_test_atomicity" } as Env,
+			);
+		} finally {
+			emailRequestCount = emailRequest.mock.calls.length;
+			emailRequest.mockRestore();
+		}
+		expect(emailRequestCount).toBe(0);
+
+		expect(
+			await sql`SELECT id FROM entities
+				WHERE organization_id = ${org.id} AND name = 'Atomic Member Create'`,
+		).toHaveLength(0);
+		expect(
+			await sql`SELECT id FROM invitation
+				WHERE "organizationId" = ${org.id} AND email = ${email}`,
+		).toHaveLength(0);
+		expect(
+			await sql`SELECT id FROM events
+				WHERE organization_id = ${org.id}
+					AND metadata->>'category' = 'workspace'
+					AND metadata->>'resource_kind' = 'invitation'`,
+		).toHaveLength(0);
+	}, 60_000);
+
+	it("rolls a $member delete and invitation cancellation back together", async () => {
+		const sql = getTestDb();
+		const { org, user } = await seed();
+		await ensureMemberEntityType(org.id);
+		const email = "atomic-member-delete@test.example.com";
+		const member = await createEntity({
+			entity_type: "$member",
+			name: "Atomic Member Delete",
+			organization_id: org.id,
+			created_by: user.id,
+			metadata: { email, status: "invited" },
+		});
+		const invitationId = "atomic-member-delete-invitation";
+		await sql`
+			INSERT INTO invitation (
+				id, "organizationId", email, role, status,
+				"expiresAt", "inviterId", "createdAt"
+			) VALUES (
+				${invitationId}, ${org.id}, ${email}, 'member', 'pending',
+				${new Date(Date.now() + 86_400_000)}, ${user.id}, current_timestamp
+			)
+		`;
+		const queued = await proposeEntityDelete(
+			ctxFor(org.id, { agentId: "atomic-member-delete-agent" }),
+			{
+				entity_id: member.id,
+				force_delete_tree: false,
+				current: {
+					id: member.id,
+					entity_type: "$member",
+					name: member.name,
+					metadata: member.metadata,
+				},
+				attribution: "agent",
+			},
+		);
+		await approveWithTerminalFailure(
+			queued.runId,
+			ctxFor(org.id, { userId: user.id }),
+		);
+
+		const [entity] = await sql<[{ deleted_at: Date | null }]>`
+			SELECT deleted_at FROM entities WHERE id = ${member.id}
+		`;
+		expect(entity.deleted_at).toBeNull();
+		const [invitation] = await sql<[{ status: string }]>`
+			SELECT status FROM invitation WHERE id = ${invitationId}
+		`;
+		expect(invitation.status).toBe("pending");
+		expect(
+			await sql`SELECT id FROM events
+				WHERE organization_id = ${org.id}
+					AND metadata->>'category' = 'workspace'
+					AND metadata->>'resource_kind' = 'invitation'
+					AND metadata->>'resource_id' = ${invitationId}`,
+		).toHaveLength(0);
 	}, 60_000);
 });

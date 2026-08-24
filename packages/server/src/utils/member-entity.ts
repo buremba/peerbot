@@ -7,7 +7,7 @@
  */
 
 import { unvalidatedEntityRowPatch, validateEntityRowPatch } from "../authz/entity-row-validation";
-import { getDb } from '../db/client';
+import { type DbClient, getDb } from '../db/client';
 import {
   createEntity,
   type EntityData,
@@ -20,11 +20,13 @@ import { ensureMemberEntityType, resolveMemberSchemaFieldsFromSchema } from './m
  * Resolve annotated field names from the $member entity type's metadata_schema.
  * Uses the `x-email`/`x-image` annotations; falls back to 'email' for email.
  */
-export async function resolveMemberSchemaFields(organizationId: string): Promise<{
+export async function resolveMemberSchemaFields(
+  organizationId: string,
+  sql: DbClient = getDb()
+): Promise<{
   emailField: string;
   imageField?: string;
 }> {
-  const sql = getDb();
   const rows = await sql`
     SELECT metadata_schema FROM entity_types
     WHERE slug = '$member' AND deleted_at IS NULL AND organization_id = ${organizationId}

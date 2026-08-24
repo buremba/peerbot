@@ -1358,6 +1358,7 @@ export async function applyEntityChangeProposal(
 	db: DbClient,
 	mergeResolution?: MergeApprovalResolution,
 	sourceRunId: number | null = null,
+	postCommitEffects?: Array<() => Promise<void>>,
 ): Promise<unknown> {
 	const operation = operationOf(proposal);
 	if (operation === "update") {
@@ -1386,6 +1387,9 @@ export async function applyEntityChangeProposal(
 					organizationId: ctx.organizationId,
 					userId: ctx.userId,
 					env,
+					deferAfterCommit: postCommitEffects
+						? (effect) => postCommitEffects.push(effect)
+						: undefined,
 				},
 				// This IS the approval, scoped to what the card showed. A `deny` still
 				// throws: approval cannot make an illegal row legal.

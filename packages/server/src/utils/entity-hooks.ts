@@ -10,10 +10,14 @@ import { createElement } from 'react';
 import { sendTransactionalEmail } from '../email/send';
 import { InvitationEmail, invitationSubject } from '../email/templates/invitation';
 import type { Env } from '../index';
-import { getDb } from '../db/client';
+import { type DbClient, getDb } from '../db/client';
 import { resolveMemberSchemaFields } from './member-entity';
 import { getConfiguredPublicOrigin } from './public-origin';
-import { recordWorkspaceChangeEvent } from './insert-event';
+import {
+  insertWorkspaceChangeEventInTransaction,
+  recordWorkspaceChangeEvent,
+  type WorkspaceChangeEventParams,
+} from './insert-event';
 import type { CreatedEntity, EntityData } from './entity-management';
 import logger from './logger';
 
@@ -21,6 +25,10 @@ export interface EntityHookContext {
   organizationId: string;
   userId: string | null;
   env?: Env;
+  /** Caller-owned transaction for hook database work. */
+  sql?: DbClient;
+  /** Register network side effects that may run only after the caller commits. */
+  deferAfterCommit?: (effect: () => Promise<void>) => void;
 }
 
 interface EntityLifecycleHooks {
@@ -53,15 +61,58 @@ export function getEntityHooks(entityType: string): EntityLifecycleHooks | undef
 // $member hooks
 // ---------------------------------------------------------------------------
 
+async function sendMemberInvitationEmail(
+  entity: CreatedEntity,
+  ctx: EntityHookContext
+): Promise<void> {
+  const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
+  const meta = entity.metadata as Record<string, unknown> | null;
+  const email = meta?.[emailField] as string | undefined;
+  if (!email || !ctx.env?.RESEND_API_KEY) return;
+
+  try {
+    const sql = getDb();
+    const orgRows =
+      await sql`SELECT name FROM organization WHERE id = ${ctx.organizationId} LIMIT 1`;
+    const orgName = (orgRows[0]?.name as string) || 'your organization';
+
+    let inviterName: string | undefined;
+    if (ctx.userId) {
+      const userRows = await sql`SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1`;
+      if (userRows[0]?.name) inviterName = userRows[0].name as string;
+    }
+
+    const invRows = await sql`
+      SELECT id FROM invitation
+      WHERE "organizationId" = ${ctx.organizationId} AND email = ${email} AND status = 'pending'
+      ORDER BY "createdAt" DESC LIMIT 1
+    `;
+    if (invRows.length === 0) return;
+
+    const baseUrl = getConfiguredPublicOrigin() || 'http://localhost:8787';
+    const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${invRows[0].id}`;
+
+    await sendTransactionalEmail({
+      env: ctx.env,
+      to: email,
+      category: 'invite',
+      subject: invitationSubject({ inviterName, orgName }),
+      react: createElement(InvitationEmail, { inviterName, orgName, acceptUrl }),
+    });
+  } catch (err) {
+    logger.error({ err }, '[Entity Hook] Failed to send invitation email');
+  }
+}
+
 registerEntityHooks('$member', {
   async beforeCreate(data, ctx) {
-    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
+    const sql = ctx.sql ?? getDb();
+    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId, sql);
     const meta = { ...(data.metadata ?? {}) };
     const email = meta[emailField] as string | undefined;
 
     if (email) {
       // Insert a Better Auth invitation (skip if one already pending)
-      const sql = getDb();
       const inserted = (await sql`
         INSERT INTO invitation (id, "organizationId", email, role, status, "expiresAt", "inviterId", "createdAt")
         SELECT
@@ -82,7 +133,7 @@ registerEntityHooks('$member', {
         RETURNING id
       `) as unknown as Array<{ id: string }>;
       if (inserted.length > 0) {
-        recordWorkspaceChangeEvent({
+        const event: WorkspaceChangeEventParams = {
           organizationId: ctx.organizationId,
           resourceKind: 'invitation',
           resourceId: inserted[0].id,
@@ -96,7 +147,12 @@ registerEntityHooks('$member', {
           changedFields: ['role', 'status'],
           actorSource: 'ui',
           createdBy: ctx.userId ?? null,
-        });
+        };
+        if (ctx.sql) {
+          await insertWorkspaceChangeEventInTransaction(event, sql);
+        } else {
+          recordWorkspaceChangeEvent(event);
+        }
       }
       meta.status = 'invited';
     } else {
@@ -107,53 +163,20 @@ registerEntityHooks('$member', {
   },
 
   async afterCreate(entity, ctx) {
-    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
-    const meta = entity.metadata as Record<string, unknown> | null;
-    const email = meta?.[emailField] as string | undefined;
-    if (!email || !ctx.env) return;
-    if (!ctx.env.RESEND_API_KEY) return;
-
-    try {
-      const sql = getDb();
-      const orgRows =
-        await sql`SELECT name FROM organization WHERE id = ${ctx.organizationId} LIMIT 1`;
-      const orgName = (orgRows[0]?.name as string) || 'your organization';
-
-      let inviterName: string | undefined;
-      if (ctx.userId) {
-        const userRows = await sql`SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1`;
-        if (userRows[0]?.name) inviterName = userRows[0].name as string;
-      }
-
-      const invRows = await sql`
-        SELECT id FROM invitation
-        WHERE "organizationId" = ${ctx.organizationId} AND email = ${email} AND status = 'pending'
-        ORDER BY "createdAt" DESC LIMIT 1
-      `;
-      if (invRows.length === 0) return;
-
-      const baseUrl = getConfiguredPublicOrigin() || 'http://localhost:8787';
-      const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${invRows[0].id}`;
-
-      await sendTransactionalEmail({
-        env: ctx.env,
-        to: email,
-        category: 'invite',
-        subject: invitationSubject({ inviterName, orgName }),
-        react: createElement(InvitationEmail, { inviterName, orgName, acceptUrl }),
-      });
-    } catch (err) {
-      logger.error({ err }, '[Entity Hook] Failed to send invitation email');
+    if (ctx.deferAfterCommit) {
+      ctx.deferAfterCommit(() => sendMemberInvitationEmail(entity, ctx));
+      return;
     }
+    await sendMemberInvitationEmail(entity, ctx);
   },
 
   async beforeDelete(entity, ctx) {
-    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
+    const sql = ctx.sql ?? getDb();
+    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId, sql);
     const email = entity.metadata?.[emailField] as string | undefined;
     if (!email) return;
 
     // Cancel any pending invitation for this email
-    const sql = getDb();
     const cancelled = (await sql`
       UPDATE invitation
       SET status = 'canceled'
@@ -168,9 +191,9 @@ registerEntityHooks('$member', {
     }>;
     // The $member delete cancels every pending invite; record each
     // cancellation so the invitation lifecycle audit (send → canceled) stays
-    // complete. Fire-and-forget — the update already committed.
+    // complete.
     for (const inv of cancelled) {
-      recordWorkspaceChangeEvent({
+      const event: WorkspaceChangeEventParams = {
         organizationId: ctx.organizationId,
         resourceKind: 'invitation',
         resourceId: inv.id,
@@ -184,7 +207,12 @@ registerEntityHooks('$member', {
         changedFields: ['status'],
         actorSource: 'ui',
         createdBy: ctx.userId ?? null,
-      });
+      };
+      if (ctx.sql) {
+        await insertWorkspaceChangeEventInTransaction(event, sql);
+      } else {
+        recordWorkspaceChangeEvent(event);
+      }
     }
   },
 });

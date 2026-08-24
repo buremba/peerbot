@@ -27,6 +27,7 @@ import { isPlatformEventType, platformEventKinds } from '../../automations/platf
 import { compileEntityRule } from '../../authz/entity-rule-executor';
 import {
   type ActingPrincipal,
+  automationIdFromPrincipalId,
   resolveActingPrincipal,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
@@ -222,13 +223,14 @@ export async function applyManageEntitySchemaProposal(
   if (!prepared) {
     throw new ToolUserError('Invalid manage_entity_schema approval proposal', 400);
   }
+  const currentPrincipal = await resolvePreparedSchemaPrincipal(prepared, ctx, db);
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'entity_schema',
-    principalKind: prepared.policy_principal_kind,
-    principalId: prepared.policy_principal_id,
-    ownerAgentId: prepared.owner_agent_id,
-    ownerResolved: prepared.owner_resolved,
+    principalKind: currentPrincipal.kind,
+    principalId: currentPrincipal.id,
+    ownerAgentId: currentPrincipal.ownerAgentId,
+    ownerResolved: currentPrincipal.ownerResolved,
     action: prepared.policy_action,
     sql: db,
   });
@@ -246,6 +248,43 @@ export async function applyManageEntitySchemaProposal(
     },
     db
   );
+}
+
+/**
+ * Re-resolve the held principal inside the approval transaction. Agent policy
+ * rows cascade when an agent is deleted, and an Automation can be reassigned
+ * while a card is pending; trusting the proposal-time owner in either case
+ * would silently loosen the current policy envelope.
+ */
+async function resolvePreparedSchemaPrincipal(
+  prepared: ManageEntitySchemaProposal,
+  ctx: ToolContext,
+  sql: DbClient
+): Promise<ActingPrincipal & { kind: 'agent' | 'automation' }> {
+  if (prepared.policy_principal_kind === 'automation') {
+    const automationId = automationIdFromPrincipalId(prepared.policy_principal_id);
+    if (automationId == null) {
+      return {
+        kind: 'automation',
+        id: prepared.policy_principal_id,
+        ownerAgentId: null,
+        ownerResolved: false,
+      };
+    }
+    const current = await resolveActingPrincipal(sql, {
+      organizationId: ctx.organizationId,
+      sessionAutomationId: automationId,
+    });
+    if (current.kind === 'automation') return { ...current, kind: 'automation' };
+    return { ...current, kind: 'automation', ownerResolved: false };
+  }
+  const current = await resolveActingPrincipal(sql, {
+    organizationId: ctx.organizationId,
+    userId: null,
+    agentId: prepared.policy_principal_id,
+  });
+  if (current.kind === 'agent') return { ...current, kind: 'agent' };
+  return { ...current, kind: 'agent', ownerResolved: false };
 }
 
 function isEntitySchemaMutation(args: ManageEntitySchemaArgs): boolean {

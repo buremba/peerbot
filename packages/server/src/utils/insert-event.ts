@@ -1466,7 +1466,7 @@ interface StateChangeEventParams<ResourceKind extends AuditResourceKind> {
 
 export interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
 
-interface WorkspaceChangeEventParams
+export interface WorkspaceChangeEventParams
   extends StateChangeEventParams<WorkspaceAuditResourceKind> {}
 
 /**
@@ -1549,7 +1549,27 @@ export async function insertConfigChangeEventInTransaction(
   params: ConfigChangeEventParams,
   sql: DbClient
 ): Promise<InsertedEvent> {
-  const originId = `config_${params.resourceKind}_${params.op}_${params.resourceId}_${crypto.randomUUID()}`;
+  return insertStateChangeEventInTransaction(params, 'config', sql);
+}
+
+/**
+ * Durable workspace audit seam for identity mutations that already own a
+ * transaction. The audit row and its Automation activation task commit with
+ * the invitation/member state they describe.
+ */
+export async function insertWorkspaceChangeEventInTransaction(
+  params: WorkspaceChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent> {
+  return insertStateChangeEventInTransaction(params, 'workspace', sql);
+}
+
+async function insertStateChangeEventInTransaction(
+  params: StateChangeEventParams<AuditResourceKind>,
+  category: 'config' | 'workspace',
+  sql: DbClient
+): Promise<InsertedEvent> {
+  const originId = `${category}_${params.resourceKind}_${params.op}_${params.resourceId}_${crypto.randomUUID()}`;
   const state = redactConfigState(params.resourceKind, params.state);
   return insertConnectionlessAuditEvent(
     {
@@ -1558,11 +1578,12 @@ export async function insertConfigChangeEventInTransaction(
       originId,
       title: params.summary,
       semanticType: 'change',
-      originType: `config_${params.resourceKind}_${params.op}`,
+      originType: `${category}_${params.resourceKind}_${params.op}`,
       payloadType: 'empty',
       payloadData: { state },
       metadata: {
-        category: 'config',
+        category,
+        ...(category === 'workspace' ? { _lobu_workspace_audit: true } : {}),
         resource_kind: params.resourceKind,
         resource_id: String(params.resourceId),
         op: params.op,

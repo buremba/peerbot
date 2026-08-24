@@ -131,7 +131,11 @@ export async function createMyDeviceFeed(c: Context<{ Bindings: Env }>) {
       ORDER BY connector_definitions.updated_at DESC, connector_definitions.id DESC
       LIMIT 1
     `) as unknown as Array<{ feed_definition: { operations?: unknown } | null }>;
-    const operations = definition?.feed_definition?.operations;
+    const feedDefinition = definition?.feed_definition;
+    if (!feedDefinition) {
+      return c.json({ error: `Feed '${feedKey}' is not declared by connector '${connectorKey}'` }, 400);
+    }
+    const operations = feedDefinition.operations;
     if (!Array.isArray(operations) || operations.length === 0) {
       return c.json({ error: `Feed '${feedKey}' is not declared by connector '${connectorKey}'` }, 400);
     }

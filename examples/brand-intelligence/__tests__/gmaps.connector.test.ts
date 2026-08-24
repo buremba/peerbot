@@ -50,6 +50,7 @@ describe("GoogleMapsConnector.sync", () => {
     };
 
     const result = await connector.sync({
+      feedKey: "reviews",
       config: { GOOGLE_MAPS_API_KEY: "key", business_name: "Acme" },
       checkpoint: null,
     });
@@ -68,6 +69,7 @@ describe("GoogleMapsConnector.sync", () => {
 
     await expect(
       connector.sync({
+        feedKey: "reviews",
         config: { GOOGLE_MAPS_API_KEY: "key", place_id: "PID" },
         checkpoint: null,
       })

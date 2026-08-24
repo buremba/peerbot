@@ -256,7 +256,11 @@ export function buildAtlassianMcpJql(args: {
 		if (caller.body) {
 			body = body.length > 0 ? `(${body}) AND (${caller.body})` : caller.body;
 		}
-		if (caller.orderBy) orderBy = caller.orderBy;
+		if (caller.orderBy) {
+			throw new Error(
+				"Jira source read query cannot contain ORDER BY; use the separate sort field",
+			);
+		}
 	}
 
 	if (orderBy) {

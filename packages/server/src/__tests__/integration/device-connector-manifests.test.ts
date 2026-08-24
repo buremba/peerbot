@@ -60,7 +60,7 @@ function manifest(overrides: Record<string, unknown> = {}) {
       snapshots: {
         key: 'snapshots',
         name: 'Snapshots',
-				operations: ['sync'],
+        operations: ['sync'],
         configSchema: { type: 'object', properties: {} },
         eventKinds: {
           snapshot: {
@@ -427,6 +427,87 @@ describe('device connector manifests', () => {
     expect(body.connector_manifest_hash).toBe(
       deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
     );
+  });
+
+  it('keeps a persisted pre-operations bridge manifest authorized and scheduled', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const currentManifest = manifest({
+      runtime: { platforms: ['macos'], execution: 'bridge' },
+    });
+    const snapshotFeed = {
+      ...(currentManifest.feeds_schema.snapshots as Record<string, unknown>),
+    };
+    delete snapshotFeed.operations;
+    const legacyManifest = {
+      ...currentManifest,
+      feeds_schema: {
+        snapshots: snapshotFeed,
+        live_snapshots: {
+          key: 'live_snapshots',
+          name: 'Live snapshots',
+          virtual: true,
+        },
+      },
+    };
+    const legacyHash = deviceManifestHash(legacyManifest as DeviceConnectorManifest);
+
+    await sql`
+      UPDATE device_workers
+      SET capabilities = ${sql.json(['screentime'])},
+          connector_manifests = ${sql.json({
+            [CONNECTOR_KEY]: {
+              manifest: legacyManifest,
+              manifest_hash: legacyHash,
+              received_at: new Date().toISOString(),
+            },
+          })},
+          last_seen_at = NOW()
+      WHERE worker_id = ${workerId}
+    `;
+
+    const pollPersistedInventory = (capacityAvailable: number) =>
+      post('/api/workers/poll', {
+        body: {
+          worker_id: workerId,
+          platform: 'macos',
+          app_version: '9.9.0',
+          capabilities: { screentime: true },
+          capacity_available: capacityAvailable,
+        },
+      });
+
+    const reconcileResponse = await pollPersistedInventory(0);
+    expect(reconcileResponse.status).toBe(200);
+
+    const definition = await readDefinition(orgId);
+    expect(definition?.feeds_schema).toEqual(
+      expect.objectContaining({
+        snapshots: expect.objectContaining({ operations: ['sync'] }),
+        live_snapshots: expect.objectContaining({ operations: ['read'] }),
+      }),
+    );
+    const feeds = (await sql`
+      SELECT f.feed_key, f.next_run_at
+      FROM feeds f
+      JOIN connections c ON c.id = f.connection_id
+      WHERE c.organization_id = ${orgId}
+        AND c.connector_key = ${CONNECTOR_KEY}
+        AND f.feed_key IN ('snapshots', 'live_snapshots')
+      ORDER BY f.feed_key
+    `) as unknown as Array<{ feed_key: string; next_run_at: Date | string | null }>;
+    expect(feeds).toEqual([
+      { feed_key: 'live_snapshots', next_run_at: null },
+      { feed_key: 'snapshots', next_run_at: expect.anything() },
+    ]);
+
+    const claimResponse = await pollPersistedInventory(1);
+    expect(claimResponse.status).toBe(200);
+    const body = (await claimResponse.json()) as Record<string, unknown>;
+    expect(body.connector_key).toBe(CONNECTOR_KEY);
+    expect(body.feed_key).toBe('snapshots');
+    expect(body.execution_backend).toBe('native_bridge');
+    expect(body.connector_manifest_hash).toBe(legacyHash);
   });
 
   it('reconciles a same-version compiled artifact back to manifest-only poll payload', async () => {

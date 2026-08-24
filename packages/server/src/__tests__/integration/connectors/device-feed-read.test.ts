@@ -24,7 +24,9 @@
 
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import type { AuthzScope } from '../../../authz/scope';
+import { compileConnectorSource } from '../../../utils/connector-compiler';
 
 // The waiter is swapped through a server-internal slot so two cases can make it
 // throw. NOT `vi.mock`: vitest runs this package with `isolate: false` (one
@@ -270,6 +272,57 @@ describe('device-backed source feed read', () => {
     expect(runs[0].action_input).toEqual({ scrubbed: true, feed_key: FEED_KEY });
     expect(JSON.stringify(runs[0])).not.toContain('invoice 4471');
     expect(JSON.stringify(runs[0])).not.toContain('Dana Ruiz');
+  }, 30_000);
+
+  it('executes a pinned historical compiled version when active metadata is device-only', async () => {
+    const historicalVersion = '0.2.0';
+    const sourceCode = `
+      import { defineConnector } from '@lobu/connector-sdk';
+      export default defineConnector({
+        key: '${CONNECTOR_KEY}',
+        name: 'Historical WhatsApp',
+        version: '${historicalVersion}',
+        authSchema: { methods: [{ type: 'none' }] },
+        feeds: {
+          ${FEED_KEY}: {
+            key: '${FEED_KEY}',
+            name: 'Messages',
+            operations: ['read'],
+            read: async () => ({
+              rows: [{ source: 'historical-compiled' }],
+              hasMore: false,
+            }),
+          },
+        },
+      });
+    `;
+    const compiled = await compileConnectorSource(sourceCode);
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code,
+        compiled_code_hash, compile_config_hash, source_code, created_at
+      ) VALUES (
+        ${orgId}, ${CONNECTOR_KEY}, ${historicalVersion}, ${compiled.compiledCode},
+        ${compiled.compiledCodeHash}, ${COMPILE_CONFIG_HASH}, ${sourceCode}, NOW()
+      )
+    `;
+    await sql`UPDATE feeds SET pinned_version = ${historicalVersion} WHERE id = ${feedId}`;
+    await setDeviceLastSeen('1 hour');
+
+    try {
+      const result = await readSourceFeed({ scope: scope(), feedId });
+      expect(result.rows).toEqual([{ source: 'historical-compiled' }]);
+      expect(await readRunRows()).toEqual([]);
+    } finally {
+      await sql`UPDATE feeds SET pinned_version = NULL WHERE id = ${feedId}`;
+      await sql`
+        DELETE FROM connector_versions
+        WHERE organization_id = ${orgId}
+          AND connector_key = ${CONNECTOR_KEY}
+          AND version = ${historicalVersion}
+      `;
+    }
   }, 30_000);
 
   it('surfaces a device-side failure and still scrubs the run', async () => {

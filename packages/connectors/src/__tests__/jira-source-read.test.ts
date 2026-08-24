@@ -413,7 +413,7 @@ describe('Jira feed source read', () => {
     ).rejects.toThrow(/unsupported/);
   });
 
-  test('rejects caller sort when the JQL already contains ORDER BY', async () => {
+  test('rejects caller ORDER BY even when a separate sort is also supplied', async () => {
     const c = connectorWith({ jqls: [], maxResults: [], tokens: [], urls: [] });
     await expect(
       readIssues(c, {
@@ -422,7 +422,19 @@ describe('Jira feed source read', () => {
         sort: { column: 'updated_at', order: 'desc' },
         limit: 5,
       }),
-    ).rejects.toThrow(/already contains ORDER BY/);
+    ).rejects.toThrow(/use the separate sort field/);
+  });
+
+  test('rejects ORDER BY inside the caller query instead of overriding the configured sort', async () => {
+    const c = connectorWith({ jqls: [], maxResults: [], tokens: [], urls: [] });
+    await expect(
+      readIssues(c, {
+        ...BASE_CTX,
+        config: { ...BASE_CTX.config, query: 'project = SUPP ORDER BY updated DESC' },
+        query: 'status = Open ORDER BY key ASC',
+        limit: 5,
+      }),
+    ).rejects.toThrow(/use the separate sort field/);
   });
 
   test('applies supported sort columns', async () => {

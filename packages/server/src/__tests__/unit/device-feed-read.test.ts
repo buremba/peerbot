@@ -72,6 +72,28 @@ describe('device feed read — reserved action key', () => {
   });
 });
 
+describe('device manifest feed operations', () => {
+  it('rejects a newly advertised feed that omits operations', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'macos',
+      capabilities: ['whatsapp_local'],
+      manifests: [
+        {
+          key: 'whatsapp.local',
+          version: '9.9.9',
+          name: 'Missing operations',
+          required_capability: 'whatsapp_local',
+          runtime: { platforms: ['macos'] },
+          feeds_schema: { messages: { key: 'messages', name: 'Messages' } },
+        },
+      ],
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.manifests).toHaveLength(0);
+  });
+});
+
 describe('WhatsApp Browser manifest compatibility', () => {
   const chromeManifest = {
     key: 'whatsapp.local',

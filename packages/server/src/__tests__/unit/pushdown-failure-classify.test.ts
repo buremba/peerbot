@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { isRetryable } from '@lobu/core';
+import { isRetryable, ToolError } from '@lobu/core';
 import { classifyPushdownFailure } from '../../lib/connector-pushdown';
 
 // Mirror of SubprocessError's surface: a message plus the propagated httpStatus.
@@ -65,5 +65,13 @@ describe('classifyPushdownFailure', () => {
     const code = classifyPushdownFailure(error);
     expect(code).toBe('UPSTREAM_TIMEOUT');
     expect(isRetryable(code)).toBe(true);
+  });
+
+  it('preserves a gateway-owned structured code regardless of message text', () => {
+    const code = classifyPushdownFailure(
+      new ToolError('NOT_FOUND', 'upstream body claimed an internal timeout'),
+    );
+    expect(code).toBe('NOT_FOUND');
+    expect(isRetryable(code)).toBe(false);
   });
 });

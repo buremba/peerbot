@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  MAC_DEVICE_DAEMON_PROTOCOL,
   createMacDeviceDaemonShutdown,
   macDeviceDaemonMetadata,
   selectMacDeviceDaemonAgentKind,
   validateMacDeviceDaemonOptions,
 } from '../daemon/mac-device-daemon';
 import { executeAutomationRun } from '../daemon/automation';
+import { NATIVE_BRIDGE_PROTOCOL } from '../daemon/native-bridge/protocol';
 import {
   createWorkerPollLoopShutdownHandler,
   shouldHandleWorkerPollLoopStdinEof,
@@ -18,7 +18,7 @@ describe('Mac device daemon options', () => {
     expect(macDeviceDaemonMetadata('15.8.0')).toMatchObject({
       name: 'lobu-device-daemon',
       version: '15.8.0',
-      protocol: MAC_DEVICE_DAEMON_PROTOCOL,
+      protocol: NATIVE_BRIDGE_PROTOCOL,
       platform: 'macos',
       artifact: 'standalone-bun-macho-arm64',
     });

@@ -31,6 +31,15 @@ describe("Atlassian MCP feed helpers", () => {
 		).toBe('(project = KAN) AND (text ~ "timeout") ORDER BY updated DESC');
 	});
 
+	it("rejects caller ORDER BY instead of replacing the configured ordering", () => {
+		expect(() =>
+			buildAtlassianMcpJql({
+				baseQuery: "project = KAN ORDER BY updated DESC",
+				query: "status = Open ORDER BY key ASC",
+			}),
+		).toThrow("use the separate sort field");
+	});
+
 	it("maps REST-shaped and flattened MCP issue payloads onto the Jira row", () => {
 		const rows = parseAtlassianMcpIssues({
 			content: [

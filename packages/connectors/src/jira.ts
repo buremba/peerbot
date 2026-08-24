@@ -248,7 +248,11 @@ function buildJiraJql(args: {
     if (caller.body) {
       body = body.length > 0 ? `(${body}) AND (${caller.body})` : caller.body;
     }
-    if (caller.orderBy) orderBy = caller.orderBy;
+    if (caller.orderBy) {
+      throw new Error(
+        'Jira source read query cannot contain ORDER BY; use the separate sort field',
+      );
+    }
   }
 
   // `body` is non-empty from here on: an empty base fell back to

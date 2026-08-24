@@ -246,6 +246,24 @@ describe('explicit feed source reads', () => {
     );
     if (mismatchedSort.action !== 'read_feeds') throw new Error('expected read_feeds result');
     expect(mismatchedSort.results[0]).toMatchObject({ ok: false, error_code: 'VALIDATION' });
+
+    const differentFeed = await manageFeeds(
+      {
+        action: 'read_feeds',
+        reads: [
+          {
+            feed_id: privateFeedId,
+            query: 'ap',
+            cursor: firstRead.next_cursor,
+            sort: { column: 'id', order: 'asc' },
+          },
+        ],
+      },
+      {},
+      ownerCtx
+    );
+    if (differentFeed.action !== 'read_feeds') throw new Error('expected read_feeds result');
+    expect(differentFeed.results[0]).toMatchObject({ ok: false, error_code: 'VALIDATION' });
   }, 60_000);
 
   it('keeps each explicit source read visibility-fenced', async () => {

@@ -20,9 +20,9 @@ import { installWorkerPollLoopSignals, WorkerPollLoop } from './poll-loop.js';
 import { setDebug } from './log.js';
 import { NativeBridgeClient } from './native-bridge/client.js';
 import { executeNativeBridgeRun } from './native-bridge/executor.js';
+import { NATIVE_BRIDGE_PROTOCOL } from './native-bridge/protocol.js';
 import { reportTerminalFailure } from './terminal-failure.js';
 
-export const MAC_DEVICE_DAEMON_PROTOCOL = 'device-daemon/v1';
 export const MAC_DEVICE_PLATFORM = 'macos';
 const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const WORKER_PAT_PATTERN = /^owl_pat_[A-Za-z0-9_-]{32}$/;
@@ -47,7 +47,7 @@ export interface MacDeviceDaemonOptions {
 export interface MacDeviceDaemonMetadata {
   name: 'lobu-device-daemon';
   version: string;
-  protocol: typeof MAC_DEVICE_DAEMON_PROTOCOL;
+  protocol: typeof NATIVE_BRIDGE_PROTOCOL;
   platform: typeof MAC_DEVICE_PLATFORM;
   artifact: 'standalone-bun-macho-arm64';
 }
@@ -56,7 +56,7 @@ export function macDeviceDaemonMetadata(version: string): MacDeviceDaemonMetadat
   return {
     name: 'lobu-device-daemon',
     version,
-    protocol: MAC_DEVICE_DAEMON_PROTOCOL,
+    protocol: NATIVE_BRIDGE_PROTOCOL,
     platform: MAC_DEVICE_PLATFORM,
     artifact: 'standalone-bun-macho-arm64',
   };

@@ -604,15 +604,11 @@ function sourceReadError(message: string): Error & { exitReason: 'timeout' } {
 
 /**
  * Faults this handler owns are recognised structurally; everything else is a
- * connector/source failure and goes to the shared pushdown classifier. The two
- * message probes below match readSourceFeed's own resolution errors, which are
- * argument faults rather than upstream failures.
+ * connector/source failure, including typed resolution failures owned by
+ * readSourceFeed, goes to the shared pushdown classifier.
  */
 function sourceErrorCode(err: unknown): ToolErrorCode {
   if (err instanceof SourceCursorError) return 'VALIDATION';
-  const message = getErrorMessage(err).toLowerCase();
-  if (message.includes('does not support source reads')) return 'VALIDATION';
-  if (message.includes('not found or not accessible')) return 'NOT_FOUND';
   return classifyPushdownFailure(err);
 }
 
@@ -660,9 +656,14 @@ async function readSourceWithinDeadline(
   try {
     const result = await Promise.race([pending, deadline]);
     const nextPosition = page.position + result.rows.length;
+    // Once a source has selected token pagination, absence of a replacement
+    // token means exhaustion. Never downgrade that traversal to an offset
+    // cursor: token-only providers reject offsets and cannot resume that page.
     const hasMore =
       result.nextCursor !== undefined
         ? true
+        : page.sourceCursor !== undefined
+          ? false
         : result.hasMore !== undefined
           ? result.hasMore
           : result.total !== undefined
@@ -1009,16 +1010,26 @@ async function handleUpdateFeed(
   // config into a shape that only fails at sync time.
   const txResult = await sql.begin(async (tx) => {
     const existing = await tx`
-      SELECT f.id, f.status, f.schedule, f.timezone, f.feed_key, f.config, c.auth_profile_id, cd.feeds_schema
+      SELECT f.id, f.status, f.schedule, f.timezone, f.feed_key, f.config,
+             f.pinned_version, c.auth_profile_id, cd.feeds_schema
       FROM feeds f
       JOIN connections c ON c.id = f.connection_id
       LEFT JOIN LATERAL (
         SELECT feeds_schema
         FROM connector_definitions
         WHERE key = c.connector_key
-          AND status = 'active'
           AND organization_id = ${organizationId}
-        ORDER BY updated_at DESC
+          AND (
+            (f.pinned_version IS NULL AND status = 'active')
+            OR (
+              f.pinned_version IS NOT NULL
+              AND (version = f.pinned_version OR status = 'active')
+            )
+          )
+        ORDER BY (version = f.pinned_version) DESC,
+                 (status = 'active') DESC,
+                 updated_at DESC,
+                 id DESC
         LIMIT 1
       ) cd ON TRUE
       WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId}
@@ -1038,12 +1049,6 @@ async function handleUpdateFeed(
         error: `Feed '${String(feedRow.feed_key)}' declares no sync or read operation`,
       } as const;
     }
-    if ((nextSchedule || args.timezone) && !canSync) {
-      return {
-        error: `Feed '${String(feedRow.feed_key)}' does not support sync cadence`,
-      } as const;
-    }
-
     // `read_feed`/`list_feeds` redact feeds.config, so a client that reads and
     // PATCHes back would otherwise persist `__LOBU_REDACTED__` over the stored
     // value. Restore from the row (read under the same FOR UPDATE lock, so the
@@ -1086,6 +1091,15 @@ async function handleUpdateFeed(
       ? (args.timezone ?? null)
       : (feedRow.timezone as string | null);
     const recomputeNextRun = touchesCadence || resuming;
+    if (
+      !canSync &&
+      recomputeNextRun &&
+      (effectiveSchedule !== null || effectiveTimezone !== null)
+    ) {
+      return {
+        error: `Feed '${String(feedRow.feed_key)}' does not support sync cadence`,
+      } as const;
+    }
     const nextRunAtVal =
       recomputeNextRun && effectiveSchedule
         ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)

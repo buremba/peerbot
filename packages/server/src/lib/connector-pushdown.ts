@@ -12,6 +12,7 @@ import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtim
 import {
   classifyToolError,
   getErrorMessage,
+  ToolError,
   type ToolErrorCode,
 } from '@lobu/core';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
@@ -67,7 +68,10 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     LIMIT 1
   `;
   if (connRows.length === 0) {
-    throw new Error(`source connection '${p.connectionSlug}' not found or not accessible`);
+    throw new ToolError(
+      'NOT_FOUND',
+      `source connection '${p.connectionSlug}' not found or not accessible`,
+    );
   }
   const conn = connRows[0] as {
     id: number;
@@ -180,6 +184,7 @@ function remainingReadMs(p: ReadSourceFeedParams): number | undefined {
 
 /** Classify a thrown connector/source failure using structured diagnostics first. */
 export function classifyPushdownFailure(err: unknown): ToolErrorCode {
+  if (err instanceof ToolError) return err.code;
   const diagnostic = err as {
     httpStatus?: unknown;
     exitReason?: unknown;
@@ -241,7 +246,12 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
                 SELECT 1
                 FROM connector_versions cv
                 WHERE cv.connector_key = cd0.key
-                  AND cv.version = cd0.version
+                  -- Definition metadata may fall back to the active row when
+                  -- a pinned historical definition was archived, but code
+                  -- execution remains pinned. Inspect that same artifact here
+                  -- so a compiled historical version never gets misrouted to
+                  -- the device read lane.
+                  AND cv.version = COALESCE(f.pinned_version, cd0.version)
                   AND (cv.organization_id = cd0.organization_id
                        OR cv.organization_id IS NULL)
                   AND cv.compiled_code IS NOT NULL
@@ -297,12 +307,18 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
   }>;
 
   if (feedRows.length === 0) {
-    throw new Error(`feed '${p.feedId}' not found or not accessible`);
+    throw new ToolError(
+      'NOT_FOUND',
+      `feed '${p.feedId}' not found or not accessible`,
+    );
   }
   const feed = feedRows[0];
   const feedOperations = Array.isArray(feed.feed_operations) ? feed.feed_operations : [];
   if (!feedOperations.includes('read')) {
-    throw new Error(`feed '${p.feedId}' does not support source reads`);
+    throw new ToolError(
+      'VALIDATION',
+      `feed '${p.feedId}' does not support source reads`,
+    );
   }
 
   const feedConfig = (feed.config ?? {}) as Record<string, unknown>;

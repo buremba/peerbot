@@ -37,6 +37,7 @@ describe("IOSAppStoreConnector.sync", () => {
 
     await expect(
       connector.sync({
+        feedKey: "reviews",
         config: { app_id: "123", country: "US" },
         checkpoint: {},
       })
@@ -56,6 +57,7 @@ describe("IOSAppStoreConnector.sync", () => {
     };
 
     const result = await connector.sync({
+      feedKey: "reviews",
       config: { app_id: "123", country: "US" },
       checkpoint: {},
     });

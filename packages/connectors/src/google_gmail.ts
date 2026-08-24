@@ -78,7 +78,7 @@ interface GmailConfig {
    * Only emit person-relevant threads: replied non-role counterparties or
    * unreplied senders/recipients that pass the human-address heuristic. Drives
    * person minting/merging from a narrow subset of the mailbox while everything
-   * else stays a virtual/live read.
+   * else remains available only through direct source reads.
    */
   human_senders_only?: boolean;
 }

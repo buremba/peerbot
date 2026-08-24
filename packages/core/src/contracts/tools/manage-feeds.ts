@@ -63,7 +63,7 @@ const FeedSourceRead = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        "Connector-native search query. Omit for an unfiltered source read.",
+        "Connector-native filter/search query. Omit for an unfiltered source read; use `sort` for ordering.",
     })
   ),
   limit: Type.Optional(

@@ -61,6 +61,7 @@ const personalAgent = defineAgent({
       "github.com",
       ".github.com",
       ".githubusercontent.com",
+      "lnkd.in",
       "registry.npmjs.org",
       ".npmjs.org",
     ],

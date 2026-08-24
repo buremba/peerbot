@@ -518,36 +518,52 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // Engagement comes only from LinkedIn's dedicated social-count controls.
     // Keep both visible text and accessible-label variants because the current
     // feed uses both shapes across post types and experiments.
+    //
+    // Row scoping matters here: a post row CONTAINS its visible comment rows,
+    // and `querySelector` returns the first match in DOCUMENT order across the
+    // whole comma list, not the first branch that matches. So every branch that
+    // is not already anchored to `.social-details-social-counts` (the post's own
+    // block) carries `:not([id^="replaceableComment_"] *)`, which excludes
+    // elements inside a nested comment. The reaction fields then add a leading
+    // `:scope[id^="replaceableComment_"]` branch so a comment row reads its OWN
+    // reactions: the current feed puts the count beside an "Open reactions
+    // menu" button using obfuscated classes, while permalink pages still use a
+    // comment social-bar class with an experiment suffix (`--cr`). The semantic
+    // sibling branch covers the feed and the prefix class match covers the
+    // permalink shape. Current post cards put their count block immediately
+    // before the divider and action bar; those semantic siblings avoid the
+    // obfuscated classes. Comment and repost counts stay post-only — a
+    // comment's reply count is a different quantity.
     reaction_count_text: {
       selector:
-        ".social-details-social-counts__reactions-count, .social-details-social-counts__reactions",
+        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > a:first-child, :scope[id^="replaceableComment_"] div:has(> button[aria-label="Open reactions menu"]) > :first-child, :scope[id^="replaceableComment_"] [class*="comments-comment-social-bar__reactions-count"], .social-details-social-counts__reactions-count, .social-details-social-counts__reactions',
       take: "text",
     },
     reaction_count_label: {
       selector:
-        '.social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i], [aria-label$=" reactions" i]',
+        ':scope[id^="replaceableComment_"] [aria-label*=" reaction on " i], :scope[id^="replaceableComment_"] [aria-label*=" reactions on " i], .social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i]:not([aria-label^="Reaction button state:" i]):not([id^="replaceableComment_"] *), [aria-label$=" reactions" i]:not([aria-label^="Reaction button state:" i]):not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
     comment_count_text: {
       selector:
-        ".social-details-social-counts__comments, .social-details-social-counts__comments-count",
+        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > div:first-child, .social-details-social-counts__comments, .social-details-social-counts__comments-count',
       take: "text",
     },
     comment_count_label: {
       selector:
-        '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comments" i]',
+        '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
     repost_count_text: {
       selector:
-        ".social-details-social-counts__reposts, .social-details-social-counts__reposts-count",
+        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > a:last-child, .social-details-social-counts__reposts, .social-details-social-counts__reposts-count',
       take: "text",
     },
     repost_count_label: {
       selector:
-        '.social-details-social-counts [aria-label*="repost" i], [aria-label$=" repost" i], [aria-label$=" reposts" i]',
+        '.social-details-social-counts [aria-label*="repost" i], [aria-label$=" repost" i]:not([id^="replaceableComment_"] *), [aria-label$=" reposts" i]:not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
@@ -878,15 +894,18 @@ function maxHomeFeedCounter(
 }
 
 function homeFeedReactionCount(row: HomeFeedRow): number | undefined {
+  for (const value of [row.reaction_count_text, row.reaction_count_label]) {
+    const others = value?.match(
+      /\band\s+(\d[\d,.]*(?:\s*[kmb])?)\s+others?\s+reacted\b/i
+    );
+    if (others) return parseLinkedInCompactCount(others[1]) + 1;
+  }
+
   const explicitTotal = maxHomeFeedCounter(row.reaction_count_text);
   if (explicitTotal !== undefined) return explicitTotal;
 
   const label = row.reaction_count_label;
   if (!label) return undefined;
-  const others = label.match(
-    /\band\s+(\d[\d,.]*(?:\s*[kmb])?)\s+others?\s+reacted\b/i
-  );
-  if (others) return parseLinkedInCompactCount(others[1]) + 1;
   return maxHomeFeedCounter(label);
 }
 
@@ -1262,6 +1281,84 @@ export function normalizeLinkedInPostUrl(input: string): string | null {
   } catch {
     return null;
   }
+}
+
+function isLinkedInShortPostUrl(input: string | undefined): boolean {
+  if (!input) return false;
+  try {
+    const url = new URL(input);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "lnkd.in" &&
+      url.pathname.startsWith("/p/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve LinkedIn's Copy-link short URL to its durable post URN URL. */
+export async function resolveLinkedInShortPostUrl(
+  input: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string | null> {
+  let shortUrl: URL;
+  try {
+    shortUrl = new URL(input);
+  } catch {
+    return null;
+  }
+  if (!isLinkedInShortPostUrl(shortUrl.href)) return null;
+
+  try {
+    const response = await fetchImpl(shortUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: AbortSignal.timeout(5_000),
+    });
+    const location = response.headers.get("location");
+    if (!location) return normalizeLinkedInPostUrl(response.url);
+    return normalizeLinkedInPostUrl(new URL(location, shortUrl).href);
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveHomeFeedPostUrls(
+  rows: HomeFeedRow[],
+  fetchImpl: typeof fetch = fetch
+): Promise<HomeFeedRow[]> {
+  return Promise.all(
+    rows.map(async (row) => {
+      const postUrl = row.post_url?.trim();
+      if (!postUrl || normalizeLinkedInPostUrl(postUrl)) return row;
+      const resolved = await resolveLinkedInShortPostUrl(postUrl, fetchImpl);
+      return resolved ? { ...row, post_url: resolved } : row;
+    })
+  );
+}
+
+function unresolvedHomeFeedPostCount(rows: HomeFeedRow[]): number {
+  let count = 0;
+  for (const row of rows) {
+    if (!row?.id || !row.body) continue;
+    if (parseHomeFeedCommentIdentity(row.id) || isHomeFeedNoise(row.body)) {
+      continue;
+    }
+    const context = buildHomeFeedRowContext(row);
+    if (!homeFeedPostIdentityKey(row, context)) count += 1;
+  }
+  return count;
+}
+
+function unresolvedHomeFeedShortUrlCount(rows: HomeFeedRow[]): number {
+  return rows.filter(
+    (row) =>
+      Boolean(row?.id && row.body) &&
+      !parseHomeFeedCommentIdentity(row.id) &&
+      !isHomeFeedNoise(row.body ?? "") &&
+      isLinkedInShortPostUrl(row.post_url)
+  ).length;
 }
 
 /** True when navigate landed on login / authwall rather than the post. */
@@ -2515,6 +2612,13 @@ export default class LinkedInConnector extends ConnectorRuntime<
   LinkedInCheckpoint,
   LinkedInConfig
 > {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = fetch) {
+    super();
+    this.fetchImpl = fetchImpl;
+  }
+
   readonly definition: RuntimeConnectorDefinition<
     LinkedInCheckpoint,
     LinkedInConfig
@@ -2523,7 +2627,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.0",
+    version: "3.11.3",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -3122,8 +3226,9 @@ export default class LinkedInConnector extends ConnectorRuntime<
    * Personalized home feed via the extension's content-script scrape. Network
    * capture can't read it (the CDP debugger stops the feed rendering), so we
    * dispatch a `cs_scrape` against linkedin.com/feed/ with the home-feed
-   * selectors. Each run uses its own scratch tab; the paired Chrome profile
-   * supplies the shared login cookies.
+   * selectors. Prefer an already-loaded feed tab in the paired Chrome profile;
+   * otherwise reuse a site-persistent tab so a slow first hydration is still
+   * available to the next scheduled retry.
    */
   private async syncHomeFeed(
     maxScrolls: number,
@@ -3139,6 +3244,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
       },
       parseRows: (raw) => raw as HomeFeedRow[],
       allowedOrigins: LINKEDIN_ALLOWED_ORIGINS,
+      existingTabMatch: "linkedin.com/feed/",
+      persistent: true,
     });
 
     if (!loggedIn) {
@@ -3146,14 +3253,39 @@ export default class LinkedInConnector extends ConnectorRuntime<
         "Not logged into LinkedIn. Sign in to linkedin.com in the paired Chrome profile, then re-run the sync."
       );
     }
+    if (rows.length === 0) {
+      throw new Error(
+        "LinkedIn is logged in, but the home feed produced no post rows. Keep a signed-in linkedin.com/feed/ tab open on the paired browser and retry."
+      );
+    }
 
-    const events = buildHomeFeedEvents(rows, new Date());
+    const resolvedRows = await resolveHomeFeedPostUrls(rows, this.fetchImpl);
+    const unresolvedShortUrlCount =
+      unresolvedHomeFeedShortUrlCount(resolvedRows);
+    if (unresolvedShortUrlCount > 0) {
+      throw new Error(
+        `LinkedIn could not resolve ${unresolvedShortUrlCount} copied post short URL${unresolvedShortUrlCount === 1 ? "" : "s"} to a durable identity. No home-feed events were persisted.`
+      );
+    }
+    const unresolvedPostCount = unresolvedHomeFeedPostCount(resolvedRows);
+    if (unresolvedPostCount > 0) {
+      throw new Error(
+        `LinkedIn scraped ${unresolvedPostCount} post row${unresolvedPostCount === 1 ? "" : "s"} without a durable activity/share/ugcPost identity. No partial home-feed batch was persisted.`
+      );
+    }
+
+    const events = buildHomeFeedEvents(resolvedRows, new Date());
+    if (events.length === 0) {
+      throw new Error(
+        "LinkedIn is logged in and returned feed rows, but no row combined usable content with a durable identity. Keep a signed-in linkedin.com/feed/ tab open on the paired browser and retry."
+      );
+    }
 
     // Capability gate: author/engager slugs need the `objectAll` scrape take. An
     // older extension can't produce it, so identity degrades to name-only.
     // Surface it in metadata (rather than failing) so a stale extension is
     // observable — events still flow, just without slugs.
-    const objectAllSupported = homeFeedObjectAllSupported(rows);
+    const objectAllSupported = homeFeedObjectAllSupported(resolvedRows);
 
     return {
       events,

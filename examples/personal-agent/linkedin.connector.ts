@@ -789,21 +789,27 @@ function resolveMemberSlug(
  * the home feed has no structured "is this an ad" field over the content-script
  * scrape.
  */
-export function isHomeFeedNoise(body: string): boolean {
+export function isHomeFeedNoise(
+  body: string,
+  signals: {
+    authorControlLabel?: string;
+    hasDurableIdentity?: boolean;
+  } = {}
+): boolean {
   if (!body || body.trim().length < 30) return true;
   if (/\bPromoted\b/i.test(body.slice(0, 130))) return true;
   if (/\bSuggested\b/i.test(body.slice(0, 30))) return true;
-  // Platform self-promo cards only when there is no real member header
-  // (no connection-degree " • " and no expanded "Author" badge). A genuine
-  // post that *discusses* LinkedIn Ads must not be dropped.
+  // Current feed modules use the same outer componentkey shape and "Feed post"
+  // prefix as posts, but have neither a post control nor an author/time header.
+  // Real member/company cards expose at least one of those signals. Keeping the
+  // header fallback makes a broken control-menu selector fail the durable-id
+  // health check instead of silently dropping genuine posts.
   const text = body.replace(/^feed post\s+/i, "").trim();
   const hasMemberHeader = text.includes(" • ") || /^\S.+\s+Author\b/.test(text);
-  if (!hasMemberHeader) {
-    if (/\b(?:Try )?LinkedIn Ads\b/i.test(body)) return true;
-    if (/\bGet more leads with boosting\b/i.test(body)) return true;
-    if (/\bBoost your best content on LinkedIn\b/i.test(body)) return true;
-  }
-  return false;
+  const hasPostControl = Boolean(
+    parseAuthorControlLabel(signals.authorControlLabel)
+  );
+  return !hasMemberHeader && !hasPostControl && !signals.hasDurableIdentity;
 }
 
 interface HomeFeedEngagement {
@@ -1044,6 +1050,16 @@ function buildHomeFeedRowContext(row: HomeFeedRow): HomeFeedRowContext {
   };
 }
 
+function isHomeFeedRowNoise(
+  row: HomeFeedRow,
+  context: HomeFeedRowContext
+): boolean {
+  return isHomeFeedNoise(row.body ?? "", {
+    authorControlLabel: row.author_control_label,
+    hasDurableIdentity: Boolean(homeFeedPostIdentityKey(row, context)),
+  });
+}
+
 /**
  * Map cs_scrape home-feed rows to event envelopes. The permalink recovered
  * from LinkedIn's Copy-link action is the canonical post identity; an embedded
@@ -1073,8 +1089,10 @@ export function buildHomeFeedEvents(
   for (const row of rows) {
     if (!row?.id || !row.body) continue;
     const nativeIdentity = parseHomeFeedCommentIdentity(row.id);
-    if (!nativeIdentity && isHomeFeedNoise(row.body)) continue;
     const context = buildHomeFeedRowContext(row);
+    if (!nativeIdentity && isHomeFeedRowNoise(row, context)) {
+      continue;
+    }
     prepared.push({
       row,
       body: row.body,
@@ -1342,23 +1360,28 @@ function unresolvedHomeFeedPostCount(rows: HomeFeedRow[]): number {
   let count = 0;
   for (const row of rows) {
     if (!row?.id || !row.body) continue;
-    if (parseHomeFeedCommentIdentity(row.id) || isHomeFeedNoise(row.body)) {
+    const context = buildHomeFeedRowContext(row);
+    if (
+      parseHomeFeedCommentIdentity(row.id) ||
+      isHomeFeedRowNoise(row, context)
+    ) {
       continue;
     }
-    const context = buildHomeFeedRowContext(row);
     if (!homeFeedPostIdentityKey(row, context)) count += 1;
   }
   return count;
 }
 
 function unresolvedHomeFeedShortUrlCount(rows: HomeFeedRow[]): number {
-  return rows.filter(
-    (row) =>
-      Boolean(row?.id && row.body) &&
-      !parseHomeFeedCommentIdentity(row.id) &&
-      !isHomeFeedNoise(row.body ?? "") &&
-      isLinkedInShortPostUrl(row.post_url)
-  ).length;
+  return rows.filter((row) => {
+    if (!row?.id || !row.body || parseHomeFeedCommentIdentity(row.id)) {
+      return false;
+    }
+    const context = buildHomeFeedRowContext(row);
+    return (
+      !isHomeFeedRowNoise(row, context) && isLinkedInShortPostUrl(row.post_url)
+    );
+  }).length;
 }
 
 /** True when navigate landed on login / authwall rather than the post. */
@@ -2627,7 +2650,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.3",
+    version: "3.11.4",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

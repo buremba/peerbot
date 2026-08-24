@@ -1998,6 +1998,53 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.structuredContent?.tone).toBe('warning');
   });
 
+  it('warns for a legacy connector approval whose impact cannot be reconstructed', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', 'github', 'legacy_external_action'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_legacy_connector_approval_${runId}`,
+      title: 'Legacy connector action — pending approval',
+      content: 'Review this connected-service change.',
+      semanticType: 'operation',
+      connectorKey: 'github',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { target: 'external-record-123' },
+      metadata: { operation_key: 'legacy_external_action' },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 218,
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.icon).toBe('connector');
+    expect(body.result?.structuredContent?.impact).toEqual({
+      level: 'high',
+      reason:
+        'This connector approval predates impact metadata, so its external effect cannot be verified.',
+      consequences: ['Review the connected-service change before approving.'],
+    });
+    expect(body.result?.structuredContent?.tone).toBe('warning');
+  });
+
   it('bounds explicit approval impact metadata for the MCP view contract', async () => {
     const [run] = await getDb()<{ id: number }>`
       INSERT INTO runs (organization_id, run_type, status, approval_status)

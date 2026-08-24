@@ -410,15 +410,25 @@ function legacyApprovalKind(row: ApprovalContentItem): ApprovalKind {
   return ApprovalKind.Approval;
 }
 
-function legacyApprovalImpact(metadata: Record<string, unknown> | null): ApprovalImpact {
+function legacyApprovalImpact(
+  metadata: Record<string, unknown> | null,
+  kind: ApprovalKind
+): ApprovalImpact {
   if (metadata?.review_tone === 'warning') {
     return highApprovalImpact('This action was marked as high impact by its producer.');
   }
   if (metadata?.review_tone === 'default') return normalApprovalImpact();
   const action = typeof metadata?.action === 'string' ? metadata.action.toLowerCase() : '';
-  return HIGH_IMPACT_APPROVAL_ACTIONS.has(action)
-    ? highApprovalImpact('This action can remove or irreversibly change data.')
-    : normalApprovalImpact();
+  if (HIGH_IMPACT_APPROVAL_ACTIONS.has(action)) {
+    return highApprovalImpact('This action can remove or irreversibly change data.');
+  }
+  if (kind === ApprovalKind.Connector) {
+    return highApprovalImpact(
+      'This connector approval predates impact metadata, so its external effect cannot be verified.',
+      ['Review the connected-service change before approving.']
+    );
+  }
+  return normalApprovalImpact();
 }
 
 function approvalImpactForView(impact: ApprovalImpact): ApprovalImpact {
@@ -442,15 +452,16 @@ function approvalContextForView(
   status: string
 ): { kind: ApprovalKind; impact: ApprovalImpact } {
   const explicit = readApprovalContext(row.metadata?.approval_context);
+  const kind = explicit?.kind ?? legacyApprovalKind(row);
   if (status !== 'pending') {
     return {
-      kind: explicit?.kind ?? legacyApprovalKind(row),
+      kind,
       impact: normalApprovalImpact(),
     };
   }
   return {
-    kind: explicit?.kind ?? legacyApprovalKind(row),
-    impact: approvalImpactForView(explicit?.impact ?? legacyApprovalImpact(row.metadata)),
+    kind,
+    impact: approvalImpactForView(explicit?.impact ?? legacyApprovalImpact(row.metadata, kind)),
   };
 }
 

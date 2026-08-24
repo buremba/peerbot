@@ -257,6 +257,20 @@ describe("operations.execute backend lifecycle", () => {
 									responses: { "200": { description: "ok" } },
 								},
 							},
+							"/items/{id}": {
+								delete: {
+									operationId: "delete_item",
+									parameters: [
+										{
+											name: "id",
+											in: "path",
+											required: true,
+											schema: { type: "string" },
+										},
+									],
+									responses: { "204": { description: "deleted" } },
+								},
+							},
 						},
 					});
 				}
@@ -1085,12 +1099,17 @@ describe("operations.execute backend lifecycle", () => {
 		);
 		expect(listed).toMatchObject({
 			action: "list_available",
-			operations: [
+			operations: expect.arrayContaining([
 				expect.objectContaining({
 					operation_key: "create_item",
 					backend: "http_operation",
 				}),
-			],
+				expect.objectContaining({
+					operation_key: "delete_item",
+					backend: "http_operation",
+					annotations: expect.objectContaining({ destructiveHint: true }),
+				}),
+			]),
 		});
 		const result = await manageOperations(
 			{
@@ -1107,6 +1126,39 @@ describe("operations.execute backend lifecycle", () => {
 			status: "completed",
 			output: {
 				body: { created: true, body: { value: "http-ok" } },
+			},
+		});
+	});
+
+	it("marks an OpenAPI DELETE approval as high impact", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: httpConnectionId,
+				operation_key: "delete_item",
+				input: { path: { id: "item-123" } },
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "pending_approval",
+		});
+		const [approval] = await getTestDb()`
+			SELECT metadata->'approval_context' AS approval_context
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.approval_context).toEqual({
+			kind: "connector",
+			impact: {
+				level: "high",
+				reason:
+					"This action can remove or irreversibly change data in the connected service.",
+				consequences: ["Lobu may not be able to undo the external change."],
 			},
 		});
 	});

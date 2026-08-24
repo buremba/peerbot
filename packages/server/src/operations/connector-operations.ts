@@ -351,7 +351,12 @@ async function getOpenApiOperations(
 				backend: "http_operation",
 				requires_approval: requiresApproval,
 				annotations:
-					kind === "read" ? { idempotentHint: true } : { openWorldHint: true },
+					kind === "read"
+						? { idempotentHint: true }
+						: {
+								openWorldHint: true,
+								...(method === "delete" ? { destructiveHint: true } : {}),
+							},
 				input_schema: getOperationInputSchema(
 					spec,
 					pathParameters,

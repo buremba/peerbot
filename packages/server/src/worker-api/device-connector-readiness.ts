@@ -25,6 +25,8 @@ export interface DeviceConnectorReadiness {
 export interface DeviceConnectorReadinessTarget {
   ownerUserId: string | null;
   connectorKey: string;
+  /** Exact execution pin. Null/absent means any device in the owner's fleet. */
+  deviceWorkerId?: string | null;
 }
 
 export type DeviceConnectorReadinessIndex = Map<
@@ -32,13 +34,27 @@ export type DeviceConnectorReadinessIndex = Map<
   DeviceConnectorReadiness
 >;
 
-function readinessKey(ownerUserId: string, connectorKey: string): string {
-  return `${ownerUserId}\u0000${connectorKey}`;
+function readinessKey(
+  ownerUserId: string,
+  connectorKey: string,
+  deviceWorkerId?: string | null
+): string {
+  return `${ownerUserId}\u0000${connectorKey}\u0000${deviceWorkerId ?? ''}`;
 }
 
 export function classifyDeviceConnectorReadiness(
   source: DeviceConnectorSource,
+  deviceWorkerId?: string | null
 ): DeviceConnectorReadiness {
+  if (deviceWorkerId) {
+    if (source.onlineAdvertiserDeviceIds.includes(deviceWorkerId)) {
+      return { state: 'ready', source };
+    }
+    if (source.onlineManifestDeviceIds.includes(deviceWorkerId)) {
+      return { state: 'setup_required', source };
+    }
+    return { state: 'device_offline', source };
+  }
   if (source.onlineAdvertiserDeviceIds.length > 0) {
     return { state: 'ready', source };
   }
@@ -59,11 +75,6 @@ export async function loadDeviceConnectorReadiness(params: {
     ): target is DeviceConnectorReadinessTarget & { ownerUserId: string } =>
       typeof target.ownerUserId === 'string' && target.ownerUserId.length > 0,
   );
-  const requested = new Set(
-    targets.map((target) =>
-      readinessKey(target.ownerUserId, target.connectorKey),
-    ),
-  );
   const ownerUserIds = [
     ...new Set(targets.map((target) => target.ownerUserId)),
   ];
@@ -80,9 +91,14 @@ export async function loadDeviceConnectorReadiness(params: {
   const readiness = new Map<string, DeviceConnectorReadiness>();
   for (const { ownerUserId, sources } of sourcesByOwner) {
     for (const source of sources) {
-      const key = readinessKey(ownerUserId, source.key);
-      if (requested.has(key))
-        readiness.set(key, classifyDeviceConnectorReadiness(source));
+      for (const target of targets) {
+        if (target.ownerUserId !== ownerUserId || target.connectorKey !== source.key) continue;
+        const key = readinessKey(ownerUserId, source.key, target.deviceWorkerId);
+        readiness.set(
+          key,
+          classifyDeviceConnectorReadiness(source, target.deviceWorkerId)
+        );
+      }
     }
   }
   return readiness;
@@ -93,7 +109,9 @@ export function findDeviceConnectorReadiness(
   target: DeviceConnectorReadinessTarget,
 ): DeviceConnectorReadiness | undefined {
   if (!target.ownerUserId) return undefined;
-  return index.get(readinessKey(target.ownerUserId, target.connectorKey));
+  return index.get(
+    readinessKey(target.ownerUserId, target.connectorKey, target.deviceWorkerId)
+  );
 }
 
 export function describeDeviceConnectorSetupRequired(

@@ -171,6 +171,7 @@ function groupExecutionTargets(
 				findDeviceConnectorReadiness(deviceReadiness, {
 					ownerUserId: row.device_owner_user_id,
 					connectorKey: row.connector_key,
+					deviceWorkerId: row.device_worker_id,
 				}),
 			),
 		);
@@ -664,6 +665,7 @@ export async function handleListAvailable(
 		targets: targetRows.map((row) => ({
 			ownerUserId: row.device_owner_user_id,
 			connectorKey: row.connector_key,
+			deviceWorkerId: row.device_worker_id,
 		})),
 	});
 	const targetsByConnector = groupExecutionTargets(targetRows, deviceReadiness);

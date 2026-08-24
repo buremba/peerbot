@@ -450,6 +450,7 @@ async function handleListFeeds(
         ? [{
             ownerUserId: feed.device_owner_user_id as string | null,
             connectorKey: feed.connector_key as string,
+            deviceWorkerId: feed.device_worker_id as string | null,
           }]
         : []
     ),
@@ -458,6 +459,7 @@ async function handleListFeeds(
     const connectorReadiness = findDeviceConnectorReadiness(deviceReadiness, {
       ownerUserId: feed.device_owner_user_id as string | null,
       connectorKey: feed.connector_key as string,
+      deviceWorkerId: feed.device_worker_id as string | null,
     });
     const semantics = deriveFeedHealthSemantics({
       operations: feed.operations as Array<'sync' | 'read'> | null,

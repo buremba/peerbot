@@ -167,6 +167,13 @@ describe('device connector readiness', () => {
   it('derives offline when the selected manifest has no online advertiser', () => {
     expect(classifyDeviceConnectorReadiness(source([], [])).state).toBe('device_offline');
   });
+
+  it('classifies an execution pin independently from the rest of the fleet', () => {
+    const fleet = source(['device-2'], []);
+    expect(classifyDeviceConnectorReadiness(fleet).state).toBe('setup_required');
+    expect(classifyDeviceConnectorReadiness(fleet, 'device-1').state).toBe('device_offline');
+    expect(classifyDeviceConnectorReadiness(fleet, 'device-2').state).toBe('setup_required');
+  });
 });
 
 describe('device feed read — outcome mapping', () => {

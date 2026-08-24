@@ -236,11 +236,18 @@ async function describeUnservableDevice(
   const sql = getDb();
   const readinessIndex = await loadDeviceConnectorReadiness({
     sql,
-    targets: [{ ownerUserId: p.deviceOwnerUserId, connectorKey: p.connectorKey }],
+    targets: [
+      {
+        ownerUserId: p.deviceOwnerUserId,
+        connectorKey: p.connectorKey,
+        deviceWorkerId: p.deviceWorkerId,
+      },
+    ],
   });
   const connectorReadiness = findDeviceConnectorReadiness(readinessIndex, {
     ownerUserId: p.deviceOwnerUserId,
     connectorKey: p.connectorKey,
+    deviceWorkerId: p.deviceWorkerId,
   });
   if (connectorReadiness?.state === 'setup_required') {
     throw new ToolError(

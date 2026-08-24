@@ -465,6 +465,49 @@ describe('device-backed source feed read', () => {
     expect(await readRunRows()).toHaveLength(0);
   });
 
+  it('keeps an offline execution pin authoritative over another device\'s setup state', async () => {
+    await setDeviceLastSeen('30 minutes');
+    const manifest = {
+      key: CONNECTOR_KEY,
+      version: CONNECTOR_VERSION,
+      name: 'WhatsApp Personal',
+      required_capability: 'whatsapp_local',
+      runtime: { platforms: ['macos'] },
+      auth_schema: { methods: [{ type: 'none' }] },
+      feeds_schema: { [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } },
+    };
+    const sql = getTestDb();
+    const other = (await sql`
+      INSERT INTO device_workers
+        (user_id, worker_id, platform, app_version, capabilities, label,
+         organization_id, last_seen_at, connector_manifests)
+      VALUES (${userId}, ${'wk-wa-setup-incomplete'}, 'macos', '9.9.0',
+              ${sql.json([])}, 'Other Mac', ${orgId}, now(),
+              ${sql.json({
+                [CONNECTOR_KEY]: {
+                  manifest,
+                  manifest_hash: deviceManifestHash(manifest as DeviceConnectorManifest),
+                  received_at: new Date().toISOString(),
+                },
+              })})
+      RETURNING id
+    `) as Array<{ id: string }>;
+
+    try {
+      const error = await readSourceFeed({ scope: scope(), feedId }).then(
+        () => new Error('expected the read to be refused'),
+        (err: unknown) => err as Error
+      );
+      expect(error.message).toMatch(
+        /is unavailable: device "Test Mac" is offline \(last polled 30m ago\)/
+      );
+      expect(error.message).not.toMatch(/requires setup/i);
+      expect(await readRunRows()).toHaveLength(0);
+    } finally {
+      await sql`DELETE FROM device_workers WHERE id = ${other[0].id}::uuid`;
+    }
+  });
+
   it('reports setup_required for an auto-paused feed whose online manifest lacks permission', async () => {
     const manifest = {
       key: CONNECTOR_KEY,

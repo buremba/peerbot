@@ -172,9 +172,8 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
  * re-minting through this endpoint with its stored worker_id (the reuse branch
  * keeps the device identity and revokes the old token). `lobu daemon` does this
  * for itself: on start it re-mints from its cached child PAT once less than a
- * third of that token's life remains. A bearer is still snapshotted for the
- * process lifetime, so a daemon left running past day 90 rotates only on its
- * next start.
+ * third of that token's life remains. The response includes the replacement's
+ * exact expiry so long-running clients can schedule another re-mint before it.
  *
  * Forward-only: legacy children (minted before this shipped) keep their null
  * expiry until they rotate. A retroactive backfill would hard-kill working
@@ -193,12 +192,12 @@ const CHILD_SELF_MINT_ONLY = {
  * POST /api/me/devices/mint-child-token  { platform, label?, worker_id? }
  *
  * Hand-off path for a first-party device grant to authorize a worker without a
- * second OAuth dance: the Mac bridge pairing a sibling device (today: the
- * Owletto Chrome extension), or `lobu daemon` authorizing this host from its
- * stored login. The caller's bearer authenticates the user; we mint a PAT in
- * that user's personal org bound to a worker_id — the one the caller asked for,
- * else a fresh uuid — and return both for the device to use as if it had
- * completed device-authorization on its own.
+ * second OAuth dance. It supports a Mac app authorizing a packaged daemon, a
+ * Mac bridge pairing an Owletto Chrome sibling, or `lobu daemon` authorizing
+ * this host from its stored login. The caller's bearer authenticates the user;
+ * we mint a PAT in that user's personal org bound to a worker_id — the one the
+ * caller asked for, else a fresh uuid — and return both for the device to use
+ * as if it had completed device-authorization on its own.
  *
  * The child token carries the same `device_worker:run` scope the regular Mac
  * OAuth flow ends up with. Its stored worker_id binding stops the mint chain at
@@ -255,11 +254,12 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'platform is required' }, 400);
   }
   // Only known device platforms can mint children — keeps the surface tight.
-  // Today: chrome-extension (Mac bridge pairs the extension) and headless
-  // (a server/VM registers itself via a CLI session, then runs the worker
-  // daemon with the minted PAT). The Mac app calling for itself would just
-  // use its existing OAuth token; macos/ios don't need this path.
-  if ((platform !== 'chrome-extension' && platform !== 'headless') || !isKnownPlatform(platform)) {
+  // Eligible identities are macos (packaged daemon), chrome-extension (Mac
+  // bridge pairing), and headless (server/VM daemon). iOS remains ineligible.
+  if (
+    (platform !== 'macos' && platform !== 'chrome-extension' && platform !== 'headless') ||
+    !isKnownPlatform(platform)
+  ) {
     return c.json({ error: `platform '${platform}' is not eligible for child-token mint` }, 400);
   }
   const label = body.label?.toString().trim() || null;

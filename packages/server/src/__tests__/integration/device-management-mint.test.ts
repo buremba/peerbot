@@ -1,8 +1,8 @@
 /**
- * POST /api/me/devices/mint-child-token must let a headless device register
- * itself (platform: 'headless') from a device_worker:run bearer, and bind the
- * device + child PAT to the user's personal org - the same contract as the
- * chrome-extension Mac-bridge path, now open to server/VM devices (herdr).
+ * POST /api/me/devices/mint-child-token registers eligible device platforms
+ * from a device_worker:run bearer and binds each device + child PAT to the
+ * user's personal org. The suite covers headless, Chrome, and macOS child-mint
+ * requests plus the shared platform-isolation rules.
  */
 
 import { Hono } from 'hono';
@@ -50,7 +50,7 @@ function mintApp(userId: string): Hono<{ Bindings: Env; Variables: { user: { id:
   return app;
 }
 
-describe('headless device mint (mint-child-token)', () => {
+describe('device mint (mint-child-token)', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
   });
@@ -421,9 +421,10 @@ describe('headless device mint (mint-child-token)', () => {
     );
   });
 
-  it('rejects a platform that is not eligible for child-token mint', async () => {
-    const user = await createTestUser({ email: 'headless-mint-reject@test.example.com' });
-    const personalOrg = await createTestOrganization({ name: 'Personal Reject' });
+  it('mints the exact requested macos identity without creating a browser session', async () => {
+    const sql = getTestDb();
+    const user = await createTestUser({ email: 'macos-mint@test.example.com' });
+    const personalOrg = await createTestOrganization({ name: 'Test Personal Mac' });
     await markPersonalOrg(personalOrg.id, user.id);
     await addUserToOrganization(user.id, personalOrg.id, 'owner');
 
@@ -432,10 +433,61 @@ describe('headless device mint (mint-child-token)', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ platform: 'macos', label: 'should-fail' }),
+        body: JSON.stringify({
+          platform: 'macos',
+          worker_id: 'mac-test-device',
+          label: 'Test Mac',
+        }),
+      },
+      TEST_ENV
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      worker_id: string;
+      access_token: string;
+      session_token: string | null;
+      platform: string;
+    };
+    expect(body.worker_id).toBe('mac-test-device');
+    expect(body.access_token.startsWith('owl_pat_')).toBe(true);
+    expect(body.session_token).toBeNull();
+    expect(body.platform).toBe('macos');
+
+    const rows = (await sql`
+      SELECT worker_id, platform, organization_id FROM device_workers
+      WHERE user_id = ${user.id}
+    `) as unknown as Array<{
+      worker_id: string;
+      platform: string;
+      organization_id: string;
+    }>;
+    expect(rows).toEqual([
+      {
+        worker_id: 'mac-test-device',
+        platform: 'macos',
+        organization_id: personalOrg.id,
+      },
+    ]);
+  });
+
+  it.each(['ios', 'toString'])('rejects ineligible child-token platform %s', async (platform) => {
+    const user = await createTestUser({ email: `mint-reject-${platform}@test.example.com` });
+    const personalOrg = await createTestOrganization({ name: `Personal Reject ${platform}` });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+
+    const res = await mintApp(user.id).request(
+      '/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform, worker_id: 'must-not-be-created' }),
       },
       TEST_ENV
     );
     expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: `platform '${platform}' is not eligible for child-token mint`,
+    });
   });
 });

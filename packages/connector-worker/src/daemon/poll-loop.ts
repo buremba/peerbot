@@ -12,6 +12,12 @@ import { log } from './log.js';
 export interface WorkerPollLoopOptions {
   client: WorkerClient;
   pollIntervalMs?: number;
+  /**
+   * Optional ceiling for the delay between claims. Device daemons that expose
+   * short-deadline source reads use this so an idle server hint cannot consume
+   * the caller's whole queue budget before the run is claimed.
+   */
+  maxIdleDelayMs?: number;
   maxConcurrentJobs?: number;
   execute: (job: PollResponse) => Promise<unknown>;
   beforeIdlePoll?: () => Promise<void>;
@@ -35,6 +41,7 @@ export function shouldHandleWorkerPollLoopStdinEof(
 export class WorkerPollLoop {
   private readonly client: WorkerClient;
   private readonly pollIntervalMs: number;
+  private readonly maxIdleDelayMs?: number;
   private readonly maxConcurrentJobs: number;
   private readonly execute: (job: PollResponse) => Promise<unknown>;
   private readonly beforeIdlePoll?: () => Promise<void>;
@@ -46,6 +53,9 @@ export class WorkerPollLoop {
   constructor(options: WorkerPollLoopOptions) {
     this.client = options.client;
     this.pollIntervalMs = options.pollIntervalMs ?? 10000;
+    this.maxIdleDelayMs = options.maxIdleDelayMs === undefined
+      ? undefined
+      : Math.max(1, options.maxIdleDelayMs);
     this.maxConcurrentJobs = Math.max(1, options.maxConcurrentJobs ?? 1);
     this.execute = options.execute;
     this.beforeIdlePoll = options.beforeIdlePoll;
@@ -80,7 +90,13 @@ export class WorkerPollLoop {
         }
         log.info('[daemon] Poll error:', err);
       }
-      if (this.running) await this.sleep(nextDelayMs ?? this.pollIntervalMs);
+      if (this.running) {
+        const requestedDelayMs = nextDelayMs ?? this.pollIntervalMs;
+        const delayMs = nextDelayMs === undefined || this.maxIdleDelayMs === undefined
+          ? requestedDelayMs
+          : Math.min(requestedDelayMs, this.maxIdleDelayMs);
+        await this.sleep(delayMs);
+      }
     }
     log.info('[daemon] Stopped');
   }

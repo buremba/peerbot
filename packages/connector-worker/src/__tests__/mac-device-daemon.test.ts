@@ -199,6 +199,29 @@ describe('WorkerPollLoop', () => {
     await started;
   });
 
+  test('can cap an idle server delay for short-deadline device reads', async () => {
+    let polls = 0;
+    let loop: WorkerPollLoop;
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => {
+        polls++;
+        if (polls === 2) loop.stop();
+        return { next_poll_seconds: 10 } as never;
+      },
+    } as never;
+    loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 10_000,
+      maxIdleDelayMs: 1,
+      execute: async () => undefined,
+    });
+
+    await loop.start();
+
+    expect(polls).toBe(2);
+  });
+
   test('stops polling and waits for the active job during shutdown', async () => {
     let polls = 0;
     let release!: () => void;

@@ -27,6 +27,10 @@ export const MAC_DEVICE_PLATFORM = 'macos';
 const WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const WORKER_PAT_PATTERN = /^owl_pat_[A-Za-z0-9_-]{32}$/;
 const DEFAULT_POLL_INTERVAL_MS = 10000;
+// Source reads default to a ten-second end-to-end deadline. Keep the signed
+// Mac daemon's claim latency well below that even when the server returns its
+// normal ten-second idle hint.
+const SOURCE_READ_IDLE_DELAY_CEILING_MS = 1000;
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
 const NATIVE_BRIDGE_SHUTDOWN_TIMEOUT_MS = 5000;
 export const INTERNAL_ACP_ADAPTER_ARG = '--internal-acp-adapter';
@@ -319,6 +323,7 @@ export function createMacDeviceDaemon(
   const loop = new WorkerPollLoop({
     client,
     pollIntervalMs: validated.pollIntervalMs,
+    maxIdleDelayMs: SOURCE_READ_IDLE_DELAY_CEILING_MS,
     maxConcurrentJobs: validated.maxConcurrentJobs,
     execute: async (job) => {
       if (job.run_type === 'automation') {

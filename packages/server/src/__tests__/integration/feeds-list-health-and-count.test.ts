@@ -272,6 +272,28 @@ describe("list_feeds health filter and true total", () => {
 		});
 		const sql = getTestDb();
 		await sql`
+			INSERT INTO connector_definitions (
+				key, name, version, feeds_schema, auth_schema, organization_id,
+				status, created_at, updated_at
+			) VALUES (
+				'hackernews', 'Hacker News', '0.9.0',
+				${sql.json({ "pinned-read-only": { operations: ["read"] } })},
+				${sql.json({})}, ${orgId}, 'archived', NOW(), NOW()
+			)
+		`;
+		await sql`
+			UPDATE connector_definitions
+			SET feeds_schema = jsonb_set(
+				feeds_schema,
+				'{pinned-read-only}',
+				${sql.json({ operations: ["sync"] })}::jsonb,
+				true
+			)
+			WHERE organization_id = ${orgId}
+				AND key = 'hackernews'
+				AND status = 'active'
+		`;
+		await sql`
 			INSERT INTO feeds (
 					organization_id, connection_id, feed_key, status, schedule,
 				next_run_at, last_sync_status, last_sync_at, consecutive_failures,
@@ -294,6 +316,18 @@ describe("list_feeds health filter and true total", () => {
 				)
 		`;
 		await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, status, schedule,
+				next_run_at, last_sync_status, last_sync_at, consecutive_failures,
+				entity_ids, pinned_version, created_at, updated_at
+			) VALUES (
+				${orgId}, ${conn.id}, 'pinned-read-only', 'active',
+				'0 * * * *', current_timestamp - interval '2 hours', 'failed',
+				current_timestamp - interval '3 hours', 3, ARRAY[]::bigint[],
+				'0.9.0', NOW(), NOW()
+			)
+		`;
+		await sql`
 			INSERT INTO runs (
 				organization_id, run_type, feed_id, status, approval_status, created_at
 			)
@@ -309,6 +343,8 @@ describe("list_feeds health filter and true total", () => {
 		expect(byKey.get("scheduled-overdue")?.attention).toBe("overdue");
 		expect(byKey.get("scheduled-active")?.attention).toBe("healthy");
 		expect(byKey.get("no-schedule-old")?.attention).toBe("healthy");
+		expect(byKey.get("pinned-read-only")?.operations).toEqual(["read"]);
+		expect(byKey.get("pinned-read-only")?.attention).toBe("healthy");
 
 		const healthy = await runList({
 			connection_id: conn.id,
@@ -316,6 +352,7 @@ describe("list_feeds health filter and true total", () => {
 		});
 		expect(healthy.feeds.map((feed) => feed.feed_key).sort()).toEqual([
 			"no-schedule-old",
+			"pinned-read-only",
 			"scheduled-active",
 		]);
 

@@ -117,19 +117,20 @@ async function seedFeed(opts: {
   consecutiveFailures?: number;
   lastError?: string | null;
   deletedAt?: Date | null;
+  pinnedVersion?: string | null;
 }): Promise<void> {
   const sql = getTestDb();
   await sql`
     INSERT INTO feeds (
       organization_id, connection_id, feed_key, status, config,
       last_sync_status, last_sync_at, consecutive_failures, last_error,
-      deleted_at, created_at, updated_at
+      deleted_at, pinned_version, created_at, updated_at
     ) VALUES (
       ${opts.orgId}, ${opts.connectionId}, ${opts.feedKey},
       ${opts.status ?? 'active'}, ${sql.json({ store: opts.store ?? 'events' })},
       ${opts.lastSyncStatus ?? null}, ${opts.lastSyncAt ?? null},
       ${opts.consecutiveFailures ?? 0}, ${opts.lastError ?? null},
-      ${opts.deletedAt ?? null}, NOW(), NOW()
+      ${opts.deletedAt ?? null}, ${opts.pinnedVersion ?? null}, NOW(), NOW()
     )
   `;
 }
@@ -817,6 +818,54 @@ describe('connector-health alerter', () => {
 
     const res = await runConnectorHealthCheck();
     expect(res.details.some((d) => d.connectionId === sourceOnly.id)).toBe(false);
+
+    const [row] = (await sql`
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${sourceOnly.id}
+    `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
+    expect(row.unhealthy_alerted_at).toBeNull();
+  });
+
+  it('uses the pinned definition when deciding whether a feed can sync', async () => {
+    const sql = getTestDb();
+    const connectorKey = 'health.pinned-source-only';
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: 'Pinned Source-only Health Fixture v1',
+      version: '1.0.0',
+      organization_id: orgId,
+      feeds_schema: { history: { key: 'history', operations: ['read'] } },
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET status = 'archived'
+      WHERE organization_id = ${orgId} AND key = ${connectorKey}
+    `;
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: 'Pinned Source-only Health Fixture v2',
+      version: '2.0.0',
+      organization_id: orgId,
+      feeds_schema: { history: { key: 'history', operations: ['sync'] } },
+    });
+    const sourceOnly = await seedConnection({
+      orgId,
+      userId,
+      connectorKey,
+      slug: 'pinned-source-only',
+      createdAt: OLD,
+    });
+    await seedFeed({
+      orgId,
+      connectionId: sourceOnly.id,
+      feedKey: 'history',
+      lastSyncStatus: 'failed',
+      lastSyncAt: OLD,
+      consecutiveFailures: cfg.failureThreshold,
+      pinnedVersion: '1.0.0',
+    });
+
+    const res = await runConnectorHealthCheck();
+    expect(res.details.some((detail) => detail.connectionId === sourceOnly.id)).toBe(false);
 
     const [row] = (await sql`
       SELECT unhealthy_alerted_at FROM connections WHERE id = ${sourceOnly.id}

@@ -1,6 +1,6 @@
 /**
- * Google Chat capability descriptor. Lobu stores service-account JSON as an
- * encrypted string, while Chat SDK expects an object/auth client. Google also
+ * Google Chat capability descriptor. Lobu resolves stored service-account JSON
+ * as a string, while Chat SDK expects an object/auth client. Google also
  * sends standalone Chat API interaction events in a different envelope from
  * the Workspace Add-on envelope Chat SDK currently parses. Both translations
  * stay at this adapter boundary so storage and the cross-platform message
@@ -15,8 +15,6 @@ import type {
 import type { WebhookOptions } from "chat";
 import { extractWhatsAppStyleRoutingInfo } from "./shared.js";
 import type { ChatPlatformDescriptor } from "./types.js";
-
-const CHAT_BOT_SCOPE = "https://www.googleapis.com/auth/chat.bot";
 
 type JsonObject = Record<string, any>;
 
@@ -45,7 +43,7 @@ function actionParameters(value: unknown): Record<string, string> | undefined {
 }
 
 /** Translate standalone Chat API events into Chat SDK's Add-on envelope. */
-export function normalizeGoogleChatInteractionEvent(body: unknown): unknown {
+function normalizeGoogleChatInteractionEvent(body: unknown): unknown {
   if (!isObject(body) || isObject(body.chat)) return body;
 
   const eventType =
@@ -163,40 +161,21 @@ export function parseGoogleChatCredentials(
 }
 
 async function createAdapter(config: JsonObject): Promise<GoogleChatAdapter> {
-  // Keep the Google SDK lazy with its platform adapter; eager loading it adds
-  // provider-specific startup cost to gateways that do not use Google Chat.
-  const [{ createGoogleChatAdapter }, { auth }] = await Promise.all([
-    import("@chat-adapter/gchat"),
-    import("@googleapis/chat"),
-  ]);
+  // Preserve the platform registry's existing lazy adapter boundary.
+  const { createGoogleChatAdapter } = await import("@chat-adapter/gchat");
   const adapterConfig = { ...config };
   delete adapterConfig.platform;
 
-  let normalizedConfig: GoogleChatAdapterConfig;
-  if (adapterConfig.auth) {
-    normalizedConfig = adapterConfig as GoogleChatAdapterConfig;
-  } else if (adapterConfig.credentials) {
-    const credentials = parseGoogleChatCredentials(adapterConfig.credentials);
-    delete adapterConfig.credentials;
-    normalizedConfig = {
-      ...adapterConfig,
-      auth: new auth.JWT({
-        email: credentials.client_email,
-        key: credentials.private_key,
-        scopes: [CHAT_BOT_SCOPE],
-      }),
-    } as GoogleChatAdapterConfig;
-  } else if (adapterConfig.useApplicationDefaultCredentials === true) {
-    delete adapterConfig.useApplicationDefaultCredentials;
-    normalizedConfig = {
-      ...adapterConfig,
-      auth: new auth.GoogleAuth({ scopes: [CHAT_BOT_SCOPE] }),
-    } as GoogleChatAdapterConfig;
-  } else {
-    normalizedConfig = adapterConfig as GoogleChatAdapterConfig;
-  }
+  const normalizedConfig = adapterConfig.credentials
+    ? {
+        ...adapterConfig,
+        credentials: parseGoogleChatCredentials(adapterConfig.credentials),
+      }
+    : adapterConfig;
 
-  const adapter = createGoogleChatAdapter(normalizedConfig);
+  const adapter = createGoogleChatAdapter(
+    normalizedConfig as GoogleChatAdapterConfig
+  );
   const handleWebhook = adapter.handleWebhook.bind(adapter);
   adapter.handleWebhook = (
     request: Request,

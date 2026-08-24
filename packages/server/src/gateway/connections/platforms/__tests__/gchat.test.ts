@@ -146,18 +146,40 @@ describe("Google Chat platform compatibility", () => {
     expect(delivered).toEqual([{ actionId: "approve", value: "invoice-42" }]);
   });
 
-  test("turns stored credential JSON into a least-privilege auth client", async () => {
+  test("retains credential mode for impersonation and Workspace Events", async () => {
     const adapter = (await gchatPlatform.createAdapter({
       credentials,
       disableSignatureVerification: true,
+      impersonateUser: "admin@example.com",
     })) as any;
 
+    expect(adapter.credentials).toEqual(JSON.parse(credentials));
     expect(adapter.authClient.email).toBe(
       "lobu-chat@example.iam.gserviceaccount.com",
     );
-    expect(adapter.authClient.scopes).toEqual([
+    expect(adapter.authClient.scopes).toContain(
       "https://www.googleapis.com/auth/chat.bot",
-    ]);
+    );
+    expect(adapter.impersonatedChatApi).toBeDefined();
+    expect(adapter.getAuthOptions()).toEqual({
+      credentials: JSON.parse(credentials),
+      impersonateUser: "admin@example.com",
+    });
+  });
+
+  test("retains ADC mode for impersonation and Workspace Events", async () => {
+    const adapter = (await gchatPlatform.createAdapter({
+      useApplicationDefaultCredentials: true,
+      disableSignatureVerification: true,
+      impersonateUser: "admin@example.com",
+    })) as any;
+
+    expect(adapter.useADC).toBe(true);
+    expect(adapter.impersonatedChatApi).toBeDefined();
+    expect(adapter.getAuthOptions()).toEqual({
+      useApplicationDefaultCredentials: true,
+      impersonateUser: "admin@example.com",
+    });
   });
 
   test("rejects malformed service-account JSON during connection validation", () => {

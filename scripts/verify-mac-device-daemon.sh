@@ -13,7 +13,7 @@ file "$DAEMON" | grep -q 'Mach-O 64-bit executable arm64' \
 
 VERSION_JSON="$("$DAEMON" --version)"
 case "$VERSION_JSON" in
-  *'"name":"lobu-device-daemon"'*'"protocol":"device-daemon/v1"'*'"platform":"macos"'*) ;;
+  *'"name":"lobu-device-daemon"'*'"protocol":"device-daemon/v2"'*'"platform":"macos"'*) ;;
   *) die "Mac device daemon reported unexpected metadata: $VERSION_JSON" ;;
 esac
 

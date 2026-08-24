@@ -107,7 +107,7 @@ describe('Jira OAuth callback stamps cloud_id (e2e)', () => {
         issues: {
           key: 'issues',
           name: 'Issues',
-          virtual: true,
+          operations: ['read'],
           configSchema: { type: 'object', properties: {} },
         },
       },

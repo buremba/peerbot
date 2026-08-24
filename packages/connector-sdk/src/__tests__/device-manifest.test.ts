@@ -17,6 +17,7 @@ const validSpec = () => ({
     events: {
       key: 'events',
       name: 'Events',
+      operations: ['sync' as const],
       configSchema: { type: 'object' },
       eventKinds: { event: { metadataSchema: { type: 'object' } } },
     },
@@ -31,8 +32,8 @@ describe('defineDeviceConnector', () => {
     expect(manifest.runtime).toEqual({ execution: 'bridge', platforms: ['macos'] });
     expect(manifest.auth_schema).toEqual({ methods: [{ type: 'none' }] });
     expect(manifest.feeds_schema.events).toEqual(validSpec().feeds.events);
-    expect(JSON.stringify(manifest)).not.toContain('sync');
-    expect(JSON.stringify(manifest)).not.toContain('execute');
+    expect(typeof (manifest.feeds_schema.events as Record<string, unknown>).sync).toBe('undefined');
+    expect(typeof (manifest.feeds_schema.events as Record<string, unknown>).read).toBe('undefined');
   });
 
   test('rejects missing identity, capability, platforms, and non-Mac bridge use', () => {
@@ -92,7 +93,7 @@ describe('defineDeviceConnector', () => {
     );
   });
 
-  test('keeps ordinary Connector SDK definitions backward compatible', () => {
+  test('keeps server-executed Connector SDK definitions distinct from bridge manifests', () => {
     const ordinary = defineConnector({
       key: 'ordinary',
       version: '1.0.0',

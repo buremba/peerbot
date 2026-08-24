@@ -46,7 +46,7 @@
 
 import {
   type ChromeActionDispatcher,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type SyncContext,
@@ -1193,7 +1193,7 @@ const transactionMetadataSchema = {
 };
 
 export default class RevolutTransactionsConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "revolut",
     name: "Revolut",
     description:
@@ -1210,6 +1210,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     },
     feeds: {
       transactions: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "transactions",
         name: "Transactions",
         description:
@@ -1223,6 +1224,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
         },
       },
       balances: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "balances",
         name: "Balances & Investments",
         description:
@@ -1426,7 +1428,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     };
   }
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     if (ctx.feedKey === "balances") {
       return this.syncBalances(ctx);
     }

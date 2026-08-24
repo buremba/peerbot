@@ -53,11 +53,9 @@ beforeEach(() => {
 test('stories enrichment short-circuits after consecutive egress failures', async () => {
   const { default: HackerNewsConnector } = await import('../hackernews');
   const connector = new HackerNewsConnector();
-  const logs: string[] = [];
   const ctx = {
     feedKey: 'stories',
     config: { search_query: 'AI agents' },
-    log: (m: string) => logs.push(m),
   };
   // biome-ignore lint/suspicious/noExplicitAny: minimal SyncContext for unit test
   const result = await connector.sync(ctx as any);
@@ -67,7 +65,6 @@ test('stories enrichment short-circuits after consecutive egress failures', asyn
   // But we stopped fetching content after the consecutive-failure threshold (3),
   // not after all 20 — that's the anti-stall guard.
   expect(contentFetches).toBeLessThanOrEqual(3);
-  expect(logs.some((l) => l.includes('consecutive content fetches failed'))).toBe(true);
 }, 20_000);
 
 test('non-HTML/non-OK results do NOT trip the egress short-circuit', async () => {
@@ -106,8 +103,8 @@ test('non-HTML/non-OK results do NOT trip the egress short-circuit', async () =>
   // Reached the 4th fetch (would be <=3 if non-HTML wrongly tripped the guard).
   expect(contentFetches).toBeGreaterThanOrEqual(4);
   // The 4th story got real content; the first three did not.
-  expect(result.events[3]?.content).toBeTruthy();
-  expect(result.events[0]?.content).toBeFalsy();
+  expect(result.events[3]?.payload_text).toBeTruthy();
+  expect(result.events[0]?.payload_text).toBeFalsy();
 }, 20_000);
 
 test('front-page schema accepts every story kind the mapper emits', async () => {

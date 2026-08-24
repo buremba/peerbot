@@ -601,7 +601,7 @@ describe("MidasConnector.sync", () => {
         checkpoint: {},
         sessionState: { chrome_dispatcher: dispatcher },
       } as never)
-    ).rejects.toThrow(/Unknown feed/);
+    ).rejects.toThrow(/does not support sync/);
   });
 
   test("throws when dashboard text cannot be parsed", async () => {

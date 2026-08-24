@@ -7,10 +7,10 @@ export default class DiscoursePostsConnector extends ConnectorRuntime {
     name: "Discourse posts",
     version: "1.0.0",
     authSchema: { methods: [{ type: "env_keys" as const, fields: [{ key: "api_key", secret: true }] }] },
-    feeds: { posts: { key: "posts", name: "Forum posts" } },
+    feeds: { posts: { key: "posts", name: "Forum posts", sync: (ctx: SyncContext) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext) {
+  private async syncFeed(ctx: SyncContext) {
     const cursor = (ctx.checkpoint as any)?.last_post_id ?? 0;
     const r = await fetch(`${ctx.config.base_url}/posts.json?before=${cursor + 50}`);
     const posts: any[] = ((await r.json() as any).latest_posts ?? []).filter((p: any) => p.id > cursor).sort((a: any, b: any) => a.id - b.id);

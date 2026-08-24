@@ -9,10 +9,11 @@ import { join, resolve } from "node:path";
  * "connector ... is not installed in the org".
  *
  * The catalog source of truth is the `key:` literal that opens each
- * `definition: ConnectorDefinition = {` under packages/connectors/src
- * (filenames use underscores, keys use dots). Module-level maps and payload
- * shapes also contain `key:` fields, so the match must be anchored to the
- * definition rather than taking the file's first `key:`.
+ * `definition` literal under packages/connectors/src. Feed runtimes use
+ * `RuntimeConnectorDefinition` (optionally generic); feedless integrations use
+ * `ConnectorDefinition`. Filenames use underscores while keys use dots.
+ * Module-level maps and payload shapes also contain `key:` fields, so the match
+ * must be anchored to the definition rather than taking the file's first key.
  */
 
 const TEMPLATE_PATH = resolve(import.meta.dir, "../templates/AGENTS.md.tmpl");
@@ -25,7 +26,7 @@ function catalogKeys(): Set<string> {
     const source = readFileSync(join(CONNECTORS_SRC_DIR, file), "utf-8");
     if (!source.includes("ConnectorDefinition")) continue;
     const match = source.match(
-      /definition:\s*ConnectorDefinition\s*=\s*\{\s*key:\s*["']([^"']+)["']/
+      /definition:\s*(?:Runtime)?ConnectorDefinition(?:<[^\n]+?>)?\s*=\s*\{\s*key:\s*["']([^"']+)["']/
     );
     if (match) keys.add(match[1]);
   }

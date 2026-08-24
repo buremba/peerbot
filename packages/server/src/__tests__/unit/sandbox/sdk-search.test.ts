@@ -1,9 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ToolContext } from "../../../tools/registry";
-import {
-	isSdkOnlyDiscoveryQuery,
-	sdkSearch,
-} from "../../../tools/sdk_search";
+import { isSdkOnlyDiscoveryQuery, sdkSearch } from "../../../tools/sdk_search";
 
 const stubEnv = {} as never;
 
@@ -35,25 +32,29 @@ const adminCtx: ToolContext = {
 };
 
 describe("sdkSearch", () => {
-	it.each(["agents", "entitySchema", "AUTHprofiles", "client.feeds", "feeds.create"])(
-		"treats exact SDK query %s as method-only discovery",
-		(query) => {
-			expect(isSdkOnlyDiscoveryQuery(query)).toBe(true);
-		},
-	);
+	it.each([
+		"agents",
+		"entitySchema",
+		"AUTHprofiles",
+		"client.feeds",
+		"feeds.create",
+	])("treats exact SDK query %s as method-only discovery", (query) => {
+		expect(isSdkOnlyDiscoveryQuery(query)).toBe(true);
+	});
 
-	it.each(["google.calendar", "website", "connections sync run"])(
-		"still allows connector discovery for %s",
-		(query) => {
-			expect(isSdkOnlyDiscoveryQuery(query)).toBe(false);
-		},
-	);
+	it.each([
+		"google.calendar",
+		"website",
+		"connections sync run",
+	])("still allows connector discovery for %s", (query) => {
+		expect(isSdkOnlyDiscoveryQuery(query)).toBe(false);
+	});
 
 	it("returns drill-down for an exact path", async () => {
 		const result = await sdkSearch(
 			{ query: "automations.list" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("automations.list");
@@ -64,7 +65,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "entities.get entities.create entities.link" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 
 		expect(result.match_count).toBe(3);
@@ -80,7 +81,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "entities.get operations.execu" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 
 		expect(result.match_count).toBe(2);
@@ -119,8 +120,14 @@ describe("sdkSearch", () => {
 		["classifiers.delete", "client.classifiers.delete({ classifier_id: 42 })"],
 		["schedules.cancel", "client.schedules.cancel({ id: 'schedule-id' })"],
 		["automations.get", "client.automations.get({ automation_id: '42' })"],
-		["automations.trigger", "client.automations.trigger({ automation_id: '42' })"],
-		["automations.delete", "client.automations.delete({ automation_ids: ['42'] })"],
+		[
+			"automations.trigger",
+			"client.automations.trigger({ automation_id: '42' })",
+		],
+		[
+			"automations.delete",
+			"client.automations.delete({ automation_ids: ['42'] })",
+		],
 	])("renders the current %s signature in exact drill-down", async (path, snippet) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 
@@ -133,7 +140,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "ctx.sleep", mode: "read" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("ctx.sleep");
@@ -153,7 +160,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "automations", mode: "read" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 		const joined = result.results.join("\n");
 		expect(joined).toContain("automations.list");
@@ -168,7 +175,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "agents.delete" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 		expect(result.match_count).toBe(0);
 		expect(result.notes).toMatch(/ask a workspace owner\/admin/i);
@@ -207,11 +214,7 @@ describe("sdkSearch", () => {
 	});
 
 	it("keeps hidden admin namespaces role-aware without suggesting run_sdk", async () => {
-		const member = await sdkSearch(
-			{ query: "schedules" },
-			stubEnv,
-			writeCtx,
-		);
+		const member = await sdkSearch({ query: "schedules" }, stubEnv, writeCtx);
 		expect(member.match_count).toBe(0);
 		expect(member.notes).toMatch(/ask a workspace owner\/admin/i);
 		expect(member.notes).not.toMatch(/call via run_sdk/i);
@@ -229,7 +232,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "agents.delete" },
 			stubEnv,
-			ownerWriteCtx
+			ownerWriteCtx,
 		);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("agents.delete");
@@ -243,7 +246,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "agents", mode: "read" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		const joined = result.results.join("\n");
 		expect(joined).toContain("agents.list");
@@ -259,7 +262,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "entityschema" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 		expect(result.match_count).toBeGreaterThan(0);
 		const joined = result.results.join("\n");
@@ -271,7 +274,7 @@ describe("sdkSearch", () => {
 		const listed = await sdkSearch(
 			{ query: "notifications", mode: "read" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(listed.match_count).toBeGreaterThan(0);
 		const joined = listed.results.join("\n");
@@ -282,7 +285,7 @@ describe("sdkSearch", () => {
 		const markRead = await sdkSearch(
 			{ query: "notifications.markRead", mode: "read" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(markRead.match_count).toBe(0);
 		expect(markRead.notes ?? "").toContain("operate access (mcp:write)");
@@ -326,14 +329,14 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "connector action" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 
 		// Phrase match on the method summary must still surface operations.execute.
 		// When DATABASE_URL is available, live-connector hits may also match the
 		// free-text query and prepend — so don't require match_count === 1.
 		const methodHit = result.results.find((line) =>
-			line.startsWith("operations.execute —")
+			line.startsWith("operations.execute —"),
 		);
 		expect(methodHit).toBeDefined();
 		expect(methodHit).toContain("Execute a connector action");
@@ -343,12 +346,12 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "connections sync run", mode: "read" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 
 		expect(result.match_count).toBeGreaterThan(0);
 		expect(
-			result.results.some((line) => line.startsWith("operations.listRuns —"))
+			result.results.some((line) => line.startsWith("operations.listRuns —")),
 		).toBe(true);
 	});
 
@@ -356,7 +359,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(result.match_count).toBe(0);
 		expect(result.notes).toBeDefined();
@@ -366,7 +369,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "automations", limit: 2 },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 		expect(result.results.length).toBeLessThanOrEqual(2);
 		expect(result.notes).toContain("more matches");
@@ -376,14 +379,14 @@ describe("sdkSearch", () => {
 		const paginated = await sdkSearch(
 			{ query: "entities.list" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(paginated.results[0]).toContain("limit?: number");
 
 		const unpaginated = await sdkSearch(
 			{ query: "metrics.list" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(unpaginated.results[0]).toContain("not paginated");
 	});
@@ -424,21 +427,25 @@ describe("sdkSearch", () => {
 	});
 
 	it.each([
-		["feeds.get", ["limit?: number", "search_term?: string"]],
-		["feeds.readMany", ["timeout_ms?: number", "search_term?: string"]],
+		["feeds.get", ["feed_id: number", "without querying its source"]],
+		["feeds.readMany", ["reads: Array", "cursor?: string"]],
 		[
 			"feeds.create",
 			[
 				"entity_ids?: number[]",
 				"timezone?: string",
-				"virtual?: boolean",
-				"manual-only",
+				"connector-declared operations",
+				"has no cron unless `schedule` is set",
 				"feeds.trigger",
 			],
 		],
 		[
 			"feeds.update",
-			["replace_config?: boolean", "schedule?: string | null", "timezone?: string | null"],
+			[
+				"replace_config?: boolean",
+				"schedule?: string | null",
+				"timezone?: string | null",
+			],
 		],
 	])("documents the complete public %s contract", async (path, fields) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
@@ -491,15 +498,15 @@ describe("sdkSearch", () => {
 		const entitiesGet = await sdkSearch(
 			{ query: "entities.get" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(entitiesGet.results[0]).toContain(
-			"accepted aliases: id → entity_id"
+			"accepted aliases: id → entity_id",
 		);
 		const send = await sdkSearch(
 			{ query: "notifications.send" },
 			stubEnv,
-			writeCtx
+			writeCtx,
 		);
 		expect(send.results[0]).toContain("accepted aliases: message → body");
 	});
@@ -521,7 +528,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "authProfiles.get", mode: "read" },
 			stubEnv,
-			readCtx
+			readCtx,
 		);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("authProfiles.get");

@@ -5,7 +5,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   createHttpClient,
@@ -53,7 +53,7 @@ const configSchema = {
 };
 
 export default class GoogleMapsConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "gmaps",
     name: "Google Maps",
     description: "Fetches business reviews using Google Places API.",
@@ -76,6 +76,7 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "Business Reviews",
         description: "Fetch reviews for a business on Google Maps.",
@@ -103,7 +104,7 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
   // transient 429/5xx and consistent error formatting.
   private readonly http = createHttpClient({ errorPrefix: "Google Places" });
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const apiKey = ctx.config.GOOGLE_MAPS_API_KEY as string | undefined;
     if (!apiKey) {
       throw new Error("GOOGLE_MAPS_API_KEY is required");

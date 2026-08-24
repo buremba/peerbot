@@ -33,12 +33,13 @@
  */
 
 import {
-  type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
+  type FeedReadContext,
+  type FeedReadResult,
   type QueryContext,
   type QueryResult,
-  type SearchContext,
+  type RuntimeConnectorDefinition,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -276,7 +277,7 @@ const POOL_OPTS = {
 
 /**
  * SSRF/egress pre-flight + guarded pool, run before any socket opens on sync(),
- * query(), and search(). The server injects `block-private` under cloud mode
+ * query(), and direct feed reads. The server injects `block-private` under cloud mode
  * plus any operator host exemptions; everything else defaults to trusted
  * `allow-private`. Under block-private the guard forces TLS and installs a
  * socket factory that dials the validated IP, closing DNS-rebind TOCTOU. Under
@@ -327,11 +328,11 @@ function toDate(v: unknown): Date | null {
 }
 
 export default class PostgresConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'postgres',
     name: 'PostgreSQL',
     description:
-      'Bring your own PostgreSQL database as memory (collected sync) or live virtual reads via query()/search(). Connection DATABASE_URL is merged into virtual reads with feed config.',
+      'Bring your own PostgreSQL database as memory, read a configured feed directly, or run governed connection-level SQL.',
     version: '1.0.1',
     faviconDomain: 'postgresql.org',
     authSchema: {
@@ -357,11 +358,11 @@ export default class PostgresConnector extends ConnectorRuntime {
         key: 'query',
         name: 'SQL Query',
         description:
-          'Read-only SELECT — collected sync ingests as memory; set virtual:true for live query()/search() with no event copy. Connection.config (DATABASE_URL) is merged by the platform.',
+          'A read-only SELECT that can sync rows into memory and be read directly without copying.',
+        sync: (ctx) => this.syncFeed(ctx),
+        read: (ctx) => this.readFeed(ctx),
         // Every instance carries a required user-authored query, so it cannot be auto-wired.
         userManaged: true,
-        // Not virtual-by-default: the primary product path is memory ingestion.
-        // Callers opt into live reads with virtual:true (query/search already implemented).
         configSchema,
         displayNameTemplate: '{name}',
         eventKinds: {
@@ -373,7 +374,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const connectionString = ctx.config.DATABASE_URL as string | undefined;
     if (!connectionString) {
       throw new Error('DATABASE_URL is required');
@@ -470,9 +471,7 @@ export default class PostgresConnector extends ConnectorRuntime {
   }
 
   /**
-   * Live read (no copy): run `ctx.query` read-only against the source and return
-   * rows. The platform calls this for virtual-feed reads and external-backed
-   * derived entities. An inner ORDER BY/LIMIT inside a subquery is fine — it's
+   * Connection-level governed SQL read. An inner ORDER BY/LIMIT inside a subquery is fine — it's
    * wrapped and paginated on the outside; a TOP-level LIMIT is rejected by
    * validateReadOnlySelect because the outer OFFSET would page over a capped set.
    */
@@ -525,7 +524,7 @@ export default class PostgresConnector extends ConnectorRuntime {
   }
 
   /**
-   * Virtual-feed RECALL: live read with the caller's keyword `terms` pushed DOWN
+   * Configured feed read with the caller's optional query pushed DOWN
    * as an `ILIKE` predicate over the validated subquery, inside the SAME
    * read-only transaction + egress guard as query(). The output columns are
    * probed (LIMIT 0) so each term is matched against EVERY column cast to text;
@@ -533,15 +532,15 @@ export default class PostgresConnector extends ConnectorRuntime {
    * parameters (never interpolated) and wildcard-escaped, so a term like `50%`
    * matches literally. Empty `terms` ⇒ behaves like query() (no predicate).
    */
-  async search(ctx: SearchContext): Promise<QueryResult> {
+  private async readFeed(ctx: FeedReadContext): Promise<FeedReadResult> {
     const connectionString = (ctx.config as Record<string, unknown>).DATABASE_URL as
       | string
       | undefined;
     if (!connectionString) {
       throw new Error('DATABASE_URL is required');
     }
-    const baseSql = validateReadOnlySelect(ctx.query);
-    const terms = (ctx.terms ?? []).map((t) => t.trim()).filter(Boolean);
+    const baseSql = validateReadOnlySelect(String(ctx.config.query ?? ''));
+    const terms = ctx.query?.trim() ? [ctx.query.trim()] : [];
     const limit =
       ctx.limit !== undefined ? Math.min(Math.max(Math.trunc(ctx.limit), 1), 5000) : 1000;
     const offset = ctx.offset !== undefined ? Math.max(Math.trunc(ctx.offset), 0) : 0;

@@ -275,7 +275,6 @@ async function executeConnectorRuntime(
   if (job.mode === 'query') {
     // Live read: returns rows to the caller, persists nothing (like an action).
     const queryResult = await instance.query({
-      feedKey: job.feedKey ?? undefined,
       query: job.query,
       config: buildConnectorConfig(job),
       credentials: job.credentials,
@@ -292,13 +291,12 @@ async function executeConnectorRuntime(
     };
   }
 
-  if (job.mode === 'search') {
-    // Virtual-feed recall: live read with keyword terms pushed down. Persists
-    // nothing (like `query`/`action`).
-    const searchResult = await instance.search({
-      feedKey: job.feedKey ?? undefined,
+  if (job.mode === 'read') {
+    const readResult = await instance.read({
+      feedId: job.feedId ?? undefined,
+      feedKey: job.feedKey,
       query: job.query,
-      terms: job.terms,
+      cursor: job.cursor,
       config: buildConnectorConfig(job),
       credentials: job.credentials,
       sessionState: job.sessionState,
@@ -307,10 +305,12 @@ async function executeConnectorRuntime(
       sort: job.sort,
     });
     return {
-      mode: 'search',
-      rows: searchResult.rows ?? [],
-      columns: searchResult.columns,
-      total: searchResult.total,
+      mode: 'read',
+      rows: readResult.rows ?? [],
+      columns: readResult.columns,
+      total: readResult.total,
+      nextCursor: readResult.nextCursor,
+      hasMore: readResult.hasMore,
     };
   }
 

@@ -289,9 +289,8 @@ async function landJiraMcpWebhookEvent(params: {
 		},
 		params.sql,
 	);
-	// Verified webhooks are live pushes, not a cold-start backfill. Virtual feeds
-	// never have sync runs, so bypass only that gate and retain the persisted
-	// eventKinds catalog check.
+	// Verified webhooks are live pushes, not a cold-start backfill. Bypass the
+	// prior-sync gate while retaining the persisted eventKinds catalog check.
 	deriveContext.feedPreviouslySynced = true;
 	const activations: AutomationActivationResult[] = [];
 	await insertEvent(

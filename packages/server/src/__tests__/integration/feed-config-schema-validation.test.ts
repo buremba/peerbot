@@ -27,6 +27,7 @@ const RSS_FEEDS_SCHEMA = {
 	articles: {
 		key: "articles",
 		name: "Feed Articles",
+		operations: ["sync"],
 		configSchema: {
 			type: "object",
 			required: ["feed_urls"],
@@ -80,7 +81,9 @@ describe("manage_feeds config validation against connector configSchema", () => 
 			key: "no-config-schema",
 			name: "No Config Schema",
 			organization_id: orgId,
-			feeds_schema: { default: { key: "default", name: "Default" } },
+			feeds_schema: {
+				default: { key: "default", name: "Default", operations: ["sync"] },
+			},
 		});
 		const noSchemaConn = await createTestConnection({
 			organization_id: orgId,
@@ -241,8 +244,8 @@ describe("manage_feeds config validation against connector configSchema", () => 
 		// persists exactly that validated object, so the legacy key is normalized.
 		const sql = getTestDb();
 		const [legacy] = await sql<{ id: number }[]>`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, display_name, status, kind, config, created_at, updated_at)
-      VALUES (${orgId}, ${rssConnectionId}, 'articles', 'legacy-config', 'active', 'collected',
+      INSERT INTO feeds (organization_id, connection_id, feed_key, display_name, status, config, created_at, updated_at)
+      VALUES (${orgId}, ${rssConnectionId}, 'articles', 'legacy-config', 'active',
               ${sql.json({ feed_urls: ["https://example.com/legacy.xml"], max_items_per_feed: "75" })}, NOW(), NOW())
       RETURNING id
     `;
@@ -287,68 +290,17 @@ describe("manage_feeds config validation against connector configSchema", () => 
 		expect(result.feed?.id).toBeDefined();
 	});
 
-	it("allows create_feed when the connector has no definition installed", async () => {
-		const result = (await owner.feeds.create({
-			connection_id: bareConnectionId,
-			feed_key: "default",
-			config: { arbitrary: true },
-		})) as { error?: string; feed?: { id: number } };
-
-		expect(result.error).toBeUndefined();
-		expect(result.feed?.id).toBeDefined();
-	});
-
-	it("does not gate VIRTUAL feed creation on the sync configSchema", async () => {
-		// A virtual feed is never synced; its config (`query` scope fence) is not
-		// the sync config contract, so required sync fields must not block it.
-		const result = (await owner.feeds.manage({
-			action: "create_feed",
-			connection_id: rssConnectionId,
-			feed_key: "articles",
-			virtual: true,
-			config: { query: "recent articles" },
-		})) as { error?: string; feed?: { id: number } };
-
-		expect(result.error).toBeUndefined();
-		expect(result.feed?.id).toBeDefined();
-	});
-
-	it("still validates a VIRTUAL feed's config shape (only required is exempt)", async () => {
+	it("rejects create_feed when the connector has no capability definition", async () => {
 		const error = await owner.feeds
 			.create({
-				connection_id: rssConnectionId,
-				feed_key: "articles",
-				virtual: true,
-				config: { max_items_per_feed: 5000 },
+				connection_id: bareConnectionId,
+				feed_key: "default",
+				config: { arbitrary: true },
 			})
 			.catch((reason: unknown) => reason);
 
 		expect(error).toBeInstanceOf(ClientSdkActionError);
-		expect((error as ClientSdkActionError).message).toContain("max_items_per_feed");
+		expect((error as ClientSdkActionError).message).toContain("no sync or read operation");
 	});
 
-	it("does not gate a VIRTUAL feed's update_feed on the sync configSchema", async () => {
-		const created = (await owner.feeds.manage({
-			action: "create_feed",
-			connection_id: rssConnectionId,
-			feed_key: "articles",
-			virtual: true,
-			config: { query: "virtual update target" },
-		})) as { feed?: { id: number } };
-		const feedId = Number(created.feed?.id);
-		expect(feedId).toBeGreaterThan(0);
-
-		// Merged config still has no `feed_urls` (that requirement belongs to the
-		// sync path this feed never takes), but the shape check still runs.
-		const result = (await owner.feeds.update({
-			feed_id: feedId,
-			config: { max_items_per_feed: 10 },
-		})) as { error?: string };
-		expect(result.error).toBeUndefined();
-
-		const rejected = await owner.feeds
-			.update({ feed_id: feedId, config: { max_items_per_feed: 5000 } })
-			.catch((reason: unknown) => reason);
-		expect(rejected).toBeInstanceOf(ClientSdkActionError);
-	});
 });

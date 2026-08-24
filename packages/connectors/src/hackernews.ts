@@ -7,7 +7,7 @@
 
 import TurndownService from 'turndown';
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
@@ -61,7 +61,7 @@ const CONTENT_TYPE_TAG: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export default class HackerNewsConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'hackernews',
     name: 'Hacker News',
     description: 'Searches Hacker News stories and comments via Algolia API.',
@@ -74,6 +74,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       stories: {
         key: 'stories',
         name: 'Stories',
+        sync: (ctx) => this.syncFeed(ctx),
         description: 'Search HN for stories, Ask HN, and Show HN posts.',
         configSchema: {
           type: 'object',
@@ -153,6 +154,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       front_page: {
         key: 'front_page',
         name: 'Front Page',
+        sync: (ctx) => this.syncFeed(ctx),
         description:
           'The current Hacker News front page — the live homepage, not a keyword search. No search query.',
         configSchema: {
@@ -210,6 +212,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       comments: {
         key: 'comments',
         name: 'Comments',
+        sync: (ctx) => this.syncFeed(ctx),
         description: 'Search HN for comments.',
         configSchema: {
           type: 'object',
@@ -286,7 +289,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     // Front page is the live HN homepage (Algolia `tags=front_page`): no search
     // query, no lookback — it returns the stories currently ranked on the front
     // page. Everything else is a keyword search over the Algolia archive.
@@ -361,23 +364,16 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
       hasMore = data.page < data.nbPages - 1 && data.hits.length > 0;
       page++;
-      ctx.log?.(`HN: fetched page ${page} (${events.length} items so far)`);
 
       if (hasMore) {
         await sleep(this.PAGE_DELAY_MS);
       }
     }
 
-    if (hasMore && Date.now() >= deadline) {
-      ctx.log?.(
-        `HN: hit the ${Math.round(this.SYNC_BUDGET_MS / 1000)}s sync budget after ${page} page(s); returning ${events.length} items (next run continues)`
-      );
-    }
-
     // Enrich high-engagement stories with external content (bounded by the
     // remaining time budget + a fetch cap; skipped entirely if it's exhausted).
     if (contentType !== 'comment') {
-      await this.enrichStoriesWithExternalContent(events, deadline, ctx);
+      await this.enrichStoriesWithExternalContent(events, deadline);
     }
 
     return {
@@ -469,27 +465,25 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
   private async enrichStoriesWithExternalContent(
     events: EventEnvelope[],
-    deadline: number,
-    ctx: SyncContext
+    deadline: number
   ): Promise<void> {
     let fetches = 0;
     let consecutiveFailures = 0;
     for (const event of events) {
       if (fetches >= this.MAX_CONTENT_FETCHES) break;
       if (Date.now() >= deadline) {
-        ctx.log?.(`HN: content-enrichment time budget reached after ${fetches} fetch(es)`);
         break;
       }
 
       const externalUrl = event.metadata?.external_url as string | undefined;
       const points = event.metadata?.score as number | undefined;
 
-      if (!event.content && externalUrl && points != null && points >= this.ENGAGEMENT_THRESHOLD) {
+      if (!event.payload_text && externalUrl && points != null && points >= this.ENGAGEMENT_THRESHOLD) {
         fetches++;
         const res = await this.fetchExternalContent(externalUrl);
         if (res.ok) {
           consecutiveFailures = 0;
-          event.content = res.content;
+          event.payload_text = res.content;
           event.metadata = {
             ...event.metadata,
             fetched_content: true,
@@ -501,9 +495,6 @@ export default class HackerNewsConnector extends ConnectorRuntime {
           // timeout) per remaining story.
           consecutiveFailures++;
           if (consecutiveFailures >= this.MAX_CONSECUTIVE_FETCH_FAILURES) {
-            ctx.log?.(
-              `HN: ${consecutiveFailures} consecutive content fetches failed (egress) — skipping enrichment for the rest`
-            );
             break;
           }
         } else {

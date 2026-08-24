@@ -20,7 +20,7 @@
 import {
   type ActionContext,
   type ActionResult,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   createHttpClient,
@@ -254,7 +254,7 @@ function isPageTokenRejection(status: number, body: string): boolean {
 // ---------------------------------------------------------------------------
 
 export default class YouTubeConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'youtube',
     name: 'YouTube',
     description:
@@ -282,6 +282,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       liked_videos: {
         key: 'liked_videos',
         name: 'Liked Videos',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
         description:
           "Videos the authenticated user has liked. Uses the account's Likes playlist.",
@@ -315,6 +316,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       playlists: {
         key: 'playlists',
         name: 'Playlists',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
         description: "The authenticated user's playlists and the videos in each playlist.",
         configSchema: {
@@ -370,6 +372,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       subscriptions: {
         key: 'subscriptions',
         name: 'Subscriptions',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
         description: "Channels the authenticated user's YouTube account subscribes to.",
         configSchema: {
@@ -403,6 +406,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       videos: {
         key: 'videos',
         name: 'Videos',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
         description:
           'Scheduled ingest of a fixed public keyword search (metadata, comments, transcripts). For agent-time search use the `search` action instead.',
@@ -474,6 +478,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
 		kind: 'read',
         name: 'Search Videos',
         description: 'Search public YouTube by keyword and return matching videos.',
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['query'],
@@ -501,6 +506,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
 		kind: 'read',
         name: 'Get Video',
         description: 'Fetch metadata for one YouTube video by id or URL.',
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['video_id'],
@@ -526,6 +532,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
         name: 'Search Liked Videos',
         description:
           "Filter the authenticated user's liked videos by title or channel name (substring match).",
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['query'],
@@ -549,6 +556,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
 		kind: 'read',
         name: 'List Playlists',
         description: "List the authenticated user's YouTube playlists.",
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           properties: {
@@ -566,6 +574,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
 		kind: 'read',
         name: 'Get Playlist',
         description: 'List videos in one of your playlists, with an optional title filter.',
+        requiresApproval: false,
         inputSchema: {
           type: 'object',
           required: ['playlist_id'],
@@ -603,7 +612,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const auth = this.resolveAuth(ctx);
 
     switch (ctx.feedKey) {

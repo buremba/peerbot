@@ -12,7 +12,7 @@ import {
   ACL_RESOURCE_TYPE_SLUG,
   type ActionContext,
   type ActionResult,
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   createHttpClient,
   type EventAttributionRule,
@@ -333,7 +333,7 @@ const GITHUB_REPO_ATTRIBUTION: EventAttributionRule = {
 };
 
 export default class GitHubConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'github',
     name: 'GitHub',
     description: 'Collects GitHub issues/discussions and executes repo actions.',
@@ -460,6 +460,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       issues: {
         key: 'issues',
         name: 'Issues',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync GitHub issues from a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} issues',
@@ -492,6 +493,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       pull_requests: {
         key: 'pull_requests',
         name: 'Pull Requests',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync GitHub pull requests from a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} PRs',
@@ -524,6 +526,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       issue_comments: {
         key: 'issue_comments',
         name: 'Issue Comments',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync comments on GitHub issues.',
         displayNameTemplate: '{repo_owner}/{repo_name} issue comments',
@@ -552,6 +555,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       pr_comments: {
         key: 'pr_comments',
         name: 'PR Comments',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync comments on GitHub pull requests.',
         displayNameTemplate: '{repo_owner}/{repo_name} PR comments',
@@ -580,6 +584,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       discussions: {
         key: 'discussions',
         name: 'Discussions',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync GitHub discussions from a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} discussions',
@@ -611,6 +616,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       discussion_comments: {
         key: 'discussion_comments',
         name: 'Discussion Comments',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync comments on GitHub discussions.',
         displayNameTemplate: '{repo_owner}/{repo_name} discussion comments',
@@ -640,6 +646,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       commits: {
         key: 'commits',
         name: 'Commits',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync commits pushed to a repository, attributed to their authors.',
         displayNameTemplate: '{repo_owner}/{repo_name} commits',
@@ -670,6 +677,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       stargazers: {
         key: 'stargazers',
         name: 'Stargazers',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: [],
         description: 'Sync GitHub users who starred a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} stargazers',
@@ -858,7 +866,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const config = ctx.config as GitHubConfig;
     const repo = this.resolveRepo(config, {});
     const token = this.resolveToken(ctx.credentials?.accessToken, config);
@@ -1839,7 +1847,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     return raw
       .map((item): GitHubStargazerCheckpoint | null => {
         if (!item || typeof item !== 'object') return null;
-        const value = item as Record<string, unknown>;
+        const value = item as unknown as Record<string, unknown>;
         const login = asString(value.login);
         if (!login) return null;
         const userId = typeof value.user_id === 'number' ? value.user_id : null;

@@ -146,6 +146,7 @@ export default class SlackConnector extends IntegrationConnector {
 					type: "oauth",
 					provider: "slack",
 					loginScopes: ["openid", "email", "profile"],
+					requiredScopes: [],
 					authorizationUrl: "https://slack.com/openid/connect/authorize",
 					tokenUrl: "https://slack.com/api/openid.connect.token",
 					userinfoUrl: "https://slack.com/api/openid.connect.userInfo",

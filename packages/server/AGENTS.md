@@ -19,9 +19,9 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 ## Connections, feeds, and routing
 - Chat platforms live under `src/gateway/connections/` and use Chat SDK adapters. Configure connections via `/agents` UI or CRUD API; do not add per-platform env vars or bespoke SDK transports.
 - Webhooks are the default transport. Telegram alone supports `auto|webhook|polling`; reject polling in cloud mode.
-- `feeds` is the unified list. `kind='collected'` feeds are scheduled connector pulls into `events`; `kind='streaming'` feeds are chat channels backed by `channel_messages`, not scheduled syncs; `virtual` feeds are projections/metadata and must not be queued as real sync work.
+- `feeds` is the unified list. A feed definition declares `operations` (`sync`, `read`, or both); storage is independent (`events` for connector data, `channel_messages` for chat). Only `sync` feeds may be scheduled. Source reads always go through the generic feed-read contract.
 - Runtime connection ids may be slugs/managed ids (for example `slackinst-…`), not numeric `connections.id`. Resolve through connection stores; do not cast runtime ids to bigint.
-- Bound chat channels should materialize an idempotent streaming feed so the UI has one feed model, not a separate channel island.
+- Bound chat channels should materialize an idempotent channel feed backed by `channel_messages`, so the UI has one feed model rather than a separate channel island.
 
 ## Auth, providers, and secrets
 - Product auth uses better-auth/session/PAT flows in `src/auth`; model/provider auth and user auth profiles live under `src/gateway/auth`.

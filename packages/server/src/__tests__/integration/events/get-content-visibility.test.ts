@@ -1131,8 +1131,8 @@ describe('getContent > source attribution fields across query branches', () => {
     const sql = getTestDb();
     // Feed row the event is attributed to; display_name feeds the join.
     const [feed] = await sql`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, display_name, created_at)
-      VALUES (${org.id}, ${connId}, 'home_feed', 'active', 'collected', 'Attr Home Feed', NOW())
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, display_name, created_at)
+      VALUES (${org.id}, ${connId}, 'home_feed', 'active', 'Attr Home Feed', NOW())
       RETURNING id
     `;
     feedId = feed.id as number;

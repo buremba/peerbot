@@ -7,7 +7,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type SyncContext,
@@ -44,7 +44,7 @@ interface RSSConfig {
 // ---------------------------------------------------------------------------
 
 export default class RSSConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'rss',
     name: 'RSS / Atom',
     description: 'Fetches and parses RSS 2.0 and Atom feeds to collect articles.',
@@ -57,6 +57,7 @@ export default class RSSConnector extends ConnectorRuntime {
       articles: {
         key: 'articles',
         name: 'Feed Articles',
+        sync: (ctx) => this.syncFeed(ctx),
         description: 'Articles from RSS/Atom feeds.',
         configSchema: {
           type: 'object',
@@ -104,7 +105,7 @@ export default class RSSConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const config = ctx.config as unknown as RSSConfig;
     const feedUrls = config.feed_urls;
     if (!feedUrls || !Array.isArray(feedUrls) || feedUrls.length === 0) {

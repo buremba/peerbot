@@ -123,6 +123,23 @@ async function main() {
     const supportsExecute =
       Object.getOwnPropertyNames(RuntimeClass.prototype).includes('execute');
 
+    const feeds = def.feeds == null
+      ? null
+      : Object.fromEntries(Object.entries(def.feeds).map(([feedKey, rawFeed]) => {
+          const feed = rawFeed && typeof rawFeed === 'object' ? rawFeed : {};
+          const { sync, read, ...serializable } = feed;
+          const operations = [];
+          if (typeof sync === 'function') operations.push('sync');
+          if (typeof read === 'function') operations.push('read');
+          if (operations.length === 0) {
+            throw new Error(
+              'Connector feed ' + JSON.stringify(feedKey) +
+              ' must implement sync and/or read on its feed definition.'
+            );
+          }
+          return [feedKey, { ...serializable, operations }];
+        }));
+
     const metadata = {
       key: def.key || null,
       name: def.name || null,
@@ -131,7 +148,7 @@ async function main() {
       kind: def.kind || null,
       authSchema: def.authSchema || null,
       webhook: def.webhook || null,
-      feeds: def.feeds || null,
+      feeds,
       actions: def.actions || null,
       automationEvents: def.automationEvents || null,
       optionsSchema: def.optionsSchema || null,

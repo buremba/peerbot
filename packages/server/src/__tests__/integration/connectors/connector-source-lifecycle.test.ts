@@ -66,16 +66,18 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     const installed = await manageConnections(
       { action: 'install_connector', source_code: probeSource('1.0.0', 'V1') },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in installed ? installed.error : undefined).toBeUndefined();
-    expect('version' in installed ? installed.version : undefined).toBe('1.0.0');
+    expect('version' in installed ? installed.version : undefined).toBe(
+      '1.0.0',
+    );
 
     // ---- get_connector_source: active source + retained history ----
     const got = await manageConnections(
       { action: 'get_connector_source', connector_key: KEY },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in got ? got.error : undefined).toBeUndefined();
     if (!('active_version' in got)) throw new Error('unexpected result shape');
@@ -83,7 +85,11 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     expect(got.version).toBe('1.0.0');
     expect(got.source_code).toContain("marker: 'V1'");
     expect(got.versions).toEqual([
-      expect.objectContaining({ version: '1.0.0', active: true, has_source: true }),
+      expect.objectContaining({
+        version: '1.0.0',
+        active: true,
+        has_source: true,
+      }),
     ]);
 
     // ---- validate: broken source → diagnostics, no persistence ----
@@ -93,11 +99,13 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
         source_code: 'export default class Broken {',
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
     if (!('valid' in invalid)) throw new Error('unexpected result shape');
     expect(invalid.valid).toBe(false);
-    expect('diagnostics' in invalid && invalid.diagnostics.length).toBeGreaterThan(0);
+    expect(
+      'diagnostics' in invalid && invalid.diagnostics.length,
+    ).toBeGreaterThan(0);
 
     // ---- validate: compiles but missing identity → diagnostics too ----
     const noIdentity = await manageConnections(
@@ -110,12 +118,12 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
 }`,
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
     if (!('valid' in noIdentity)) throw new Error('unexpected result shape');
     expect(noIdentity.valid).toBe(false);
     expect('diagnostics' in noIdentity ? noIdentity.diagnostics : '').toMatch(
-      /key, name, and version/
+      /key, name, and version/,
     );
 
     // Neither validation persisted anything.
@@ -123,13 +131,18 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
       SELECT version FROM connector_versions
       WHERE connector_key = ${KEY} AND organization_id = ${orgId}
     `;
-    expect(afterValidate.map((r) => (r as { version: string }).version)).toEqual(['1.0.0']);
+    expect(
+      afterValidate.map((r) => (r as { version: string }).version),
+    ).toEqual(['1.0.0']);
 
     // ---- validate: good v2 source → preflight metadata, still no persistence ----
     const valid = await manageConnections(
-      { action: 'validate_connector_source', source_code: probeSource('2.0.0', 'V2') },
+      {
+        action: 'validate_connector_source',
+        source_code: probeSource('2.0.0', 'V2'),
+      },
       TEST_ENV,
-      ctx
+      ctx,
     );
     if (!('valid' in valid) || valid.valid !== true) {
       throw new Error(`expected valid preflight, got ${JSON.stringify(valid)}`);
@@ -152,7 +165,13 @@ export default class ActionProbeConnector {
     key: '${KEY}',
     name: 'Action Probe',
     version: '3.0.0',
-    feeds: { articles: { key: 'articles', name: 'Articles' } },
+    feeds: {
+      articles: {
+        key: 'articles',
+        name: 'Articles',
+        sync: async () => ({ events: [], checkpoint: null }),
+      },
+    },
     actions: {
       read_thing: { key: 'read_thing', name: 'Read thing', kind: 'read', requiresApproval: false, requiredScopes: ['probe.read'] },
       hinted_read: { key: 'hinted_read', name: 'Hinted read', requiresApproval: false, annotations: { readOnlyHint: true } },
@@ -165,10 +184,12 @@ export default class ActionProbeConnector {
 `,
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
     if (!('valid' in withActions) || withActions.valid !== true) {
-      throw new Error(`expected valid preflight, got ${JSON.stringify(withActions)}`);
+      throw new Error(
+        `expected valid preflight, got ${JSON.stringify(withActions)}`,
+      );
     }
     expect(withActions.actions.read_thing).toEqual({
       kind: 'read',
@@ -195,9 +216,11 @@ export default class ActionProbeConnector {
         source_code: probeSource('2.0.0', 'V2').replace(KEY, 'zz.otherprobe'),
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
-    expect('error' in wrongKey ? wrongKey.error : '').toContain("defines connector 'zz.otherprobe'");
+    expect('error' in wrongKey ? wrongKey.error : '').toContain(
+      "defines connector 'zz.otherprobe'",
+    );
 
     // Stale optimistic version check: refused.
     const staleExpected = await manageConnections(
@@ -208,9 +231,11 @@ export default class ActionProbeConnector {
         expected_version: '0.9.9',
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
-    expect('error' in staleExpected ? staleExpected.error : '').toContain('Version conflict');
+    expect('error' in staleExpected ? staleExpected.error : '').toContain(
+      'Version conflict',
+    );
 
     // Same active version + different code: refused (rollback would be lost).
     const noBump = await manageConnections(
@@ -220,7 +245,7 @@ export default class ActionProbeConnector {
         source_code: probeSource('1.0.0', 'V1-changed'),
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in noBump ? noBump.error : '').toContain('Bump the version');
 
@@ -233,10 +258,11 @@ export default class ActionProbeConnector {
         expected_version: '1.0.0',
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in updated ? updated.error : undefined).toBeUndefined();
-    if (!('previous_version' in updated)) throw new Error('unexpected result shape');
+    if (!('previous_version' in updated))
+      throw new Error('unexpected result shape');
     expect(updated.previous_version).toBe('1.0.0');
     expect(updated.version).toBe('2.0.0');
 
@@ -246,40 +272,62 @@ export default class ActionProbeConnector {
       WHERE organization_id = ${orgId} AND key = ${KEY} AND status = 'active'
     `;
     expect((defAfterUpdate[0] as { version: string }).version).toBe('2.0.0');
-    expect((defAfterUpdate[0] as { description: string }).description).toBe('V2');
+    expect((defAfterUpdate[0] as { description: string }).description).toBe(
+      'V2',
+    );
     const retained = await sql`
       SELECT version FROM connector_versions
       WHERE connector_key = ${KEY} AND organization_id = ${orgId}
       ORDER BY version
     `;
-    expect(retained.map((r) => (r as { version: string }).version)).toEqual(['1.0.0', '2.0.0']);
+    expect(retained.map((r) => (r as { version: string }).version)).toEqual([
+      '1.0.0',
+      '2.0.0',
+    ]);
 
     // ---- rollback guards ----
     const missingVersion = await manageConnections(
-      { action: 'rollback_connector_version', connector_key: KEY, version: '9.9.9' },
+      {
+        action: 'rollback_connector_version',
+        connector_key: KEY,
+        version: '9.9.9',
+      },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in missingVersion ? missingVersion.error : '').toContain(
-      "No retained version '9.9.9'"
+      "No retained version '9.9.9'",
     );
-    expect('error' in missingVersion ? missingVersion.error : '').toContain('1.0.0');
+    expect('error' in missingVersion ? missingVersion.error : '').toContain(
+      '1.0.0',
+    );
 
     const alreadyActive = await manageConnections(
-      { action: 'rollback_connector_version', connector_key: KEY, version: '2.0.0' },
+      {
+        action: 'rollback_connector_version',
+        connector_key: KEY,
+        version: '2.0.0',
+      },
       TEST_ENV,
-      ctx
+      ctx,
     );
-    expect('error' in alreadyActive ? alreadyActive.error : '').toContain('already the active version');
+    expect('error' in alreadyActive ? alreadyActive.error : '').toContain(
+      'already the active version',
+    );
 
     // ---- rollback to v1: one operation, definition metadata restored ----
     const rolled = await manageConnections(
-      { action: 'rollback_connector_version', connector_key: KEY, version: '1.0.0' },
+      {
+        action: 'rollback_connector_version',
+        connector_key: KEY,
+        version: '1.0.0',
+      },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in rolled ? rolled.error : undefined).toBeUndefined();
-    if (!('previous_version' in rolled)) throw new Error('unexpected result shape');
+    if (!('previous_version' in rolled))
+      throw new Error('unexpected result shape');
     expect(rolled.previous_version).toBe('2.0.0');
     expect(rolled.version).toBe('1.0.0');
 
@@ -288,18 +336,24 @@ export default class ActionProbeConnector {
       WHERE organization_id = ${orgId} AND key = ${KEY} AND status = 'active'
     `;
     expect((defAfterRollback[0] as { version: string }).version).toBe('1.0.0');
-    expect((defAfterRollback[0] as { description: string }).description).toBe('V1');
+    expect((defAfterRollback[0] as { description: string }).description).toBe(
+      'V1',
+    );
 
     // Rolling back consumed nothing: v2 stays retained for a roll-forward.
     const finalGet = await manageConnections(
       { action: 'get_connector_source', connector_key: KEY },
       TEST_ENV,
-      ctx
+      ctx,
     );
-    if (!('active_version' in finalGet)) throw new Error('unexpected result shape');
+    if (!('active_version' in finalGet))
+      throw new Error('unexpected result shape');
     expect(finalGet.active_version).toBe('1.0.0');
     expect(finalGet.source_code).toContain("marker: 'V1'");
-    expect(finalGet.versions.map((v) => v.version).sort()).toEqual(['1.0.0', '2.0.0']);
+    expect(finalGet.versions.map((v) => v.version).sort()).toEqual([
+      '1.0.0',
+      '2.0.0',
+    ]);
   }, 240_000);
 
   it('refuses to overwrite a RETAINED non-active version with different code (#2045 review)', async () => {
@@ -312,7 +366,7 @@ export default class ActionProbeConnector {
     await manageConnections(
       { action: 'install_connector', source_code: src('1.0.0', 'R1') },
       TEST_ENV,
-      ctx
+      ctx,
     );
     await manageConnections(
       {
@@ -322,7 +376,7 @@ export default class ActionProbeConnector {
         expected_version: '1.0.0',
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
 
     // Updating to v1 (retained, non-active) with DIFFERENT code must be refused:
@@ -335,12 +389,14 @@ export default class ActionProbeConnector {
         source_code: src('1.0.0', 'R1-tampered'),
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
     expect('error' in clobber ? clobber.error : '').toContain(
-      "Version '1.0.0'"
+      "Version '1.0.0'",
     );
-    expect('error' in clobber ? clobber.error : '').toContain('Bump the version');
+    expect('error' in clobber ? clobber.error : '').toContain(
+      'Bump the version',
+    );
 
     // v1's retained source is intact on EVERY row (shared + dual-write org
     // copy) — the rollback target was not corrupted.
@@ -350,8 +406,12 @@ export default class ActionProbeConnector {
     `;
     expect(v1.length).toBeGreaterThan(0);
     for (const row of v1) {
-      expect((row as { source_code: string }).source_code).toContain("marker: 'R1'");
-      expect((row as { source_code: string }).source_code).not.toContain('R1-tampered');
+      expect((row as { source_code: string }).source_code).toContain(
+        "marker: 'R1'",
+      );
+      expect((row as { source_code: string }).source_code).not.toContain(
+        'R1-tampered',
+      );
     }
   }, 120_000);
 
@@ -360,11 +420,16 @@ export default class ActionProbeConnector {
       {
         action: 'update_connector_source',
         connector_key: 'zz.neverinstalled',
-        source_code: probeSource('1.0.0', 'X').replace(KEY, 'zz.neverinstalled'),
+        source_code: probeSource('1.0.0', 'X').replace(
+          KEY,
+          'zz.neverinstalled',
+        ),
       },
       TEST_ENV,
-      ctx
+      ctx,
     );
-    expect('error' in result ? result.error : '').toContain('not installed in this organization');
+    expect('error' in result ? result.error : '').toContain(
+      'not installed in this organization',
+    );
   }, 60_000);
 });

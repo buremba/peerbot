@@ -13,7 +13,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runConnectorHealthCheck } from '../../connectors/connector-health';
 import { BROWSER_SESSION_EXPIRED_KIND } from '../../utils/platform-notification-kinds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-import { addUserToOrganization, createTestOrganization, createTestUser } from '../setup/test-fixtures';
+import {
+  addUserToOrganization,
+  createTestConnectorDefinition,
+  createTestOrganization,
+  createTestUser,
+} from '../setup/test-fixtures';
 
 // Comfortably outside the 24h min-age grace window so age never masks a flag.
 const OLD = new Date(Date.now() - 48 * 60 * 60 * 1000);
@@ -22,7 +27,7 @@ async function seedConn(
   orgId: string,
   userId: string,
   connectorKey: string,
-  slug: string
+  slug: string,
 ): Promise<number> {
   const sql = getTestDb();
   const [row] = await sql`
@@ -42,7 +47,7 @@ async function seedFailingFeed(
   orgId: string,
   connectionId: number,
   feedKey: string,
-  lastError: string
+  lastError: string,
 ): Promise<void> {
   const sql = getTestDb();
   await sql`
@@ -66,7 +71,7 @@ async function seedFailingFeed(
  */
 async function authNotifsFor(
   orgId: string,
-  connectionId: number
+  connectionId: number,
 ): Promise<Array<{ id: number; title: string; semantic_type: string }>> {
   const sql = getTestDb();
   return (await sql`
@@ -92,6 +97,12 @@ describe('connector-health → browser-auth-expired notification', () => {
     const user = await createTestUser({ email: 'reauth-owner@test.com' });
     ownerId = user.id;
     await addUserToOrganization(ownerId, orgId, 'owner');
+    await createTestConnectorDefinition({
+      key: 'revolut',
+      name: 'Revolut',
+      organization_id: orgId,
+      feeds_schema: { transactions: {} },
+    });
 
     // (A) Expired site session — should notify.
     authConnId = await seedConn(orgId, ownerId, 'revolut', 'revolut-auth');
@@ -99,16 +110,21 @@ describe('connector-health → browser-auth-expired notification', () => {
       orgId,
       authConnId,
       'transactions',
-      'Revolut session needs sign-in (redirected to https://sso.revolut.com/signin)'
+      'Revolut session needs sign-in (redirected to https://sso.revolut.com/signin)',
     );
 
     // (B) Offline device / transport — unhealthy, but NOT an auth failure.
-    offlineConnId = await seedConn(orgId, ownerId, 'revolut', 'revolut-offline');
+    offlineConnId = await seedConn(
+      orgId,
+      ownerId,
+      'revolut',
+      'revolut-offline',
+    );
     await seedFailingFeed(
       orgId,
       offlineConnId,
       'transactions',
-      'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).'
+      'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
     );
   });
 

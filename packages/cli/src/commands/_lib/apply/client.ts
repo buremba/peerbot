@@ -232,7 +232,6 @@ export interface RemoteFeed {
   status: string;
   schedule?: string | null;
   config?: Record<string, unknown> | null;
-  virtual?: boolean;
 }
 
 interface InstallConnectorResult {
@@ -1637,7 +1636,6 @@ export class ApplyClient {
     /** Cron string, or null for manual-only. */
     schedule?: string | null;
     config?: Record<string, unknown>;
-    virtual?: boolean;
   }): Promise<RemoteFeed> {
     const body = await this.feedsTool<{ feed?: RemoteFeed }>({
       action: "create_feed",
@@ -1648,7 +1646,6 @@ export class ApplyClient {
       // not have to invent a default.
       ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
       ...(payload.config ? { config: payload.config } : {}),
-      ...(payload.virtual ? { virtual: true } : {}),
     });
     if (!body.feed) {
       throw new ApiError(

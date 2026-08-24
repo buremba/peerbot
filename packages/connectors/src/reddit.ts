@@ -6,7 +6,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   createHttpClient,
@@ -75,7 +75,7 @@ interface RedditCheckpoint {
 // ---------------------------------------------------------------------------
 
 export default class RedditConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'reddit',
     name: 'Reddit',
     description: 'Fetches posts and comments from Reddit subreddits or search queries.',
@@ -99,6 +99,7 @@ export default class RedditConnector extends ConnectorRuntime {
       posts: {
         key: 'posts',
         name: 'Posts',
+        sync: (ctx) => this.syncFeed(ctx),
         description: 'Fetch posts from subreddits or search queries.',
         displayNameTemplate: 'r/{subreddit} posts',
         configSchema: {
@@ -153,6 +154,7 @@ export default class RedditConnector extends ConnectorRuntime {
       comments: {
         key: 'comments',
         name: 'Comments',
+        sync: (ctx) => this.syncFeed(ctx),
         description: 'Fetch comments from subreddits.',
         displayNameTemplate: 'r/{subreddit} comments',
         configSchema: {
@@ -187,6 +189,7 @@ export default class RedditConnector extends ConnectorRuntime {
       user_activity: {
         key: 'user_activity',
         name: 'User activity',
+        sync: (ctx) => this.syncFeed(ctx),
         description:
           "Fetch a Reddit user's posts and comments interleaved. Defaults to the connected user.",
         displayNameTemplate: 'u/{username} activity',
@@ -245,7 +248,7 @@ export default class RedditConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const subreddit = ctx.config.subreddit as string | undefined;
     const searchTerms = ctx.config.search_terms as string | undefined;
     const isUserFeed = ctx.feedKey === 'user_activity';

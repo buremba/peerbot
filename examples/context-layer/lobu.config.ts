@@ -55,7 +55,7 @@ const baseline = defineAgent({
  * The warehouse connection, declared as config (config-as-constructor). `lobu
  * run` applies this: it installs the bundled `postgres` connector, creates an
  * authenticated, read-only connection to the fake Kelder warehouse, AND creates
- * the VIRTUAL churn-rollup feed on it (declared below). The credential is a
+ * the source-readable churn-rollup feed on it (declared below). The credential is a
  * `$VAR` reference resolved from the environment at apply time — it never lives
  * in committed code.
  */
@@ -72,15 +72,13 @@ const warehouse = defineConnection({
   connector: "postgres",
   name: "Kelder warehouse",
   authProfile: warehouseAuth,
-  // The monthly churn rollup as a VIRTUAL (federated) feed: read LIVE at
-  // request time through the connector pushdown, never copied into Lobu. A
-  // virtual feed never syncs, so it carries no schedule. Declared here so the
-  // whole warehouse-federation story lives in config — `lobu run` creates it.
+  // The monthly churn rollup is read live through the connector pushdown. It
+  // has no schedule, so Lobu does not copy it unless a caller explicitly
+  // triggers the same feed's sync operation.
   feeds: [
     {
       feed: "query",
       name: "Monthly churn rollup (live)",
-      virtual: true,
       config: { query: CHURN_ROLLUP_SQL },
     },
   ],
@@ -293,7 +291,7 @@ const verifiedQuery = defineEntityType({
       type: "string",
       description:
         "The exact read-only SQL that produced the approved answer. Runs " +
-        "against the warehouse connection (same query the virtual feed uses).",
+        "against the warehouse connection (same query the source-readable feed uses).",
     },
     approved_answer: Type.Optional(
       Type.Unsafe({

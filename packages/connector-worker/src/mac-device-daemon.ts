@@ -3,12 +3,12 @@
 import packageJson from '../package.json' with { type: 'json' };
 import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import {
-  MAC_DEVICE_DAEMON_PROTOCOL,
   INTERNAL_ACP_ADAPTER_ARG,
   macDeviceDaemonMetadata,
   runMacDeviceDaemon,
   validateMacDeviceDaemonOptions,
 } from './daemon/mac-device-daemon.js';
+import { NATIVE_BRIDGE_PROTOCOL } from './daemon/native-bridge/protocol.js';
 
 const VERSION = packageJson.version;
 
@@ -37,7 +37,7 @@ Options:
 Required for polling:
   WORKER_API_TOKEN=owl_pat_... (durable device token)
 
-Protocol: ${MAC_DEVICE_DAEMON_PROTOCOL}
+Protocol: ${NATIVE_BRIDGE_PROTOCOL}
 `);
 }
 

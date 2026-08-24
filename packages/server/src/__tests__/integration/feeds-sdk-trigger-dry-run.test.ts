@@ -24,7 +24,7 @@ import {
 
 async function seedFeed(
   slug: string,
-  status: 'active' | 'paused' = 'active'
+  status: 'active' | 'paused' = 'active',
 ): Promise<{
   feedId: number;
   ctx: Awaited<ReturnType<typeof seedOwnerContext>>['ctx'];
@@ -40,6 +40,7 @@ async function seedFeed(
     key: 'rss',
     name: 'RSS',
     organization_id: org.id,
+    feeds_schema: { items: {} },
   });
   const conn = await createTestConnection({
     organization_id: org.id,
@@ -104,7 +105,7 @@ describe('client.feeds.trigger dry_run', () => {
 
     const feeds = buildFeedsNamespace(ctx, {} as Env);
     await expect(feeds.trigger({ feed_id: feedId })).rejects.toThrow(
-      'Feed is paused, must be active to trigger sync'
+      'Feed is paused, must be active to trigger sync',
     );
 
     const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;

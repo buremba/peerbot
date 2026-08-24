@@ -15,6 +15,10 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { reconcileDeviceCapabilities } from '../../worker-api/device-reconcile';
+import {
+  deviceManifestHash,
+  type DeviceConnectorManifest,
+} from '../../worker-api/device-manifests';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization, createTestUser } from '../setup/test-fixtures';
 
@@ -58,7 +62,7 @@ async function seedWorker(userId: string, orgId: string, fresh: boolean): Promis
   const manifests = {
     [CONNECTOR]: {
       manifest: MANIFEST,
-      manifest_hash: `hash-${CONNECTOR}-1.0.0`,
+      manifest_hash: deviceManifestHash(MANIFEST as DeviceConnectorManifest),
       received_at: new Date().toISOString(),
     },
   };

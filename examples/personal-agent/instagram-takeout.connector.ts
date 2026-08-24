@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventAttributionRule,
   type EventEnvelope,
@@ -82,7 +82,10 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
   InstagramTakeoutCheckpoint,
   LocalTakeoutConfig
 > {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<
+    InstagramTakeoutCheckpoint,
+    LocalTakeoutConfig
+  > = {
     key: "instagram.takeout",
     name: "Instagram Takeout",
     version: "1.0.0",
@@ -96,6 +99,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
     runtime: { platforms: ["macos"] },
     feeds: {
       messages: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "messages",
         name: "Messages",
         configSchema: localTakeoutSchema(
@@ -103,6 +107,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       connections: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "connections",
         name: "Followers and Following",
         configSchema: localTakeoutSchema(
@@ -128,6 +133,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         },
       },
       saved: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "saved",
         name: "Saved Items",
         configSchema: localTakeoutSchema(
@@ -135,6 +141,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       comments: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "comments",
         name: "Comments",
         configSchema: localTakeoutSchema(
@@ -142,6 +149,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       likes: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "likes",
         name: "Likes",
         configSchema: localTakeoutSchema(
@@ -149,6 +157,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       media: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "media",
         name: "Posts and Stories",
         configSchema: localTakeoutSchema(
@@ -156,6 +165,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       story_interactions: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "story_interactions",
         name: "Story Interactions",
         configSchema: localTakeoutSchema(
@@ -163,6 +173,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       searches: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "searches",
         name: "Searches",
         configSchema: localTakeoutSchema(
@@ -170,6 +181,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       link_history: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "link_history",
         name: "Link History",
         configSchema: localTakeoutSchema(
@@ -177,6 +189,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         ),
       },
       ads: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "ads",
         name: "Ad Interactions",
         configSchema: localTakeoutSchema(
@@ -186,7 +199,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
     },
   };
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<InstagramTakeoutCheckpoint, LocalTakeoutConfig>
   ): Promise<SyncResult<InstagramTakeoutCheckpoint>> {
     const takeoutDir = assertDirectory(ctx.config, "Instagram");

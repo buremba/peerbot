@@ -737,7 +737,7 @@ async function handleOAuthCallback(
 
   // Jira 3LO tokens are site-agnostic — REST needs cloud_id. Discover the
   // unique accessible site once here so connection.config + external_tenant_id
-  // are ready before the first virtual feed read / webhook register. Best-effort:
+  // are ready before the first source read / webhook register. Best-effort:
   // discovery failure or a multi-site grant does not fail OAuth; an ambiguous
   // connection must set config.cloud_id before its first Jira read.
   let jiraSite: JiraCloudSite | null = null;

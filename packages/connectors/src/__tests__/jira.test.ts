@@ -37,6 +37,7 @@ function fakeHttp(pages: JiraPage[]) {
 
 function makeCtx() {
   return {
+    feedKey: 'issues',
     config: { cloud_id: 'cloud-1', jql: 'order by updated DESC' },
     credentials: { accessToken: 'tok' },
     sessionState: null,

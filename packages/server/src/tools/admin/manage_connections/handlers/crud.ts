@@ -187,8 +187,8 @@ export async function handleListConnectorGroups(
            COUNT(*)::int AS connection_count,
            bool_or(cd.declares_chat) AS has_chat_connection,
            bool_or(fc.feed_count > 0) AS has_active_feeds,
-           -- DATA-facet input: only non-streaming feeds count, so a chat-only
-           -- group whose channels became streaming feeds isn't mislabeled data.
+           -- DATA-facet input: only event-store feeds count, so a chat-only
+           -- group whose channel feeds use channel_messages isn't mislabeled data.
            bool_or(fc.data_feed_count > 0) AS has_active_data_feeds,
            bool_or(cd.has_feeds_schema) AS connector_has_feeds,
            COALESCE(
@@ -221,7 +221,7 @@ export async function handleListConnectorGroups(
     ) cd ON TRUE
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::int AS feed_count,
-             COUNT(*) FILTER (WHERE f.kind <> 'streaming')::int AS data_feed_count
+             COUNT(*) FILTER (WHERE COALESCE(f.config ->> 'store', '') <> 'channel_messages')::int AS data_feed_count
       FROM feeds f
       WHERE f.connection_id = c.id
         AND f.deleted_at IS NULL
@@ -333,10 +333,10 @@ export async function handleList(
            -- row and costs ~1.2ms.
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
            -- The DATA facet must not light up just because a chat connection's
-           -- channels are now streaming feeds: count only non-streaming feeds
-           -- (collected/virtual) for facet.data. feed_count stays the TOTAL
+           -- channels are feed rows too: exclude the channel_messages store
+           -- for facet.data. feed_count stays the TOTAL
            -- (drives the feeds rail, which lists channels too).
-           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND f.kind <> 'streaming')::int AS data_feed_count,
+           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND COALESCE(f.config ->> 'store', '') <> 'channel_messages')::int AS data_feed_count,
            (SELECT ct.token FROM connect_tokens ct
             WHERE ct.connection_id = c.id AND ct.status = 'pending' AND ct.expires_at > NOW()
             ORDER BY ct.created_at DESC LIMIT 1) AS connect_token,
@@ -524,7 +524,7 @@ export async function handleGet(
            -- included). data_feed_count excludes streaming channels so the DATA
            -- facet stays off for a pure-chat connection (mirrors list).
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
-           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND f.kind <> 'streaming')::int AS data_feed_count
+           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND COALESCE(f.config ->> 'store', '') <> 'channel_messages')::int AS data_feed_count
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT name, feeds_schema, auth_schema, options_schema,

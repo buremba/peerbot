@@ -230,26 +230,26 @@ describe("manage_automations source-id + cross-org guards", () => {
 		).rejects.toThrow(/nonexistent-typo/i);
 	});
 
-	it("accepts an @feed ref that points at a streaming (channel) feed", async () => {
-		// A streaming/channel feed compiles to a membership-gated read over
+	it("accepts an @feed ref that points at a channel-message feed", async () => {
+		// A channel feed compiles to a membership-gated read over
 		// channel_messages (compileChannelMessagesVisibility), so it IS a valid
 		// @feed source — the gate keeps enforced-channel content from leaking.
 		const sql = getTestDb();
 		const connection = await createTestConnection({
 			organization_id: ownerOrgId,
 			connector_key: "slack",
-			display_name: "Streaming Feed Connection",
-			slug: "streaming-feed-connection",
+			display_name: "Channel Feed Connection",
+			slug: "channel-feed-connection",
 		});
 		await sql`
-			INSERT INTO feeds (organization_id, connection_id, feed_key, display_name, status, kind, virtual, config)
-			VALUES (${ownerOrgId}, ${connection.id}, 'slack:C123', 'general', 'active', 'streaming', false, ${sql.json({ store: "channel_messages" })}::jsonb)
+			INSERT INTO feeds (organization_id, connection_id, feed_key, display_name, status, config)
+			VALUES (${ownerOrgId}, ${connection.id}, 'slack:C123', 'general', 'active', ${sql.json({ store: "channel_messages" })}::jsonb)
 		`;
 
 		const created = (await owner.automations.create({
 			entity_id: inOrgEntityId,
-			slug: "streaming-feed-src",
-			name: "Streaming Feed Src",
+			slug: "channel-feed-src",
+			name: "Channel Feed Src",
 			prompt: "Track stuff.",
 			agent_id: agentId,
 			sources: [{ name: "content", query: "@feed:slack:C123" }],

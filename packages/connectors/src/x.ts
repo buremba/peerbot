@@ -31,7 +31,7 @@ import {
 	type ActionContext,
 	type ActionResult,
 	type ChromeActionDispatcher,
-	type ConnectorDefinition,
+	type RuntimeConnectorDefinition,
 	type EventAttributionRule,
 	type EventAttributionTargetSpec,
 	type EntityTraitSpec,
@@ -3088,7 +3088,7 @@ export async function prepareXReply(
 // ── Connector ──────────────────────────────────────────────────
 
 export default class XConnector extends ConnectorRuntime {
-	readonly definition: ConnectorDefinition = {
+	readonly definition: RuntimeConnectorDefinition = {
 		key: "x",
 		name: "X (Twitter)",
 		description:
@@ -3145,6 +3145,7 @@ export default class XConnector extends ConnectorRuntime {
 			tweets: {
 				key: "tweets",
 				name: "Tweets",
+				sync: (ctx) => this.syncFeed(ctx),
 				description:
 					"Search and sync tweets matching a query or a specific account handle.",
 				configSchema: searchConfigSchema,
@@ -3164,6 +3165,7 @@ export default class XConnector extends ConnectorRuntime {
 			my_tweets: {
 				key: "my_tweets",
 				name: "My Posts",
+				sync: (ctx) => this.syncFeed(ctx),
 				description:
 					"Posts and replies authored by the connected account. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
 				configSchema: accountTimelineConfigSchema,
@@ -3183,6 +3185,7 @@ export default class XConnector extends ConnectorRuntime {
 			liked_tweets: {
 				key: "liked_tweets",
 				name: "Liked Posts",
+				sync: (ctx) => this.syncFeed(ctx),
 				description:
 					"Posts the connected account has liked. OAuth remains available for API-backed feeds; the paired signed-in Chrome extension performs resumable cursor backfill and incremental collection.",
 				configSchema: likedTweetsConfigSchema,
@@ -3197,6 +3200,7 @@ export default class XConnector extends ConnectorRuntime {
 			bookmarks: {
 				key: "bookmarks",
 				name: "Bookmarks",
+				sync: (ctx) => this.syncFeed(ctx),
 				description:
 					"Posts bookmarked by the connected account. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
 				configSchema: bookmarksConfigSchema,
@@ -3211,6 +3215,7 @@ export default class XConnector extends ConnectorRuntime {
 			direct_messages: {
 				key: "direct_messages",
 				name: "Direct Messages",
+				sync: (ctx) => this.syncFeed(ctx),
 				description:
 					"Direct message events across all conversations. Uses the X API when dm.read is granted, otherwise the paired Chrome extension on /messages. Auto-creates person entities for 1:1 counterparts.",
 				configSchema: bookmarksConfigSchema,
@@ -3225,6 +3230,7 @@ export default class XConnector extends ConnectorRuntime {
 			home_feed: {
 				key: "home_feed",
 				name: "Home Timeline",
+				sync: (ctx) => this.syncFeed(ctx),
 				description:
 					"Your personalized x.com home timeline (For you + Following). Extension-only via content-script scrape — there is no public API for the home timeline.",
 				configSchema: homeFeedConfigSchema,
@@ -3346,7 +3352,7 @@ export default class XConnector extends ConnectorRuntime {
 		}
 	}
 
-	async sync(ctx: SyncContext): Promise<SyncResult> {
+	private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
 		const config = ctx.config as Record<string, unknown>;
 		const checkpoint = (ctx.checkpoint ?? {}) as XCheckpoint;
 		const feedKey = ctx.feedKey ?? "tweets";

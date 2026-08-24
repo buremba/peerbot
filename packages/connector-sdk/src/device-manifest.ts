@@ -34,7 +34,7 @@ export interface DeviceFeedDefinition extends DeviceManifestSchema {
   name: string;
   description?: string;
   userManaged?: boolean;
-  virtual?: boolean;
+  operations: Array<'sync' | 'read'>;
   configSchema?: DeviceManifestSchema;
   eventKinds?: Record<string, DeviceManifestSchema>;
 }
@@ -183,6 +183,14 @@ function validateFeeds(feeds: DeviceConnectorDefinition['feeds']): void {
     }
     if (feed.configSchema !== undefined && !isRecord(feed.configSchema)) {
       throw new Error(`invalid feed configSchema '${key}'`);
+    }
+    if (
+      !Array.isArray(feed.operations) ||
+      feed.operations.length === 0 ||
+      !feed.operations.every((operation) => operation === 'sync' || operation === 'read') ||
+      new Set(feed.operations).size !== feed.operations.length
+    ) {
+      throw new Error(`invalid feed operations '${key}'`);
     }
     if (feed.eventKinds !== undefined) {
       if (!isRecord(feed.eventKinds)) throw new Error(`invalid feed eventKinds '${key}'`);

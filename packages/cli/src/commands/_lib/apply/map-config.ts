@@ -827,14 +827,6 @@ function mapConnection(
       );
     }
     seenFeeds.add(feed.feed);
-    // A virtual feed is read live and never synced — a schedule is meaningless
-    // there (the server persists schedule = NULL regardless). Reject the
-    // contradiction at config time rather than silently dropping the schedule.
-    if (feed.virtual && feed.schedule) {
-      throw new ValidationError(
-        `connection "${connection.slug}" feed "${feed.feed}" is virtual (read live, never synced) so it cannot have a schedule — remove "schedule"`
-      );
-    }
     if (feed.schedule) {
       const err = cronError(feed.schedule);
       if (err) {
@@ -847,9 +839,8 @@ function mapConnection(
       feedKey: feed.feed,
       ...(feed.name ? { name: feed.name } : {}),
       // Omit in config → manual-only (null). Never invent a default cron.
-      schedule: feed.virtual ? null : (feed.schedule ?? null),
+      schedule: feed.schedule ?? null,
       ...(feed.config ? { config: feed.config } : {}),
-      ...(feed.virtual ? { virtual: true } : {}),
     };
   });
   const authSlug = authProfileSlug(connection.authProfile);

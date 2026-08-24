@@ -36,25 +36,35 @@ import type {
   AuthResult,
   ConnectorDefinition,
   FeedDefinition,
+  FeedReadHandler,
+  FeedSyncHandler,
   QueryContext,
   QueryResult,
   ReflectContext,
   ReflectResult,
-  SearchContext,
-  SyncContext,
-  SyncResult,
+  RuntimeConnectorDefinition,
   WebhookRegistration,
   WebhookRegistrationContext,
 } from "./connector-types.js";
 
-/** A feed's metadata (minus the record-derived `key`) plus its `sync` handler. */
-export interface ConnectorFeedSpec<
+/**
+ * A feed's metadata plus one or both executable operations. Capabilities are
+ * inferred from these handlers when metadata is extracted.
+ */
+export type ConnectorFeedSpec<
   C = Record<string, unknown>,
   F = Record<string, unknown>,
-> extends Omit<FeedDefinition, "key"> {
-  /** Ingest handler for this feed. Called by the worker for a `sync` run. */
-  sync(ctx: SyncContext<C, F>): Promise<SyncResult<C>>;
-}
+> = Omit<FeedDefinition, "key" | "operations"> &
+  (
+    | {
+        sync: FeedSyncHandler<C, F>;
+        read?: FeedReadHandler<F>;
+      }
+    | {
+        sync?: FeedSyncHandler<C, F>;
+        read: FeedReadHandler<F>;
+      }
+  );
 
 /** An action's metadata (minus `key`; `requiresApproval` defaults false) plus its `execute` handler. */
 export interface ConnectorActionSpec
@@ -77,18 +87,10 @@ export interface ConnectorSpec
    */
   authenticate?(ctx: AuthContext): Promise<AuthResult>;
   /**
-   * Optional live-read handler. When provided, lowers to `ConnectorRuntime.query`
-   * — the platform calls it for virtual-feed reads and external-backed derived
-   * entities (returns rows, no persistence). Omitted ⇒ live queries unsupported.
+   * Optional connection-level governed query handler for SQL/warehouse
+   * pushdown. Configured feed reads belong on `feeds[key].read`.
    */
   query?(ctx: QueryContext): Promise<QueryResult>;
-  /**
-   * Optional virtual-feed recall handler. When provided, lowers to
-   * `ConnectorRuntime.search` — the platform calls it to read a virtual feed
-   * live with the caller's keyword terms pushed down to the source. Omitted ⇒
-   * recall over this connector's virtual feeds is unsupported.
-   */
-  search?(ctx: SearchContext): Promise<QueryResult>;
   /**
    * Optional metric-reflection handler. When provided, lowers to
    * `ConnectorRuntime.reflectMetrics` — contributes entity types federating the
@@ -112,9 +114,9 @@ export interface ConnectorSpec
 /** Constructor shape the connector-worker's `child-runner` detects and instantiates. */
 export type ConnectorClass = new () => ConnectorRuntime;
 
-/** Strip handler closures and derive `key` from the record key — keeps the definition serializable. */
-function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
-  const definition: ConnectorDefinition = {
+/** Build the executable runtime definition; metadata extraction strips handlers. */
+function buildDefinition(spec: ConnectorSpec): RuntimeConnectorDefinition {
+  const definition: RuntimeConnectorDefinition = {
     key: spec.key,
     name: spec.name,
     version: spec.version,
@@ -132,7 +134,7 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
 
   if (spec.feeds) {
     definition.feeds = Object.fromEntries(
-      Object.entries(spec.feeds).map(([key, feed]): [string, FeedDefinition] => [
+      Object.entries(spec.feeds).map(([key, feed]) => [
         key,
         {
           key,
@@ -142,8 +144,10 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
           displayNameTemplate: feed.displayNameTemplate,
           configSchema: feed.configSchema,
           userManaged: feed.userManaged,
-          virtual: feed.virtual,
+          webhook: feed.webhook,
           eventKinds: feed.eventKinds,
+          sync: feed.sync,
+          read: feed.read,
         },
       ]),
     );
@@ -188,16 +192,6 @@ export function defineConnector(spec: ConnectorSpec): ConnectorClass {
   return class extends ConnectorRuntime {
     readonly definition = definition;
 
-    async sync(ctx: SyncContext): Promise<SyncResult> {
-      const feed = spec.feeds?.[ctx.feedKey];
-      if (!feed) {
-        throw new Error(
-          `Connector '${spec.key}' has no sync handler for feed '${ctx.feedKey}'`,
-        );
-      }
-      return feed.sync(ctx);
-    }
-
     async execute(ctx: ActionContext): Promise<ActionResult> {
       const action = spec.actions?.[ctx.actionKey];
       if (!action) {
@@ -221,13 +215,6 @@ export function defineConnector(spec: ConnectorSpec): ConnectorClass {
         return super.query(ctx);
       }
       return spec.query(ctx);
-    }
-
-    async search(ctx: SearchContext): Promise<QueryResult> {
-      if (!spec.search) {
-        return super.search(ctx);
-      }
-      return spec.search(ctx);
     }
 
     async reflectMetrics(ctx: ReflectContext): Promise<ReflectResult> {

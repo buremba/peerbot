@@ -25,7 +25,7 @@ test('missing token + API 401 → sync throws instead of a clean empty run', asy
 
   const connector = new ProductHuntConnector();
   // biome-ignore lint/suspicious/noExplicitAny: minimal SyncContext for unit test
-  const ctx = { config: { search_query: 'ai agents' }, checkpoint: null } as any;
+  const ctx = { feedKey: 'posts', config: { search_query: 'ai agents' }, checkpoint: null } as any;
 
   await expect(connector.sync(ctx)).rejects.toThrow(/Developer Token/);
 });

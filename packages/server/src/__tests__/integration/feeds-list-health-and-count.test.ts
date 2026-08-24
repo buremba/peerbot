@@ -20,7 +20,11 @@ import { manageFeeds } from "../../tools/admin/manage_feeds";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { createTestConnection, seedOwnerContext } from "../setup/test-fixtures";
+import {
+	createTestConnection,
+	createTestConnectorDefinition,
+	seedOwnerContext,
+} from "../setup/test-fixtures";
 
 describe("list_feeds health filter and true total", () => {
 	let orgId: string;
@@ -36,6 +40,28 @@ describe("list_feeds health filter and true total", () => {
 		});
 		orgId = org.id;
 		ctx = ownerCtx;
+		await createTestConnectorDefinition({
+			key: "hackernews",
+			name: "Hacker News",
+			organization_id: orgId,
+			feeds_schema: Object.fromEntries(
+				[
+					"h1",
+					"h2",
+					"h3",
+					"bad1",
+					"bad2",
+					"paused-manual-failed",
+					"paused-auto-failed",
+					"paused-healthy",
+					"paused-connection-failing",
+					"paused-connection-healthy",
+					"scheduled-overdue",
+					"scheduled-active",
+					"no-schedule-old",
+				].map((feedKey) => [feedKey, {}]),
+			),
+		});
 
 		const conn = await createTestConnection({
 			organization_id: orgId,
@@ -68,8 +94,18 @@ describe("list_feeds health filter and true total", () => {
 			{ key: "h3", status: "active", last: null, fails: 0 },
 			{ key: "bad1", status: "active", last: "failed", fails: 14 },
 			{ key: "bad2", status: "active", last: "success", fails: 3 },
-			{ key: "paused-manual-failed", status: "paused", last: "failed", fails: 1 },
-			{ key: "paused-auto-failed", status: "paused", last: "failed", fails: 20 },
+			{
+				key: "paused-manual-failed",
+				status: "paused",
+				last: "failed",
+				fails: 1,
+			},
+			{
+				key: "paused-auto-failed",
+				status: "paused",
+				last: "failed",
+				fails: 20,
+			},
 			{ key: "paused-healthy", status: "paused", last: "success", fails: 0 },
 		];
 		for (const f of feeds) {
@@ -237,22 +273,22 @@ describe("list_feeds health filter and true total", () => {
 		const sql = getTestDb();
 		await sql`
 			INSERT INTO feeds (
-				organization_id, connection_id, feed_key, status, kind, schedule,
+					organization_id, connection_id, feed_key, status, schedule,
 				next_run_at, last_sync_status, last_sync_at, consecutive_failures,
 				entity_ids, created_at, updated_at
 			) VALUES
 				(
-					${orgId}, ${conn.id}, 'scheduled-overdue', 'active', 'collected',
+						${orgId}, ${conn.id}, 'scheduled-overdue', 'active',
 					'0 * * * *', current_timestamp - interval '2 hours', 'success',
 					current_timestamp - interval '3 hours', 0, ARRAY[]::bigint[], NOW(), NOW()
 				),
 				(
-					${orgId}, ${conn.id}, 'scheduled-active', 'active', 'collected',
+						${orgId}, ${conn.id}, 'scheduled-active', 'active',
 					'0 * * * *', current_timestamp - interval '2 hours', 'success',
 					current_timestamp - interval '3 hours', 0, ARRAY[]::bigint[], NOW(), NOW()
 				),
 				(
-					${orgId}, ${conn.id}, 'no-schedule-old', 'active', 'collected',
+						${orgId}, ${conn.id}, 'no-schedule-old', 'active',
 					NULL, NULL, 'success', current_timestamp - interval '30 days', 0,
 					ARRAY[]::bigint[], NOW(), NOW()
 				)
@@ -274,13 +310,19 @@ describe("list_feeds health filter and true total", () => {
 		expect(byKey.get("scheduled-active")?.attention).toBe("healthy");
 		expect(byKey.get("no-schedule-old")?.attention).toBe("healthy");
 
-		const healthy = await runList({ connection_id: conn.id, health: "healthy" });
+		const healthy = await runList({
+			connection_id: conn.id,
+			health: "healthy",
+		});
 		expect(healthy.feeds.map((feed) => feed.feed_key).sort()).toEqual([
 			"no-schedule-old",
 			"scheduled-active",
 		]);
 
-		const failing = await runList({ connection_id: conn.id, health: "failing" });
+		const failing = await runList({
+			connection_id: conn.id,
+			health: "failing",
+		});
 		expect(failing.feeds.map((feed) => feed.feed_key)).toEqual([
 			"scheduled-overdue",
 		]);

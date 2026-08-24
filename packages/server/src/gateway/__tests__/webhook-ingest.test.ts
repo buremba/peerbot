@@ -1081,7 +1081,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			) VALUES (
 				${ORG}, ${connectorKey}, 'Atlassian', '1.0.0', 'active',
 				${sql.json({ upstream_url: "https://mcp.atlassian.com/v1/mcp" })},
-				${sql.json({ issues: { key: "issues", virtual: true } })}
+				${sql.json({ issues: { key: "issues", operations: ["read"] } })}
 			)
 		`;
 		const appProfile = await createAuthProfile({
@@ -1120,9 +1120,9 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		const id = String(connection.id);
 		await sql`
 			INSERT INTO feeds (
-				organization_id, connection_id, feed_key, display_name, status, kind, virtual, config
+				organization_id, connection_id, feed_key, display_name, status, config
 			) VALUES (
-				${ORG}, ${id}, 'issues', 'Issues', 'active', 'virtual', true, '{}'::jsonb
+				${ORG}, ${id}, 'issues', 'Issues', 'active', '{}'::jsonb
 			)
 		`;
 		await sql`
@@ -1166,10 +1166,10 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 		await getDb()`
 			INSERT INTO feeds (
-				organization_id, connection_id, feed_key, status, kind,
+					organization_id, connection_id, feed_key, status,
 				config, next_run_at, created_at, updated_at
 			) VALUES (
-				${ORG}, ${id}, 'issues', 'active', 'collected',
+					${ORG}, ${id}, 'issues', 'active',
 				${getDb().json({ repo_owner: "lobu-ai", repo_name: "lobu" })},
 				${future}::timestamptz, current_timestamp, current_timestamp
 			)
@@ -1361,10 +1361,10 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		`;
 		await getDb()`
 			INSERT INTO feeds (
-				organization_id, connection_id, feed_key, status, kind,
+					organization_id, connection_id, feed_key, status,
 				config, next_run_at, created_at, updated_at
 			) VALUES (
-				${ORG}, ${id}, 'issues', 'active', 'collected',
+					${ORG}, ${id}, 'issues', 'active',
 				${getDb().json({ repo_owner: "acme", repo_name: "api" })},
 				current_timestamp + interval '1 hour',
 				current_timestamp, current_timestamp

@@ -1,15 +1,14 @@
 /**
  * Far-end of the connector-side taxonomy pipe (lobu#2051 Item 2): when a connector
- * subprocess fails, query_sql re-throws with a code derived from the structured
- * `httpStatus` the executor propagates (from the SDK's HttpStatusError) — not from
- * keyword-matching the redacted message. This pins that classification.
- *
- * `classifyPushdownFailure` is the exact function query_sql's 502 throw sites call.
+ * subprocess fails, query_sql and manage_feeds re-throw with a code derived from
+ * the structured `httpStatus` the executor propagates (from the SDK's
+ * HttpStatusError) — not from keyword-matching the redacted message. This pins
+ * that classification.
  */
 
 import { describe, expect, it } from 'bun:test';
-import { isRetryable } from '@lobu/core';
-import { classifyPushdownFailure } from '../../tools/admin/query_sql';
+import { isRetryable, ToolError } from '@lobu/core';
+import { classifyPushdownFailure } from '../../lib/connector-pushdown';
 
 // Mirror of SubprocessError's surface: a message plus the propagated httpStatus.
 class SubprocessErrorLike extends Error {
@@ -59,5 +58,20 @@ describe('classifyPushdownFailure', () => {
     const code = classifyPushdownFailure(new SubprocessErrorLike('ECONNRESET', undefined));
     expect(code).toBe('NETWORK');
     expect(isRetryable(code)).toBe(true);
+  });
+
+  it('classifies a structured subprocess deadline as UPSTREAM_TIMEOUT', () => {
+    const error = Object.assign(new Error('redacted'), { exitReason: 'timeout' });
+    const code = classifyPushdownFailure(error);
+    expect(code).toBe('UPSTREAM_TIMEOUT');
+    expect(isRetryable(code)).toBe(true);
+  });
+
+  it('preserves a gateway-owned structured code regardless of message text', () => {
+    const code = classifyPushdownFailure(
+      new ToolError('NOT_FOUND', 'upstream body claimed an internal timeout'),
+    );
+    expect(code).toBe('NOT_FOUND');
+    expect(isRetryable(code)).toBe(false);
   });
 });

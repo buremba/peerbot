@@ -57,7 +57,10 @@ function mockWorkerCtx(body: unknown): {
   ctx: Context<{ Bindings: Env }>;
   result: () => { body: unknown; status: number };
 } {
-  let captured: { body: unknown; status: number } = { body: undefined, status: 200 };
+  let captured: { body: unknown; status: number } = {
+    body: undefined,
+    status: 200,
+  };
   const ctx = {
     req: { json: async () => body },
     var: {},
@@ -71,7 +74,7 @@ function mockWorkerCtx(body: unknown): {
 
 async function insertConnection(
   organizationId: string,
-  slug = 'chrome-backoff-test'
+  slug = 'chrome-backoff-test',
 ): Promise<number> {
   const sql = getTestDb();
   const rows = (await sql`
@@ -89,7 +92,7 @@ async function insertConnection(
 async function insertFeed(
   organizationId: string,
   connectionId: number,
-  consecutiveFailures: number
+  consecutiveFailures: number,
 ): Promise<number> {
   const sql = getTestDb();
   const rows = (await sql`
@@ -107,7 +110,7 @@ async function insertFeed(
 async function insertRunningRun(
   organizationId: string,
   connectionId: number,
-  feedId: number
+  feedId: number,
 ): Promise<number> {
   const sql = getTestDb();
   const rows = (await sql`
@@ -138,7 +141,7 @@ async function declareChromeFeeds(organizationId: string): Promise<void> {
        automation_events, status)
     VALUES (${organizationId}, 'chrome', 'Chrome', '1.0.0',
       ${sql.json({ methods: [] })},
-      ${sql.json({ 'chrome-feed': { name: 'Chrome feed' } })},
+      ${sql.json({ 'chrome-feed': { name: 'Chrome feed', operations: ['sync'] } })},
       ${sql.json([])},
       'active')
     ON CONFLICT DO NOTHING
@@ -209,14 +212,22 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       // Feed A: 1 prior failure → new count 2 → backoff 2000ms.
       const feedA = await insertFeed(org.id, connId, 1);
       const runA = await insertRunningRun(org.id, connId, feedA);
-      const a = mockWorkerCtx({ run_id: runA, worker_id: WORKER_ID, status: 'failed' });
+      const a = mockWorkerCtx({
+        run_id: runA,
+        worker_id: WORKER_ID,
+        status: 'failed',
+      });
       await completeWorkerJob(a.ctx);
 
       // Feed B: 9 prior failures → new count 10 → backoff capped at MAX_MS.
       const connId2 = await insertConnection(org.id, 'chrome-backoff-b');
       const feedB = await insertFeed(org.id, connId2, 9);
       const runB = await insertRunningRun(org.id, connId2, feedB);
-      const b = mockWorkerCtx({ run_id: runB, worker_id: WORKER_ID, status: 'failed' });
+      const b = mockWorkerCtx({
+        run_id: runB,
+        worker_id: WORKER_ID,
+        status: 'failed',
+      });
       await completeWorkerJob(b.ctx);
 
       const sql = getTestDb();
@@ -225,12 +236,17 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
                EXTRACT(EPOCH FROM (next_run_at - current_timestamp)) AS seconds_out
         FROM feeds WHERE id IN (${feedA}, ${feedB})
       `) as Array<{ id: number; seconds_out: number | string }>;
-      const outA = Number(rows.find((r) => Number(r.id) === feedA)?.seconds_out);
-      const outB = Number(rows.find((r) => Number(r.id) === feedB)?.seconds_out);
+      const outA = Number(
+        rows.find((r) => Number(r.id) === feedA)?.seconds_out,
+      );
+      const outB = Number(
+        rows.find((r) => Number(r.id) === feedB)?.seconds_out,
+      );
       // 10-failure feed is scheduled strictly further out than the 2-failure feed.
       expect(outB).toBeGreaterThan(outA);
     } finally {
-      process.env.FEED_PAUSE_AFTER_CONSECUTIVE_FAILURES = String(PAUSE_THRESHOLD);
+      process.env.FEED_PAUSE_AFTER_CONSECUTIVE_FAILURES =
+        String(PAUSE_THRESHOLD);
     }
   });
 

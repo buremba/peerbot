@@ -6,7 +6,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   type HttpClient,
@@ -86,7 +86,7 @@ function formatRecipients(
 // ---------------------------------------------------------------------------
 
 export default class MicrosoftOutlookConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'microsoft.outlook',
     name: 'Microsoft Outlook',
     description: 'Syncs emails and calendar events from Microsoft 365 via Graph API.',
@@ -123,6 +123,7 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
       messages: {
         key: 'messages',
         name: 'Messages',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: ['Mail.Read'],
         description: 'Syncs email messages from Outlook.',
         configSchema: {
@@ -169,6 +170,7 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
       calendar: {
         key: 'calendar',
         name: 'Calendar Events',
+        sync: (ctx) => this.syncFeed(ctx),
         requiredScopes: ['Calendars.Read'],
         description: 'Syncs calendar events from Outlook.',
         configSchema: {
@@ -226,7 +228,7 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const http = requireBearerClient(ctx.credentials, {
       errorPrefix: 'Microsoft Graph API',
       label: 'Microsoft Outlook',

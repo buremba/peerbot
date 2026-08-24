@@ -175,7 +175,7 @@ describe("refreshConnectorDefinitions", () => {
     `;
 		expect(after?.feeds_schema?.issues).toMatchObject({
 			key: "issues",
-			virtual: true,
+			operations: ["read"],
 		});
 	});
 });

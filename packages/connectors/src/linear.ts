@@ -1,21 +1,19 @@
 /**
  * Linear Connector (V1 runtime)
  *
- * Live-reads Linear issues via GraphQL (`query()` / `search()` for virtual
- * feeds) and optionally syncs them into events (`sync()` for collected feeds).
+ * Reads Linear issues via GraphQL and can sync them into events.
  * Real-time Issue/Comment deliveries arrive via app webhooks; raw deliveries
- * land downstream (extract-load). Virtual feeds never poll.
+ * land downstream (extract-load).
  */
 
 import { randomBytes } from 'node:crypto';
 import {
-  type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
-  type QueryContext,
-  type QueryResult,
+  type FeedReadContext,
+  type FeedReadResult,
   requireBearerClient,
-  type SearchContext,
+  type RuntimeConnectorDefinition,
   type SyncContext,
   type SyncCredentials,
   type SyncResult,
@@ -31,12 +29,13 @@ interface LinearConfig {
   /** Optional team filter (Linear team key, e.g. "ENG"). */
   team_key?: string;
   /**
-   * Optional free-text scope for virtual-feed reads (platform `config.query`).
-   * Combined with search() terms as containsIgnoreCase on title/description.
+   * Optional free-text scope for direct source reads (`config.query`).
+   * Combined with the caller's `ctx.query` as containsIgnoreCase on
+   * title/description.
    */
   query?: string;
   lookback_days?: number;
-  /** Optional cap on issues returned by one live virtual-feed read. */
+  /** Optional cap on issues returned by one direct source read. */
   max_results?: number;
 }
 
@@ -69,7 +68,7 @@ interface LinearIssueNode {
 
 const GRAPHQL_ENDPOINT = 'https://api.linear.app/graphql';
 
-/** Stable column set returned by live `query()`/`search()` pushdown reads. */
+/** Stable column set returned by direct source reads. */
 const LINEAR_ISSUE_COLUMNS = [
   { name: 'id', type: 'string' },
   { name: 'identifier', type: 'string' },
@@ -136,11 +135,11 @@ function buildLinearIssueFilter(args: {
 // ---------------------------------------------------------------------------
 
 export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, LinearConfig> {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<LinearCheckpoint, LinearConfig> = {
     key: 'linear',
     name: 'Linear',
     description:
-      'Live-reads Linear issues via GraphQL (virtual feeds) and receives real-time issue/comment webhooks.',
+      'Syncs and live-reads Linear issues via GraphQL, and receives real-time issue/comment webhooks.',
     version: '1.1.0',
     faviconDomain: 'linear.app',
     webhook: {
@@ -178,8 +177,9 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
         key: 'issues',
         name: 'Issues',
         description:
-          'Live Linear issues via GraphQL (virtual by default); collected sync remains available when explicitly requested.',
-        virtual: true,
+          'Linear issues can sync into memory and be read directly from Linear.',
+        sync: (ctx) => this.syncFeed(ctx),
+        read: (ctx) => this.readFeed(ctx),
         configSchema: {
           type: 'object',
           properties: {
@@ -190,7 +190,7 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
             query: {
               type: 'string',
               description:
-                'Optional free-text scope for virtual-feed reads (title/description contains).',
+                'Optional free-text scope for sync and source reads (title/description contains).',
             },
             lookback_days: {
               type: 'integer',
@@ -204,7 +204,7 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
               minimum: 1,
               maximum: 100,
               description:
-                'Optional cap on issues returned per virtual-feed read. The uncapped default request size is 50.',
+                'Optional cap on issues returned per source-read page. The uncapped default request size is 50.',
             },
           },
         },
@@ -240,34 +240,20 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
   private readonly MAX_PAGES = 50;
 
   // -------------------------------------------------------------------------
-  // Live pushdown (virtual feeds) — read-only, never persisted.
+  // Direct source read — read-only, never persisted.
   // -------------------------------------------------------------------------
 
-  async query(ctx: QueryContext<LinearConfig>): Promise<QueryResult> {
-    return this.liveSearch(ctx, []);
-  }
-
-  async search(ctx: SearchContext<LinearConfig>): Promise<QueryResult> {
-    return this.liveSearch(ctx, ctx.terms ?? []);
-  }
-
-  private async liveSearch(
-    ctx: QueryContext<LinearConfig>,
-    terms: string[],
-  ): Promise<QueryResult> {
+  private async readFeed(ctx: FeedReadContext<LinearConfig>): Promise<FeedReadResult> {
     if (!ctx.credentials?.accessToken) {
-      throw new Error('Linear virtual-feed reads require Linear OAuth credentials.');
+      throw new Error('Linear source reads require Linear OAuth credentials.');
     }
     if (ctx.sort) {
       throw new Error(
-        'Linear virtual feed does not support caller-defined sort; issues are ordered by updatedAt.',
+        'Linear source read does not support caller-defined sort; issues are ordered by updatedAt.',
       );
     }
 
-    const textTerms = [
-      asString(ctx.query) ?? asString(ctx.config.query) ?? '',
-      ...terms.map((t) => t.trim()),
-    ].filter(Boolean);
+    const textTerms = [asString(ctx.config.query) ?? '', asString(ctx.query) ?? ''].filter(Boolean);
 
     const lookbackDays = Math.min(Math.max(ctx.config.lookback_days ?? 90, 1), 730);
     const updatedAfter = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
@@ -285,67 +271,46 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
         : Math.min(Math.max(Math.trunc(ctx.config.max_results), 1), 100);
     const limit = Math.min(requestedLimit, configuredMax);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
-    const want = offset + limit;
-    // Cursor pagination has no random access — walk from the start. Cap depth so
-    // a huge offset never returns a silent empty page while more issues exist.
-    const maxReachable = this.PAGE_SIZE * this.MAX_PAGES;
-    if (want > maxReachable) {
+    if (offset > 0) {
       throw new Error(
-        `Linear virtual feed: offset+limit (${want}) exceeds max reachable depth ${maxReachable}. Narrow the filter or lower offset.`,
+        'Linear source reads paginate with the returned cursor, not an offset.',
       );
     }
 
-    const collected: LinearIssueNode[] = [];
-    let cursor: string | null = null;
-    let pages = 0;
-    let sourceExhausted = false;
-
-    while (collected.length < want && pages < this.MAX_PAGES) {
-      pages += 1;
-      const after: string = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
-      const pageSize = Math.min(this.PAGE_SIZE, want - collected.length);
-      const gql: string = `
-        query {
-          issues(first: ${pageSize}${after}, orderBy: updatedAt${filter}) {
-            pageInfo { hasNextPage endCursor }
-            nodes { ${ISSUE_NODE_SELECTION} }
-          }
+    const after = ctx.cursor ? `, after: ${JSON.stringify(ctx.cursor)}` : '';
+    const gql = `
+      query {
+        issues(first: ${Math.min(this.PAGE_SIZE, limit)}${after}, orderBy: updatedAt${filter}) {
+          pageInfo { hasNextPage endCursor }
+          nodes { ${ISSUE_NODE_SELECTION} }
         }
-      `;
-      const response: {
-        issues?: {
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
-          nodes?: LinearIssueNode[];
-        };
-      } = await this.graphql(ctx.credentials, gql);
-
-      const nodes = response.issues?.nodes ?? [];
-      collected.push(...nodes);
-      const pageInfo: { hasNextPage?: boolean; endCursor?: string | null } | undefined =
-        response.issues?.pageInfo;
-      if (!pageInfo?.hasNextPage || !pageInfo.endCursor || nodes.length === 0) {
-        sourceExhausted = true;
-        break;
       }
-      cursor = pageInfo.endCursor;
-    }
+    `;
+    const response: {
+      issues?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: LinearIssueNode[];
+      };
+    } = await this.graphql(ctx.credentials, gql);
 
-    if (collected.length < want && !sourceExhausted && pages >= this.MAX_PAGES) {
-      throw new Error(
-        `Linear virtual feed: pagination depth cap (${this.MAX_PAGES} pages × ${this.PAGE_SIZE}) hit before offset+limit (${want}). Narrow the filter or lower offset.`,
-      );
-    }
-
-    const page = collected.slice(offset, offset + limit);
-    const rows = page.map((n) => this.issueRow(n)).filter((r) => r !== null);
-    return { rows, columns: [...LINEAR_ISSUE_COLUMNS] };
+    const rows = (response.issues?.nodes ?? [])
+      .map((node) => this.issueRow(node))
+      .filter((row) => row !== null);
+    const pageInfo = response.issues?.pageInfo;
+    const nextCursor = pageInfo?.hasNextPage ? pageInfo.endCursor ?? undefined : undefined;
+    return {
+      rows,
+      columns: [...LINEAR_ISSUE_COLUMNS],
+      nextCursor,
+      hasMore: Boolean(nextCursor),
+    };
   }
 
   // -------------------------------------------------------------------------
-  // sync (collected feeds only — virtual feeds never call this)
+  // Sync into local memory.
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext<LinearCheckpoint, LinearConfig>): Promise<SyncResult<LinearCheckpoint>> {
+  private async syncFeed(ctx: SyncContext<LinearCheckpoint, LinearConfig>): Promise<SyncResult<LinearCheckpoint>> {
     const events: EventEnvelope[] = [];
     let cursor: string | null = null;
     let pages = 0;

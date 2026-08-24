@@ -260,6 +260,8 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // phase-2 DROP COLUMN migration.
     feeds: new Set([
       'checkpoint',
+      'kind',
+      'virtual',
       'repair_agent_id',
       'repair_thread_id',
       'repair_attempt_count',

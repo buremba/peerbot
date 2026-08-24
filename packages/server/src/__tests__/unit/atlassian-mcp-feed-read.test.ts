@@ -5,7 +5,7 @@ const calls: Array<{
 	args: Record<string, unknown>;
 }> = [];
 
-let responseMode: "normal" | "ambiguous-sites" | "endless-pages" = "normal";
+let responseMode: "normal" | "ambiguous-sites" = "normal";
 
 mock.module("../../mcp-proxy/client", () => ({
 	discoverTools: async () => [],
@@ -40,20 +40,6 @@ mock.module("../../mcp-proxy/client", () => ({
 									]
 								: [{ id: "cloud-1", url: "https://acme.atlassian.net" }],
 						),
-					},
-				],
-			};
-		}
-		if (responseMode === "endless-pages") {
-			return {
-				isError: false,
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							issues: [{ id: String(calls.length), key: `KAN-${calls.length}` }],
-							nextPageToken: `page-${calls.length}`,
-						}),
 					},
 				],
 			};
@@ -93,17 +79,17 @@ mock.module("../../mcp-proxy/client", () => ({
 	},
 }));
 
-let readAtlassianMcpVirtualFeed: typeof import("../../operations/atlassian-mcp-feed").readAtlassianMcpVirtualFeed;
+let readAtlassianMcpFeed: typeof import("../../operations/atlassian-mcp-feed").readAtlassianMcpFeed;
 
 beforeAll(async () => {
-	({ readAtlassianMcpVirtualFeed } = await import("../../operations/atlassian-mcp-feed"));
+	({ readAtlassianMcpFeed } = await import("../../operations/atlassian-mcp-feed"));
 });
 
-describe("readAtlassianMcpVirtualFeed", () => {
-	it("pages with nextPageToken and windows offset/limit across pages", async () => {
+describe("readAtlassianMcpFeed", () => {
+	it("returns nextPageToken and passes it to the next source request", async () => {
 		calls.length = 0;
 		responseMode = "normal";
-		const result = await readAtlassianMcpVirtualFeed({
+		const first = await readAtlassianMcpFeed({
 			organizationId: "org-1",
 			connectionId: 505,
 			connectorKey: "mcp.mcp-atlassian-com",
@@ -111,33 +97,45 @@ describe("readAtlassianMcpVirtualFeed", () => {
 				upstream_url: "https://mcp.atlassian.com/v1/mcp",
 				tool_prefix: "mcp_atlassian_com",
 			},
-			feedConfig: {},
+			feedConfig: { cloud_id: "cloud-1" },
 			connectionConfig: {},
-			query: "project = KAN",
-			offset: 2,
+			baseQuery: "project = KAN",
 			limit: 2,
 		});
 
-		expect(calls.map((call) => call.tool)).toEqual([
-			"getAccessibleAtlassianResources",
-			"searchJiraIssuesUsingJql",
-			"searchJiraIssuesUsingJql",
-		]);
-		expect(calls[1].args).toMatchObject({
+		expect(calls.map((call) => call.tool)).toEqual(["searchJiraIssuesUsingJql"]);
+		expect(calls[0].args).toMatchObject({
 			cloudId: "cloud-1",
 			jql: "project = KAN ORDER BY updated DESC",
 			maxResults: 2,
 		});
-		expect(calls[1].args.nextPageToken).toBeUndefined();
-		expect(calls[2].args.nextPageToken).toBe("page-2");
-		expect(result.rows.map((row) => row.key)).toEqual(["KAN-3", "KAN-4"]);
+		expect(first.rows.map((row) => row.key)).toEqual(["KAN-1", "KAN-2"]);
+		expect(first.nextCursor).toBe("page-2");
+
+		const second = await readAtlassianMcpFeed({
+			organizationId: "org-1",
+			connectionId: 505,
+			connectorKey: "mcp.mcp-atlassian-com",
+			mcpConfig: {
+				upstream_url: "https://mcp.atlassian.com/v1/mcp",
+				tool_prefix: "mcp_atlassian_com",
+			},
+			feedConfig: { cloud_id: "cloud-1" },
+			connectionConfig: {},
+			baseQuery: "project = KAN",
+			cursor: first.nextCursor,
+			limit: 2,
+		});
+		expect(calls[1].args.nextPageToken).toBe("page-2");
+		expect(second.rows.map((row) => row.key)).toEqual(["KAN-3", "KAN-4"]);
+		expect(second.hasMore).toBe(false);
 	});
 
 	it("rejects an ambiguous multi-site grant", async () => {
 		calls.length = 0;
 		responseMode = "ambiguous-sites";
 		await expect(
-			readAtlassianMcpVirtualFeed({
+			readAtlassianMcpFeed({
 				organizationId: "org-1",
 				connectionId: 505,
 				connectorKey: "mcp.mcp-atlassian-com",
@@ -147,16 +145,16 @@ describe("readAtlassianMcpVirtualFeed", () => {
 				},
 				feedConfig: {},
 				connectionConfig: {},
-				query: "project = KAN",
+				baseQuery: "project = KAN",
 			}),
 		).rejects.toThrow("multiple accessible Jira sites");
 	});
 
-	it("fails visibly when the bounded page budget cannot fill the requested window", async () => {
+	it("rejects offsets so callers cannot force a provider page re-walk", async () => {
 		calls.length = 0;
-		responseMode = "endless-pages";
+		responseMode = "normal";
 		await expect(
-			readAtlassianMcpVirtualFeed({
+			readAtlassianMcpFeed({
 				organizationId: "org-1",
 				connectionId: 505,
 				connectorKey: "mcp.mcp-atlassian-com",
@@ -166,10 +164,11 @@ describe("readAtlassianMcpVirtualFeed", () => {
 				},
 				feedConfig: { cloud_id: "cloud-1", max_results: 1 },
 				connectionConfig: {},
-				query: "project = KAN",
+				baseQuery: "project = KAN",
 				offset: 20,
 				limit: 1,
 			}),
-		).rejects.toThrow("pagination limit");
+		).rejects.toThrow("returned cursor");
+		expect(calls).toHaveLength(0);
 	});
 });

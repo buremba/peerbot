@@ -1,83 +1,75 @@
 # Connector SDK
 
-Connectors are TypeScript modules that sync data from external services into Lobu and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is a class extending `ConnectorRuntime` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. The functional `defineConnector({ ... })` helper lowers to the same class shape. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
+Connectors are TypeScript modules that sync data from external services into Lobu, read configured feeds directly from their source, and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is created with `defineConnector({ ... })` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
 
 ## Quick Start
 
 ```typescript
 import {
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  type SyncContext,
-  type SyncResult,
+  defineConnector,
   type EventEnvelope,
 } from '@lobu/connector-sdk';
 
-export default class MyConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
-    key: 'my_connector',
-    name: 'My Connector',
-    description: 'Fetches data from My Service.',
-    version: '1.0.0',
-    faviconDomain: 'example.com',
-    authSchema: {
-      methods: [{ type: 'none' }],
-    },
-    feeds: {
-      items: {
-        key: 'items',
-        name: 'Items',
-        description: 'Sync items from the service.',
-        configSchema: {
-          type: 'object',
-          required: ['query'],
-          properties: {
-            query: { type: 'string', description: 'Search query' },
-          },
+export default defineConnector({
+  key: 'my_connector',
+  name: 'My Connector',
+  description: 'Fetches data from My Service.',
+  version: '1.0.0',
+  faviconDomain: 'example.com',
+  authSchema: { methods: [{ type: 'none' }] },
+  feeds: {
+    items: {
+      name: 'Items',
+      description: 'Sync items from the service.',
+      configSchema: {
+        type: 'object',
+        required: ['query'],
+        properties: {
+          query: { type: 'string', description: 'Search query' },
         },
-        eventKinds: {
-          item: {
-            description: 'An item from the service',
-            metadataSchema: {
-              type: 'object',
-              properties: {
-                score: { type: 'number' },
-              },
+      },
+      eventKinds: {
+        item: {
+          description: 'An item from the service',
+          metadataSchema: {
+            type: 'object',
+            properties: {
+              score: { type: 'number' },
             },
           },
         },
       },
+      sync: async (ctx) => {
+        const query = ctx.config.query as string;
+        // Fetch data, transform to events...
+        const events: EventEnvelope[] = [];
+
+        return {
+          events,
+          checkpoint: { last_sync_at: new Date().toISOString() },
+          metadata: { query, items_found: events.length },
+        };
+      },
     },
-  };
-
-  async sync(ctx: SyncContext): Promise<SyncResult> {
-    const query = ctx.config.query as string;
-    // Fetch data, transform to events...
-    const events: EventEnvelope[] = [];
-
-    return {
-      events,
-      checkpoint: { last_sync_at: new Date().toISOString() },
-      metadata: { items_found: events.length },
-    };
-  }
-}
+  },
+});
 ```
 
-## Connector Definition
+## Connector Spec
 
-The `definition` property declares everything about your connector: metadata, auth requirements, available feeds, actions, and configuration schemas.
+The object passed to `defineConnector` declares connector metadata, auth,
+handler-bearing feeds, actions, and optional connection-level handlers:
 
 ```typescript
-interface ConnectorDefinition {
+interface ConnectorSpec {
   key: string;                              // Unique identifier (e.g. 'github', 'rss')
   name: string;                             // Display name
   description?: string;                     // What this connector does
   version: string;                          // Semver
   faviconDomain?: string;                   // Domain for favicon lookup (e.g. 'github.com')
   authSchema?: ConnectorAuthSchema;         // Authentication configuration
-  feeds?: Record<string, FeedDefinition>;   // Data sources (keyed by feed_key)
-  actions?: Record<string, ActionDefinition>; // Write-back actions
+  feeds?: Record<string, ConnectorFeedSpec>; // Per-feed sync/read handlers
+  actions?: Record<string, ConnectorActionSpec>; // Write-back handlers
   automationEvents?: ConnectorAutomationEvent[]; // Explicit Automation trigger catalog
   optionsSchema?: Record<string, unknown>;  // Global connector options (JSON Schema)
   mcpConfig?: { upstreamUrl: string };      // Proxy an upstream MCP server
@@ -88,6 +80,7 @@ interface ConnectorDefinition {
     includeTags?: string[];
     serverUrl?: string;
   };
+  query?(ctx: QueryContext): Promise<QueryResult>; // Connection-level SQL/warehouse pushdown
 }
 ```
 
@@ -196,35 +189,88 @@ Use `'cdp'` for services like Google that block headless browsers — it connect
 
 ## Feeds
 
-Feeds define the data sources your connector can sync. Each feed has:
+Each feed is one configured data surface with a `sync` handler, a `read`
+handler, or both. `defineConnector` derives the published `operations` metadata
+from those handlers, so authors do not declare a separate mode:
 
 ```typescript
-interface FeedDefinition {
-  key: string;                    // Unique identifier within the connector
-  name: string;                   // Display name
-  description?: string;           // What this feed syncs
-  displayNameTemplate?: string;   // Template using config values: "{repo_owner}/{repo_name} issues"
-  configSchema?: object;          // JSON Schema for feed-specific configuration
-  eventKinds?: Record<string, {   // Event types this feed produces
+type ConnectorFeedSpec = {
+  name: string;
+  description?: string;
+  displayNameTemplate?: string;   // "{repo_owner}/{repo_name} issues"
+  configSchema?: object;          // JSON Schema for persisted feed-instance config
+  userManaged?: boolean;          // Do not create automatically
+  eventKinds?: Record<string, {   // Durable event types produced by sync
     description?: string;
-    metadataSchema?: object;      // JSON Schema for event metadata
+    metadataSchema?: object;
   }>;
-}
+} & (
+  | { sync: FeedSyncHandler; read?: FeedReadHandler }
+  | { sync?: FeedSyncHandler; read: FeedReadHandler }
+);
 ```
 
-The feed key is passed to `sync()` as `ctx.feedKey`, so a single connector can handle multiple feed types by switching on `ctx.feedKey`.
+The record key becomes the feed key. A `sync` handler publishes
+`operations: ['sync']`, a `read` handler publishes `['read']`, and defining both
+publishes `['sync', 'read']`. Metadata-only device or MCP connector definitions
+declare `operations` explicitly because their executable handlers live outside
+the connector process.
+
+`configSchema` describes the persisted feed instance, not one operation. Its
+top-level `required` fields are therefore enforced for read-only, sync-only,
+and hybrid feeds alike. If an input is optional for one handler, model that
+optionality in the schema instead of relying on the feed's capabilities.
+
+Capabilities and storage are independent. `sync` may materialize events for
+local search and relational queries; `read` returns source-owned rows without
+persisting them. Webhooks are a delivery path, not another feed mode.
+
+```typescript
+feeds: {
+  issues: {
+    name: 'Issues',
+    configSchema: {
+      type: 'object',
+      required: ['project'],
+      properties: { project: { type: 'string' } },
+      additionalProperties: false,
+    },
+    eventKinds: {
+      issue: { description: 'An issue changed' },
+    },
+    // Incremental materialization for local search and Automations.
+    sync: async (ctx) => ({
+      events: await fetchChangedIssues(ctx.config.project, ctx.checkpoint),
+      checkpoint: { synced_at: new Date().toISOString() },
+    }),
+    // Direct source read with native filtering and pagination.
+    read: async (ctx) => {
+      const page = await queryIssues({
+        project: ctx.config.project,
+        query: ctx.query,
+        cursor: ctx.cursor,
+        limit: ctx.limit,
+      });
+      return { rows: page.rows, nextCursor: page.nextCursor };
+    },
+  },
+}
+```
 
 A feed's `eventKinds` are also the **default Automation trigger catalog**. The first successful non-dry sync establishes a baseline without activation; later inserts whose kind matches a declared `eventKinds` key activate subscribers. A non-empty `automationEvents` declaration (camelCase in `ConnectorDefinition`, persisted as `automation_events` in the catalog) replaces that derived catalog in the trigger picker. Keys that differ from the feed's `eventKinds` fire only when the emitted `EventEnvelope` carries matching `automation_signals`.
 
 ## Syncing Data
 
-The worker calls `sync()` for scheduled and manually triggered sync runs. It receives a `SyncContext` and returns a `SyncResult`.
+The worker calls the selected feed's `sync` handler for scheduled,
+webhook-triggered, and manually triggered sync runs. It receives a `SyncContext`
+and returns a `SyncResult`.
 
 ### SyncContext
 
 ```typescript
 interface SyncContext {
   feedKey: string;                          // Which feed to sync
+  feedId?: number;                          // Stable configured feed-instance ID
   config: Record<string, unknown>;          // Feed + connector config merged
   checkpoint: Record<string, unknown> | null; // Previous checkpoint (null on first sync)
   credentials: SyncCredentials | null;      // OAuth/session credentials; env_keys are in config
@@ -281,16 +327,52 @@ Use checkpoints to implement incremental sync. Common patterns:
 
 For long-running syncs, use `ctx.emitEvents()` to stream event batches to the platform as they're collected, and `ctx.updateCheckpoint()` to persist progress. If the sync crashes mid-way, the next run resumes from the last saved checkpoint.
 
-## Actions
+## Reading from the Source
 
-Actions let connectors write back to external services (e.g. create a GitHub issue). Define them in `definition.actions`:
+The platform invokes a feed's `read` handler only through an explicit source
+read such as `client.feeds.readMany`. Local `search_memory` does not call source
+systems; its coverage result tells the agent which visible feeds it may choose
+to read.
 
 ```typescript
-interface ActionDefinition {
-  key: string;                    // Unique identifier
+interface FeedReadContext {
+  feedId?: number;
+  feedKey: string;
+  query?: string;
+  cursor?: string;                         // Opaque source continuation token
+  config: Record<string, unknown>;
+  credentials: SyncCredentials | null;
+  sessionState?: Record<string, unknown>;
+  limit?: number;
+  offset?: number;
+  sort?: { column: string; order: 'asc' | 'desc' };
+}
+
+interface FeedReadResult {
+  rows: Record<string, unknown>[];
+  columns?: Array<{ name: string; type: string }>;
+  total?: number;
+  nextCursor?: string;
+  hasMore?: boolean;
+}
+```
+
+Push filtering, sorting, pagination, and SQL into the provider when it supports
+them. A connection-level `query` handler remains a separate seam for governed
+ad-hoc SQL and warehouse pushdown; configured feed reads belong on
+`feeds[key].read`.
+
+## Actions
+
+Actions let connectors write back to external services (e.g. create a GitHub
+issue). Define them in the `actions` record passed to `defineConnector`. The
+record key becomes the action key and `requiresApproval` defaults to `false`:
+
+```typescript
+interface ConnectorActionSpec {
   name: string;                   // Display name
   description?: string;           // What this action does
-  requiresApproval: boolean;      // Whether user must approve before execution
+  requiresApproval?: boolean;     // Whether user must approve before execution
   inputSchema?: object;           // JSON Schema for action input
   outputSchema?: object;          // JSON Schema for action output
   annotations?: {                 // MCP tool annotations for client-side UX
@@ -298,6 +380,7 @@ interface ActionDefinition {
     openWorldHint?: boolean;      // Action interacts with external systems
     idempotentHint?: boolean;     // Safe to retry without side effects
   };
+  execute(ctx: ActionContext): Promise<ActionResult>;
 }
 ```
 
@@ -306,7 +389,6 @@ Example:
 ```typescript
 actions: {
   create_issue: {
-    key: 'create_issue',
     name: 'Create Issue',
     description: 'Create a new issue in the repository.',
     requiresApproval: true,
@@ -329,33 +411,18 @@ actions: {
         url: { type: 'string' },
       },
     },
+    execute: async (ctx) => {
+      const result = await createIssue(ctx.input.title, ctx.input.body);
+      return {
+        success: true,
+        output: { issue_number: result.number, url: result.url },
+      };
+    },
   },
 }
 ```
 
-Handle actions in `execute()`:
-
-```typescript
-async execute(ctx: ActionContext): Promise<ActionResult> {
-  // ctx.actionKey  - which action to run
-  // ctx.input      - validated input matching inputSchema
-  // ctx.credentials - auth tokens (SyncCredentials | null)
-  // ctx.config     - connector config
-
-  switch (ctx.actionKey) {
-    case 'create_issue':
-      const result = await createIssue(ctx.input.title, ctx.input.body);
-      return { success: true, output: { issue_number: result.number, url: result.url } };
-    default:
-      return { success: false, error: `Unknown action: ${ctx.actionKey}` };
-  }
-}
-```
-
-If your connector doesn't support actions, do nothing — the base
-`ConnectorRuntime` class ships a default `execute()` that returns
-`{ success: false, error: 'Actions not supported' }`. Omit the method
-entirely.
+If your connector doesn't support actions, omit the `actions` record entirely.
 
 ## Options Schema
 
@@ -414,10 +481,9 @@ Review-site scrapers (Trustpilot, G2, etc.) live in `examples/brand-intelligence
 not bundled because scraping may violate third-party terms of service.
 
 ```typescript
-import { launchBrowser, runReviewScrape } from '@lobu/connector-sdk';
+import { runReviewScrape, type SyncContext } from '@lobu/connector-sdk';
 
-async sync(ctx: SyncContext): Promise<SyncResult> {
-  return runReviewScrape(ctx, {
+const syncReviews = (ctx: SyncContext) => runReviewScrape(ctx, {
     connectorKey: 'my-connector-sync',
     baseUrl: 'https://www.example.com/reviews',
     expectedDomain: 'example.com',
@@ -426,7 +492,6 @@ async sync(ctx: SyncContext): Promise<SyncResult> {
     gotoTimeoutMs: 30000,
     extract: async (page, cardsFound) => ({ /* ... */ }),
   });
-}
 ```
 
 For user-session scraping (logged-in sites), use the Chrome extension bridge

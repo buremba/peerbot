@@ -148,7 +148,7 @@ describe("ClientSDK object signature contract", () => {
 
 		await entities.get({ entity_id: 11 });
 		await entities.delete({ entity_id: 12, force_delete_tree: true });
-		await feeds.get({ feed_id: 21, search_term: "urgent" });
+		await feeds.get({ feed_id: 21 });
 		await feeds.trigger({ feed_id: 22 });
 		await feeds.delete({ feed_id: 23 });
 		await classifiers.delete({ classifier_id: 31 });
@@ -170,7 +170,7 @@ describe("ClientSDK object signature contract", () => {
 			},
 			{
 				action: "read_feed",
-				input: { feed_id: 21, search_term: "urgent" },
+				input: { feed_id: 21 },
 			},
 			{ action: "trigger_feed", input: { feed_id: 22 } },
 			{ action: "delete_feed", input: { feed_id: 23 } },

@@ -8,15 +8,14 @@
 import {
   type ActionContext,
   type ActionResult,
-  type ConnectorDefinition,
   ConnectorRuntime,
   createHttpClient,
   type EventEnvelope,
   type HttpClient,
   paginateByCursor,
-  type QueryContext,
-  type QueryResult,
-  type SearchContext,
+  type FeedReadContext,
+  type FeedReadResult,
+  type RuntimeConnectorDefinition,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -120,8 +119,8 @@ function isSyncTokenRejection(status: number, body: string): boolean {
 // Connector
 // ---------------------------------------------------------------------------
 
-export default class GoogleCalendarConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+export default class GoogleCalendarConnector extends ConnectorRuntime<Record<string, unknown>, CalendarConfig> {
+  readonly definition: RuntimeConnectorDefinition<Record<string, unknown>, CalendarConfig> = {
     key: 'google.calendar',
     name: 'Google Calendar',
     description: 'Syncs calendar events from Google Calendar and supports creating new events.',
@@ -151,8 +150,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         name: 'Events',
         requiredScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
         description:
-          'Live Google Calendar events (virtual by default); reads current state directly from Google without copying events into Lobu.',
-        virtual: true,
+          'Google Calendar events can sync into memory and be read directly from Google.',
+        sync: (ctx) => this.syncFeed(ctx),
+        read: (ctx) => this.readFeed(ctx),
         configSchema: {
           type: 'object',
           properties: {
@@ -202,7 +202,8 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         name: 'Calendar changes',
         requiredScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
         description:
-          'Durable incremental Google Calendar changes for Automations and event-driven workflows. Collected only when explicitly created.',
+          'Durable incremental Google Calendar changes for Automations and event-driven workflows.',
+        sync: (ctx) => this.syncFeed(ctx),
         configSchema: {
           type: 'object',
           properties: {
@@ -333,35 +334,17 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   private readonly BASE_URL = 'https://www.googleapis.com/calendar/v3';
 
   // -------------------------------------------------------------------------
-  // Live pushdown (virtual events feed) — current state, never persisted.
+  // Direct source read — current state, never persisted.
   // -------------------------------------------------------------------------
 
-  async query(ctx: QueryContext<CalendarConfig>): Promise<QueryResult> {
-    return this.liveRead(ctx, []);
-  }
-
-  async search(ctx: SearchContext<CalendarConfig>): Promise<QueryResult> {
-    return this.liveRead(ctx, ctx.terms ?? []);
-  }
-
-  private async liveRead(
-    ctx: QueryContext<CalendarConfig>,
-    terms: string[]
-  ): Promise<QueryResult> {
+  private async readFeed(ctx: FeedReadContext<CalendarConfig>): Promise<FeedReadResult> {
     const token = ctx.credentials?.accessToken;
     if (!token) {
-      throw new Error('Google Calendar virtual-feed reads require Google OAuth credentials.');
-    }
-    if (ctx.feedKey && ctx.feedKey !== 'events') {
-      throw new Error(
-        "Google Calendar live queries are only supported for the virtual events feed; got '" +
-          ctx.feedKey +
-          "'."
-      );
+      throw new Error('Google Calendar source reads require Google OAuth credentials.');
     }
     if (ctx.sort && !(ctx.sort.column === 'start_time' && ctx.sort.order === 'asc')) {
       throw new Error(
-        "Google Calendar virtual feed only supports sort {column:'start_time', order:'asc'}."
+        "Google Calendar source reads only support sort {column:'start_time', order:'asc'}."
       );
     }
 
@@ -375,15 +358,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     );
     const limit = Math.min(requestedLimit, configuredLimit);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
-    const want = offset + limit;
-    const maxReachable = 250 * 200;
-    if (want > maxReachable) {
+    if (offset > 0) {
       throw new Error(
-        'Google Calendar virtual feed offset+limit (' +
-          want +
-          ') exceeds max reachable depth ' +
-          maxReachable +
-          '. Narrow the query or lower offset.'
+        'Google Calendar source reads paginate with the returned cursor, not an offset.'
       );
     }
 
@@ -392,58 +369,41 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     const timeMax = new Date();
     timeMax.setDate(timeMax.getDate() + lookaheadDays);
 
-    const baseQuery = (ctx.query || ctx.config.query || '').trim();
-    const queryParts = [baseQuery, ...terms.map((term) => term.trim())].filter(Boolean);
+    const queryParts = [ctx.config.query, ctx.query].map((part) => part?.trim()).filter(Boolean);
     const q = queryParts.join(' ');
     const http = this.client(token);
-    const rows: Record<string, unknown>[] = [];
-    let pageToken: string | undefined;
-    let pages = 0;
+    const params = new URLSearchParams({
+      maxResults: String(Math.min(250, limit)),
+      orderBy: 'startTime',
+      singleEvents: 'true',
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+    });
+    if (q) params.set('q', q);
+    if (ctx.cursor) params.set('pageToken', ctx.cursor);
 
-    while (rows.length < want && pages < 200) {
-      pages += 1;
-      const params = new URLSearchParams({
-        maxResults: String(Math.min(250, Math.max(1, want - rows.length))),
-        orderBy: 'startTime',
-        singleEvents: 'true',
-        timeMin: timeMin.toISOString(),
-        timeMax: timeMax.toISOString(),
-      });
-      if (q) params.set('q', q);
-      if (pageToken) params.set('pageToken', pageToken);
-
-      const url =
-        this.BASE_URL +
-        '/calendars/' +
-        encodeURIComponent(calendarId) +
-        '/events?' +
-        params.toString();
-      const response = await http.raw(url);
-      if (!response.ok) {
-        throw new Error(
-          'Calendar events.list error (' + response.status + '): ' + (await response.text())
-        );
-      }
-      const data = (await response.json()) as CalendarEventListResponse;
-      for (const event of data.items ?? []) {
-        const row = this.calendarEventToRow(event);
-        if (row) rows.push(row);
-      }
-      if (!data.nextPageToken || (data.items ?? []).length === 0) break;
-      pageToken = data.nextPageToken;
-    }
-
-    if (rows.length < want && pageToken && pages >= 200) {
+    const url =
+      this.BASE_URL +
+      '/calendars/' +
+      encodeURIComponent(calendarId) +
+      '/events?' +
+      params.toString();
+    const response = await http.raw(url);
+    if (!response.ok) {
       throw new Error(
-        'Google Calendar virtual feed pagination depth cap hit before offset+limit (' +
-          want +
-          '). Narrow the query or lower offset.'
+        'Calendar events.list error (' + response.status + '): ' + (await response.text())
       );
     }
+    const data = (await response.json()) as CalendarEventListResponse;
+    const rows = (data.items ?? [])
+      .map((event) => this.calendarEventToRow(event))
+      .filter((row): row is Record<string, unknown> => row !== null);
 
     return {
-      rows: rows.slice(offset, offset + limit),
+      rows,
       columns: [...CALENDAR_EVENT_COLUMNS],
+      nextCursor: data.nextPageToken,
+      hasMore: Boolean(data.nextPageToken),
     };
   }
 
@@ -451,7 +411,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const token = ctx.credentials?.accessToken;
     if (!token) {
       throw new Error('Google Calendar requires Google OAuth credentials.');

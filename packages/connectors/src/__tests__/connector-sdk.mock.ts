@@ -79,6 +79,39 @@ export function connectorSdkMock() {
   const notUsed = (name: string) => () => {
     throw new Error(`${name} is not used in connector unit tests`);
   };
+  class ConnectorRuntime {
+    definition!: {
+      key: string;
+      feeds?: Record<
+        string,
+        {
+          sync?: (ctx: unknown) => Promise<unknown>;
+          read?: (ctx: unknown) => Promise<unknown>;
+        }
+      >;
+    };
+
+    async sync(ctx: { feedKey: string }): Promise<unknown> {
+      const handler = this.definition.feeds?.[ctx.feedKey]?.sync;
+      if (!handler) {
+        throw new Error(
+          `${this.definition.key} feed '${ctx.feedKey}' does not support sync`,
+        );
+      }
+      return handler(ctx);
+    }
+
+    async read(ctx: { feedKey: string }): Promise<unknown> {
+      const handler = this.definition.feeds?.[ctx.feedKey]?.read;
+      if (!handler) {
+        throw new Error(
+          `${this.definition.key} feed '${ctx.feedKey}' does not support source reads`,
+        );
+      }
+      return handler(ctx);
+    }
+  }
+  class IntegrationConnector extends ConnectorRuntime {}
   return {
     // Sole platform entity-type slug for ACL-gated resources. Inlined (not
     // imported from connector-sdk/src) to keep this mock valid when copied
@@ -206,8 +239,8 @@ export function connectorSdkMock() {
     requireBearerClient: notUsed('requireBearerClient'),
     paginateByCursor,
     paginateByOffset,
-    ConnectorRuntime: class {},
-    IntegrationConnector: class {},
+    ConnectorRuntime,
+    IntegrationConnector,
     calculateEngagementScore: () => 0,
     SubscriptionCandidateSchema: {
       type: 'object',

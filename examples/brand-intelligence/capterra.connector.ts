@@ -4,7 +4,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
@@ -24,7 +24,7 @@ interface CapterraReview {
 }
 
 export default class CapterraConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "capterra",
     name: "Capterra",
     version: "1.0.0",
@@ -35,6 +35,7 @@ export default class CapterraConnector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "Reviews",
         description: "Capterra software reviews",
@@ -88,7 +89,7 @@ export default class CapterraConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const productId = ctx.config.product_id as string;
     const productName = ctx.config.product_name as string | undefined;
 

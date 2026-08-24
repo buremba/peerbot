@@ -1,13 +1,20 @@
 /**
  * Pushdown: run a read-only query LIVE against a connection's source by invoking
  * its connector in `query` mode — no copy, no events. Used by query_sql when a
- * `connection` is given, and by virtual-feed reads ({@link readVirtualFeed}).
+ * `connection` is given.
  * The DB socket lives in the connector subprocess (behind the worker egress
- * controls), never in the gateway. Reuses the same inline-run path as
+ * controls), never in the gateway. Feed source reads use the separate
+ * per-feed `read` capability below. Reuses the same inline-run path as
  * operations.execute (feed-sync.ts).
  */
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
+import {
+  classifyToolError,
+  getErrorMessage,
+  ToolError,
+  type ToolErrorCode,
+} from '@lobu/core';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
@@ -16,16 +23,8 @@ import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
-import {
-  ATLASSIAN_JIRA_ISSUES_FEED_KEY,
-  isAtlassianMcpConfig,
-  normalizeMcpProxyConfig,
-  readAtlassianMcpVirtualFeed,
-} from '../operations/atlassian-mcp-feed';
-import {
-  isMetadataOnlyDeviceConnector,
-  readDeviceVirtualFeed,
-} from './device-virtual-feed';
+import { isMetadataOnlyDeviceConnector, readDeviceFeed } from './device-feed-read';
+import { readSourceFeedFromAdapter } from './source-feed-adapters';
 
 interface ConnectorQueryParams {
   /** The ACL gate — tenant + principal. Its `organizationId`/`principal` drive
@@ -38,7 +37,6 @@ interface ConnectorQueryParams {
   /** Owner/admin callers see every connection; members only org-visible or their
    * own. A full management-tier bypass. */
   isAdmin: boolean;
-  feedKey?: string;
   config?: Record<string, unknown>;
   limit?: number;
   offset?: number;
@@ -70,7 +68,10 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     LIMIT 1
   `;
   if (connRows.length === 0) {
-    throw new Error(`source connection '${p.connectionSlug}' not found or not accessible`);
+    throw new ToolError(
+      'NOT_FOUND',
+      `source connection '${p.connectionSlug}' not found or not accessible`,
+    );
   }
   const conn = connRows[0] as {
     id: number;
@@ -103,7 +104,6 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     compiledCode,
     job: {
       mode: 'query',
-      feedKey: p.feedKey ?? null,
       query: p.query,
       // Same merge as feed-sync / worker poll: connection.config under
       // credentials + caller overrides (any connector-level config).
@@ -134,8 +134,8 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   return { rows: result.rows, columns: result.columns ?? [], total: result.total };
 }
 
-/** Params for {@link readVirtualFeed}. */
-export interface ReadVirtualFeedParams {
+/** Params for {@link readSourceFeed}. */
+export interface ReadSourceFeedParams {
   /**
    * The requesting principal + tenant. The feed's backing connection is resolved
    * through the SAME connection-visibility compiler every read seam uses, so a
@@ -143,66 +143,91 @@ export interface ReadVirtualFeedParams {
    * private connection they own. A `null` principal (headless) sees org-only.
    */
   scope: AuthzScope;
-  /** The virtual feed to read (feeds.id). Must be a `virtual = true` row. */
+  /** The configured feed to read directly from its source. */
   feedId: number;
-  /**
-   * Keyword terms for RECALL. When present and non-empty, the connector's
-   * `search()` runs (terms pushed down to the source); otherwise its `query()`
-   * runs (plain live read). A connector lacking the needed method throws a
-   * "recall over virtual unsupported" / "live queries unsupported" capability
-   * error — surfaced, not branched on.
-   */
-  terms?: string[];
+  /** Optional source-native filter/search expression. */
+  query?: string;
+  /** Source-native continuation token recovered from the public cursor envelope. */
+  cursor?: string;
   /** Row cap pushed down to the source (connector clamps it). */
   limit?: number;
   offset?: number;
   sort?: { column: string; order: 'asc' | 'desc' };
-  /**
-   * Caller's deadline for this read. Honoured by the device seam, which stops
-   * waiting AND terminalizes + scrubs its transport run rather than leaving it
-   * in flight. The compiled path has no in-subprocess cancellation, so a caller
-   * that must bound wall clock (ambient recall) races this promise too — see
-   * `readVirtualFeedWithinRecallBudget` in tools/search.ts.
-   */
+  /** Caller cancellation, threaded into device and HTTP transports. */
   signal?: AbortSignal;
+  /** Absolute wall-clock deadline. Compiled connectors are killed at this deadline. */
+  deadlineAt?: number;
 }
 
-/** Result from {@link readVirtualFeed} — live rows, never persisted. */
-export interface ReadVirtualFeedResult {
+/** Result from {@link readSourceFeed} — live rows, never persisted. */
+export interface ReadSourceFeedResult {
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
   total?: number;
+  nextCursor?: string;
+  hasMore?: boolean;
+}
+
+function deadlineError(feedId: number): Error & { exitReason: 'timeout' } {
+  return Object.assign(new Error(`source read for feed '${feedId}' timed out`), {
+    exitReason: 'timeout' as const,
+  });
+}
+
+function remainingReadMs(p: ReadSourceFeedParams): number | undefined {
+  if (p.signal?.aborted) throw deadlineError(p.feedId);
+  if (p.deadlineAt === undefined) return undefined;
+  const remaining = Math.trunc(p.deadlineAt - Date.now());
+  if (remaining <= 0) throw deadlineError(p.feedId);
+  return remaining;
+}
+
+/** Classify a thrown connector/source failure using structured diagnostics first. */
+export function classifyPushdownFailure(err: unknown): ToolErrorCode {
+  if (err instanceof ToolError) return err.code;
+  const diagnostic = err as {
+    httpStatus?: unknown;
+    exitReason?: unknown;
+  } | null;
+  const httpStatus = typeof diagnostic?.httpStatus === 'number' ? diagnostic.httpStatus : undefined;
+  const exitReason =
+    diagnostic?.exitReason === 'timeout' ||
+    diagnostic?.exitReason === 'oom' ||
+    diagnostic?.exitReason === 'crash' ||
+    diagnostic?.exitReason === 'error_message'
+      ? diagnostic.exitReason
+      : undefined;
+  const code = classifyToolError({ httpStatus, exitReason, message: getErrorMessage(err) });
+  return code === 'INTERNAL' ? 'UPSTREAM_5XX' : code;
 }
 
 /**
- * Read a VIRTUAL feed LIVE by id — the "(later) virtual-feed reads" seam this
- * module was built for. Resolves the feed + its backing connection under the
- * AuthzScope connection-visibility rule, asserts the feed is virtual, then runs
- * the connector's `search()` (when `terms` are given) or `query()` in the
- * subprocess behind the worker egress controls. Persists NOTHING (no events, no
- * checkpoint). Multi-replica safe: a pure per-request read with all state in
- * Postgres — no pod-local state, runnable on any replica.
- *
- * The live SQL is the feed's stored `config.query` (the same read-only SELECT
- * shape sync uses), so a connector author keeps one query authoring surface.
+ * Read a configured feed directly from its source. The selected connector
+ * definition must declare the feed's `read` operation; the same feed may also
+ * declare `sync`. Persists no events or checkpoint. Multi-replica safe: a pure
+ * per-request read with all state in Postgres, runnable on any replica.
  */
-export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVirtualFeedResult> {
+export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourceFeedResult> {
+  remainingReadMs(p);
   const sql = getDb();
 
   // Resolve the feed + connection, fenced by the SAME visibility compiler the
   // SQL seam uses.
   const vis = compileConnectionRowVisibility(p.scope, 'c');
   const feedRows = (await sql.unsafe(
-    `SELECT f.id, f.feed_key, f.config, f.virtual,
+    `SELECT f.id, f.feed_key, f.config, f.pinned_version,
             c.id AS connection_id, c.connector_key,
             c.auth_profile_id, c.app_auth_profile_id,
             c.device_worker_id,
             COALESCE(c.config, '{}'::jsonb) AS connection_config,
+            cd.version AS definition_version, cd.feed_operations,
             cd.mcp_config, cd.runtime, cd.required_capability, cd.has_compiled_code
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
      LEFT JOIN LATERAL (
-       SELECT cd0.mcp_config, cd0.runtime, cd0.required_capability,
+       SELECT cd0.version, cd0.mcp_config, cd0.runtime, cd0.required_capability,
+              COALESCE(cd0.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
+                AS feed_operations,
               EXISTS (
                 -- Does the SELECTED version ship code THIS path can execute?
                 --
@@ -221,7 +246,12 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
                 SELECT 1
                 FROM connector_versions cv
                 WHERE cv.connector_key = cd0.key
-                  AND cv.version = cd0.version
+                  -- Definition metadata may fall back to the active row when
+                  -- a pinned historical definition was archived, but code
+                  -- execution remains pinned. Inspect that same artifact here
+                  -- so a compiled historical version never gets misrouted to
+                  -- the device read lane.
+                  AND cv.version = COALESCE(f.pinned_version, cd0.version)
                   AND (cv.organization_id = cd0.organization_id
                        OR cv.organization_id IS NULL)
                   AND cv.compiled_code IS NOT NULL
@@ -229,9 +259,23 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
               ) AS has_compiled_code
        FROM connector_definitions cd0
        WHERE cd0.key = c.connector_key
-         AND cd0.status = 'active'
+         AND (
+           (f.pinned_version IS NULL AND cd0.status = 'active')
+           OR (
+             f.pinned_version IS NOT NULL
+             AND (cd0.version = f.pinned_version OR cd0.status = 'active')
+           )
+         )
          AND cd0.organization_id = $2
-       ORDER BY cd0.updated_at DESC
+       -- Prefer exact historical metadata when it exists, matching
+       -- check-due-feeds. Device-manifest upgrades archive the previous
+       -- definition, so a pinned artifact may have no matching row; falling back
+       -- to the active definition for the same key keeps the feed's declared
+       -- operations readable instead of reporting the feed as read-incapable.
+       ORDER BY (cd0.version = f.pinned_version) DESC,
+                (cd0.status = 'active') DESC,
+                cd0.updated_at DESC,
+                cd0.id DESC
        LIMIT 1
      ) cd ON TRUE
      WHERE f.id = $1
@@ -247,7 +291,9 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     id: number;
     feed_key: string;
     config: Record<string, unknown> | null;
-    virtual: boolean;
+    pinned_version: string | null;
+    definition_version: string | null;
+    feed_operations: unknown;
     connection_id: number;
     connector_key: string;
     auth_profile_id: number | null;
@@ -261,41 +307,44 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   }>;
 
   if (feedRows.length === 0) {
-    throw new Error(`virtual feed '${p.feedId}' not found or not accessible`);
+    throw new ToolError(
+      'NOT_FOUND',
+      `feed '${p.feedId}' not found or not accessible`,
+    );
   }
   const feed = feedRows[0];
-  if (feed.virtual !== true) {
-    throw new Error(`feed '${p.feedId}' is not a virtual feed — only virtual feeds can be read live`);
+  const feedOperations = Array.isArray(feed.feed_operations) ? feed.feed_operations : [];
+  if (!feedOperations.includes('read')) {
+    throw new ToolError(
+      'VALIDATION',
+      `feed '${p.feedId}' does not support source reads`,
+    );
   }
 
   const feedConfig = (feed.config ?? {}) as Record<string, unknown>;
-  const storedQuery = typeof feedConfig.query === 'string' ? feedConfig.query : '';
+  remainingReadMs(p);
 
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
 
-  const mcpConfig = isAtlassianMcpConfig(feed.mcp_config)
-    ? normalizeMcpProxyConfig(feed.mcp_config)
-    : null;
-  if (mcpConfig) {
-    if (feed.feed_key !== ATLASSIAN_JIRA_ISSUES_FEED_KEY) {
-      throw new Error(
-        `Atlassian MCP virtual feed '${feed.feed_key}' has no registered live-read adapter`
-      );
-    }
-    return readAtlassianMcpVirtualFeed({
-      organizationId: p.scope.organizationId,
-      connectionId: Number(feed.connection_id),
-      connectorKey: feed.connector_key,
-      mcpConfig,
-      feedConfig,
-      connectionConfig: feed.connection_config,
-      query: storedQuery || (typeof feedConfig.jql === 'string' ? feedConfig.jql : ''),
-      terms: p.terms,
-      limit: p.limit,
-      offset: p.offset,
-      sort: p.sort,
-    });
+  const adapterResult = await readSourceFeedFromAdapter({
+    organizationId: p.scope.organizationId,
+    connectionId: Number(feed.connection_id),
+    connectorKey: feed.connector_key,
+    feedKey: feed.feed_key,
+    mcpConfig: feed.mcp_config,
+    feedConfig,
+    connectionConfig: feed.connection_config,
+    query: p.query,
+    cursor: p.cursor,
+    limit: p.limit,
+    offset: p.offset,
+    sort: p.sort,
+    signal: p.signal,
+    deadlineAt: p.deadlineAt,
+  });
+  if (adapterResult) {
+    return { ...adapterResult, columns: adapterResult.columns ?? [] };
   }
 
   // Native device connectors (whatsapp.local, apple.*, os.shell, …) are
@@ -319,7 +368,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   const hasConnectorCode =
     feed.has_compiled_code === true || findBundledConnectorFile(feed.connector_key) !== null;
   if (isMetadataOnlyDeviceConnector(feed.runtime, hasConnectorCode)) {
-    return readDeviceVirtualFeed({
+    remainingReadMs(p);
+    return readDeviceFeed({
       organizationId: p.scope.organizationId,
       feedId: Number(feed.id),
       feedKey: feed.feed_key,
@@ -331,7 +381,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
       connectorKey: feed.connector_key,
       deviceWorkerId: feed.device_worker_id,
       requiredCapability: feed.required_capability,
-      terms: p.terms,
+      query: p.query,
+      cursor: p.cursor,
       limit: p.limit,
       offset: p.offset,
       sort: p.sort,
@@ -341,7 +392,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
 
   const compiledCode = await resolveConnectorCodeForKey(
     feed.connector_key,
-    p.scope.organizationId
+    p.scope.organizationId,
+    feed.pinned_version ?? feed.definition_version
   );
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
@@ -351,7 +403,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     appAuthProfileId: Number(feed.app_auth_profile_id) || null,
     credentialDb: getDb(),
     logContext: { feedId: String(p.feedId) },
-    logMessage: 'Failed to resolve virtual feed read credentials',
+    logMessage: 'Failed to resolve feed source-read credentials',
   });
 
   // Same merge order as feed-sync / worker poll:
@@ -362,40 +414,34 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     ...dbEgressConfig(),
   };
 
-  const terms = (p.terms ?? []).map((t) => t.trim()).filter(Boolean);
+  const timeoutMs = remainingReadMs(p);
   const result = await executeCompiledConnector({
     compiledCode,
-    job:
-      terms.length > 0
-        ? {
-            mode: 'search',
-            feedKey: feed.feed_key,
-            query: storedQuery,
-            terms,
-            config,
-            env: {},
-            sessionState,
-            credentials,
-            limit: p.limit,
-            offset: p.offset,
-            sort: p.sort,
-          }
-        : {
-            mode: 'query',
-            feedKey: feed.feed_key,
-            query: storedQuery,
-            config,
-            env: {},
-            sessionState,
-            credentials,
-            limit: p.limit,
-            offset: p.offset,
-            sort: p.sort,
-          },
+    job: {
+      mode: 'read',
+      feedId: feed.id,
+      feedKey: feed.feed_key,
+      query: p.query,
+      cursor: p.cursor,
+      config,
+      env: {},
+      sessionState,
+      credentials,
+      limit: p.limit,
+      offset: p.offset,
+      sort: p.sort,
+    },
+    timeoutMs,
   });
 
-  if (result.mode !== 'query' && result.mode !== 'search') {
-    throw new Error(`Expected query/search result, got mode=${result.mode}`);
+  if (result.mode !== 'read') {
+    throw new Error(`Expected read result, got mode=${result.mode}`);
   }
-  return { rows: result.rows, columns: result.columns ?? [], total: result.total };
+  return {
+    rows: result.rows,
+    columns: result.columns ?? [],
+    total: result.total,
+    nextCursor: result.nextCursor,
+    hasMore: result.hasMore,
+  };
 }

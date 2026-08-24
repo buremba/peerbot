@@ -1,19 +1,16 @@
 /**
- * Gmail virtual-feed pushdown (PR #1702) — the connector half of the seam.
+ * Gmail feed source read — the connector half of the seam.
  *
- * The DB-level `readVirtualFeed` seam is covered by `virtual-feed-read.test.ts`
- * (with the postgres connector as the stand-in source). This test covers the
- * NEW Gmail code that seam dispatches into: `GmailConnector.query()`/`search()`
- * → `liveSearch()` → `listMessageIds()` + `fetchMessageRows()`.
+ * The DB-level seam is covered by `source-feed-read.test.ts` (with Postgres as
+ * the stand-in source). This test covers Gmail's per-feed `read` handler.
  *
  * The only external dependency — the Gmail HTTP API — is stubbed at the
  * `HttpClient.raw()` boundary (the connector's single egress seam), so this is
  * deterministic and needs no network or DB. It verifies:
- *  - query() builds the Gmail `q` from `ctx.query` alone;
- *  - search() ANDs the recall `terms` onto `q` (Gmail `q` is space-separated);
+ *  - configured and caller Gmail queries are AND-composed;
  *  - the stable column set + row shape (id, thread_id, subject, from fields, date, snippet, url);
  *  - the limit is clamped and passed as maxResults, capping the id list;
- *  - offset pages forward then drops the leading rows;
+ *  - the provider continuation token is returned and reused without re-walking;
  *  - an unsupported sort is rejected (Gmail is always date-desc), and no total is reported;
  *  - a single unreadable message (non-2xx metadata fetch) is skipped, not fatal;
  *  - missing credentials and an empty `q` throw.
@@ -56,13 +53,14 @@ const MESSAGES: FakeMessage[] = [
 interface Capture {
   listQueries: string[];
   listMaxResults: number[];
+  listTokens?: Array<string | null>;
 }
 
 /**
  * Build a fake `HttpClient` that answers Gmail's messages.list + messages.get
  * (metadata) endpoints from `messages`. The list endpoint honors `maxResults`
- * and `pageToken` (real forward pagination), so offset/limit slicing is exercised
- * end-to-end. `unreadable` ids return a non-2xx from the metadata fetch so we can
+ * and `pageToken` (real forward pagination). `unreadable` ids return a non-2xx
+ * from the metadata fetch so we can
  * assert the skip-on-404 path.
  */
 function fakeClient(
@@ -77,6 +75,7 @@ function fakeClient(
       capture.listQueries.push(u.searchParams.get('q') ?? '');
       const maxResults = Number(u.searchParams.get('maxResults'));
       capture.listMaxResults.push(maxResults);
+      capture.listTokens?.push(u.searchParams.get('pageToken'));
       // pageToken is a numeric cursor into `corpus`; return maxResults ids then
       // the next cursor if more remain.
       const start = Number(u.searchParams.get('pageToken') ?? '0');
@@ -133,11 +132,15 @@ function connectorWith(
 
 const CREDS = { credentials: { accessToken: 'fake-token' } };
 
-describe('Gmail virtual-feed pushdown', () => {
-  it('query() builds q from ctx.query alone and returns the stable row shape', async () => {
+function readThreads(connector: GmailConnector, context: Record<string, unknown>) {
+  return connector.read({ feedKey: 'threads', ...context } as never);
+}
+
+describe('Gmail feed source read', () => {
+  it('builds q from the caller query and returns the stable row shape', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    const res = await c.query({ ...CREDS, query: 'in:inbox newer_than:30d', config: {}, limit: 10 } as never);
+    const res = await readThreads(c, { ...CREDS, query: 'in:inbox newer_than:30d', config: {}, limit: 10 });
 
     expect(cap.listQueries).toEqual(['in:inbox newer_than:30d']);
     expect(res.columns.map((col) => col.name)).toEqual([
@@ -160,31 +163,31 @@ describe('Gmail virtual-feed pushdown', () => {
   it('does not report a (misleading) total for a partial page', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    const res = await c.query({ ...CREDS, query: 'in:inbox', config: {}, limit: 10 } as never);
+    const res = await readThreads(c, { ...CREDS, query: 'in:inbox', config: {}, limit: 10 });
     // Gmail gives no reliable match count — omitting total avoids reporting the
     // page length as if it were the grand total.
     expect(res.total).toBeUndefined();
   });
 
-  it('search() ANDs recall terms onto the base q (bare tokens pass through)', async () => {
+  it('ANDs caller syntax onto configured q', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    await c.search({ ...CREDS, query: 'in:inbox', terms: ['report', 'urgent'], config: {}, limit: 5 } as never);
+    await readThreads(c, { ...CREDS, query: 'report urgent', config: { query: 'in:inbox' }, limit: 5 });
     // Gmail q is space-separated = AND
     expect(cap.listQueries).toEqual(['in:inbox report urgent']);
   });
 
-  it('search() passes terms as raw Gmail syntax (phrases with spaces AND as tokens)', async () => {
+  it('passes phrases as raw Gmail syntax', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    await c.search({ ...CREDS, query: 'in:inbox', terms: ['weekly report'], config: {}, limit: 5 } as never);
+    await readThreads(c, { ...CREDS, query: 'weekly report', config: { query: 'in:inbox' }, limit: 5 });
     expect(cap.listQueries).toEqual(['in:inbox weekly report']);
   });
 
-  it('search() treats operator syntax in terms as Gmail operators', async () => {
+  it('treats caller operator syntax as Gmail operators', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    await c.search({ ...CREDS, query: 'in:inbox', terms: ['from:alice@x.com'], config: {}, limit: 5 } as never);
+    await readThreads(c, { ...CREDS, query: 'from:alice@x.com', config: { query: 'in:inbox' }, limit: 5 });
     expect(cap.listQueries).toEqual(['in:inbox from:alice@x.com']);
   });
 
@@ -192,67 +195,75 @@ describe('Gmail virtual-feed pushdown', () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
     // limit 2 → maxResults 2, id list capped to 2 even though 3 fixtures exist
-    const res = await c.query({ ...CREDS, query: 'in:inbox', config: {}, limit: 2 } as never);
+    const res = await readThreads(c, { ...CREDS, query: 'in:inbox', config: {}, limit: 2 });
     expect(cap.listMaxResults[0]).toBe(2);
     expect(res.rows).toHaveLength(2);
   });
 
-  it('applies offset by paging forward then dropping the leading rows', async () => {
-    // 5-message corpus, offset 2 + limit 2 → rows m3, m4 (m1, m2 dropped).
+  it('returns and reuses Gmail pageToken without walking the prefix again', async () => {
     const corpus: FakeMessage[] = Array.from({ length: 5 }, (_, i) => ({
       id: `m${i + 1}`,
       threadId: `t${i + 1}`,
       snippet: `msg ${i + 1}`,
       headers: { Subject: `Subject ${i + 1}`, From: `s${i + 1}@acme.com`, Date: '' },
     }));
-    const cap: Capture = { listQueries: [], listMaxResults: [] };
+    const cap: Capture = { listQueries: [], listMaxResults: [], listTokens: [] };
     const c = connectorWith(cap, { messages: corpus });
-    const res = await c.query({ ...CREDS, query: 'in:inbox', config: {}, limit: 2, offset: 2 } as never);
-    expect(res.rows.map((r) => r.id)).toEqual(['m3', 'm4']);
+    const first = await readThreads(c, { ...CREDS, query: 'in:inbox', config: {}, limit: 2 });
+    expect(first.rows.map((r) => r.id)).toEqual(['m1', 'm2']);
+    expect(first.nextCursor).toBe('2');
+    const second = await readThreads(c, {
+      ...CREDS,
+      query: 'in:inbox',
+      config: {},
+      cursor: first.nextCursor,
+      limit: 2,
+    });
+    expect(second.rows.map((r) => r.id)).toEqual(['m3', 'm4']);
+    expect(cap.listTokens).toEqual([null, '2']);
   });
 
   it('rejects an unsupported sort (Gmail is always date-desc)', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
     await expect(
-      c.query({ ...CREDS, query: 'in:inbox', config: {}, sort: { column: 'subject', order: 'asc' } } as never),
-    ).rejects.toThrow(/only supports sort/i);
+      readThreads(c, { ...CREDS, query: 'in:inbox', config: {}, sort: { column: 'subject', order: 'asc' } }),
+    ).rejects.toThrow(/only support sort/i);
     // …but the natural date-desc sort is accepted.
-    const ok = await c.query({ ...CREDS, query: 'in:inbox', config: {}, sort: { column: 'date', order: 'desc' } } as never);
+    const ok = await readThreads(c, { ...CREDS, query: 'in:inbox', config: {}, sort: { column: 'date', order: 'desc' } });
     expect(ok.rows.length).toBeGreaterThan(0);
   });
 
   it('skips a single unreadable message instead of failing the batch', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap, { unreadable: new Set(['m2']) });
-    const res = await c.query({ ...CREDS, query: 'in:inbox', config: {}, limit: 10 } as never);
+    const res = await readThreads(c, { ...CREDS, query: 'in:inbox', config: {}, limit: 10 });
     expect(res.rows.map((r) => r.id)).toEqual(['m1', 'm3']); // m2 skipped
   });
 
   it('throws without credentials', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    await expect(c.query({ query: 'in:inbox', config: {} } as never)).rejects.toThrow(/OAuth credentials/i);
+    await expect(readThreads(c, { query: 'in:inbox', config: {} })).rejects.toThrow(/OAuth credentials/i);
   });
 
   it('lists without q when base and terms are empty (unbounded mailbox)', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    const res = await c.query({ ...CREDS, query: '', config: {}, limit: 10 } as never);
+    const res = await readThreads(c, { ...CREDS, query: '', config: {}, limit: 10 });
     expect(cap.listQueries).toEqual(['']);
     expect(res.rows.length).toBeGreaterThan(0);
   });
 
-  it('AND-composes feed scope (config.query) with agent search() terms', async () => {
+  it('AND-composes feed scope with the caller query', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    await c.search({
+    await readThreads(c, {
       ...CREDS,
-      query: 'in:all',
-      terms: ['after:2020/01/01 from:linkedin.com'],
-      config: {},
+      query: 'after:2020/01/01 from:linkedin.com',
+      config: { query: 'in:all' },
       limit: 5,
-    } as never);
+    });
     expect(cap.listQueries).toEqual(['in:all after:2020/01/01 from:linkedin.com']);
   });
 });

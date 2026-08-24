@@ -9,7 +9,6 @@ import {
   type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
-  type SyncResult,
 } from "@lobu/connector-sdk";
 
 type QuoteOk = {
@@ -331,12 +330,6 @@ export default class MarketQuotesConnector extends ConnectorRuntime {
   };
 
   fetchImpl: FetchLike = fetch;
-
-  async sync(): Promise<SyncResult> {
-    throw new Error(
-      "market.quotes has no feeds; use its quote action for current marks."
-    );
-  }
 
   async execute(ctx: ActionContext): Promise<ActionResult> {
     if (ctx.actionKey !== "quote") {

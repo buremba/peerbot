@@ -1,9 +1,9 @@
 /**
- * Atlassian Rovo MCP virtual-feed adapter.
+ * Atlassian Rovo MCP feed-read adapter.
  *
  * MCP install is tools-only (`feeds: null`). Rovo already exposes
- * `searchJiraIssuesUsingJql`, the same primitive the bundled Jira virtual
- * feed uses. This module stamps that feed onto an Atlassian MCP definition
+ * `searchJiraIssuesUsingJql`, the same primitive the bundled Jira feed's
+ * `read` handler uses. This module stamps that feed onto an Atlassian MCP definition
  * and reads it through the existing MCP proxy — no second connector, no
  * approval-gated manage_operations execute.
  */
@@ -17,6 +17,21 @@ import {
 } from "../connect/atlassian-resources";
 
 export const ATLASSIAN_JIRA_ISSUES_FEED_KEY = "issues";
+
+function sourceCallOptions(params: {
+	signal?: AbortSignal;
+	deadlineAt?: number;
+}): { signal?: AbortSignal; timeoutMs?: number } {
+	const timedOut = (): Error & { exitReason: "timeout" } =>
+		Object.assign(new Error("Atlassian source read timed out"), {
+			exitReason: "timeout" as const,
+		});
+	if (params.signal?.aborted) throw timedOut();
+	if (params.deadlineAt === undefined) return { signal: params.signal };
+	const timeoutMs = Math.trunc(params.deadlineAt - Date.now());
+	if (timeoutMs <= 0) throw timedOut();
+	return { signal: params.signal, timeoutMs };
+}
 
 export const ATLASSIAN_JIRA_ISSUE_COLUMNS = [
 	{ name: "id", type: "string" },
@@ -42,7 +57,7 @@ export const ATLASSIAN_MCP_FEEDS = {
 		name: "Issues",
 		description:
 			"Live Jira issues via JQL. Reads call Rovo searchJiraIssuesUsingJql; signed Jira issue/comment webhooks are copied into events.",
-		virtual: true,
+		operations: ["read"],
 		configSchema: {
 			type: "object",
 			properties: {
@@ -54,7 +69,7 @@ export const ATLASSIAN_MCP_FEEDS = {
 				query: {
 					type: "string",
 					description:
-						"Base JQL for virtual reads (platform config.query). Empty defaults to updated >= -90d.",
+						"Base JQL for source reads. Empty defaults to updated >= -90d.",
 				},
 				jql: {
 					type: "string",
@@ -190,10 +205,6 @@ export function atlassianDocumentToText(value: unknown): string {
 	return "";
 }
 
-function escapeJqlString(value: string): string {
-	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
 function splitTrailingOrderBy(jql: string): { body: string; orderBy: string | null } {
 	let quote: '"' | "'" | null = null;
 	let escaped = false;
@@ -231,7 +242,7 @@ function splitTrailingOrderBy(jql: string): { body: string; orderBy: string | nu
 
 export function buildAtlassianMcpJql(args: {
 	baseQuery: string;
-	terms?: string[];
+	query?: string;
 	sort?: { column: string; order: "asc" | "desc" };
 }): string {
 	const trimmed = args.baseQuery.trim();
@@ -239,18 +250,23 @@ export function buildAtlassianMcpJql(args: {
 	let { body, orderBy } = splitTrailingOrderBy(jql);
 	if (!body && orderBy) body = "updated >= -90d";
 
-	const terms = (args.terms ?? []).map((term) => term.trim()).filter(Boolean);
-	if (terms.length > 0) {
-		const textClauses = terms
-			.map((term) => `text ~ "${escapeJqlString(term)}"`)
-			.join(" AND ");
-		body = body.length > 0 ? `(${body}) AND (${textClauses})` : textClauses;
+	const callerQuery = args.query?.trim() ?? "";
+	if (callerQuery) {
+		const caller = splitTrailingOrderBy(callerQuery);
+		if (caller.body) {
+			body = body.length > 0 ? `(${body}) AND (${caller.body})` : caller.body;
+		}
+		if (caller.orderBy) {
+			throw new Error(
+				"Jira source read query cannot contain ORDER BY; use the separate sort field",
+			);
+		}
 	}
 
 	if (orderBy) {
 		if (args.sort) {
 			throw new Error(
-				"Jira virtual feed: cannot apply sort when the base JQL already contains ORDER BY",
+				"Jira source read: cannot apply sort when the base JQL already contains ORDER BY",
 			);
 		}
 		return body.length > 0 ? `${body} ${orderBy}` : orderBy;
@@ -260,7 +276,7 @@ export function buildAtlassianMcpJql(args: {
 		const field = SORT_COLUMNS[args.sort.column];
 		if (!field) {
 			throw new Error(
-				`Jira virtual feed sort column '${args.sort.column}' is unsupported`,
+				`Jira source read sort column '${args.sort.column}' is unsupported`,
 			);
 		}
 		const dir = args.sort.order === "asc" ? "ASC" : "DESC";
@@ -502,6 +518,8 @@ export async function resolveAtlassianMcpJiraSite(params: {
 	connectorKey: string;
 	mcpConfig: McpProxyConfig;
 	preferredCloudId?: string;
+	signal?: AbortSignal;
+	deadlineAt?: number;
 }): Promise<JiraCloudSite> {
 	const result = await callTool(
 		params.connectorKey,
@@ -510,6 +528,7 @@ export async function resolveAtlassianMcpJiraSite(params: {
 		"getAccessibleAtlassianResources",
 		{},
 		params.connectionId,
+		sourceCallOptions(params),
 	);
 	if (result.isError) {
 		throw new Error(
@@ -540,22 +559,27 @@ export async function resolveAtlassianMcpJiraSite(params: {
 	);
 }
 
-export async function readAtlassianMcpVirtualFeed(params: {
+export async function readAtlassianMcpFeed(params: {
 	organizationId: string;
 	connectionId: number;
 	connectorKey: string;
 	mcpConfig: McpProxyConfig;
 	feedConfig: Record<string, unknown>;
 	connectionConfig: Record<string, unknown>;
-	query: string;
-	terms?: string[];
+	baseQuery: string;
+	query?: string;
+	cursor?: string;
 	limit?: number;
 	offset?: number;
 	sort?: { column: string; order: "asc" | "desc" };
+	signal?: AbortSignal;
+	deadlineAt?: number;
 }): Promise<{
 	rows: Record<string, unknown>[];
 	columns: { name: string; type: string }[];
 	total?: number;
+	nextCursor?: string;
+	hasMore?: boolean;
 }> {
 	const config = { ...params.connectionConfig, ...params.feedConfig };
 	let cloudId = asString(config.cloud_id) ?? asString(config.cloudId);
@@ -566,64 +590,55 @@ export async function readAtlassianMcpVirtualFeed(params: {
 				connectionId: params.connectionId,
 				connectorKey: params.connectorKey,
 				mcpConfig: params.mcpConfig,
+				signal: params.signal,
+				deadlineAt: params.deadlineAt,
 			})
 		).cloudId;
 	}
 	if (!cloudId) {
 		throw new Error(
-			"Jira virtual feed requires a cloud_id. Reconnect the Atlassian connection or set config.cloud_id.",
+			"Jira source read requires a cloud_id. Reconnect the Atlassian connection or set config.cloud_id.",
 		);
 	}
 
 	const jql = buildAtlassianMcpJql({
-		baseQuery: params.query,
-		terms: params.terms,
+		baseQuery: params.baseQuery,
+		query: params.query,
 		sort: params.sort,
 	});
 	const offset = Math.max(0, params.offset ?? 0);
-	const limit = Math.max(1, params.limit ?? 50);
-	const pageSize = Math.min(
-		100,
-		Math.max(1, Number(config.max_results) || Math.min(limit, 50)),
-	);
-	const needed = offset + limit;
-	const rows: Record<string, unknown>[] = [];
-	let nextPageToken: string | undefined;
-
-	// Walk Rovo pages until the requested window is filled. Jira's token has
-	// no random access, so we fetch and discard the prefix — same as bundled
-	// jira liveSearch.
-	const maxPages = 20;
-	for (let page = 0; page < maxPages && rows.length < needed; page += 1) {
-		const result = await callTool(
-			params.connectorKey,
-			params.mcpConfig,
-			params.organizationId,
-			"searchJiraIssuesUsingJql",
-			{
-				cloudId,
-				jql,
-				maxResults: pageSize,
-				...(nextPageToken ? { nextPageToken } : {}),
-			},
-			params.connectionId,
-		);
-		if (result.isError) {
-			throw new Error(mcpTextError(result.content, "searchJiraIssuesUsingJql failed"));
-		}
-		const pageRows = parseAtlassianMcpIssues(result.content, config);
-		rows.push(...pageRows);
-		nextPageToken = parseAtlassianMcpNextPageToken(result.content);
-		if (pageRows.length === 0 || !nextPageToken) break;
-	}
-	if (rows.length < needed && nextPageToken) {
+	if (offset > 0) {
 		throw new Error(
-			`Jira virtual feed pagination limit (${maxPages} pages) reached before offset+limit (${needed}); narrow the JQL or lower offset`,
+			"Jira source reads paginate with the returned cursor, not an offset.",
 		);
 	}
+	const limit = Math.max(1, params.limit ?? 50);
+	const configuredMax = Math.max(1, Number(config.max_results) || limit);
+	const pageSize = Math.min(100, limit, configuredMax);
+	const result = await callTool(
+		params.connectorKey,
+		params.mcpConfig,
+		params.organizationId,
+		"searchJiraIssuesUsingJql",
+		{
+			cloudId,
+			jql,
+			maxResults: pageSize,
+			...(params.cursor ? { nextPageToken: params.cursor } : {}),
+		},
+		params.connectionId,
+		sourceCallOptions(params),
+	);
+	if (result.isError) {
+		throw new Error(mcpTextError(result.content, "searchJiraIssuesUsingJql failed"));
+	}
+	const rows = parseAtlassianMcpIssues(result.content, config);
+	const nextCursor = parseAtlassianMcpNextPageToken(result.content);
 
 	return {
-		rows: rows.slice(offset, offset + limit),
+		rows,
 		columns: [...ATLASSIAN_JIRA_ISSUE_COLUMNS],
+		nextCursor,
+		hasMore: Boolean(nextCursor),
 	};
 }

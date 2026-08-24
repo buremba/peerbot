@@ -45,7 +45,7 @@ because the definition change actually changed *which cancellations count*.
 | **Agent eval** | `eval.ts` | Asks a real agent the March question twice — WITH the governed context pushed vs a WITHOUT baseline — and asserts the pushed context changed the answer (cites the migration, corrects ~550 → ~50). Runs a live agent when a model provider is configured; falls back to a labelled deterministic proxy when the local install has no model. |
 | **Verified-query drift canary** | `verified-query` entity + `drift-check.ts` | A human-approved answer (the exact SQL + the rows it produced at approval time) is pinned. Re-running the query and diffing against the pinned answer is the canary: a mismatch means the warehouse (or a definition) moved and the answer needs re-verification — *before* someone repeats a stale number in a board deck. |
 
-The connection, auth profile, the virtual churn-rollup feed, and the entity
+The connection, auth profile, the source-readable churn-rollup feed, and the entity
 schema are all declared in `lobu.config.ts` (config-as-constructor) and created
 by `lobu run`. The seed script adds the definition chain (with governing
 predicates), the business events (with structured adjustments), and the pinned
@@ -53,7 +53,7 @@ verified answer on top.
 
 ```
 context-layer/
-├── lobu.config.ts              # agent, entity types, warehouse connection + auth profile + virtual feed
+├── lobu.config.ts              # agent, entity types, warehouse connection + auth profile + source-readable feed
 ├── IDENTITY.md                 # the analyst agent's identity
 ├── env.example                 # copy to .env
 └── scripts/

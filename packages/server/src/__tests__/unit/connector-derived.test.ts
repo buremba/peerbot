@@ -85,7 +85,7 @@ describe('deriveConnectorActivationSignals', () => {
     ).toEqual([]);
   });
 
-  test('does not fire when the event is not a collected feed row', () => {
+  test('does not fire when the event is not from a sync-capable feed', () => {
     const unconnected = { ...baseEvent, connectionId: null };
     expect(
       deriveConnectorActivationSignals(context, unconnected, 'inserted', 123),

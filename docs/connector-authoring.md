@@ -24,36 +24,9 @@ conclude "no integration exists" — author a custom connector in the project.
 
 ## The contract
 
-A connector is a default-exported class extending `ConnectorRuntime` from
-`@lobu/connector-sdk` — or the functional `defineConnector({ ... })` sugar,
-which lowers to the same class:
-
-```ts
-export default class MyConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
-    key: "my_connector",          // catalog id; feed/action keys come from the records below
-    name: "My Connector",
-    version: "1.0.0",
-    faviconDomain: "example.com",
-    authSchema: { methods: [{ type: "none" }] },
-    feeds: {
-      items: {
-        key: "items",
-        name: "Items",
-        eventKinds: { item: { description: "An item from the service" } },
-      },
-    },
-  };
-
-  async sync(ctx: SyncContext): Promise<SyncResult> {
-    const events: EventEnvelope[] = [];
-    return { events, checkpoint: { last_sync_at: new Date().toISOString() } };
-  }
-}
-```
-
-The functional `defineConnector` form derives feed/action keys from the record
-keys and dispatches each call to the handler declared on that entry:
+A connector default-exports `defineConnector({ ... })` from
+`@lobu/connector-sdk`. Feed and action keys come from their record keys, and
+each feed declares its own `sync` and/or `read` handler:
 
 ```ts
 import { defineConnector } from "@lobu/connector-sdk";
@@ -66,10 +39,20 @@ export default defineConnector({
   feeds: {
     items: {
       name: "Items",
+      configSchema: {
+        type: "object",
+        required: ["scope"],
+        properties: { scope: { type: "string" } },
+        additionalProperties: false,
+      },
       eventKinds: { item: { description: "An item from the service" } },
       sync: async () => ({
         events: [],
         checkpoint: { last_sync_at: new Date().toISOString() },
+      }),
+      read: async () => ({
+        rows: [],
+        hasMore: false,
       }),
     },
   },
@@ -92,9 +75,43 @@ export default defineConnector({
 });
 ```
 
-Optional top-level handlers (`authenticate`, `query`, `search`,
+Optional top-level handlers (`authenticate`, `query`,
 `reflectMetrics`, `registerWebhook`, `unregisterWebhook`) dispatch through the
 corresponding `ConnectorRuntime` methods.
+
+### Feed capabilities and storage
+
+Handlers are the capability contract. A feed with `sync` publishes
+`operations: ['sync']`; one with `read` publishes `['read']`; defining both
+publishes `['sync', 'read']`. Connector authors do not declare a separate feed
+mode. Only metadata-only device or MCP definitions declare `operations`
+directly because their executable handlers live elsewhere.
+
+- **`sync`** returns event envelopes and a checkpoint. The platform may persist
+  those events for local search, entities, relationships, and Automations.
+- **`read`** pushes filtering and pagination to the source and returns rows to
+  the caller without persisting them.
+- **Both** lets a connector maintain a small, searchable index while retaining
+  an explicit path to source-owned detail. Gmail can sync selected metadata yet
+  read complete messages on demand; SQL and warehouse connectors can
+  materialize selected queries while pushing ad-hoc compute to the database.
+
+`configSchema` governs the persisted feed instance across every handler.
+Top-level `required` fields are enforced for read-only, sync-only, and hybrid
+feeds alike. Model operation-specific optionality in the schema itself.
+
+Agents read source-owned data explicitly:
+
+```ts
+const result = await client.feeds.readMany({
+  reads: [{ feed_id: 123, query: "open", limit: 25 }],
+  timeout_ms: 10_000,
+});
+```
+
+`search_memory` remains local and reports visible, unqueried source feeds in its
+coverage result. Each `readMany` entry is independently bounded by the per-feed
+timeout, and one failure does not discard successful results from the others.
 
 ### What a feed sync must get right
 

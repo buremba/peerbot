@@ -47,8 +47,9 @@ export async function describeRunDeviceLastSeen(
  * A plain `setTimeout` would hold an aborted wait for the rest of the poll
  * interval before the loop noticed, and the caller's run stays in flight —
  * claimable, and still holding its payload — for that whole window. Callers
- * with a short deadline (ambient recall) measure their budget in a handful of
- * poll intervals, so "up to 500ms late" is a meaningful share of it.
+ * with a short deadline (an explicit `read_feeds` source read) measure their
+ * budget in a handful of poll intervals, so "up to 500ms late" is a meaningful
+ * share of it.
  *
  * The listener is always removed: this runs once per poll for the life of the
  * wait, and a signal that outlives the loop would otherwise accumulate them.

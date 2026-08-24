@@ -255,7 +255,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_memory',
     description:
-      'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” A query such as `memory 4939822` performs an exact permission-checked content read. Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+      'Search local saved workspace memory: entities, facts, decisions, preferences, observations, notes, and authorized channel transcripts. Source-backed feeds are never queried implicitly; `coverage` reports local stores searched and visible source feeds with status `not_queried`, which agents can read explicitly through query_sdk client.feeds.readMany. A query such as `memory 4939822` performs an exact permission-checked content read. Pair writes with `save_memory`. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: SearchSchema,
     // Advertise the narrower public schema: query_embedding (server pre-compute
     // optimization) and agent_id (auth-bound) are server-internal, not client
@@ -305,7 +305,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'query_sql',
     description:
-      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org. The query does not change workspace content or external systems, but Lobu appends a private audit/activity record for the invocation.',
+      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org, or pass `connection` to push read-only SQL fully into an external database connector. Source-backed feeds are queried explicitly with query_sdk client.feeds.readMany. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org. The query does not change workspace content or external systems, but Lobu appends a private audit/activity record for the invocation.',
     inputSchema: QuerySqlSchema,
     outputSchema: QuerySqlResultSchema,
     annotations: { ...AUDITED_READ, title: 'Query SQL' },

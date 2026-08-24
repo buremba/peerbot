@@ -5,7 +5,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
@@ -49,7 +49,7 @@ const configSchema = {
 };
 
 export default class G2Connector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "g2",
     name: "G2",
     description: "Scrapes B2B software reviews from G2.com.",
@@ -60,6 +60,7 @@ export default class G2Connector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "Product Reviews",
         description: "Scrape reviews for a G2 product listing.",
@@ -94,7 +95,7 @@ export default class G2Connector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const productUrl = ctx.config.product_url as string;
 
     if (

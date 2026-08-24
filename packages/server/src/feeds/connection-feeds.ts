@@ -1,22 +1,22 @@
 import { getDb } from "../db/client.js";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection.js";
-import type { FeedKind, FeedSpec, FeedStatus } from "./types.js";
+import type { FeedOperation, FeedSpec, FeedStatus, FeedStore } from "./types.js";
 
 interface FeedRow {
 	id: string;
 	feed_key: string;
-	kind: string;
+	operations: FeedOperation[];
+	store: FeedStore;
 	label: string;
 	status: string;
-	virtual: boolean;
 	last_sync_at: Date | string | null;
 	items_collected: string | number;
 	target_agent_id: string | null;
 }
 
 /**
- * List every feed on a connection (all kinds), fenced to `(organization_id,
- * connection_id)` so it never scans globally. A streaming (chat) feed is
+ * List every feed on a connection, fenced to `(organization_id,
+ * connection_id)` so it never scans globally. A channel-message feed is
  * decorated with the agent subscribed to its channel via an Automation trigger
  * (channel_id = feed_key).
  *
@@ -35,10 +35,31 @@ export async function listConnectionFeeds(
 		SELECT
 			f.id::text                            AS id,
 			f.feed_key                            AS feed_key,
-			f.kind                                AS kind,
+			COALESCE((
+				SELECT definition.feeds_schema -> f.feed_key -> 'operations'
+				FROM connector_definitions definition
+				JOIN connections definition_connection ON definition_connection.id = f.connection_id
+				WHERE definition.key = definition_connection.connector_key
+					AND definition.organization_id = f.organization_id
+					AND (
+						(f.pinned_version IS NULL AND definition.status = 'active')
+						OR (
+							f.pinned_version IS NOT NULL
+							AND (
+								definition.version = f.pinned_version
+								OR definition.status = 'active'
+							)
+						)
+					)
+				ORDER BY (definition.version = f.pinned_version) DESC,
+					(definition.status = 'active') DESC,
+					definition.updated_at DESC,
+					definition.id DESC
+				LIMIT 1
+			), '[]'::jsonb)                    AS operations,
+			COALESCE(f.config ->> 'store', 'events') AS store,
 			COALESCE(f.display_name, f.feed_key)  AS label,
 			f.status                              AS status,
-			f.virtual                             AS virtual,
 			f.last_sync_at                        AS last_sync_at,
 			f.items_collected                     AS items_collected,
 			(
@@ -68,11 +89,11 @@ export async function listConnectionFeeds(
 	return rows.map((r) => ({
 		id: r.id,
 		feedKey: r.feed_key,
-		kind: r.kind as FeedKind,
+		operations: r.operations,
+		store: r.store,
 		connectionId,
 		label: r.label,
 		status: r.status as FeedStatus,
-		virtual: r.virtual,
 		lastSyncAt:
 			r.last_sync_at == null ? null : new Date(r.last_sync_at).toISOString(),
 		itemsCollected: Number(r.items_collected),

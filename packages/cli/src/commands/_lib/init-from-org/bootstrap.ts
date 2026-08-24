@@ -740,11 +740,6 @@ function emitConnection(
         if (f.config && Object.keys(f.config).length > 0) {
           fFields.push(`config: ${emitValue(f.config, 3)}`);
         }
-        // A virtual (federated) feed must round-trip: without this the generated
-        // config declares it as collected, and the first `lobu apply` fails the
-        // virtual/collected immutability check in diffFeed. Virtual feeds never
-        // sync, so no schedule is emitted.
-        if (f.virtual) fFields.push(`virtual: true`);
         return objectLiteral(fFields, 2);
       });
     fields.push(`feeds: [\n    ${items.join(",\n    ")},\n  ]`);

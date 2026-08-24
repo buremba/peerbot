@@ -59,6 +59,7 @@ function manifestFor(key: string, capability: string) {
       snapshots: {
         key: 'snapshots',
         name: 'Snapshots',
+        operations: ['sync'],
         configSchema: { type: 'object', properties: {} },
         eventKinds: {
           snapshot: {
@@ -114,7 +115,10 @@ async function seedFleet() {
   return { userId, orgId, workerId };
 }
 
-function pollManifests(workerId: string, manifests: Array<ReturnType<typeof manifestFor>>) {
+function pollManifests(
+  workerId: string,
+  manifests: Array<ReturnType<typeof manifestFor>>,
+) {
   return post('/api/workers/poll', {
     body: {
       worker_id: workerId,
@@ -150,7 +154,7 @@ async function waitForWireBlockedOn(blockerPid: number): Promise<void> {
       throw new Error(
         'Timed out waiting for the device-connector wire to block on the squatted slug — ' +
           'the wire no longer computes it from the manifest display name, so this test ' +
-          'is no longer forcing the collision it claims to force.'
+          'is no longer forcing the collision it claims to force.',
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -184,7 +188,8 @@ describe('device connector slug race', () => {
           NULL, NULL, NULL, ${userId}, 'private'
         )
       `;
-      const pidRows = (await tx`SELECT pg_backend_pid()::int AS pid`) as unknown as Array<{
+      const pidRows =
+        (await tx`SELECT pg_backend_pid()::int AS pid`) as unknown as Array<{
         pid: number;
       }>;
       squatterReady.resolve(pidRows[0].pid);
@@ -194,7 +199,9 @@ describe('device connector slug race', () => {
     let status: number;
     try {
       const squatterPid = await squatterReady.promise;
-      const polled = pollManifests(workerId, [manifestFor('apple.collide_one', 'screentime')]);
+      const polled = pollManifests(workerId, [
+        manifestFor('apple.collide_one', 'screentime'),
+      ]);
       await waitForWireBlockedOn(squatterPid);
       releaseSquatter.resolve();
       // COMMIT: the parked INSERT wakes into the unique violation.
@@ -218,14 +225,14 @@ describe('device connector slug race', () => {
     // and it is what made an unrelated test flake ~1 run in 8.
     expect(
       conns.map((c) => c.connector_key),
-      'the wire lost the slug race and never retried'
+      'the wire lost the slug race and never retried',
     ).toEqual(['apple.collide_one', SQUATTER_KEY]);
 
     // And the retry must resolve the collision by suffixing against the now
     // visible winner, not by betting on the same slug again.
-    expect(conns.find((c) => c.connector_key === 'apple.collide_one')?.slug).toBe(
-      `${BASE_SLUG}-2`
-    );
+    expect(
+      conns.find((c) => c.connector_key === 'apple.collide_one')?.slug,
+    ).toBe(`${BASE_SLUG}-2`);
   }, 60_000);
 
   it('wires both connectors when two manifests share a display name', async () => {
@@ -248,10 +255,10 @@ describe('device connector slug race', () => {
       ORDER BY connector_key
     `) as unknown as Array<{ connector_key: string; slug: string }>;
 
-    expect(conns.map((c) => c.connector_key), 'a connector failed to wire').toEqual([
-      'apple.collide_one',
-      'apple.collide_two',
-    ]);
+    expect(
+      conns.map((c) => c.connector_key),
+      'a connector failed to wire',
+    ).toEqual(['apple.collide_one', 'apple.collide_two']);
     expect(new Set(conns.map((c) => c.slug)).size, 'slugs collided').toBe(2);
   }, 60_000);
 });

@@ -10,10 +10,10 @@ export default class SalesforcePipelineConnector extends ConnectorRuntime<Checkp
     name: "Salesforce pipeline",
     version: "1.0.0",
     authSchema: { methods: [{ type: "oauth" as const, provider: "salesforce", requiredScopes: ["api", "refresh_token"] }] },
-    feeds: { opportunities: { key: "opportunities", name: "Opportunities" } },
+    feeds: { opportunities: { key: "opportunities", name: "Opportunities", sync: (ctx: SyncContext<Checkpoint>) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext<Checkpoint>) {
+  private async syncFeed(ctx: SyncContext<Checkpoint>) {
     const since = ctx.checkpoint?.last_modified ?? "2000-01-01T00:00:00Z";
     const q = `SELECT Id,Name,StageName,LastModifiedDate FROM Opportunity WHERE LastModifiedDate > ${since} LIMIT 200`;
     const r = await fetch(`${ctx.config.instance_url}/services/data/v60.0/query?q=${encodeURIComponent(q)}`);

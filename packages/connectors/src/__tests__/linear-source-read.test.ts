@@ -1,5 +1,5 @@
 /**
- * Linear virtual-feed pushdown — query()/search() via GraphQL issues filter.
+ * Linear feed source reads via the GraphQL issues filter.
  */
 
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
@@ -40,8 +40,12 @@ function connectorWith(capture: Capture, nodes: Array<Record<string, unknown>>) 
   return c;
 }
 
-describe('Linear virtual-feed pushdown', () => {
-  test('query() returns stable row shape', async () => {
+function readIssues(connector: any, context: Record<string, unknown>) {
+  return connector.read({ feedKey: 'issues', ...context });
+}
+
+describe('Linear feed source read', () => {
+  test('returns a stable row shape', async () => {
     const cap: Capture = { queries: [] };
     const c = connectorWith(cap, [
       {
@@ -56,7 +60,7 @@ describe('Linear virtual-feed pushdown', () => {
         updatedAt: '2026-07-02T00:00:00.000Z',
       },
     ]);
-    const res = await c.query({
+    const res = await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config: { team_key: 'ENG', lookback_days: 30 },
       sessionState: null,
@@ -79,21 +83,21 @@ describe('Linear virtual-feed pushdown', () => {
     expect(cap.queries[0]).toContain('auth');
   });
 
-  test('search() pushes terms into filter', async () => {
+  test('pushes the source-native query into the filter', async () => {
     const cap: Capture = { queries: [] };
     const c = connectorWith(cap, []);
-    await c.search({
+    await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config: {},
       sessionState: null,
-      terms: ['billing'],
+      query: 'billing',
       limit: 5,
     });
     expect(cap.queries[0]).toContain('billing');
     expect(cap.queries[0]).toContain('containsIgnoreCase');
   });
 
-  test('pages beyond Linear per-request limits to honor the caller limit', async () => {
+  test('returns a provider cursor instead of re-walking beyond one Linear page', async () => {
     const cap: Capture = { queries: [] };
     const nodes = Array.from({ length: 120 }, (_, index) => ({
       id: `iss-${index + 1}`,
@@ -104,26 +108,24 @@ describe('Linear virtual-feed pushdown', () => {
       updatedAt: '2026-07-02T00:00:00.000Z',
     }));
     const c = connectorWith(cap, nodes);
-    const res = await c.query({
+    const res = await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config: {},
       sessionState: null,
       query: '',
       limit: 120,
     });
-    expect(res.rows).toHaveLength(120);
-    expect(cap.queries).toHaveLength(3);
+    expect(res.rows).toHaveLength(50);
+    expect(res.nextCursor).toBe('50');
+    expect(cap.queries).toHaveLength(1);
     expect(cap.queries[0]).toContain('issues(first: 50');
-    expect(cap.queries[1]).toContain('issues(first: 50, after: "50"');
-    expect(cap.queries[2]).toContain('issues(first: 20, after: "100"');
   });
 
-  test('rejects offset+limit beyond max reachable pagination depth', async () => {
+  test('rejects offsets so callers cannot force a provider page re-walk', async () => {
     const cap: Capture = { queries: [] };
     const c = connectorWith(cap, []);
-    // PAGE_SIZE=50 × MAX_PAGES=50 → 2500 max. offset=2500 limit=1 ⇒ 2501.
     await expect(
-      c.query({
+      readIssues(c, {
         credentials: { accessToken: 'tok' },
         config: {},
         sessionState: null,
@@ -131,7 +133,7 @@ describe('Linear virtual-feed pushdown', () => {
         limit: 1,
         offset: 2500,
       }),
-    ).rejects.toThrow(/max reachable depth/);
+    ).rejects.toThrow(/returned cursor/);
     expect(cap.queries).toHaveLength(0);
   });
 
@@ -143,7 +145,7 @@ describe('Linear virtual-feed pushdown', () => {
       title: `Issue ${index + 1}`,
     }));
     const c = connectorWith(cap, nodes);
-    const res = await c.query({
+    const res = await readIssues(c, {
       credentials: { accessToken: 'tok' },
       config: { max_results: 2 },
       sessionState: null,
@@ -158,7 +160,7 @@ describe('Linear virtual-feed pushdown', () => {
   test('throws without credentials', async () => {
     const c = new LinearConnector();
     await expect(
-      c.query({
+      readIssues(c, {
         credentials: null,
         config: {},
         sessionState: null,
@@ -169,7 +171,7 @@ describe('Linear virtual-feed pushdown', () => {
   test('rejects caller-defined sort instead of silently returning updated order', async () => {
     const c = connectorWith({ queries: [] }, []);
     await expect(
-      c.query({
+      readIssues(c, {
         credentials: { accessToken: 'tok' },
         config: {},
         sessionState: null,
@@ -179,9 +181,10 @@ describe('Linear virtual-feed pushdown', () => {
     ).rejects.toThrow(/does not support caller-defined sort/);
   });
 
-  test('feed definition defaults issues to virtual', () => {
+  test('issues supports both sync and source read on one feed', () => {
     const c = new LinearConnector();
-    expect(c.definition.feeds?.issues?.virtual).toBe(true);
+    expect(typeof c.definition.feeds?.issues?.sync).toBe('function');
+    expect(typeof c.definition.feeds?.issues?.read).toBe('function');
     expect(c.definition.version).toBe('1.1.0');
   });
 });

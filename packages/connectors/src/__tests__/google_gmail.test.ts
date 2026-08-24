@@ -98,6 +98,7 @@ async function syncThreads(threads: FakeThread[], config: Record<string, unknown
   const connector = new GmailConnector();
   connector.createClient = () => fakeHttp(threads);
   const result = await connector.sync({
+    feedKey: 'threads',
     config,
     credentials: { accessToken: 'tok' },
     checkpoint: {},
@@ -114,6 +115,7 @@ test('the checkpoint precedes sync requests so messages arriving during sync rem
     });
 
   const result = await connector.sync({
+    feedKey: 'threads',
     config: {},
     credentials: { accessToken: 'tok' },
     checkpoint: {},
@@ -140,6 +142,7 @@ test('person-building sync requests its label union and attribution headers', as
     );
 
   await connector.sync({
+    feedKey: 'threads',
     config: { labels: [' INBOX ', 'SENT'], human_senders_only: true },
     credentials: { accessToken: 'tok' },
     checkpoint: {},
@@ -605,6 +608,7 @@ describe('Gmail human_senders_only sync mode', () => {
       );
 
     await connector.sync({
+      feedKey: 'threads',
       config: { max_results: 1, human_senders_only: true },
       credentials: { accessToken: 'tok' },
       checkpoint: {},

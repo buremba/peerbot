@@ -45,24 +45,27 @@ export default class SelfCheckNoopConnector extends ConnectorRuntime {
     version: '0.0.0',
     authSchema: { methods: [{ type: 'none' }] },
     feeds: {
-      noop: { key: 'noop', name: 'No-Op', description: 'Emits one synthetic event.', configSchema: { type: 'object', properties: {} }, eventKinds: {} },
+      noop: {
+        key: 'noop',
+        name: 'No-Op',
+        description: 'Emits one synthetic event.',
+        configSchema: { type: 'object', properties: {} },
+        eventKinds: {},
+        sync: async () => ({
+          events: [
+            {
+              origin_id: 'self-check-noop-1',
+              semantic_type: 'observation',
+              occurred_at: new Date(0),
+              payload_text: 'self-check noop event',
+            },
+          ],
+          checkpoint: { ran: true },
+          metadata: { items_found: 1, items_skipped: 0 },
+        }),
+      },
     },
   };
-
-  async sync() {
-    return {
-      events: [
-        {
-          origin_id: 'self-check-noop-1',
-          semantic_type: 'observation',
-          occurred_at: new Date(0),
-          payload_text: 'self-check noop event',
-        },
-      ],
-      checkpoint: { ran: true },
-      metadata: { items_found: 1, items_skipped: 0 },
-    };
-  }
 }
 `;
 

@@ -76,6 +76,39 @@ async function* paginateByOffset<T>(
   }
 }
 
+class MockConnectorRuntime {
+  declare readonly definition: {
+    key: string;
+    feeds?: Record<
+      string,
+      {
+        sync?: (ctx: never) => unknown;
+        read?: (ctx: never) => unknown;
+      }
+    >;
+  };
+
+  async sync(ctx: { feedKey: string }) {
+    const handler = this.definition.feeds?.[ctx.feedKey]?.sync;
+    if (!handler) {
+      throw new Error(
+        `${this.definition.key} feed '${ctx.feedKey}' does not support sync`
+      );
+    }
+    return handler(ctx as never);
+  }
+
+  async read(ctx: { feedKey: string }) {
+    const handler = this.definition.feeds?.[ctx.feedKey]?.read;
+    if (!handler) {
+      throw new Error(
+        `${this.definition.key} feed '${ctx.feedKey}' does not support source reads`
+      );
+    }
+    return handler(ctx as never);
+  }
+}
+
 export function connectorSdkMock() {
   const notUsed = (name: string) => () => {
     throw new Error(`${name} is not used in connector unit tests`);
@@ -95,7 +128,9 @@ export function connectorSdkMock() {
     requireBearerClient: notUsed("requireBearerClient"),
     paginateByCursor,
     paginateByOffset,
-    ConnectorRuntime: class {},
+    // Match the SDK base-class dispatch contract. Example connectors declare
+    // per-feed handlers and inherit these entry points in production.
+    ConnectorRuntime: MockConnectorRuntime,
     calculateEngagementScore: () => 0,
     sleep: async (_ms: number) => undefined,
     filterByCheckpoint: (

@@ -1808,6 +1808,7 @@ describe("LinkedInConnector home_feed", () => {
           optionTextRegex: string;
         };
         more: { selector: string; textRegex: string };
+        maxDurationMs: number;
         outputField: string;
       };
       id: { name: string | string[]; regex: string; group: number };
@@ -1853,6 +1854,7 @@ describe("LinkedInConnector home_feed", () => {
       optionTextRegex: "^Most recent\\b",
     });
     expect(cfg.expandRows.more.textRegex).toContain("replies");
+    expect(cfg.expandRows.maxDurationMs).toBe(55_000);
     expect(cfg.expandRows.outputField).toBe("comment_coverage");
     expect(cfg.id.name).toEqual(["componentkey", "id"]);
     expect(
@@ -1947,7 +1949,8 @@ describe("LinkedInConnector home_feed", () => {
    */
   const syncHomeFeedDom = async (
     body: string,
-    setup?: (dom: JSDOM) => void
+    setup?: (dom: JSDOM) => void,
+    expandRowsOverride?: Record<string, unknown>
   ) => {
     const dom = new JSDOM(`<!doctype html><body>${body}</body>`, {
       url: "https://www.linkedin.com/feed/",
@@ -1996,6 +1999,18 @@ describe("LinkedInConnector home_feed", () => {
               result: await genericScrape({
                 ...(input.scrape_config as Record<string, unknown>),
                 scroll: { max: 0, stall: 0, waitMs: 0 },
+                ...(expandRowsOverride
+                  ? {
+                      expandRows: {
+                        ...((
+                          input.scrape_config as {
+                            expandRows?: Record<string, unknown>;
+                          }
+                        ).expandRows ?? {}),
+                        ...expandRowsOverride,
+                      },
+                    }
+                  : {}),
               }),
             }),
           },
@@ -2035,6 +2050,17 @@ describe("LinkedInConnector home_feed", () => {
       </div>`,
       (dom) => {
         const document = dom.window.document;
+        const bindMore = (row: Element) => {
+          row.querySelector(".more-comments")?.addEventListener("click", () => {
+            const holder = document.createElement("div");
+            holder.innerHTML = comment("8222222222222222224", "Commenter Four");
+            const fourth = holder.firstElementChild;
+            if (fourth) row.append(fourth);
+            row.querySelector(".more-comments")?.remove();
+          });
+        };
+        const initialRow = document.querySelector("[componentkey]");
+        if (initialRow) bindMore(initialRow);
         document
           .querySelector(".comment-sort")
           ?.addEventListener("click", () => {
@@ -2043,21 +2069,19 @@ describe("LinkedInConnector home_feed", () => {
             option.textContent =
               "Most recent See all comments, the most recent comments are first";
             option.addEventListener("click", () => {
-              const sort = document.querySelector(".comment-sort");
-              if (sort) sort.textContent = "Most recent";
+              const current = document.querySelector("[componentkey]");
+              const replacement = current?.cloneNode(true) as
+                | Element
+                | undefined;
+              const sort = replacement?.querySelector(".comment-sort");
+              if (sort && current) {
+                sort.textContent = "Most recent";
+                bindMore(replacement);
+                current.replaceWith(replacement);
+              }
               option.remove();
             });
             document.body.append(option);
-          });
-        document
-          .querySelector(".more-comments")
-          ?.addEventListener("click", () => {
-            const holder = document.createElement("div");
-            holder.innerHTML = comment("8222222222222222224", "Commenter Four");
-            const fourth = holder.firstElementChild;
-            if (fourth)
-              document.querySelector("[componentkey]")?.append(fourth);
-            document.querySelector(".more-comments")?.remove();
           });
       }
     );
@@ -2089,6 +2113,28 @@ describe("LinkedInConnector home_feed", () => {
           <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444443)"><p>Commenter Three • Third rendered fixture comment</p></div>
         </div>`)
     ).rejects.toThrow(/captured 3 of 4 advertised comments/i);
+  });
+
+  test("names the expansion budget when a thread times out mid-expansion", async () => {
+    const activityId = "8555555555555555555";
+    // `more` never resolves the thread, so expansion can only end on its
+    // deadline — the branch that must be reported as a budget timeout rather
+    // than as a stale-extension or wrong-selector failure.
+    await expect(
+      syncHomeFeedDom(
+        `
+        <div componentkey="expandedtimeout_threadFeedType_MAIN_FEED_RELEVANCE">
+          <button aria-label="Open control menu for post by Timed Out Thread Author"></button>
+          <span id="translatable-commentary-urn:li:activity:${activityId}"></span>
+          <p>A timed-out-thread home-feed post with enough useful text to pass the filter</p>
+          <div role="button" class="comment-count">4 comments</div>
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:${activityId},8666666666666666661)"><p>Commenter One • First rendered fixture comment</p></div>
+          <div role="button" class="more-comments">See 3 more comments</div>
+        </div>`,
+        undefined,
+        { maxDurationMs: 1, waitMs: 5 }
+      )
+    ).rejects.toThrow(/Expansion hit its 55s budget on 1 thread/i);
   });
 
   test("a post does not inherit reactions from a comment rendered above its own counts", async () => {
@@ -3018,7 +3064,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.5");
+    expect(c.definition.version).toBe("3.11.6");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

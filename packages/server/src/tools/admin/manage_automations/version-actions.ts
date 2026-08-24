@@ -387,7 +387,8 @@ export async function handleCreateVersion(
           next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
           next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
           completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
-          window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END
+          window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,
+          last_completed_window_start = CASE WHEN ${resetsWindowProjection} THEN NULL ELSE last_completed_window_start END
         WHERE id = ${args.automation_id}
       `;
     }

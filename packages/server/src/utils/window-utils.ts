@@ -18,11 +18,10 @@ interface WindowDates {
   windowStart: Date;
   windowEnd: Date;
   /**
-   * The cursor this window was chained off — `readWindowCursor`'s result, handed
-   * back so a caller that also needs to report lag does not re-query for a value
-   * this function just read.
+   * The latest completed non-event window, handed back so a caller that also
+   * reports lag does not re-query the projection this function just read.
    */
-  cursor: Date | null;
+  lastCompletedWindowStart: Date | null;
 }
 
 /** Row shape for a `DATE_TRUNC('month', ...)` aggregate of total events per month. */
@@ -110,19 +109,31 @@ export async function computePendingWindow(
   automationId: number,
   granularity: AutomationTimeGranularity
 ): Promise<WindowDates> {
-  const windowStart = await ensureExpectedAutomationWindowStart(
-    sql,
-    automationId,
-    granularity
-  );
-  const cursor = subtractAutomationPeriod(windowStart, granularity);
+  const readProjection = async (client: DbClient) => {
+    const windowStart = await ensureExpectedAutomationWindowStart(
+      client,
+      automationId,
+      granularity
+    );
+    const lastCompletedWindowStart = await readLastCompletedWindowStart(
+      client,
+      automationId,
+      granularity
+    );
+    return { windowStart, lastCompletedWindowStart };
+  };
+  const projection =
+    typeof sql.savepoint === 'function'
+      ? await readProjection(sql)
+      : await sql.begin(readProjection);
+  const { windowStart, lastCompletedWindowStart } = projection;
 
   // Always a full period. `windowStart <= alignedNow` by construction, so this
   // can never exceed the current period's end and never needs clamping — which
   // is what keeps it from degenerating.
   const windowEnd = addAutomationPeriod(windowStart, granularity);
 
-  return { windowStart, windowEnd, cursor };
+  return { windowStart, windowEnd, lastCompletedWindowStart };
 }
 
 /** Read the durable expected period without consulting run history. */
@@ -198,7 +209,8 @@ async function ensureExpectedAutomationWindowStartLocked(
       UPDATE automations
       SET next_window_start = ${initial.toISOString()}::timestamptz,
           completed_window_coverage = '{}'::tstzmultirange,
-          window_projection_granularity = ${granularity}
+          window_projection_granularity = ${granularity},
+          last_completed_window_start = NULL
       WHERE id = ${automationId}
     `;
     return initial;
@@ -330,6 +342,10 @@ async function advanceExpectedAutomationWindowLocked(
         completed_window_coverage = resolved.coverage
           * tstzmultirange(tstzrange(resolved.next_cursor, NULL, '[)')),
         window_projection_granularity = ${granularity},
+        last_completed_window_start = GREATEST(
+          automation.last_completed_window_start,
+          ${completedStart.toISOString()}::timestamptz
+        ),
         updated_at = current_timestamp
     FROM resolved
     WHERE automation.id = ${automationId}
@@ -471,14 +487,32 @@ export async function readAutomationPendingProjection(
   };
 }
 
-/** The period immediately before the durable oldest-unfinished cursor, for lag display. */
-export async function readWindowCursor(
+/** Read the latest completed non-event period from the bounded write-time projection. */
+export async function readLastCompletedWindowStart(
   sql: DbClient,
   automationId: number,
   granularity: AutomationTimeGranularity
 ): Promise<Date | null> {
-  const expected = await readExpectedAutomationWindowStart(sql, automationId, granularity);
-  return subtractAutomationPeriod(expected, granularity);
+  const [projection] = await sql<{
+    last_completed_window_start: string | Date | null;
+    window_projection_granularity: string | null;
+  }>`
+    SELECT last_completed_window_start, window_projection_granularity
+    FROM automations
+    WHERE id = ${automationId}
+    LIMIT 1
+  `;
+  if (
+    !projection?.last_completed_window_start ||
+    (projection.window_projection_granularity != null &&
+      projection.window_projection_granularity !== granularity)
+  ) {
+    return null;
+  }
+  return alignToAutomationWindowStart(
+    new Date(projection.last_completed_window_start),
+    granularity
+  );
 }
 
 /**
@@ -573,16 +607,15 @@ export function alignRequestedWindow(
  * How the window a run is about to analyse sits against the clock.
  *
  * Two different facts, and conflating them is a bug this function was rewritten
- * to fix. `periodsBehind` measures the WINDOW BEING HANDED OUT, not the cursor.
- * Measured against the cursor, a perfectly healthy daily Automation reads as two
- * periods behind at the moment its run calls `read_knowledge` — the cursor is the
- * period completed by the PREVIOUS run, and the pending window is the one after
- * that. Prod Automation 79 (`0 4 * * *`) sits exactly there every single day. Any
- * staleness threshold applied to the cursor therefore fires on healthy runs.
+ * to fix. `periodsBehind` measures the WINDOW BEING HANDED OUT, not the latest
+ * completed period. A healthy daily Automation normally hands out the period
+ * immediately after that completion, so measuring the completion itself would
+ * overstate lag by one period.
  *
  * `periodsSkipped` describes a caller-selected window that starts after the
- * sequential cursor. Normal dispatch always chains directly and therefore
- * reports zero; the durable expected cursor is not advanced by a later ad-hoc read.
+ * latest completed period. Normal sequential dispatch therefore reports zero;
+ * older unfinished holes remain in `pending_analysis`, and a later ad-hoc read
+ * does not advance that durable oldest-unfinished projection.
  *
  * Deliberately still raw facts: no `is_stale` flag. Whether a skipped span is
  * worth draining depends on what the Automation is FOR — a drafting Automation wants
@@ -590,7 +623,7 @@ export function alignRequestedWindow(
  * that judgment lives in the prompt, which this function will never see.
  */
 export function computeWindowLag(
-  cursor: Date | null,
+  lastCompletedWindowStart: Date | null,
   windowStart: Date,
   now: Date,
   granularity: AutomationTimeGranularity
@@ -611,10 +644,13 @@ export function computeWindowLag(
     wholePeriodsBetween(alignedWindow, currentPeriodStart, granularity)
   );
 
-  // The period a sequential claim would cover. A later caller-selected window
-  // leaves the intervening range visible here without advancing the cursor.
-  const chained = cursor
-    ? addAutomationPeriod(alignToAutomationWindowStart(cursor, granularity), granularity)
+  // The period after the latest completion. A later caller-selected window
+  // leaves the intervening range visible without advancing pending_analysis.
+  const chained = lastCompletedWindowStart
+    ? addAutomationPeriod(
+        alignToAutomationWindowStart(lastCompletedWindowStart, granularity),
+        granularity
+      )
     : null;
   const periodsSkipped =
     chained && chained < alignedWindow

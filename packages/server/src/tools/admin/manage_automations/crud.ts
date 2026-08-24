@@ -692,6 +692,7 @@ export async function handleUpdate(
       next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
       completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
       window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,
+      last_completed_window_start = CASE WHEN ${resetsWindowProjection} THEN NULL ELSE last_completed_window_start END,
       agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,

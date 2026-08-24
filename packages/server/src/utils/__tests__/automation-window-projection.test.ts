@@ -85,15 +85,20 @@ describe('compact Automation scheduled-coverage projection', () => {
       const [compacted] = await sql<{
         next_window_start: string | Date;
         completed_window_coverage: string;
+        last_completed_window_start: string | Date | null;
       }>`
         SELECT next_window_start,
-               completed_window_coverage::text AS completed_window_coverage
+               completed_window_coverage::text AS completed_window_coverage,
+               last_completed_window_start
         FROM automations WHERE id = ${automationId}
       `;
       expect(new Date(compacted.next_window_start).toISOString()).toBe(
         periods[3].toISOString()
       );
       expect(compacted.completed_window_coverage).toBe('{}');
+      expect(new Date(compacted.last_completed_window_start as string | Date).toISOString()).toBe(
+        periods[2].toISOString()
+      );
 
       const pruned = await readAutomationPendingProjection(
         sql,

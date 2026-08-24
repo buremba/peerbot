@@ -148,6 +148,46 @@ describe("Automation window lag is visible and actionable", () => {
 			userId,
 		})) as AutomationContent;
 
+	const completeSelectedDay = async (day: Date) => {
+		const date = day.toISOString().slice(0, 10);
+		const selected = await read({ since: date, until: date });
+		const run = await createAutomationRun({
+			organizationId: orgId,
+			automationId,
+			windowStart: selected.window_start,
+			windowEnd: selected.window_end,
+			dispatchSource: "manual",
+		});
+		await sql`
+			UPDATE runs
+			SET status = 'running', claimed_at = NOW(), claimed_by = ${`user:${userId}`}
+			WHERE id = ${run.runId}
+		`;
+		await manageAutomations(
+			{
+				action: "complete_window",
+				automation_id: String(automationId),
+				window_token: selected.window_token,
+				run_id: run.runId,
+				extracted_data: { summary: `completed ${date}` },
+			},
+			ENV,
+			ctx,
+		);
+	};
+
+	it("reports no last completed window for a fresh Automation", async () => {
+		expect((await read()).window_lag?.last_window_start).toBeNull();
+	});
+
+	it("reports the latest non-event period when windows finish out of order", async () => {
+		const later = dayStart(3);
+		await completeSelectedDay(later);
+		await completeSelectedDay(dayStart(5));
+
+		expect((await read()).window_lag?.last_window_start).toBe(later.toISOString());
+	});
+
 	it("dispatches the oldest missing window when fifty periods behind", async () => {
 		const staleStart = await seedStaleCursor(50);
 		const content = await read();

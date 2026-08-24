@@ -83,14 +83,16 @@ describe('automation CRUD', () => {
       next_window_start: string | Date | null;
       completed_window_coverage: string;
       window_projection_granularity: string | null;
+      last_completed_window_start: string | Date | null;
     }[]>`
       SELECT next_window_start, completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity
+             window_projection_granularity, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(createdProjection.next_window_start).not.toBeNull();
     expect(createdProjection.completed_window_coverage).toBe('{}');
     expect(createdProjection.window_projection_granularity).toBe('daily');
+    expect(createdProjection.last_completed_window_start).toBeNull();
 
     const got = (await owner.automations.get({ automation_id: automationId })) as {
       automation?: { automation_name: string };
@@ -137,7 +139,8 @@ describe('automation CRUD', () => {
       SET next_window_start = '2025-01-01T00:00:00.000Z'::timestamptz,
           completed_window_coverage = tstzmultirange(
             tstzrange('2025-01-08T00:00:00.000Z', '2025-01-09T00:00:00.000Z', '[)')
-          )
+          ),
+          last_completed_window_start = '2025-01-08T00:00:00.000Z'::timestamptz
       WHERE id = ${created.automation_id}
     `;
 
@@ -150,9 +153,10 @@ describe('automation CRUD', () => {
       next_window_start: string | Date;
       completed_window_coverage: string;
       window_projection_granularity: string;
+      last_completed_window_start: string | Date | null;
     }[]>`
       SELECT next_window_start, completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity
+             window_projection_granularity, last_completed_window_start
       FROM automations WHERE id = ${created.automation_id}
     `;
     expect(new Date(projection.next_window_start).toISOString()).not.toBe(
@@ -160,6 +164,27 @@ describe('automation CRUD', () => {
     );
     expect(projection.completed_window_coverage).toBe('{}');
     expect(projection.window_projection_granularity).toBe('weekly');
+    expect(projection.last_completed_window_start).toBeNull();
+
+    await sql`
+      UPDATE automations
+      SET last_completed_window_start = '2025-01-06T00:00:00.000Z'::timestamptz
+      WHERE id = ${created.automation_id}
+    `;
+    await owner.automations.createVersion({
+      automation_id: created.automation_id,
+      prompt: 'Track each daily scheduled period.',
+      triggers: [{ kind: 'schedule', cron: '0 10 * * *' }],
+    });
+    const [versionReset] = await sql<{
+      window_projection_granularity: string;
+      last_completed_window_start: string | Date | null;
+    }[]>`
+      SELECT window_projection_granularity, last_completed_window_start
+      FROM automations WHERE id = ${created.automation_id}
+    `;
+    expect(versionReset.window_projection_granularity).toBe('daily');
+    expect(versionReset.last_completed_window_start).toBeNull();
   });
 
   it('creates an automation and its reaction contract atomically', async () => {
@@ -1197,7 +1222,7 @@ describe('automation CRUD', () => {
         SELECT agent_id, device_worker_id, agent_kind,
                triggers::text AS triggers, next_window_start,
                completed_window_coverage::text AS completed_window_coverage,
-               window_projection_granularity
+               window_projection_granularity, last_completed_window_start
         FROM automations WHERE id = ${cloneId}
       `;
       expect(clone.agent_id).toBe(agentId);
@@ -1206,6 +1231,7 @@ describe('automation CRUD', () => {
       expect(clone.next_window_start).not.toBeNull();
       expect(clone.completed_window_coverage).toBe('{}');
       expect(clone.window_projection_granularity).toBe('daily');
+      expect(clone.last_completed_window_start).toBeNull();
       // The schedule trigger is preserved and still resolves via the device pin.
       expect(clone.triggers).toMatch(/schedule/);
 

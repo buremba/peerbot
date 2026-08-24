@@ -34,7 +34,7 @@ import {
   describeWindowLag,
   foldUnprocessedRanges,
   parseAutomationWindowDate,
-  readWindowCursor,
+  readLastCompletedWindowStart,
 } from '../../utils/window-utils';
 import {
   DEFAULT_AUTOMATION_SOURCE_QUERY,
@@ -695,15 +695,23 @@ export async function handleAutomationMode(
 
   // A bound run owns its queued window. Interactive previews may still request
   // an explicit range or fall back to the Automation's pending cursor.
-  let windowStart: Date, windowEnd: Date, windowCursor: Date | null;
+  let windowStart: Date, windowEnd: Date, lastCompletedWindowStart: Date | null;
   if (context.claimedWindow) {
     windowStart = new Date(context.claimedWindow.windowStart);
     windowEnd = new Date(context.claimedWindow.windowEnd);
-    windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
+    lastCompletedWindowStart = await readLastCompletedWindowStart(
+      sql,
+      automationId,
+      timeGranularity
+    );
   } else if (boundRun) {
     windowStart = boundRun.windowStart;
     windowEnd = boundRun.windowEnd;
-    windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
+    lastCompletedWindowStart = await readLastCompletedWindowStart(
+      sql,
+      automationId,
+      timeGranularity
+    );
   } else if (args.since && args.until) {
     // An agent-chosen range, aligned to the granularity so an agent-written
     // window is indistinguishable in shape from a server-computed one.
@@ -712,21 +720,26 @@ export async function handleAutomationMode(
       parseAutomationWindowDate(args.until),
       timeGranularity
     ));
-    windowCursor = await readWindowCursor(sql, automationId, timeGranularity);
-  } else {
-    ({ windowStart, windowEnd, cursor: windowCursor } = await computePendingWindow(
+    lastCompletedWindowStart = await readLastCompletedWindowStart(
       sql,
       automationId,
       timeGranularity
-    ));
+    );
+  } else {
+    ({ windowStart, windowEnd, lastCompletedWindowStart } =
+      await computePendingWindow(sql, automationId, timeGranularity));
   }
 
   // How the window being handed out sits against the clock, and whether an
   // explicit range omitted periods. Measured against the WINDOW, not the
-  // cursor: at the moment a run reads, the cursor is the period the PREVIOUS run
-  // completed, so a healthy daily Automation is two periods behind by that measure
-  // and one by this one.
-  const windowLag = computeWindowLag(windowCursor, windowStart, new Date(), timeGranularity);
+  // latest completed period: at the moment a run reads, the pending window is
+  // ordinarily one period after it for a healthy sequential Automation.
+  const windowLag = computeWindowLag(
+    lastCompletedWindowStart,
+    windowStart,
+    new Date(),
+    timeGranularity
+  );
   const windowLagNote = describeWindowLag({
     skippedFrom: windowLag.skippedFrom,
     skippedTo: windowLag.skippedTo,
@@ -928,7 +941,9 @@ export async function handleAutomationMode(
     window_start: windowStartIso,
     window_end: windowEndIso,
     window_lag: {
-      last_window_start: windowCursor ? windowCursor.toISOString() : null,
+      last_window_start: lastCompletedWindowStart
+        ? lastCompletedWindowStart.toISOString()
+        : null,
       current_period_start: windowLag.currentPeriodStart.toISOString(),
       periods_behind: windowLag.periodsBehind,
       granularity: timeGranularity,

@@ -1074,7 +1074,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/setup-submodule
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
@@ -1168,10 +1169,11 @@ jobs:
         # next release.
         run: bun test scripts/__tests__/release-publish-order.test.ts --timeout 30000
 
-      - name: Sparkle appcast ordering
-        # RFC 2822 pubDate values begin with a weekday. A string sort left an
-        # older Wednesday release above newer Monday releases, breaking the
-        # feed's newest-first contract.
+      - name: Sparkle updater freshness
+        # RFC 2822 pubDate values begin with a weekday, so string sorting is
+        # not chronological and breaks the feed's newest-first contract.
+        env:
+          OWLETTO_SUBMODULE_STUBBED: ${{ steps.submodule.outputs.stubbed }}
         run: bun test scripts/__tests__/sparkle-appcast-order.test.ts --timeout 30000
 
       - name: Release image audit decision table

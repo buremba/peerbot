@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const script = join(repoRoot, "scripts/sparkle/update-appcast.py");
@@ -12,6 +12,8 @@ const macInfoPlist = join(
   "packages/owletto/apps/mac/Owletto/Info.plist"
 );
 const temporaryDirectories: string[] = [];
+const owlettoSubmoduleStubbed =
+  process.env.OWLETTO_SUBMODULE_STUBBED === "true";
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -19,7 +21,7 @@ afterEach(() => {
   }
 });
 
-describe("Sparkle appcast ordering", () => {
+describe("Sparkle updater freshness", () => {
   it("orders releases by timestamp rather than weekday text", () => {
     const directory = mkdtempSync(join(tmpdir(), "lobu-appcast-test-"));
     temporaryDirectories.push(directory);
@@ -72,10 +74,13 @@ describe("Sparkle appcast ordering", () => {
     expect(versions).toEqual(["17.0.0", "15.7.0", "14.7.1"]);
   });
 
-  it("checks unattended device workers every hour", () => {
-    const plist = readFileSync(macInfoPlist, "utf8");
-    expect(plist).toMatch(
-      /<key>SUScheduledCheckInterval<\/key>\s*<integer>3600<\/integer>/
-    );
-  });
+  it.skipIf(owlettoSubmoduleStubbed)(
+    "checks unattended device workers every hour",
+    () => {
+      const plist = readFileSync(macInfoPlist, "utf8");
+      expect(plist).toMatch(
+        /<key>SUScheduledCheckInterval<\/key>\s*<integer>3600<\/integer>/
+      );
+    }
+  );
 });

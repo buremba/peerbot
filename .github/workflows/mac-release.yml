@@ -211,8 +211,8 @@ jobs:
           fi
 
           # Device workers are often unattended and long-lived. Sparkle's
-          # default daily cadence left newly released fixes undiscovered until
-          # the following day, so keep the fleet check interval at one hour.
+          # default daily cadence can delay discovery of new fixes for up to
+          # 24 hours, so keep the fleet check interval at one hour.
           update_interval=$(/usr/libexec/PlistBuddy -c "Print :SUScheduledCheckInterval" \
             packages/owletto/apps/mac/Owletto/Info.plist 2>/dev/null || true)
           if [ "$update_interval" != "3600" ]; then

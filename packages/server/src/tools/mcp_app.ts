@@ -363,28 +363,28 @@ function displayFieldFormat(key: string, value: unknown): 'code' | undefined {
   return undefined;
 }
 
-function approvalTone(
-  impact: ApprovalImpact,
-  status: string
-): 'default' | 'warning' {
-  if (status !== 'pending') return 'default';
-  return impact.level === 'high' ? 'warning' : 'default';
-}
-
+/**
+ * Kind for an approval written before its producer stamped `approval_context`:
+ * a row already pending at rollout still has to render as the kind of thing it
+ * is. Keyed on `metadata.tool`, which every producer persists.
+ */
 function legacyApprovalKind(row: ApprovalContentItem): ApprovalKind {
   const metadata = row.metadata ?? {};
   if (metadata.tool === 'manage_entity_schema') return ApprovalKind.EntitySchema;
   if (metadata.tool === 'manage_agents') return ApprovalKind.Agent;
   if (metadata.tool === 'manage_automations') return ApprovalKind.Automation;
   if (metadata.tool === 'notify') return ApprovalKind.Question;
-  if (metadata.resourceKind === 'entity' || metadata.fields) return ApprovalKind.Entity;
+  if (
+    metadata.tool === 'entity_change' ||
+    metadata.tool === 'entity_field_change' ||
+    metadata.resourceKind === 'entity'
+  )
+    return ApprovalKind.Entity;
   if (stringOrNull(row.platform) || metadata.operation_key) return ApprovalKind.Connector;
   return ApprovalKind.Approval;
 }
 
-function legacyApprovalImpact(
-  metadata: Record<string, unknown> | null
-): ApprovalImpact {
+function legacyApprovalImpact(metadata: Record<string, unknown> | null): ApprovalImpact {
   if (metadata?.review_tone === 'warning') {
     return highApprovalImpact('This action was marked as high impact by its producer.');
   }
@@ -795,7 +795,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
     ),
     icon: approvalContext.kind,
     impact: approvalContext.impact,
-    tone: approvalTone(approvalContext.impact, status),
+    tone: approvalContext.impact.level === 'high' ? 'warning' : 'default',
     blocks: [
       ...approvalBlocks({
         content: row.payload_text,

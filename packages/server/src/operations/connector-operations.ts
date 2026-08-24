@@ -448,8 +448,7 @@ function getLocalActionOperations(
 		backend: "local_action",
 		requires_approval: def.requiresApproval ?? false,
 		required_scopes: normalizeRequiredScopes(def.requiredScopes),
-		annotations:
-			normalizeAnnotations(def.annotations),
+		annotations: normalizeAnnotations(def.annotations),
 		input_schema: def.input_schema ?? def.inputSchema,
 		output_schema: def.output_schema ?? def.outputSchema,
 		supports_execute: executeSupported,

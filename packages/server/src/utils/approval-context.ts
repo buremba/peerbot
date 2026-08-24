@@ -1,3 +1,9 @@
+/**
+ * Vocabulary of the `icon` field on a Lobu view. Shared with Owletto's
+ * `InteractionView` icon union: the client authors its own cards for the
+ * message/tool/memory kinds, so every member has a producer even when the
+ * server only stamps a subset onto durable approvals.
+ */
 export const ApprovalKind = {
 	Approval: "approval",
 	Connector: "connector",
@@ -11,8 +17,7 @@ export const ApprovalKind = {
 	Memory: "memory",
 } as const;
 
-export type ApprovalKind =
-	(typeof ApprovalKind)[keyof typeof ApprovalKind];
+export type ApprovalKind = (typeof ApprovalKind)[keyof typeof ApprovalKind];
 
 export type ApprovalImpact = {
 	level: "normal" | "high";
@@ -20,14 +25,14 @@ export type ApprovalImpact = {
 	consequences?: string[];
 };
 
-export type ApprovalContext = {
+type ApprovalContext = {
 	kind: ApprovalKind;
 	impact: ApprovalImpact;
 };
 
 const APPROVAL_KINDS = new Set<string>(Object.values(ApprovalKind));
 
-export function isApprovalKind(value: unknown): value is ApprovalKind {
+function isApprovalKind(value: unknown): value is ApprovalKind {
 	return typeof value === "string" && APPROVAL_KINDS.has(value);
 }
 
@@ -66,7 +71,9 @@ export function readApprovalContext(value: unknown): ApprovalContext | null {
 	}
 	const impact = context.impact as Record<string, unknown>;
 	if (impact.level !== "normal" && impact.level !== "high") return null;
-	if (impact.reason !== undefined && typeof impact.reason !== "string") return null;
+	if (impact.reason !== undefined && typeof impact.reason !== "string") {
+		return null;
+	}
 	if (
 		impact.consequences !== undefined &&
 		(!Array.isArray(impact.consequences) ||

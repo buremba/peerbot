@@ -115,19 +115,27 @@ export function buildActionConfig(
 	};
 }
 
+/**
+ * Review rows for a connector approval card: what is being run and where,
+ * ahead of the operation input. Preserve colliding input keys with an explicit
+ * `input_` display prefix so neither trusted routing context nor user arguments
+ * disappear from the card.
+ */
 function connectorApprovalReviewFields(
 	connectionName: string,
 	operationName: string,
 	input: Record<string, unknown>,
 ): Array<{ key: string; value: unknown }> {
 	const reserved = new Set(["resource", "connection", "operation"]);
+	const inputFields = Object.entries(input).map(([key, value]) => ({
+		key: reserved.has(key) ? `input_${key}` : key,
+		value,
+	}));
 	return [
 		{ key: "resource", value: "Connector operation" },
 		{ key: "connection", value: connectionName },
 		{ key: "operation", value: operationName },
-		...Object.entries(input)
-			.filter(([key]) => !reserved.has(key))
-			.map(([key, value]) => ({ key, value })),
+		...inputFields,
 	];
 }
 

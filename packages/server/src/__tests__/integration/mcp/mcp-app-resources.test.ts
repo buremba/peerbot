@@ -1837,6 +1837,49 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
   });
 
+  it('classifies an approval written before approval_context existed', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_legacy_approval_${runId}`,
+      title: 'Delete entity: Legacy contact — pending approval',
+      content: 'Review this deletion.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { entity_id: 42 },
+      // A row already pending at rollout: the producer never stamped
+      // `approval_context`, so kind comes from `tool` and impact from `action`.
+      metadata: { tool: 'entity_change', action: 'delete' },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 217,
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.icon).toBe('entity');
+    expect(body.result?.structuredContent?.impact).toEqual({
+      level: 'high',
+      reason: 'This action can remove or irreversibly change data.',
+    });
+    expect(body.result?.structuredContent?.tone).toBe('warning');
+  });
+
   it('keeps user-authored envelope-shaped fields in an ordinary approval proposal', async () => {
     const [run] = await getDb()<{ id: number }>`
       INSERT INTO runs (organization_id, run_type, status, approval_status)

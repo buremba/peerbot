@@ -856,6 +856,40 @@ describe("operations.execute backend lifecycle", () => {
 		]);
 	});
 
+	it("keeps connector inputs that collide with review headers visible", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "needs_approval",
+				input: {
+					resource: "customer-record",
+					connection: "input-connection",
+					operation: "preview",
+					issue: "#3129",
+				},
+			},
+			{} as Env,
+			ctx,
+		);
+		const [approval] = await getTestDb()`
+			SELECT metadata->'review_fields' AS review_fields
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.review_fields).toEqual([
+			{ key: "resource", value: "Connector operation" },
+			{ key: "connection", value: `Test Connection ${LOCAL}` },
+			{ key: "operation", value: "Needs approval" },
+			{ key: "input_resource", value: "customer-record" },
+			{ key: "input_connection", value: "input-connection" },
+			{ key: "input_operation", value: "preview" },
+			{ key: "issue", value: "#3129" },
+		]);
+	});
+
 	it("marks only explicitly destructive connector actions as high impact", async () => {
 		const result = await manageOperations(
 			{

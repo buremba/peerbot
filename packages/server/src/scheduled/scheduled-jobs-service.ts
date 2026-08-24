@@ -39,7 +39,7 @@ export interface ScheduledDeliveryContext {
  * platform accepted at creation but unhandled at execution would store a dead
  * `delivery_context` and silently fall back to the api path.
  */
-export const DELIVERABLE_CHAT_PLATFORMS = ['slack', 'telegram'] as const;
+export const DELIVERABLE_CHAT_PLATFORMS = ['slack', 'telegram', 'gchat'] as const;
 
 export function isDeliverableChatPlatform(platform: string): boolean {
   return (DELIVERABLE_CHAT_PLATFORMS as readonly string[]).includes(platform);

@@ -180,6 +180,43 @@ describe("manage_schedules wake_agent chat delivery", () => {
     });
   });
 
+  test("stores trusted Google Chat delivery context for one-shot wakeups", async () => {
+    await seedChatConnection({ id: "gchat-real", platform: "gchat" });
+
+    const result = await manageSchedules(
+      {
+        action: "create",
+        description: "Google Chat poll deadline",
+        run_at: new Date(Date.now() + 60_000).toISOString(),
+        payload: {
+          type: "wake_agent",
+          agent_id: AGENT,
+          prompt: "Close the poll if it is still open.",
+        },
+      },
+      {} as any,
+      ctx({
+        platform: "gchat",
+        connectionId: "gchat-real",
+        channelId: "spaces/AAAA-test",
+        conversationId: "gchat:spaces/AAAA-test:dm",
+        userId: "users/clicker-a",
+      })
+    );
+
+    expect(result.error).toBeUndefined();
+    const rows = await getDb()`SELECT delivery_context FROM scheduled_jobs`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].delivery_context).toEqual({
+      platform: "gchat",
+      connectionId: "gchat-real",
+      channelId: "spaces/AAAA-test",
+      conversationId: "gchat:spaces/AAAA-test:dm",
+      teamId: null,
+      userId: "users/clicker-a",
+    });
+  });
+
   test("scheduled-jobs ticker injects delivery_context into the wake task payload", async () => {
     await seedChatConnection({ id: "conn-real" });
 

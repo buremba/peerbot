@@ -1,3 +1,4 @@
+import { LINKEDIN_IDENTITY } from '@lobu/connectors/linkedin-identity';
 import { X_IDENTITY } from '@lobu/connectors/x-identity';
 import { describe, expect, it } from 'vitest';
 import {
@@ -13,10 +14,23 @@ describe('content-search identity namespace registry bridge', () => {
     expect(STANDARD_IDENTITY_NAMESPACES).not.toContain(X_IDENTITY.HANDLE);
   });
 
+  it('includes both LinkedIn author identity namespaces', () => {
+    expect(STANDARD_IDENTITY_NAMESPACES).toContain(LINKEDIN_IDENTITY.SLUG);
+    expect(STANDARD_IDENTITY_NAMESPACES).toContain(LINKEDIN_IDENTITY.MEMBER_ID);
+  });
+
   it('emits an indexed x_user_id branch for entity-link matching', () => {
     const sql = entityLinkMatchSql('$1', 'f');
     expect(sql).toContain("ei.namespace = 'x_user_id'");
     expect(sql).toContain("e2.metadata ? 'x_user_id'");
+  });
+
+  it('emits indexed LinkedIn identity branches for entity-link matching', () => {
+    const sql = entityLinkMatchSql('$1', 'f');
+    expect(sql).toContain("ei.namespace = 'linkedin_slug'");
+    expect(sql).toContain("e2.metadata ? 'linkedin_slug'");
+    expect(sql).toContain("ei.namespace = 'linkedin_member_id'");
+    expect(sql).toContain("e2.metadata ? 'linkedin_member_id'");
   });
 
   it('builds scoped unions for indexed namespaces and skips mutable unindexed handles', () => {

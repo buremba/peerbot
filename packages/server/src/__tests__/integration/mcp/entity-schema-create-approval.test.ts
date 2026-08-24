@@ -152,14 +152,17 @@ describe("MCP entitySchema.createType approval", () => {
 	async function propose(
 		slug: string,
 		token = ownerAdminToken,
+		name = slug,
+		extra: Record<string, unknown> = {},
 	): Promise<PendingCreate> {
+		const input = { ...extra, slug, name };
 		const result = await mcpToolsCall<{
 			success: boolean;
 			return_value: PendingCreate;
 		}>(
 			"run_sdk",
 			{
-				script: `export default async (_ctx, client) => client.entitySchema.createType({ slug: ${JSON.stringify(slug)}, name: ${JSON.stringify(slug)} });`,
+				script: `export default async (_ctx, client) => client.entitySchema.createType(${JSON.stringify(input)});`,
 			},
 			{ token, orgSlug: org.slug },
 		);
@@ -193,6 +196,7 @@ describe("MCP entitySchema.createType approval", () => {
 		);
 		const capability = viewResponse.result?._meta?.["lobu/approval-capability"];
 		expect(typeof capability).toBe("string");
+		const view = viewResponse.result?.structuredContent;
 
 		const response = await mcpRequest<any>(
 			"tools/call",
@@ -206,7 +210,7 @@ describe("MCP entitySchema.createType approval", () => {
 			},
 			{ token, orgSlug: org.slug },
 		);
-		return { response, capability };
+		return { response, capability, view };
 	}
 
 	it("keeps a direct human owner create immediate", async () => {
@@ -427,7 +431,11 @@ describe("MCP entitySchema.createType approval", () => {
 
 	it("requires policy approval and applies only after embedded human approval", async () => {
 		await setCreatePolicy("approval");
-		const pending = await propose("member-proposed-type");
+		const pending = await propose(
+			"member-proposed-type",
+			ownerAdminToken,
+			"ChatGPT schema E2E",
+		);
 		expect(pending).toMatchObject({
 			schema_type: "entity_type",
 			action: "create",
@@ -441,7 +449,7 @@ describe("MCP entitySchema.createType approval", () => {
 				policy_action: "create_type",
 				schema_type: "entity_type",
 				action: "create",
-				args: { slug: "member-proposed-type", name: "member-proposed-type" },
+				args: { slug: "member-proposed-type", name: "ChatGPT schema E2E" },
 			},
 			current: null,
 		});
@@ -478,6 +486,47 @@ describe("MCP entitySchema.createType approval", () => {
 			interaction_type: "approval",
 			interaction_status: "pending",
 		});
+
+		const reviewView = await mcpRequest<any>(
+			"tools/call",
+			{
+				name: "get_approval",
+				arguments: { run_id: pending.run_id },
+			},
+			{ token: ownerWriteToken, orgSlug: org.slug },
+		);
+		expect(reviewView.result?.isError).not.toBe(true);
+		const reviewBlocks = reviewView.result?.structuredContent?.blocks ?? [];
+		expect(reviewBlocks.find((block: { type?: string }) => block.type === "diff")).toEqual({
+			type: "diff",
+			fields: [
+				{ label: "Resource", after: "Entity type" },
+				{ label: "Name", after: "ChatGPT schema E2E" },
+				{
+					label: "Slug",
+					after: "member-proposed-type",
+					format: "code",
+				},
+				{ label: "Metadata schema", after: "Any metadata (no schema)" },
+				{ label: "Storage", after: "Stored" },
+				{ label: "Event kinds", after: "None declared" },
+				{ label: "Metrics", after: "None declared" },
+				{ label: "Write rules", after: "None" },
+			],
+		});
+		expect(reviewBlocks.some((block: { type?: string }) => block.type === "code")).toBe(false);
+		expect(JSON.stringify(reviewBlocks)).not.toMatch(
+			/owner_resolved|policy_action|precondition|resource_class/,
+		);
+		expect(reviewView.result?.structuredContent?.title).toBe(
+			"Create entity type: ChatGPT schema E2E",
+		);
+		expect(reviewView.result?.structuredContent?.actions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: "review", label: "Review in Lobu" }),
+			]),
+		);
+
 		const unauthorized = await resolveInApp(
 			pending.run_id,
 			"approve",
@@ -527,6 +576,34 @@ describe("MCP entitySchema.createType approval", () => {
 				AND metadata->>'op' = 'created'
 		`;
 		expect(configEvents).toHaveLength(1);
+	});
+
+	it("renders an explicit metadata schema exactly with code typography", async () => {
+		await setCreatePolicy("approval");
+		const metadataSchema = {
+			type: "object",
+			properties: {
+				status: { type: "string", enum: ["active", "archived"] },
+			},
+			required: ["status"],
+		};
+		const pending = await propose(
+			"typed-proposed-type",
+			ownerAdminToken,
+			"Typed proposed type",
+			{ metadata_schema: metadataSchema },
+		);
+		const { response, view } = await resolveInApp(pending.run_id, "reject");
+		const schemaField = view.blocks[0].fields.find(
+			(field: { label: string }) => field.label === "Metadata schema",
+		);
+		expect(schemaField).toMatchObject({
+			label: "Metadata schema",
+			format: "code",
+		});
+		expect(JSON.parse(schemaField.after)).toEqual(metadataSchema);
+		expect(response.result?.isError).not.toBe(true);
+		expect(await entityTypeExists("typed-proposed-type")).toBe(false);
 	});
 
 	it("rejects a policy-held mutation without applying and refuses replay", async () => {
@@ -745,6 +822,51 @@ describe("MCP entitySchema.createType approval", () => {
 		);
 		expect(proposed.success).toBe(true);
 		expect(proposed.return_value.status).toBe("pending_approval");
+		const [interaction] = await getDb()<
+			[
+				{
+					interaction_input: Record<string, unknown>;
+					current: Record<string, unknown>;
+				},
+			]
+		>`
+			SELECT interaction_input, metadata->'current' AS current
+			FROM events
+			WHERE run_id = ${proposed.return_value.run_id}
+				AND interaction_type = 'approval'
+				AND interaction_status = 'pending'
+		`;
+		expect(interaction.interaction_input).toMatchObject({
+			name: "Approved old name",
+			slug: "stale-update-type",
+		});
+		expect(interaction.current).toMatchObject({
+			name: "Original",
+			slug: "stale-update-type",
+		});
+
+		const reviewView = await mcpRequest<any>(
+			"tools/call",
+			{
+				name: "get_approval",
+				arguments: { run_id: proposed.return_value.run_id },
+			},
+			{ token: ownerWriteToken, orgSlug: org.slug },
+		);
+		const reviewFields = reviewView.result?.structuredContent?.blocks?.find(
+			(block: { type?: string }) => block.type === "diff",
+		)?.fields;
+		expect(reviewFields).toEqual([
+			{ label: "Resource", after: "Entity type" },
+			{ label: "Name", before: "Original", after: "Approved old name" },
+			{
+				label: "Slug",
+				before: "stale-update-type",
+				after: "stale-update-type",
+				format: "code",
+			},
+		]);
+
 		await getDb()`
 			UPDATE entity_types
 			SET name = 'Newer human name',
@@ -809,10 +931,25 @@ describe("MCP entitySchema.createType approval", () => {
 			await getDb()`SELECT id FROM entity_relationship_types
 			WHERE organization_id = ${org.id} AND slug = 'governed-rel' AND deleted_at IS NULL`,
 		).toHaveLength(0);
-		const { response } = await resolveInApp(
+		const { response, view } = await resolveInApp(
 			proposed.return_value.run_id,
 			"approve",
 		);
+		expect(view.blocks[0]).toEqual({
+			type: "diff",
+			fields: [
+				{ label: "Resource", after: "Relationship type" },
+				{ label: "Name", after: "Governed relation" },
+				{ label: "Slug", after: "governed-rel", format: "code" },
+				{
+					label: "Metadata schema",
+					after: "Any relationship metadata (no schema)",
+				},
+				{ label: "Direction", after: "Directional" },
+				{ label: "Inverse type", after: "None" },
+				{ label: "Status", after: "Active" },
+			],
+		});
 		expect(response.result?.isError).not.toBe(true);
 		expect(
 			await getDb()`SELECT id FROM entity_relationship_types

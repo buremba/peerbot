@@ -205,9 +205,12 @@ describe("an escalated card applies atomically or not at all", () => {
 		expect((await readMetadata(invoice.id)).amount).toBe(40000);
 
 		// 4. Approve the card as persisted.
-		await applyEntityFieldChangeProposal(
-			proposal as Parameters<typeof applyEntityFieldChangeProposal>[0],
-			user.id,
+		await getTestDb().begin((tx) =>
+			applyEntityFieldChangeProposal(
+				proposal as Parameters<typeof applyEntityFieldChangeProposal>[0],
+				user.id,
+				tx,
+			),
 		);
 
 		const after = await readMetadata(invoice.id);
@@ -248,9 +251,12 @@ describe("an escalated card applies atomically or not at all", () => {
 			ctxFor(org.id, { userId: user.id }),
 		);
 
-		await applyEntityFieldChangeProposal(
-			proposal as Parameters<typeof applyEntityFieldChangeProposal>[0],
-			user.id,
+		await getTestDb().begin((tx) =>
+			applyEntityFieldChangeProposal(
+				proposal as Parameters<typeof applyEntityFieldChangeProposal>[0],
+				user.id,
+				tx,
+			),
 		);
 
 		expect(await readName(invoice.id)).toBe("INV-HUMAN");

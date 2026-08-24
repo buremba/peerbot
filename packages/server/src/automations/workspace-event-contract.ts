@@ -9,6 +9,14 @@ export const MAX_WORKSPACE_EVENT_FANOUT = 32;
 export const MAX_COALESCED_AUTOMATION_EVENT_INPUTS = 25;
 export const MAX_WORKSPACE_EVENT_CAUSAL_AUTOMATIONS = 256;
 
+/** Expected chain-termination signal, distinct from database/runtime failures. */
+export class WorkspaceEventCausalityLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkspaceEventCausalityLimitError';
+  }
+}
+
 /**
  * Durable pointer passed between Automation runs. Event content stays in the
  * append-only event store; this signal carries only delivery/correlation data.
@@ -106,12 +114,12 @@ export function deriveWorkspaceEventCausality(
     causalAutomationIds.push(producerAutomationId);
   }
   if (causalAutomationIds.length > MAX_WORKSPACE_EVENT_CAUSAL_AUTOMATIONS) {
-    throw new Error(
+    throw new WorkspaceEventCausalityLimitError(
       `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_CAUSAL_AUTOMATIONS} distinct Automations`
     );
   }
   if (rootEventIds.length > MAX_COALESCED_AUTOMATION_EVENT_INPUTS) {
-    throw new Error(
+    throw new WorkspaceEventCausalityLimitError(
       `Workspace event causality exceeds ${MAX_COALESCED_AUTOMATION_EVENT_INPUTS} distinct roots`
     );
   }

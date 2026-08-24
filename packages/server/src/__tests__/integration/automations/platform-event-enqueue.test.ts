@@ -18,6 +18,7 @@ import {
 } from '../../../utils/insert-event';
 import { runWithActingAutomation } from '../../../utils/acting-automation-context';
 import { WORKSPACE_EVENT_ACTIVATION_TASK } from '../../../scheduled/task-definitions';
+import { MAX_COALESCED_AUTOMATION_EVENT_INPUTS } from '../../../automations/workspace-event-contract';
 
 interface QueuedActivation {
   organizationId: string;
@@ -334,6 +335,77 @@ describe('audit rows inherit the producing run causal chain', () => {
       upstreamAutomationId,
       automationId,
     ]);
+  });
+
+  it('commits a transactional mutation while terminating an over-broad causal chain', async () => {
+    const { organizationId, automationId, api, agentId } = await subscriber(
+      'Causality Cap Org',
+      ['connection.deleted']
+    );
+    const upstreamAutomationId = await secondAutomation(
+      api,
+      agentId,
+      'cap-upstream'
+    );
+    const sql = getTestDb();
+    const roots = Array.from(
+      { length: MAX_COALESCED_AUTOMATION_EVENT_INPUTS * 2 },
+      (_, index) => index + 1
+    );
+    const signals = [
+      roots.slice(0, MAX_COALESCED_AUTOMATION_EVENT_INPUTS),
+      roots.slice(MAX_COALESCED_AUTOMATION_EVENT_INPUTS),
+    ].map((rootEventIds, index) => ({
+      kind: 'event',
+      source: 'workspace',
+      event_id: rootEventIds[0],
+      event_type: 'connection.deleted',
+      delivery_id: `workspace-event:cap-${index}`,
+      occurred_at: new Date().toISOString(),
+      root_event_ids: rootEventIds,
+      causal_automation_ids: [upstreamAutomationId],
+      depth: 2,
+    }));
+    const [sourceRun] = await sql<{ id: number }>`
+      INSERT INTO public.runs (
+        organization_id, run_type, action_key, status, automation_id,
+        approved_input
+      ) VALUES (
+        ${organizationId}, 'automation', 'run_automation', 'running',
+        ${automationId}, ${sql.json({ trigger_signals: signals })}
+      )
+      RETURNING id
+    `;
+    const originId = `causality_cap_transaction_${Date.now()}`;
+
+    await runWithActingAutomation(
+      { automationId, runId: Number(sourceRun.id) },
+      () =>
+        sql.begin(async (tx) => {
+          await tx`UPDATE organization SET name = 'Causality cap committed' WHERE id = ${organizationId}`;
+          await insertConnectionlessAuditEvent(
+            {
+              entityIds: [],
+              organizationId,
+              originId,
+              title: 'Connection deleted at causality cap',
+              semanticType: 'change',
+            },
+            { subject: 'connection', op: 'deleted' },
+            { sql: tx }
+          );
+        })
+    );
+
+    const [organization] = await sql<{ name: string }>`
+      SELECT name FROM organization WHERE id = ${organizationId}
+    `;
+    expect(organization.name).toBe('Causality cap committed');
+    expect(
+      await sql`SELECT id FROM events
+        WHERE organization_id = ${organizationId} AND origin_id = ${originId}`
+    ).toHaveLength(1);
+    expect(await queuedActivations(organizationId)).toEqual([]);
   });
 
   it('resolves the run through the declared window when the lane has no run id', async () => {

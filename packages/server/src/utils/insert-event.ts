@@ -13,6 +13,7 @@ import {
   findSubscribedWorkspaceEventTypes,
   loadRunEventCausality,
 } from '../automations/workspace-event-enqueue';
+import { WorkspaceEventCausalityLimitError } from '../automations/workspace-event-contract';
 import {
   AUDIT_EVENT_TYPE_METADATA_KEY,
   type AuditEventType,
@@ -1075,15 +1076,29 @@ async function queueWorkspaceEventActivationInTransaction(
     tx
   );
   if (!subscribed.has(args.eventType)) return;
-  const inherited =
-    args.producerAutomationId == null || args.actingRunId == null
-      ? null
-      : await loadRunEventCausality(
-          args.organizationId,
-          args.actingRunId,
-          args.producerAutomationId,
-          tx
-        );
+  let inherited: Awaited<ReturnType<typeof loadRunEventCausality>> = null;
+  if (args.producerAutomationId != null && args.actingRunId != null) {
+    try {
+      inherited = await loadRunEventCausality(
+        args.organizationId,
+        args.actingRunId,
+        args.producerAutomationId,
+        tx
+      );
+    } catch (error) {
+      if (!(error instanceof WorkspaceEventCausalityLimitError)) throw error;
+      logger.warn(
+        {
+          eventId: args.eventId,
+          eventType: args.eventType,
+          organizationId: args.organizationId,
+          error: error.message,
+        },
+        '[insert-event] workspace-event causality cap reached; activation chain terminated'
+      );
+      return;
+    }
+  }
   await enqueueWorkspaceEventActivations(tx, [
     {
       organizationId: args.organizationId,

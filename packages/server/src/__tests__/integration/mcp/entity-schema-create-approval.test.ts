@@ -589,6 +589,7 @@ describe("MCP entitySchema.createType approval", () => {
 		const pending = await propose("terminal-card-rollback-type");
 		const sql = getDb();
 		await sql.unsafe(`
+			DROP TRIGGER IF EXISTS test_fail_schema_terminal_card_trg ON events;
 			CREATE OR REPLACE FUNCTION test_fail_schema_terminal_card() RETURNS trigger AS $fn$
 			BEGIN
 				IF NEW.interaction_type = 'approval' AND NEW.interaction_status = 'completed' THEN
@@ -618,6 +619,41 @@ describe("MCP entitySchema.createType approval", () => {
 			[{ status: string; approval_status: string }]
 		>`SELECT status, approval_status FROM runs WHERE id = ${pending.run_id}`;
 		expect(run).toEqual({ status: "pending", approval_status: "pending" });
+	});
+
+	it("rolls an immediate schema mutation back when its audit row fails", async () => {
+		const sql = getDb();
+		await sql.unsafe(`
+			DROP TRIGGER IF EXISTS test_fail_entity_type_audit_trg ON entity_type_audit;
+			CREATE OR REPLACE FUNCTION test_fail_entity_type_audit() RETURNS trigger AS $fn$
+			BEGIN
+				RAISE EXCEPTION 'simulated entity type audit failure';
+			END;
+			$fn$ LANGUAGE plpgsql;
+			CREATE TRIGGER test_fail_entity_type_audit_trg
+				BEFORE INSERT ON entity_type_audit
+				FOR EACH ROW EXECUTE FUNCTION test_fail_entity_type_audit();
+		`);
+		const direct = await TestApiClient.for({
+			organizationId: org.id,
+			userId: owner.id,
+			memberRole: "owner",
+			scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		});
+		try {
+			await expect(
+				direct.entity_schema.createType({
+					slug: "audit-rollback-type",
+					name: "Audit rollback type",
+				}),
+			).rejects.toThrow(/audit failure/i);
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS test_fail_entity_type_audit_trg ON entity_type_audit;
+				DROP FUNCTION IF EXISTS test_fail_entity_type_audit();
+			`);
+		}
+		expect(await entityTypeExists("audit-rollback-type")).toBe(false);
 	});
 
 	it("keeps dry_run preview-only with no durable approval", async () => {

@@ -52,7 +52,6 @@ import {
 	type EntityData,
 	mergeEntityFields,
 	patchEntityRows,
-	withEntityWriteTransaction,
 } from "../../utils/entity-management";
 import { applyMergeGroupInTransaction } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
@@ -1131,7 +1130,7 @@ export async function applyEntityFieldChangeProposal(
 			ATTRIBUTE_FIELD_KEYS.has(key),
 		),
 	);
-	return await withEntityWriteTransaction(sql, async (tx) => {
+	const apply = async (tx: DbClient): Promise<FieldMergeResult> => {
 		// Resolve and claim the organization parent before mergeEntityFields locks
 		// the entity. The canonical event insert below takes the same FK lock, and
 		// this order avoids deadlocking with organization deletion's parent-first
@@ -1279,7 +1278,14 @@ export async function applyEntityFieldChangeProposal(
 			);
 		}
 		return merge;
-	}).catch((err) => {
+	};
+	// A stale escalated card is converted into a successful "skipped" result.
+	// When this function joins the approval's outer transaction, that conversion
+	// must happen outside a savepoint so every write from the stale attempt is
+	// rolled back before the outer transaction continues to its terminal card.
+	const transaction =
+		typeof sql.savepoint === "function" ? sql.savepoint(apply) : sql.begin(apply);
+	return await transaction.catch((err) => {
 		// Not an apply failure: nothing was wrong with the write, the reviewed
 		// unit simply no longer describes the row. Resolve as fully stale so the
 		// caller reports "skipped (stale)" and the newer human value stands.

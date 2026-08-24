@@ -428,8 +428,8 @@ export async function devCommand(
   // /api/local-init and print a deep-link URL. The SPA hook accepts
   // ?lobu_token=<session> and exchanges it for a cookie, so the user can
   // click the URL straight from their terminal and land logged in. Also
-  // persists the session as the `local` CLI context so `lobu chat -c local`
-  // works without a separate `lobu login`.
+  // persists the session in the selected CLI context so later commands work
+  // without a separate `lobu login`.
   void announceLocalSignIn(gatewayUrl, mode === "embedded").then(
     async (localSignIn) => {
       const localContextReady = localSignIn.ready;
@@ -444,9 +444,9 @@ export async function devCommand(
       if (signInWarning) {
         console.warn(chalk.yellow(`  ${signInWarning}`));
       }
-      // Once the `local` context is confirmed registered + active, push the
+      // Once the selected context is registered and credentialed, push the
       // project's lobu.config.ts into the embedded DB so the scaffolded agent is
-      // usable via `lobu chat -c local …` with no separate `lobu apply`.
+      // usable with no separate `lobu apply`.
       // Gated (see shouldAutoApplyLocalProject) AND pinned to the local URL so
       // a failed sign-in can never apply this local project to whatever
       // cloud/prod context happened to be active.
@@ -496,8 +496,7 @@ export async function devCommand(
 /**
  * Whether `lobu run` should auto-apply the project. True only when:
  *  - the backend is embedded (never auto-mutate an external/prod DB), AND
- *  - the `local` context was registered + made active (so the apply targets the
- *    embedded server, not whatever cloud context was active before), AND
+ *  - local sign-in registered and credentialed the selected context, AND
  *  - the project actually has a `lobu.config.ts` to apply.
  */
 export function shouldAutoApplyLocalProject(opts: {
@@ -513,8 +512,8 @@ export function shouldAutoApplyLocalProject(opts: {
 /**
  * After `lobu run` boots an embedded backend, push the project's `lobu.config.ts`
  * into the local DB so the agent the user just scaffolded is immediately usable
- * (`lobu chat -c local …`) without a separate `lobu apply`. Uses the `local`
- * context that `announceLocalSignIn` just registered.
+ * without a separate `lobu apply`. The apply is pinned to the embedded URL and
+ * bootstrap org rather than relying on the globally active context.
  *
  * Best-effort: a project with nothing to apply, or a transient failure, must
  * never crash the running server. The apply graph (esbuild + connector-worker
@@ -538,7 +537,7 @@ export async function autoApplyLocalProject(
     const applyCommand =
       applyImpl ?? (await import("./_lib/apply/apply-cmd.js")).applyCommand;
     // Pin the apply to the embedded server's URL. `resolveApiTarget` matches
-    // the `local` context by URL — and refuses to send any other context's
+    // a stored context by URL — and refuses to send any other context's
     // credentials to a different URL — so this can only ever target the local
     // server, never a cloud/prod org. Also pin the ORG to the embedded server's
     // bootstrap org (from /api/local-init) so a `defineConfig({ org })` naming a
@@ -632,8 +631,8 @@ export function resolveBackendBundle(
 
 /**
  * After the embedded server is reachable, hit POST /api/local-init for
- * a fresh session token, register a `local` CLI context pointing at the
- * gateway, persist the session as that context's bearer credential, and
+ * a fresh session token, register a CLI context pointing at the gateway,
+ * persist the session as that context's bearer credential, and
  * print a deep-link URL the user can click to land logged into the SPA.
  *
  * Best-effort: a failure here (server not ready, /local-init refused because
@@ -777,8 +776,9 @@ export async function announceLocalSignIn(
     };
   }
 
+  const requestedContextName = process.env.LOBU_CONTEXT?.trim();
+  const contextName = requestedContextName || "local";
   try {
-    const contextName = "local";
     await dependencies.addContextImpl(contextName, gatewayUrl);
     const creds: Credentials = {
       accessToken: cliToken,
@@ -789,7 +789,7 @@ export async function announceLocalSignIn(
     };
     await dependencies.saveCredentialsImpl(creds, contextName);
     // Bind the bootstrap org slug returned by /api/local-init to the
-    // context. Without this, `lobu apply -c local` errors with
+    // context. Without this, an apply targeting the context errors with
     // "No organization selected" until the user manually runs
     // `lobu org set <slug>`. The server is the source of truth — it
     // auto-provisioned this org for the install operator.
@@ -798,22 +798,21 @@ export async function announceLocalSignIn(
         .setActiveOrgImpl(orgSlug, contextName)
         .catch(() => undefined);
     }
-    // Auto-switch the active context so plain `lobu apply` / `lobu chat`
-    // from any shell hit this loopback server instead of whatever cloud
-    // context was active. Announce on stderr when we actually flip so the
-    // user isn't surprised — `lobu run` on a fresh box silently lands on
-    // `local`; `lobu run` from a shell previously on `lobu` cloud prints
-    // the switch.
-    try {
-      const current = await dependencies.getCurrentContextNameImpl();
-      if (current !== contextName) {
-        await dependencies.setCurrentContextImpl(contextName);
-        process.stderr.write(
-          `Switched active context to "${contextName}" (lobu run)\n`
-        );
+    // A normal interactive `lobu run` switches the global default to `local`.
+    // An explicit LOBU_CONTEXT pins this process and must not retarget CLI
+    // commands running without that override.
+    if (!requestedContextName) {
+      try {
+        const current = await dependencies.getCurrentContextNameImpl();
+        if (current !== contextName) {
+          await dependencies.setCurrentContextImpl(contextName);
+          process.stderr.write(
+            `Switched active context to "${contextName}" (lobu run)\n`
+          );
+        }
+      } catch {
+        // Best-effort — failing to switch shouldn't kill the run banner.
       }
-    } catch {
-      // Best-effort — failing to switch shouldn't kill the run banner.
     }
 
     const url = new URL(gatewayUrl);
@@ -828,8 +827,8 @@ export async function announceLocalSignIn(
         chalk.cyan(`lobu chat -c ${contextName} "hello"`)
     );
     console.log();
-    // The `local` context is registered, credentialed, and active — safe to
-    // auto-apply the project against it. Return the bootstrap org slug so the
+    // The selected context is registered and credentialed, so the URL-pinned
+    // auto-apply is safe. Return the bootstrap org slug so the
     // auto-apply can target the local org explicitly (a config `org:` for a
     // cloud org must not redirect the local apply — that 404s silently).
     return { ready: true, localOrgSlug: orgSlug };
@@ -837,7 +836,7 @@ export async function announceLocalSignIn(
     return {
       ready: false,
       stage: "context_setup",
-      detail: 'could not register or persist the "local" context',
+      detail: `could not register or persist the "${contextName}" context`,
     };
   }
 }

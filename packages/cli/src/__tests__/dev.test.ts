@@ -277,7 +277,7 @@ describe("lobu run backend bundle resolution", () => {
 });
 
 describe("shouldAutoApplyLocalProject", () => {
-  test("applies for an embedded run once the local context is ready", () => {
+  test("applies for an embedded run once the selected context is ready", () => {
     expect(
       shouldAutoApplyLocalProject({
         mode: "embedded",
@@ -287,7 +287,7 @@ describe("shouldAutoApplyLocalProject", () => {
     ).toBe(true);
   });
 
-  test("skips when sign-in did not establish the local context", () => {
+  test("skips when sign-in did not establish the selected context", () => {
     // The guard that stops `lobu run` applying a local project to whatever
     // cloud/prod context happened to be active.
     expect(
@@ -622,6 +622,43 @@ describe("lobu run local sign-in diagnostics", () => {
         hasLobuConfig: true,
       })
     ).toBeNull();
+  });
+
+  test("isolates an explicit process context without changing the global default", async () => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    process.env.LOBU_CONTEXT = "__owletto_debug_v2__5:local";
+    const calls: string[] = [];
+    try {
+      const result = await announceLocalSignIn("http://127.0.0.1:8788", true, {
+        ...dependencies(),
+        addContextImpl: async (name, url) => {
+          calls.push(`context:${name}:${url}`);
+        },
+        saveCredentialsImpl: async (_credentials, name) => {
+          calls.push(`credentials:${name}`);
+        },
+        setActiveOrgImpl: async (slug, name) => {
+          calls.push(`org:${slug}:${name}`);
+        },
+        getCurrentContextNameImpl: async () => {
+          calls.push("read-current");
+          return "local";
+        },
+        setCurrentContextImpl: async (name) => {
+          calls.push(`set-current:${name}`);
+        },
+      });
+
+      expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(calls).toEqual([
+        "context:__owletto_debug_v2__5:local:http://127.0.0.1:8788",
+        "credentials:__owletto_debug_v2__5:local",
+        "org:local-install:__owletto_debug_v2__5:local",
+      ]);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+    }
   });
 
   test("warns only when an embedded project will skip auto-apply", () => {

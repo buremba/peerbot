@@ -3250,7 +3250,7 @@ export type ManageFeedsData = {
       }
     | {
         /**
-         * Trigger an immediate sync run for a collected feed.
+         * Trigger an immediate sync run for a sync-capable feed.
          */
         action: "trigger_feed";
         /**

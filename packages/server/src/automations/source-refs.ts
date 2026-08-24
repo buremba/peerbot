@@ -200,6 +200,8 @@ interface ResolvedFeed {
   /** `connections.slug` of the feed's connection (for the channel-messages path). */
   connectionSlug: string;
   feedKey: string;
+  /** Declared feed capabilities; empty when no definition resolved. */
+  operations: string[];
 }
 
 async function resolveFeeds(
@@ -213,10 +215,34 @@ async function resolveFeeds(
     store: string | null;
     feed_key: string;
     connection_slug: string;
+    operations: unknown;
   }>`
-    SELECT f.id, f.config ->> 'store' AS store, f.feed_key, c.slug AS connection_slug
+    SELECT f.id, f.config ->> 'store' AS store, f.feed_key, c.slug AS connection_slug,
+           COALESCE(cd.feed_operations, '[]'::jsonb) AS operations
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
+    LEFT JOIN LATERAL (
+      SELECT connector_definitions.feeds_schema -> f.feed_key -> 'operations'
+        AS feed_operations
+      FROM connector_definitions
+      WHERE connector_definitions.key = c.connector_key
+        AND connector_definitions.organization_id = f.organization_id
+        AND (
+          (f.pinned_version IS NULL AND connector_definitions.status = 'active')
+          OR (
+            f.pinned_version IS NOT NULL
+            AND (
+              connector_definitions.version = f.pinned_version
+              OR connector_definitions.status = 'active'
+            )
+          )
+        )
+      ORDER BY (connector_definitions.version = f.pinned_version) DESC,
+               (connector_definitions.status = 'active') DESC,
+               connector_definitions.updated_at DESC,
+               connector_definitions.id DESC
+      LIMIT 1
+    ) cd ON TRUE
     WHERE f.organization_id = ${organizationId}
       AND f.deleted_at IS NULL
       AND c.deleted_at IS NULL
@@ -234,6 +260,7 @@ async function resolveFeeds(
       store: (r.store === 'channel_messages' ? 'channel_messages' : 'events') as ResolvedFeed['store'],
       connectionSlug: String(r.connection_slug),
       feedKey: String(r.feed_key),
+      operations: Array.isArray(r.operations) ? r.operations.map(String) : [],
     }))
     .filter((r) => Number.isSafeInteger(r.id) && r.id > 0);
 }
@@ -244,7 +271,7 @@ function bareChannelId(feedKey: string): string {
   return feedKey.includes(':') ? feedKey.slice(feedKey.indexOf(':') + 1) : feedKey;
 }
 
-/** Compile a set of streaming (chat-channel) feeds to a read over
+/** Compile a set of channel feeds to a read over
  *  `channel_messages`. The rows are membership-gated by the channel_messages CTE
  *  in execute-data-sources — a headless automation run reads only non-enforced
  *  channels, so enforced-channel content never reaches the shared recap. */
@@ -301,6 +328,19 @@ async function compileRefToQuery(
       if (feeds.length === 0) throw new Error(`@feed:${ref.value} did not match any feed`);
       const eventFeeds = feeds.filter((f) => f.store === 'events');
       const channelFeeds = feeds.filter((f) => f.store === 'channel_messages');
+      // A source-only feed never persists events, so compiling it to an
+      // `events` SELECT would silently yield zero rows forever. Reject it loudly
+      // instead. A feed whose definition did not resolve keeps the events read:
+      // that is the uninstalled-connector case, not a declared capability gap.
+      const sourceOnly = eventFeeds.find(
+        (f) => f.operations.length > 0 && !f.operations.includes('sync')
+      );
+      if (sourceOnly) {
+        throw new Error(
+          `@feed:${ref.value} is a source-read-only feed and stores no events; ` +
+            'read it with feeds.readMany instead of an @feed source'
+        );
+      }
       // Don't mix storage planes in one source: a single SELECT cannot span
       // both `events` and `channel_messages`.
       if (eventFeeds.length > 0 && channelFeeds.length > 0) {

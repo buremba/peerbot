@@ -1038,7 +1038,7 @@ const marketQuotesConnection = defineConnection({
   feeds: [],
 });
 
-// Gmail person-building, not mailbox mirroring. One narrow collected feed syncs
+// Gmail person-building, not mailbox mirroring. One narrow feed materializes
 // only person-relevant threads (human_senders_only) so the DB holds a small
 // high-signal set that drives person minting/merging — full email content stays
 // a live read via the connector's search/get_thread actions, never persisted.

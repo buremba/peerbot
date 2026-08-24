@@ -1,7 +1,9 @@
 -- Make channel-feed lifecycle depend on the canonical storage marker rather
--- than the transitional feeds.kind column. Capability-era writers dual-write
--- kind/virtual only for pre-capability replicas during the rolling window; the
--- new runtime invariant must therefore follow config.store.
+-- than the transitional feeds.kind column. Only ensureChannelFeed still writes
+-- kind/virtual, and only so pre-capability replicas keep resolving channel
+-- feeds during the rolling window (see TODO(#3134)); every other writer now
+-- leaves those columns at their defaults. config.store is therefore the single
+-- discriminator this invariant can rely on.
 
 -- migrate:up
 

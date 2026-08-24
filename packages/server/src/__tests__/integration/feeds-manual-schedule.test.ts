@@ -1,5 +1,5 @@
 /**
- * Collected feeds with no schedule are manual-only (no platform default cron).
+ * Sync-capable feeds with no schedule are not enqueued by the cron scheduler.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";

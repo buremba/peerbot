@@ -39,10 +39,20 @@ export default defineConnector({
   feeds: {
     items: {
       name: "Items",
+      configSchema: {
+        type: "object",
+        required: ["scope"],
+        properties: { scope: { type: "string" } },
+        additionalProperties: false,
+      },
       eventKinds: { item: { description: "An item from the service" } },
       sync: async () => ({
         events: [],
         checkpoint: { last_sync_at: new Date().toISOString() },
+      }),
+      read: async () => ({
+        rows: [],
+        hasMore: false,
       }),
     },
   },
@@ -68,6 +78,40 @@ export default defineConnector({
 Optional top-level handlers (`authenticate`, `query`,
 `reflectMetrics`, `registerWebhook`, `unregisterWebhook`) dispatch through the
 corresponding `ConnectorRuntime` methods.
+
+### Feed capabilities and storage
+
+Handlers are the capability contract. A feed with `sync` publishes
+`operations: ['sync']`; one with `read` publishes `['read']`; defining both
+publishes `['sync', 'read']`. Connector authors do not declare a separate feed
+mode. Only metadata-only device or MCP definitions declare `operations`
+directly because their executable handlers live elsewhere.
+
+- **`sync`** returns event envelopes and a checkpoint. The platform may persist
+  those events for local search, entities, relationships, and Automations.
+- **`read`** pushes filtering and pagination to the source and returns rows to
+  the caller without persisting them.
+- **Both** lets a connector maintain a small, searchable index while retaining
+  an explicit path to source-owned detail. Gmail can sync selected metadata yet
+  read complete messages on demand; SQL and warehouse connectors can
+  materialize selected queries while pushing ad-hoc compute to the database.
+
+`configSchema` governs the persisted feed instance across every handler.
+Top-level `required` fields are enforced for read-only, sync-only, and hybrid
+feeds alike. Model operation-specific optionality in the schema itself.
+
+Agents read source-owned data explicitly:
+
+```ts
+const result = await client.feeds.readMany({
+  reads: [{ feed_id: 123, query: "open", limit: 25 }],
+  timeout_ms: 10_000,
+});
+```
+
+`search_memory` remains local and reports visible, unqueried source feeds in its
+coverage result. Each `readMany` entry is independently bounded by the per-feed
+timeout, and one failure does not discard successful results from the others.
 
 ### What a feed sync must get right
 

@@ -23,7 +23,7 @@
  *   - `no_schedule` — a syncable feed with no cron. This says the feed has
  *     no cron and NOTHING MORE. It was called `manual` until 2026-08-12, which
  *     read an intent into it that the column does not carry: measured on prod
- *     that day, 196 of 215 active collected feeds have no cron, and many are
+ *     that day, 196 of 215 active sync-capable feeds have no cron, and many are
  *     driven unattended through other dispatch paths (github `issue_comments` =
  *     4551 sync runs in 14 days with `schedule` and `next_run_at` both NULL).
  *     Do not reintroduce the intent reading under a new name.

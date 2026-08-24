@@ -232,7 +232,7 @@ instructions because it can drift from the deployed SDK:
 2. Always follow the methods it returns in order instead of relying on a remembered connect/feed/operation sequence. Repeat discovery after authorization or state changes so the next step reflects the live connector and current caller.
 3. Treat `access: operate` as `mcp:write` and `access: administer` as workspace owner/admin plus `mcp:admin`. If discovery asks for MCP reauthorization or an owner/admin handoff, follow that instruction; never attempt methods it withheld as unavailable.
 
-Source-backed feeds query the provider only through an explicit `client.feeds.readMany({ reads: [...] })` call; `search_memory` stays local and reports unqueried source feeds in `coverage`, while `client.feeds.get` returns metadata without source access. Collected feeds persist events for search and relational queries. For connector actions, use the live discovery result's operation target and readiness. If readiness is disconnected, follow the returned next action instead of guessing a connection. Surface approval-gated `pending_approval` as a waiting state, not a failure.
+Source-backed feeds query the provider only through an explicit `client.feeds.readMany({ reads: [...] })` call; `search_memory` stays local and reports unqueried source feeds in `coverage`, while `client.feeds.get` returns metadata without source access. Feeds with `sync` may persist events for search and relational queries. For connector actions, use the live discovery result's operation target and readiness. If readiness is disconnected, follow the returned next action instead of guessing a connection. Surface approval-gated `pending_approval` as a waiting state, not a failure.
 
 ## Data Ingestion
 

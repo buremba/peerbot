@@ -44,6 +44,7 @@ describe('manage_feeds create_feed capability contract', () => {
             operations: [...operations],
             configSchema: {
               type: 'object',
+              ...(key === 'read-only' ? { required: ['query'] } : {}),
               properties: { query: { type: 'string' } },
               additionalProperties: false,
             },
@@ -73,10 +74,20 @@ describe('manage_feeds create_feed capability contract', () => {
   });
 
   it('derives read-only operations and rejects sync scheduling', async () => {
+    const missingConfig = await owner.feeds
+      .create({
+        connection_id: connections.get('read-only')!,
+        feed_key: 'items',
+      })
+      .catch((reason: unknown) => reason);
+    expect(missingConfig).toBeInstanceOf(ClientSdkActionError);
+    expect(String(missingConfig)).toMatch(/query|required/i);
+
     const error = await owner.feeds
       .create({
         connection_id: connections.get('read-only')!,
         feed_key: 'items',
+        config: { query: 'open' },
         schedule: '0 * * * *',
       })
       .catch((reason: unknown) => reason);
@@ -130,6 +141,7 @@ describe('manage_feeds create_feed capability contract', () => {
     const created = (await owner.feeds.create({
       connection_id: connections.get('read-only-update')!,
       feed_key: 'items',
+      config: { query: 'open' },
     })) as { feed?: { id?: number } };
     const feedId = Number(created.feed?.id);
     expect(feedId).toBeGreaterThan(0);

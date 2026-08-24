@@ -1,9 +1,9 @@
 /**
  * Cron scheduling utilities shared by feed and automation schedulers.
  *
- * Collected feeds with schedule = NULL are manual-only (trigger_feed). There is
- * no platform default cadence — callers that want a poll must pass an explicit
- * cron (e.g. app-install AUTO_FEED_SCHEDULE).
+ * A sync-capable feed with schedule = NULL is not enqueued by the cron
+ * scheduler. Other paths may still trigger it. There is no platform default
+ * cadence — callers that want polling must pass an explicit cron.
  */
 
 import { CronExpressionParser } from 'cron-parser';
@@ -53,4 +53,3 @@ export function validateSchedule(schedule: string): string | null {
     return `Invalid cron expression: ${e.message}`;
   }
 }
-

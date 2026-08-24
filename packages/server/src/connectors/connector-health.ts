@@ -63,7 +63,7 @@
  * It is tempting to read "no cron" as "human-triggered, so a failure is
  * user-visible and never an unattended incident" — which holds for Midas but
  * does not generalise: measured on prod 2026-08-12, 196 of 215
- * active collected feeds have NO `schedule`, yet many run unattended through
+ * active sync-capable feeds have NO `schedule`, yet many run unattended through
  * other dispatch paths (github `issue_comments`: 4551 sync runs in 14 days with
  * `schedule` and `next_run_at` both NULL; linkedin `home_feed` ~hourly; gmail
  * `threads` ~every 2.6h). Replaying both predicates over that snapshot, gating

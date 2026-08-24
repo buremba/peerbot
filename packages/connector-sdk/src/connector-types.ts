@@ -499,7 +499,11 @@ export interface FeedDefinition {
   requiredScopes?: string[];
   /** Template for generating feed display names from config values, e.g. "{subreddit} - {content_type}" */
   displayNameTemplate?: string;
-  /** JSON Schema for feed-specific config */
+  /**
+   * JSON Schema for the persisted feed-instance config. It governs the feed
+   * itself, so top-level `required` fields are enforced for read-only,
+   * sync-only, and hybrid feeds alike.
+   */
   configSchema?: Record<string, unknown>;
   /**
    * When true, auto-wire (device-reconcile + bundled-connector install) skips

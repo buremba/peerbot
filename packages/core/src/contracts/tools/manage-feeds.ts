@@ -193,7 +193,7 @@ export const DeleteFeedAction = Type.Object({
 
 export const TriggerFeedAction = Type.Object({
   action: Type.Literal("trigger_feed", {
-    description: "Trigger an immediate sync run for a collected feed.",
+    description: "Trigger an immediate sync run for a sync-capable feed.",
   }),
   feed_id: Type.Number({ description: "Feed ID to trigger sync for" }),
   dry_run: Type.Optional(

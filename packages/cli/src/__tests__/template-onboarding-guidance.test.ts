@@ -72,7 +72,7 @@ describe("generated AGENTS.md onboarding guidance", () => {
     expect(template).toContain("lobu context use <cloud-name>");
     expect(template).toContain("authoritative `view_url`");
     expect(template).toContain("Do not call onboarding complete");
-    expect(template).toContain("connectors that expose no collected feed");
+    expect(template).toContain("connectors that expose no sync-capable feed");
     expect(template).toContain(
       "never run the project from its parent directory"
     );

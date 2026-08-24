@@ -1,8 +1,8 @@
 /**
- * Streaming (chat-channel) feed as an automation @feed source — the membership-gated
- * read of `channel_messages`.
+ * Channel (chat-transcript) feed as an automation @feed source — the
+ * membership-gated read of `channel_messages`.
  *
- * A streaming @feed compiles to a read over `channel_messages` (not `events`),
+ * A channel @feed compiles to a read over `channel_messages` (not `events`),
  * and that read is gated per-channel by `compileChannelMessagesVisibility`:
  *
  *   1. On a NON-enforced connection, a headless automation run (null principal)
@@ -17,7 +17,10 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getTestDb } from "../../setup/test-db";
 import { withAclEdgeWrite } from "../../../utils/relationship-validation";
-import { createTestConnection } from "../../setup/test-fixtures";
+import {
+  createTestConnection,
+  createTestConnectorDefinition,
+} from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
 import {
   slackAclSource,
@@ -359,5 +362,32 @@ describe("channel feed as an automation @feed source", () => {
     })) as Array<{ text: string }>;
     expect(rows.length).toBe(1);
     expect(rows[0].text).toBe("inside window");
+  });
+
+  it("rejects a source-read-only @feed instead of compiling it to an empty events read", async () => {
+    const sql = getTestDb();
+    await createTestConnectorDefinition({
+      key: "readonly_src",
+      name: "Read Only Source",
+      organization_id: orgId,
+      feeds_schema: { items: { name: "Items", operations: ["read"] } },
+    });
+    const conn = await createTestConnection({
+      organization_id: orgId,
+      connector_key: "readonly_src",
+      createDefaultFeed: false,
+    });
+    await sql`
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, created_at, updated_at)
+      VALUES (${orgId}, ${conn.id}, 'items', 'active', NOW(), NOW())
+    `;
+
+    // A read-only feed never persists events, so an events SELECT over it would
+    // silently return nothing forever. The reference must fail loudly instead.
+    await expect(
+      normalizeAutomationSources(sql as unknown as DbClient, orgId, [
+        { name: "items", query: "@feed:items" },
+      ])
+    ).rejects.toThrow(/source-read-only/i);
   });
 });

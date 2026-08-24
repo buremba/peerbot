@@ -409,9 +409,10 @@ function validateFeedOperations(
   for (const [feedKey, feedDefinition] of Object.entries(feedsSchema)) {
     if (!isRecord(feedDefinition)) throw new Error(`feeds_schema.${feedKey} must be an object`);
     const operations = feedDefinition.operations;
-    // Manifests persisted before feed operations became required described
-    // sync-only feeds. Keep their original JSON shape so its artifact hash
-    // remains valid; new poll payloads still use the strict public validator.
+    // Manifests persisted before feed operations became required carried the
+    // capability in `virtual` instead. Keep their original JSON shape so the
+    // artifact hash stays valid — `manifestFeedsForMetadata` projects them onto
+    // operations. New poll payloads still use the strict public validator.
     if (operations === undefined && allowLegacyMissingOperations) continue;
     if (
       !Array.isArray(operations) ||

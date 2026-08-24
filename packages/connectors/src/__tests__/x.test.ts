@@ -2046,7 +2046,7 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.13.6");
+		expect(new XConnector().definition.version).toBe("3.13.7");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is

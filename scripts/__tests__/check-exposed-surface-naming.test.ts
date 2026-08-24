@@ -45,6 +45,15 @@ const GENERIC_BEHAVIOR_PROBE_FILE = join(
   REPO_ROOT,
   "packages/core/src/guard-probe.json"
 );
+/**
+ * The AppKit exemption is content-shaped, not path-scoped, so a main-repo probe
+ * exercises it. A probe under `packages/owletto` would instead pass vacuously on
+ * a checkout without the submodule, which the guard skips.
+ */
+const APPKIT_BEHAVIOR_PROBE_FILE = join(
+  REPO_ROOT,
+  "packages/core/src/guard-probe.swift"
+);
 const RETIRED_PATH_PROBE_FILE = join(
   REPO_ROOT,
   "packages/core/src/watcher-probe.bin"
@@ -96,6 +105,20 @@ describe("check-exposed-surface-naming", () => {
   it("allows an exact external platform behavior option", () => {
     create(GENERIC_BEHAVIOR_PROBE_FILE, '{"behavior":"smooth"}\n');
     expect(runGuard()).toBe(0);
+  });
+
+  it("allows exact AppKit behavior property and type spellings", () => {
+    create(
+      APPKIT_BEHAVIOR_PROBE_FILE,
+      "panel.collectionBehavior = NSWindow.CollectionBehavior.stationary\n" +
+        "panel.animationBehavior = .none\n"
+    );
+    expect(runGuard()).toBe(0);
+  });
+
+  it("does not exempt an owned AppKit-shaped behavior key", () => {
+    create(GENERIC_BEHAVIOR_PROBE_FILE, '{"collectionBehavior":"owned"}\n');
+    expect(runGuard()).toBe(1);
   });
 
   it("does not turn the generic-option exception into a product-term escape", () => {

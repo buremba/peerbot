@@ -634,8 +634,8 @@ describe("lobu run local sign-in diagnostics", () => {
     try {
       const result = await announceLocalSignIn("http://127.0.0.1:8788", true, {
         ...dependencies(),
-        addContextImpl: async (name, url) => {
-          calls.push(`context:${name}:${url}`);
+        addContextImpl: async (name, url, server) => {
+          calls.push(`context:${name}:${url}:${server?.lifecycle}`);
         },
         saveCredentialsImpl: async (_credentials, name) => {
           calls.push(`credentials:${name}`);
@@ -654,10 +654,56 @@ describe("lobu run local sign-in diagnostics", () => {
 
       expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
       expect(calls).toEqual([
-        "context:__owletto_debug_v2__5:local:http://127.0.0.1:8788",
+        "context:__owletto_debug_v2__5:local:http://127.0.0.1:8788:managed",
         "credentials:__owletto_debug_v2__5:local",
         "org:local-install:__owletto_debug_v2__5:local",
       ]);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
+  });
+
+  test("keeps a new explicit runner context ready across restarts", async () => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = "__owletto_debug_v2__5:local";
+    process.env.LOBU_API_URL = "http://localhost:8788";
+    let storedContext:
+      | { url: string; lifecycle?: "managed" | "external" }
+      | undefined;
+    const testDependencies = {
+      ...dependencies(),
+      inspectContextImpl: async () => storedContext,
+      addContextImpl: async (
+        _name: string,
+        url: string,
+        server?: { lifecycle?: "managed" | "external" }
+      ) => {
+        storedContext = { url, lifecycle: server?.lifecycle };
+      },
+    };
+
+    try {
+      const first = await announceLocalSignIn(
+        "http://127.0.0.1:8788",
+        true,
+        testDependencies
+      );
+      const second = await announceLocalSignIn(
+        "http://127.0.0.1:8788",
+        true,
+        testDependencies
+      );
+
+      expect(first).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(second).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(storedContext).toEqual({
+        url: "http://127.0.0.1:8788",
+        lifecycle: "managed",
+      });
     } finally {
       if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
       else process.env.LOBU_CONTEXT = previousContext;

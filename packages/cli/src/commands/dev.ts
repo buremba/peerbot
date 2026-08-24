@@ -57,7 +57,11 @@ export type LocalSignInResult =
 export interface LocalSignInDependencies {
   waitForReachable: (url: string) => Promise<boolean>;
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>;
-  addContextImpl: (name: string, url: string) => Promise<unknown>;
+  addContextImpl: (
+    name: string,
+    url: string,
+    server?: { lifecycle?: "managed" | "external" }
+  ) => Promise<unknown>;
   saveCredentialsImpl: (
     credentials: Credentials,
     contextName: string
@@ -849,7 +853,11 @@ export async function announceLocalSignIn(
         }
       }
     }
-    await dependencies.addContextImpl(contextName, gatewayUrl);
+    await dependencies.addContextImpl(
+      contextName,
+      gatewayUrl,
+      requestedContextName ? { lifecycle: "managed" } : undefined
+    );
     const creds: Credentials = {
       accessToken: cliToken,
       ...(deviceToken ? { localWorkerToken: deviceToken } : {}),

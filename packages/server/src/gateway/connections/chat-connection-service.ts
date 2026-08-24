@@ -10,6 +10,7 @@ import { restoreRedactedConfig } from "../../utils/connection-config-redaction.j
 import { SLACK_INSTALLATION_ID_PREFIX } from "../../lobu/stores/slack-installations.js";
 import { PlatformAdapterConfigSchema } from "../routes/schemas/platform-config.js";
 import { isAdapterlessPlatform } from "./chat-instance-manager.js";
+import { parseGoogleChatCredentials } from "./platforms/gchat.js";
 import { getPlatformDescriptor } from "./platforms/index.js";
 import { createSlackWebApi } from "./slack-web.js";
 import { isSlackConfig, type PlatformAdapterConfig } from "./types.js";
@@ -93,13 +94,38 @@ function validateRequiredCredentials(
 	platform: string,
 	config: Record<string, unknown>,
 ): void {
+	if (platform === "gchat") {
+		const credentials = config.credentials;
+		const usesAdc = config.useApplicationDefaultCredentials === true;
+		const missing: string[] = [];
+		if (
+			(typeof credentials !== "string" || credentials.trim().length === 0) &&
+			!usesAdc
+		) {
+			missing.push("credentials or useApplicationDefaultCredentials");
+		}
+		if (
+			typeof config.googleChatProjectNumber !== "string" ||
+			config.googleChatProjectNumber.trim().length === 0
+		) {
+			missing.push("googleChatProjectNumber");
+		}
+		if (missing.length > 0) {
+			throw new Error(
+				`Missing required gchat configuration: ${missing.join(", ")}`,
+			);
+		}
+		if (typeof credentials === "string") {
+			parseGoogleChatCredentials(credentials);
+		}
+		return;
+	}
 	const requiredByPlatform: Record<string, string[]> = {
 		slack: ["botToken", "signingSecret"],
 		telegram: ["botToken"],
 		discord: ["botToken", "applicationId", "publicKey"],
 		whatsapp: ["accessToken", "phoneNumberId", "appSecret", "verifyToken"],
 		teams: ["appId", "appPassword"],
-		gchat: ["credentials", "googleChatProjectNumber"],
 	};
 	const missing = (requiredByPlatform[platform] ?? []).filter((key) => {
 		const value = config[key];

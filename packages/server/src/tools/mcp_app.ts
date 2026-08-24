@@ -395,6 +395,22 @@ function legacyApprovalImpact(metadata: Record<string, unknown> | null): Approva
     : normalApprovalImpact();
 }
 
+function approvalImpactForView(impact: ApprovalImpact): ApprovalImpact {
+  return {
+    level: impact.level,
+    ...(impact.reason !== undefined
+      ? { reason: truncate(impact.reason, APPROVAL_IMPACT_REASON_MAX_LENGTH) }
+      : {}),
+    ...(impact.consequences !== undefined
+      ? {
+          consequences: impact.consequences
+            .slice(0, APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS)
+            .map((item) => truncate(item, APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH)),
+        }
+      : {}),
+  };
+}
+
 function approvalContextForView(
   row: ApprovalContentItem,
   status: string
@@ -408,7 +424,7 @@ function approvalContextForView(
   }
   return {
     kind: explicit?.kind ?? legacyApprovalKind(row),
-    impact: explicit?.impact ?? legacyApprovalImpact(row.metadata),
+    impact: approvalImpactForView(explicit?.impact ?? legacyApprovalImpact(row.metadata)),
   };
 }
 

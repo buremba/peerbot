@@ -864,9 +864,10 @@ describe("operations.execute backend lifecycle", () => {
 				operation_key: "needs_approval",
 				input: {
 					resource: "customer-record",
+					input_resource: "already-prefixed-customer-record",
 					connection: "input-connection",
 					operation: "preview",
-					issue: "#3129",
+					issue: "synthetic-issue-001",
 				},
 			},
 			{} as Env,
@@ -884,9 +885,13 @@ describe("operations.execute backend lifecycle", () => {
 			{ key: "connection", value: `Test Connection ${LOCAL}` },
 			{ key: "operation", value: "Needs approval" },
 			{ key: "input_resource", value: "customer-record" },
+			{
+				key: "input_input_resource",
+				value: "already-prefixed-customer-record",
+			},
 			{ key: "input_connection", value: "input-connection" },
 			{ key: "input_operation", value: "preview" },
-			{ key: "issue", value: "#3129" },
+			{ key: "input_issue", value: "synthetic-issue-001" },
 		]);
 	});
 

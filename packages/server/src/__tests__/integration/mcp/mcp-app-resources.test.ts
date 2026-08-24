@@ -1880,6 +1880,63 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.structuredContent?.tone).toBe('warning');
   });
 
+  it('bounds explicit approval impact metadata for the MCP view contract', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_bounded_approval_impact_${runId}`,
+      title: 'Bound approval impact — pending approval',
+      content: 'Review this bounded impact metadata.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      metadata: {
+        approval_context: {
+          kind: 'entity-schema',
+          impact: {
+            level: 'high',
+            reason: 'r'.repeat(501),
+            consequences: [
+              'c'.repeat(501),
+              'two',
+              'three',
+              'four',
+              'five',
+              'six',
+            ],
+          },
+        },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 218,
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    const impact = body.result?.structuredContent?.impact;
+    expect(impact.reason).toHaveLength(500);
+    expect(impact.reason.endsWith('…')).toBe(true);
+    expect(impact.consequences).toHaveLength(5);
+    expect(impact.consequences[0]).toHaveLength(500);
+    expect(impact.consequences[0].endsWith('…')).toBe(true);
+    expect(impact.consequences).not.toContain('six');
+  });
+
   it('keeps user-authored envelope-shaped fields in an ordinary approval proposal', async () => {
     const [run] = await getDb()<{ id: number }>`
       INSERT INTO runs (organization_id, run_type, status, approval_status)

@@ -601,12 +601,14 @@ async function tryApproveBuilderRun(
 		const message = error instanceof Error ? error.message : String(error);
 		const eventId = await getDb().begin(async (tx) => {
 			await lockOrganizationForApproval(tx, ctx.organizationId);
-			await tx`
+			const reset = await tx`
 				UPDATE runs SET approval_status = 'pending', status = 'pending',
 				  error_message = ${message}
 				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
 				  AND approval_status = 'pending' AND status = 'pending'
+				RETURNING id
 			`;
+			if (reset.length === 0) return null;
 			const failedEventId = await supersedeActionEvent(
 				args.run_id,
 				ctx.organizationId,
@@ -620,6 +622,12 @@ async function tryApproveBuilderRun(
 			requireApprovalCard(args.run_id, failedEventId, "apply_failed");
 			return failedEventId;
 		});
+		if (eventId === null) {
+			return {
+				error:
+					"The approval was already decided while this request was in flight. Refresh before acting.",
+			};
+		}
 		return {
 			error: `Failed to apply ${attempt.nounLabel.toLowerCase()}: ${message}. The approval is still pending.`,
 			event_id: eventId,

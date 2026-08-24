@@ -592,6 +592,15 @@ describe("MCP entitySchema.createType approval", () => {
 			slug: "stale-update-type",
 			name: "Original",
 		});
+		// Pin both versions inside one JavaScript millisecond. PostgreSQL keeps
+		// microseconds; stale protection must not round them away through Date.
+		await getDb()`
+			UPDATE entity_types
+			SET updated_at = date_trunc('second', current_timestamp)
+				+ interval '123456 microseconds'
+			WHERE organization_id = ${org.id}
+				AND slug = 'stale-update-type'
+		`;
 		await setUpdatePolicy("approval");
 		const proposed = await mcpToolsCall<{
 			success: boolean;
@@ -606,10 +615,13 @@ describe("MCP entitySchema.createType approval", () => {
 		);
 		expect(proposed.success).toBe(true);
 		expect(proposed.return_value.status).toBe("pending_approval");
-		await direct.entity_schema.updateType({
-			slug: "stale-update-type",
-			name: "Newer human name",
-		});
+		await getDb()`
+			UPDATE entity_types
+			SET name = 'Newer human name',
+				updated_at = updated_at + interval '1 microsecond'
+			WHERE organization_id = ${org.id}
+				AND slug = 'stale-update-type'
+		`;
 
 		const { response } = await resolveInApp(
 			proposed.return_value.run_id,
@@ -723,6 +735,113 @@ describe("MCP entitySchema.createType approval", () => {
 			await getDb()`SELECT id FROM entity_relationship_types
 			WHERE organization_id = ${org.id} AND slug = 'held-with-inverse' AND deleted_at IS NULL`,
 		).toHaveLength(0);
+	});
+
+	it("treats a changed public inverse as a stale relationship create", async () => {
+		const publicOrg = await createTestOrganization({
+			name: "Public inverse approval catalog",
+			visibility: "public",
+		});
+		await getDb()`
+			INSERT INTO entity_relationship_types (
+				organization_id, slug, name, status, created_at, updated_at
+			) VALUES (
+				${publicOrg.id}, 'public-inverse-before', 'Public inverse before',
+				'active', current_timestamp, current_timestamp
+			)
+		`;
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "agent",
+			effects: { create_relationship_type: "approval" },
+		});
+		const proposed = await mcpToolsCall<{
+			success: boolean;
+			return_value: PendingCreate;
+		}>(
+			"run_sdk",
+			{
+				script:
+					"export default async (_ctx, client) => client.entitySchema.createRelType({ slug: 'held-with-public-inverse', name: 'Held with public inverse', inverse_type_slug: 'public-inverse-before' });",
+			},
+			{ token: ownerAdminToken, orgSlug: org.slug },
+		);
+		expect(proposed.return_value.status).toBe("pending_approval");
+		await getDb()`
+			UPDATE entity_relationship_types
+			SET name = 'Public inverse changed', updated_at = current_timestamp
+			WHERE organization_id = ${publicOrg.id}
+				AND slug = 'public-inverse-before'
+		`;
+
+		const { response } = await resolveInApp(
+			proposed.return_value.run_id,
+			"approve",
+		);
+		expect(response.result?.isError).toBe(true);
+		expect(response.result?.content?.[0]?.text).toMatch(
+			/inverse relationship type changed|stale/i,
+		);
+		expect(
+			await getDb()`SELECT id FROM entity_relationship_types
+			WHERE organization_id = ${org.id}
+				AND slug = 'held-with-public-inverse'
+				AND deleted_at IS NULL`,
+		).toHaveLength(0);
+	});
+
+	it("does not apply a held relationship update after its chosen inverse changes", async () => {
+		const direct = await TestApiClient.for({
+			organizationId: org.id,
+			userId: owner.id,
+			memberRole: "owner",
+			scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		});
+		await direct.entity_schema.createRelType({
+			slug: "held-update-rel",
+			name: "Held update relation",
+		});
+		await direct.entity_schema.createRelType({
+			slug: "update-inverse-before",
+			name: "Update inverse before",
+		});
+		await upsertEntityApprovalPolicy(org.id, {
+			resourceClass: "entity_schema",
+			principalKind: "agent",
+			effects: { update_relationship_type: "approval" },
+		});
+		const proposed = await mcpToolsCall<{
+			success: boolean;
+			return_value: PendingCreate;
+		}>(
+			"run_sdk",
+			{
+				script:
+					"export default async (_ctx, client) => client.entitySchema.updateRelType({ slug: 'held-update-rel', inverse_type_slug: 'update-inverse-before' });",
+			},
+			{ token: ownerAdminToken, orgSlug: org.slug },
+		);
+		expect(proposed.return_value.status).toBe("pending_approval");
+		await direct.entity_schema.updateRelType({
+			slug: "update-inverse-before",
+			name: "Update inverse changed",
+		});
+
+		const { response } = await resolveInApp(
+			proposed.return_value.run_id,
+			"approve",
+		);
+		expect(response.result?.isError).toBe(true);
+		expect(response.result?.content?.[0]?.text).toMatch(
+			/inverse relationship type changed|stale/i,
+		);
+		const [target] = await getDb()<[{ inverse_type_id: number | null }]>`
+			SELECT inverse_type_id FROM entity_relationship_types
+			WHERE organization_id = ${org.id}
+				AND slug = 'held-update-rel'
+				AND deleted_at IS NULL
+		`;
+		expect(target.inverse_type_id).toBeNull();
 	});
 
 	it("governs relationship rules as relationship-type updates", async () => {

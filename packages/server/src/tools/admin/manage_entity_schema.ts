@@ -273,8 +273,10 @@ function entitySchemaPolicyAction(args: ManageEntitySchemaArgs): WriteAction | n
 
 function timestamp(value: unknown): string | null {
   if (value == null) return null;
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.valueOf()) ? String(value) : date.toISOString();
+  // PROD_PG_VALUE_OPTIONS returns untyped timestamptz values as strings. Keep
+  // their full PostgreSQL microsecond precision: routing them through Date
+  // truncates to milliseconds and can let a newer schema version look equal.
+  return value instanceof Date ? value.toISOString() : String(value);
 }
 
 async function schemaActingPrincipal(sql: DbClient, ctx: ToolContext): Promise<ActingPrincipal> {
@@ -304,6 +306,7 @@ async function prepareEntitySchemaMutation(
       : {}),
   } as ManageEntitySchemaArgs;
   let current: Record<string, unknown> | null = null;
+  let targetUpdatedAt: string | null = null;
   let targetKind: 'entity_type' | 'relationship_type' | 'relationship_rule' = args.schema_type;
   let relatedId: number | undefined;
   let relatedUpdatedAt: string | undefined;
@@ -328,16 +331,15 @@ async function prepareEntitySchemaMutation(
       );
     if (args.inverse_type_slug) {
       const inverse = await resolveInverseType(sql, args.inverse_type_slug, ctx);
-      if (inverse.ownedByCaller) {
-        relatedId = inverse.id;
-        relatedUpdatedAt = inverse.updatedAt;
-      }
+      relatedId = inverse.id;
+      relatedUpdatedAt = inverse.updatedAt;
     }
   } else if (args.action === 'remove_rule') {
     if (!args.rule_id) throw new ToolUserError('rule_id is required for remove_rule action', 400);
     targetKind = 'relationship_rule';
     const rows = await sql`
-      SELECT r.*, rt.slug AS relationship_type_slug
+      SELECT r.*, rt.slug AS relationship_type_slug,
+        r.updated_at::text AS governance_updated_at
       FROM entity_relationship_type_rules r
       JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
       WHERE r.id = ${args.rule_id} AND r.deleted_at IS NULL
@@ -345,12 +347,17 @@ async function prepareEntitySchemaMutation(
       LIMIT 1`;
     if (rows.length === 0) throw new ToolUserError(`Rule ${args.rule_id} not found`, 404);
     current = rows[0] as Record<string, unknown>;
+    targetUpdatedAt = timestamp(current.governance_updated_at);
+    delete current.governance_updated_at;
   } else {
     if (!normalizedArgs.slug)
       throw new ToolUserError(`slug is required for ${args.action} action`, 400);
     const table = args.schema_type === 'entity_type' ? 'entity_types' : 'entity_relationship_types';
     const rows = await sql.unsafe(
-      `SELECT * FROM ${table} WHERE organization_id = $1 AND slug = $2 AND deleted_at IS NULL LIMIT 1`,
+      `SELECT *, updated_at::text AS governance_updated_at
+       FROM ${table}
+       WHERE organization_id = $1 AND slug = $2 AND deleted_at IS NULL
+       LIMIT 1`,
       [ctx.organizationId, normalizedArgs.slug]
     );
     if (rows.length === 0)
@@ -359,6 +366,21 @@ async function prepareEntitySchemaMutation(
         404
       );
     current = rows[0] as Record<string, unknown>;
+    targetUpdatedAt = timestamp(current.governance_updated_at);
+    delete current.governance_updated_at;
+    if (
+      args.schema_type === 'relationship_type' &&
+      args.action === 'update' &&
+      args.inverse_type_slug != null &&
+      args.inverse_type_slug !== ''
+    ) {
+      const inverse = await resolveInverseType(sql, args.inverse_type_slug, ctx);
+      if (inverse.id === Number(current.id)) {
+        throw new ToolUserError('inverse_type_id cannot point to self', 422);
+      }
+      relatedId = inverse.id;
+      relatedUpdatedAt = inverse.updatedAt;
+    }
   }
 
   return {
@@ -372,7 +394,7 @@ async function prepareEntitySchemaMutation(
     precondition: {
       target_kind: targetKind,
       target_id: current == null ? null : Number(current.id),
-      updated_at: current == null ? null : timestamp(current.updated_at),
+      updated_at: current == null ? null : targetUpdatedAt,
       ...(relatedId == null
         ? {}
         : {
@@ -396,7 +418,8 @@ async function assertPreparedEntitySchemaFresh(
   const expected = proposal.precondition;
   let rows: unknown[];
   if (expected.target_kind === 'relationship_rule') {
-    rows = await sql`SELECT r.id, r.updated_at FROM entity_relationship_type_rules r
+    rows = await sql`SELECT r.id, r.updated_at::text AS updated_at
+      FROM entity_relationship_type_rules r
       JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
       WHERE r.id = ${expected.target_id} AND r.deleted_at IS NULL
         AND rt.organization_id = ${ctx.organizationId} FOR UPDATE OF r`;
@@ -405,7 +428,8 @@ async function assertPreparedEntitySchemaFresh(
       expected.target_kind === 'entity_type' ? 'entity_types' : 'entity_relationship_types';
     if (expected.target_id == null) {
       rows = await sql.unsafe(
-        `SELECT id, updated_at FROM ${table} WHERE organization_id = $1 AND slug = $2 AND deleted_at IS NULL`,
+        `SELECT id, updated_at::text AS updated_at FROM ${table}
+         WHERE organization_id = $1 AND slug = $2 AND deleted_at IS NULL`,
         [ctx.organizationId, args.slug]
       );
       if (rows.length > 0) {
@@ -416,7 +440,9 @@ async function assertPreparedEntitySchemaFresh(
       }
     } else {
       rows = await sql.unsafe(
-        `SELECT id, updated_at FROM ${table} WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`,
+        `SELECT id, updated_at::text AS updated_at FROM ${table}
+         WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL
+         FOR UPDATE`,
         [ctx.organizationId, expected.target_id]
       );
     }
@@ -435,11 +461,14 @@ async function assertPreparedEntitySchemaFresh(
     }
   }
   if (expected.related_id != null) {
-    const related = await sql`SELECT id, updated_at FROM entity_relationship_types
-      WHERE organization_id = ${ctx.organizationId}
-        AND id = ${expected.related_id}
-        AND deleted_at IS NULL
-      FOR UPDATE`;
+    const related = await sql`
+      SELECT rt.id, rt.updated_at::text AS updated_at
+      FROM entity_relationship_types rt
+      LEFT JOIN organization o ON o.id = rt.organization_id
+      WHERE rt.id = ${expected.related_id}
+        AND rt.deleted_at IS NULL
+        AND (rt.organization_id = ${ctx.organizationId} OR o.visibility = 'public')
+      FOR UPDATE OF rt`;
     const row = related[0] as { id?: unknown; updated_at?: unknown } | undefined;
     if (
       !row ||
@@ -1570,7 +1599,8 @@ async function resolveInverseType(
   ctx: ToolContext
 ): Promise<{ id: number; ownedByCaller: boolean; updatedAt: string }> {
   const rows = await sql`
-    SELECT rt.id, rt.slug, rt.purpose, rt.updated_at,
+    SELECT rt.id, rt.slug, rt.purpose,
+      rt.updated_at::text AS governance_updated_at,
       (rt.organization_id = ${ctx.organizationId}) AS owned
     FROM entity_relationship_types rt
     LEFT JOIN organization o ON o.id = rt.organization_id
@@ -1596,7 +1626,7 @@ async function resolveInverseType(
   return {
     id: Number(rows[0].id),
     ownedByCaller: Boolean(rows[0].owned),
-    updatedAt: timestamp(rows[0].updated_at) ?? '',
+    updatedAt: timestamp(rows[0].governance_updated_at) ?? '',
   };
 }
 

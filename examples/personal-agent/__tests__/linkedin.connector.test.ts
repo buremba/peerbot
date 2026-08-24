@@ -2132,6 +2132,51 @@ describe("LinkedInConnector home_feed", () => {
     ).rejects.toThrow(/No partial home-feed batch was persisted/i);
   });
 
+  test("ignores current feed modules without weakening organic-post identity checks", async () => {
+    const dispatcher = {
+      dispatch: async () => ({
+        result: {
+          loggedIn: true,
+          rows: [
+            {
+              id: "market-like-a-pro-module",
+              body: "Feed post Market like a pro Transform every high-performing post into a campaign that converts Learn how",
+              author_control_label: "",
+              post_url: "",
+            },
+            {
+              id: "jobs-recommended-module",
+              body: "Feed post Jobs recommended for you Staff / Senior Staff Engineer, AI Agent Engineering Equinix London (Hybrid) Show more",
+              author_control_label: "",
+              post_url: "",
+            },
+            {
+              id: "organic-post",
+              body: "Feed post Fixture Author • 1st A real organic post with enough text",
+              author_control_label:
+                "Open control menu for post by Fixture Author",
+              post_url:
+                "https://www.linkedin.com/feed/update/urn:li:activity:1234567890123456789",
+            },
+          ],
+        },
+      }),
+    };
+    const connector = new LinkedInConnector();
+
+    const result = await connector.sync({
+      feedKey: "home_feed",
+      config: {},
+      checkpoint: {},
+      sessionState: { chrome_dispatcher: dispatcher },
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].origin_id).toBe(
+      "li_home_activity_1234567890123456789"
+    );
+  });
+
   test("persists the durable post identity resolved from a copied short URL", async () => {
     const fetchImpl = async () =>
       new Response(null, {
@@ -2763,7 +2808,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.3");
+    expect(c.definition.version).toBe("3.11.4");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

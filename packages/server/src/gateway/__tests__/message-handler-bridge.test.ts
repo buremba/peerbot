@@ -1018,6 +1018,58 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(clickPayload.platformMetadata.isDirect).toBeUndefined();
   });
 
+  test("routes suggestion clicks through message.created Automation ingress with a replay-stable identity", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "gchat",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const automation: MatchingAutomationActivation = {
+      automationId: 91,
+      organizationId: "org-connection",
+      agentId: "poll-agent",
+      deviceWorkerId: null,
+      agentKind: null,
+      model: null,
+      instructions: "Handle the verified chat interaction.",
+      minCooldownSeconds: 0,
+      trigger,
+    };
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "gchat",
+      automations: [automation],
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.ingestClick({
+      userId: "users/clicker-a",
+      channelId: CHANNEL_ID,
+      conversationId: THREAD_ID,
+      value: "Vote B",
+      thread,
+      interactionId: "interaction-gchat-card-click-1",
+    });
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    expect(payload.userId).toBe("users/clicker-a");
+    expect(payload.messageId).toBe(
+      "interaction-gchat-card-click-1:automation:91"
+    );
+    expect(payload.platformMetadata).toMatchObject({
+      senderId: "users/clicker-a",
+      automationId: 91,
+      automationDeliveryId:
+        `chat:${CONN_ID}:interaction-gchat-card-click-1`,
+    });
+  });
+
   test("matching reply Automations fan out as independent turns with one history entry", async () => {
     const trigger = {
       kind: "event" as const,

@@ -667,7 +667,12 @@ export class MessageHandlerBridge {
   async handleMessage(
     thread: any,
     message: any,
-    source: "mention" | "dm" | "subscribed"
+    source: "mention" | "dm" | "subscribed" | "interaction",
+    routing?: {
+      channelId: string;
+      conversationId: string;
+      responseThreadId?: string;
+    }
   ): Promise<void> {
     const { connection } = this;
 
@@ -682,9 +687,13 @@ export class MessageHandlerBridge {
 
     const platform = connection.platform;
     const userId = message.author?.userId ?? "unknown";
-    const channelId = thread.channelId ?? thread.id ?? "unknown";
+    const channelId =
+      routing?.channelId ?? thread.channelId ?? thread.id ?? "unknown";
     const messageId = message.id ?? String(Date.now());
-    const isGroup = source === "mention" || source === "subscribed";
+    const isGroup =
+      source === "interaction"
+        ? routing?.conversationId !== channelId
+        : source === "mention" || source === "subscribed";
     // Collapse to the canonical `thread.id` whenever we're inside an existing
     // thread — group thread reply OR DM thread reply alike. Slack encodes
     // `slack:{channel}:{thread_ts}` (top-level DM has empty thread_ts so the id
@@ -699,7 +708,8 @@ export class MessageHandlerBridge {
       thread.id !== channelId &&
       thread.id !== `${channelId}:`;
     const conversationId =
-      isGroup || isThreadReply ? (thread.id as string) : channelId;
+      routing?.conversationId ??
+      (isGroup || isThreadReply ? (thread.id as string) : channelId);
 
     logger.info(
       {
@@ -1325,7 +1335,7 @@ export class MessageHandlerBridge {
             : messageId,
         messageText,
         isGroup,
-        isDirect: !isGroup,
+        isDirect: source === "interaction" ? undefined : !isGroup,
         thread,
         teamId,
         payloadTeamId: isGroup ? channelId : platform,
@@ -1343,7 +1353,7 @@ export class MessageHandlerBridge {
             : undefined,
         senderUsername: message.author?.userName,
         senderDisplayName: message.author?.fullName,
-        responseThreadId: thread.id,
+        responseThreadId: routing?.responseThreadId ?? thread.id,
         extraMetadata: {
           ...("automationId" in target
             ? {
@@ -1649,18 +1659,8 @@ export class MessageHandlerBridge {
     value: string;
     thread: any;
     responseThreadId?: string;
+    interactionId?: string;
   }): Promise<void> {
-    const { connection } = this;
-
-    if (!this.manager.has(connection.id)) {
-      logger.info(
-        { connectionId: connection.id },
-        "Connection no longer active, dropping click ingest"
-      );
-      return;
-    }
-
-    const platform = connection.platform;
     const {
       userId,
       channelId,
@@ -1671,67 +1671,32 @@ export class MessageHandlerBridge {
       value,
       thread,
       responseThreadId,
+      interactionId,
     } = params;
 
-    if (!isSenderAllowed(connection.settings?.allowFrom, userId)) {
-      logger.info({ userId }, "Click blocked by allowlist");
-      return;
-    }
-
-    const messageId = `click-${randomUUID()}`;
-    const isGroup = conversationId !== channelId;
-
-    const automationSubscriptionService =
-      this.services.getAutomationSubscriptionService();
-    const isPreview = this.connection.settings?.previewMode === true;
-    const resolved = await resolveAgentId({
-      platform,
-      channelId,
-      teamId,
-      agentId: this.connection.agentId,
-      organizationId: this.connection.organizationId,
-      connectionId: this.connection.id,
-      automationSubscriptionService,
-      crossOrg: isPreview,
-    });
-    if (!resolved) {
-      // Same dead end as the message path: reply with the unlinked notice
-      // (Slack and non-Slack alike) instead of eating the click silently.
-      if (
-        !isPreview &&
-        (await this.postUnlinkedChatNotice(thread, channelId, teamId))
-      ) {
-        return;
-      }
-      logger.warn(
-        { platform, channelId, teamId, connectionId: this.connection.id },
-        "No channel Automation and connection has no owning agent — dropping interaction"
-      );
-      return;
-    }
-    const agentId = resolved.agentId;
-    const routingOrgId =
-      resolved.organizationId ?? this.connection.organizationId;
-
-    await this.enqueueUserTurn({
-      agentId,
-      organizationId: routingOrgId,
-      userId,
-      channelId,
-      conversationId,
-      messageId,
-      messageText: value,
-      isGroup,
+    await this.handleMessage(
       thread,
-      teamId,
-      payloadTeamId: teamId || platform,
-      model: resolved.model,
-      senderUsername: authorUsername,
-      senderDisplayName: authorName,
-      responseThreadId: responseThreadId ?? thread.id,
-      spanName: "question_click_received",
-      logMessage: "Question click enqueued via Chat SDK bridge",
-      logExtra: { value },
-    });
+      {
+        id: interactionId ?? `interaction-${randomUUID()}`,
+        text: value,
+        author: {
+          userId,
+          userName: authorUsername,
+          fullName: authorName,
+          isBot: false,
+          isMe: false,
+        },
+        raw: teamId ? { team_id: teamId } : {},
+        metadata: { dateSent: new Date() },
+        attachments: [],
+        isMention: false,
+      },
+      "interaction",
+      {
+        channelId,
+        conversationId,
+        responseThreadId: responseThreadId ?? conversationId,
+      }
+    );
   }
 }

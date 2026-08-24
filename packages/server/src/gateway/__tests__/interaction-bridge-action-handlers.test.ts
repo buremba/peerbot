@@ -1,10 +1,38 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { storePendingTool, type PendingToolInvocation } from "../auth/mcp/pending-tool-store.js";
-import { registerActionHandlers } from "../connections/interaction-bridge.js";
+import {
+  interactionDeliveryId,
+  registerActionHandlers,
+} from "../connections/interaction-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 type ActionHandler = (event: any) => Promise<void>;
+
+test("interaction delivery ids collapse exact retries but not later clicks", () => {
+  const first = interactionDeliveryId({
+    actionId: "suggestion:s_poll:0",
+    messageId: "spaces/one/messages/card",
+    user: { userId: "users/a" },
+    raw: { chat: { eventTime: "2026-08-24T18:00:00Z", value: "A" } },
+  });
+  const retry = interactionDeliveryId({
+    user: { userId: "users/a" },
+    messageId: "spaces/one/messages/card",
+    actionId: "suggestion:s_poll:0",
+    raw: { chat: { value: "A", eventTime: "2026-08-24T18:00:00Z" } },
+  });
+  const laterClick = interactionDeliveryId({
+    actionId: "suggestion:s_poll:0",
+    messageId: "spaces/one/messages/card",
+    user: { userId: "users/a" },
+    raw: { chat: { eventTime: "2026-08-24T18:00:01Z", value: "A" } },
+  });
+
+  expect(first).toBe(retry);
+  expect(first).toMatch(/^interaction-[a-f0-9]{64}$/);
+  expect(laterClick).not.toBe(first);
+});
 
 interface Harness {
   handler: ActionHandler;
@@ -442,12 +470,13 @@ describe("registerActionHandlers — suggestion", () => {
     await h.handler({
       actionId: "suggestion:s_ab12cd34ef56:2",
       value: "",
+      messageId: "message-card-1",
       thread: h.thread,
       user: { userId: "U_clicker", userName: "ada", fullName: "Ada Lovelace" },
     });
 
     expect(h.onSuggestionClick).toHaveBeenCalledTimes(1);
-    const [suggestionId, promptIndex, threadArg, author] =
+    const [suggestionId, promptIndex, threadArg, author, actionEvent] =
       h.onSuggestionClick.mock.calls[0];
     expect(suggestionId).toBe("s_ab12cd34ef56");
     expect(promptIndex).toBe(2);
@@ -456,6 +485,10 @@ describe("registerActionHandlers — suggestion", () => {
       userId: "U_clicker",
       userName: "ada",
       fullName: "Ada Lovelace",
+    });
+    expect(actionEvent).toMatchObject({
+      actionId: "suggestion:s_ab12cd34ef56:2",
+      messageId: "message-card-1",
     });
     // No bare post — the message must go through the turn pipeline.
     expect(h.thread.post).not.toHaveBeenCalled();

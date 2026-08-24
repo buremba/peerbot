@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import {
 	Actions,
@@ -47,6 +48,40 @@ import type { PlatformConnection } from "./types.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 
 const logger = createLogger("chat-interaction-bridge");
+
+function canonicalJson(value: unknown): string {
+	if (value === null || typeof value !== "object") {
+		return JSON.stringify(value) ?? "null";
+	}
+	if (Array.isArray(value)) {
+		return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+	}
+	return `{${Object.entries(value as Record<string, unknown>)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+		.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+		.join(",")}}`;
+}
+
+/**
+ * Exact webhook retries must converge on one Automation delivery id, while two
+ * intentional taps on the same card must remain distinct. Platform action
+ * payloads carry a per-delivery timestamp/id in `raw`, so hash that verified
+ * envelope instead of branching on Slack/GChat/Telegram-specific fields.
+ */
+export function interactionDeliveryId(event: any): string {
+	if (!event?.raw) return `interaction-${randomUUID()}`;
+	const digest = createHash("sha256")
+		.update(
+			canonicalJson({
+				actionId: event.actionId,
+				messageId: event.messageId,
+				userId: event.user?.userId,
+				raw: event.raw,
+			}),
+		)
+		.digest("hex");
+	return `interaction-${digest}`;
+}
 
 /** Signature for the direct tool execution function injected from the MCP proxy. */
 type ExecuteToolDirectFn = (
@@ -814,6 +849,7 @@ export function registerInteractionBridge(
           thread,
           responseThreadId:
             typeof thread?.id === "string" ? thread.id : undefined,
+			interactionId: interactionDeliveryId(actionEvent),
         });
       })().catch((error) => {
         logger.error(
@@ -824,7 +860,7 @@ export function registerInteractionBridge(
     },
     async (channelId, conversationId) =>
 			resolveThread(manager, connectionId, channelId, conversationId),
-    async (suggestionId, promptIndex, thread, author) => {
+    async (suggestionId, promptIndex, thread, author, actionEvent) => {
       // A suggestion click is just a new user message — no claim, no receipt,
       // no card edit. The chips intentionally stay clickable: nothing is
       // suspended on their response, so a second tap is a legitimate follow-up
@@ -894,6 +930,7 @@ export function registerInteractionBridge(
         value: prompt.message,
         thread: routedThread ?? thread,
         responseThreadId: suggestion.conversationId,
+			interactionId: interactionDeliveryId(actionEvent),
       });
     },
   );
@@ -946,6 +983,7 @@ type OnSuggestionClickFn = (
   promptIndex: number,
   thread: any,
 	author: { userId?: string; userName?: string; fullName?: string } | undefined,
+	actionEvent: any,
 ) => Promise<void>;
 
 /**
@@ -1348,7 +1386,13 @@ export function registerActionHandlers(
         return;
       }
       try {
-        await onSuggestionClick(suggestionId, promptIndex, thread, event.user);
+        await onSuggestionClick(
+				suggestionId,
+				promptIndex,
+				thread,
+				event.user,
+				event,
+			);
       } catch (error) {
         logger.error(
           { connectionId: connection.id, error: String(error) },

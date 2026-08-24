@@ -15,6 +15,7 @@ import {
   addContext,
   getCurrentContextName,
   getServerConfig,
+  loadContextConfig,
   setActiveOrg,
   setCurrentContext,
 } from "../internal/context.js";
@@ -62,6 +63,9 @@ export interface LocalSignInDependencies {
     contextName: string
   ) => Promise<unknown>;
   setActiveOrgImpl: (slug: string, contextName: string) => Promise<unknown>;
+  inspectContextImpl: (
+    contextName: string
+  ) => Promise<{ url: string; lifecycle?: "managed" | "external" } | undefined>;
   getCurrentContextNameImpl: () => Promise<string>;
   setCurrentContextImpl: (contextName: string) => Promise<unknown>;
 }
@@ -647,9 +651,55 @@ const defaultLocalSignInDependencies: LocalSignInDependencies = {
   addContextImpl: addContext,
   saveCredentialsImpl: saveCredentials,
   setActiveOrgImpl: setActiveOrg,
+  inspectContextImpl: async (contextName) => {
+    const config = await loadContextConfig();
+    const context = config.contexts[contextName];
+    return context
+      ? { url: context.url, lifecycle: context.lifecycle }
+      : undefined;
+  },
   getCurrentContextNameImpl: getCurrentContextName,
   setCurrentContextImpl: setCurrentContext,
 };
+
+function matchingLoopbackEndpoints(leftRaw: string, rightRaw: string): boolean {
+  const normalize = (raw: string) => {
+    try {
+      const url = new URL(raw);
+      const scheme = url.protocol.toLowerCase();
+      const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      if (
+        (scheme !== "http:" && scheme !== "https:") ||
+        !["localhost", "127.0.0.1", "::1"].includes(host) ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      ) {
+        return null;
+      }
+      return {
+        scheme,
+        host: "loopback",
+        port: url.port || (scheme === "https:" ? "443" : "80"),
+        path: url.pathname.replace(/\/+$/, "") || "/",
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const left = normalize(leftRaw);
+  const right = normalize(rightRaw);
+  return (
+    left !== null &&
+    right !== null &&
+    left.scheme === right.scheme &&
+    left.host === right.host &&
+    left.port === right.port &&
+    left.path === right.path
+  );
+}
 
 export async function announceLocalSignIn(
   gatewayUrl: string,
@@ -779,6 +829,26 @@ export async function announceLocalSignIn(
   const requestedContextName = process.env.LOBU_CONTEXT?.trim();
   const contextName = requestedContextName || "local";
   try {
+    if (requestedContextName) {
+      const configured = await dependencies.inspectContextImpl(contextName);
+      if (configured) {
+        if (
+          configured.lifecycle !== "managed" ||
+          !matchingLoopbackEndpoints(configured.url, gatewayUrl)
+        ) {
+          throw new Error("explicit context is not owned by this local runner");
+        }
+      } else {
+        // Owletto Debug deliberately uses a new build-scoped credential
+        // context on first boot. Only allow that new slot when the spawning
+        // process also pins the same loopback endpoint explicitly; a bare
+        // LOBU_CONTEXT must never repurpose a cloud or user-managed name.
+        const pinnedUrl = process.env.LOBU_API_URL?.trim();
+        if (!pinnedUrl || !matchingLoopbackEndpoints(pinnedUrl, gatewayUrl)) {
+          throw new Error("new explicit context is not pinned to this runner");
+        }
+      }
+    }
     await dependencies.addContextImpl(contextName, gatewayUrl);
     const creds: Credentials = {
       accessToken: cliToken,

@@ -338,6 +338,7 @@ describe("lobu run local sign-in diagnostics", () => {
     addContextImpl: async () => undefined,
     saveCredentialsImpl: async () => undefined,
     setActiveOrgImpl: async () => undefined,
+    inspectContextImpl: async () => undefined,
     getCurrentContextNameImpl: async () => "local",
     setCurrentContextImpl: async () => undefined,
   });
@@ -626,7 +627,9 @@ describe("lobu run local sign-in diagnostics", () => {
 
   test("isolates an explicit process context without changing the global default", async () => {
     const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
     process.env.LOBU_CONTEXT = "__owletto_debug_v2__5:local";
+    process.env.LOBU_API_URL = "http://localhost:8788";
     const calls: string[] = [];
     try {
       const result = await announceLocalSignIn("http://127.0.0.1:8788", true, {
@@ -658,6 +661,46 @@ describe("lobu run local sign-in diagnostics", () => {
     } finally {
       if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
       else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
+  });
+
+  test("refuses to overwrite an explicit remote context", async () => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = "production";
+    delete process.env.LOBU_API_URL;
+    const calls: string[] = [];
+    try {
+      const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+        ...dependencies(),
+        inspectContextImpl: async () => ({
+          url: "https://app.lobu.ai/api/v1",
+          lifecycle: "external",
+        }),
+        addContextImpl: async () => {
+          calls.push("context");
+        },
+        saveCredentialsImpl: async () => {
+          calls.push("credentials");
+        },
+        setActiveOrgImpl: async () => {
+          calls.push("org");
+        },
+      });
+
+      expect(result).toEqual({
+        ready: false,
+        stage: "context_setup",
+        detail: 'could not register or persist the "production" context',
+      });
+      expect(calls).toEqual([]);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
     }
   });
 

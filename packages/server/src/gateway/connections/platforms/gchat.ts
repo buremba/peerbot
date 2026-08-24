@@ -14,7 +14,10 @@ import type {
 } from "@chat-adapter/gchat";
 import type { WebhookOptions } from "chat";
 import { extractWhatsAppStyleRoutingInfo } from "./shared.js";
-import type { ChatPlatformDescriptor } from "./types.js";
+import type {
+  AdapterCreationContext,
+  ChatPlatformDescriptor,
+} from "./types.js";
 
 type JsonObject = Record<string, any>;
 
@@ -160,11 +163,31 @@ export function parseGoogleChatCredentials(
   return parsed as ServiceAccountCredentials;
 }
 
-async function createAdapter(config: JsonObject): Promise<GoogleChatAdapter> {
+async function createAdapter(
+  config: JsonObject,
+  context?: AdapterCreationContext
+): Promise<GoogleChatAdapter> {
   // Preserve the platform registry's existing lazy adapter boundary.
   const { createGoogleChatAdapter } = await import("@chat-adapter/gchat");
   const adapterConfig = { ...config };
   delete adapterConfig.platform;
+
+  // Workspace Add-on webhooks use the manager-owned connection URL as their
+  // JWT audience and sign as the Google-managed identity derived from the
+  // configured project number. Neither value needs a second config field that
+  // can drift from the connection URL or project number.
+  if (context?.webhookUrl) {
+    adapterConfig.endpointUrl = context.webhookUrl;
+  }
+  const projectNumber = adapterConfig.googleChatProjectNumber;
+  if (
+    !adapterConfig.workspaceAddOnServiceAccountEmail &&
+    typeof projectNumber === "string" &&
+    /^\d+$/.test(projectNumber.trim())
+  ) {
+    adapterConfig.workspaceAddOnServiceAccountEmail =
+      `service-${projectNumber.trim()}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`;
+  }
 
   const normalizedConfig = adapterConfig.credentials
     ? {

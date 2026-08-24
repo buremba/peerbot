@@ -104,10 +104,6 @@ describe("buildRunContextBlock", () => {
     // synthetic "Channel: api_<userId>" name orient nobody — there is no other
     // channel they could have meant. The block is only useful where a run could
     // have come from one of several places (Slack channel, Telegram thread).
-    // It also LEAKS: pi records whatever string is passed to session.prompt()
-    // into the transcript, so an injected block replays into the UI as if the
-    // user had typed it. Suppressing it here is what keeps the web transcript
-    // equal to what the user actually wrote.
     expect(
       buildRunContextBlock({
         platform: "api",

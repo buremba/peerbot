@@ -131,11 +131,17 @@ type BuildAgentSessionOptions = Omit<
    * Production must always pass it.
    */
   renderSystemPrompt?: LobuSystemPromptRenderer;
+  /**
+   * Returns Lobu-owned context for the active turn. The resource loader injects
+   * it into Pi's provider-only context copy, never the persisted user message.
+   */
+  getTransientTurnContext?: () => string | undefined;
 };
 
 export async function buildAgentSession({
   builtinOverrides,
   renderSystemPrompt,
+  getTransientTurnContext,
   ...options
 }: BuildAgentSessionOptions): Promise<CreateAgentSessionResult> {
   // Pi's defaults persist under ~/.pi and discover resources/config from cwd.
@@ -150,7 +156,10 @@ export async function buildAgentSession({
     AuthStorage.inMemory();
   const modelRegistry =
     options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
-  const resourceLoader = createLobuResourceLoader(renderSystemPrompt);
+  const resourceLoader = createLobuResourceLoader(
+    renderSystemPrompt,
+    getTransientTurnContext
+  );
 
   const result = await createAgentSession({
     ...options,
@@ -406,10 +415,11 @@ export function resolveAgentIdentity(
  * Per-run conversation context: where this turn is happening, who triggered it,
  * and (when available) a link back to the conversation.
  *
- * This is DELIBERATELY injected into the per-turn USER prompt, never the system
- * prompt. It varies every turn/channel, so putting it in the cached system
- * prefix would bust the prompt cache on every message. As the tail of the user
- * turn it appends after all cached content and costs nothing in cache terms.
+ * This is DELIBERATELY injected into Pi's provider-only view of the current
+ * user turn, never the system prompt or durable transcript. It varies every
+ * turn/channel, so putting it in the cached system prefix would bust the prompt
+ * cache on every message. It stays in the uncached current turn and costs
+ * nothing in cache terms.
  *
  * Only fields actually present are rendered — an empty/unknown field is omitted
  * rather than shown as "unknown". Returns "" when nothing is known, so the
@@ -427,13 +437,9 @@ export function buildRunContextBlock(input: {
   // The web chat gets no block. This context exists to disambiguate WHICH
   // conversation a run came from when several are possible (a Slack channel, a
   // Telegram thread); on `api` there is only ever the chat the user is looking
-  // at, so "Platform: api" / "Channel: api_<userId>" is pure noise. It is also
-  // the one surface where the block is visibly harmful: pi records whatever
-  // string is handed to `session.prompt()` into the transcript, so the injected
-  // scaffolding replays into the UI attributed to the user. Suppressing it at
-  // the source keeps the web transcript equal to what the user actually typed —
-  // stripping it back out downstream can't work, because by then injected text
-  // and identical user-typed text are indistinguishable.
+  // at, so "Platform: api" / "Channel: api_<userId>" is pure noise. The
+  // provider-only context boundary below now protects every surface from
+  // transcript leakage; this suppression remains solely a relevance choice.
   if (input.platform === "api") return "";
 
   const md =
@@ -1031,6 +1037,16 @@ export async function runAISession(
   // for a normal session (has an assistant). Must run on the FINAL manager,
   // after any provider-change reopen above.
   await normalizeHydratedSessionFile(sessionManager, sessionFile);
+  if (sessionSummary) {
+    // Provider isolation is a durable conversation event, unlike per-run
+    // attention/recall/channel context. Pi custom messages participate in LLM
+    // context but remain hidden from the normal transcript surface.
+    sessionManager.appendCustomMessageEntry(
+      "lobu.provider_change",
+      sessionSummary,
+      false
+    );
+  }
   const settingsManager = SettingsManager.inMemory();
 
   const toolsPolicy = buildToolPolicy({
@@ -1271,6 +1287,7 @@ user references earlier discussion or you need prior context.`);
   let deltaTimer: Timer | null = null;
   let session: Awaited<ReturnType<typeof buildAgentSession>>["session"] | null =
     null;
+  let activeTransientTurnContext = "";
   // Fire the plugin `agent_end` hook with the live session messages. No-op
   // when the session never came up (the catch path before construction). An
   // `error` makes it a failure; its absence makes it a success.
@@ -1309,6 +1326,7 @@ user references earlier discussion or you need prior context.`);
       cwd: workspaceDir,
       model,
       renderSystemPrompt,
+      getTransientTurnContext: () => activeTransientTurnContext,
       // pi's createAgentSession() uses `tools` only to derive active tool
       // names and rebuilds the base tools internally (bash via getShellEnv()
       // = {...process.env}, no env strip, no embedded BashOperations).
@@ -1391,7 +1409,11 @@ user references earlier discussion or you need prior context.`);
 
     const runPromptTurn = async (
       promptText: string,
-      options?: { images?: ImageContent[]; silent?: boolean }
+      options?: {
+        images?: ImageContent[];
+        silent?: boolean;
+        transientContext?: string;
+      }
     ): Promise<void> => {
       const currentSession = session;
       if (!currentSession) {
@@ -1416,6 +1438,7 @@ user references earlier discussion or you need prior context.`);
       });
 
       suppressProgressOutput = options?.silent === true;
+      activeTransientTurnContext = options?.transientContext?.trim() ?? "";
 
       try {
         onSteerReady((prompt) => {
@@ -1444,6 +1467,7 @@ user references earlier discussion or you need prior context.`);
         }
         await turnDone;
       } finally {
+        activeTransientTurnContext = "";
         suppressProgressOutput = false;
         if (resolveTurnDone && currentTurnNonce === turnNonce) {
           resolveTurnDone = null;
@@ -1781,7 +1805,8 @@ user references earlier discussion or you need prior context.`);
     // the user turn the model tended to echo it back into its reply. (Full
     // pre-resolution of refs into injected data is a possible future follow-up.)
     // Per-run conversation context (channel, trigger, link). Injected into the
-    // user turn — NOT the cached system prompt — because it varies per turn.
+    // provider's user-turn view — NOT the cached system prompt or persisted
+    // user message — because it varies per turn.
     const runContext = buildRunContextBlock({
       platform,
       channelId,
@@ -1794,7 +1819,20 @@ user references earlier discussion or you need prior context.`);
       webOrigin: context.webOrigin,
     });
 
-    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${runContext ? `${runContext}\n\n` : ""}${userPrompt}`;
+    const transientTurnContext = [
+      configNotice,
+      ephemeralContext,
+      prependContexts,
+      runContext,
+    ]
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join("\n\n");
+    // Token forecasting must account for the provider's complete view even
+    // though only userPrompt is durable in the transcript.
+    const modelPromptText = transientTurnContext
+      ? `${transientTurnContext}\n\n${userPrompt}`
+      : userPrompt;
 
     // Load image attachments for vision-capable models
     const images = await loadImageAttachments();
@@ -1807,14 +1845,17 @@ user references earlier discussion or you need prior context.`);
       sessionManager,
       settingsManager,
       memoryFlushConfig,
-      incomingPromptText: effectivePromptText,
+      incomingPromptText: modelPromptText,
       incomingImageCount: images.length,
       runSilentPrompt: async (prompt) => {
         await runPromptTurn(prompt, { silent: true });
       },
     });
 
-    await runPromptTurn(effectivePromptText, { images });
+    await runPromptTurn(userPrompt, {
+      images,
+      transientContext: transientTurnContext,
+    });
 
     const sessionError = progressProcessor.consumeFatalErrorMessage();
     if (sessionError) {

@@ -46,6 +46,7 @@
 import {
   type BeforeAgentStartEvent,
   type BeforeAgentStartEventResult,
+  type ContextEvent,
   createExtensionRuntime,
   createSyntheticSourceInfo,
   type Extension,
@@ -57,6 +58,7 @@ import type { LobuSystemPromptRenderer } from "./system-prompt.js";
 
 /** Identifies our synthetic extension in pi's diagnostics and error reports. */
 const SYSTEM_PROMPT_EXTENSION_PATH = "<lobu:system-prompt>";
+const TRANSIENT_TURN_CONTEXT_EXTENSION_PATH = "<lobu:transient-turn-context>";
 
 /**
  * The extension that installs Lobu's system prompt on every turn.
@@ -100,16 +102,84 @@ function createSystemPromptExtension(
   };
 }
 
+/**
+ * Inject Lobu's per-run context into the provider view without changing the
+ * AgentSession messages that Pi persists.
+ *
+ * Pi emits `context` before every LLM request (including later tool-loop
+ * iterations) with a deep copy of the session messages. Prefixing the latest
+ * user message in that copy gives the model the same ordering it had when the
+ * worker concatenated the strings, while leaving persisted user entries in
+ * session.jsonl and transcript snapshots equal to what the user authored.
+ */
+function createTransientTurnContextExtension(
+  getTransientTurnContext: () => string | undefined
+): Extension {
+  const handler: ExtensionHandler<
+    ContextEvent,
+    { messages?: ContextEvent["messages"] }
+  > = (event) => {
+    const transientContext = getTransientTurnContext()?.trim();
+    if (!transientContext) return;
+
+    let latestUserIndex = -1;
+    for (let index = event.messages.length - 1; index >= 0; index -= 1) {
+      if (event.messages[index]?.role === "user") {
+        latestUserIndex = index;
+        break;
+      }
+    }
+    if (latestUserIndex < 0) return;
+
+    const userMessage = event.messages[latestUserIndex];
+    if (!userMessage || userMessage.role !== "user") return;
+
+    const content =
+      typeof userMessage.content === "string"
+        ? `${transientContext}\n\n${userMessage.content}`
+        : [
+            { type: "text" as const, text: `${transientContext}\n\n` },
+            ...userMessage.content,
+          ];
+    const messages = [...event.messages];
+    messages[latestUserIndex] = { ...userMessage, content };
+    return { messages };
+  };
+
+  return {
+    path: TRANSIENT_TURN_CONTEXT_EXTENSION_PATH,
+    resolvedPath: TRANSIENT_TURN_CONTEXT_EXTENSION_PATH,
+    sourceInfo: createSyntheticSourceInfo(
+      TRANSIENT_TURN_CONTEXT_EXTENSION_PATH,
+      { source: "lobu" }
+    ),
+    handlers: new Map([["context", [handler as never]]]),
+    tools: new Map(),
+    messageRenderers: new Map(),
+    commands: new Map(),
+    flags: new Map(),
+    shortcuts: new Map(),
+  };
+}
+
 export function createLobuResourceLoader(
-  renderSystemPrompt?: LobuSystemPromptRenderer
+  renderSystemPrompt?: LobuSystemPromptRenderer,
+  getTransientTurnContext?: () => string | undefined
 ): ResourceLoader {
   // Built once, not per call: `AgentSession._buildRuntime` reads this result and
   // writes extension flag values onto `runtime`, which a fresh object per call
   // would silently discard.
+  const loadedExtensions: Extension[] = [];
+  if (renderSystemPrompt) {
+    loadedExtensions.push(createSystemPromptExtension(renderSystemPrompt));
+  }
+  if (getTransientTurnContext) {
+    loadedExtensions.push(
+      createTransientTurnContextExtension(getTransientTurnContext)
+    );
+  }
   const extensions: LoadExtensionsResult = {
-    extensions: renderSystemPrompt
-      ? [createSystemPromptExtension(renderSystemPrompt)]
-      : [],
+    extensions: loadedExtensions,
     errors: [],
     runtime: createExtensionRuntime(),
   };

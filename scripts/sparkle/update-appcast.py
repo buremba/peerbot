@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timezone
-from email.utils import format_datetime
+from email.utils import format_datetime, parsedate_to_datetime
 from xml.etree import ElementTree as ET
 
 SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
@@ -79,10 +79,24 @@ def main() -> int:
         },
     )
 
-    # Sort items newest first.
+    # Sort items newest first. RFC 2822 dates start with the weekday, so a raw
+    # string sort puts "Wed" ahead of a newer "Mon" release. Keep the feed's
+    # stated newest-first contract for humans and first-item consumers.
+    def published_at(el: ET.Element) -> datetime:
+        value = el.findtext("pubDate")
+        if not value:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     items = sorted(
         channel.findall("item"),
-        key=lambda el: el.findtext("pubDate") or "",
+        key=published_at,
         reverse=True,
     )
     for el in channel.findall("item"):

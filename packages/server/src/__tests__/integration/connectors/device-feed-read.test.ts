@@ -27,6 +27,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import type { AuthzScope } from '../../../authz/scope';
 import { compileConnectorSource } from '../../../utils/connector-compiler';
+import {
+  deviceManifestHash,
+  type DeviceConnectorManifest,
+} from '../../../worker-api/device-manifests';
 
 // The waiter is swapped through a server-internal slot so two cases can make it
 // throw. NOT `vi.mock`: vitest runs this package with `isolate: false` (one
@@ -228,6 +232,8 @@ describe('device-backed source feed read', () => {
     __setDeviceActionWaiterForTest(null);
     await setDeviceLastSeen('5 seconds');
     await setDeviceCapabilities(['whatsapp_local']);
+    await getTestDb()`UPDATE device_workers SET connector_manifests = '{}'::jsonb WHERE id = ${deviceWorkerId}::uuid`;
+    await getTestDb()`UPDATE feeds SET status = 'active' WHERE id = ${feedId}`;
     await getTestDb()`DELETE FROM runs WHERE organization_id = ${orgId}`;
   });
 
@@ -433,7 +439,9 @@ describe('device-backed source feed read', () => {
       feedConfig: {},
       connectionId,
       connectorKey: CONNECTOR_KEY,
+      deviceOwnerUserId: userId,
       deviceWorkerId: foreign[0].id,
+      feedStatus: 'active',
       requiredCapability: 'whatsapp_local',
     }).then(
       () => new Error('expected the read to be refused'),
@@ -457,11 +465,38 @@ describe('device-backed source feed read', () => {
     expect(await readRunRows()).toHaveLength(0);
   });
 
-  it('fails fast when the device no longer grants the connector capability', async () => {
-    await setDeviceCapabilities([]);
-    await expect(readSourceFeed({ scope: scope(), feedId })).rejects.toThrow(
-      /no longer grants 'whatsapp_local'/
+  it('reports setup_required for an auto-paused feed whose online manifest lacks permission', async () => {
+    const manifest = {
+      key: CONNECTOR_KEY,
+      version: CONNECTOR_VERSION,
+      name: 'WhatsApp Personal',
+      required_capability: 'whatsapp_local',
+      runtime: { platforms: ['macos'] },
+      auth_schema: { methods: [{ type: 'none' }] },
+      feeds_schema: { [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } },
+    };
+    const manifestHash = deviceManifestHash(manifest as DeviceConnectorManifest);
+    const sql = getTestDb();
+    await sql`
+      UPDATE device_workers
+      SET capabilities = ${sql.json([])},
+          connector_manifests = ${sql.json({
+            [CONNECTOR_KEY]: {
+              manifest,
+              manifest_hash: manifestHash,
+              received_at: new Date().toISOString(),
+            },
+          })}
+      WHERE id = ${deviceWorkerId}::uuid
+    `;
+    await sql`UPDATE feeds SET status = 'paused' WHERE id = ${feedId}`;
+
+    const error = await readSourceFeed({ scope: scope(), feedId }).then(
+      () => null,
+      (err: unknown) => err as { code?: string; retryable?: boolean; message: string }
     );
+    expect(error).toMatchObject({ code: 'PERMISSION', retryable: false });
+    expect(error?.message).toMatch(/requires setup.*whatsapp_local.*finish setup.*retry/i);
     expect(await readRunRows()).toHaveLength(0);
   });
 });
@@ -960,7 +995,9 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
       feedConfig: {},
       connectionId: lifecycleConnectionId,
       connectorKey: CONNECTOR_KEY,
+      deviceOwnerUserId: lifecycleUserId,
       deviceWorkerId: lifecycleDeviceId,
+      feedStatus: 'active',
       requiredCapability: CAPABILITY,
       query: 'tenancy deposit',
       signal: controller.signal,
@@ -1001,7 +1038,9 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
       feedConfig: {},
       connectionId: lifecycleConnectionId,
       connectorKey: CONNECTOR_KEY,
+      deviceOwnerUserId: lifecycleUserId,
       deviceWorkerId: lifecycleDeviceId,
+      feedStatus: 'active',
       requiredCapability: CAPABILITY,
       query: 'tenancy deposit',
       signal: controller.signal,

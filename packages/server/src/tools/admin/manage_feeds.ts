@@ -78,6 +78,11 @@ import {
   ACTIVE_RUN_STATUSES,
   runStatusLiteral,
 } from '../../utils/run-statuses';
+import {
+  describeDeviceConnectorSetupRequired,
+  findDeviceConnectorReadiness,
+  loadDeviceConnectorReadiness,
+} from '../../worker-api/device-connector-readiness';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { recordToolConfigChange } from './helpers/config-audit';
@@ -362,6 +367,7 @@ async function handleListFeeds(
            c.status AS connection_status,
            c.external_tenant_id AS external_tenant_id,
            c.device_worker_id,
+           COALESCE(dw.user_id, (o.metadata::jsonb)->>'personal_org_for_user_id') AS device_owner_user_id,
            dw.label AS device_label,
            dw.platform AS device_platform,
            dw.last_seen_at AS device_last_seen_at,
@@ -372,6 +378,7 @@ async function handleListFeeds(
              THEN 'offline'
            END AS device_status,
            cd.name AS connector_name,
+           cd.required_capability,
            ap.profile_kind AS auth_profile_kind,
            ap.status AS auth_profile_status,
            (
@@ -393,9 +400,10 @@ async function handleListFeeds(
            COALESCE(ec.event_count, 0)::int AS event_count
     FROM page p
     JOIN connections c ON c.id = p.connection_id
+    JOIN "organization" o ON o.id = c.organization_id
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
-      SELECT name
+      SELECT name, required_capability
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -435,7 +443,22 @@ async function handleListFeeds(
     organizationId,
     rows.map(({ filtered_total: _filtered_total, ...feed }) => feed),
   );
+  const deviceReadiness = await loadDeviceConnectorReadiness({
+    sql,
+    targets: feeds.flatMap((feed) =>
+      typeof feed.required_capability === 'string' && feed.required_capability.length > 0
+        ? [{
+            ownerUserId: feed.device_owner_user_id as string | null,
+            connectorKey: feed.connector_key as string,
+          }]
+        : []
+    ),
+  });
   const feedsWithHealth = feeds.map((feed) => {
+    const connectorReadiness = findDeviceConnectorReadiness(deviceReadiness, {
+      ownerUserId: feed.device_owner_user_id as string | null,
+      connectorKey: feed.connector_key as string,
+    });
     const semantics = deriveFeedHealthSemantics({
       operations: feed.operations as Array<'sync' | 'read'> | null,
       store:
@@ -453,11 +476,20 @@ async function handleListFeeds(
       auth_profile_status: feed.auth_profile_status as string | null,
       device_worker_id: feed.device_worker_id as string | null,
       device_online: feed.device_online as boolean | null,
+      device_connector_readiness: connectorReadiness?.state,
     });
+    const {
+      device_owner_user_id: _deviceOwnerUserId,
+      required_capability: _requiredCapability,
+      ...publicFeed
+    } = feed;
     return {
-      ...feed,
+      ...publicFeed,
       execution_mode: semantics.executionMode,
       attention: semantics.attention,
+      ...(connectorReadiness?.state === 'setup_required'
+        ? { attention_reason: describeDeviceConnectorSetupRequired(connectorReadiness) }
+        : {}),
     };
   });
   return {

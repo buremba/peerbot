@@ -12,7 +12,12 @@
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { pgTextArray } from "../../db/client";
+import {
+	deviceManifestHash,
+	type DeviceConnectorManifest,
+} from "../../worker-api/device-manifests";
 import { manageConnections } from "../../tools/admin/manage_connections";
+import { manageFeeds } from "../../tools/admin/manage_feeds";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { createAuthProfile } from "../../utils/auth-profiles";
@@ -63,6 +68,7 @@ const KEY_READY = "demo.ops.ready";
 const KEY_DISCONNECTED = "demo.ops.disconnected";
 const KEY_INACTIVE = "demo.ops.inactive";
 const KEY_DEVICE = "demo.ops.device";
+const KEY_DEVICE_SETUP = "chrome.test_readiness";
 
 const ACTIONS_SCHEMA = {
 	create_issue: {
@@ -101,7 +107,7 @@ async function seedConnector(
 
 async function purge(organizationId: string): Promise<void> {
 	const sql = getTestDb();
-	const keys = [KEY_READY, KEY_DISCONNECTED, KEY_INACTIVE, KEY_DEVICE];
+	const keys = [KEY_READY, KEY_DISCONNECTED, KEY_INACTIVE, KEY_DEVICE, KEY_DEVICE_SETUP];
 	await sql`DELETE FROM feeds WHERE connection_id IN (SELECT id FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId})`;
 	await sql`DELETE FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
 	await sql`DELETE FROM connector_definitions WHERE key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
@@ -498,6 +504,126 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 			"https://gateway.test",
 		);
 		expect(JSON.stringify(create)).not.toContain(workerId);
+	});
+
+	it("uses the manifest snapshot to report setup_required for an online device", async () => {
+		const { org, user } = await setupOwner("Ops Device Setup Org");
+		await seedConnector(org.id, KEY_DEVICE_SETUP, "Device Setup Connector");
+		const sql = getTestDb();
+		await sql`
+			UPDATE connector_definitions
+			SET runtime = ${sql.json({ platforms: ["chrome-extension"] })},
+			    required_capability = 'browser.whatsapp'
+			WHERE organization_id = ${org.id} AND key = ${KEY_DEVICE_SETUP}
+		`;
+		const manifest = {
+			key: KEY_DEVICE_SETUP,
+			version: "1.0.0",
+			name: "Device Setup Connector",
+			required_capability: "browser.whatsapp",
+			runtime: { platforms: ["chrome-extension"] },
+			auth_schema: { methods: [{ type: "none" }] },
+			feeds_schema: {},
+			actions_schema: ACTIONS_SCHEMA,
+		};
+		const manifestHash = deviceManifestHash(manifest as DeviceConnectorManifest);
+		const [device] = (await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, connector_manifests,
+				label, organization_id, last_seen_at
+			) VALUES (
+				${user.id}, ${`ext-${Math.random().toString(36).slice(2, 10)}`},
+				'chrome-extension', ${sql.json(["browser.scripting"])},
+				${sql.json({
+					[KEY_DEVICE_SETUP]: {
+						manifest,
+						manifest_hash: manifestHash,
+						received_at: new Date().toISOString(),
+					},
+				})},
+				'Test Ext', ${org.id}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: string }>;
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_DEVICE_SETUP,
+			status: "active",
+			createDefaultFeed: false,
+		});
+		await sql`UPDATE connections SET device_worker_id = ${device.id}::uuid WHERE id = ${conn.id}`;
+		const [feed] = (await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, display_name, status
+			) VALUES (${org.id}, ${conn.id}, 'items', 'Items', 'paused')
+			RETURNING id
+		`) as unknown as Array<{ id: number }>;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_DEVICE_SETUP,
+		});
+		const create = getOperation(operations, "create_issue");
+		expect(create).toMatchObject({
+			executable: false,
+			readiness: "setup_required",
+			execution_targets: [
+				{ connection_id: conn.id, status: "setup_required", executable: false },
+			],
+			next_action: { action: "open_setup", manual: true },
+		});
+		expect(create.execution_targets[0]?.reason).toMatch(
+			/browser\.whatsapp.*finish setup.*retry/i,
+		);
+
+		const listed = (await manageFeeds(
+			{ action: "list_feeds", connection_id: conn.id },
+			TEST_ENV(),
+			ctxFor(org.id, user.id),
+		)) as { feeds: Array<Record<string, unknown>> };
+		expect(listed.feeds).toContainEqual(
+			expect.objectContaining({
+				id: feed.id,
+				attention: "setup_required",
+				attention_reason: expect.stringMatching(
+					/browser\.whatsapp.*finish setup.*retry/i,
+				),
+			}),
+		);
+		expect(listed.feeds[0]).not.toHaveProperty("device_owner_user_id");
+		expect(listed.feeds[0]).not.toHaveProperty("required_capability");
+
+		await sql`
+			UPDATE device_workers
+			SET last_seen_at = NOW() - INTERVAL '10 minutes'
+			WHERE id = ${device.id}::uuid
+		`;
+		await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, connector_manifests,
+				label, organization_id, last_seen_at
+			) VALUES (
+				${user.id}, ${`ext-${Math.random().toString(36).slice(2, 10)}`},
+				'chrome-extension', ${sql.json(["browser.whatsapp"])},
+				${sql.json({
+					[KEY_DEVICE_SETUP]: {
+						manifest,
+						manifest_hash: manifestHash,
+						received_at: new Date().toISOString(),
+					},
+				})},
+				'Other Ready Ext', ${org.id}, NOW()
+			)
+		`;
+		const afterPinnedDeviceGoesOffline = await listAll(org.id, user.id, {
+			connector_key: KEY_DEVICE_SETUP,
+		});
+		expect(getOperation(afterPinnedDeviceGoesOffline.operations, "create_issue")).toMatchObject({
+			executable: false,
+			readiness: "device_offline",
+			execution_targets: [
+				{ connection_id: conn.id, status: "device_offline", executable: false },
+			],
+		});
 	});
 
 	it("query search matches connector name + operation name across disconnected connectors", async () => {

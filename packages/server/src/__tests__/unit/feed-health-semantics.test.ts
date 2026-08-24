@@ -41,6 +41,25 @@ describe("feed execution mode", () => {
 });
 
 describe("feed attention", () => {
+  test("canonical setup overrides auto-pause but never overrides an execution pin", () => {
+    expect(
+      syncFeed({
+        status: "paused",
+        device_worker_id: "dw-1",
+        device_online: true,
+        device_connector_readiness: "setup_required",
+      }).attention,
+    ).toBe("setup_required");
+    expect(
+      syncFeed({
+        status: "active",
+        device_worker_id: "dw-stale",
+        device_online: false,
+        device_connector_readiness: "ready",
+      }).attention,
+    ).toBe("device_offline");
+  });
+
   test("lifecycle, auth, configuration, and device failures have precedence", () => {
     expect(syncFeed({ status: "paused", last_sync_status: "failed" }).attention).toBe("paused");
     expect(syncFeed({ status: "active", connection_status: "paused" }).attention).toBe("paused");

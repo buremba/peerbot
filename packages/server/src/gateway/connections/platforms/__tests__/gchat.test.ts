@@ -310,6 +310,138 @@ describe("Google Chat platform compatibility", () => {
     expect(deliveredThreadNames).toEqual([commandThread.name]);
   });
 
+  test("dispatches the registered Workspace Add-on /lobu command with its subcommand", async () => {
+    const chat = await createTestChat({ helpCommandId: "999" });
+    const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
+    chat.onNewMention(async (_thread, message) => {
+      delivered.push(message.text);
+      completion.resolve();
+    });
+    const messageEvent = standardDirectMessage("/lobu status");
+    messageEvent.message.argumentText = "/lobu status";
+    messageEvent.space.type = "ROOM";
+    messageEvent.space.spaceType = "SPACE";
+    messageEvent.message.space = messageEvent.space;
+
+    const response = await chat.webhooks.gchat(
+      webhook({
+        chat: {
+          user: messageEvent.user,
+          eventTime: messageEvent.eventTime,
+          appCommandPayload: {
+            appCommandMetadata: {
+              appCommandId: "999",
+              appCommandType: "SLASH_COMMAND",
+            },
+            message: messageEvent.message,
+            space: messageEvent.space,
+          },
+        },
+      }),
+    );
+    await waitForDelivery(completion.promise);
+
+    expect(response.status).toBe(200);
+    expect(delivered).toEqual(["@lobu /lobu status"]);
+  });
+
+  test("preserves Workspace Add-on /lobu arguments when Google only supplies argumentText", async () => {
+    const chat = await createTestChat({ helpCommandId: "999" });
+    const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
+    chat.onDirectMessage(async (_thread, message) => {
+      delivered.push(message.text);
+      completion.resolve();
+    });
+    const event = standardDirectMessage();
+    delete event.message.text;
+    event.message.argumentText = "/lobu link crm-ABC123";
+
+    const response = await chat.webhooks.gchat(
+      webhook({
+        chat: {
+          user: event.user,
+          eventTime: event.eventTime,
+          appCommandPayload: {
+            appCommandMetadata: {
+              appCommandId: "999",
+              appCommandType: "SLASH_COMMAND",
+            },
+            message: event.message,
+            space: event.space,
+          },
+        },
+      }),
+    );
+    await waitForDelivery(completion.promise);
+
+    expect(response.status).toBe(200);
+    expect(delivered).toEqual(["/lobu link crm-ABC123"]);
+  });
+
+  test("does not dispatch /lobu for another project-local command ID", async () => {
+    const chat = await createTestChat({ helpCommandId: "999" });
+    const delivered: string[] = [];
+    chat.onDirectMessage(async (_thread, message) => {
+      delivered.push(message.text);
+    });
+    const event = standardDirectMessage("/lobu status");
+
+    const response = await dispatchAndWait(
+      chat,
+      webhook({
+        chat: {
+          user: event.user,
+          eventTime: event.eventTime,
+          appCommandPayload: {
+            appCommandMetadata: {
+              appCommandId: "1",
+              appCommandType: "SLASH_COMMAND",
+            },
+            message: event.message,
+            space: event.space,
+          },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(delivered).toEqual([]);
+  });
+
+  test("maps a bare registered /lobu command to help", async () => {
+    const chat = await createTestChat({ helpCommandId: "999" });
+    const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
+    chat.onDirectMessage(async (_thread, message) => {
+      delivered.push(message.text);
+      completion.resolve();
+    });
+    const event = standardDirectMessage("/lobu");
+
+    const response = await chat.webhooks.gchat(
+      webhook({
+        chat: {
+          user: event.user,
+          eventTime: event.eventTime,
+          appCommandPayload: {
+            appCommandMetadata: {
+              appCommandId: "999",
+              appCommandType: "SLASH_COMMAND",
+            },
+            message: event.message,
+            space: event.space,
+          },
+        },
+      }),
+    );
+    await waitForDelivery(completion.promise);
+
+    expect(response.status).toBe(200);
+    expect(delivered).toEqual(["/help"]);
+  });
+
   test("dispatches a Workspace Add-on slash command without message text", async () => {
     const chat = await createTestChat({ helpCommandId: "999" });
     const delivered: string[] = [];
@@ -422,6 +554,25 @@ describe("Google Chat platform compatibility", () => {
 
     expect(response.status).toBe(200);
     expect(delivered).toEqual(["/help"]);
+  });
+
+  test("dispatches a standalone registered /lobu command with arguments", async () => {
+    const chat = await createTestChat({ helpCommandId: "999" });
+    const delivered: string[] = [];
+    const completion = Promise.withResolvers<void>();
+    chat.onDirectMessage(async (_thread, message) => {
+      delivered.push(message.text);
+      completion.resolve();
+    });
+    const event = standardDirectMessage("/lobu try crm");
+    event.message.argumentText = "/lobu try crm";
+    event.message.slashCommand = { commandId: "999" };
+
+    const response = await chat.webhooks.gchat(webhook(event));
+    await waitForDelivery(completion.promise);
+
+    expect(response.status).toBe(200);
+    expect(delivered).toEqual(["/lobu try crm"]);
   });
 
   test("dispatches a standalone annotated slash command without message text", async () => {

@@ -2156,7 +2156,7 @@ describe("LinkedInConnector home_feed", () => {
         checkpoint: {},
         sessionState: { chrome_dispatcher: dispatcher },
       })
-    ).rejects.toThrow(/none had a durable post identity or usable content/i);
+    ).rejects.toThrow(/usable content with a durable identity/i);
   });
 
   test("throws a clear error when not logged into LinkedIn", async () => {

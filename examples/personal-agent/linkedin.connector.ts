@@ -3261,7 +3261,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     const events = buildHomeFeedEvents(resolvedRows, new Date());
     if (events.length === 0) {
       throw new Error(
-        "LinkedIn is logged in and returned feed rows, but none had a durable post identity or usable content. Keep a signed-in linkedin.com/feed/ tab open on the paired browser and retry."
+        "LinkedIn is logged in and returned feed rows, but no row combined usable content with a durable identity. Keep a signed-in linkedin.com/feed/ tab open on the paired browser and retry."
       );
     }
 

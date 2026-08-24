@@ -1,7 +1,7 @@
+import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { JSDOM } from "jsdom";
 import { connectorSdkMock } from "./connector-sdk.mock";
 
@@ -10,7 +10,6 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
 let LinkedInConnector: any;
-let personalAgentConfig: any;
 let buildHomeFeedEvents: any;
 let homeFeedObjectAllSupported: any;
 let parseHomeFeedAuthor: any;
@@ -42,7 +41,6 @@ let genericScrape: (
 
 beforeAll(async () => {
   const mod = await import("../linkedin.connector");
-  personalAgentConfig = (await import("../lobu.config")).default;
   LinkedInConnector = mod.default;
   buildHomeFeedEvents = mod.buildHomeFeedEvents;
   homeFeedObjectAllSupported = mod.homeFeedObjectAllSupported;
@@ -243,7 +241,7 @@ describe("buildHomeFeedEvents", () => {
     expect(ev.metadata).toEqual({ author: "Jane Doe" });
   });
 
-  test("emits a native visible comment with its parent, people, and media", () => {
+  test("links a native comment to its copied-link parent when post identity is empty", () => {
     const occurredAt = new Date("2026-08-23T10:00:00.000Z");
     const events = buildHomeFeedEvents(
       [
@@ -252,6 +250,7 @@ describe("buildHomeFeedEvents", () => {
           body: "Feed post Fixture Post Author • 1st Fixture Role at Fixture Co 9h • A post with enough text to keep",
           author_control_label:
             "Open control menu for post by Fixture Post Author",
+          post_identity: "",
           post_url:
             "https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111",
           links: [
@@ -262,13 +261,9 @@ describe("buildHomeFeedEvents", () => {
           ],
         },
         {
-          id: "commentsSectionContainerparent_token",
-          body: "Fixture Commenter Verified Profile 1st Fixture Commenter • 1st Fixture Role 9h Fixture comment body",
+          id: "replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,2222222222222222222)",
+          body: "Great work!",
           author: "Fixture Commenter",
-          comment_body:
-            "Fixture Commenter • Fixture comment body long enough to retain",
-          comment_identity:
-            "replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,2222222222222222222)",
           links: [
             {
               href: "https://www.linkedin.com/in/fixture-commenter/",
@@ -296,6 +291,7 @@ describe("buildHomeFeedEvents", () => {
       source_url:
         "https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111",
       score: 0,
+      payload_text: "Great work!",
       attachments: [
         {
           kind: "image",
@@ -359,7 +355,7 @@ describe("buildHomeFeedEvents", () => {
       repost_count_label: "49 reposts",
     };
     expect(parseHomeFeedEngagement(counters)).toEqual({
-      reactions: 1616,
+      reactions: 1617,
       comments: 65,
       reposts: 49,
     });
@@ -369,7 +365,7 @@ describe("buildHomeFeedEvents", () => {
     );
     expect(event.score).toBe(100);
     expect(event.metadata).toMatchObject({
-      reactions: 1616,
+      reactions: 1617,
       comments: 65,
       reposts: 49,
     });

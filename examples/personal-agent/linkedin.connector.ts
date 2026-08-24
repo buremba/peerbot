@@ -30,22 +30,22 @@
  * Staging ≠ verified posted.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import {
   type ActionContext,
   type ActionResult,
   type ChromeActionDispatcher,
   type ConnectorDefinition,
   ConnectorRuntime,
+  calculateEngagementScore,
   type EventAttributionRule,
   type EventEnvelope,
-  type SyncContext,
-  type SyncResult,
-  calculateEngagementScore,
   extensionDomScrape,
   extensionNetworkSync,
+  type SyncContext,
+  type SyncResult,
 } from "@lobu/connector-sdk";
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import {
   LINKEDIN_EMAIL_NAMESPACE,
   LINKEDIN_IDENTITY,
@@ -53,9 +53,9 @@ import {
   normalizeLinkedInSlug,
 } from "./linkedin-identity.ts";
 import {
-  type LocalTakeoutConfig,
   assertDirectory,
   batchSize,
+  type LocalTakeoutConfig,
   maxEventCursor,
   parseCsv,
   stableId,
@@ -398,10 +398,6 @@ interface HomeFeedRow {
   post_url?: string;
   /** Rendered identifier containing LinkedIn's stable shareId / ugcPostId. */
   post_identity?: string;
-  /** Rendered identifier containing the native comment and parent-post ids. */
-  comment_identity?: string;
-  /** The visible comment container, without the sibling "See more" control. */
-  comment_body?: string;
   /** Every profile/company anchor in the card, each with its accessible name. */
   links?: HomeFeedLink[];
   /** Media that belongs to a top-level post (nested comment media excluded). */
@@ -814,19 +810,11 @@ interface HomeFeedRowContext {
   metadata: Record<string, unknown>;
 }
 
-const HOME_FEED_COMMENT_ROW_PREFIX = "commentsSectionContainer";
-
-function homeFeedCommentParentToken(id: string): string | undefined {
-  return id.startsWith(HOME_FEED_COMMENT_ROW_PREFIX)
-    ? id.slice(HOME_FEED_COMMENT_ROW_PREFIX.length) || undefined
-    : undefined;
-}
-
 function homeFeedPostIdentityKey(
   row: HomeFeedRow,
   context: HomeFeedRowContext
 ): string | undefined {
-  const raw = row.post_identity ?? context.postUrl;
+  const raw = row.post_identity || context.postUrl;
   if (!raw) return undefined;
   const match = raw.match(
     /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
@@ -883,12 +871,22 @@ function maxHomeFeedCounter(
   return max > 0 ? max : undefined;
 }
 
+function homeFeedReactionCount(row: HomeFeedRow): number | undefined {
+  const explicitTotal = maxHomeFeedCounter(row.reaction_count_text);
+  if (explicitTotal !== undefined) return explicitTotal;
+
+  const label = row.reaction_count_label;
+  if (!label) return undefined;
+  const others = label.match(
+    /\band\s+(\d[\d,.]*(?:\s*[kmb])?)\s+others?\s+reacted\b/i
+  );
+  if (others) return parseLinkedInCompactCount(others[1]) + 1;
+  return maxHomeFeedCounter(label);
+}
+
 export function parseHomeFeedEngagement(row: HomeFeedRow): HomeFeedEngagement {
   return {
-    reactions: maxHomeFeedCounter(
-      row.reaction_count_text,
-      row.reaction_count_label
-    ),
+    reactions: homeFeedReactionCount(row),
     comments: maxHomeFeedCounter(
       row.comment_count_text,
       row.comment_count_label
@@ -1040,15 +1038,18 @@ export function buildHomeFeedEvents(
   const contexts = new Map<string, HomeFeedRowContext>();
   const postRowsByIdentity = new Map<string, string>();
   for (const row of rows) {
+    const nativeIdentity = row?.id
+      ? parseHomeFeedCommentIdentity(row.id)
+      : undefined;
     if (
       row?.id &&
       row.body &&
-      !isHomeFeedNoise(row.body) &&
+      (nativeIdentity || !isHomeFeedNoise(row.body)) &&
       !contexts.has(row.id)
     ) {
       const context = buildHomeFeedRowContext(row);
       contexts.set(row.id, context);
-      if (!parseHomeFeedCommentIdentity(row.comment_identity ?? row.id)) {
+      if (!nativeIdentity) {
         const identityKey = homeFeedPostIdentityKey(row, context);
         if (identityKey && !postRowsByIdentity.has(identityKey)) {
           postRowsByIdentity.set(identityKey, row.id);
@@ -1058,52 +1059,34 @@ export function buildHomeFeedEvents(
   }
   for (const row of rows) {
     if (!row?.id || !row.body || seen.has(row.id)) continue;
-    if (isHomeFeedNoise(row.body)) continue;
+    const nativeIdentity = parseHomeFeedCommentIdentity(row.id);
+    if (!nativeIdentity && isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
     const context = contexts.get(row.id)!;
-    const nativeIdentity = parseHomeFeedCommentIdentity(
-      row.comment_identity ?? row.id
-    );
-    const parentToken =
-      homeFeedCommentParentToken(row.id) ??
-      (nativeIdentity
-        ? postRowsByIdentity.get(
-            `${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
-          )
-        : undefined);
-    if (parentToken || nativeIdentity) {
+    if (nativeIdentity) {
+      const parentToken = postRowsByIdentity.get(
+        `${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
+      );
       const parentOriginToken =
         parentToken ??
-        `${nativeIdentity!.parentNamespace}_${nativeIdentity!.parentId}`;
+        `${nativeIdentity.parentNamespace}_${nativeIdentity.parentId}`;
       const parent = parentToken ? contexts.get(parentToken) : undefined;
-      const payloadText = row.comment_body?.trim() || row.body;
-      const originId = nativeIdentity
-        ? `li_comment_${nativeIdentity.commentId}`
-        : stableId("li_home_comment", [
-            parentOriginToken,
-            context.authorSlug ?? context.author,
-            payloadText,
-          ]);
+      const payloadText = row.body;
+      const originId = `li_comment_${nativeIdentity.commentId}`;
       const sourceUrl =
         parent?.postUrl ??
-        (nativeIdentity
-          ? normalizeLinkedInPostUrl(
-              `urn:li:${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
-            )
-          : "");
+        normalizeLinkedInPostUrl(
+          `urn:li:${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
+        );
       const counts = parseHomeFeedEngagement(row);
       const commentMetadata: Record<string, unknown> = {
         ...context.metadata,
         ...homeFeedEngagementMetadata(counts),
         parent_post_origin_id: `li_home_${parentOriginToken}`,
-        ...(nativeIdentity
-          ? {
-              comment_urn: nativeIdentity.urn,
-              comment_id: nativeIdentity.commentId,
-              parent_activity_id: nativeIdentity.parentId,
-              parent_activity_namespace: nativeIdentity.parentNamespace,
-            }
-          : {}),
+        comment_urn: nativeIdentity.urn,
+        comment_id: nativeIdentity.commentId,
+        parent_activity_id: nativeIdentity.parentId,
+        parent_activity_namespace: nativeIdentity.parentNamespace,
       };
       if (parent) {
         commentMetadata.parent_author = parent.author;

@@ -196,6 +196,13 @@ const GoogleChatConfigSchema = Type.Object({
 				"Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.",
 		}),
 	),
+	helpCommandId: Type.Optional(
+		Type.String({
+			pattern: "^(?:[1-9][0-9]{0,2}|1000)$",
+			description:
+				"Google Chat command ID (1-1000) mapped to Lobu help for this project.",
+		}),
+	),
 	userName: Type.Optional(
 		Type.String({ description: "Override bot username." }),
 	),

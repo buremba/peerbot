@@ -14,6 +14,7 @@ import { getConfiguredPublicOrigin } from "../utils/public-origin";
 import { requireOrgUser } from "../utils/require-org-user";
 import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
 import { AutomationSubscriptionService } from "../gateway/channels/automation-subscription-service";
+import { formatChatCommand } from "../gateway/commands/command-spelling";
 
 // Slack Preview lets people trying Lobu locally talk to their agent through the
 // hosted "Lobu Developer" Slack workspace before they have their own bot token.
@@ -44,17 +45,16 @@ const PREVIEW_JOIN_DEFAULTS: Record<string, string> = {
 
 type SurfaceType = "dm" | "channel";
 
-// Slash-command spellings differ by platform: Slack only delivers the
-// natively-registered `/lobu`, so its subcommands are `/lobu try` etc.; other
-// platforms register each command directly (`/try`, `/agents`, `/link`).
+// Slack and Google Chat expose a native `/lobu` wrapper; other chat platforms
+// use bare command spellings.
 function tryCommand(platform: string): string {
-	return platform === "slack" ? "/lobu try" : "/try";
+	return formatChatCommand(platform, "try");
 }
 function listCommand(platform: string): string {
-	return platform === "slack" ? "/lobu agents" : "/agents";
+	return formatChatCommand(platform, "agents");
 }
 function linkCommand(platform: string): string {
-	return platform === "slack" ? "/lobu link" : "/link";
+	return formatChatCommand(platform, "link");
 }
 
 interface ClaimPayload {
@@ -110,7 +110,7 @@ function previewJoinUrl(platform: string): string {
 
 /** The slash command to send to the hosted bot to redeem a code. */
 function previewLinkCommand(platform: string, code: string): string {
-	return platform === "slack" ? `/lobu link ${code}` : `/link ${code}`;
+	return `${formatChatCommand(platform, "link")} ${code}`;
 }
 
 /**

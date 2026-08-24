@@ -9,6 +9,7 @@ import {
   buildAttachmentTranscriptText,
   type InboundAttachmentLike,
   ingestInboundAttachments,
+  isEarlyDispatchableChatCommand,
   isSenderAllowed,
   MessageHandlerBridge,
   parsePreviewLinkCode,
@@ -150,6 +151,18 @@ describe("isSenderAllowed", () => {
     },
   ] as const)("$label → $expected", ({ allow, user, expected }) => {
     expect(isSenderAllowed(allow as string[] | undefined, user)).toBe(expected);
+  });
+});
+
+describe("isEarlyDispatchableChatCommand", () => {
+  test("early dispatch keeps complete commands but excludes reset placeholders", () => {
+    expect(isEarlyDispatchableChatCommand("/link code-123")).toBe(true);
+    expect(isEarlyDispatchableChatCommand("/help")).toBe(true);
+    expect(isEarlyDispatchableChatCommand("/lobu agents")).toBe(true);
+    expect(isEarlyDispatchableChatCommand("/new")).toBe(false);
+    expect(isEarlyDispatchableChatCommand("/lobu clear")).toBe(false);
+    expect(isEarlyDispatchableChatCommand("/HELP")).toBe(false);
+    expect(isEarlyDispatchableChatCommand("help")).toBe(false);
   });
 });
 
@@ -938,6 +951,30 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
 
+  test("adapter-normalized help dispatches before preview onboarding", async () => {
+    const tryHandleSlashText = mock(async () => true);
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "gchat",
+      linkedAutomation: null,
+      commandDispatcher: {
+        tryHandleSlashText,
+        tryHandle: mock(async () => false),
+      },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "/help" }),
+      "dm",
+    );
+
+    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
+    expect(tryHandleSlashText.mock.calls[0]?.[0]).toBe("/help");
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(thread.post).not.toHaveBeenCalled();
+  });
+
   test("linked chat → routes to the Automation's agent, no notice", async () => {
     const { bridge, enqueueMessage } = makePreviewHarness({
       linkedAutomation: { agentId: "linked-agent" },
@@ -1289,6 +1326,103 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(resolveForConnection).not.toHaveBeenCalled();
     // Linked + filter-rejected must not spam the "link your agent" notice.
     expect(thread.post).not.toHaveBeenCalled();
+  });
+
+  test("adapter-normalized help bypasses a rejected linked Automation filter", async () => {
+    const tryHandleSlashText = mock(async () => true);
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "gchat",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID, mention_only: true },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const { bridge, enqueueMessage, resolveForConnection } = makePreviewHarness({
+      platform: "gchat",
+      agentId: undefined,
+      previewMode: false,
+      commandDispatcher: {
+        tryHandleSlashText,
+        tryHandle: mock(async () => false),
+      },
+      fallbackSubscription: {
+        agentId: "filtered-agent",
+        organizationId: "org-filtered",
+      },
+      automations: [
+        {
+          automationId: 74,
+          organizationId: "org-filtered",
+          agentId: "filtered-agent",
+          deviceWorkerId: null,
+          agentKind: null,
+          model: null,
+          instructions: "Only respond to mentions.",
+          trigger,
+        },
+      ],
+    });
+
+    await bridge.handleMessage(
+      makeThread(undefined),
+      makeMessage({ text: "/help", isMention: false }),
+      "subscribed",
+    );
+
+    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
+    expect(tryHandleSlashText.mock.calls[0]?.[0]).toBe("/help");
+    expect(resolveForConnection).not.toHaveBeenCalled();
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("adapter-normalized help bypasses record-only capture for a matched Automation", async () => {
+    const tryHandleSlashText = mock(async () => true);
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "gchat",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "gchat",
+      previewMode: false,
+      settings: { recordChannelMessages: true },
+      commandDispatcher: {
+        tryHandleSlashText,
+        tryHandle: mock(async () => false),
+      },
+      automations: [
+        {
+          automationId: 75,
+          organizationId: "org-connection",
+          agentId: "recording-agent",
+          deviceWorkerId: null,
+          agentKind: null,
+          model: null,
+          instructions: "Capture ordinary messages and respond to commands.",
+          trigger,
+        },
+      ],
+    });
+
+    await bridge.handleMessage(
+      makeThread(undefined),
+      makeMessage({ text: "/help", isMention: false }),
+      "subscribed",
+    );
+
+    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
+    expect(tryHandleSlashText.mock.calls[0]?.[0]).toBe("/help");
+    expect(enqueueMessage).not.toHaveBeenCalled();
   });
 
   test("recordChannelMessages skips agent turns for Automation-routed subscribed messages", async () => {

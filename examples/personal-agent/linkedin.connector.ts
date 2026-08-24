@@ -1283,6 +1283,20 @@ export function normalizeLinkedInPostUrl(input: string): string | null {
   }
 }
 
+function isLinkedInShortPostUrl(input: string | undefined): boolean {
+  if (!input) return false;
+  try {
+    const url = new URL(input);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "lnkd.in" &&
+      url.pathname.startsWith("/p/")
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Resolve LinkedIn's Copy-link short URL to its durable post URN URL. */
 export async function resolveLinkedInShortPostUrl(
   input: string,
@@ -1294,13 +1308,7 @@ export async function resolveLinkedInShortPostUrl(
   } catch {
     return null;
   }
-  if (
-    shortUrl.protocol !== "https:" ||
-    shortUrl.hostname !== "lnkd.in" ||
-    !shortUrl.pathname.startsWith("/p/")
-  ) {
-    return null;
-  }
+  if (!isLinkedInShortPostUrl(shortUrl.href)) return null;
 
   try {
     const response = await fetchImpl(shortUrl, {
@@ -1341,6 +1349,16 @@ function unresolvedHomeFeedPostCount(rows: HomeFeedRow[]): number {
     if (!homeFeedPostIdentityKey(row, context)) count += 1;
   }
   return count;
+}
+
+function unresolvedHomeFeedShortUrlCount(rows: HomeFeedRow[]): number {
+  return rows.filter(
+    (row) =>
+      Boolean(row?.id && row.body) &&
+      !parseHomeFeedCommentIdentity(row.id) &&
+      !isHomeFeedNoise(row.body ?? "") &&
+      isLinkedInShortPostUrl(row.post_url)
+  ).length;
 }
 
 /** True when navigate landed on login / authwall rather than the post. */
@@ -2594,6 +2612,13 @@ export default class LinkedInConnector extends ConnectorRuntime<
   LinkedInCheckpoint,
   LinkedInConfig
 > {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = fetch) {
+    super();
+    this.fetchImpl = fetchImpl;
+  }
+
   readonly definition: ConnectorDefinition = {
     key: "linkedin",
     name: "LinkedIn",
@@ -3218,7 +3243,14 @@ export default class LinkedInConnector extends ConnectorRuntime<
       );
     }
 
-    const resolvedRows = await resolveHomeFeedPostUrls(rows);
+    const resolvedRows = await resolveHomeFeedPostUrls(rows, this.fetchImpl);
+    const unresolvedShortUrlCount =
+      unresolvedHomeFeedShortUrlCount(resolvedRows);
+    if (unresolvedShortUrlCount > 0) {
+      throw new Error(
+        `LinkedIn could not resolve ${unresolvedShortUrlCount} copied post short URL${unresolvedShortUrlCount === 1 ? "" : "s"} to a durable identity. No home-feed events were persisted.`
+      );
+    }
     const unresolvedPostCount = unresolvedHomeFeedPostCount(resolvedRows);
     if (unresolvedPostCount > 0) {
       throw new Error(

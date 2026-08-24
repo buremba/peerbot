@@ -2037,7 +2037,7 @@ describe("LinkedInConnector home_feed", () => {
               {
                 id: "scroll-budget-fixture",
                 body: "A loaded feed row used only to verify the scroll budget",
-                post_identity: "urn:li:activity:7497353023476916224",
+                post_identity: "urn:li:activity:1234567890123456789",
               },
             ],
           },
@@ -2101,6 +2101,36 @@ describe("LinkedInConnector home_feed", () => {
         sessionState: { chrome_dispatcher: dispatcher },
       })
     ).rejects.toThrow(/No partial home-feed batch was persisted/i);
+  });
+
+  test("never falls back to an embedded origin when copied-link resolution fails", async () => {
+    const failedFetch = (async () => {
+      throw new Error("temporary redirect failure");
+    }) as typeof fetch;
+    const dispatcher = {
+      dispatch: async () => ({
+        result: {
+          loggedIn: true,
+          rows: [
+            {
+              id: "opaque-component-key",
+              body: "Fixture Author • 1st A real organic post with enough text",
+              post_url: "https://lnkd.in/p/example-token",
+              post_identity: "urn:li:share:1234567890123456789",
+            },
+          ],
+        },
+      }),
+    };
+    const connector = new LinkedInConnector(failedFetch);
+    await expect(
+      connector.sync({
+        feedKey: "home_feed",
+        config: {},
+        checkpoint: {},
+        sessionState: { chrome_dispatcher: dispatcher },
+      })
+    ).rejects.toThrow(/could not resolve.*No home-feed events were persisted/i);
   });
 
   test("throws a clear error when not logged into LinkedIn", async () => {
@@ -2493,18 +2523,18 @@ describe("prepare_comment helpers", () => {
         status: 301,
         headers: {
           location:
-            "https://www.linkedin.com/posts/jsduncan98_example-share-7497353023476916224-wb8S/?utm_source=share",
+            "https://www.linkedin.com/posts/example-user_example-share-1234567890123456789-abcd/?utm_source=share",
         },
       });
     };
 
     await expect(
-      resolveLinkedInShortPostUrl("https://lnkd.in/p/eeCQdN3n", fetchImpl)
+      resolveLinkedInShortPostUrl("https://lnkd.in/p/example-token", fetchImpl)
     ).resolves.toBe(
-      "https://www.linkedin.com/feed/update/urn:li:share:7497353023476916224"
+      "https://www.linkedin.com/feed/update/urn:li:share:1234567890123456789"
     );
     expect(calls).toHaveLength(1);
-    expect(calls[0].input).toBe("https://lnkd.in/p/eeCQdN3n");
+    expect(calls[0].input).toBe("https://lnkd.in/p/example-token");
     expect(calls[0].init.method).toBe("HEAD");
     expect(calls[0].init.redirect).toBe("manual");
   });
@@ -2517,7 +2547,7 @@ describe("prepare_comment helpers", () => {
         status: 301,
         headers: {
           location:
-            "https://www.linkedin.com/posts/example_activity-7497353023476916224-x",
+            "https://www.linkedin.com/posts/example-user_activity-1234567890123456789-abcd",
         },
       });
     };
@@ -2531,7 +2561,7 @@ describe("prepare_comment helpers", () => {
         id: "canonical",
         body: "Canonical fixture",
         post_url:
-          "https://www.linkedin.com/feed/update/urn:li:activity:7497353023476916225",
+          "https://www.linkedin.com/feed/update/urn:li:activity:1234567890123456790",
       },
       {
         id: "unsupported",
@@ -2543,7 +2573,7 @@ describe("prepare_comment helpers", () => {
     const resolved = await resolveHomeFeedPostUrls(rows, fetchImpl);
     expect(fetchCount).toBe(1);
     expect(resolved[0].post_url).toBe(
-      "https://www.linkedin.com/feed/update/urn:li:activity:7497353023476916224"
+      "https://www.linkedin.com/feed/update/urn:li:activity:1234567890123456789"
     );
     expect(resolved[1]).toBe(rows[1]);
     expect(resolved[2]).toBe(rows[2]);

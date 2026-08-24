@@ -1168,6 +1168,12 @@ jobs:
         # next release.
         run: bun test scripts/__tests__/release-publish-order.test.ts --timeout 30000
 
+      - name: Sparkle appcast ordering
+        # RFC 2822 pubDate values begin with a weekday. A string sort left an
+        # older Wednesday release above newer Monday releases, breaking the
+        # feed's newest-first contract.
+        run: bun test scripts/__tests__/sparkle-appcast-order.test.ts --timeout 30000
+
       - name: Release image audit decision table
         # The scheduled audit (release-image-audit.yml) is the only thing that
         # notices a release which published no image — a run evicted from its

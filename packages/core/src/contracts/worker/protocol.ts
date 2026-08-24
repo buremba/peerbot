@@ -61,6 +61,7 @@ export const RunTypeSchema = Type.Union([
   Type.Literal("sync"),
   Type.Literal("action"),
   Type.Literal("automation"),
+  Type.Literal("chat_message"),
   Type.Literal("embed_backfill"),
   Type.Literal("auth"),
 ]);
@@ -219,6 +220,31 @@ export const AutomationPollPayloadSchema = Type.Object({
   context: AutomationPollContextSchema,
 });
 
+/** One bounded prior turn shipped to a stateless device CLI. */
+export const DeviceChatHistoryMessageSchema = Type.Object({
+  role: Type.Union([Type.Literal("user"), Type.Literal("assistant")]),
+  content: Type.String({ maxLength: 16_000 }),
+});
+
+/** Device-local chat execution metadata. Conversation ownership stays with `agent.id`. */
+export const DeviceChatPollPayloadSchema = Type.Object({
+  chat: Type.Object({
+    agent_kind: Type.String({ minLength: 1, maxLength: 64 }),
+    execution_config: Type.Optional(AutomationExecutionConfigSchema),
+    message: Type.String({ maxLength: 32_000 }),
+    ephemeral_context: Type.Optional(Type.String({ maxLength: 2_048 })),
+    history: Type.Array(DeviceChatHistoryMessageSchema, { maxItems: 12 }),
+    agent: Type.Object({
+      id: Type.String({ minLength: 1 }),
+      name: Type.Optional(Type.String()),
+      identity_md: Type.Optional(Type.String()),
+      soul_md: Type.Optional(Type.String()),
+      user_md: Type.Optional(Type.String()),
+    }),
+  }),
+  context: AutomationPollContextSchema,
+});
+
 /** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
 export const PollResponseSchema = Type.Object({
   next_poll_seconds: Type.Optional(Type.Number()),
@@ -284,7 +310,9 @@ export const PollResponseSchema = Type.Object({
    * prompt, and the device returns its process exit via `/complete-automation`.
    * No connector code, credentials, or compiled_code are shipped on this lane.
    */
-  payload: Type.Optional(AutomationPollPayloadSchema),
+  payload: Type.Optional(
+    Type.Union([AutomationPollPayloadSchema, DeviceChatPollPayloadSchema])
+  ),
 });
 
 export const ActivatePageRequestSchema = Type.Object({
@@ -453,6 +481,22 @@ export const CompleteAutomationResponseSchema = Type.Object({
   idempotent: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
 });
 
+/** Device-side terminal report for a `chat_message` turn. */
+export const CompleteDeviceChatRequestSchema = Type.Object({
+  worker_id: Type.String(),
+  output: Type.Optional(Type.String()),
+  error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  exit_code: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  exit_signal: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  exit_reason: Type.Optional(WorkerExitReasonSchema),
+});
+
+export const CompleteDeviceChatResponseSchema = Type.Object({
+  ok: Type.Boolean(),
+  status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
+  idempotent: Type.Optional(Type.Boolean()),
+});
+
 // ── auth signalling ─────────────────────────────────────────────────────────
 
 /** `POST /api/workers/emit-auth-artifact`. */
@@ -536,11 +580,21 @@ export type AutomationPollMeta = Static<typeof AutomationPollMetaSchema>;
 export type AutomationPollEvent = Static<typeof AutomationPollEventSchema>;
 export type AutomationPollContext = Static<typeof AutomationPollContextSchema>;
 export type AutomationPollPayload = Static<typeof AutomationPollPayloadSchema>;
+export type DeviceChatHistoryMessage = Static<
+  typeof DeviceChatHistoryMessageSchema
+>;
+export type DeviceChatPollPayload = Static<typeof DeviceChatPollPayloadSchema>;
 export type CompleteAutomationRequest = Static<
   typeof CompleteAutomationRequestSchema
 >;
 export type CompleteAutomationResponse = Static<
   typeof CompleteAutomationResponseSchema
+>;
+export type CompleteDeviceChatRequest = Static<
+  typeof CompleteDeviceChatRequestSchema
+>;
+export type CompleteDeviceChatResponse = Static<
+  typeof CompleteDeviceChatResponseSchema
 >;
 export type ActivatePageRequest = Static<typeof ActivatePageRequestSchema>;
 export type ActivatePageResponse = Static<typeof ActivatePageResponseSchema>;

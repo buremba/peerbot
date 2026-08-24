@@ -12,7 +12,7 @@ import { generateWorkerToken, verifyWorkerToken } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getRevokedTokenStore } from '../../../gateway/auth/revoked-token-store';
 import { buildDeploymentWorkerToken } from '../../../gateway/orchestration/deployment-identity';
-import { buildAutomationRunWorkerAccess } from '../../../gateway/services/automation-run-worker-token';
+import { buildAutomationRunWorkerAccess } from '../../../gateway/services/run-worker-access';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,

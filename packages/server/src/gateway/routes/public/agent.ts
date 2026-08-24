@@ -5,6 +5,7 @@ import {
   type AgentConfigStore,
   createLogger,
   createRootSpan,
+	type DeviceExecutionTarget,
   generateWorkerToken,
   type NetworkConfig,
   normalizeDomainPatterns,
@@ -19,7 +20,7 @@ import {
   getValidated,
   type RouteSpec,
 } from "../shared/define-route.js";
-import { getDb } from "../../../db/client.js";
+import { getDb, parsePgTextArray } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
@@ -45,9 +46,10 @@ import {
   verifyAutomationRunIntent,
 } from "../../permissions/automation-run-intent.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
-import { buildAutomationRunWorkerAccess } from "../../services/automation-run-worker-token.js";
+import { buildAutomationRunWorkerAccess } from "../../services/run-worker-access.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
+import { readSnapshotJsonl } from "../../services/transcript-snapshot.js";
 import type { ISessionManager, ThreadSession } from "../../session.js";
 import {
   resolveSettingsLookupUserId,
@@ -120,6 +122,38 @@ const AutomationRunIntentSchema = Type.Object({
   automationId: Type.Integer({ minimum: 1 }),
 });
 
+const DeviceExecutionTargetSchema = Type.Object(
+	{
+		kind: Type.Literal("device"),
+		deviceWorkerId: Type.String({
+			pattern:
+				"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+		}),
+		agentKind: Type.String({ minLength: 1, maxLength: 64 }),
+	},
+	{ additionalProperties: false },
+);
+
+function executionTargetFromSnapshot(
+	snapshot: string | null,
+): DeviceExecutionTarget | undefined {
+	// Placement is in the small leading session record; do not split a whole
+	// multi-megabyte transcript just to recover that header after session expiry.
+	const header = snapshot
+		?.slice(0, 8192)
+		.split("\n")
+		.find((line) => line.trim());
+	if (!header) return undefined;
+	try {
+		const parsed = JSON.parse(header) as { executionTarget?: unknown };
+		return Value.Check(DeviceExecutionTargetSchema, parsed.executionTarget)
+			? (parsed.executionTarget as DeviceExecutionTarget)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 const CreateAgentRequestSchema = Type.Object({
   provider: Type.Optional(Type.Literal("claude", { default: "claude" })),
   model: Type.Optional(Type.String()),
@@ -129,6 +163,7 @@ const CreateAgentRequestSchema = Type.Object({
   forceNew: Type.Optional(Type.Boolean()),
   dryRun: Type.Optional(Type.Boolean()),
   intent: Type.Optional(AutomationRunIntentSchema),
+	executionTarget: Type.Optional(DeviceExecutionTargetSchema),
   networkConfig: Type.Optional(NetworkConfigSchema),
   nix: Type.Optional(NixConfigSchema),
 });
@@ -140,6 +175,7 @@ const CreateAgentResponseSchema = Type.Object({
   expiresAt: Type.Number(),
   sseUrl: Type.String(),
   messagesUrl: Type.String(),
+	executionTarget: Type.Optional(DeviceExecutionTargetSchema),
 });
 
 const SlackRoutingInfoSchema = Type.Object({
@@ -766,6 +802,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       forceNew,
       dryRun,
       intent,
+			executionTarget,
       networkConfig,
       nix: nixConfig,
     } = body;
@@ -992,6 +1029,73 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
     }
 
+		// Session state has a TTL; the transcript is the durable conversation
+		// substrate. Recover a device placement from its session header so an old
+		// device thread cannot silently fall back to the managed runtime.
+		let candidateExecutionTarget = executionTarget as
+			| DeviceExecutionTarget
+			| undefined;
+		if (!candidateExecutionTarget && effectiveForceNew) {
+			candidateExecutionTarget = existing?.executionTarget;
+		}
+		if (
+			!candidateExecutionTarget &&
+			!existing &&
+			!automationIntent &&
+			effectiveThread &&
+			tokenOrganizationId
+		) {
+			candidateExecutionTarget = executionTargetFromSnapshot(
+				await readSnapshotJsonl({
+					agentId,
+					organizationId: tokenOrganizationId,
+					conversationId,
+				}),
+			);
+		}
+
+		let verifiedExecutionTarget: DeviceExecutionTarget | undefined;
+		if (candidateExecutionTarget) {
+			if (intent || !access.callerUserId || !tokenOrganizationId) {
+				return c.json(
+					{
+						success: false,
+						error: "Device chat requires a workspace user session",
+					},
+					403,
+				);
+			}
+			const devices = await getDb()<{
+				id: string;
+				agent_kinds: string[] | string | null;
+				capabilities: Record<string, unknown> | null;
+			}>`
+        SELECT id, agent_kinds, capabilities
+        FROM device_workers
+        WHERE id = ${candidateExecutionTarget.deviceWorkerId}::uuid
+          AND user_id = ${access.callerUserId}
+          AND organization_id = ${tokenOrganizationId}
+        LIMIT 1
+      `;
+			const device = devices[0];
+			const advertisedKinds =
+				device?.agent_kinds == null ? [] : parsePgTextArray(device.agent_kinds);
+			if (
+				!device ||
+				device.capabilities?.["automations.execute"] !== true ||
+				!advertisedKinds.includes(candidateExecutionTarget.agentKind)
+			) {
+				return c.json(
+					{
+						success: false,
+						error: "That device cannot run the selected agent",
+					},
+					400,
+				);
+			}
+			verifiedExecutionTarget = candidateExecutionTarget;
+		}
+
     // Resume (unless forceNew). Refuse cross-tenant resume defensively: even
     // though the userId fallback above is per-org-unique for the default-agent
     // path, a future caller that bypasses the auth bridge or passes a colliding
@@ -1010,6 +1114,21 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         return c.json({ success: false, error: "Forbidden" }, 403);
       }
       if (existing) {
+				const existingTarget = existing.executionTarget;
+				if (
+					verifiedExecutionTarget &&
+					(verifiedExecutionTarget?.deviceWorkerId !==
+						existingTarget?.deviceWorkerId ||
+						verifiedExecutionTarget?.agentKind !== existingTarget?.agentKind)
+				) {
+					return c.json(
+						{
+							success: false,
+							error: "Conversation execution target cannot change",
+						},
+						409,
+					);
+				}
         // Reuse the existing session — touch lastActivity and hand back a
         // freshly minted token for it (tokens are stateless, never stored).
         await sessMgr.touchSession(conversationId);
@@ -1029,6 +1148,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
             expiresAt,
             sseUrl: `${baseUrl}/api/v1/agents/${conversationId}/events`,
             messagesUrl: `${baseUrl}/api/v1/agents/${conversationId}/messages`,
+            ...(existing.executionTarget
+              ? { executionTarget: existing.executionTarget }
+              : {}),
           },
           201
         );
@@ -1047,6 +1169,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       status: "created",
       provider,
       model,
+			...(verifiedExecutionTarget
+				? { executionTarget: verifiedExecutionTarget }
+				: {}),
       networkConfig: normalizedNetworkConfig,
       nixConfig,
       agentId,
@@ -1073,6 +1198,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         expiresAt,
         sseUrl: `${baseUrl}/api/v1/agents/${conversationId}/events`,
         messagesUrl: `${baseUrl}/api/v1/agents/${conversationId}/messages`,
+        ...(session.executionTarget
+          ? { executionTarget: session.executionTarget }
+          : {}),
       },
       201
     );
@@ -1428,6 +1556,13 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       return c.json({ success: false, error: "content or files required" }, 400);
     }
 
+    if (preSession?.executionTarget && hasInboundFiles) {
+      return c.json(
+        { success: false, error: "Device chat does not support attachments yet" },
+        400,
+      );
+    }
+
     const platform = body.platform as string | undefined;
 
     // ── Platform-routed path ──────────────────────────────────────────────────
@@ -1664,6 +1799,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         botId: "lobu-api",
         platform: "api",
         messageText: messageTextForTranscript,
+				...(session.executionTarget
+					? { executionTarget: session.executionTarget }
+					: {}),
         ...(applyEphemeralContext
           ? { ephemeralContext: ephemeralForTurn.slice(0, 2048) }
           : {}),

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { verifyWorkerToken } from "@lobu/core";
 import { AUTOMATION_RUN_SOURCE } from "../automation-run-session.js";
-import { buildAutomationRunWorkerAccess } from "../services/automation-run-worker-token.js";
+import { buildAutomationRunWorkerAccess } from "../services/run-worker-access.js";
 
 // Minting encrypts with ENCRYPTION_KEY. The gateway lane runs many files in one
 // bun process and its peers set/restore the key per file, so this suite cannot

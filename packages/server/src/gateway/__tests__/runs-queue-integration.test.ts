@@ -318,7 +318,7 @@ describe("RunsQueue — graceful shutdown", () => {
 });
 
 describe("RunsQueue — startup recovery scan", () => {
-  test("recovers stale claimed rows on start", async () => {
+	test("recovers gateway claims without stealing device chat lifecycle", async () => {
     if (!queue) throw new Error("queue not started");
     // Stop the live queue first so we can manipulate rows freely.
     await queue.stop();
@@ -329,10 +329,18 @@ describe("RunsQueue — startup recovery scan", () => {
     // crashed prior run.
     await sql`
       INSERT INTO runs (run_type, queue_name, action_input, status, claimed_at, claimed_by, run_at)
-      VALUES ('chat_message', 'recovery-q', '{}'::jsonb, 'claimed',
-              now() - interval '20 minutes',
-              'gateway-old-pid',
-              now() - interval '20 minutes')
+      VALUES
+        ('chat_message', 'recovery-q', '{}'::jsonb, 'claimed',
+         now() - interval '20 minutes', 'gateway-old-pid',
+         now() - interval '20 minutes'),
+        ('chat_message', 'messages', ${sql.json({
+					executionTarget: {
+						kind: "device",
+						deviceWorkerId: "00000000-0000-4000-8000-000000000001",
+						agentKind: "pi",
+					},
+				})}, 'running', now() - interval '20 minutes', 'device-old-pid',
+         now() - interval '20 minutes')
     `;
 
     // New RunsQueue instance — startup scan should reset the row.
@@ -340,10 +348,21 @@ describe("RunsQueue — startup recovery scan", () => {
     await fresh.start();
     queue = fresh;
 
-    const rows = await sql<{ status: string; claimed_by: string | null }>`
-      SELECT status, claimed_by FROM runs WHERE queue_name = 'recovery-q'
+		const rows = await sql<{
+			queue_name: string;
+			status: string;
+			claimed_by: string | null;
+		}>`
+      SELECT queue_name, status, claimed_by
+      FROM runs
+      WHERE queue_name IN ('recovery-q', 'messages')
+      ORDER BY queue_name
     `;
-    expect(rows[0]?.status).toBe("pending");
-    expect(rows[0]?.claimed_by).toBeNull();
+		const deviceChat = rows.find((row) => row.queue_name === "messages");
+		const gatewayChat = rows.find((row) => row.queue_name === "recovery-q");
+		expect(gatewayChat?.status).toBe("pending");
+		expect(gatewayChat?.claimed_by).toBeNull();
+		expect(deviceChat?.status).toBe("running");
+		expect(deviceChat?.claimed_by).toBe("device-old-pid");
   });
 });

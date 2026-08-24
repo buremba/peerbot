@@ -106,6 +106,48 @@ export interface AutomationExecutorConfig {
   acpAdapters?: AutomationAcpAdapters;
 }
 
+/** Shared liveness/cancellation control for every device-local agent run. */
+export function monitorDeviceAgentRun(
+	client: ExecutorClient,
+	runId: number,
+	cfg: AutomationExecutorConfig,
+	label: string,
+) {
+	const abortController = new AbortController();
+	let shutdownRequested = false;
+	const onShutdown = () => {
+		shutdownRequested = true;
+		abortController.abort();
+	};
+	cfg.shutdownSignal?.addEventListener("abort", onShutdown, { once: true });
+	if (cfg.shutdownSignal?.aborted) onShutdown();
+
+	const heartbeat = setInterval(() => {
+		client.heartbeat(runId).catch((error) => {
+			if (error instanceof WorkerHttpError && error.status === 409) {
+				if (!abortController.signal.aborted) {
+					log.info(
+						`[executor] ${label} run ${runId} is no longer active; stopping the local CLI`,
+					);
+					abortController.abort();
+					clearInterval(heartbeat);
+				}
+				return;
+			}
+			log.debug(`[executor] ${label} heartbeat failed:`, error);
+		});
+	}, cfg.heartbeatIntervalMs ?? 30_000);
+
+	return {
+		abortController,
+		shutdownRequested: () => shutdownRequested,
+		stop: () => {
+			clearInterval(heartbeat);
+			cfg.shutdownSignal?.removeEventListener("abort", onShutdown);
+		},
+	};
+}
+
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 export interface ExecutorResult {
   output: string;
@@ -332,8 +374,8 @@ function buildMcp(
   return { mcpArgs, mcpEnv, cleanup };
 }
 
-/** The credential set one automation run's spawned CLI executes with. */
-export interface AutomationRunAccess {
+/** The run-scoped credential set used by any spawned local agent CLI. */
+export interface DeviceAgentRunAccess {
   /** Lobu MCP wiring for the CLI's mcp config (buildMcp). */
   wiring: { url: string; bearer?: string } | undefined;
   /** Extra env for the child process (LOBU_API_TOKEN / LOBU_MEMORY_URL). */
@@ -378,8 +420,18 @@ function claudeSessionMeta(
 export function resolveAutomationRunAccess(
   payload: AutomationPollPayload,
   daemonWiring: { url: string; bearer?: string } | undefined
-): AutomationRunAccess {
-  const session = payload.context.agent_session;
+): DeviceAgentRunAccess {
+  return resolveDeviceAgentRunAccess(
+    payload.context.agent_session,
+    daemonWiring
+  );
+}
+
+/** Resolve the credential boundary shared by Automation and device chat CLIs. */
+export function resolveDeviceAgentRunAccess(
+  session: AutomationPollPayload['context']['agent_session'],
+  daemonWiring: { url: string; bearer?: string } | undefined
+): DeviceAgentRunAccess {
   if (!session) return { wiring: daemonWiring, env: {} };
   return {
     wiring: { url: session.mcp_url, bearer: session.token },
@@ -407,7 +459,7 @@ export async function runCli(
   spec: AgentSpec,
   prompt: string,
   config: AutomationPollPayload['automation']['execution_config'],
-  access: AutomationRunAccess,
+  access: DeviceAgentRunAccess,
   timeoutMs: number,
   binaryPath?: string,
   abortSignal?: AbortSignal,
@@ -704,6 +756,11 @@ export async function executeAutomationRun(
     await completeAutomationWithError(client, runId, message, 'error_message');
     return { itemsCollected: 0, error: message };
   }
+  if (!("automation" in payload)) {
+    const message = "automation run received a non-automation payload envelope";
+    await completeAutomationWithError(client, runId, message, "error_message");
+    return { itemsCollected: 0, error: message };
+  }
 
   if (cfg.requireRunScopedSession && !payload.context.agent_session) {
     const message = 'macOS Automation run is missing its required run-scoped agent session';
@@ -746,38 +803,15 @@ export async function executeAutomationRun(
     ? 'undecided'
     : 'subprocess';
 
-  // Heartbeat the run while the CLI executes so the server's stale-run sweeper
-  // can distinguish a live turn from an abandoned one.
-  const runAbort = new AbortController();
-  let shutdownRequested = false;
-  const onShutdown = () => {
-    shutdownRequested = true;
-    runAbort.abort();
-  };
-  cfg.shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
-  if (cfg.shutdownSignal?.aborted) onShutdown();
-  const heartbeat = setInterval(() => {
-    client.heartbeat(runId).catch((err) => {
-      if (err instanceof WorkerHttpError && err.status === 409) {
-        if (!runAbort.signal.aborted) {
-          log.info(
-            `[executor] Automation run ${runId} is no longer active; waiting for the local CLI to exit`
-          );
-          runAbort.abort();
-          // The outcome is already settled server-side; stop beating at a run
-          // that will 409 for the rest of the terminal grace.
-          clearInterval(heartbeat);
-        }
-        return;
-      }
-      log.debug('[executor] Automation heartbeat failed:', err);
-    });
-  }, cfg.heartbeatIntervalMs ?? 30_000);
+  const monitor = monitorDeviceAgentRun(client, runId, cfg, 'Automation');
+  const runAbort = monitor.abortController;
 
   const io: AutomationRunIo = {
     run: async (finalizeNudge) => {
       if (runAbort.signal.aborted) {
-        if (!shutdownRequested) throw new AutomationRunNoLongerActiveError();
+        if (!monitor.shutdownRequested()) {
+          throw new AutomationRunNoLongerActiveError();
+        }
         return {
           output: '',
           error: null,
@@ -942,8 +976,7 @@ export async function executeAutomationRun(
   try {
     return await dispatchAutomationResumeLoop(io);
   } finally {
-    clearInterval(heartbeat);
-    cfg.shutdownSignal?.removeEventListener('abort', onShutdown);
+    monitor.stop();
   }
 }
 

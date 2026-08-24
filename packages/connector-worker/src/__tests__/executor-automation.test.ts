@@ -265,13 +265,17 @@ describe('executeRun try/catch safety net', () => {
   test('automation-lane unhandled error terminates via complete-automation, never the sync endpoint', async () => {
     const { client, completes, automationCompletes } = makeSafetyNetClient();
 
-    // payload present but malformed (automation key missing) → throws inside
-    // executeAutomationRun before its own reporting kicks in, exercising the
-    // outer net. The sync /complete endpoint must NOT be used: it would
+    // A payload that clears the envelope guard but has no `context` → throws
+    // inside executeAutomationRun before its own reporting kicks in, exercising
+    // the outer net. The sync /complete endpoint must NOT be used: it would
     // finalize the run row but skip the automation-side bookkeeping.
     const result = await executeRun(
       client as any,
-      { run_id: 12, run_type: 'automation', payload: {} } as any,
+      {
+        run_id: 12,
+        run_type: 'automation',
+        payload: { automation: { agent_kind: 'pi' } },
+      } as any,
       {}
     );
 
@@ -281,6 +285,22 @@ describe('executeRun try/catch safety net', () => {
     expect(automationCompletes[0]!.runId).toBe(12);
     expect(automationCompletes[0]!.req.exit_reason).toBe('crash');
     expect(String(automationCompletes[0]!.req.error)).toBeTruthy();
+  });
+
+  test('a chat envelope on the automation lane is reported, not crashed', async () => {
+    const { client, completes, automationCompletes } = makeSafetyNetClient();
+
+    const result = await executeRun(
+      client as any,
+      { run_id: 13, run_type: 'automation', payload: { chat: {} } } as any,
+      {}
+    );
+
+    expect(result.error).toContain('non-automation payload envelope');
+    expect(completes).toHaveLength(0);
+    expect(automationCompletes).toHaveLength(1);
+    expect(automationCompletes[0]!.runId).toBe(13);
+    expect(automationCompletes[0]!.req.exit_reason).toBe('error_message');
   });
 });
 

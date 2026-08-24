@@ -12,6 +12,7 @@ import { batchGenerateEmbeddings } from '../embeddings.js';
 import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
 import { executeAutomationRun } from './automation.js';
+import { executeDeviceChatRun } from './device-chat.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
@@ -167,6 +168,8 @@ export async function executeRun(
         // unreachable for them — but if a run does slip through (deploy skew), the
         // dispatcher reports the failure rather than stomping the run.
         return await executeAutomationRun(client, job, cfg);
+      case 'chat_message':
+        return await executeDeviceChatRun(client, job, cfg);
       case 'embed_backfill':
         return await executeEmbedBackfillRun(client, job, env, cfg);
       case 'auth':

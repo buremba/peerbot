@@ -12,6 +12,7 @@ import {
 import {
   applyEventAttributions,
   clearEntityLinkRulesCache,
+  loadAttributionRuleByType,
   resolveEventAttributionsForItems,
   resolveSenderIdentity,
 } from '../entity-link-upsert';
@@ -195,6 +196,76 @@ describe('applyEventAttributions', () => {
       WHERE organization_id = ${org.id} AND entity_id = ${entities[0].id}
     `;
     expect(idents).toEqual([{ namespace: 'x_user_id', identifier: '123' }]);
+  });
+
+  it('loads the active connector definition instead of an archived definition', async () => {
+    const { org } = await setupOrg('versioned attribution org');
+    const sql = getTestDb();
+
+    await createTestConnectorDefinition({
+      key: 'x-versioned',
+      name: 'Archived X',
+      version: '1.0.0',
+      organization_id: org.id,
+      feeds_schema: { [FEED_KEY]: { eventKinds: {} } },
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET status = 'archived'
+      WHERE key = 'x-versioned'
+        AND organization_id = ${org.id}
+        AND version = '1.0.0'
+    `;
+    await createTestConnectorDefinition({
+      key: 'x-versioned',
+      name: 'Active X',
+      version: '2.0.0',
+      organization_id: org.id,
+      feeds_schema: {
+        [FEED_KEY]: {
+          eventKinds: {
+            tweet: {
+              attributions: [
+                {
+                  role: 'authored_by',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    titlePath: 'metadata.author_name',
+                    identities: [
+                      { namespace: 'x_user_id', eventPath: 'metadata.author_id', primary: true },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    clearEntityLinkRulesCache();
+
+    const item = {
+      origin_type: 'tweet',
+      metadata: { author_id: '456', author_name: 'Versioned Alice' },
+    };
+    await applyEventAttributions({
+      connectorKey: 'x-versioned',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [item],
+    });
+
+    expect((item.metadata as Record<string, unknown>).x_user_id).toBe('456');
+
+    clearEntityLinkRulesCache();
+    const activeRule = await loadAttributionRuleByType(sql, {
+      connectorKey: 'x-versioned',
+      orgId: org.id,
+      entityType: '$member',
+      role: 'authored_by',
+    });
+    expect(activeRule?.identities[0]?.namespace).toBe('x_user_id');
   });
 
   it('first-writer-wins when two rules stamp the same namespace on one event', async () => {

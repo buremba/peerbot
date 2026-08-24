@@ -141,6 +141,7 @@ async function loadEventAttributionRules(
       FROM connector_definitions
       WHERE key = ${params.connectorKey}
         AND organization_id = ${params.orgId}
+        AND status = 'active'
       LIMIT 1
     `;
 
@@ -187,6 +188,7 @@ export async function loadAttributionRuleByType(
       FROM connector_definitions
       WHERE key = ${params.connectorKey}
         AND organization_id = ${params.orgId}
+        AND status = 'active'
       LIMIT 1
     `;
     const result: RuleMap = {};

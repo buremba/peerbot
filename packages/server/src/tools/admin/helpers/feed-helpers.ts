@@ -17,9 +17,7 @@ export function feedOperations(
   feedsSchema: Record<string, FeedDefinition> | null,
   feedKey: string
 ): Array<'sync' | 'read'> {
-  const definition =
-    feedsSchema?.[feedKey] ??
-    Object.values(feedsSchema ?? {}).find((candidate) => candidate?.key === feedKey);
+  const definition = feedsSchema?.[feedKey];
   return Array.isArray(definition?.operations) ? definition.operations : [];
 }
 
@@ -34,15 +32,11 @@ export function feedOperations(
  * `feed_urls`) is persisted "successfully" and only fails at sync time, giving
  * an MCP caller zero upfront signal.
  *
- * `ignoreRequired` is reserved for callers validating a partial patch rather
- * than a concrete feed configuration. Create/update validate the effective
- * stored config, so they do not use it.
  */
 export function validateFeedConfig(
   feedsSchema: Record<string, FeedDefinition> | null,
   feedKey: string,
-  config: Record<string, unknown>,
-  options?: { ignoreRequired?: boolean }
+  config: Record<string, unknown>
 ): string | null {
   // Direct key lookup plus the `key` field fallback — deliberately NOT the
   // single-entry fallback getFeedDefinition uses for display names: guessing a
@@ -61,27 +55,10 @@ export function validateFeedConfig(
     return `Invalid config for feed '${feedKey}': config exceeds size/nesting limits`;
   }
 
-  // Strip the keyword rather than filtering `required` out of validate.errors
-  // afterwards: the shared AJV runs with `allErrors: false`, so a config that
-  // trips `required` first would report only that error and a real type error
-  // behind it would slip through the filter.
-  const effectiveSchema =
-    options?.ignoreRequired && 'required' in configSchema
-      ? withoutRequired(configSchema)
-      : configSchema;
-
-  const validate = getAjv().compile(effectiveSchema);
+  const validate = getAjv().compile(configSchema);
   if (validate(config)) return null;
   const detail = (validate.errors ?? []).map(formatAjvError).join('; ') || 'validation failed';
   return `Invalid config for feed '${feedKey}': ${detail}`;
-}
-
-/** Top-level `required` only; a nested object's own required keys stay a shape check. */
-function withoutRequired(
-  configSchema: NonNullable<FeedDefinition['configSchema']>
-): NonNullable<FeedDefinition['configSchema']> {
-  const { required: _required, ...rest } = configSchema;
-  return rest;
 }
 
 function getFeedDefinition(

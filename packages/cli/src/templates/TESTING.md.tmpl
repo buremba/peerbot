@@ -84,7 +84,7 @@ the dry-run is healthy and the user approves a real collection, trigger without
 exists.
 
 Source-readable feeds can be queried live independently of sync. Verify those with
-`client.feeds.readMany({ feed_ids: [Number("<feed-id>")] })`.
+`client.feeds.readMany({ reads: [{ feed_id: Number("<feed-id>") }] })`.
 If the connector declares no feeds, as with some chat
 integrations, skip feed verification and prove its inbound message path instead.
 

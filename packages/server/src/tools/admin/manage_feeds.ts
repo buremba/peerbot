@@ -659,16 +659,18 @@ async function readSourceWithinDeadline(
     // Once a source has selected token pagination, absence of a replacement
     // token means exhaustion. Never downgrade that traversal to an offset
     // cursor: token-only providers reject offsets and cannot resume that page.
-    const hasMore =
-      result.nextCursor !== undefined
-        ? true
-        : page.sourceCursor !== undefined
-          ? false
-        : result.hasMore !== undefined
-          ? result.hasMore
-          : result.total !== undefined
-            ? nextPosition < result.total
-            : result.rows.length >= limit;
+    let hasMore: boolean;
+    if (result.nextCursor !== undefined) {
+      hasMore = true;
+    } else if (page.sourceCursor !== undefined) {
+      hasMore = false;
+    } else if (result.hasMore !== undefined) {
+      hasMore = result.hasMore;
+    } else if (result.total !== undefined) {
+      hasMore = nextPosition < result.total;
+    } else {
+      hasMore = result.rows.length >= limit;
+    }
     return {
       feed_id: read.feed_id,
       ok: true as const,

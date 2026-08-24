@@ -1,6 +1,11 @@
 # Changelog
 
-## [16.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v16.1.0...lobu-v16.2.0) (2026-08-24)
+## [17.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v16.1.0...lobu-v17.0.0) (2026-08-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **connectors:** feed capabilities now use per-feed `sync` and `read` handlers. The public Connector SDK no longer exposes `SearchContext`, `ConnectorRuntime.search()`, `FeedDefinition.virtual`, or `QueryContext.feedKey`. External connectors must move live source reads into each feed's `read` handler; connection-level `query` remains for SQL and warehouse compute pushdown.
 
 
 ### Features

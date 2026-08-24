@@ -13,6 +13,7 @@
 import { isKnownPlatform } from '@lobu/core';
 import type { Context } from 'hono';
 import { createAuth } from '../auth';
+import { resolveBaseUrl } from '../auth/base-url';
 import { findExistingPersonalOrg } from '../auth/personal-org-provisioning';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { getDb, parsePgTextArray, pgBigintArray } from '../db/client';
@@ -481,7 +482,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       }
     }
 
-    const gatewayUrl = new URL(c.req.url).origin;
+    const gatewayUrl = resolveBaseUrl({ request: c.req.raw });
     if (reused) {
       logger.info(
         { userId, workerId, platform },

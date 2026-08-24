@@ -55,6 +55,30 @@ describe('device mint (mint-child-token)', () => {
     await cleanupTestDatabase();
   });
 
+  it('returns the public HTTPS gateway origin behind a reverse proxy', async () => {
+    const personalOrg = await createTestOrganization({ name: 'Personal Public Origin' });
+    const user = await createTestUser({ email: 'public-origin@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+
+    const res = await mintApp(user.id).request(
+      'http://app.lobu.ai/api/me/devices/mint-child-token',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-host': 'app.lobu.ai',
+          'x-forwarded-proto': 'https',
+        },
+        body: JSON.stringify({ platform: 'headless', label: 'proxied-device' }),
+      },
+      TEST_ENV
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ gateway_url: 'https://app.lobu.ai' });
+  });
+
   it('mints a headless device bound to the personal org with an owl_pat_ child token', async () => {
     const sql = getTestDb();
     const personalOrg = await createTestOrganization({ name: 'Personal' });

@@ -143,6 +143,7 @@ describe('explicit feed source reads', () => {
       [publicFeedId, privateFeedId].sort()
     );
     expect(owner.coverage?.source_feeds.every((feed) => feed.status === 'not_queried')).toBe(true);
+
     const member = await gatherLocalRecall(memberScope(), recallContext());
     expect(member.coverage?.source_feeds.map((feed) => feed.feed_id)).toEqual([publicFeedId]);
   });

@@ -241,9 +241,8 @@ async function handleListFeeds(
   // intentionally separate from this sync-health filter.
   if (args.health) {
     where = sql`${where} AND f.status = 'active' AND c.status <> 'paused'`;
-    const overdue = sql`
-      COALESCE(f.schedule, '') <> ''
-      AND COALESCE((
+    const selectedOperations = sql`
+      COALESCE((
         SELECT health_cd.feeds_schema -> f.feed_key -> 'operations'
         FROM connector_definitions health_cd
         WHERE health_cd.key = c.connector_key
@@ -263,7 +262,15 @@ async function handleListFeeds(
                  health_cd.updated_at DESC,
                  health_cd.id DESC
         LIMIT 1
-      ), '[]'::jsonb) @> '["sync"]'::jsonb
+      ), '[]'::jsonb)
+    `;
+    const sourceOnly = sql`
+      ${selectedOperations} @> '["read"]'::jsonb
+      AND NOT (${selectedOperations} @> '["sync"]'::jsonb)
+    `;
+    const overdue = sql`
+      ${selectedOperations} @> '["sync"]'::jsonb
+      AND COALESCE(f.schedule, '') <> ''
       AND f.next_run_at IS NOT NULL
       AND f.next_run_at < now() - interval '1 hour'
       AND NOT EXISTS (
@@ -273,16 +280,24 @@ async function handleListFeeds(
       )
     `;
     if (args.health === 'failing') {
-      where = sql`${where} AND (
-        f.last_sync_status = 'failed'
-        OR COALESCE(f.consecutive_failures, 0) > 0
-        OR (${overdue})
-      )`;
+      where = sql`${where}
+        AND NOT (${sourceOnly})
+        AND (
+          f.last_sync_status = 'failed'
+          OR COALESCE(f.consecutive_failures, 0) > 0
+          OR (${overdue})
+        )
+      `;
     } else {
       where = sql`${where}
-        AND f.last_sync_status IS DISTINCT FROM 'failed'
-        AND COALESCE(f.consecutive_failures, 0) = 0
-        AND NOT (${overdue})
+        AND (
+          (${sourceOnly})
+          OR (
+            f.last_sync_status IS DISTINCT FROM 'failed'
+            AND COALESCE(f.consecutive_failures, 0) = 0
+            AND NOT (${overdue})
+          )
+        )
       `;
     }
   }

@@ -322,8 +322,8 @@ describe("list_feeds health filter and true total", () => {
 				entity_ids, pinned_version, created_at, updated_at
 			) VALUES (
 				${orgId}, ${conn.id}, 'pinned-read-only', 'active',
-				'0 * * * *', current_timestamp - interval '2 hours', 'success',
-				current_timestamp - interval '3 hours', 0, ARRAY[]::bigint[],
+				'0 * * * *', current_timestamp - interval '2 hours', 'failed',
+				current_timestamp - interval '3 hours', 3, ARRAY[]::bigint[],
 				'0.9.0', NOW(), NOW()
 			)
 		`;
@@ -344,6 +344,7 @@ describe("list_feeds health filter and true total", () => {
 		expect(byKey.get("scheduled-active")?.attention).toBe("healthy");
 		expect(byKey.get("no-schedule-old")?.attention).toBe("healthy");
 		expect(byKey.get("pinned-read-only")?.operations).toEqual(["read"]);
+		expect(byKey.get("pinned-read-only")?.attention).toBe("healthy");
 
 		const healthy = await runList({
 			connection_id: conn.id,

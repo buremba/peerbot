@@ -7,7 +7,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   createHttpClient,
@@ -135,7 +135,7 @@ query ListPosts($topic: String, $postedAfter: DateTime, $after: String) {
 // ---------------------------------------------------------------------------
 
 export default class ProductHuntConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: 'producthunt',
     name: 'Product Hunt',
     description: 'Searches Product Hunt posts and comments for a given query.',
@@ -162,6 +162,7 @@ export default class ProductHuntConnector extends ConnectorRuntime {
       posts: {
         key: 'posts',
         name: 'Posts & Comments',
+        sync: (ctx) => this.syncFeed(ctx),
         description: 'Search Product Hunt for posts and their comments.',
         configSchema: {
           type: 'object',
@@ -233,7 +234,7 @@ export default class ProductHuntConnector extends ConnectorRuntime {
   // sync
   // -------------------------------------------------------------------------
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const searchQuery = ctx.config.search_query as string;
     const lookbackDays = (ctx.config.lookback_days as number) ?? 365;
     const maxPages = (ctx.config.max_pages as number) ?? 10;

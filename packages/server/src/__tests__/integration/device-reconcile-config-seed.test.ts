@@ -16,6 +16,10 @@
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileDeviceCapabilities } from '../../worker-api/device-reconcile';
+import {
+  deviceManifestHash,
+  type DeviceConnectorManifest,
+} from '../../worker-api/device-manifests';
 import logger from '../../utils/logger';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization, createTestUser } from '../setup/test-fixtures';
@@ -31,7 +35,7 @@ const DEFAULT_CONFIG = { action_modes: { upload_file: 'auto' } };
 async function seedDefinition(
   orgId: string,
   defaultConfig: Record<string, unknown> | null,
-  feedsSchema: Record<string, unknown> = {}
+  feedsSchema: Record<string, unknown> = {},
 ) {
   await sql`
     INSERT INTO connector_definitions (
@@ -54,7 +58,9 @@ async function seedDefinition(
   `;
 }
 
-async function manifestFor(feeds: Record<string, unknown>): Promise<typeof MANIFEST> {
+async function manifestFor(
+  feeds: Record<string, unknown>,
+): Promise<typeof MANIFEST> {
   return {
     key: CONNECTOR,
     version: VERSION,
@@ -84,14 +90,15 @@ const MANIFEST = {
 async function seedWorker(
   userId: string,
   orgId: string,
-  feeds: Record<string, unknown> = {}
+  feeds: Record<string, unknown> = {},
 ): Promise<string> {
   const workerId = `mac-${Math.random().toString(36).slice(2, 10)}`;
-  const manifest = Object.keys(feeds).length > 0 ? await manifestFor(feeds) : MANIFEST;
+  const manifest =
+    Object.keys(feeds).length > 0 ? await manifestFor(feeds) : MANIFEST;
   const manifests = {
     [CONNECTOR]: {
       manifest,
-      manifest_hash: `hash-${CONNECTOR}-${VERSION}`,
+      manifest_hash: deviceManifestHash(manifest as DeviceConnectorManifest),
       received_at: new Date().toISOString(),
     },
   };
@@ -111,7 +118,7 @@ async function seedWorker(
 async function seedConn(
   orgId: string,
   userId: string,
-  config: Record<string, unknown> | null | undefined
+  config: Record<string, unknown> | null | undefined,
 ): Promise<number> {
   const slug = `conn-${Math.random().toString(36).slice(2, 8)}`;
   const [row] = (await sql`
@@ -132,7 +139,9 @@ async function configOf(id: number): Promise<Record<string, unknown> | null> {
     SELECT config FROM connections WHERE id = ${id}
   `) as unknown as Array<{ config: unknown }>;
   if (row == null || row.config == null) return null;
-  return typeof row.config === 'string' ? JSON.parse(row.config) : (row.config as Record<string, unknown>);
+  return typeof row.config === 'string'
+    ? JSON.parse(row.config)
+    : (row.config as Record<string, unknown>);
 }
 
 async function setUpOrg(): Promise<{ orgId: string; userId: string }> {
@@ -210,6 +219,7 @@ describe('device reconcile config seeding', () => {
   it('converges without re-wiring when the definition default is wholly feed-scoped', async () => {
     const FEEDS = {
       main: {
+        operations: ['sync'],
         configSchema: {
           type: 'object',
           properties: { lookback_days: { type: 'number' } },
@@ -233,7 +243,7 @@ describe('device reconcile config seeding', () => {
       expect(row.config).toBeNull();
 
       const wired = info.mock.calls.filter(
-        (call) => call[1] === '[device-connectors] Wired device connector'
+        (call) => call[1] === '[device-connectors] Wired device connector',
       );
       // Exactly one wire pass. A ready-gate that approximated "default exists"
       // with the raw default instead of the seedable CONNECTION-scoped half

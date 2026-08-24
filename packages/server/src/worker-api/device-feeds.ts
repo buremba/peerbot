@@ -122,6 +122,24 @@ export async function createMyDeviceFeed(c: Context<{ Bindings: Env }>) {
   if (error || !connection) return error!;
   try {
     const sql = getDb();
+    const [definition] = (await sql`
+      SELECT connector_definitions.feeds_schema -> ${feedKey} AS feed_definition
+      FROM connector_definitions
+      WHERE connector_definitions.organization_id = ${device!.organization_id}
+        AND connector_definitions.key = ${connectorKey}
+        AND connector_definitions.status = 'active'
+      ORDER BY connector_definitions.updated_at DESC, connector_definitions.id DESC
+      LIMIT 1
+    `) as unknown as Array<{ feed_definition: { operations?: unknown } | null }>;
+    const feedDefinition = definition?.feed_definition;
+    if (!feedDefinition) {
+      return c.json({ error: `Feed '${feedKey}' is not declared by connector '${connectorKey}'` }, 400);
+    }
+    const operations = feedDefinition.operations;
+    if (!Array.isArray(operations) || operations.length === 0) {
+      return c.json({ error: `Feed '${feedKey}' is not declared by connector '${connectorKey}'` }, 400);
+    }
+    const canSync = operations.includes('sync');
     // Idempotent on (connection_id, feed_key, config->>'folder_id'): two
     // concurrent reconciles must not produce duplicate feeds for the same
     // folder. We probe with a SELECT first, then INSERT; race window is
@@ -152,7 +170,7 @@ export async function createMyDeviceFeed(c: Context<{ Bindings: Env }>) {
       ) VALUES (
         ${device!.organization_id}, ${connection.id}, ${feedKey}, ${displayName}, 'active',
         ${body.config ? sql.json(body.config) : null},
-        NOW()
+        ${canSync ? new Date() : null}
       )
       RETURNING id, feed_key, display_name, status, config, created_at
     `) as unknown as Array<Record<string, unknown>>;

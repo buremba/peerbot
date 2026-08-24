@@ -7,10 +7,10 @@ export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
     name: "QuickBooks transactions",
     version: "1.0.0",
     authSchema: { methods: [{ type: "oauth" as const, provider: "intuit", requiredScopes: ["com.intuit.quickbooks.accounting"] }] },
-    feeds: { transactions: { key: "transactions", name: "Posted transactions" } },
+    feeds: { transactions: { key: "transactions", name: "Posted transactions", sync: (ctx: SyncContext) => this.syncFeed(ctx) } },
   };
 
-  async sync(ctx: SyncContext) {
+  private async syncFeed(ctx: SyncContext) {
     const since = (ctx.checkpoint as any)?.last_txn_date ?? "1970-01-01";
     const q = `SELECT * FROM Transaction WHERE TxnDate > '${since}' ORDERBY TxnDate ASC MAXRESULTS 500`;
     const r = await fetch(`https://quickbooks.api.intuit.com/v3/company/${ctx.config.realm_id}/query?query=${encodeURIComponent(q)}`);

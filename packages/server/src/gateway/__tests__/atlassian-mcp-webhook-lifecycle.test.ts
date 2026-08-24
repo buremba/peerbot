@@ -82,7 +82,7 @@ async function seedConfiguredConnection(options?: {
 		) VALUES (
 			${ORG}, 'mcp.mcp-atlassian-com', 'Atlassian', '1.0.0', 'active',
 			${sql.json({ upstream_url: "https://mcp.atlassian.com/v1/mcp" })},
-			${sql.json({ issues: { key: "issues", virtual: true } })}
+			${sql.json({ issues: { key: "issues", operations: ["read"] } })}
 		)
 	`;
 	const accountId = "jira-webhook-account";

@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  MAC_DEVICE_DAEMON_PROTOCOL,
   createMacDeviceDaemonShutdown,
   macDeviceDaemonMetadata,
   selectMacDeviceDaemonAgentKind,
   validateMacDeviceDaemonOptions,
 } from '../daemon/mac-device-daemon';
 import { executeAutomationRun } from '../daemon/automation';
+import { NATIVE_BRIDGE_PROTOCOL } from '../daemon/native-bridge/protocol';
 import {
   createWorkerPollLoopShutdownHandler,
   shouldHandleWorkerPollLoopStdinEof,
@@ -18,7 +18,7 @@ describe('Mac device daemon options', () => {
     expect(macDeviceDaemonMetadata('15.8.0')).toMatchObject({
       name: 'lobu-device-daemon',
       version: '15.8.0',
-      protocol: MAC_DEVICE_DAEMON_PROTOCOL,
+      protocol: NATIVE_BRIDGE_PROTOCOL,
       platform: 'macos',
       artifact: 'standalone-bun-macho-arm64',
     });
@@ -197,6 +197,29 @@ describe('WorkerPollLoop', () => {
     expect(polls).toBe(1);
     loop.stop();
     await started;
+  });
+
+  test('can cap an idle server delay for short-deadline device reads', async () => {
+    let polls = 0;
+    let loop: WorkerPollLoop;
+    const client = {
+      healthCheck: async () => true,
+      poll: async () => {
+        polls++;
+        if (polls === 2) loop.stop();
+        return { next_poll_seconds: 10 } as never;
+      },
+    } as never;
+    loop = new WorkerPollLoop({
+      client,
+      pollIntervalMs: 10_000,
+      maxIdleDelayMs: 1,
+      execute: async () => undefined,
+    });
+
+    await loop.start();
+
+    expect(polls).toBe(2);
   });
 
   test('stops polling and waits for the active job during shutdown', async () => {

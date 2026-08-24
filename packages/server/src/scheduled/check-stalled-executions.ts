@@ -56,9 +56,9 @@ import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { reconcileAutomationRuns, sweepStaleAutomationRuns } from '../automations/automation';
 import {
-  DEVICE_VIRTUAL_FEED_ACTION_KEY,
-  DEVICE_VIRTUAL_FEED_SCRUB_GRACE_SECONDS,
-} from '../lib/device-virtual-feed-protocol';
+  DEVICE_FEED_READ_ACTION_KEY,
+  DEVICE_FEED_READ_SCRUB_GRACE_SECONDS,
+} from '../lib/device-feed-read-protocol';
 import { buildStaleRunWhereSql } from './stale-run-sweeper';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
@@ -67,7 +67,7 @@ import { buildStaleRunWhereSql } from './stale-run-sweeper';
 const REAPER_ADVISORY_LOCK_KEY = 0x726e7372; // 'rnsr' — runs-reaper
 
 /** Statuses a live-read run can still be claimed or completed from. */
-const VIRTUAL_FEED_IN_FLIGHT_STATUSES = "('pending', 'claimed', 'running')";
+const FEED_READ_IN_FLIGHT_STATUSES = "('pending', 'claimed', 'running')";
 
 /**
  * The only in-flight status this sweep may terminalize on an expired horizon.
@@ -85,20 +85,20 @@ const VIRTUAL_FEED_IN_FLIGHT_STATUSES = "('pending', 'claimed', 'running')";
  * Once IT terminalizes them, the terminal-grace lane here clears their payload
  * on a later tick, so nothing is left holding rows either way.
  */
-const VIRTUAL_FEED_EXPIRABLE_STATUS = "'pending'";
+const FEED_READ_EXPIRABLE_STATUS = "'pending'";
 
-const VIRTUAL_FEED_ORPHAN_MESSAGE =
-  'Live virtual-feed read expired without a device answer (swept by the run reaper).';
+const FEED_READ_ORPHAN_MESSAGE =
+  'Device feed read expired without an answer (swept by the run reaper).';
 
 /**
- * Scrub abandoned device virtual-feed read runs, set-wise.
+ * Scrub abandoned device source-read runs, set-wise.
  *
  * A live read carries the caller's recall terms in `action_input` and a page of
  * the device's rows in `action_output` — the transport that lets a result cross
- * from a laptop to whichever replica is waiting. `readDeviceVirtualFeed` clears
+ * from a laptop to whichever replica is waiting. `readDeviceFeed` clears
  * both in a `finally`, which covers every path the gateway process survives. It
  * covers none of the paths where it does not: an OOM kill, a pod eviction, a
- * rolling deploy mid-read. The promise that a virtual feed keeps no copy cannot
+ * rolling deploy mid-read. The promise that a source read keeps no copy cannot
  * rest on a process staying alive, so the same guarantee is re-asserted from
  * the reaper, which any replica runs.
  *
@@ -108,7 +108,7 @@ const VIRTUAL_FEED_ORPHAN_MESSAGE =
  *   - UNCLAIMED (`pending`) rows whose claim horizon (`expires_at`) has lapsed
  *     are timed out AND scrubbed, so a device that wakes up late cannot claim
  *     one and post a fresh page of messages into a row nobody is waiting on.
- *     Only `pending` — see {@link VIRTUAL_FEED_EXPIRABLE_STATUS}; a claimed run
+ *     Only `pending` — see {@link FEED_READ_EXPIRABLE_STATUS}; a claimed run
  *     is a device mid-query and is the heartbeat reaper's to judge.
  *
  * The grace is what keeps this from racing a HEALTHY waiter: a run marked
@@ -120,7 +120,7 @@ const VIRTUAL_FEED_ORPHAN_MESSAGE =
  * carries the `scrubbed` marker), so repeat ticks are no-ops. Fenced to the
  * reserved action key, so no real operation's input or output is ever touched.
  */
-export async function sweepAbandonedVirtualFeedReadRuns(
+export async function sweepAbandonedDeviceFeedReadRuns(
   sql: Pick<DbClient, 'unsafe'>
 ): Promise<number> {
   const result = await sql.unsafe(
@@ -132,13 +132,13 @@ export async function sweepAbandonedVirtualFeedReadRuns(
            'scrubbed', true,
            'feed_key', action_input->>'feed_key'
          ),
-         status = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+         status = CASE WHEN status IN ${FEED_READ_IN_FLIGHT_STATUSES}
                     THEN 'timeout' ELSE status END,
-         outcome = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+         outcome = CASE WHEN status IN ${FEED_READ_IN_FLIGHT_STATUSES}
                      THEN $2 ELSE outcome END,
-         completed_at = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+         completed_at = CASE WHEN status IN ${FEED_READ_IN_FLIGHT_STATUSES}
                           THEN current_timestamp ELSE completed_at END,
-         error_message = CASE WHEN status IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+         error_message = CASE WHEN status IN ${FEED_READ_IN_FLIGHT_STATUSES}
                            THEN $3 ELSE error_message END
      WHERE run_type = 'action'
        AND action_key = $1
@@ -148,18 +148,18 @@ export async function sweepAbandonedVirtualFeedReadRuns(
          OR (action_input IS NOT NULL AND NOT jsonb_exists(action_input, 'scrubbed'))
        )
        AND (
-         (status NOT IN ${VIRTUAL_FEED_IN_FLIGHT_STATUSES}
+         (status NOT IN ${FEED_READ_IN_FLIGHT_STATUSES}
           AND COALESCE(completed_at, created_at)
               <= current_timestamp - ($4::int * interval '1 second'))
-         OR (status = ${VIRTUAL_FEED_EXPIRABLE_STATUS}
+         OR (status = ${FEED_READ_EXPIRABLE_STATUS}
              AND expires_at IS NOT NULL
              AND expires_at <= current_timestamp)
        )`,
     [
-      DEVICE_VIRTUAL_FEED_ACTION_KEY,
+      DEVICE_FEED_READ_ACTION_KEY,
       classifyRunOutcome({ status: 'timeout' }),
-      VIRTUAL_FEED_ORPHAN_MESSAGE,
-      DEVICE_VIRTUAL_FEED_SCRUB_GRACE_SECONDS,
+      FEED_READ_ORPHAN_MESSAGE,
+      DEVICE_FEED_READ_SCRUB_GRACE_SECONDS,
     ]
   );
   return Number(result.count ?? 0);
@@ -238,21 +238,21 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
 
     try {
       // First, and independently of the staleness predicate below: a crashed
-      // gateway leaves live virtual-feed reads holding user rows. This is a
+      // gateway leaves device source reads holding user rows. This is a
       // retention guarantee, not a queue-health one, so it runs even when
       // nothing else is stale.
       try {
-        const scrubbed = await sweepAbandonedVirtualFeedReadRuns(reserved);
+        const scrubbed = await sweepAbandonedDeviceFeedReadRuns(reserved);
         if (scrubbed > 0) {
           logger.warn(
             { scrubbed },
-            '[reaper] Scrubbed abandoned device virtual-feed read runs'
+            '[reaper] Scrubbed abandoned device feed-read runs'
           );
         }
       } catch (err) {
         logger.error(
           { error: String(err) },
-          '[reaper] Failed to scrub abandoned device virtual-feed read runs'
+          '[reaper] Failed to scrub abandoned device feed-read runs'
         );
       }
 

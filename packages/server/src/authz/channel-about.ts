@@ -8,11 +8,7 @@
  */
 
 import { ACL_RESOURCE_TYPE_SLUG } from "@lobu/connector-sdk";
-import {
-	type DbClient,
-	getDb,
-	pgBigintArray,
-} from "../db/client.js";
+import { type DbClient, getDb } from "../db/client.js";
 import { upsertEdges } from "../utils/edge-writes.js";
 import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
@@ -168,35 +164,6 @@ export async function ensureChannelResourceEntity(opts: {
 	return ids?.[0] ?? null;
 }
 
-async function findChannelResourceEntityId(opts: {
-	organizationId: string;
-	connectorKey: string;
-	teamId: string | null | undefined;
-	channelId: string;
-	sql: DbClient;
-}): Promise<number | null> {
-	if (opts.connectorKey === "slack" && !opts.teamId) return null;
-	const { namespace, key } = channelResourceIdentity(
-		opts.connectorKey,
-		opts.teamId,
-		opts.channelId,
-	);
-	const rows = await opts.sql<{ id: number }>`
-    SELECT e.id
-    FROM entity_identities ei
-    JOIN entities e
-      ON e.id = ei.entity_id
-     AND e.organization_id = ei.organization_id
-     AND e.deleted_at IS NULL
-    WHERE ei.organization_id = ${opts.organizationId}
-      AND ei.namespace = ${namespace}
-      AND ei.identifier = ${key}
-      AND ei.deleted_at IS NULL
-    LIMIT 1
-  `;
-	return rows[0] ? Number(rows[0].id) : null;
-}
-
 /**
  * Take ownership of one channel's `about` edges: create what is missing and
  * re-stamp metadata/source on what already exists.
@@ -306,54 +273,6 @@ export async function setManualChannelAboutEdges(opts: {
 	});
 }
 
-export interface ChannelAboutEntity {
-	id: number;
-	name: string;
-	slug: string | null;
-}
-
-/** Business entities linked to a channel via `about` (any source). */
-export async function listChannelAboutEntities(opts: {
-	organizationId: string;
-	connectionId: string | number;
-	connectorKey: string;
-	teamId: string | null | undefined;
-	channelId: string;
-	sql?: DbClient;
-}): Promise<ChannelAboutEntity[]> {
-	const sql = opts.sql ?? getDb();
-	const bareChannelId = opts.channelId.includes(":")
-		? opts.channelId.slice(opts.channelId.indexOf(":") + 1)
-		: opts.channelId;
-	const channelEntityId = await findChannelResourceEntityId({
-		organizationId: opts.organizationId,
-		connectorKey: opts.connectorKey,
-		teamId: opts.teamId,
-		channelId: bareChannelId,
-		sql,
-	});
-	if (channelEntityId === null) return [];
-	const ids = await listChannelAboutEntityIds({
-		organizationId: opts.organizationId,
-		channelEntityId,
-		sql,
-	});
-	if (ids.length === 0) return [];
-	const rows = await sql<{ id: number; name: string; slug: string | null }>`
-    SELECT id, name, slug
-    FROM entities
-    WHERE organization_id = ${opts.organizationId}
-      AND id = ANY(${pgBigintArray(ids)}::bigint[])
-      AND deleted_at IS NULL
-    ORDER BY name NULLS LAST, id
-  `;
-	return rows.map((r) => ({
-		id: Number(r.id),
-		name: r.name,
-		slug: r.slug,
-	}));
-}
-
 /** Business entity ids linked to a channel via `about` (any source). */
 export async function listChannelAboutEntityIds(opts: {
 	organizationId: string;
@@ -421,7 +340,7 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 	}));
 }
 
-/** Channel key stored on `about` edge metadata for a streaming feed row.
+/** Channel key stored on `about` edge metadata for a channel feed row.
  *
  * The team half is the channel's CONCRETE workspace, taken from the streaming
  * feed's Automation subscription team — the SAME real team the
@@ -431,7 +350,7 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
  * supports connectors whose tenant identity is their workspace. A not-yet-healed
  * Grid subscription has no matching about edge until its concrete team is known.
  * The subscription channel id equals feed_key, so the correlation is exact. */
-export function streamingFeedChannelKeyExpr(
+export function channelFeedChannelKeyExpr(
 	feedAlias = "f",
 	connectionAlias = "c",
 ): string {
@@ -470,7 +389,7 @@ export function feedLinkedToBusinessEntitySql(
 	const org = orgIdExpr ?? `${feedAlias}.organization_id`;
 	const tagMatch = `${entityIdExpr} = ANY(${feedAlias}.entity_ids)`;
 	const aboutMatch = `(
-    ${feedAlias}.kind = 'streaming'
+    ${feedAlias}.config ->> 'store' = 'channel_messages'
     AND EXISTS (
       SELECT 1
       FROM entity_relationships r
@@ -483,7 +402,7 @@ export function feedLinkedToBusinessEntitySql(
         AND r.to_entity_id = ${entityIdExpr}
         AND r.deleted_at IS NULL
         AND r.metadata->>'connection_id' = ${feedAlias}.connection_id::text
-        AND r.metadata->>'channel_key' = ${streamingFeedChannelKeyExpr(feedAlias, connectionAlias)}
+        AND r.metadata->>'channel_key' = ${channelFeedChannelKeyExpr(feedAlias, connectionAlias)}
     )
   )`;
 	return `(${tagMatch} OR ${aboutMatch})`;
@@ -570,10 +489,10 @@ export function feedLinkedEntityIdsSql(
      AND rt.organization_id = r.organization_id
      AND rt.slug = '${ABOUT_RELATIONSHIP_SLUG}'
      AND rt.status = 'active'
-    WHERE ${feedAlias}.kind = 'streaming'
+    WHERE ${feedAlias}.config ->> 'store' = 'channel_messages'
       AND r.organization_id = ${feedAlias}.organization_id
       AND r.deleted_at IS NULL
       AND r.metadata->>'connection_id' = ${feedAlias}.connection_id::text
-      AND r.metadata->>'channel_key' = ${streamingFeedChannelKeyExpr(feedAlias, connectionAlias)}
+      AND r.metadata->>'channel_key' = ${channelFeedChannelKeyExpr(feedAlias, connectionAlias)}
   )`;
 }

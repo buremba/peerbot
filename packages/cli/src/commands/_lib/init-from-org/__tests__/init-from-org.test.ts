@@ -269,7 +269,6 @@ function fullOrgRoutes(): Record<
                 status: "active",
                 schedule: null,
                 config: { query: "SELECT 1" },
-                virtual: true,
               },
             ]
           : [],
@@ -468,17 +467,15 @@ describe("lobu init --from-org", () => {
     expect(conn?.authProfileSlug).toBe("github-account");
     expect(conn?.appAuthProfileSlug).toBe("github-app");
     expect(conn?.config).toEqual({ repo_owner: "lobu-ai", repo_name: "lobu" });
-    // Feeds are emitted sorted by feed_key (query < stargazers). The virtual
-    // feed must round-trip `virtual: true` — otherwise the generated config
-    // declares it collected and the first `lobu apply` fails the
-    // virtual/collected immutability check.
+    // Feeds are emitted sorted by feed_key (query < stargazers). Capabilities
+    // belong to connector definitions, so connection config only carries the
+    // feed instance settings.
     expect(conn?.feeds).toEqual([
       {
         feedKey: "query",
         name: "Churn rollup (live)",
         schedule: null,
         config: { query: "SELECT 1" },
-        virtual: true,
       },
       {
         feedKey: "stargazers",

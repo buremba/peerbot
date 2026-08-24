@@ -1,6 +1,6 @@
 import path from "node:path";
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventAttributionRule,
   type EventEnvelope,
@@ -210,13 +210,16 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
   TwitterTakeoutCheckpoint,
   LocalTakeoutConfig
 > {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition<
+    TwitterTakeoutCheckpoint,
+    LocalTakeoutConfig
+  > = {
     key: "twitter.takeout",
     name: "X/Twitter Takeout",
     version: "1.0.0",
     description: "Ingests local X/Twitter archive exports.",
     authSchema: { methods: [{ type: "none" }] },
-    // sync() reads an absolute path on the user's own machine. Per the SDK
+    // Feed sync reads an absolute path on the user's own machine. Per the SDK
     // contract, omitting `runtime` means "runs on the cloud worker fleet" and
     // omitting `requiredCapability` means "any worker" — so declaring neither
     // is what let `worker-api/poll.ts` hand these runs to a Kubernetes pod with
@@ -232,6 +235,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
     runtime: { platforms: ["macos"] },
     feeds: {
       tweets: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "tweets",
         name: "Tweets and Replies",
         configSchema: localTakeoutSchema(
@@ -245,6 +249,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         },
       },
       messages: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "messages",
         name: "Direct Messages",
         configSchema: localTakeoutSchema(
@@ -258,6 +263,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         },
       },
       likes: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "likes",
         name: "Likes",
         configSchema: localTakeoutSchema(
@@ -265,6 +271,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         ),
       },
       followers: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "followers",
         name: "Followers",
         configSchema: localTakeoutSchema(
@@ -278,6 +285,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         },
       },
       following: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "following",
         name: "Following",
         configSchema: localTakeoutSchema(
@@ -293,7 +301,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
     },
   };
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<TwitterTakeoutCheckpoint, LocalTakeoutConfig>
   ): Promise<SyncResult<TwitterTakeoutCheckpoint>> {
     const takeoutDir = assertDirectory(ctx.config, "X/Twitter");

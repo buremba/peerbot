@@ -1,20 +1,20 @@
 /**
- * Device-backed virtual-feed live read — end to end.
+ * Device-backed source read — end to end.
  *
  * `whatsapp.local` is a metadata-only device manifest: there is no compiled
- * connector on the server, so the `query()`/`search()` pushdown that serves
- * every other virtual feed cannot serve this one. The read is dispatched to the
+ * connector on the server, so the compiled feed-read path cannot serve it.
+ * The read is dispatched to the
  * paired Mac over the existing device action queue and awaited there.
  *
  * What each case pins:
  *
  *   (a) ROUTING — a `runtime`-bearing connector takes the device path, and the
- *       reserved `__lobu_virtual_feed_read` run is claimed by the pinned device
- *       through the ordinary `/api/workers/poll`, carrying the caller's terms
+ *       reserved `__lobu_feed_read` run is claimed by the pinned device
+ *       through the ordinary `/api/workers/poll`, carrying the caller's query
  *       and window. Rows come back through `/api/workers/complete-action`.
- *   (b) NO RETENTION — a live read writes no events and no checkpoint, and the
+ *   (b) NO RETENTION — a source read writes no events and no checkpoint, and the
  *       run row that carried the rows is scrubbed of BOTH the device's output
- *       and the caller's recall terms. The rows transit Postgres (that is the
+ *       and the caller's query. The rows transit Postgres (that is the
  *       cross-replica transport); they must not stay there.
  *   (c) The scrub survives every exit: device failure, a malformed device
  *       reply, and an exception thrown by the waiter itself.
@@ -24,19 +24,21 @@
 
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import type { AuthzScope } from '../../../authz/scope';
+import { compileConnectorSource } from '../../../utils/connector-compiler';
 
 // The waiter is swapped through a server-internal slot so two cases can make it
 // throw. NOT `vi.mock`: vitest runs this package with `isolate: false` (one
 // shared module graph for the whole Postgres-backed run), and under that
 // setting a module mock only lands if this file is the first to import
 // `connector-pushdown` — these cases passed alone and timed out in a full run.
-const { readVirtualFeed } = await import('../../../lib/connector-pushdown');
-const { readDeviceVirtualFeed, __setDeviceActionWaiterForTest } = await import(
-  '../../../lib/device-virtual-feed'
+const { readSourceFeed } = await import('../../../lib/connector-pushdown');
+const { readDeviceFeed, __setDeviceActionWaiterForTest } = await import(
+  '../../../lib/device-feed-read'
 );
-const { DEVICE_VIRTUAL_FEED_ACTION_KEY } = await import(
-  '../../../lib/device-virtual-feed-protocol'
+const { DEVICE_FEED_READ_ACTION_KEY } = await import(
+  '../../../lib/device-feed-read-protocol'
 );
 const { pollWorkerJob } = await import('../../../worker-api/poll');
 const { cleanupTestDatabase, getTestDb } = await import('../../setup/test-db');
@@ -47,8 +49,8 @@ const { post } = await import('../../setup/test-helpers');
 
 const CONNECTOR_KEY = 'whatsapp.local';
 const CONNECTOR_VERSION = '0.3.0';
-const FEED_KEY = 'messages_live';
-const WORKER_ID = 'wk-wa-virtual';
+const FEED_KEY = 'messages';
+const WORKER_ID = 'wk-wa-source-read';
 
 const DEVICE_ROWS = [
   {
@@ -124,7 +126,7 @@ async function readRunRows(): Promise<
 }
 
 /**
- * Stand in for the Mac app: poll until the reserved live-read run is handed
+ * Stand in for the Mac app: poll until the reserved source-read run is handed
  * over, then answer it. Uses the real worker endpoints, so this also proves
  * poll.ts routes a `run_type='action'` row on a device-pinned connection to the
  * device that owns the pin.
@@ -144,7 +146,7 @@ async function respondAsDevice(
     });
     expect(response.status).toBe(200);
     const job = await response.json();
-    if (job?.run_id && job?.operation_key === DEVICE_VIRTUAL_FEED_ACTION_KEY) {
+    if (job?.run_id && job?.operation_key === DEVICE_FEED_READ_ACTION_KEY) {
       const completion = await post('/api/workers/complete-action', {
         body: { run_id: job.run_id, worker_id: WORKER_ID, ...reply },
       });
@@ -153,10 +155,10 @@ async function respondAsDevice(
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('device never received the virtual-feed read job');
+  throw new Error('device never received the feed-read job');
 }
 
-describe('device-backed virtual feed read', () => {
+describe('device-backed source feed read', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'WA Live' });
@@ -190,7 +192,7 @@ describe('device-backed virtual feed read', () => {
          feeds_schema, auth_schema, created_at, updated_at)
       VALUES (${CONNECTOR_KEY}, 'WhatsApp (this Mac)', ${CONNECTOR_VERSION}, ${orgId}, 'active',
               ${sql.json({ platforms: ['macos'] })}, 'whatsapp_local',
-              ${sql.json({ [FEED_KEY]: { key: FEED_KEY, virtual: true } })},
+              ${sql.json({ [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } })},
               ${sql.json({ methods: [{ type: 'none' }] })}, NOW(), NOW())
     `;
     await sql`
@@ -210,9 +212,9 @@ describe('device-backed virtual feed read', () => {
     const feed = (await sql`
       INSERT INTO feeds
         (organization_id, connection_id, feed_key, display_name, status, config,
-         kind, virtual, next_run_at)
-      VALUES (${orgId}, ${connectionId}, ${FEED_KEY}, 'Messages (live)', 'active',
-              ${sql.json({ recall: true, chat_filter: 'all' })}, 'virtual', true, NULL)
+         next_run_at)
+      VALUES (${orgId}, ${connectionId}, ${FEED_KEY}, 'Messages', 'active',
+              ${sql.json({ recall: true, chat_filter: 'all' })}, NULL)
       RETURNING id
     `) as Array<{ id: number }>;
     feedId = feed[0].id;
@@ -230,10 +232,10 @@ describe('device-backed virtual feed read', () => {
   });
 
   it('dispatches to the paired device, returns live rows, and retains nothing', async () => {
-    const reading = readVirtualFeed({
+    const reading = readSourceFeed({
       scope: scope(),
       feedId,
-      terms: ['invoice'],
+      query: 'invoice',
       limit: 25,
       offset: 5,
     });
@@ -246,7 +248,7 @@ describe('device-backed virtual feed read', () => {
     expect(job.connector_key).toBe(CONNECTOR_KEY);
     expect(job.action_input).toMatchObject({
       feed_key: FEED_KEY,
-      terms: ['invoice'],
+      query: 'invoice',
       limit: 25,
       offset: 5,
     });
@@ -260,20 +262,71 @@ describe('device-backed virtual feed read', () => {
     expect(live.columns).toEqual(DEVICE_COLUMNS);
 
     // (b) Nothing persisted: no events, no checkpoint, no due time — and the
-    // transport row no longer holds the messages or the search terms.
+    // transport row no longer holds the messages or the query.
     expect(await countPersistence()).toEqual({ events: 0, checkpointed: 0 });
     const runs = await readRunRows();
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe('completed');
-    expect(runs[0].action_key).toBe(DEVICE_VIRTUAL_FEED_ACTION_KEY);
+    expect(runs[0].action_key).toBe(DEVICE_FEED_READ_ACTION_KEY);
     expect(runs[0].action_output).toBeNull();
     expect(runs[0].action_input).toEqual({ scrubbed: true, feed_key: FEED_KEY });
     expect(JSON.stringify(runs[0])).not.toContain('invoice 4471');
     expect(JSON.stringify(runs[0])).not.toContain('Dana Ruiz');
   }, 30_000);
 
+  it('executes a pinned historical compiled version when active metadata is device-only', async () => {
+    const historicalVersion = '0.2.0';
+    const sourceCode = `
+      import { defineConnector } from '@lobu/connector-sdk';
+      export default defineConnector({
+        key: '${CONNECTOR_KEY}',
+        name: 'Historical WhatsApp',
+        version: '${historicalVersion}',
+        authSchema: { methods: [{ type: 'none' }] },
+        feeds: {
+          ${FEED_KEY}: {
+            key: '${FEED_KEY}',
+            name: 'Messages',
+            operations: ['read'],
+            read: async () => ({
+              rows: [{ source: 'historical-compiled' }],
+              hasMore: false,
+            }),
+          },
+        },
+      });
+    `;
+    const compiled = await compileConnectorSource(sourceCode);
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO connector_versions (
+        organization_id, connector_key, version, compiled_code,
+        compiled_code_hash, compile_config_hash, source_code, created_at
+      ) VALUES (
+        ${orgId}, ${CONNECTOR_KEY}, ${historicalVersion}, ${compiled.compiledCode},
+        ${compiled.compiledCodeHash}, ${COMPILE_CONFIG_HASH}, ${sourceCode}, NOW()
+      )
+    `;
+    await sql`UPDATE feeds SET pinned_version = ${historicalVersion} WHERE id = ${feedId}`;
+    await setDeviceLastSeen('1 hour');
+
+    try {
+      const result = await readSourceFeed({ scope: scope(), feedId });
+      expect(result.rows).toEqual([{ source: 'historical-compiled' }]);
+      expect(await readRunRows()).toEqual([]);
+    } finally {
+      await sql`UPDATE feeds SET pinned_version = NULL WHERE id = ${feedId}`;
+      await sql`
+        DELETE FROM connector_versions
+        WHERE organization_id = ${orgId}
+          AND connector_key = ${CONNECTOR_KEY}
+          AND version = ${historicalVersion}
+      `;
+    }
+  }, 30_000);
+
   it('surfaces a device-side failure and still scrubs the run', async () => {
-    const reading = readVirtualFeed({ scope: scope(), feedId, terms: ['payslip'] });
+    const reading = readSourceFeed({ scope: scope(), feedId, query: 'payslip' });
     await respondAsDevice({ status: 'failed', error_message: 'Full Disk Access denied' });
 
     await expect(reading).rejects.toThrow(/failed on the paired device: Full Disk Access denied/);
@@ -283,7 +336,7 @@ describe('device-backed virtual feed read', () => {
   }, 30_000);
 
   it('rejects a malformed device reply rather than reporting an empty result', async () => {
-    const reading = readVirtualFeed({ scope: scope(), feedId });
+    const reading = readSourceFeed({ scope: scope(), feedId });
     await respondAsDevice({ status: 'success', action_output: { unexpected: true } });
 
     await expect(reading).rejects.toThrow(/malformed/);
@@ -293,13 +346,13 @@ describe('device-backed virtual feed read', () => {
 
   // The scrub lives in a `finally` that wraps the WAIT, not just its result:
   // a DB error inside the poll loop throws, and without this the run row would
-  // keep the caller's terms (and any rows a device had already posted).
+  // keep the caller's query (and any rows a device had already posted).
   it('scrubs the run even when the waiter itself throws', async () => {
     __setDeviceActionWaiterForTest(async () => {
       throw new Error('connection terminated unexpectedly');
     });
     await expect(
-      readVirtualFeed({ scope: scope(), feedId, terms: ['mortgage'] })
+      readSourceFeed({ scope: scope(), feedId, query: 'mortgage' })
     ).rejects.toThrow(/connection terminated unexpectedly/);
 
     const runs = await readRunRows();
@@ -318,7 +371,7 @@ describe('device-backed virtual feed read', () => {
       throw new Error('connection terminated unexpectedly');
     });
     await expect(
-      readVirtualFeed({ scope: scope(), feedId, terms: ['tenancy deposit'] })
+      readSourceFeed({ scope: scope(), feedId, query: 'tenancy deposit' })
     ).rejects.toThrow(/connection terminated unexpectedly/);
 
     const [abandoned] = await readRunRows();
@@ -373,7 +426,7 @@ describe('device-backed virtual feed read', () => {
 
     // A pin naming a device this org's connection does not hold: the preflight
     // reaches the device through the connection, so it finds nothing.
-    const error = await readDeviceVirtualFeed({
+    const error = await readDeviceFeed({
       organizationId: orgId,
       feedId,
       feedKey: FEED_KEY,
@@ -397,7 +450,7 @@ describe('device-backed virtual feed read', () => {
 
   it('fails fast with a diagnosis when the paired device is offline', async () => {
     await setDeviceLastSeen('30 minutes');
-    await expect(readVirtualFeed({ scope: scope(), feedId })).rejects.toThrow(
+    await expect(readSourceFeed({ scope: scope(), feedId })).rejects.toThrow(
       /is unavailable: device "Test Mac" is offline \(last polled 30m ago\)/
     );
     // No run parked for the 60s queue budget — the server already knew.
@@ -406,7 +459,7 @@ describe('device-backed virtual feed read', () => {
 
   it('fails fast when the device no longer grants the connector capability', async () => {
     await setDeviceCapabilities([]);
-    await expect(readVirtualFeed({ scope: scope(), feedId })).rejects.toThrow(
+    await expect(readSourceFeed({ scope: scope(), feedId })).rejects.toThrow(
       /no longer grants 'whatsapp_local'/
     );
     expect(await readRunRows()).toHaveLength(0);
@@ -414,7 +467,7 @@ describe('device-backed virtual feed read', () => {
 });
 
 /**
- * Which org an UNPINNED device-backed virtual feed may be served in.
+ * Which org an UNPINNED device-backed source feed may be served in.
  *
  * poll.ts branch 1B gates the unpinned claim on `baseOrgScopeIds` — the worker
  * token's bound org plus the owner's personal org. At preflight time no token
@@ -503,11 +556,11 @@ async function pollPersonalDevice(boundOrgId: string): Promise<Record<string, un
   return (await response.json()) as Record<string, unknown> | null;
 }
 
-/** Stand in for the Mac: claim the reserved live-read run and answer it. */
+/** Stand in for the Mac: claim the reserved source-read run and answer it. */
 async function respondAsPersonalDevice(boundOrgId: string): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const job = await pollPersonalDevice(boundOrgId);
-    if (job?.run_id && job?.operation_key === DEVICE_VIRTUAL_FEED_ACTION_KEY) {
+    if (job?.run_id && job?.operation_key === DEVICE_FEED_READ_ACTION_KEY) {
       const completion = await post('/api/workers/complete-action', {
         body: {
           run_id: job.run_id,
@@ -521,7 +574,7 @@ async function respondAsPersonalDevice(boundOrgId: string): Promise<Record<strin
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('device never received the virtual-feed read job');
+  throw new Error('device never received the source-feed read job');
 }
 
 async function countRuns(organizationId: string): Promise<number> {
@@ -533,10 +586,10 @@ async function countRuns(organizationId: string): Promise<number> {
 }
 
 async function readFails(organizationId: string, feedId: number): Promise<Error> {
-  const error = await readVirtualFeed({
+  const error = await readSourceFeed({
     scope: scopeIn(organizationId),
     feedId,
-    terms: ['live'],
+    query: 'live',
     limit: 10,
   }).then(
     () => null,
@@ -546,7 +599,7 @@ async function readFails(organizationId: string, feedId: number): Promise<Error>
   return error;
 }
 
-/** A device-manifest connector + an unpinned virtual feed in `organizationId`. */
+/** A device-manifest connector + an unpinned source feed in `organizationId`. */
 async function seedPersonalLaneConnection(
   organizationId: string,
   slug: string
@@ -558,7 +611,7 @@ async function seedPersonalLaneConnection(
        feeds_schema, auth_schema, created_at, updated_at)
     VALUES (${CONNECTOR_KEY}, 'WhatsApp (this Mac)', ${CONNECTOR_VERSION}, ${organizationId}, 'active',
             ${sql.json({ platforms: ['macos'] })}, ${CAPABILITY},
-            ${sql.json({ [FEED_KEY]: { key: FEED_KEY, virtual: true } })},
+            ${sql.json({ [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } })},
             ${sql.json({ methods: [{ type: 'none' }] })}, NOW(), NOW())
   `;
   const connection = (await sql`
@@ -572,15 +625,15 @@ async function seedPersonalLaneConnection(
   const feed = (await sql`
     INSERT INTO feeds
       (organization_id, connection_id, feed_key, display_name, status, config,
-       kind, virtual, next_run_at)
-    VALUES (${organizationId}, ${connection[0].id}, ${FEED_KEY}, 'Messages (live)', 'active',
-            ${sql.json({ recall: true })}, 'virtual', true, NULL)
+       next_run_at)
+    VALUES (${organizationId}, ${connection[0].id}, ${FEED_KEY}, 'Messages', 'active',
+            ${sql.json({ recall: true })}, NULL)
     RETURNING id
   `) as Array<{ id: number }>;
   return { connectionId: connection[0].id, feedId: feed[0].id };
 }
 
-describe('unpinned device virtual-feed reads are a personal-org lane', () => {
+describe('unpinned device source-feed reads are a personal-org lane', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     const user = await createTestUser({ email: 'wa-personal@test.com' });
@@ -651,16 +704,16 @@ describe('unpinned device virtual-feed reads are a personal-org lane', () => {
     expect(home.organization_id).toBe(staleHomeOrgId);
     expect(home.organization_id).not.toBe(personalOrgId);
 
-    const reading = readVirtualFeed({
+    const reading = readSourceFeed({
       scope: scopeIn(personalOrgId),
       feedId: personalFeedId,
-      terms: ['live'],
+      query: 'live',
       limit: 10,
     });
     const job = await respondAsPersonalDevice(personalOrgId);
 
     expect(job.connector_key).toBe(CONNECTOR_KEY);
-    expect(job.operation_key).toBe(DEVICE_VIRTUAL_FEED_ACTION_KEY);
+    expect(job.operation_key).toBe(DEVICE_FEED_READ_ACTION_KEY);
     const live = await reading;
     expect(live.rows).toEqual(PERSONAL_ROWS);
 
@@ -690,14 +743,14 @@ describe('unpinned device virtual-feed reads are a personal-org lane', () => {
       WHERE id = ${teamConnectionId}
     `;
 
-    const reading = readVirtualFeed({
+    const reading = readSourceFeed({
       scope: scopeIn(teamOrgId),
       feedId: teamFeedId,
-      terms: ['live'],
+      query: 'live',
       limit: 10,
     });
     const job = await respondAsPersonalDevice(teamOrgId);
-    expect(job.operation_key).toBe(DEVICE_VIRTUAL_FEED_ACTION_KEY);
+    expect(job.operation_key).toBe(DEVICE_FEED_READ_ACTION_KEY);
     const live = await reading;
     expect(live.rows).toEqual(PERSONAL_ROWS);
   });
@@ -707,22 +760,13 @@ describe('unpinned device virtual-feed reads are a personal-org lane', () => {
  * Lifecycle of the transport run: DEADLINES and ORPHAN sweeping.
  *
  * The read seam's `finally` scrubs on every path the gateway process survives.
- * Two holes remain, and this block is about both:
- *
- *   (1) AMBIENT recall must not inherit the deliberate-read budget. A live feed
- *       opted into `search_memory` is a side dish — it runs on every call — so
- *       one sleeping laptop must not stall a chat turn for the device queue's
- *       60s pre-claim plus 95s post-claim. The deadline ABORTS rather than only
- *       racing: the waiter stops polling and terminalizes its run, and the
- *       cleanup scrubs it, so nothing is left holding a page of messages.
- *   (2) A gateway that DIES mid-read runs no `finally` at all. The retention
+ * A gateway that DIES mid-read runs no `finally` at all. The retention
  *       promise cannot rest on a process staying alive, so the reaper
  *       re-asserts it set-wise from whichever replica is up.
  */
 const LIFECYCLE_WORKER_ID = 'wk-wa-lifecycle';
 
-const { gatherRecall, RECALL_SOURCES } = await import('../../../tools/search');
-const { sweepAbandonedVirtualFeedReadRuns } = await import(
+const { sweepAbandonedDeviceFeedReadRuns } = await import(
   '../../../scheduled/check-stalled-executions'
 );
 const { manageOperations } = await import('../../../tools/admin/manage_operations');
@@ -738,44 +782,6 @@ let lifecycleUserId: string;
 let lifecycleDeviceId: string;
 let lifecycleConnectionId: number;
 let lifecycleFeedId: number;
-
-const virtualRecallSource = () => {
-  const source = RECALL_SOURCES.find((s) => s.kind === 'virtual');
-  if (!source) throw new Error('the virtual recall source is no longer registered');
-  return source;
-};
-
-/**
- * A second recall source that always succeeds fast. Its facet is how we tell
- * "the virtual feed was skipped" from "recall itself fell over" — the point of
- * a per-source deadline is that the other readers still answer.
- */
-const fastStubSource = {
-  kind: 'conversation' as const,
-  source: 'chat-channel' as never,
-  lens: 'recall' as const,
-  canRead: () => true,
-  read: async () => ({
-    conversation_messages: [
-      {
-        id: 1,
-        channel: 'stub',
-        text: 'other recall sources still answered',
-        author: null,
-        occurred_at: null,
-      },
-    ],
-  }),
-} as unknown as (typeof RECALL_SOURCES)[number];
-
-function lifecycleRecallContext(): Parameters<typeof gatherRecall>[1] {
-  return {
-    query: 'invoice',
-    contentAgentId: undefined,
-    contentLimit: 5,
-    env: {} as never,
-  };
-}
 
 async function lifecycleRuns(): Promise<
   Array<{
@@ -803,7 +809,7 @@ async function lifecycleRuns(): Promise<
   }>;
 }
 
-/** Insert a live-read run in an arbitrary state, bypassing the read seam. */
+/** Insert a source-read run in an arbitrary state, bypassing the read seam. */
 async function seedReservedRun(opts: {
   status: string;
   actionKey?: string;
@@ -821,8 +827,8 @@ async function seedReservedRun(opts: {
     ) VALUES (
       ${lifecycleOrgId}, 'action', ${lifecycleConnectionId}, ${CONNECTOR_KEY},
       ${CONNECTOR_VERSION},
-      ${opts.actionKey ?? DEVICE_VIRTUAL_FEED_ACTION_KEY},
-      ${sql.json({ feed_key: FEED_KEY, terms: ['tenancy deposit'], chat_jids: ['15551230000@s.whatsapp.net'] })},
+      ${opts.actionKey ?? DEVICE_FEED_READ_ACTION_KEY},
+      ${sql.json({ feed_key: FEED_KEY, query: 'tenancy deposit', chat_jids: ['15551230000@s.whatsapp.net'] })},
       ${sql.json({ rows: DEVICE_ROWS })},
       'auto', ${opts.status},
       ${opts.completedAtSecondsAgo == null
@@ -844,30 +850,6 @@ async function seedReservedRun(opts: {
   return row.id;
 }
 
-/**
- * Wait for the transport run to reach its terminal, scrubbed state.
- *
- * The recall deadline returns control to the CALLER first and lets the aborted
- * read finish tearing itself down behind it — that ordering is the point (the
- * caller is not made to wait on cleanup), so the assertion has to follow the
- * cleanup rather than assume it already ran. Bounded: if it never converges the
- * test fails on the assertions after this returns.
- */
-async function awaitScrubbedRun(timeoutMs = 5_000): Promise<
-  Array<{ id: number; status: string; action_input: unknown; action_output: unknown }>
-> {
-  const deadline = Date.now() + timeoutMs;
-  let runs = await lifecycleRuns();
-  while (Date.now() < deadline) {
-    if (runs.length > 0 && runs.every((r) => r.status === 'timeout' && r.action_output === null)) {
-      return runs;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    runs = await lifecycleRuns();
-  }
-  return runs;
-}
-
 async function readRunById(runId: number): Promise<{
   status: string;
   action_input: unknown;
@@ -886,7 +868,7 @@ async function readRunById(runId: number): Promise<{
   return row;
 }
 
-describe('device virtual-feed read lifecycle — deadlines and orphan sweeping', () => {
+describe('device source-feed read lifecycle — deadlines and orphan sweeping', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     await initWorkspaceProvider();
@@ -918,7 +900,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
          feeds_schema, auth_schema, created_at, updated_at)
       VALUES (${CONNECTOR_KEY}, 'WhatsApp (this Mac)', ${CONNECTOR_VERSION}, ${lifecycleOrgId},
               'active', ${sql.json({ platforms: ['macos'] })}, ${CAPABILITY},
-              ${sql.json({ [FEED_KEY]: { key: FEED_KEY, virtual: true } })},
+              ${sql.json({ [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } })},
               ${sql.json({ methods: [{ type: 'none' }] })}, NOW(), NOW())
     `;
     await sql`
@@ -938,9 +920,9 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
     const feed = (await sql`
       INSERT INTO feeds
         (organization_id, connection_id, feed_key, display_name, status, config,
-         kind, virtual, next_run_at)
-      VALUES (${lifecycleOrgId}, ${lifecycleConnectionId}, ${FEED_KEY}, 'Messages (live)', 'active',
-              ${sql.json({ recall: true })}, 'virtual', true, NULL)
+         next_run_at)
+      VALUES (${lifecycleOrgId}, ${lifecycleConnectionId}, ${FEED_KEY}, 'Messages', 'active',
+              ${sql.json({ recall: true })}, NULL)
       RETURNING id
     `) as Array<{ id: number }>;
     lifecycleFeedId = feed[0].id;
@@ -964,14 +946,14 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
 
   // The abort has to reach the WAITER, not just the caller. A `Promise.race`
   // alone would return control while the run stayed pending for the full 60s
-  // queue budget, holding the caller's terms and claimable by a device that
+  // queue budget, holding the caller's query and claimable by a device that
   // would then post a page of messages into it.
   it('an aborted read stops waiting, terminalizes the run, and scrubs it', async () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 400);
 
     const startedAt = Date.now();
-    const error = await readDeviceVirtualFeed({
+    const error = await readDeviceFeed({
       organizationId: lifecycleOrgId,
       feedId: lifecycleFeedId,
       feedKey: FEED_KEY,
@@ -980,7 +962,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
       connectorKey: CONNECTOR_KEY,
       deviceWorkerId: lifecycleDeviceId,
       requiredCapability: CAPABILITY,
-      terms: ['tenancy deposit'],
+      query: 'tenancy deposit',
       signal: controller.signal,
     }).then(
       () => null,
@@ -1007,12 +989,12 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
   // The preflight is two DB round-trips. An ambient read on a few seconds'
   // budget can spend it in there, and enqueueing afterwards would create a
   // transport run whose only future is cancellation — a row briefly holding the
-  // caller's terms for a read nobody is waiting on.
+  // caller's query for a read nobody is waiting on.
   it('creates no transport run when the deadline expires during the preflight', async () => {
     const controller = new AbortController();
     controller.abort();
 
-    const error = await readDeviceVirtualFeed({
+    const error = await readDeviceFeed({
       organizationId: lifecycleOrgId,
       feedId: lifecycleFeedId,
       feedKey: FEED_KEY,
@@ -1021,7 +1003,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
       connectorKey: CONNECTOR_KEY,
       deviceWorkerId: lifecycleDeviceId,
       requiredCapability: CAPABILITY,
-      terms: ['tenancy deposit'],
+      query: 'tenancy deposit',
       signal: controller.signal,
     }).then(
       () => null,
@@ -1034,60 +1016,12 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
     expect(await lifecycleRuns()).toHaveLength(0);
   });
 
-  it('bounds ambient recall to the per-feed budget while other sources still answer', async () => {
-    const startedAt = Date.now();
-    const recalled = await gatherRecall(
-      { organizationId: lifecycleOrgId, principal: lifecycleUserId },
-      lifecycleRecallContext(),
-      [virtualRecallSource(), fastStubSource]
-    );
-    const elapsedMs = Date.now() - startedAt;
-
-    // The budget bounded it. Without the deadline this is the device queue's
-    // 60s pre-claim wait, on every single search_memory call.
-    expect(elapsedMs).toBeLessThan(20_000);
-    // The live feed contributed nothing — correctly, no device answered.
-    expect(recalled.virtual_feeds).toBeUndefined();
-    // …and the other reader was untouched by it.
-    expect(recalled.conversation_messages).toHaveLength(1);
-
-    // The abandoned transport run was closed and emptied, not left in flight.
-    const runs = await awaitScrubbedRun();
-    expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe('timeout');
-    expect(runs[0].action_output).toBeNull();
-    expect(runs[0].action_input).toEqual({ scrubbed: true, feed_key: FEED_KEY });
-  }, 40_000);
-
-  it('still returns live rows when the device answers inside the budget', async () => {
-    // A device that answers immediately: the deadline exists to bound the slow
-    // case, and must not cost the fast one.
-    __setDeviceActionWaiterForTest(async () => ({
-      status: 'completed' as const,
-      output: { rows: DEVICE_ROWS, columns: DEVICE_COLUMNS },
-    }));
-
-    const recalled = await gatherRecall(
-      { organizationId: lifecycleOrgId, principal: lifecycleUserId },
-      lifecycleRecallContext(),
-      [virtualRecallSource(), fastStubSource]
-    );
-
-    expect(recalled.virtual_feeds).toHaveLength(1);
-    expect(recalled.virtual_feeds?.[0]).toMatchObject({
-      feed_id: lifecycleFeedId,
-      feed_key: FEED_KEY,
-      rows: DEVICE_ROWS,
-    });
-    expect(recalled.conversation_messages).toHaveLength(1);
-  }, 30_000);
-
   // Everything below is the CRASH path: rows the in-process `finally` never got
   // to, because the process that owned it is gone.
-  it('scrubs a completed live-read run the crashed gateway never cleaned up', async () => {
+  it('scrubs a completed source-read run the crashed gateway never cleaned up', async () => {
     const runId = await seedReservedRun({ status: 'completed', completedAtSecondsAgo: 120 });
 
-    expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(1);
+    expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(1);
 
     const after = await readRunById(runId);
     // The verdict is not the sweep's to rewrite — only the payload is.
@@ -1099,13 +1033,13 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
     expect(JSON.stringify(after)).not.toContain('invoice 4471');
 
     // Idempotent: a second tick has nothing left to do.
-    expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(0);
+    expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(0);
   });
 
-  it('times out AND scrubs an in-flight live-read run whose claim horizon lapsed', async () => {
+  it('times out AND scrubs an in-flight source-read run whose claim horizon lapsed', async () => {
     const runId = await seedReservedRun({ status: 'pending', expiresAtSecondsFromNow: -30 });
 
-    expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(1);
+    expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(1);
 
     const after = await readRunById(runId);
     // Terminal, so a device that wakes up late cannot claim it and post a fresh
@@ -1114,7 +1048,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
     expect(after.action_output).toBeNull();
     expect(after.action_input).toEqual({ scrubbed: true, feed_key: FEED_KEY });
     expect(after.error_message).toMatch(/swept by the run reaper/);
-    expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(0);
+    expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(0);
   });
 
   // `expires_at` on a device action is the UNCLAIMED claim horizon, not an
@@ -1132,7 +1066,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
         heartbeatSecondsAgo: 1,
       });
 
-      expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(0);
+      expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(0);
 
       const after = await readRunById(runId);
       expect(after.status).toBe(status);
@@ -1151,7 +1085,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
   it('leaves a freshly completed run alone until the grace elapses', async () => {
     const runId = await seedReservedRun({ status: 'completed', completedAtSecondsAgo: 1 });
 
-    expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(0);
+    expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(0);
 
     const after = await readRunById(runId);
     expect(after.action_output).not.toBeNull();
@@ -1166,7 +1100,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
       completedAtSecondsAgo: 120,
     });
 
-    expect(await sweepAbandonedVirtualFeedReadRuns(getTestDb())).toBe(1);
+    expect(await sweepAbandonedDeviceFeedReadRuns(getTestDb())).toBe(1);
 
     expect((await readRunById(reservedId)).action_output).toBeNull();
     const unrelated = await readRunById(unrelatedId);
@@ -1186,15 +1120,15 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
       ctx
     )) as { operations?: Array<{ operation_key: string }> };
     expect(
-      (listed.operations ?? []).some((o) => o.operation_key === DEVICE_VIRTUAL_FEED_ACTION_KEY)
+      (listed.operations ?? []).some((o) => o.operation_key === DEVICE_FEED_READ_ACTION_KEY)
     ).toBe(false);
 
     const executed = (await manageOperations(
       {
         action: 'execute',
         connection_id: lifecycleConnectionId,
-        operation_key: DEVICE_VIRTUAL_FEED_ACTION_KEY,
-        input: { feed_key: FEED_KEY, terms: ['invoice'], limit: 5, offset: 0, sort: null },
+        operation_key: DEVICE_FEED_READ_ACTION_KEY,
+        input: { feed_key: FEED_KEY, query: 'invoice', limit: 5, offset: 0, sort: null },
       },
       {} as never,
       ctx
@@ -1206,7 +1140,7 @@ describe('device virtual-feed read lifecycle — deadlines and orphan sweeping',
     // Refused because the key is not in `actions_schema` — the same gate any
     // undeclared operation hits, which is exactly the property being pinned.
     expect(String(executed.error ?? '')).toBe(
-      `Invalid operation_key '${DEVICE_VIRTUAL_FEED_ACTION_KEY}' for this connection.`
+      `Invalid operation_key '${DEVICE_FEED_READ_ACTION_KEY}' for this connection.`
     );
     // And no run was enqueued behind the refusal.
     expect(await lifecycleRuns()).toHaveLength(0);

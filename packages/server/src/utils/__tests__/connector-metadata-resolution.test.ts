@@ -26,10 +26,10 @@ import {
 } from '../connector-compiler';
 
 const CONNECTOR_SOURCE = `
-import { ConnectorRuntime, type ConnectorDefinition } from '@lobu/connector-sdk';
+import { ConnectorRuntime, type RuntimeConnectorDefinition } from '@lobu/connector-sdk';
 
 export default class MetaResolutionProbeConnector extends ConnectorRuntime {
-  definition: ConnectorDefinition = {
+  definition: RuntimeConnectorDefinition = {
     key: 'meta_resolution_probe',
     name: 'Metadata Resolution Probe',
     description: 'Synthetic connector for the #1181 extraction reproducer.',
@@ -39,6 +39,9 @@ export default class MetaResolutionProbeConnector extends ConnectorRuntime {
       invoices: {
         key: 'invoices',
         name: 'Invoices',
+        sync: async () => ({
+          events: [], checkpoint: null, metadata: { items_found: 0, items_skipped: 0 },
+        }),
         eventKinds: {
           invoice: {
             attributions: [
@@ -54,9 +57,6 @@ export default class MetaResolutionProbeConnector extends ConnectorRuntime {
     },
   };
 
-  async sync() {
-    return { events: [], checkpoint: null, metadata: { items_found: 0, items_skipped: 0 } };
-  }
 }
 `;
 
@@ -96,6 +96,7 @@ describe('extractConnectorMetadata in a project dir without node_modules', () =>
       expect(metadata.version).toBe('0.0.1');
       expect(metadata.feeds).toMatchObject({
         invoices: {
+          operations: ['sync'],
           eventKinds: {
             invoice: {
               attributions: [

@@ -499,7 +499,11 @@ export interface FeedDefinition {
   requiredScopes?: string[];
   /** Template for generating feed display names from config values, e.g. "{subreddit} - {content_type}" */
   displayNameTemplate?: string;
-  /** JSON Schema for feed-specific config */
+  /**
+   * JSON Schema for the persisted feed-instance config. It governs the feed
+   * itself, so top-level `required` fields are enforced for read-only,
+   * sync-only, and hybrid feeds alike.
+   */
   configSchema?: Record<string, unknown>;
   /**
    * When true, auto-wire (device-reconcile + bundled-connector install) skips
@@ -510,16 +514,11 @@ export interface FeedDefinition {
    */
   userManaged?: boolean;
   /**
-   * When true, this feed is a VIRTUAL feed: it is read LIVE against the source
-   * via {@link ConnectorRuntime.query} (or {@link ConnectorRuntime.search} for
-   * keyword recall) at read time and NEVER synced — no events are persisted, no
-   * checkpoint is kept, and the feed scheduler never selects it for `sync()`.
-   * A user-configured virtual feed is a `feeds` row with `virtual = true` whose
-   * sync-lifecycle columns (schedule / next_run_at / checkpoint) stay NULL.
-   * The live query lives in the feed's stored `config` (for the postgres
-   * connector, `config.query` — the same read-only SELECT shape sync uses).
+   * Operations implemented by this feed. Compiled connectors derive this list
+   * from their per-feed handlers; metadata-only device/MCP connectors declare
+   * it because their implementation is remote. Users never select a feed mode.
    */
-  virtual?: boolean;
+  operations?: FeedOperation[];
   /**
    * Routes inbound app-webhook deliveries to this feed. Lives on the feed (not
    * the connector's webhook schema) because feeds_schema is the persisted,
@@ -977,22 +976,76 @@ export interface WebhookRegistration {
 }
 
 // =============================================================================
-// Query (live pushdown — virtual feeds & external-backed derived entities)
+// Feed source reads + connection queries
 // =============================================================================
+
+export type FeedOperation = 'sync' | 'read';
+
+/**
+ * A source read for one configured feed. The connector interprets `query` in
+ * its native vocabulary and pushes pagination/sort into the source. Results are
+ * returned to the caller without being persisted by this contract.
+ */
+export interface FeedReadContext<F = Record<string, unknown>> {
+  feedId?: number;
+  feedKey: string;
+  query?: string;
+  /** Source-native continuation token from the previous page, when supported. */
+  cursor?: string;
+  config: F;
+  credentials: SyncCredentials | null;
+  sessionState?: Record<string, unknown> | null;
+  installation?: ConnectorInstallationContext;
+  limit?: number;
+  offset?: number;
+  sort?: { column: string; order: 'asc' | 'desc' };
+}
+
+export interface FeedReadResult {
+  rows: Record<string, unknown>[];
+  columns?: { name: string; type: string }[];
+  total?: number;
+  /** Source-native continuation token. The platform wraps this before exposing it. */
+  nextCursor?: string;
+  /** Explicit page exhaustion signal for sources without a continuation token. */
+  hasMore?: boolean;
+}
+
+export type FeedSyncHandler<C = Record<string, unknown>, F = Record<string, unknown>> = (
+  ctx: SyncContext<C, F>
+) => Promise<SyncResult<C>>;
+
+export type FeedReadHandler<F = Record<string, unknown>> = (
+  ctx: FeedReadContext<F>
+) => Promise<FeedReadResult>;
+
+/** Executable feed definition held only inside a connector runtime. */
+export interface RuntimeFeedDefinition<
+  C = Record<string, unknown>,
+  F = Record<string, unknown>,
+> extends Omit<FeedDefinition, 'operations'> {
+  sync?: FeedSyncHandler<C, F>;
+  read?: FeedReadHandler<F>;
+}
+
+/** Runtime-only connector definition. Metadata extraction strips handlers. */
+export interface RuntimeConnectorDefinition<
+  C = Record<string, unknown>,
+  F = Record<string, unknown>,
+> extends Omit<ConnectorDefinition, 'feeds'> {
+  feeds?: Record<string, RuntimeFeedDefinition<C, F>>;
+}
 
 /**
  * Context passed to ConnectorRuntime.query(). The connector runs `query` LIVE
- * against its source and returns rows WITHOUT persisting anything (contrast
- * sync(), which emits events). Used for virtual-feed reads and external-backed
- * derived entities — `query` is the feed's configured SQL, or the entity's
- * backing.sql.
+ * against its source and returns rows WITHOUT persisting anything. This is the
+ * connection-level governed query seam used by SQL/warehouse connectors; feed
+ * reads use the per-feed `read` handler instead.
  */
 export interface QueryContext<F = Record<string, unknown>> {
-  /** Present for a virtual-feed read; absent for an ad-hoc / derived-entity query. */
-  feedKey?: string;
   /** The read-only query to run. */
   query: string;
-  /** Feed configuration (typed via F) when feedKey is set; `{}` otherwise. */
+  /** Connection-level query configuration (typed via F). */
   config: F;
   /** OAuth/env credentials (if applicable). */
   credentials: SyncCredentials | null;
@@ -1012,20 +1065,6 @@ export interface QueryResult {
   columns?: { name: string; type: string }[];
   /** Total matching rows (for pagination), when cheaply available. */
   total?: number;
-}
-
-/**
- * Context passed to ConnectorRuntime.search() — a virtual-feed RECALL read.
- * Same live, read-only, no-persistence contract as {@link QueryContext}, plus
- * the keyword `terms` to push DOWN to the external source (e.g. an `ILIKE`
- * predicate over the validated subquery), so recall is computed at the source
- * instead of pulling the whole feed and filtering in-process. A connector that
- * does not implement `search()` signals "recall over virtual unsupported" — a
- * capability gap, not a runtime branch.
- */
-export interface SearchContext<F = Record<string, unknown>> extends QueryContext<F> {
-  /** Keyword terms to match at the source. A row matches when every term hits at least one column. */
-  terms: string[];
 }
 
 // =============================================================================

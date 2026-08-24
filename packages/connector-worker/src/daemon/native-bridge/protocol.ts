@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 
-export const NATIVE_BRIDGE_PROTOCOL_VERSION = 1;
-export const NATIVE_BRIDGE_PROTOCOL = 'device-daemon/v1';
+export const NATIVE_BRIDGE_PROTOCOL_VERSION = 2;
+export const NATIVE_BRIDGE_PROTOCOL = 'device-daemon/v2';
 // Action results may carry bounded, user-requested screenshot data. Keep the
 // frame bounded while allowing ordinary Retina PNG payloads to cross the
 // supervised bridge without tearing down the owning run.

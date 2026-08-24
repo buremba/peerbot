@@ -1689,18 +1689,6 @@ function diffFeed(
   desired: DesiredFeed,
   remote: RemoteFeed | undefined
 ): FeedDiffRow {
-  // `virtual` is fixed at create: a virtual feed reads live and stores nothing,
-  // a collected feed syncs into `events` — the server exposes no update path to
-  // flip one into the other. Diffing it as a mutable field would push a change
-  // apply can't persist, so the drift would resurface every apply. Treat a
-  // mismatch on an existing feed as a hard error (recreate under a new key to
-  // change kind), mirroring the inference-provider `kind` immutability.
-  if (remote && Boolean(desired.virtual) !== Boolean(remote.virtual)) {
-    throw new ValidationError(
-      `connection "${connectionSlug}" feed "${desired.feedKey}" is declared ${desired.virtual ? "virtual" : "collected"} but the server has it as ${remote.virtual ? "virtual" : "collected"}. ` +
-        `A feed's virtual/collected kind is immutable — delete it and recreate under a new feed key to change it.`
-    );
-  }
   return buildDiffRow({
     kind: "feed",
     id: `${connectionSlug}/${desired.feedKey}`,

@@ -12,8 +12,8 @@ import { requireOrgId } from "../../lobu/stores/org-context.js";
 import { getNextNumericId } from "../../tools/admin/helpers/db-helpers.js";
 import { nextAutomationWindowStart } from "../../utils/window-utils.js";
 import {
-	resolveStreamingChannelFeedId,
-	softDeleteStreamingChannelFeed,
+	resolveChannelFeedId,
+	softDeleteChannelFeed,
 } from "./channel-feed.js";
 
 const logger = createLogger("automation-channel-subscriptions");
@@ -548,7 +548,7 @@ export class AutomationSubscriptionService {
 		if (options.sql) await write(sql);
 		else await sql.begin(write);
 
-		await resolveStreamingChannelFeedId({
+		await resolveChannelFeedId({
 			connectionId: String(options.connectionId),
 			organizationId,
 			channelKey: `${platform}:${nativeChannelId(platform, channelId)}`,
@@ -601,7 +601,7 @@ export class AutomationSubscriptionService {
 					canonicalChannelId,
 				))
 			) {
-				await softDeleteStreamingChannelFeed({
+				await softDeleteChannelFeed({
 					connectionId: String(connectionId),
 					channelKey: canonicalChannelId,
 					sql: tx,
@@ -673,7 +673,7 @@ export class AutomationSubscriptionService {
 				if (
 					!(await hasChannelSubscription(tx, row.connection_id, row.channel_id))
 				) {
-					await softDeleteStreamingChannelFeed({
+					await softDeleteChannelFeed({
 						connectionId: row.connection_id,
 						channelKey: row.channel_id,
 						sql: tx,

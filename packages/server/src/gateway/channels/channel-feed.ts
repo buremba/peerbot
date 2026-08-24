@@ -1,17 +1,14 @@
 /**
- * Channel-as-streaming-feed materialization.
+ * Channel feed materialization.
  *
- * A bound chat channel IS a feed — `kind = 'streaming'`. Its rows are not pulled
+ * A bound chat channel IS a feed. Its rows are not pulled
  * on a schedule; they arrive in real time and live in `channel_messages` (the
  * transcript), never embedded into `events`. Materializing the channel as a
  * `feeds` row is what lets it surface in the ONE unified Feeds list under its
  * connection, instead of a bespoke channel island.
  *
- * TWO-PHASE INVARIANT (the scheduler still gates on `feeds.virtual` + a non-null
- * `next_run_at`): a streaming feed is written with `virtual = false`, `kind =
- * 'streaming'`, AND its sync-lifecycle columns (`schedule` / `next_run_at` /
- * `checkpoint`) left NULL, so `check-due-feeds` never queues it (it also filters
- * `kind = 'collected'` explicitly). Both guards hold here.
+ * The `config.store` marker selects the transcript data plane. It declares no
+ * connector `sync` operation, so the scheduler never queues it.
  *
  * Multi-replica safe + idempotent WITHOUT a unique constraint on
  * (connection_id, feed_key): the fast path is a lock-free SELECT (the common
@@ -24,10 +21,10 @@ import { type DbClient, getDb } from "../../db/client.js";
 
 const logger = createLogger("channel-feed");
 
-/** The store a streaming channel feed reads from (its config marker). */
+/** The store a channel feed reads from (its config marker). */
 const CHANNEL_FEED_STORE = "channel_messages";
 
-async function findStreamingFeedId(
+async function findChannelFeedId(
 	sql: DbClient,
 	connectionId: string | number,
 	feedKey: string,
@@ -36,7 +33,7 @@ async function findStreamingFeedId(
     SELECT id FROM feeds
     WHERE connection_id = ${connectionId}::bigint
       AND feed_key = ${feedKey}
-      AND kind = 'streaming'
+      AND config @> ${sql.json({ store: CHANNEL_FEED_STORE })}::jsonb
       AND deleted_at IS NULL
     LIMIT 1
   `;
@@ -44,12 +41,12 @@ async function findStreamingFeedId(
 }
 
 /**
- * Idempotently ensure the streaming feed for a bound channel, returning its id.
+ * Idempotently ensure the feed for a bound channel, returning its id.
  * `channelKey` is the channel id exactly as stored on the binding (may be
- * platform-prefixed, e.g. `slack:C…`) — the feed_key mirrors it so the read path
- * (`read_feed`) maps back to the same `channel_messages` rows.
+ * platform-prefixed, e.g. `slack:C…`) — the feed_key mirrors it for stable,
+ * idempotent channel metadata.
  */
-export async function ensureStreamingChannelFeed(opts: {
+export async function ensureChannelFeed(opts: {
 	connectionId: string | number;
 	organizationId: string;
 	/** Channel id as stored on the binding — becomes the feed_key. */
@@ -63,22 +60,28 @@ export async function ensureStreamingChannelFeed(opts: {
 	const { connectionId, organizationId, channelKey } = opts;
 	const displayName = opts.displayName ?? channelKey;
 
-	const existing = await findStreamingFeedId(sql, connectionId, channelKey);
+	const existing = await findChannelFeedId(sql, connectionId, channelKey);
 	if (existing !== null) return existing;
 
 	const insertWithLock = async (tx: DbClient) => {
 		await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
 			`channel-feed:${connectionId}:${channelKey}`,
 		]);
-		const again = await findStreamingFeedId(tx, connectionId, channelKey);
+		const again = await findChannelFeedId(tx, connectionId, channelKey);
 		if (again !== null) return again;
+		// Keep the retired discriminator coherent while old replicas can still
+		// compile @feed sources from it. New code selects the data plane solely
+		// from config.store; remove these two writes with the retained columns.
+		// TODO(#3134): delete kind/virtual and this dual-write
+		// after the rolling window guarantees no pre-capability replica can run.
 		const inserted = await tx`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, display_name,
-        status, kind, virtual, config
+        status, config, kind, virtual
       ) VALUES (
         ${organizationId}, ${connectionId}::bigint, ${channelKey}, ${displayName},
-        'active', 'streaming', false, ${tx.json({ store: CHANNEL_FEED_STORE })}::jsonb
+        'active', ${tx.json({ store: CHANNEL_FEED_STORE })}::jsonb,
+        'streaming', false
       )
       RETURNING id
     `;
@@ -92,16 +95,16 @@ export async function ensureStreamingChannelFeed(opts: {
 /** Best-effort resolve/create — never throws. Feed materialization must not
  *  break the bind path; on failure the channel still binds (recall is unaffected)
  *  and the feed is created on the next bind, idempotently. */
-export async function resolveStreamingChannelFeedId(opts: {
+export async function resolveChannelFeedId(opts: {
 	connectionId: string | number;
 	organizationId: string;
 	channelKey: string;
 	displayName?: string | null;
 	sql?: DbClient;
 }): Promise<number | null> {
-	if (opts.sql) return await ensureStreamingChannelFeed(opts);
+	if (opts.sql) return await ensureChannelFeed(opts);
 	try {
-		return await ensureStreamingChannelFeed(opts);
+		return await ensureChannelFeed(opts);
 	} catch (err) {
 		logger.warn(
 			{
@@ -109,18 +112,18 @@ export async function resolveStreamingChannelFeedId(opts: {
 				channelKey: opts.channelKey,
 				err: String(err),
 			},
-			"ensure streaming channel feed failed (non-fatal)",
+			"ensure channel feed failed (non-fatal)",
 		);
 		return null;
 	}
 }
 
 /**
- * Soft-delete the streaming feed for an unbound channel. Best-effort: an unbind
+ * Soft-delete the feed for an unbound channel. Best-effort: an unbind
  * already removed the binding (the routing contract); a lingering feed row is
  * cosmetic, so a failure here never fails the unbind.
  */
-export async function softDeleteStreamingChannelFeed(opts: {
+export async function softDeleteChannelFeed(opts: {
 	connectionId: string | number;
 	channelKey: string;
 	sql?: DbClient;
@@ -132,7 +135,7 @@ export async function softDeleteStreamingChannelFeed(opts: {
       SET deleted_at = now(), status = 'paused', updated_at = now()
       WHERE connection_id = ${opts.connectionId}::bigint
         AND feed_key = ${opts.channelKey}
-        AND kind = 'streaming'
+        AND config @> ${sql.json({ store: CHANNEL_FEED_STORE })}::jsonb
         AND deleted_at IS NULL
     `;
 		return;
@@ -143,7 +146,7 @@ export async function softDeleteStreamingChannelFeed(opts: {
       SET deleted_at = now(), status = 'paused', updated_at = now()
       WHERE connection_id = ${opts.connectionId}::bigint
         AND feed_key = ${opts.channelKey}
-        AND kind = 'streaming'
+        AND config @> ${sql.json({ store: CHANNEL_FEED_STORE })}::jsonb
         AND deleted_at IS NULL
     `;
 	} catch (err) {
@@ -153,7 +156,7 @@ export async function softDeleteStreamingChannelFeed(opts: {
 				channelKey: opts.channelKey,
 				err: String(err),
 			},
-			"soft-delete streaming channel feed failed (non-fatal)",
+			"soft-delete channel feed failed (non-fatal)",
 		);
 	}
 }

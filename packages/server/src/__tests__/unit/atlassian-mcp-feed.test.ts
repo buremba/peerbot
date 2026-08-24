@@ -8,27 +8,36 @@ import {
 	parseAtlassianMcpNextPageToken,
 } from "../../operations/atlassian-mcp-feed";
 
-describe("Atlassian MCP virtual feed helpers", () => {
+describe("Atlassian MCP feed helpers", () => {
 	it("recognizes the Rovo MCP host and ignores other MCP URLs", () => {
 		expect(isAtlassianMcpUrl("https://mcp.atlassian.com/v1/mcp")).toBe(true);
 		expect(isAtlassianMcpUrl("https://mcp.example.com/rpc")).toBe(false);
 	});
 
-	it("declares the same virtual issues feed the bundled Jira connector uses", () => {
+	it("declares a source-readable issues feed", () => {
 		expect(ATLASSIAN_MCP_FEEDS.issues.key).toBe("issues");
-		expect(ATLASSIAN_MCP_FEEDS.issues.virtual).toBe(true);
+		expect(ATLASSIAN_MCP_FEEDS.issues.operations).toEqual(["read"]);
 	});
 
-	it("builds bounded JQL and AND-composes recall terms", () => {
+	it("builds bounded JQL and AND-composes caller JQL", () => {
 		expect(buildAtlassianMcpJql({ baseQuery: "" })).toBe(
 			"updated >= -90d ORDER BY updated DESC",
 		);
 		expect(
 			buildAtlassianMcpJql({
 				baseQuery: "project = KAN",
-				terms: ["timeout"],
+				query: 'text ~ "timeout"',
 			}),
 		).toBe('(project = KAN) AND (text ~ "timeout") ORDER BY updated DESC');
+	});
+
+	it("rejects caller ORDER BY instead of replacing the configured ordering", () => {
+		expect(() =>
+			buildAtlassianMcpJql({
+				baseQuery: "project = KAN ORDER BY updated DESC",
+				query: "status = Open ORDER BY key ASC",
+			}),
+		).toThrow("use the separate sort field");
 	});
 
 	it("maps REST-shaped and flattened MCP issue payloads onto the Jira row", () => {

@@ -25,7 +25,7 @@ export interface NativeBridgeRunResult {
 
 export interface NativeBridgeRunOptions {
   requestId?: string;
-  operation: 'sync' | 'action' | 'auth' | 'query' | 'search';
+  operation: 'sync' | 'action' | 'auth' | 'read';
   job: Record<string, unknown>;
   onStream?: (payload: Record<string, unknown>, sequence: number) => Promise<void>;
 }

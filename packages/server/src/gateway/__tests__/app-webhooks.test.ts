@@ -781,7 +781,7 @@ async function seedAtlassianMcpIssuesFeed(): Promise<{
     ) VALUES (
       ${ORG}, ${connectorKey}, 'Atlassian', '1.0.0', 'active',
       ${sql.json({ upstream_url: "https://mcp.atlassian.com/v1/mcp" })},
-      ${sql.json({ issues: { key: "issues", virtual: true } })}
+      ${sql.json({ issues: { key: "issues", operations: ["read"] } })}
     )
   `;
 	const [connection] = await sql`
@@ -800,9 +800,9 @@ async function seedAtlassianMcpIssuesFeed(): Promise<{
   `;
 	const [feed] = await sql`
     INSERT INTO feeds (
-      organization_id, connection_id, feed_key, display_name, status, kind, virtual, config
+      organization_id, connection_id, feed_key, display_name, status, config
     ) VALUES (
-      ${ORG}, ${connection.id}, 'issues', 'Issues', 'active', 'virtual', true, '{}'::jsonb
+      ${ORG}, ${connection.id}, 'issues', 'Issues', 'active', '{}'::jsonb
     )
     RETURNING id
   `;

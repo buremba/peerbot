@@ -42,50 +42,7 @@ import {
  */
 interface ManifestFeed {
   name?: string;
-  virtual?: boolean;
-  configSchema?: { properties?: Record<string, unknown> } | null;
-}
-
-/**
- * Feed config keys whose declared JSON Schema `default` must be MATERIALIZED
- * onto a newly auto-wired virtual feed rather than left as documentation.
- *
- * A JSON Schema default is not written back by validation, so `feeds.config`
- * stays NULL — invisible to anything that reads the COLUMN. `recall` is read
- * from the column (`search_memory`'s virtual fan-out selects
- * `f.config->>'recall' = 'true'`), so a virtual feed that declares
- * `recall.default = true` and is auto-wired with a NULL config would never
- * participate in ambient recall, however it advertises itself.
- *
- * Kept to an explicit allowlist rather than "materialize every default": the
- * rest of a feed's schema defaults are read through the schema at use time and
- * copying them would freeze today's value into every row.
- */
-const MATERIALIZED_VIRTUAL_FEED_DEFAULTS = ['recall'] as const;
-
-/**
- * Config to persist on a NEWLY created auto-wired feed. Seeded at CREATE only
- * — never re-applied on the re-activate path below, so a user who turns
- * `recall` off does not get it switched back on by the next poll.
- */
-function virtualFeedSeedConfig(
-  definition: ManifestFeed | undefined,
-  isVirtual: boolean
-): Record<string, unknown> | null {
-  if (!isVirtual || !definition) return null;
-  const properties = definition.configSchema?.properties ?? {};
-  const seed: Record<string, unknown> = {};
-  for (const key of MATERIALIZED_VIRTUAL_FEED_DEFAULTS) {
-    const property = properties[key];
-    if (
-      property != null &&
-      typeof property === 'object' &&
-      (property as { default?: unknown }).default === true
-    ) {
-      seed[key] = true;
-    }
-  }
-  return Object.keys(seed).length > 0 ? seed : null;
+  operations?: Array<'sync' | 'read'>;
 }
 
 /** A device worker counts toward "serves capability X" only if seen this recently. */
@@ -273,6 +230,7 @@ async function ensureDeviceConnectorWired(
       connectorKey: currentSource.key,
       connectorVersion: currentSource.metadata.version,
       manifestHash: currentSource.manifestHash,
+      definitionManifestHash: currentSource.definitionManifestHash,
       sourcePath: currentSource.sourcePath,
       runtimeExecution: currentSource.metadata.runtime?.execution,
     };
@@ -667,75 +625,32 @@ async function ensureDeviceConnectorWired(
       }
       if (!connectionId) return null;
 
-      // 4. Ensure every feed the connector declares exists, is active, and is
-      //    due at least once — multi-feed device connectors (e.g. apple.health
-      //    has daily_summaries + workouts) need all of them wired, not just the
-      //    first one. Also re-activates feeds a previous "capability went away"
-      //    pass had paused.
-      // `feeds.kind` is IMMUTABLE once a row exists — nothing converts a
-      // collected feed to virtual in place, and doing so would strand the
-      // events/checkpoints already collected under it. WhatsApp's compatibility
-      // rollout therefore leaves `messages` collected and `messages_live`
-      // virtual. Issue #3020 will make one logical messages feed support both
-      // materialized and source reads; this transport cutover adds no hybrid
-      // kind and performs no feed migration.
+      // 4. Ensure every connector-declared feed exists and is active. A feed's
+      //    handlers decide its operations; the same row may sync and read.
       const declaredFeeds = metadata.feeds as Record<string, ManifestFeed> | null;
-      const declaredVirtual = (feedKey: string): boolean =>
-        declaredFeeds?.[feedKey]?.virtual === true;
 
       for (const feedKey of feedKeys) {
-        const isVirtual = declaredVirtual(feedKey);
+        const operations = declaredFeeds?.[feedKey]?.operations ?? [];
+        const canSync = operations.includes('sync');
         const existingFeed = (await tx`
-          SELECT id, kind, virtual FROM feeds
+          SELECT id FROM feeds
           WHERE connection_id = ${connectionId}
             AND feed_key = ${feedKey}
             AND deleted_at IS NULL
           LIMIT 1
-        `) as unknown as Array<{ id: number; kind: string | null; virtual: boolean | null }>;
+        `) as unknown as Array<{ id: number }>;
 
         if (existingFeed[0]?.id) {
-          const existingIsVirtual =
-            existingFeed[0].virtual === true || existingFeed[0].kind === 'virtual';
-          if (existingIsVirtual !== isVirtual) {
-            // Kind is immutable. Reconcile heals status and due time; it must
-            // never convert a feed in place. Flipping a collected row to
-            // virtual would strand its events and checkpoint behind a read path
-            // that never looks at them; flipping the other way would start
-            // minting sync runs for a feed nothing can sync. Leave the row
-            // exactly as it is — including next_run_at, which belongs to the
-            // kind the row actually has — and say so. The fix is a new feed
-            // key, not a mutation.
-            logger.warn(
-              {
-                userId,
-                connectorKey,
-                organizationId,
-                feedId: existingFeed[0].id,
-                feedKey,
-                existingKind: existingFeed[0].kind,
-                declaredVirtual: isVirtual,
-              },
-              '[device-connectors] Manifest feed kind differs from the existing feed row; leaving it untouched (feeds.kind is immutable — declare a new feed key instead)'
-            );
-            continue;
-          }
-          // A virtual feed is read live and NEVER synced, so it must not carry a
-          // due time: `materializeDueFeeds` would mint sync runs no device can
-          // serve, and each would fail the feed.
           await tx`
             UPDATE feeds
             SET status = 'active',
-                next_run_at = ${isVirtual ? tx`NULL::timestamptz` : tx`COALESCE(next_run_at, NOW())`},
+                next_run_at = ${canSync ? tx`COALESCE(next_run_at, NOW())` : tx`NULL::timestamptz`},
                 updated_at = current_timestamp
             WHERE id = ${existingFeed[0].id}
           `;
         } else {
-          const seedFeedConfig = virtualFeedSeedConfig(declaredFeeds?.[feedKey], isVirtual);
           // The manifest's per-feed `name` when it declares one, and only the
-          // connector's own name as the fallback. A connector with several
-          // feeds (`Messages` + `Messages (live)`) otherwise wires them all
-          // under one indistinguishable label, which is exactly the case a
-          // virtual feed introduces.
+          // connector's own name as the fallback.
           const declaredName = declaredFeeds?.[feedKey]?.name;
           const displayName =
             typeof declaredName === 'string' && declaredName.trim().length > 0
@@ -743,13 +658,12 @@ async function ensureDeviceConnectorWired(
               : metadata.name;
           await tx`
             INSERT INTO feeds (
-              organization_id, connection_id, feed_key, display_name, status, config,
-              next_run_at, kind, virtual
+              organization_id, connection_id, feed_key, display_name, status,
+              next_run_at
             ) VALUES (
               ${organizationId}, ${connectionId}, ${feedKey},
-              ${displayName}, 'active', ${seedFeedConfig ? tx.json(seedFeedConfig) : null},
-              ${isVirtual ? null : new Date()},
-              ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual}
+              ${displayName}, 'active',
+              ${canSync ? new Date() : null}
             )
           `;
         }

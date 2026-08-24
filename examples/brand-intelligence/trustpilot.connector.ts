@@ -5,7 +5,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
@@ -48,7 +48,7 @@ const configSchema = {
 };
 
 export default class TrustpilotConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "trustpilot",
     name: "Trustpilot",
     description: "Scrapes business reviews from Trustpilot.",
@@ -59,6 +59,7 @@ export default class TrustpilotConnector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "Business Reviews",
         description: "Scrape reviews for a business on Trustpilot.",
@@ -80,7 +81,7 @@ export default class TrustpilotConnector extends ConnectorRuntime {
     },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const businessUrl = ctx.config.business_url as string | undefined;
     const businessName = ctx.config.business_name as string | undefined;
 

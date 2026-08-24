@@ -34,10 +34,17 @@ export default class NpmDownloadsConnector extends ConnectorRuntime<
     name: "npm downloads",
     version: "1.0.0",
     authSchema: { methods: [{ type: "none" as const }] },
-    feeds: { weekly: { key: "weekly", name: "Weekly downloads" } },
+    feeds: {
+      weekly: {
+        key: "weekly",
+        name: "Weekly downloads",
+        sync: (ctx: SyncContext<NpmDownloadsCheckpoint, NpmDownloadsConfig>) =>
+          this.syncFeed(ctx),
+      },
+    },
   };
 
-  async sync(
+  private async syncFeed(
     ctx: SyncContext<NpmDownloadsCheckpoint, NpmDownloadsConfig>
   ): Promise<SyncResult<NpmDownloadsCheckpoint>> {
     const seen = new Set<string>(ctx.checkpoint?.seen_periods ?? []);

@@ -11,6 +11,7 @@ import {
   NativeBridgeFrameDecoder,
   NativeBridgeProtocolError,
   NATIVE_BRIDGE_MAX_FRAME_BYTES,
+  NATIVE_BRIDGE_PROTOCOL,
   NATIVE_BRIDGE_PROTOCOL_VERSION,
 } from '../daemon/native-bridge/protocol';
 
@@ -47,24 +48,24 @@ describe('native bridge framing', () => {
     oversized.writeUInt32LE(NATIVE_BRIDGE_MAX_FRAME_BYTES + 1, 0);
     expect(() => new NativeBridgeFrameDecoder().append(oversized)).toThrow('exceeds');
     expect(() => decodeNativeBridgeBody(Buffer.from(JSON.stringify({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'unknown',
       request_id: 'r',
       payload: {},
     })))).toThrow('unsupported');
     expect(() => decodeNativeBridgeBody(Buffer.from(JSON.stringify({
-      version: 2,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION - 1,
       kind: 'ping',
       request_id: 'r',
       payload: {},
     })))).toThrow('unsupported');
     expect(() => decodeNativeBridgeBody(Buffer.from(JSON.stringify({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'ping',
       payload: {},
     })))).toThrow('request_id');
     expect(() => decodeNativeBridgeBody(Buffer.from(JSON.stringify({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'ping',
       request_id: 'r',
     })))).toThrow('payload');
@@ -89,12 +90,12 @@ describe('native bridge framing', () => {
 
 function helloFrame(workerId = 'mac:test', generation: number | null = 4) {
   return encodeNativeBridgeFrame({
-    version: 1,
+    version: NATIVE_BRIDGE_PROTOCOL_VERSION,
     kind: 'hello',
     request_id: 'hello-1',
     payload: {
-      protocol: 'device-daemon/v1',
-      protocol_version: 1,
+      protocol: NATIVE_BRIDGE_PROTOCOL,
+      protocol_version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       app_build: 'app-build-1',
       daemon_build: 'daemon-build-1',
       worker_id: workerId,
@@ -160,7 +161,7 @@ describe('native bridge handshake', () => {
       kind: 'hello_ack',
       request_id: 'hello-1',
       payload: {
-        protocol: 'device-daemon/v1',
+        protocol: NATIVE_BRIDGE_PROTOCOL,
         daemon_build: 'daemon-build-1',
         nonce: 'nonce-1',
         worker_id: 'mac:test',
@@ -171,7 +172,7 @@ describe('native bridge handshake', () => {
     expect(runFrame.payload).toMatchObject({ operation: 'action' });
 
     input.write(encodeNativeBridgeFrame({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'complete',
       request_id: 'run-1',
       run_id: 42,
@@ -211,7 +212,7 @@ describe('native bridge handshake', () => {
 
     input.write(Buffer.concat([
       encodeNativeBridgeFrame({
-        version: 1,
+        version: NATIVE_BRIDGE_PROTOCOL_VERSION,
         kind: 'stream',
         request_id: 'stream-failure:one',
         run_id: 51,
@@ -219,7 +220,7 @@ describe('native bridge handshake', () => {
         payload: {},
       }),
       encodeNativeBridgeFrame({
-        version: 1,
+        version: NATIVE_BRIDGE_PROTOCOL_VERSION,
         kind: 'complete',
         request_id: 'healthy-run',
         run_id: 52,
@@ -251,7 +252,7 @@ describe('native bridge handshake', () => {
     await Bun.sleep(5);
     output.read();
     input.write(encodeNativeBridgeFrame({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'stream',
       request_id: 'sequence-run',
       run_id: 53,
@@ -259,7 +260,7 @@ describe('native bridge handshake', () => {
       payload: {},
     }));
     input.write(encodeNativeBridgeFrame({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'stream',
       request_id: 'sequence-run',
       run_id: 53,
@@ -285,7 +286,7 @@ describe('native bridge handshake', () => {
     await Bun.sleep(5);
     output.read();
     const terminal = encodeNativeBridgeFrame({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'complete',
       request_id: 'terminal-run',
       run_id: 54,
@@ -333,7 +334,7 @@ describe('native bridge handshake', () => {
     expect((frames[0]?.payload as { job: { config: Record<string, unknown> } }).job.config.pat).toBeUndefined();
     expect((frames[0]?.payload as { job: { config: Record<string, unknown> } }).job.config.auth_profile).toBeUndefined();
     input.write(encodeNativeBridgeFrame({
-      version: 1,
+      version: NATIVE_BRIDGE_PROTOCOL_VERSION,
       kind: 'complete',
       request_id: 'sanitize-run',
       run_id: 55,

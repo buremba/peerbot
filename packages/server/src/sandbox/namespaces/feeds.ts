@@ -19,8 +19,6 @@ export interface FeedsCreateInput {
 	schedule?: string | null;
 	/** IANA zone the schedule is evaluated in; omit for server time (UTC). */
 	timezone?: string;
-	/** Read live through connector query/search instead of scheduling collection. */
-	virtual?: boolean;
 }
 
 export interface FeedsNamespace {
@@ -34,17 +32,16 @@ export interface FeedsNamespace {
 		limit?: number;
 		offset?: number;
 	}): Promise<unknown>;
-	get(input: {
-		feed_id: number;
-		limit?: number;
-		search_term?: string;
-	}): Promise<unknown>;
+	get(input: { feed_id: number }): Promise<unknown>;
 	readMany(input: {
-		feed_ids: number[];
-		limit?: number;
+		reads: Array<{
+			feed_id: number;
+			query?: string;
+			limit?: number;
+			cursor?: string;
+			sort?: { column: string; order: "asc" | "desc" };
+		}>;
 		timeout_ms?: number;
-		/** For VIRTUAL feeds: term pushed to each connector's search() pushdown. */
-		search_term?: string;
 	}): Promise<unknown>;
 	create(input: FeedsCreateInput): Promise<unknown>;
 	update(input: {

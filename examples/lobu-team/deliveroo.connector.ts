@@ -28,8 +28,6 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   extensionDomScrape,
-  type SyncContext,
-  type SyncResult,
 } from "@lobu/connector-sdk";
 
 const DELIVEROO_ALLOWED_ORIGINS = ["deliveroo.co.uk", "*.deliveroo.co.uk"];
@@ -272,13 +270,6 @@ export default class DeliverooConnector extends ConnectorRuntime {
     },
     optionsSchema: connectionConfigSchema,
   };
-
-  // This connector exposes only on-demand actions — there is nothing to poll.
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(
-      "The Deliveroo connector has no feeds to sync — use the search_restaurants and read_menu actions."
-    );
-  }
 
   async execute(ctx: ActionContext): Promise<ActionResult> {
     try {

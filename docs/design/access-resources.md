@@ -414,9 +414,9 @@ Relationship rows are readable only when both endpoints are readable. Counts,
 pagination, sorting, and aggregation happen after the visibility predicate, not
 after application-memory filtering.
 
-### Virtual and external rows
+### Source-backed and external rows
 
-A virtual-feed or connection-pushdown row may have no stored Lobu entity from
+A direct source-feed or connection-pushdown row may have no stored Lobu entity from
 which to derive `x-lobu-visibility`. It is safe only when one of these holds:
 
 1. the query executes with the requesting user's source credential and the source
@@ -872,7 +872,7 @@ Required negative cases:
 - a source fetch error does not reconcile to an empty audience;
 - a source-owned resource rejects manual membership replacement;
 - deleting or merging a referenced access resource does not widen dependants;
-- an unlabeled shared-account virtual row fails closed;
+- an unlabeled shared-account source row fails closed;
 - an approval for a restricted target is not visible org-wide;
 - a derived output never has a weaker envelope than any input;
 - a generic caller cannot create or delete `member_of` edges;

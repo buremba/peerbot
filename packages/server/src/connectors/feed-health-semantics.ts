@@ -7,8 +7,8 @@
  *
  * ## Why derive instead of store
  *
- * A feed's execution nature (`virtual` vs `streaming` vs `scheduled` vs
- * `no_schedule`) is a pure function of `kind`/`virtual`/`schedule`. Its
+ * A feed's execution nature (`source_only` vs `streaming` vs `scheduled` vs
+ * `no_schedule`) is a pure function of its declared operations and schedule. Its
  * attention state is a pure function of lifecycle/sync state, auth-profile
  * status, and device liveness. Storing these would duplicate state that already
  * lives on the row and drift when the source columns move (auto-pause, backoff,
@@ -17,13 +17,13 @@
  * ## The two outputs
  *
  * - `executionMode` — what the row says about how this feed runs:
- *   - `virtual` — a virtual (live-pushdown) feed evaluated on demand.
+ *   - `source_only` — a feed that supports direct reads but not sync.
  *   - `streaming` — a chat channel populated by incoming messages.
- *   - `scheduled` — a non-virtual feed with a cron in `feeds.schedule`.
- *   - `no_schedule` — a non-virtual feed with no cron. This says the feed has
+ *   - `scheduled` — a syncable feed with a cron in `feeds.schedule`.
+ *   - `no_schedule` — a syncable feed with no cron. This says the feed has
  *     no cron and NOTHING MORE. It was called `manual` until 2026-08-12, which
  *     read an intent into it that the column does not carry: measured on prod
- *     that day, 196 of 215 active collected feeds have no cron, and many are
+ *     that day, 196 of 215 active sync-capable feeds have no cron, and many are
  *     driven unattended through other dispatch paths (github `issue_comments` =
  *     4551 sync runs in 14 days with `schedule` and `next_run_at` both NULL).
  *     Do not reintroduce the intent reading under a new name.
@@ -55,7 +55,7 @@
  * unattended event-driven feed from a human-triggered one.
  */
 
-type FeedExecutionMode = "virtual" | "streaming" | "scheduled" | "no_schedule";
+type FeedExecutionMode = "source_only" | "streaming" | "scheduled" | "no_schedule";
 
 type FeedAttentionState =
   | "healthy"
@@ -68,10 +68,10 @@ type FeedAttentionState =
   | "misconfigured";
 
 interface FeedHealthSemanticsInput {
-  /** `feeds.kind` — 'collected' | 'streaming' | 'virtual'. */
-  kind?: string | null;
-  /** Legacy `feeds.virtual` boolean (two-phase migration keeps both). */
-  virtual?: boolean | null;
+  /** Operations derived from the selected connector feed handlers. */
+  operations?: Array<'sync' | 'read'> | null;
+  /** Storage plane. Channel feeds read transcripts rather than connector events. */
+  store?: 'events' | 'channel_messages' | null;
   /** `feeds.status` — 'active' | 'paused' | 'error'. */
   status?: string | null;
   /** `feeds.schedule` — cron; NULL means no cron is configured, which does NOT
@@ -103,14 +103,11 @@ interface FeedHealthSemantics {
   attention: FeedAttentionState;
 }
 
-const isVirtual = (input: FeedHealthSemanticsInput): boolean =>
-  input.kind === "virtual" || input.virtual === true;
-
 const isStreaming = (input: FeedHealthSemanticsInput): boolean =>
-  input.kind === "streaming";
+  input.store === "channel_messages";
 
 const isScheduled = (input: FeedHealthSemanticsInput): boolean =>
-  !isVirtual(input) &&
+  input.operations?.includes('sync') === true &&
   typeof input.schedule === "string" &&
   input.schedule.length > 0;
 
@@ -189,19 +186,22 @@ export function deriveFeedHealthSemantics(
   input: FeedHealthSemanticsInput,
   now: number = Date.now()
 ): FeedHealthSemantics {
-  // Virtual feeds are evaluated on demand; they have no unattended runtime.
-  if (isVirtual(input)) {
+  // Storage decides presentation. A chat channel remains streaming even if a
+  // connector later adds a direct read operation for that transcript.
+  if (isStreaming(input)) {
     return {
-      executionMode: "virtual",
+      executionMode: "streaming",
       attention: nonCollectorAttention(input),
     };
   }
 
-  // Streaming feeds are chat channels backed by channel_messages, not
-  // collector jobs. They have no sync history or schedule to classify.
-  if (isStreaming(input)) {
+  // Read-only feeds are evaluated on demand; they have no sync lifecycle.
+  if (
+    input.operations?.includes('read') === true &&
+    input.operations.includes('sync') === false
+  ) {
     return {
-      executionMode: "streaming",
+      executionMode: "source_only",
       attention: nonCollectorAttention(input),
     };
   }

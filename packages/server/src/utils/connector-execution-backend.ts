@@ -28,6 +28,7 @@ export interface AuthorizedManifestIdentity {
   connectorKey: string;
   connectorVersion: string;
   manifestHash: string;
+  definitionManifestHash?: string;
   sourcePath?: string;
   runtimeExecution?: DeviceConnectorManifest['runtime']['execution'];
 }
@@ -124,7 +125,11 @@ export function classifySelectedConnectorExecution(params: {
   // already happened during manifest reconciliation.
   if (params.definition && definitionBridge) {
     const hashes = definitionManifestHashes(params.definition, definitionRuntime!);
-    if (!hashes.has(params.artifact.manifestHash)) {
+    if (
+      !hashes.has(params.artifact.manifestHash) &&
+      (!authorization.definitionManifestHash ||
+        !hashes.has(authorization.definitionManifestHash))
+    ) {
       return { manifestBacked, inconsistency: 'canonical definition does not match the selected manifest hash' };
     }
   }

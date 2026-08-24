@@ -63,7 +63,7 @@ describe('scheduled feed device liveness', () => {
       await createTestConnectorDefinition({
         key: connectorKey,
         name: connectorKey,
-        feeds_schema: { items: { description: 'Items' } },
+        feeds_schema: { items: { description: 'Items', operations: ['sync'] } },
         organization_id: org.id,
       });
       const connection = await createTestConnection({
@@ -81,10 +81,10 @@ describe('scheduled feed device liveness', () => {
       }
       const [feed] = (await sql`
         INSERT INTO feeds (
-          organization_id, connection_id, feed_key, status, kind, virtual,
+          organization_id, connection_id, feed_key, status,
           schedule, next_run_at, created_at, updated_at
         ) VALUES (
-          ${org.id}, ${connection.id}, 'items', 'active', 'collected', false,
+          ${org.id}, ${connection.id}, 'items', 'active',
           '* * * * *', current_timestamp - INTERVAL '5 minutes',
           current_timestamp, current_timestamp
         )
@@ -255,7 +255,7 @@ describe('scheduled feed device liveness', () => {
       await createTestConnectorDefinition({
         key: options.connectorKey,
         name: options.connectorKey,
-        feeds_schema: { items: { description: 'Items' } },
+        feeds_schema: { items: { description: 'Items', operations: ['sync'] } },
         organization_id: org.id,
       });
       if (options.requiredCapability) {
@@ -281,10 +281,10 @@ describe('scheduled feed device liveness', () => {
       }
       const [feed] = (await sql`
         INSERT INTO feeds (
-          organization_id, connection_id, feed_key, status, kind, virtual,
+          organization_id, connection_id, feed_key, status,
           schedule, next_run_at, created_at, updated_at
         ) VALUES (
-          ${org.id}, ${connection.id}, 'items', 'active', 'collected', false,
+          ${org.id}, ${connection.id}, 'items', 'active',
           '* * * * *', current_timestamp - INTERVAL '5 minutes',
           current_timestamp, current_timestamp
         )
@@ -457,7 +457,7 @@ describe('scheduled feed device liveness', () => {
     await createTestConnectorDefinition({
       key: 'test.scheduler-resumed-device',
       name: 'Resumed Device Connector',
-      feeds_schema: { items: { description: 'Items' } },
+      feeds_schema: { items: { description: 'Items', operations: ['sync'] } },
       organization_id: org.id,
     });
     const connection = await createTestConnection({
@@ -473,10 +473,10 @@ describe('scheduled feed device liveness', () => {
     `;
     const [feed] = (await sql`
       INSERT INTO feeds (
-        organization_id, connection_id, feed_key, status, kind, virtual,
+        organization_id, connection_id, feed_key, status,
         schedule, next_run_at, created_at, updated_at
       ) VALUES (
-        ${org.id}, ${connection.id}, 'items', 'active', 'collected', false,
+        ${org.id}, ${connection.id}, 'items', 'active',
         '* * * * *', current_timestamp - INTERVAL '5 minutes',
         current_timestamp, current_timestamp
       )

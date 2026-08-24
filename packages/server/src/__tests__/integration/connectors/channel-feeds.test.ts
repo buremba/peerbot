@@ -1,37 +1,28 @@
 /**
- * Channels as streaming feeds (the feeds-channel consolidation).
+ * Channels as feeds (the feeds-channel consolidation).
  *
  * Pins the productionized contract:
- *   1. ensureStreamingChannelFeed materializes a channel as a kind='streaming'
- *      feed with the scheduler guards (virtual=false + sync-lifecycle columns
- *      NULL), is idempotent, and soft-deletes cleanly.
- *   2. the sync scheduler (check-due-feeds) never queues a streaming feed, even
- *      with next_run_at in the past — kind is the discriminator.
+ *   1. ensureChannelFeed materializes a channel with the
+ *      `channel_messages` store and null sync lifecycle, is idempotent, and
+ *      soft-deletes cleanly.
+ *   2. the sync scheduler never queues a channel feed, even with next_run_at
+ *      in the past, because its definition declares no `sync` operation.
  *   3. A chat-link Automation materializes the channel's feed under its
  *      connection; archiving it soft-deletes the feed.
- *   4. manage_feeds read_feed dispatches on kind: a streaming feed returns its
- *      channel transcript, a collected feed returns metadata + recent runs.
- *   5. facet derivation: a chat-only connection whose channels are streaming
+ *   4. manage_feeds read_feed is metadata-only for every storage plane.
+ *   5. facet derivation: a chat-only connection whose channels are
  *      feeds is NOT mislabeled a data connection.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import {
-  slackAclSource,
-  slackChannelKey,
-  slackChannelsToResources,
-} from "@lobu/connectors/slack-identity";
-import { buildAccessGraph } from "../../../authz/access-graph";
 import { getDb } from "../../../db/client";
 import { AutomationSubscriptionService } from "../../../gateway/channels/automation-subscription-service";
 import {
-  ensureStreamingChannelFeed,
-  softDeleteStreamingChannelFeed,
+  ensureChannelFeed,
+  softDeleteChannelFeed,
 } from "../../../gateway/channels/channel-feed";
 import type { Env } from "../../../index";
-import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
-import { ensureMemberEntity } from "../../../utils/member-entity";
 import { withAclEdgeWrite } from "../../../utils/relationship-validation";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestConnection } from "../../setup/test-fixtures";
@@ -74,7 +65,7 @@ async function makeChatConnection(opts: {
   return { id: conn.id, slug: String(row.slug) };
 }
 
-describe("channel streaming feeds", () => {
+describe("channel feeds", () => {
   let workspace: TestWorkspace;
   let orgId: string;
 
@@ -113,9 +104,9 @@ describe("channel streaming feeds", () => {
     `;
   });
 
-  it("materializes a streaming feed with the scheduler guards + idempotency", async () => {
+  it("materializes a channel feed with scheduler guards + idempotency", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    const feedId = await ensureStreamingChannelFeed({
+    const feedId = await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: "slack:C100",
@@ -124,21 +115,24 @@ describe("channel streaming feeds", () => {
 
     const sql = getDb();
     const rows = await sql`
-      SELECT id, kind, virtual, schedule, next_run_at, checkpoint, status, feed_key, config
+      SELECT id, schedule, next_run_at, checkpoint, status, feed_key, config,
+             kind, virtual
       FROM feeds WHERE connection_id = ${conn.id} AND deleted_at IS NULL
     `;
     expect(rows.length).toBe(1);
-    expect(rows[0]?.kind).toBe("streaming");
-    expect(rows[0]?.virtual).toBe(false);
-    // Two-phase invariant: no sync lifecycle → the scheduler never queues it.
+    // No sync lifecycle: the scheduler never queues it.
     expect(rows[0]?.next_run_at).toBeNull();
     expect(rows[0]?.schedule).toBeNull();
     expect(rows[0]?.checkpoint).toBeNull();
     expect(rows[0]?.feed_key).toBe("slack:C100");
     expect((rows[0]?.config as { store?: string })?.store).toBe("channel_messages");
+    // Retained only for old replicas during the rolling column-removal window.
+    // The capability-era runtime selects the store from config above.
+    expect(rows[0]?.kind).toBe("streaming");
+    expect(rows[0]?.virtual).toBe(false);
 
     // Idempotent: a second ensure returns the same id, no duplicate row.
-    const again = await ensureStreamingChannelFeed({
+    const again = await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: "slack:C100",
@@ -151,7 +145,7 @@ describe("channel streaming feeds", () => {
     expect(Number(count[0]?.n)).toBe(1);
 
     // Soft-delete retires it.
-    await softDeleteStreamingChannelFeed({
+    await softDeleteChannelFeed({
       connectionId: conn.id,
       channelKey: "slack:C100",
     });
@@ -162,19 +156,20 @@ describe("channel streaming feeds", () => {
     expect(Number(live[0]?.n)).toBe(0);
   });
 
-  it("the sync scheduler never queues a streaming feed (kind discriminator)", async () => {
+  it("the sync scheduler never queues a channel feed without sync capability", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: "slack:C200",
     });
     const sql = getDb();
-    // Force a past next_run_at to prove `kind = 'collected'` is what excludes it
-    // (not merely the NULL next_run_at the materializer leaves).
+    // Force a past next_run_at to prove capability selection excludes it, not
+    // merely the NULL next_run_at the materializer leaves.
     await sql`
       UPDATE feeds SET next_run_at = now() - interval '1 hour'
-      WHERE connection_id = ${conn.id} AND kind = 'streaming'
+      WHERE connection_id = ${conn.id}
+        AND config @> '{"store":"channel_messages"}'::jsonb
     `;
     const result = await materializeDueFeeds({} as Env, sql);
     expect(result.dueFeeds).toBe(0);
@@ -193,11 +188,11 @@ describe("channel streaming feeds", () => {
 
     const sql = getDb();
     const bound = await sql`
-      SELECT kind, feed_key, connection_id FROM feeds
+      SELECT feed_key, connection_id, config FROM feeds
       WHERE organization_id = ${orgId} AND deleted_at IS NULL
     `;
     expect(bound.length).toBe(1);
-    expect(bound[0]?.kind).toBe("streaming");
+    expect((bound[0]?.config as { store?: string })?.store).toBe("channel_messages");
     expect(bound[0]?.feed_key).toBe("slack:C300");
     expect(Number(bound[0]?.connection_id)).toBe(conn.id);
 
@@ -215,7 +210,7 @@ describe("channel streaming feeds", () => {
     expect(Number(after[0]?.n)).toBe(0);
   });
 
-  it("create_version reconciles streaming feeds when message triggers change", async () => {
+  it("create_version reconciles channel feeds when message triggers change", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     const { agentId } = await createTestAgent({ organizationId: orgId });
     const created = (await workspace.owner.automations.create({
@@ -263,9 +258,9 @@ describe("channel streaming feeds", () => {
     expect(removed.deleted_at).not.toBeNull();
   });
 
-  it("read_feed returns a streaming feed's transcript (kind dispatch)", async () => {
+  it("read_feed returns channel-feed metadata without its transcript", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    const feedId = await ensureStreamingChannelFeed({
+    const feedId = await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: "slack:C400",
@@ -300,19 +295,22 @@ describe("channel streaming feeds", () => {
       action: "read_feed",
       feed_id: feedId,
     })) as {
-      kind: string;
-      messages: Array<{ user: string; text: string; isBot: boolean }>;
+      action: string;
+      feed?: { id: number; store: string };
+      recent_runs?: unknown[];
+      messages?: unknown[];
     };
 
-    expect(result.kind).toBe("streaming");
-    expect(result.messages.length).toBe(2);
-    expect(result.messages[0]).toMatchObject({ user: "Alice", text: "hello team", isBot: false });
-    expect(result.messages[1]).toMatchObject({ user: "assistant", text: "hi Alice", isBot: true });
+    expect(result.action).toBe("read_feed");
+    expect(result.feed?.id).toBe(feedId);
+    expect(result.feed?.store).toBe("channel_messages");
+    expect(result.recent_runs).toEqual([]);
+    expect(result.messages).toBeUndefined();
   });
 
-  it("trigger_feed rejects a streaming feed (only collected feeds sync)", async () => {
+  it("trigger_feed rejects a channel feed without sync capability", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    const feedId = await ensureStreamingChannelFeed({
+    const feedId = await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: "slack:C600",
@@ -323,46 +321,43 @@ describe("channel streaming feeds", () => {
       feed_id: feedId,
     })) as { triggered?: boolean; run_id?: string; error?: string };
 
-    // A streaming feed has no connector fetch for its feed_key — triggering a
+    // A channel feed has no connector fetch for its feed_key; triggering a
     // sync would spawn a run against nothing. Reject before createSyncRun.
     expect(res.triggered).toBeUndefined();
     expect(res.run_id).toBeUndefined();
-    expect(res.error).toContain("only collected feeds");
+    expect(res.error).toContain("does not support sync");
   });
 
-  it("read_feed on a collected feed returns runs, not a transcript", async () => {
-    // A plain connection with the default kind='collected' feed.
+  it("read_feed on an event-store feed returns runs, not a transcript", async () => {
+    // A plain connection with the default event-store feed.
     const conn = await createTestConnection({
       organization_id: orgId,
       connector_key: "slack",
-      display_name: "Collected Slack",
+      display_name: "Event-store Slack",
     });
     const sql = getTestDb();
     const feedRow = (await sql`
-      SELECT id, kind FROM feeds WHERE connection_id = ${conn.id} AND deleted_at IS NULL
-    `) as Array<{ id: number; kind: string }>;
-    expect(feedRow[0]?.kind).toBe("collected");
+      SELECT id FROM feeds WHERE connection_id = ${conn.id} AND deleted_at IS NULL
+    `) as Array<{ id: number }>;
 
-    // read_feed dispatches on kind: a collected feed resolves to its metadata +
-    // recent sync runs, NEVER a channel_messages transcript.
+    // Metadata includes recent sync runs, never a channel_messages transcript.
     const res = (await workspace.owner.feeds.manage({
       action: "read_feed",
       feed_id: feedRow[0].id,
     })) as {
-      kind?: string;
-      feed?: { id: number };
+      feed?: { id: number; store: string };
       recent_runs?: unknown[];
       messages?: unknown[];
       error?: string;
     };
     expect(res.error).toBeUndefined();
-    expect(res.kind).toBe("collected");
+    expect(res.feed?.store).toBe("events");
     expect(res.messages).toBeUndefined();
     expect(Array.isArray(res.recent_runs)).toBe(true);
     expect(res.feed?.id).toBe(feedRow[0].id);
   });
 
-  it("archiveAllChatAutomations soft-deletes each unbound channel's streaming feed", async () => {
+  it("archiveAllChatAutomations soft-deletes each unbound channel feed", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     const svc = new AutomationSubscriptionService();
     const { agentId } = await createTestAgent({ organizationId: orgId });
@@ -379,24 +374,28 @@ describe("channel streaming feeds", () => {
     const sql = getDb();
     const before = await sql`
       SELECT COUNT(*)::int AS n FROM feeds
-      WHERE organization_id = ${orgId} AND kind = 'streaming' AND deleted_at IS NULL
+      WHERE organization_id = ${orgId}
+        AND config @> '{"store":"channel_messages"}'::jsonb
+        AND deleted_at IS NULL
     `;
     expect(Number(before[0]?.n)).toBe(2);
 
     const removed = await svc.archiveAllChatAutomations(agentId, orgId);
     expect(removed).toBe(2);
 
-    // Both streaming feeds are retired — no live orphan feed left behind.
+    // Both channel feeds are retired: no live orphan feed remains.
     const after = await sql`
       SELECT COUNT(*)::int AS n FROM feeds
-      WHERE organization_id = ${orgId} AND kind = 'streaming' AND deleted_at IS NULL
+      WHERE organization_id = ${orgId}
+        AND config @> '{"store":"channel_messages"}'::jsonb
+        AND deleted_at IS NULL
     `;
     expect(Number(after[0]?.n)).toBe(0);
   });
 
-  it("a chat-only connection with streaming feeds is not labeled a data connection", async () => {
+  it("a chat-only connection with channel feeds is not labeled a data connection", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    await ensureStreamingChannelFeed({
+    await ensureChannelFeed({
       connectionId: conn.id,
       organizationId: orgId,
       channelKey: "slack:C500",
@@ -408,106 +407,14 @@ describe("channel streaming feeds", () => {
         feed_count: number;
       };
     };
-    // The streaming channel feed shows in the rail (feed_count > 0)…
+    // The channel feed shows in the rail (feed_count > 0)…
     expect(result.connection.feed_count).toBeGreaterThan(0);
     // …but it does NOT make the connection claim the data facet.
     expect(result.connection.facets.data).toBe(false);
     expect(result.connection.facets.chat).toBe(true);
   });
 
-  it("read_feed gates an ACL-enforced channel by membership, not just connection visibility", async () => {
-    // The owner can SEE any connection (no visibility filter), but must not read
-    // an enforced Slack channel's transcript unless they're a channel member.
-    const conn = await makeChatConnection({ orgId, teamId: "TENF" });
-    const feedId = await ensureStreamingChannelFeed({
-      connectionId: conn.id,
-      organizationId: orgId,
-      channelKey: "slack:CENF",
-    });
-    const runtimeConnId = slugToRuntimeConnectionId(conn.slug);
-    const sql = getTestDb();
-    await sql`
-      INSERT INTO channel_messages (
-        organization_id, connection_id, platform, channel_id,
-        platform_message_id, author_name, is_bot, text, occurred_at
-      ) VALUES (
-        ${orgId}, ${runtimeConnId}, 'slack', 'CENF',
-        'me1', 'Insider', false, 'enforced channel secret', NOW()
-      )
-    `;
-
-    // Not enforced yet → owner reads it.
-    const before = (await workspace.owner.feeds.manage({
-      action: "read_feed",
-      feed_id: feedId,
-    })) as { messages?: unknown[] };
-    expect(before.messages?.length).toBe(1);
-
-    // Enforce the connection's ACL; owner is NOT a channel member.
-    const graph = await buildAccessGraph({
-      organizationId: orgId,
-      connectionId: runtimeConnId,
-      connectorKey: slackAclSource.key,
-      resourceNamespace: slackAclSource.resourceNamespace,
-      memberIdentities: slackAclSource.memberIdentities,
-      resources: slackChannelsToResources("TENF", [
-        { channelId: "CENF", name: "secret", memberSlackUserIds: [] },
-      ]),
-    });
-
-    const blocked = (await workspace.owner.feeds.manage({
-      action: "read_feed",
-      feed_id: feedId,
-    })) as { messages?: unknown[] };
-    expect(blocked.messages?.length).toBe(0); // membership gate fires
-
-    // Make the owner a channel member → they can read it again.
-    const channelEntityId =
-      graph.resourceEntityIds[slackChannelKey("TENF", "CENF")];
-    // ensureMemberEntity enforces userId-owns-email: the auth_user_id/auth:signup
-    // claim (which the gate resolves on) is only written when the userId owns the
-    // email the $member is provisioned under. The real sign-in path always passes
-    // the signed-in user's own email, so seed with it here — a constructed
-    // owner-<id>@example.com would mismatch the user row and be refused.
-    await ensureMemberEntity({
-      organizationId: orgId,
-      userId: workspace.users.owner.id,
-      name: "Owner",
-      email: workspace.users.owner.email,
-    });
-    const [member] = await sql`
-      SELECT e.id FROM entities e
-      JOIN entity_types et ON et.id = e.entity_type_id AND et.slug = '$member'
-      JOIN entity_identities ei ON ei.entity_id = e.id
-        AND ei.namespace = 'auth_user_id' AND ei.identifier = ${workspace.users.owner.id}
-        AND ei.source_connector = 'auth:signup'
-      WHERE e.organization_id = ${orgId} AND e.deleted_at IS NULL
-      LIMIT 1
-    `;
-    const [mot] = await sql`
-      SELECT id FROM entity_relationship_types
-      WHERE organization_id = ${orgId} AND slug = 'member_of' AND status = 'active'
-      LIMIT 1
-    `;
-    // Seeded under the ACL-write privilege because `member_of` is classified
-    // authorization-bearing: the chokepoint trigger refuses a grant minted
-    // outside a sync, which is the property this fixture is standing in for.
-    await withAclEdgeWrite(sql, async (tx) => {
-      await tx`
-        INSERT INTO entity_relationships (
-          organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
-        ) VALUES (${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW())
-      `;
-    });
-
-    const allowed = (await workspace.owner.feeds.manage({
-      action: "read_feed",
-      feed_id: feedId,
-    })) as { messages?: unknown[] };
-    expect(allowed.messages?.length).toBe(1);
-  });
-
-  it("does not leak a PRIVATE connection's transcript to an anonymous caller", async () => {
+  it("does not expose a private connection's feed metadata to an anonymous caller", async () => {
     // A private chat connection: visible only to its creator / org admins.
     chatConnectionSeq += 1;
     const priv = await createTestConnection({
@@ -529,7 +436,7 @@ describe("channel streaming feeds", () => {
     const runtimeConnId = slugRow[0].slug.startsWith("agentconn-")
       ? slugRow[0].slug.slice(10)
       : slugRow[0].slug;
-    const feedId = await ensureStreamingChannelFeed({
+    const feedId = await ensureChannelFeed({
       connectionId: priv.id,
       organizationId: orgId,
       channelKey: "slack:CPRIV",
@@ -544,15 +451,16 @@ describe("channel streaming feeds", () => {
       )
     `;
 
-    // Owner (creator) CAN read it.
+    // Owner (creator) can inspect metadata, but even the owner gets no content.
     const ownerRes = (await workspace.owner.feeds.manage({
       action: "read_feed",
       feed_id: feedId,
-    })) as { messages?: unknown[]; error?: string };
-    expect(ownerRes.messages?.length).toBe(1);
+    })) as { feed?: { id: number }; messages?: unknown[]; error?: string };
+    expect(ownerRes.feed?.id).toBe(feedId);
+    expect(ownerRes.messages).toBeUndefined();
 
-    // Anonymous reader of the public org must NOT — the gate hides the private
-    // connection's feed, so the transcript is never resolved.
+    // Anonymous reader of the public org cannot see the private connection's
+    // feed metadata.
     const anonRes = (await workspace.asAnonymous().feeds.manage({
       action: "read_feed",
       feed_id: feedId,

@@ -200,10 +200,14 @@ export default class PulseConnector extends ConnectorRuntime<Checkpoint> {
     name: "SDK e2e pulse",
     version: "1.0.0",
     authSchema: { methods: [{ type: "none" as const }] },
-    feeds: { pulse: { key: "pulse", name: "Pulse" } },
+    feeds: {
+      pulse: { key: "pulse", name: "Pulse", sync: this.syncPulse },
+    },
   };
 
-  async sync(ctx: SyncContext<Checkpoint>): Promise<SyncResult<Checkpoint>> {
+  private async syncPulse(
+    ctx: SyncContext<Checkpoint>,
+  ): Promise<SyncResult<Checkpoint>> {
     const seq = (ctx.checkpoint?.seq ?? 0) + 1;
     return {
       events: [

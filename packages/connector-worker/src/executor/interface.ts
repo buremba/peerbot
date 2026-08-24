@@ -41,7 +41,6 @@ export type ExecutorJob =
     }
   | {
       mode: 'query';
-      feedKey?: string | null;
       query: string;
       config: Record<string, unknown>;
       credentials: SyncCredentials | null;
@@ -52,12 +51,12 @@ export type ExecutorJob =
       sort?: { column: string; order: 'asc' | 'desc' };
     }
   | {
-      // Virtual-feed RECALL: same live, no-persistence read as `query`, plus the
-      // caller's keyword `terms` pushed down to the source.
-      mode: 'search';
-      feedKey?: string | null;
-      query: string;
-      terms: string[];
+      // Configured feed read: source-native filtering with no platform copy.
+      mode: 'read';
+      feedKey: string;
+      feedId?: number | null;
+      query?: string;
+      cursor?: string;
       config: Record<string, unknown>;
       credentials: SyncCredentials | null;
       sessionState: Record<string, unknown> | null;
@@ -118,10 +117,12 @@ export type ExecutorResult =
       total?: number;
     }
   | {
-      mode: 'search';
+      mode: 'read';
       rows: Record<string, unknown>[];
       columns?: { name: string; type: string }[];
       total?: number;
+      nextCursor?: string;
+      hasMore?: boolean;
     }
   | {
       mode: 'webhook_register';

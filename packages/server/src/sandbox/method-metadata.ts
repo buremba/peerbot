@@ -895,27 +895,27 @@ export default async (_ctx, client) => {
 	},
 	"feeds.get": {
 		summary:
-			"Get a feed by id. Collected feeds return feed metadata and recent runs, not stored records; search collected records with knowledge.search/search_memory or client.query. Virtual feeds return live rows.",
+			"Get feed metadata and recent sync runs without querying its source. Search local knowledge with knowledge.search; query source-backed feeds explicitly with feeds.readMany.",
 		access: "read",
 		signature:
-			"feeds.get(input: { feed_id: number; limit?: number; search_term?: string }): Promise<unknown>",
+			"feeds.get(input: { feed_id: number }): Promise<unknown>",
 		example: "const feed = await client.feeds.get({ feed_id: 42 });",
 	},
 	"feeds.readMany": {
 		summary:
-			"Read several feeds in parallel with per-feed successes/failures. Collected feeds return metadata and recent runs; virtual feeds return live rows. Search collected records with knowledge.search/search_memory or client.query.",
+			"Explicitly query several source-backed feeds in parallel. Each read has its own query, sort, limit, and opaque cursor; sources are deadline-bounded and fail independently.",
 		access: "read",
 		signature:
-			"feeds.readMany(input: { feed_ids: number[]; limit?: number; timeout_ms?: number; search_term?: string }): Promise<unknown>",
+			"feeds.readMany(input: { reads: Array<{ feed_id: number; query?: string; sort?: { column: string; order: 'asc' | 'desc' }; limit?: number; cursor?: string }>; timeout_ms?: number }): Promise<unknown>",
 		example:
-			"const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
+			"const feeds = await client.feeds.readMany({ reads: [{ feed_id: 42, query: 'urgent', limit: 25 }, { feed_id: 43 }] });",
 	},
 	"feeds.create": {
 		summary:
-			"Create a collected or virtual feed for a connection. A collected feed is manual-only unless `schedule` is set; call feeds.trigger to collect immediately. A virtual feed reads live and never syncs. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like feed URLs) in `config`.",
+			"Create a configured feed for a connection. Its connector-declared operations decide whether it can sync, read from the source, or do both. A syncable feed has no cron unless `schedule` is set; call feeds.trigger to sync immediately. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings in `config`.",
 		access: "admin",
 		signature:
-			"feeds.create(input: { connection_id: number; feed_key: string; display_name?: string; entity_ids?: number[]; config?: object; schedule?: string | null; timezone?: string; virtual?: boolean }): Promise<unknown>",
+			"feeds.create(input: { connection_id: number; feed_key: string; display_name?: string; entity_ids?: number[]; config?: object; schedule?: string | null; timezone?: string }): Promise<unknown>",
 		example:
 			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},
@@ -1114,11 +1114,11 @@ export default async (_ctx, client) => {
 	// top-level
 	query: {
 		summary:
-			"Run a simple read-only SQL string scoped to the org (member-safe column allowlist). For pagination, connection pushdown, or virtual feeds use the `query_sql` MCP tool instead. Prefer `client.metrics.query` for declared measures.",
+			"Run a simple read-only SQL string scoped to the org (member-safe column allowlist). For pagination or connection pushdown use the `query_sql` MCP tool; query source-backed feeds explicitly with feeds.readMany. Prefer `client.metrics.query` for declared measures.",
 		access: "read",
 		example:
 			"const rows = await client.query(\"SELECT id, name FROM entities WHERE entity_type = 'company' LIMIT 10\");",
-		usageExample: `// Simple SQL read — use query_sql for pagination/feeds.
+		usageExample: `// Simple internal SQL read — use query_sql for pagination/pushdown.
 export default async (_ctx, client) => {
   return client.query("SELECT id, name FROM entities WHERE entity_type = 'company' LIMIT 10");
 };`,

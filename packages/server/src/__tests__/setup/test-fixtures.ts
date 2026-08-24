@@ -93,7 +93,9 @@ export async function createTestUser(options?: {
       .replace(/[^a-z0-9_-]/g, '-')
       .replace(/^-+|-+$/g, '');
   const username =
-    baseUsername.length > 0 ? `${baseUsername}-${id.slice(5, 9)}` : `user-${id.slice(5, 9)}`;
+    baseUsername.length > 0
+      ? `${baseUsername}-${id.slice(5, 9)}`
+      : `user-${id.slice(5, 9)}`;
 
   await sql`
     INSERT INTO "user" (id, email, name, username, "emailVerified", "createdAt", "updatedAt")
@@ -106,7 +108,7 @@ export async function createTestUser(options?: {
 export async function addUserToOrganization(
   userId: string,
   organizationId: string,
-  role: string = 'member'
+  role: string = 'member',
 ): Promise<string> {
   const sql = getTestDb();
   const memberId = `member_${generateSecureToken(8)}`;
@@ -124,7 +126,10 @@ export async function addUserToOrganization(
  * admin-tool tests need to call `manageConnections` / `manageFeeds` as the
  * connection owner.
  */
-export function ownerToolContext(organizationId: string, userId: string): ToolContext {
+export function ownerToolContext(
+  organizationId: string,
+  userId: string,
+): ToolContext {
   return {
     organizationId,
     userId,
@@ -166,7 +171,8 @@ export async function createTestAgent(options: {
   ownerUserId?: string;
 }): Promise<TestAgent> {
   const sql = getTestDb();
-  const agentId = options.agentId ?? `agent-${generateSecureToken(8).toLowerCase()}`;
+  const agentId =
+    options.agentId ?? `agent-${generateSecureToken(8).toLowerCase()}`;
   const name = options.name ?? `Test Agent ${agentId.slice(-4)}`;
   const ownerUserId = options.ownerUserId ?? `user_${generateSecureToken(8)}`;
 
@@ -223,7 +229,9 @@ export async function insertChatConnectionRow(opts: {
   credentialMode?: 'byo' | 'managed';
 }): Promise<void> {
   const sql = getTestDb();
-  const slug = opts.id.startsWith('slackinst-') ? opts.id : `agentconn-${opts.id}`;
+  const slug = opts.id.startsWith('slackinst-')
+    ? opts.id
+    : `agentconn-${opts.id}`;
   const metadata = opts.metadata ?? {};
   const teamId =
     typeof metadata.teamId === 'string' && metadata.teamId.length > 0
@@ -235,9 +243,14 @@ export async function insertChatConnectionRow(opts: {
       : null;
   const rawStatus = opts.status ?? 'active';
   const status =
-    rawStatus === 'active' ? 'active' : rawStatus === 'error' ? 'error' : 'paused';
+    rawStatus === 'active'
+      ? 'active'
+      : rawStatus === 'error'
+        ? 'error'
+        : 'paused';
   const credentialMode =
-    opts.credentialMode ?? (opts.id.startsWith('slackinst-') ? 'managed' : 'byo');
+    opts.credentialMode ??
+    (opts.id.startsWith('slackinst-') ? 'managed' : 'byo');
   const foldedConfig = {
     ...(opts.config ?? {}),
     settings: opts.settings ?? {},
@@ -304,7 +317,13 @@ export async function seedSystemEntityTypes(): Promise<void> {
   });
 
   const types: [string, string, string, string, string][] = [
-    ['brand', 'Brand', 'A company, product line, or brand identity', '🏢', brandSchema],
+    [
+      'brand',
+      'Brand',
+      'A company, product line, or brand identity',
+      '🏢',
+      brandSchema,
+    ],
     ['product', 'Product', 'A specific product, app, or service', '📦', '{}'],
     ['competitor', 'Competitor', 'A competing brand or product', '🎯', '{}'],
     ['feature', 'Feature', 'A product feature or capability', '✨', '{}'],
@@ -458,8 +477,13 @@ export async function createTestOAuthClient(options?: {
   const sql = getTestDb();
   const client_id = `mcp_${generateSecureToken(16)}`;
   const client_secret = `secret_${generateSecureToken(32)}`;
-  const redirect_uris = options?.redirect_uris || ['http://localhost:3000/callback'];
-  const grant_types = options?.grant_types || ['authorization_code', 'refresh_token'];
+  const redirect_uris = options?.redirect_uris || [
+    'http://localhost:3000/callback',
+  ];
+  const grant_types = options?.grant_types || [
+    'authorization_code',
+    'refresh_token',
+  ];
   const clientName =
     options && Object.hasOwn(options, 'client_name')
       ? (options.client_name ?? null)
@@ -505,7 +529,7 @@ export async function createTestAccessToken(
     expiresIn?: number; // seconds
     scope?: string;
     resource?: string | null;
-  }
+  },
 ): Promise<TestAccessToken> {
   const sql = getTestDb();
   const token = generateSecureToken(32);
@@ -529,7 +553,7 @@ export async function createTestAccessToken(
 export async function createExpiredAccessToken(
   userId: string,
   organizationId: string,
-  clientId: string
+  clientId: string,
 ): Promise<TestAccessToken> {
   const sql = getTestDb();
   const token = generateSecureToken(32);
@@ -563,7 +587,7 @@ interface TestPAT {
 export async function createTestPAT(
   userId: string,
   organizationId: string,
-  options?: { scope?: string }
+  options?: { scope?: string },
 ): Promise<TestPAT> {
   const sql = getTestDb();
   const token = `owl_pat_${generateSecureToken(24)}`;
@@ -594,13 +618,36 @@ export async function createTestConnectorDefinition(options: {
   key: string;
   name: string;
   version?: string;
-  feeds_schema?: Record<string, any>;
-  auth_schema?: Record<string, any>;
+  feeds_schema?: Record<string, Record<string, unknown>>;
+  auth_schema?: Record<string, unknown>;
   automation_events?: Array<Record<string, unknown>>;
   organization_id?: string | null;
 }): Promise<TestConnectorDefinition> {
   const sql = getTestDb();
   const version = options.version ?? '1.0.0';
+  // The fixture runtime below implements sync for every declared feed. Mirror
+  // the compiler's handler-derived metadata so test definitions cannot claim
+  // fewer capabilities than the runtime they install. Preserve explicit
+  // operations (including []) for capability-validation tests.
+  const feedsSchema = Object.fromEntries(
+    Object.entries(options.feeds_schema ?? { default: {} }).map(
+      ([feedKey, rawDefinition]) => {
+        const definition =
+          rawDefinition && typeof rawDefinition === 'object'
+            ? rawDefinition
+            : {};
+        return [
+          feedKey,
+          {
+            ...definition,
+            operations: Array.isArray(definition.operations)
+              ? definition.operations
+              : ['sync'],
+          },
+        ];
+      },
+    ),
+  );
 
   await sql`
     INSERT INTO connector_definitions (
@@ -611,7 +658,7 @@ export async function createTestConnectorDefinition(options: {
       ${options.key},
       ${options.name},
       ${version},
-      ${sql.json(options.feeds_schema ?? { default: {} })},
+      ${sql.json(feedsSchema)},
       ${sql.json(options.auth_schema ?? {})},
       ${options.automation_events ? sql.json(options.automation_events) : null},
       ${options.organization_id ?? null},
@@ -670,7 +717,8 @@ export async function createTestConnection(options: {
 }): Promise<TestConnection> {
   const sql = getTestDb();
 
-  const displayName = options.display_name ?? `Test Connection ${options.connector_key}`;
+  const displayName =
+    options.display_name ?? `Test Connection ${options.connector_key}`;
   const slug = await ensureUniqueConnectionSlug({
     organizationId: options.organization_id,
     connectorKey: options.connector_key,
@@ -678,7 +726,9 @@ export async function createTestConnection(options: {
     displayName,
   });
 
-  const entityIdsLiteral = options.entity_ids ? pgBigintArray(options.entity_ids) : null;
+  const entityIdsLiteral = options.entity_ids
+    ? pgBigintArray(options.entity_ids)
+    : null;
   const [inserted] = await sql`
     INSERT INTO connections (
       organization_id, connector_key, slug, display_name, status,
@@ -753,7 +803,8 @@ export async function createTestEvent(options: {
   const sql = getTestDb();
   const originId = options.origin_id ?? `test-event-${generateSecureToken(8)}`;
   const resolvedEntityIds =
-    options.entity_ids ?? (options.entity_id != null ? [options.entity_id] : []);
+    options.entity_ids ??
+    (options.entity_id != null ? [options.entity_id] : []);
   const entityIdsLiteral = pgBigintArray(resolvedEntityIds);
 
   // Resolve organization_id from the first entity if not provided
@@ -761,10 +812,11 @@ export async function createTestEvent(options: {
   if (!organizationId && resolvedEntityIds.length > 0) {
     const entityRow =
       await sql`SELECT organization_id FROM entities WHERE id = ${resolvedEntityIds[0]}`;
-    if (entityRow.length > 0) organizationId = entityRow[0].organization_id as string;
+    if (entityRow.length > 0)
+      organizationId = entityRow[0].organization_id as string;
   }
 
-  let inserted: any;
+  let inserted: { id: number | string; origin_id: string };
   [inserted] = await sql`
     INSERT INTO events (
       entity_ids, connection_id, feed_id, feed_key, automation_id, automation_version_id, origin_id,
@@ -828,11 +880,16 @@ export async function createTestSession(userId: string): Promise<TestSession> {
   const sessionId = `session_${generateSecureToken(16)}`;
   const token = generateSecureToken(32);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-  const signedCookie = await serializeSigned('better-auth.session_token', token, TEST_AUTH_SECRET, {
+  const signedCookie = await serializeSigned(
+    'better-auth.session_token',
+    token,
+    TEST_AUTH_SECRET,
+    {
     httpOnly: true,
     path: '/',
     sameSite: 'Lax',
-  });
+    },
+  );
 
   await sql`
     INSERT INTO "session" (id, token, "userId", "expiresAt", "createdAt", "updatedAt")
@@ -862,12 +919,15 @@ export async function createTestDeviceCode(
   options?: {
     scope?: string;
     resource?: string;
-  }
+  },
 ): Promise<TestDeviceCode> {
   const sql = getTestDb();
   const deviceCode = `dc_${generateSecureToken(16)}`;
   const userCode =
-    `${generateSecureToken(2).toUpperCase()}-${generateSecureToken(2).toUpperCase()}`.slice(0, 9);
+    `${generateSecureToken(2).toUpperCase()}-${generateSecureToken(2).toUpperCase()}`.slice(
+      0,
+      9,
+    );
   const expiresAt = new Date(Date.now() + 600 * 1000); // 10 min
 
   await sql`
@@ -980,13 +1040,13 @@ export async function linkSlackIdentityInGraph(opts: {
 
   const { memberEntityId } = await provisionMemberAndCoreIdentities(
     opts.organizationId,
-    { userId: opts.userId, email }
+    { userId: opts.userId, email },
   );
 
   const identifier = normalizeSlackUserId(opts.teamId, opts.slackUserId);
   if (!identifier) {
     throw new Error(
-      `unnormalizable Slack identity: ${opts.teamId}/${opts.slackUserId}`
+      `unnormalizable Slack identity: ${opts.teamId}/${opts.slackUserId}`,
     );
   }
   await sql`

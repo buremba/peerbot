@@ -303,6 +303,7 @@ async function resolveActiveConnectorVersion(
 export type SyncRunSkipReason =
   | 'already_active'
   | 'feed_not_found'
+  | 'sync_unsupported'
   | 'cloud_restricted'
   | 'connector_uninstalled'
   | 'connector_version_unrunnable';
@@ -319,6 +320,8 @@ export function describeSyncRunSkip(reason: SyncRunSkipReason): string {
       return 'Sync already pending or running for this feed';
     case 'feed_not_found':
       return 'Feed not found';
+    case 'sync_unsupported':
+      return 'This feed does not support sync';
     case 'cloud_restricted':
       return 'This connector cannot run on Lobu Cloud yet, so no sync was queued';
     case 'connector_uninstalled':
@@ -359,9 +362,33 @@ async function createSyncRunWithClient(
   // Get feed details (including pinned_version)
   const feedRows = await sql`
     SELECT f.organization_id, f.connection_id, f.pinned_version, f.schedule, f.timezone,
-           c.connector_key
+           c.connector_key,
+           cd.definition_id,
+           COALESCE(cd.feed_operations, '[]'::jsonb) AS feed_operations
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
+    LEFT JOIN LATERAL (
+      SELECT connector_definitions.id AS definition_id,
+             connector_definitions.feeds_schema -> f.feed_key -> 'operations' AS feed_operations
+      FROM connector_definitions
+      WHERE connector_definitions.key = c.connector_key
+        AND connector_definitions.organization_id = f.organization_id
+        AND (
+          (f.pinned_version IS NULL AND connector_definitions.status = 'active')
+          OR (
+            f.pinned_version IS NOT NULL
+            AND (
+              connector_definitions.version = f.pinned_version
+              OR connector_definitions.status = 'active'
+            )
+          )
+        )
+      ORDER BY (connector_definitions.version = f.pinned_version) DESC,
+               (connector_definitions.status = 'active') DESC,
+               connector_definitions.updated_at DESC,
+               connector_definitions.id DESC
+      LIMIT 1
+    ) cd ON TRUE
     WHERE f.id = ${feedId}
   `;
   if (feedRows.length === 0) {
@@ -375,7 +402,20 @@ async function createSyncRunWithClient(
     pinned_version: string | null;
     schedule: string | null;
     timezone: string | null;
+    definition_id: number | null;
+    feed_operations: unknown;
   };
+
+  // A feed whose connector declares no `sync` operation can never be polled.
+  // Only decide this when a definition actually resolved — an absent definition
+  // is the uninstalled case, owned by resolveActiveConnectorVersion below.
+  if (
+    feed.definition_id != null &&
+    (!Array.isArray(feed.feed_operations) ||
+      !feed.feed_operations.includes('sync'))
+  ) {
+    return { ok: false, reason: 'sync_unsupported' };
+  }
 
   // Cloud gate: a raw-DB connector (postgres) has no tenant-URL egress hardening
   // yet, so under LOBU_CLOUD_MODE we don't queue a scheduled sync run for it. The

@@ -8,14 +8,15 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { advanceAutomationSchedule } from '../../automations/schedule-cursor';
 import type { DbClient } from '../../db/client';
 import { ClientSdkActionError } from '../../sandbox/namespaces/action-call';
 import { nextRunAt } from '../../utils/cron';
-import { advanceAutomationSchedule } from '../../automations/schedule-cursor';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import {
   createTestAgent,
   createTestConnection,
+  createTestConnectorDefinition,
   createTestEntity,
   createTestUser,
 } from '../setup/test-fixtures';
@@ -57,6 +58,12 @@ describe('automations/feeds timezone-aware schedules', () => {
       userId: workspace.users.owner.id,
       memberRole: 'owner',
     });
+    await createTestConnectorDefinition({
+      key: 'github',
+      name: 'GitHub',
+      organization_id: workspace.org.id,
+      feeds_schema: { default: {} },
+    });
   }, 60_000);
 
   it('Automation create stores trigger timezone and anchors next_run_at to the zone wall-clock', async () => {
@@ -65,7 +72,9 @@ describe('automations/feeds timezone-aware schedules', () => {
       slug: 'tz-automation',
       name: 'TZ Automation',
       prompt: 'Summarize {{entities}}.',
-      triggers: [{ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' }],
+      triggers: [
+        { kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' },
+      ],
       agent_id: 'tz-automation-agent',
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
@@ -86,7 +95,9 @@ describe('automations/feeds timezone-aware schedules', () => {
       SELECT next_run_at FROM automations WHERE id = ${automationId}
     `;
     expect(utcHour(advanced.next_run_at)).toBe(1);
-    expect(new Date(advanced.next_run_at as string).getTime()).toBeGreaterThan(Date.now());
+    expect(new Date(advanced.next_run_at as string).getTime()).toBeGreaterThan(
+      Date.now(),
+    );
   });
 
   it('Automation update re-anchors the pending firing when trigger timezone changes', async () => {
@@ -101,12 +112,15 @@ describe('automations/feeds timezone-aware schedules', () => {
     const automationId = Number(created.automation_id);
 
     const sql = getTestDb();
-    const [before] = await sql`SELECT next_run_at FROM automations WHERE id = ${automationId}`;
+    const [before] =
+      await sql`SELECT next_run_at FROM automations WHERE id = ${automationId}`;
     expect(utcHour(before.next_run_at)).toBe(serverTimeNineAmUtcHour());
 
     await workspace.owner.automations.update({
       automation_id: automationId,
-      triggers: [{ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' }],
+      triggers: [
+        { kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' },
+      ],
     });
     const [after] = await sql`
       SELECT timezone, next_run_at FROM automations WHERE id = ${automationId}
@@ -130,7 +144,7 @@ describe('automations/feeds timezone-aware schedules', () => {
           },
         ],
         agent_id: 'tz-automation-agent',
-      })
+      }),
     ).rejects.toThrow(/Unknown IANA timezone/);
   });
 
@@ -185,6 +199,8 @@ describe('automations/feeds timezone-aware schedules', () => {
       })
       .catch((reason: unknown) => reason);
     expect(error).toBeInstanceOf(ClientSdkActionError);
-    expect((error as ClientSdkActionError).message).toContain('Unknown IANA timezone');
+    expect((error as ClientSdkActionError).message).toContain(
+      'Unknown IANA timezone',
+    );
   });
 });

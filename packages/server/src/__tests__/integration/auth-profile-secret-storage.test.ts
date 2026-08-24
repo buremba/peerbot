@@ -154,7 +154,7 @@ describe("auth_profiles credential storage", () => {
 	});
 
 	/**
-	 * BOTH execution paths (worker poll + virtual-feed pushdown) resolve
+	 * BOTH execution paths (worker poll + direct source read) resolve
 	 * credentials through `resolveExecutionAuth` only — not through
 	 * `connections.config`. One seam test covers both; separate path-A/path-B
 	 * copies that re-called the same helper were deleted as pure duplication.

@@ -155,8 +155,8 @@ export async function resolveExecutionAuth(
 
   // `env` credentials live in `auth_data` as `secret://` refs, never as raw
   // values — resolve them here so this single seam serves BOTH execution
-  // paths: the worker sync poll (worker-api/poll.ts) and the virtual-feed
-  // pushdown (lib/connector-pushdown.ts). Non-ref entries (scope bookkeeping)
+  // paths: the worker sync poll (worker-api/poll.ts) and source reads
+  // (lib/connector-pushdown.ts). Non-ref entries (scope bookkeeping)
   // pass through untouched.
   const connectionCredentials = {
     ...(appAuthProfile

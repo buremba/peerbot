@@ -5,7 +5,7 @@
  */
 
 import {
-  type ConnectorDefinition,
+  type RuntimeConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
   createHttpClient,
@@ -66,7 +66,7 @@ const FEED_CONFIG_SCHEMA = {
 } as const;
 
 export default class IOSAppStoreConnector extends ConnectorRuntime {
-  readonly definition: ConnectorDefinition = {
+  readonly definition: RuntimeConnectorDefinition = {
     key: "ios_appstore",
     name: "iOS App Store",
     description: "Fetches app reviews from the Apple App Store via RSS feeds.",
@@ -77,6 +77,7 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
     },
     feeds: {
       reviews: {
+        sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "App Reviews",
         description: "Fetch reviews for an iOS app.",
@@ -108,7 +109,7 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
     errorPrefix: "iOS App Store RSS",
   });
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  private async syncFeed(ctx: SyncContext): Promise<SyncResult> {
     const appId = ctx.config.app_id as string;
     const country = ctx.config.country as string;
     const checkpoint = (ctx.checkpoint ?? {}) as IOSCheckpoint;

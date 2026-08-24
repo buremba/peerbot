@@ -404,7 +404,7 @@ describe('OAuth feed pause preservation', () => {
     expect(resumed?.last_error).toBeNull();
   });
 
-  it('keeps a manual collected feed unscheduled when scope re-grant resumes it', async () => {
+  it('keeps an unscheduled sync-capable feed unscheduled when scope re-grant resumes it', async () => {
     const seeded = await seedOAuthConnection({
       grantedScopes: [CONNECTOR_SCOPE],
       feeds: [{ key: 'alpha', status: 'active', schedule: null }],

@@ -8,29 +8,27 @@ entities. V1 ships **Postgres**; Snowflake/BigQuery are additive (see end).
 The connector owns the DB connection — for *both* indexing and live reads. The
 gateway never opens an external pool.
 
-- **Memory feed (indexed)** — a `postgres` connection + a `query` feed runs a
+- **Sync** — a `postgres` connection + a `query` feed runs a
   read-only `SELECT` on a schedule, keyset-incremental, and emits one event per
   row → embedded, searchable memory. (`packages/connectors/src/postgres.ts`)
-- **Live read (no copy)** — the connector's `query()` runs SQL live against the
-  source and returns rows, persisting nothing. The platform reaches it through one
-  primitive: `runConnectorQuery` (`packages/server/src/lib/connector-pushdown.ts`),
-  which invokes the connector in the worker `query` run-mode (the same inline-run
-  path as `operations.execute`). Virtual feeds use the same connector pushdown via
-  `readVirtualFeed`: a stored feed query is read live and still persists nothing.
+- **Feed source read (no copy)** — that same feed implements `read`, so its stored
+  query can run live and return rows without persisting them. The platform invokes
+  the per-feed handler through `readSourceFeed`; this is independent of whether
+  the same feed is scheduled or manually synced.
+- **Connection query (no copy)** — the connector's connection-level `query()`
+  supports ad-hoc governed SQL through `runConnectorQuery`. This is deliberately
+  separate from configured feed reads.
 - **`query_sql({ connection })`** is the single door: with a `connection` slug it
   pushes the SQL down via `runConnectorQuery` (internal org-scoping skipped — it's
   the org's own DB); without, it runs the internal org-scoped path. There is no
   separate `query_entity_type` tool.
-- **`query_sql({ feed })`** reads one virtual feed live by numeric feed id or
-  `"connection_slug/feed_key"`. The feed's stored `config.query` is the source
-  query; caller `sql` is ignored. `search_term` narrows through the connector
-  `search()` pushdown when available.
+- **`client.feeds.readMany`** is the one explicit live-feed door. Each requested
+  feed has its own source query, limit, and opaque cursor. `feeds.get` only reads
+  feed metadata and recent sync runs; it never calls the source.
 - **`SELECT FROM events` is persisted-only.** It reads synced/materialized content,
-  not live virtual feeds. When the internal SQL references `events`, `query_sql`
-  best-effort returns `coverage.source = 'persisted_events_only'` with up to five
-  visibility-fenced `suggested_virtual_feeds`, `more_available`, and a ready
-  `query_sdk` example using `client.feeds.readMany`. Coverage lookup failures log
-  and omit the block; they never fail the SQL query.
+  not source-backed feeds. `search_memory` reports that boundary in `coverage`:
+  local stores searched, `source_queried: false`, and the visibility-fenced
+  source feeds an agent may choose to query with `client.feeds.readMany`.
 - **Derived entity** — `defineEntityType({ backing: { sql, connection? } })`. With
   `connection`, the read is `get_type → query_sql({ sql: backing_sql, connection })`
   → pushdown. Without, it's the shipped internal view over `events`/`entities`.
@@ -38,12 +36,12 @@ gateway never opens an external pool.
 Single-database only: every query targets one database; no cross-source joins
 (that's a later DuckDB-class engine).
 
-Slice 2 (shipped): **virtual feeds** (`feeds.kind = 'virtual'` / legacy
-`virtual = true` → live reads, no events) and connector `search()` for live recall.
-What is still not built is transparent SQL federation or server-side cross-source
-fan-out for `events` queries. Agents decompose explicitly: use `query_sql` for
-persisted rows, then read suggested live feeds in parallel with `query_sdk` or
-`manage_feeds`.
+Feed capability comes from its connector definition: `operations: ['sync']`,
+`['read']`, or both. Storage is not a mode choice. `sync` may materialize events;
+`read` always queries the source and persists no result. Transparent SQL
+federation and ambient cross-source fan-out are intentionally absent. Agents
+decompose explicitly: search local knowledge, inspect its coverage, then query
+selected sources with `client.feeds.readMany`.
 
 ## Agent-facing live feed reads
 
@@ -52,15 +50,22 @@ or the read-only SDK method:
 
 ```ts
 export default async (_ctx, client) => {
-  return client.feeds.readMany({ feed_ids: [123, 456], limit: 25 });
+  return client.feeds.readMany({
+    reads: [
+      { feed_id: 123, query: 'urgent', limit: 25 },
+      { feed_id: 456, limit: 25 },
+    ],
+    timeout_ms: 10_000,
+  });
 };
 ```
 
 `readMany` reads up to 10 feeds in parallel. Each feed returns independently as
-`{ ok: true, result }` or `{ ok: false, error }`, so a missing or visibility-fenced
-feed does not fail the whole batch. The per-feed response timeout defaults to 10s
-and clamps at 30s; it bounds the batch response, not necessarily the underlying
-connector work.
+`{ ok: true, rows, columns, next_cursor? }` or
+`{ ok: false, error, error_code, retryable }`, so a missing or visibility-fenced
+feed does not fail the whole batch. The per-feed timeout defaults to 10s and
+clamps at 30s. It aborts device and HTTP transports and kills compiled connector
+subprocesses at the deadline.
 
 ## SSRF / egress trust model
 
@@ -83,7 +88,7 @@ scrapers' block-all-private-IPs rule can't be reused.
   sit in it until they ship equivalent hardening.
 
 **Egress guard (`packages/connectors/src/db-egress-guard.ts`).** The connector
-runs a pre-connect host check on `sync()`, `query()`, and `search()`. Policy comes from
+runs a pre-connect host check on `sync()`, `read()`, and `query()`. Policy comes from
 `ctx.config.LOBU_DB_EGRESS_POLICY`, injected by the server from cloud mode:
 
 - `allow-private` (self-hosted, the default) — allows loopback / RFC1918 / CGNAT
@@ -133,15 +138,15 @@ Gate advanced database connectivity behind a paid tier. Seam: `organization.plan
 | Postgres connector + memory feeds | free / pro |
 | Internal derived entities | free / pro |
 | External-backed (live) derived entities — `backing.connection` set | pro / enterprise |
-| Warehouse connectors (Snowflake, BigQuery), virtual feeds + federated search | enterprise |
+| Warehouse connectors (Snowflake, BigQuery), source reads + federated search | enterprise |
 
 Enforcement points when built: connector install, connection count, and presence
 of `backing.connection`.
 
 ## Snowflake / BigQuery forward-compat
 
-No redesign needed: each is a new bundled connector implementing `sync()` +
-`query()` (+ later `search()`), with `env_keys` carrying its credentials
+No redesign needed: each is a new bundled connector implementing per-feed
+`sync` + `read`, plus connection-level `query`, with `env_keys` carrying its credentials
 (Snowflake account/user/keypair/warehouse/role; BigQuery service-account JSON).
 The pushdown plumbing (`runConnectorQuery`, the `query` run-mode, `query_sql`'s
 `connection`) is dialect-agnostic — only the connector's own `query()` differs.

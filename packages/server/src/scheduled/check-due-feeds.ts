@@ -110,7 +110,10 @@ export async function materializeDueFeeds(
       LEFT JOIN device_workers pin_dw ON pin_dw.id = c.device_worker_id
       LEFT JOIN LATERAL (
         SELECT
+          cd.id AS definition_id,
           cd.version,
+          COALESCE(cd.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
+            AS feed_operations,
           CASE
             WHEN f.pinned_version IS NULL OR cd.version = f.pinned_version
               THEN cd.required_capability
@@ -124,8 +127,21 @@ export async function materializeDueFeeds(
         FROM connector_definitions cd
         WHERE cd.key = c.connector_key
           AND cd.organization_id = f.organization_id
-          AND cd.status = 'active'
-        ORDER BY cd.updated_at DESC, cd.id DESC
+          AND (
+            (f.pinned_version IS NULL AND cd.status = 'active')
+            OR (
+              f.pinned_version IS NOT NULL
+              AND (cd.version = f.pinned_version OR cd.status = 'active')
+            )
+          )
+        -- Prefer exact historical metadata when it exists. Device-manifest
+        -- upgrades update the single active definition in place, so a pinned
+        -- artifact may have no matching definition row; in that case the
+        -- active feed contract remains capability truth for the same key.
+        ORDER BY (cd.version = f.pinned_version) DESC,
+                 (cd.status = 'active') DESC,
+                 cd.updated_at DESC,
+                 cd.id DESC
         LIMIT 1
       ) cd ON true
       LEFT JOIN LATERAL (
@@ -139,14 +155,10 @@ export async function materializeDueFeeds(
         AND c.status = 'active'
         AND c.deleted_at IS NULL
         AND f.deleted_at IS NULL
-        -- Only collected feeds are scheduled. Virtual feeds are read LIVE at
-        -- request time (query/search); streaming feeds (chat channels) are
-        -- pushed in real time into channel_messages, neither is ever synced.
-        -- kind = collected is the discriminator; virtual IS NOT TRUE is kept
-        -- until the boolean is dropped (two-phase). A streaming feed also has
-        -- next_run_at NULL, so it could never match anyway (belt and suspenders).
-        AND f.kind = 'collected'
-        AND f.virtual IS NOT TRUE
+        AND (
+          cd.definition_id IS NULL
+          OR cd.feed_operations @> '["sync"]'::jsonb
+        )
         -- A connection pinned for EXECUTION can only run while that device is
         -- polling. In worker-api/poll.ts the fleet lane (1A) takes a pinned
         -- connection only for a page-activated run, and createSyncRun leaves

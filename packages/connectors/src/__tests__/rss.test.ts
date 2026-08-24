@@ -29,7 +29,7 @@ const FEED_XML = `<?xml version="1.0"?>
 
 function ctxFor(urls: string[]) {
   // biome-ignore lint/suspicious/noExplicitAny: minimal SyncContext for unit test
-  return { config: { feed_urls: urls }, checkpoint: null } as any;
+  return { feedKey: 'articles', config: { feed_urls: urls }, checkpoint: null } as any;
 }
 
 test('all feed URLs failing → sync throws with per-URL errors, not a clean empty run', async () => {

@@ -1,11 +1,12 @@
 /**
- * Collected feeds with no schedule are manual-only (no platform default cron).
+ * Sync-capable feeds with no schedule are not enqueued by the cron scheduler.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
 import { cleanupTestDatabase } from "../setup/test-db";
 import {
 	createTestConnection,
+	createTestConnectorDefinition,
 	createTestOrganization,
 	createTestUser,
 } from "../setup/test-fixtures";
@@ -23,6 +24,12 @@ describe("manage_feeds schedule (manual default)", () => {
 			organizationId: org.id,
 			userId: user.id,
 			memberRole: "owner",
+		});
+		await createTestConnectorDefinition({
+			key: "github",
+			name: "GitHub",
+			organization_id: org.id,
+			feeds_schema: { issues: {}, pulls: {}, commits: {} },
 		});
 		const conn = await createTestConnection({
 			organization_id: org.id,
@@ -81,7 +88,8 @@ describe("manage_feeds schedule (manual default)", () => {
 		})) as { error?: string; feed?: { id: number; schedule: string | null } };
 
 		expect(created.error).toBeUndefined();
-		const feedId = created.feed!.id;
+		const feedId = Number(created.feed?.id);
+		expect(feedId).toBeGreaterThan(0);
 
 		const updated = (await owner.feeds.update({
 			feed_id: feedId,

@@ -267,7 +267,6 @@ export async function invokeTemplateEventAction(
 				? `${sourceEvent.title}: ${params.action}`
 				: params.action,
 			payloadType: "empty",
-			payloadData: eventData,
 			semanticType: interaction.emits,
 			originType: "template_interaction",
 			parentOriginId: sourceEvent.origin_id,

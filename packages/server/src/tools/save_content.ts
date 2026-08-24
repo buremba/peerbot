@@ -15,7 +15,7 @@ import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
 import type { Env } from '../index';
-import { refreshSupersededEventCard } from '../notifications/service';
+import { queueInteractiveEventCardRefresh } from '../notifications/service';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
@@ -711,16 +711,11 @@ async function saveContentImpl(
   }
 
   if (inserted && args.supersedes_event_id) {
-    await refreshSupersededEventCard(
+    queueInteractiveEventCardRefresh(
       ctx.organizationId,
       Number(row.id),
       args.supersedes_event_id
-    ).catch((err) => {
-      logger.warn(
-        { err, eventId: row.id, supersededEventId: args.supersedes_event_id },
-        'Superseded chat card refresh failed'
-      );
-    });
+    );
   }
 
   logger.info(

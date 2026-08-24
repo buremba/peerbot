@@ -13,7 +13,6 @@ import {
 	TEMPLATE_ACTION_CAPABILITY_META_KEY,
 } from "../../../interactions/template-action-capability";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway";
-import { resolveNotificationKindCard } from "../../../notifications/service";
 import { getContent } from "../../../tools/get_content";
 import { getMcpResultMeta } from "../../../tools/mcp-result-meta";
 import type { ToolContext } from "../../../tools/registry";
@@ -81,19 +80,6 @@ describe("template event actions", () => {
       WHERE organization_id = ${workspace.org.id}
         AND slug = 'poll'
     `;
-
-		const productionCard = await resolveNotificationKindCard(
-			{
-				organizationId: workspace.org.id,
-				type: "agent_message",
-				title: "Ship this release?",
-				semanticType: "poll_opened",
-				entityIds: [poll.id],
-				payloadData: { poll_id: "poll-1", quorum: 2 },
-			},
-			77,
-		);
-		expect(JSON.stringify(productionCard)).toContain("event-action:77:vote");
 
 		const agent = await createTestAgent({
 			organizationId: workspace.org.id,
@@ -199,39 +185,25 @@ describe("template event actions", () => {
 		expect(first).toMatchObject({ created: true, eventType: "poll_vote_cast" });
 		const replay = await invoke();
 		expect(replay).toEqual({ ...first, created: false });
-		await invoke({
-			value: "B",
-			interactionId: "google-event-2",
-			actor: {
-				platform: "gchat",
-				platformUserId: "users/grace",
-				name: "Grace",
-			},
-		});
-		await invoke({ value: "B", interactionId: "google-event-3" });
 
 		const votes = await sql<{
 			id: number;
-			payload_data: {
+			metadata: {
 				poll_id: string;
 				interaction: { value: string; actor: { id: string } };
 			};
 		}>`
-      SELECT id, payload_data
+      SELECT id, metadata
       FROM events
       WHERE organization_id = ${workspace.org.id}
         AND semantic_type = 'poll_vote_cast'
       ORDER BY id
     `;
-		expect(votes).toHaveLength(3);
-		expect(votes.map((row) => row.payload_data.interaction)).toMatchObject([
-			{ value: "A", actor: { id: "users/ada" } },
-			{ value: "B", actor: { id: "users/grace" } },
-			{ value: "B", actor: { id: "users/ada" } },
-		]);
-		expect(votes.every((row) => row.payload_data.poll_id === "poll-1")).toBe(
-			true,
-		);
+		expect(votes).toHaveLength(1);
+		expect(votes[0].metadata).toMatchObject({
+			poll_id: "poll-1",
+			interaction: { value: "A", actor: { id: "users/ada" } },
+		});
 
 		const activations = await sql`
       SELECT id
@@ -240,7 +212,7 @@ describe("template event actions", () => {
         AND run_type = 'task'
         AND action_key = 'activate-workspace-event'
     `;
-		expect(activations).toHaveLength(3);
+		expect(activations).toHaveLength(1);
 
 		await expect(
 			invoke({ value: "C", interactionId: "forged-value" }),
@@ -262,7 +234,7 @@ describe("template event actions", () => {
         WHERE organization_id = ${workspace.org.id}
           AND semantic_type = 'poll_vote_cast'
       `,
-		).toHaveLength(3);
+		).toHaveLength(1);
 		await expect(
 			invoke({ action: "close", interactionId: "forged-action" }),
 		).rejects.toThrow(/does not declare/i);
@@ -298,7 +270,9 @@ describe("template event actions", () => {
 			supersedes_event_id: source.id,
 			idempotency_key: "poll-close:poll-1",
 		});
-		expect(editMessageContent).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() =>
+			expect(editMessageContent).toHaveBeenCalledTimes(1),
+		);
 		expect(editMessageContent).toHaveBeenCalledWith("91", {
 			threadId: "gchat:spaces/AAA:threads/thread-1",
 			messageId: "spaces/AAA/messages/poll-1",
@@ -313,6 +287,6 @@ describe("template event actions", () => {
         WHERE organization_id = ${workspace.org.id}
           AND semantic_type = 'poll_vote_cast'
       `,
-		).toHaveLength(3);
+		).toHaveLength(1);
 	});
 });

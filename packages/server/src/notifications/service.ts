@@ -636,72 +636,100 @@ export function queueApprovalNotificationCardRefresh(
 	);
 }
 
-/**
- * Replace every persisted chat copy of an event after an append-only
- * superseding event is committed. The original delivery addresses remain on
- * the source row; the replacement kind owns the new card and any new actions.
- */
-export async function refreshSupersededEventCard(
+/** Replace persisted chat copies only when the superseded event was interactive. */
+async function refreshInteractiveEventCard(
 	organizationId: string,
 	replacementEventId: number,
 	supersededEventId: number,
 ): Promise<void> {
 	const manager = getChatInstanceManager();
 	if (!manager) return;
-	const [replacement] = await getDb()<{
+	const [row] = await getDb()<{
 		title: string | null;
 		entity_ids: unknown;
 		semantic_type: string;
 		payload_data: unknown;
 		metadata: unknown;
+		source_entity_ids: unknown;
+		source_semantic_type: string;
+		source_metadata: unknown;
 	}>`
-    SELECT title, entity_ids, semantic_type, payload_data, metadata
-    FROM events
-    WHERE id = ${replacementEventId}
-      AND organization_id = ${organizationId}
+    SELECT replacement.title, replacement.entity_ids,
+           replacement.semantic_type, replacement.payload_data,
+           replacement.metadata,
+           source.entity_ids AS source_entity_ids,
+           source.semantic_type AS source_semantic_type,
+           source.metadata AS source_metadata
+    FROM events replacement
+    JOIN events source
+      ON source.id = ${supersededEventId}
+     AND source.organization_id = replacement.organization_id
+    WHERE replacement.id = ${replacementEventId}
+      AND replacement.organization_id = ${organizationId}
     LIMIT 1
   `;
-	const [source] = await getDb()<{ metadata: unknown }>`
-    SELECT metadata
-    FROM events
-    WHERE id = ${supersededEventId}
-      AND organization_id = ${organizationId}
-    LIMIT 1
-  `;
-	if (!replacement || !source) return;
+	if (!row) return;
+	const deliveries = deliveryRecords(jsonRecord(row.source_metadata));
+	if (deliveries.length === 0) return;
+	const sourceKind = await resolveEventKindDefinition(
+		row.source_semantic_type,
+		organizationId,
+		parsePgNumberArray(row.source_entity_ids),
+	);
+	if (!sourceKind?.interactions || Object.keys(sourceKind.interactions).length === 0) {
+		return;
+	}
 
-	const entityIds = parsePgNumberArray(replacement.entity_ids);
+	const entityIds = parsePgNumberArray(row.entity_ids);
 	const kind = await resolveEventKindDefinition(
-		replacement.semantic_type,
+		row.semantic_type,
 		organizationId,
 		entityIds,
 	);
 	if (!kind) return;
-	const metadata = jsonRecord(replacement.metadata);
+	const metadata = jsonRecord(row.metadata);
 	const data =
 		typeof metadata.notification_type === "string"
-			? jsonRecord(replacement.payload_data)
+			? jsonRecord(row.payload_data)
 			: metadata;
 	const card = buildKindCard({
 		metadataSchema: kind.metadataSchema,
 		jsonTemplate: kind.jsonTemplate,
 		data,
-		title: replacement.title ?? replacement.semantic_type,
+		title: row.title ?? row.semantic_type,
 		sourceEventId: replacementEventId,
 		interactions: kind.interactions,
 	});
 	if (!card) return;
 	const content: AdapterPostableMessage = {
 		card,
-		fallbackText: replacement.title ?? replacement.semantic_type,
+		fallbackText: row.title ?? row.semantic_type,
 	};
 	await Promise.all(
-		deliveryRecords(jsonRecord(source.metadata)).map((delivery) =>
+		deliveries.map((delivery) =>
 			manager.editMessageContent(delivery.connectionId, {
 				threadId: delivery.threadId,
 				messageId: delivery.messageId,
 				content,
 			}),
+		),
+	);
+}
+
+/** Best-effort post-commit refresh, mirroring approval-card settlement. */
+export function queueInteractiveEventCardRefresh(
+	organizationId: string,
+	replacementEventId: number,
+	supersededEventId: number,
+): void {
+	void refreshInteractiveEventCard(
+		organizationId,
+		replacementEventId,
+		supersededEventId,
+	).catch((err) =>
+		logger.warn(
+			{ err, organizationId, replacementEventId, supersededEventId },
+			"[Notifications] Failed to refresh interactive event card",
 		),
 	);
 }

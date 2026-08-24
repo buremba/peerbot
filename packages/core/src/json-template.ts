@@ -369,38 +369,6 @@ export function templateActionInvocation(
   return { action: handler.slice(1), value: interactionValue(value) };
 }
 
-/** Resolve a browser/MCP callback's selected value without importing DOM types into core. */
-export function templateActionRuntimeValue(
-  args: unknown[],
-  fallback: unknown
-): unknown {
-  const first = args[0];
-  if (first && typeof first === "object" && !Array.isArray(first)) {
-    const event = first as Record<string, unknown>;
-    const target =
-      event.currentTarget && typeof event.currentTarget === "object"
-        ? (event.currentTarget as Record<string, unknown>)
-        : event.target && typeof event.target === "object"
-          ? (event.target as Record<string, unknown>)
-          : null;
-    if (target && interactionValue(target.value) !== null) {
-      // HTMLButtonElement.value defaults to "" even when the template's
-      // portable value is carried separately. Do not let that erase it.
-      if (target.value !== "" || interactionValue(fallback) === null) {
-        return target.value;
-      }
-    }
-  }
-  if (
-    typeof first === "string" ||
-    typeof first === "number" ||
-    typeof first === "boolean"
-  ) {
-    return first;
-  }
-  return fallback;
-}
-
 /**
  * Resolve every action/value pair a rendered template actually exposes.
  *

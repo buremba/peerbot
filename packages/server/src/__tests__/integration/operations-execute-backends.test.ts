@@ -110,6 +110,12 @@ describe("operations.execute backend lifecycle", () => {
 					kind: "write",
 					requiresApproval: true,
 				},
+				destructive_action: {
+					name: "Delete remote record",
+					kind: "write",
+					requiresApproval: true,
+					annotations: { destructiveHint: true },
+				},
 				stage_browser: {
 					name: "Stage browser",
 					kind: "write",
@@ -815,7 +821,7 @@ describe("operations.execute backend lifecycle", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("queues destructive local actions for approval", async () => {
+	it("does not equate required approval with high impact", async () => {
 		const result = await manageOperations(
 			{
 				action: "execute",
@@ -831,6 +837,52 @@ describe("operations.execute backend lifecycle", () => {
 			status: "pending_approval",
 		});
 		expect(result).toHaveProperty("approval_url");
+		const [approval] = await getTestDb()`
+			SELECT metadata->'approval_context' AS approval_context,
+			       metadata->'review_fields' AS review_fields
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.approval_context).toEqual({
+			kind: "connector",
+			impact: { level: "normal" },
+		});
+		expect(approval.review_fields).toEqual([
+			{ key: "resource", value: "Connector operation" },
+			{ key: "connection", value: `Test Connection ${LOCAL}` },
+			{ key: "operation", value: "Needs approval" },
+		]);
+	});
+
+	it("marks only explicitly destructive connector actions as high impact", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "destructive_action",
+				input: {},
+			},
+			{} as Env,
+			ctx,
+		);
+		const [approval] = await getTestDb()`
+			SELECT metadata->'approval_context' AS approval_context
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.approval_context).toEqual({
+			kind: "connector",
+			impact: {
+				level: "high",
+				reason:
+					"This action can remove or irreversibly change data in the connected service.",
+				consequences: ["Lobu may not be able to undo the external change."],
+			},
+		});
 	});
 
 	it("surfaces MCP discovery failure for an explicit connection", async () => {

@@ -1307,7 +1307,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(renderBody.result?.isError).not.toBe(true);
     const view = renderBody.result?.structuredContent;
     expect(view?.version).toBe(1);
-    expect(view?.tone).toBe('warning');
+    expect(view?.icon).toBe('agent');
+    expect(view?.impact).toEqual({ level: 'normal' });
+    expect(view?.tone).toBe('default');
     expect(view?.actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1319,6 +1321,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         expect.objectContaining({
           id: 'reject',
           label: 'Reject',
+          variant: 'outline',
           tool: 'resolve_approval',
           args: { run_id: runId, decision: 'reject' },
         }),
@@ -1769,6 +1772,69 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     ]);
     expect(body.result?.content?.[0]?.text).toContain('before → null');
     expect(body.result?.content?.[0]?.text).toContain('before → —');
+  });
+
+  it('uses the warning tone only for an elevated-impact pending action', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_delete_approval_${runId}`,
+      title: 'Delete entity type: Legacy customer — pending approval',
+      content: 'Review this high-impact deletion.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { slug: 'legacy-customer' },
+      metadata: {
+        action: 'delete',
+        proposal: { slug: 'legacy-customer' },
+        approval_context: {
+          kind: 'entity-schema',
+          impact: {
+            level: 'high',
+            reason: 'This removes the entity type contract.',
+            consequences: ['Future writes can no longer use this type.'],
+          },
+        },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 216,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.icon).toBe('entity-schema');
+    expect(body.result?.structuredContent?.impact).toEqual({
+      level: 'high',
+      reason: 'This removes the entity type contract.',
+      consequences: ['Future writes can no longer use this type.'],
+    });
+    expect(body.result?.structuredContent?.tone).toBe('warning');
+    expect(body.result?.structuredContent?.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'approve', variant: 'primary' }),
+        expect.objectContaining({ id: 'reject', variant: 'outline' }),
+        expect.objectContaining({ id: 'review', variant: 'outline' }),
+      ])
+    );
   });
 
   it('keeps user-authored envelope-shaped fields in an ordinary approval proposal', async () => {

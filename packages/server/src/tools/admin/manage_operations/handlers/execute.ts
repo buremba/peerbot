@@ -33,6 +33,12 @@ import { getAuthProfileById } from "../../../../utils/auth-profiles";
 import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
+import {
+	ApprovalKind,
+	approvalContext,
+	highApprovalImpact,
+	normalApprovalImpact,
+} from "../../../../utils/approval-context";
 import { insertEvent } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
 import { stripNul, stripNulDeep } from "../../../../utils/strip-nul";
@@ -107,6 +113,22 @@ export function buildActionConfig(
 		...connectionCredentials,
 		...(connectionConfig ?? {}),
 	};
+}
+
+function connectorApprovalReviewFields(
+	connectionName: string,
+	operationName: string,
+	input: Record<string, unknown>,
+): Array<{ key: string; value: unknown }> {
+	const reserved = new Set(["resource", "connection", "operation"]);
+	return [
+		{ key: "resource", value: "Connector operation" },
+		{ key: "connection", value: connectionName },
+		{ key: "operation", value: operationName },
+		...Object.entries(input)
+			.filter(([key]) => !reserved.has(key))
+			.map(([key, value]) => ({ key, value })),
+	];
 }
 
 async function executeLocalActionInline(
@@ -745,6 +767,20 @@ export async function handleExecute(
 					operation_input: input,
 					action_input: input,
 					input_schema: operation.input_schema ?? null,
+					...approvalContext(
+						ApprovalKind.Connector,
+						operation.annotations?.destructiveHint === true
+							? highApprovalImpact(
+									"This action can remove or irreversibly change data in the connected service.",
+									["Lobu may not be able to undo the external change."],
+								)
+							: normalApprovalImpact(),
+					),
+					review_fields: connectorApprovalReviewFields(
+						connection.display_name ?? connection.connector_key,
+						operation.name,
+						input,
+					),
 					status: "pending_approval",
 					connection_name:
 						connection.display_name ?? connection.connector_key,

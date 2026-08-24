@@ -15,6 +15,13 @@ import {
 } from '../notifications/action-card-state';
 import { resolveInteractionActionOrigin } from '../notifications/action-origin';
 import { ToolUserError } from '../utils/errors';
+import {
+  ApprovalKind,
+  highApprovalImpact,
+  normalApprovalImpact,
+  readApprovalContext,
+  type ApprovalImpact,
+} from '../utils/approval-context';
 import { buildResourcePermalink } from '../utils/url-builder';
 import {
   AccessDeniedError,
@@ -41,6 +48,9 @@ const ACTION_LABEL_MAX_LENGTH = 120;
 const ACTION_HREF_MAX_LENGTH = 2_048;
 const APPROVAL_CAPABILITY_MAX_LENGTH = 4_096;
 const APPROVAL_CAPABILITY_TTL_MS = 10 * 60 * 1_000;
+const APPROVAL_IMPACT_REASON_MAX_LENGTH = 500;
+const APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH = 500;
+const APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS = 5;
 const DISPLAY_REDACTION = '[redacted]';
 const SECRET_SCHEMA_VALUE_KEYS = new Set(['const', 'default', 'enum', 'example', 'examples']);
 
@@ -81,6 +91,20 @@ const LobuViewBlockSchema = Type.Union([
   DiffBlockSchema,
   FormBlockSchema,
 ]);
+
+const ApprovalKindSchema = Type.Union(
+  Object.values(ApprovalKind).map((kind) => Type.Literal(kind))
+);
+
+const ApprovalImpactSchema = Type.Object({
+  level: Type.Union([Type.Literal('normal'), Type.Literal('high')]),
+  reason: Type.Optional(Type.String({ maxLength: APPROVAL_IMPACT_REASON_MAX_LENGTH })),
+  consequences: Type.Optional(
+    Type.Array(Type.String({ maxLength: APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH }), {
+      maxItems: APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS,
+    })
+  ),
+});
 
 const LinkActionSchema = Type.Object({
   id: Type.String({ minLength: 1, maxLength: ACTION_ID_MAX_LENGTH }),
@@ -145,6 +169,8 @@ const ApprovalToolActionSchema = Type.Union([
 export const LobuViewSchema = Type.Object({
   version: Type.Literal(1),
   title: Type.Optional(Type.String({ maxLength: TITLE_MAX_LENGTH })),
+  icon: Type.Optional(ApprovalKindSchema),
+  impact: Type.Optional(ApprovalImpactSchema),
   tone: Type.Optional(
     Type.Union([Type.Literal('warning'), Type.Literal('default'), Type.Literal('bare')])
   ),
@@ -196,6 +222,16 @@ const DIFF_ENVELOPE_ROUTING_KEYS = new Set([
   'resource_class',
   'schema_type',
   'version',
+]);
+
+const HIGH_IMPACT_APPROVAL_ACTIONS = new Set([
+  'delete',
+  'disconnect',
+  'merge',
+  'remove',
+  'remove_rule',
+  'reset',
+  'revoke',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -327,6 +363,55 @@ function displayFieldFormat(key: string, value: unknown): 'code' | undefined {
   return undefined;
 }
 
+function approvalTone(
+  impact: ApprovalImpact,
+  status: string
+): 'default' | 'warning' {
+  if (status !== 'pending') return 'default';
+  return impact.level === 'high' ? 'warning' : 'default';
+}
+
+function legacyApprovalKind(row: ApprovalContentItem): ApprovalKind {
+  const metadata = row.metadata ?? {};
+  if (metadata.tool === 'manage_entity_schema') return ApprovalKind.EntitySchema;
+  if (metadata.tool === 'manage_agents') return ApprovalKind.Agent;
+  if (metadata.tool === 'manage_automations') return ApprovalKind.Automation;
+  if (metadata.tool === 'notify') return ApprovalKind.Question;
+  if (metadata.resourceKind === 'entity' || metadata.fields) return ApprovalKind.Entity;
+  if (stringOrNull(row.platform) || metadata.operation_key) return ApprovalKind.Connector;
+  return ApprovalKind.Approval;
+}
+
+function legacyApprovalImpact(
+  metadata: Record<string, unknown> | null
+): ApprovalImpact {
+  if (metadata?.review_tone === 'warning') {
+    return highApprovalImpact('This action was marked as high impact by its producer.');
+  }
+  if (metadata?.review_tone === 'default') return normalApprovalImpact();
+  const action = typeof metadata?.action === 'string' ? metadata.action.toLowerCase() : '';
+  return HIGH_IMPACT_APPROVAL_ACTIONS.has(action)
+    ? highApprovalImpact('This action can remove or irreversibly change data.')
+    : normalApprovalImpact();
+}
+
+function approvalContextForView(
+  row: ApprovalContentItem,
+  status: string
+): { kind: ApprovalKind; impact: ApprovalImpact } {
+  const explicit = readApprovalContext(row.metadata?.approval_context);
+  if (status !== 'pending') {
+    return {
+      kind: explicit?.kind ?? legacyApprovalKind(row),
+      impact: normalApprovalImpact(),
+    };
+  }
+  return {
+    kind: explicit?.kind ?? legacyApprovalKind(row),
+    impact: explicit?.impact ?? legacyApprovalImpact(row.metadata),
+  };
+}
+
 function approvalBlocks(row: {
   content: string | null;
   interaction_input_schema: Record<string, unknown> | null;
@@ -421,6 +506,7 @@ type ApprovalContentItem = {
   run_id: number;
   created_at: string;
   client_id: string | null;
+  platform: string | null;
   agent_id: string | null;
   automation_id: number | null;
   title: string | null;
@@ -652,6 +738,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
   }));
 
   const status = row.interaction_status ?? 'pending';
+  const approvalContext = approvalContextForView(row, status);
   const decisionBlock = approvalDecisionBlock(row, status);
   const baseTitle = displayValue(row.title ?? `Approval run ${runId}`, TITLE_MAX_LENGTH).replace(
     /\s+—\s+(?:pending approval|approved|rejected|completed|failed|cancelled)$/i,
@@ -680,7 +767,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
         {
           id: 'reject',
           label: 'Reject',
-          variant: 'destructive',
+          variant: 'outline',
           icon: 'x',
           confirm: true,
           confirmPrompt: 'Reject this pending action?',
@@ -706,7 +793,9 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
       status === 'pending' ? baseTitle : `${baseTitle} · ${status}`,
       TITLE_MAX_LENGTH
     ),
-    tone: status === 'pending' ? 'warning' : 'default',
+    icon: approvalContext.kind,
+    impact: approvalContext.impact,
+    tone: approvalTone(approvalContext.impact, status),
     blocks: [
       ...approvalBlocks({
         content: row.payload_text,

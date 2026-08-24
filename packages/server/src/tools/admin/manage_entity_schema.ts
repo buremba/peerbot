@@ -59,6 +59,13 @@ import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
 import { insertEvent } from '../../utils/insert-event';
+import {
+  ApprovalKind,
+  approvalContext,
+  highApprovalImpact,
+  normalApprovalImpact,
+  type ApprovalImpact,
+} from '../../utils/approval-context';
 import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import {
   countEntitiesOfType,
@@ -327,6 +334,41 @@ function entitySchemaApprovalLabel(proposal: ManageEntitySchemaProposal): string
     proposal.args.rule_id;
   const title = `${action.charAt(0).toUpperCase()}${action.slice(1)} ${subject}`;
   return target == null || String(target).trim() === '' ? title : `${title}: ${String(target)}`;
+}
+
+const STRUCTURAL_ENTITY_SCHEMA_FIELDS = new Set([
+  'metadata_schema',
+  'event_kinds',
+  'backing',
+  'metrics_config',
+  'rules_source',
+  'inverse_type_slug',
+  'status',
+]);
+
+function entitySchemaApprovalImpact(
+  proposal: ManageEntitySchemaProposal
+): ApprovalImpact {
+  const subject = proposal.schema_type === 'entity_type' ? 'entity type' : 'relationship type';
+  if (proposal.action === 'delete') {
+    return highApprovalImpact(
+      `This removes the ${subject} definition used to interpret and validate workspace data.`
+    );
+  }
+  if (proposal.action === 'add_rule' || proposal.action === 'remove_rule') {
+    return highApprovalImpact(
+      'This changes which entity types may be connected by this relationship.'
+    );
+  }
+  if (
+    proposal.action === 'update' &&
+    Object.keys(proposal.args).some((key) => STRUCTURAL_ENTITY_SCHEMA_FIELDS.has(key))
+  ) {
+    return highApprovalImpact(
+      `This changes the ${subject} contract used to validate future writes.`
+    );
+  }
+  return normalApprovalImpact();
 }
 
 function entitySchemaApprovalFields(
@@ -737,6 +779,10 @@ async function governEntitySchemaMutation(
         interactionStatus: 'pending',
         interactionInput: proposal.args,
         metadata: {
+          ...approvalContext(
+            ApprovalKind.EntitySchema,
+            entitySchemaApprovalImpact(proposal)
+          ),
           tool: 'manage_entity_schema',
           action_key: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
           schema_type: proposal.schema_type,

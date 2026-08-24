@@ -367,9 +367,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		// entity attribution writes. The dry path passes a tx that is rolled back.
 		const ingestBatch = async (db: DbClient) => {
 			// Audio attachments are queued only after their event insert commits.
-			let pendingTranscriptions: Awaited<
-				ReturnType<typeof materializeInlineAttachments>
-			>["pendingTranscriptions"] = [];
+			let pendingTranscriptions: Parameters<
+				typeof triggerAudioTranscriptions
+			>[1] = [];
 
 			// Resolve or create entities declared via eventKinds[kind].attributions
 			// before inserting events. One query per (entityType, matchField) per
@@ -469,7 +469,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					continue;
 				}
 
-				let itemPendingTranscriptions: typeof pendingTranscriptions = [];
+				let itemPendingTranscriptions: Awaited<
+					ReturnType<typeof materializeInlineAttachments>
+				>["pendingTranscriptions"] = [];
 				if (!isDry) {
 					// ESCAPES THE TX: publish only after validation, immediately before
 					// the event insert. The finally block deletes this item's artifacts
@@ -587,7 +589,23 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 				// exactly as `unchanged` does — the ones just published are unreferenced.
 				if (inserted.change !== "unchanged" && inserted.change !== "state_updated") {
 					artifactCommitted = true;
-					pendingTranscriptions.push(...itemPendingTranscriptions);
+					const transcriptionConnectionId = run.connection_id;
+					if (transcriptionConnectionId != null) {
+						pendingTranscriptions.push(
+							...itemPendingTranscriptions.map((job) => ({
+								...job,
+								originId: inserted.origin_id,
+								baseEventId: inserted.id,
+								connectionId: transcriptionConnectionId,
+								title: inserted.title,
+							}))
+						);
+					} else if (itemPendingTranscriptions.length > 0) {
+						logger.warn(
+							{ run_id: batch.run_id },
+							"[stream] Audio transcription skipped — source connection missing"
+						);
+					}
 				}
 				// ESCAPES THE TX: this dispatches real Automation runs to the worker
 				// fleet. The activation ROWS roll back with the tx, but a dispatched

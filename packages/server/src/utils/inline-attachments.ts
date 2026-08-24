@@ -27,7 +27,15 @@ import {
   type ArtifactStore,
 } from "../gateway/files/artifact-store";
 import { resolvePublicGatewayUrl } from "./public-origin";
-import { insertEvent } from "./insert-event";
+import {
+  insertEvent,
+  lockEventDedupIdentity,
+} from "./insert-event";
+import {
+  generateEmbeddings,
+  getConfiguredEmbeddingModel,
+} from "./embeddings";
+import { getEnvFromProcess } from "./env";
 import logger from "./logger";
 
 /**
@@ -79,11 +87,20 @@ interface StreamItemLike {
 }
 
 /** Per-item record of audio attachments that the gateway should transcribe. */
-interface AudioTranscriptionPending {
-  originId: string;
+interface AudioTranscriptionCandidate {
   artifactId: string;
-  filename: string;
   mimeType: string;
+}
+
+interface AudioTranscriptionJob extends AudioTranscriptionCandidate {
+  /** Connection-scoped source identity of the persisted event. */
+  originId: string;
+  /** Exact stored version whose audio bytes produced this job. */
+  baseEventId: number;
+  /** Source identity is scoped to a connection, never only an organization. */
+  connectionId: number;
+  /** Persisted title included in the canonical event embedding text. */
+  title: string | null;
 }
 
 function publicGatewayUrl(): string {
@@ -104,7 +121,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
   bindingForItem?: (item: T) => string | undefined
 ): Promise<{
   items: T[];
-  pendingTranscriptions: AudioTranscriptionPending[];
+  pendingTranscriptions: AudioTranscriptionCandidate[];
   publishedArtifactIds: string[];
 }> {
   const coreServices = getLobuCoreServices();
@@ -114,7 +131,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
   }
 
   const baseUrl = publicGatewayUrl();
-  const pendingTranscriptions: AudioTranscriptionPending[] = [];
+  const pendingTranscriptions: AudioTranscriptionCandidate[] = [];
   const publishedArtifactIds: string[] = [];
   const out: T[] = [];
 
@@ -193,9 +210,7 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
 
       if (kind === "audio") {
         pendingTranscriptions.push({
-          originId: item.id,
           artifactId: published.artifactId,
-          filename: published.filename,
           mimeType: published.contentType,
         });
       }
@@ -266,7 +281,7 @@ function inferKindFromMime(mime: string): string {
  */
 export function triggerAudioTranscriptions(
   organizationId: string,
-  pending: AudioTranscriptionPending[]
+  pending: AudioTranscriptionJob[]
 ): void {
   if (pending.length === 0) return;
 
@@ -335,8 +350,8 @@ async function pickTranscriptionAgent(
   return null;
 }
 
-async function transcribeOne(
-  job: AudioTranscriptionPending,
+export async function transcribeOne(
+  job: AudioTranscriptionJob,
   organizationId: string,
   agentId: string
 ): Promise<void> {
@@ -371,58 +386,89 @@ async function transcribeOne(
   const transcript = result.text.trim();
   if (!transcript) return;
 
+  let embedding: number[] | undefined;
+  let embeddingModel: string | undefined;
+  const env = getEnvFromProcess();
+  if (env.EMBEDDINGS_SERVICE_URL?.trim()) {
+    try {
+      embeddingModel = getConfiguredEmbeddingModel();
+      const embeddingText = [job.title, transcript].filter(Boolean).join(" ").trim();
+      [embedding] = await generateEmbeddings([embeddingText], env, embeddingModel);
+    } catch (err) {
+      embedding = undefined;
+      embeddingModel = undefined;
+      logger.warn(
+        { origin_id: job.originId, err: String(err) },
+        "[inline-attachments] transcript embedding failed — backfill will retry"
+      );
+    }
+  }
+
   const sql = getDb();
-  const baseRows = (await sql`
-    SELECT id, entity_ids, title, payload_type, payload_data, attachments,
-           author_name, source_url, occurred_at, metadata, semantic_type,
-           origin_type, score
-    FROM events
-    WHERE organization_id = ${organizationId}
-      AND origin_id = ${job.originId}
-      AND NOT EXISTS (
-        SELECT 1 FROM events newer WHERE newer.supersedes_event_id = events.id
-      )
-    ORDER BY created_at DESC, id DESC
-    LIMIT 1
-  `) as Array<{
-    id: number;
-    entity_ids: number[] | null;
-    title: string | null;
-    payload_type: string;
-    payload_data: Record<string, unknown> | null;
-    attachments: unknown[] | null;
-    author_name: string | null;
-    source_url: string | null;
-    occurred_at: string | null;
-    metadata: Record<string, unknown> | null;
-    semantic_type: string;
-    origin_type: string | null;
-    score: number | null;
-  }>;
-  const base = baseRows[0];
-  if (!base) return;
+  await sql.begin(async (tx) => {
+    // Use the same per-source lock as normal connector resync. The exact event
+    // id ties this transcript to the bytes that produced it: if a newer resync
+    // already replaced that version, its own transcription job owns the new
+    // head and this stale result is discarded.
+    await lockEventDedupIdentity(tx, job.connectionId, job.originId);
+    const baseRows = (await tx`
+      SELECT e.id, e.entity_ids, e.title, e.payload_type, e.payload_data,
+             e.attachments, e.author_name, e.source_url, e.occurred_at,
+             e.metadata, e.semantic_type, e.origin_type, e.score
+      FROM events e
+      WHERE e.id = ${job.baseEventId}
+        AND e.organization_id = ${organizationId}
+        AND e.connection_id = ${job.connectionId}
+        AND e.origin_id = ${job.originId}
+        AND NOT EXISTS (
+          SELECT 1 FROM events newer WHERE newer.supersedes_event_id = e.id
+        )
+      FOR UPDATE
+    `) as Array<{
+      id: number;
+      entity_ids: number[] | null;
+      title: string | null;
+      payload_type: string;
+      payload_data: Record<string, unknown> | null;
+      attachments: unknown[] | null;
+      author_name: string | null;
+      source_url: string | null;
+      occurred_at: string | null;
+      metadata: Record<string, unknown> | null;
+      semantic_type: string;
+      origin_type: string | null;
+      score: number | null;
+    }>;
+    const base = baseRows[0];
+    if (!base) return;
 
-  const meta = { ...(base.metadata ?? {}), transcript_provider: result.provider };
+    const meta = { ...(base.metadata ?? {}), transcript_provider: result.provider };
 
-  // Tombstone-style supersede: insert a new event that points at the current
-  // row. The `current_event_records` view (and findCurrentEventByOrigin) will
-  // surface this one going forward; the original stays in history.
-  await insertEvent({
-    entityIds: base.entity_ids ?? [],
-    organizationId,
-    originId: `${job.originId}#transcript`,
-    title: base.title,
-    payloadType: (base.payload_type as never) || "text",
-    content: transcript,
-    payloadData: base.payload_data ?? {},
-    attachments: base.attachments ?? [],
-    authorName: base.author_name,
-    sourceUrl: base.source_url,
-    occurredAt: base.occurred_at,
-    semanticType: base.semantic_type,
-    originType: base.origin_type,
-    metadata: meta,
-    score: base.score,
-    supersedesEventId: base.id,
+    // Content enrichment is the next stored version of the same source item.
+    // Keeping origin_id stable lets the next connector resync find this head;
+    // insertEvent inherits connector/feed/run/parent lineage from the base.
+    await insertEvent(
+      {
+        entityIds: base.entity_ids ?? [],
+        organizationId,
+        originId: job.originId,
+        title: base.title,
+        payloadType: (base.payload_type as never) || "text",
+        content: transcript,
+        payloadData: base.payload_data ?? {},
+        attachments: base.attachments ?? [],
+        authorName: base.author_name,
+        sourceUrl: base.source_url,
+        occurredAt: base.occurred_at,
+        semanticType: base.semantic_type,
+        originType: base.origin_type,
+        metadata: meta,
+        score: base.score,
+        embedding,
+        embeddingModel,
+        supersedesEventId: base.id,
+      },
+      { sql: tx }
+    );
   });
 }

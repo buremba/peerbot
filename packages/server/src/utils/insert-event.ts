@@ -73,6 +73,18 @@ export function eventDedupLockKey(connectionId: number, originId: string): numbe
   return hash | 0;
 }
 
+/** Serialize writes for one connection-scoped source identity in a transaction. */
+export async function lockEventDedupIdentity(
+  sql: DbClient,
+  connectionId: number,
+  originId: string
+): Promise<void> {
+  const lockKey = eventDedupLockKey(connectionId, originId);
+  await sql`
+    SELECT pg_advisory_xact_lock(${EVENT_DEDUP_LOCK_NAMESPACE}, ${lockKey})
+  `;
+}
+
 // ============================================
 // Types
 // ============================================
@@ -964,12 +976,10 @@ export async function insertEvent(
   // transaction-scoped advisory lock keyed on (connection_id, origin_id) so
   // these serialize. Only engage when we own the connection (no caller-supplied
   // tx, which already runs in its own atomic scope) and have both keys.
-  if (options?.onConflictUpdate && !options.sql && params.connectionId && params.originId) {
-    const lockKey = eventDedupLockKey(params.connectionId, params.originId);
+  const dedupConnectionId = params.connectionId;
+  if (options?.onConflictUpdate && !options.sql && dedupConnectionId && params.originId) {
     return sql.begin(async (tx) => {
-      await tx`
-        SELECT pg_advisory_xact_lock(${EVENT_DEDUP_LOCK_NAMESPACE}, ${lockKey})
-      `;
+      await lockEventDedupIdentity(tx, dedupConnectionId, params.originId);
       return runInsert(tx);
     }) as Promise<InsertedEvent>;
   }

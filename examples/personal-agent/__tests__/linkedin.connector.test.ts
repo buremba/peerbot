@@ -1609,6 +1609,7 @@ describe("LinkedInConnector home_feed", () => {
               <span aria-label="View Fixture Commenter One’s profile"></span>
             </a>
             <p>Fixture Commenter One • This first visible comment is long enough to pass the noise filter</p>
+            <button class="comments-comment-social-bar__reactions-count--cr">2 reactions</button>
             <img src="https://media.licdn.com/dms/image/sync/v2/fixture-comment-one" alt="First fixture diagram" />
           </div>
           <div id="replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,3333333333333333333)">
@@ -1751,6 +1752,12 @@ describe("LinkedInConnector home_feed", () => {
     expect(cfg.fields.reaction_count_text.selector).toContain(
       "social-details-social-counts"
     );
+    expect(cfg.fields.reaction_count_text.selector).toContain(
+      "comments-comment-social-bar__reactions-count"
+    );
+    expect(cfg.fields.reaction_count_text.selector).toContain(
+      'button[aria-label="Open reactions menu"]'
+    );
     expect(cfg.fields.comment_count_label.attr).toBe("aria-label");
     expect(cfg.fields.repost_count_label.attr).toBe("aria-label");
 
@@ -1765,6 +1772,8 @@ describe("LinkedInConnector home_feed", () => {
       origin_parent_id: "li_home_activity_1111111111111111111",
       origin_type: "comment",
       author_name: "Fixture Commenter One",
+      score: 2,
+      metadata: { reactions: 2 },
       attachments: [
         {
           kind: "image",
@@ -1778,6 +1787,9 @@ describe("LinkedInConnector home_feed", () => {
       origin_parent_id: "li_home_activity_1111111111111111111",
       origin_type: "comment",
       author_name: "Fixture Commenter Two",
+      // This row has no comment social bar, so it reports no reaction count and
+      // scores 0 rather than defaulting to some non-zero engagement.
+      score: 0,
       attachments: [
         {
           kind: "image",
@@ -1786,9 +1798,158 @@ describe("LinkedInConnector home_feed", () => {
         },
       ],
     });
+    expect(
+      (res.events[2].metadata as Record<string, unknown>).reactions
+    ).toBeUndefined();
     expect(res.metadata.backend).toBe("extension-cs-scrape");
     // These mock rows carry no links field, so support is assumed.
     expect(res.metadata.object_all_supported).toBe(true);
+  });
+
+  /**
+   * Drive a real `genericScrape` over `body` with the connector's own home-feed
+   * config, so selector scoping is exercised end to end rather than asserted
+   * as a string.
+   */
+  const syncHomeFeedDom = async (body: string) => {
+    const dom = new JSDOM(`<!doctype html><body>${body}</body>`, {
+      url: "https://www.linkedin.com/feed/",
+    });
+    Object.defineProperty(dom.window.HTMLElement.prototype, "innerText", {
+      configurable: true,
+      get() {
+        return this.textContent ?? "";
+      },
+    });
+    dom.window.scrollTo = () => undefined;
+    dom.window.document.documentElement.scrollTo = () => undefined;
+    const savedGlobals = new Map(
+      ["document", "window", "location"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name),
+      ])
+    );
+    Object.defineProperties(globalThis, {
+      document: {
+        configurable: true,
+        value: dom.window.document,
+        writable: true,
+      },
+      window: { configurable: true, value: dom.window, writable: true },
+      location: {
+        configurable: true,
+        value: dom.window.location,
+        writable: true,
+      },
+    });
+    try {
+      return await new LinkedInConnector().sync({
+        feedKey: "home_feed",
+        config: { max_scrolls: 1 },
+        checkpoint: {},
+        sessionState: {
+          chrome_dispatcher: {
+            dispatch: async (
+              _action: string,
+              input: Record<string, unknown>
+            ) => ({
+              tab_id: 1,
+              cs_scrape: true,
+              result: await genericScrape({
+                ...(input.scrape_config as Record<string, unknown>),
+                scroll: { max: 0, stall: 0, waitMs: 0 },
+              }),
+            }),
+          },
+        },
+      });
+    } finally {
+      dom.window.close();
+      for (const [name, descriptor] of savedGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else delete (globalThis as Record<string, unknown>)[name];
+      }
+    }
+  };
+
+  test("a post does not inherit reactions from a comment rendered above its own counts", async () => {
+    // Ordering matters: `querySelector` returns the first match in DOCUMENT
+    // order across the whole selector list, not the first branch that matches.
+    // Put the comment's social bar BEFORE the post's social-details block, the
+    // layout in which an unscoped comment branch would hijack the post's count.
+    const res = await syncHomeFeedDom(`
+      <div componentkey="expandedparent_orderingFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Fixture Post Author"></button>
+        <span id="translatable-commentary-urn:li:activity:4444444444444444444"></span>
+        <p>A home-feed post with enough useful text to pass the noise filter</p>
+        <div componentkey="commentsSectionContainerordering_token">
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:4444444444444444444,5555555555555555555)">
+            <a href="https://www.linkedin.com/in/fixture-commenter-three/">
+              <span aria-hidden="true">Fixture Commenter Three</span>
+              <span aria-label="View Fixture Commenter Three’s profile"></span>
+            </a>
+            <p>Fixture Commenter Three • A visible comment long enough to pass the noise filter</p>
+            <button class="comments-comment-social-bar__reactions-count--cr">7 reactions</button>
+          </div>
+        </div>
+        <div class="social-details-social-counts">
+          <span class="social-details-social-counts__reactions-count">99</span>
+        </div>
+      </div>`);
+
+    const post = res.events.find((event: any) => event.origin_type === "post");
+    const comment = res.events.find(
+      (event: any) => event.origin_type === "comment"
+    );
+    // The post keeps its own 99 reactions; the comment keeps its own 7.
+    expect(post.metadata.reactions).toBe(99);
+    expect(comment.metadata.reactions).toBe(7);
+  });
+
+  test("a label-only post card does not inherit a nested comment's aria-label counts", async () => {
+    // The label branches are the shape with no social-details text node to win
+    // on document order, so an unscoped label selector leaks the comment's
+    // numbers into the post for reactions, comments, and reposts alike.
+    const res = await syncHomeFeedDom(`
+      <div componentkey="expandedparent_orderingFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Fixture Label Author"></button>
+        <span id="translatable-commentary-urn:li:activity:6666666666666666666"></span>
+        <p>A label-only home-feed post with text long enough to pass the filter</p>
+        <div componentkey="commentsSectionContainerordering_token">
+          <div id="replaceableComment_urn:li:comment:(urn:li:activity:6666666666666666666,7777777777777777777)">
+            <a href="https://www.linkedin.com/in/fixture-commenter-four/">
+              <span aria-hidden="true">Fixture Commenter Four</span>
+              <span aria-label="View Fixture Commenter Four’s profile"></span>
+            </a>
+            <p>Fixture Commenter Four • Another visible comment long enough to pass the filter</p>
+            <svg aria-label="Reaction button state: no reaction"></svg>
+            <div>
+              <div><span>3 reactions</span><span>3</span></div>
+              <button aria-label="Open reactions menu"></button>
+            </div>
+            <button aria-label="2 comments">2</button>
+            <button aria-label="1 repost">1</button>
+          </div>
+        </div>
+        <span aria-label="140 reactions"></span>
+        <span aria-label="65 comments"></span>
+        <span aria-label="49 reposts"></span>
+      </div>`);
+
+    const post = res.events.find((event: any) => event.origin_type === "post");
+    const comment = res.events.find(
+      (event: any) => event.origin_type === "comment"
+    );
+    expect(post.metadata).toMatchObject({
+      reactions: 140,
+      comments: 65,
+      reposts: 49,
+    });
+    // The comment scores from its own reactions only; reply and repost counts
+    // stay post-only quantities.
+    expect(comment.metadata.reactions).toBe(3);
+    expect(comment.metadata.comments).toBeUndefined();
+    expect(comment.metadata.reposts).toBeUndefined();
   });
 
   test("min_scrolls/max_scrolls pick a scroll budget in range each run", async () => {
@@ -2294,7 +2455,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.0");
+    expect(c.definition.version).toBe("3.11.1");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

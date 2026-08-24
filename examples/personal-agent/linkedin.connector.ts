@@ -518,14 +518,28 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // Engagement comes only from LinkedIn's dedicated social-count controls.
     // Keep both visible text and accessible-label variants because the current
     // feed uses both shapes across post types and experiments.
+    //
+    // Row scoping matters here: a post row CONTAINS its visible comment rows,
+    // and `querySelector` returns the first match in DOCUMENT order across the
+    // whole comma list, not the first branch that matches. So every branch that
+    // is not already anchored to `.social-details-social-counts` (the post's own
+    // block) carries `:not([id^="replaceableComment_"] *)`, which excludes
+    // elements inside a nested comment. The reaction fields then add a leading
+    // `:scope[id^="replaceableComment_"]` branch so a comment row reads its OWN
+    // reactions: the current feed puts the count beside an "Open reactions
+    // menu" button using obfuscated classes, while permalink pages still use a
+    // comment social-bar class with an experiment suffix (`--cr`). The semantic
+    // sibling branch covers the feed and the prefix class match covers the
+    // permalink shape. Comment and repost counts stay post-only — a comment's
+    // reply count is a different quantity.
     reaction_count_text: {
       selector:
-        ".social-details-social-counts__reactions-count, .social-details-social-counts__reactions",
+        ':scope[id^="replaceableComment_"] div:has(> button[aria-label="Open reactions menu"]) > :first-child, :scope[id^="replaceableComment_"] [class*="comments-comment-social-bar__reactions-count"], .social-details-social-counts__reactions-count, .social-details-social-counts__reactions',
       take: "text",
     },
     reaction_count_label: {
       selector:
-        '.social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i], [aria-label$=" reactions" i]',
+        ':scope[id^="replaceableComment_"] [aria-label*=" reaction on " i], :scope[id^="replaceableComment_"] [aria-label*=" reactions on " i], .social-details-social-counts [aria-label*="reaction" i], [aria-label$=" reaction" i]:not([id^="replaceableComment_"] *), [aria-label$=" reactions" i]:not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
@@ -536,7 +550,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
     },
     comment_count_label: {
       selector:
-        '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comments" i]',
+        '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
@@ -547,7 +561,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
     },
     repost_count_label: {
       selector:
-        '.social-details-social-counts [aria-label*="repost" i], [aria-label$=" repost" i], [aria-label$=" reposts" i]',
+        '.social-details-social-counts [aria-label*="repost" i], [aria-label$=" repost" i]:not([id^="replaceableComment_"] *), [aria-label$=" reposts" i]:not([id^="replaceableComment_"] *)',
       take: "attr",
       attr: "aria-label",
     },
@@ -2520,7 +2534,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.0",
+    version: "3.11.1",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

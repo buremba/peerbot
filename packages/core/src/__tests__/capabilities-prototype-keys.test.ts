@@ -51,6 +51,12 @@ describe("platform allowlist lookups ignore inherited keys", () => {
     ).toContain("automations.execute");
   });
 
+  test("Chrome authorizes the explicit WhatsApp activation capability", () => {
+    expect(
+      authorizeCapabilities("chrome-extension", ["browser.whatsapp"]).authorized
+    ).toEqual(["browser.whatsapp"]);
+  });
+
   test("headless devices authorize shell+files+automation execution but nothing browser-ish", () => {
     // A server/VM device (herdr) advertises the shell/files it actually has
     // plus `automations.execute` (the daemon runs local agent CLIs to complete

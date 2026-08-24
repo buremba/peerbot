@@ -135,10 +135,11 @@ function validateDeviceConnectorManifestsInternal(
       if (
         platform === 'chrome-extension' &&
         isLegacyNativeChromeExtensionConnectorKey(manifest.key) &&
-        manifest.required_capability !== 'browser.scripting'
+        manifest.required_capability !== 'browser.scripting' &&
+        !(manifest.key === 'whatsapp.local' && manifest.required_capability === 'browser.whatsapp')
       ) {
         throw new Error(
-          `chrome-extension connector '${manifest.key}' requires required_capability 'browser.scripting'`
+          `chrome-extension connector '${manifest.key}' has an unsupported required_capability`
         );
       }
       if (!manifest.runtime.platforms.includes(platform)) {
@@ -529,7 +530,8 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
     // Compatibility cutover: the extension intentionally keeps the legacy
     // internal key so the existing connection/feed/event identity survives.
     // This is the sole non-chrome namespace admitted for Chrome; validation
-    // above additionally binds it to browser.scripting.
+    // above additionally binds it to browser.scripting or the dedicated
+    // browser.whatsapp activation capability.
     return (
       isChromeNamespaceConnectorKey(key) || isLegacyNativeChromeExtensionConnectorKey(key)
     );

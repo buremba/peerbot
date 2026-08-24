@@ -22,6 +22,7 @@ export const BROWSER_CAPABILITIES = [
   "browser.downloads",
   "browser.notifications",
   "browser.debugger",
+  "browser.whatsapp",
   // browser.cookies intentionally absent in v1 — high-trust, not approved
 ] as const;
 

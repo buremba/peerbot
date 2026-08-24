@@ -118,6 +118,18 @@ describe('WhatsApp Browser manifest compatibility', () => {
     expect(result.manifests[0]?.manifest.key).toBe('whatsapp.local');
   });
 
+  it('accepts whatsapp.local from Chrome with explicit WhatsApp activation', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.whatsapp'],
+      manifests: [{ ...chromeManifest, required_capability: 'browser.whatsapp' }],
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.manifests).toHaveLength(1);
+    expect(result.manifests[0]?.manifest.required_capability).toBe('browser.whatsapp');
+  });
+
   it('rejects a Chrome whatsapp.local manifest with another allowed browser capability', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',

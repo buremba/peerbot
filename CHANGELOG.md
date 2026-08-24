@@ -1,5 +1,33 @@
 # Changelog
 
+## [16.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v16.0.0...lobu-v16.1.0) (2026-08-24)
+
+
+### Features
+
+* **gchat:** add marketplace welcome and help [client-regen-not-needed] ([#3143](https://github.com/lobu-ai/lobu/issues/3143)) ([eadd839](https://github.com/lobu-ai/lobu/commit/eadd8394ff69cf0d76fb55dd60cfeef712a3255b))
+* **linkedin:** complete home feed events ([#3106](https://github.com/lobu-ai/lobu/issues/3106)) ([bcbf825](https://github.com/lobu-ai/lobu/commit/bcbf82596f042242da198b30284d3ce2a92799bd))
+* **staging:** route public host to local tailnet ([#3063](https://github.com/lobu-ai/lobu/issues/3063)) ([b571155](https://github.com/lobu-ai/lobu/commit/b5711553aa741fb862a3fef5fbc2eb09b2a1cfd1))
+
+
+### Bug Fixes
+
+* **auth:** allow packaged Mac child tokens ([#3133](https://github.com/lobu-ai/lobu/issues/3133)) ([66cfb65](https://github.com/lobu-ai/lobu/commit/66cfb657a6b1dd0e43a560a2bdd926d3f5375d20))
+* **automations:** expire abandoned manual runs ([#3119](https://github.com/lobu-ai/lobu/issues/3119)) ([36def35](https://github.com/lobu-ai/lobu/commit/36def35c08c1ebe09d5da65d5e40b6d508cc8829))
+* **chat:** support live Google Chat webhooks ([#3124](https://github.com/lobu-ai/lobu/issues/3124)) ([7f9621b](https://github.com/lobu-ai/lobu/commit/7f9621bb6dcee6b1342a7110a091ac982833b0f6))
+* **chat:** verify Google Workspace add-on webhooks ([#3126](https://github.com/lobu-ai/lobu/issues/3126)) ([fb9dcf9](https://github.com/lobu-ai/lobu/commit/fb9dcf9ff1d6321fd8ac39dfff6382668c49fb41))
+* **connectors:** release final X likes parser ([#3122](https://github.com/lobu-ai/lobu/issues/3122)) ([4e23a91](https://github.com/lobu-ai/lobu/commit/4e23a917038e52c212010a591cc23f8402cd1cb2))
+* **linkedin:** allow short-link resolution ([#3139](https://github.com/lobu-ai/lobu/issues/3139)) ([db736cf](https://github.com/lobu-ai/lobu/commit/db736cfeab25c1d05d24662d6c2247b4124be929))
+* **linkedin:** fail unusable home feed scrapes ([#3137](https://github.com/lobu-ai/lobu/issues/3137)) ([57c704a](https://github.com/lobu-ai/lobu/commit/57c704adaaf53e783d92c9a20d60c4cc7254e953))
+* **linkedin:** resolve copied post links ([#3138](https://github.com/lobu-ai/lobu/issues/3138)) ([abe81f7](https://github.com/lobu-ai/lobu/commit/abe81f7a487ecea5c7231eab981e8591e918d23c))
+* **linkedin:** reuse hydrated feed for live scores ([#3136](https://github.com/lobu-ai/lobu/issues/3136)) ([0cdcf6f](https://github.com/lobu-ai/lobu/commit/0cdcf6f796f3d5cdaa315b7b822c7cb70bc3a4c2))
+* **linkedin:** score visible comment reactions ([#3135](https://github.com/lobu-ai/lobu/issues/3135)) ([e182a5a](https://github.com/lobu-ai/lobu/commit/e182a5a7bc6295801f1bc747081eeed834ec2a3a))
+* **linkedin:** use durable home feed origins ([#3130](https://github.com/lobu-ai/lobu/issues/3130)) ([81d777a](https://github.com/lobu-ai/lobu/commit/81d777ada88eb4fee68338d12d73682ff909bd3b))
+* **mcp:** render approval changes clearly ([#3129](https://github.com/lobu-ai/lobu/issues/3129)) ([b889c07](https://github.com/lobu-ai/lobu/commit/b889c077ef4caf38f46afd375296e905bd96efcc))
+* project latest completed automation window ([#3096](https://github.com/lobu-ai/lobu/issues/3096)) ([4db43dd](https://github.com/lobu-ai/lobu/commit/4db43dd6f06d2acd642d0ea263d31415b1e41ab8))
+* **server:** preserve transcription event identity ([#3120](https://github.com/lobu-ai/lobu/issues/3120)) ([88c6fdf](https://github.com/lobu-ai/lobu/commit/88c6fdf7ce162b01d574f9a031a2b65497f57586))
+* **server:** select active attribution definitions ([#3125](https://github.com/lobu-ai/lobu/issues/3125)) ([adf3e45](https://github.com/lobu-ai/lobu/commit/adf3e45a580286ded33daf894e21ff37c80eeb19))
+
 ## [16.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.8.0...lobu-v16.0.0) (2026-08-24)
 
 

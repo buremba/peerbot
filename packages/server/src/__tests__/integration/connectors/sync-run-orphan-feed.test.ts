@@ -11,6 +11,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { createSyncRun } from '../../../runs/queue-service';
+import { materializeDueFeeds } from '../../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   createTestConnection,
@@ -55,5 +56,39 @@ describe('createSyncRun orphan-feed handling (#1012)', () => {
     // No run row was created for the orphan feed.
     const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;
     expect(runs.length).toBe(0);
+  });
+
+  it('lets the scheduler retire a due feed whose connector definition was deleted', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    const connectorKey = 'orphan.no_definition';
+
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: 'Orphan No Definition',
+      organization_id: org.id,
+    });
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: connectorKey,
+    });
+    const [feed] = await sql`
+      UPDATE feeds
+      SET schedule = '* * * * *', next_run_at = current_timestamp - interval '1 minute'
+      WHERE connection_id = ${conn.id}
+      RETURNING id
+    `;
+    const feedId = Number((feed as { id: number }).id);
+
+    await sql`
+      DELETE FROM connector_definitions
+      WHERE organization_id = ${org.id} AND key = ${connectorKey}
+    `;
+
+    const materialized = await materializeDueFeeds({} as Env, sql);
+    expect(materialized).toEqual({ dueFeeds: 1, runsCreated: 0, skipped: 1 });
+
+    const [after] = await sql`SELECT deleted_at FROM feeds WHERE id = ${feedId}`;
+    expect((after as { deleted_at: Date | null }).deleted_at).not.toBeNull();
   });
 });

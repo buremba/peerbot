@@ -110,6 +110,7 @@ export async function materializeDueFeeds(
       LEFT JOIN device_workers pin_dw ON pin_dw.id = c.device_worker_id
       LEFT JOIN LATERAL (
         SELECT
+          cd.id AS definition_id,
           cd.version,
           COALESCE(cd.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
             AS feed_operations,
@@ -154,7 +155,10 @@ export async function materializeDueFeeds(
         AND c.status = 'active'
         AND c.deleted_at IS NULL
         AND f.deleted_at IS NULL
-        AND cd.feed_operations @> '["sync"]'::jsonb
+        AND (
+          cd.definition_id IS NULL
+          OR cd.feed_operations @> '["sync"]'::jsonb
+        )
         -- A connection pinned for EXECUTION can only run while that device is
         -- polling. In worker-api/poll.ts the fleet lane (1A) takes a pinned
         -- connection only for a page-activated run, and createSyncRun leaves

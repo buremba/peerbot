@@ -1,5 +1,22 @@
 # Changelog
 
+## [16.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v16.1.0...lobu-v16.2.0) (2026-08-24)
+
+
+### Features
+
+* **mcp:** add semantic approval context ([#3145](https://github.com/lobu-ai/lobu/issues/3145)) ([13a5444](https://github.com/lobu-ai/lobu/commit/13a54447ae40eb0a6b03f38bd21b174b482033b7))
+
+
+### Bug Fixes
+
+* **devices:** stamp public origin on child tokens ([#3151](https://github.com/lobu-ai/lobu/issues/3151)) ([7bf6036](https://github.com/lobu-ai/lobu/commit/7bf6036139ee13e35207265500cbd7229ccef18f))
+* **feeds:** honor pinned connector capabilities ([#3149](https://github.com/lobu-ai/lobu/issues/3149)) ([7e46922](https://github.com/lobu-ai/lobu/commit/7e4692253c8699b98a5118ed0abdc9133523a446))
+* **gchat:** resolve stored secrets in tenant context ([#3147](https://github.com/lobu-ai/lobu/issues/3147)) ([3e3c20e](https://github.com/lobu-ai/lobu/commit/3e3c20e3e0bed78800324eb5326e5ced9fa9ef8e))
+* **linkedin:** ignore identity-less feed modules ([#3152](https://github.com/lobu-ai/lobu/issues/3152)) ([43de225](https://github.com/lobu-ai/lobu/commit/43de225b8ce0cb5636a148bf113d8856c6a59713))
+* **linkedin:** recall content through person identities ([#3141](https://github.com/lobu-ai/lobu/issues/3141)) ([c80beb6](https://github.com/lobu-ai/lobu/commit/c80beb6370b09c11aea3b350c373c611c4756571))
+* **server:** allow agent chat from workspace subdomains ([#3144](https://github.com/lobu-ai/lobu/issues/3144)) ([3ee0d7c](https://github.com/lobu-ai/lobu/commit/3ee0d7c6150e5a584bc855b5857716fcc2d51b55))
+
 ## [16.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v16.0.0...lobu-v16.1.0) (2026-08-24)
 
 

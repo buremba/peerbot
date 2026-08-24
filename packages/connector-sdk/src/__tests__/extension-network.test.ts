@@ -155,6 +155,31 @@ describe('extensionNetworkSync', () => {
     expect(evalCalls.length).toBeGreaterThanOrEqual(1);
   });
 
+  test('passes the private intercept session id to a custom pagination trigger', async () => {
+    const { dispatcher } = makeDispatcher({
+      drainQueues: [
+        [makeResponse('https://x.com/api/p1', { items: ['a'] })],
+        [],
+      ],
+    });
+    const triggerCalls: Array<{ tabId: number; sessionId: string }> = [];
+    await extensionNetworkSync<string>({
+      dispatcher,
+      url: 'https://x.com/feed',
+      config: {
+        interceptPatterns: ['**/api/**'],
+        maxScrolls: 1,
+        scrollDelayMs: 0,
+        responseTimeoutMs: 0,
+      },
+      parseResponse: (_url, json) => (json as { items: string[] }).items,
+      triggerNextPage: async (tabId, _dispatcher, sessionId) => {
+        triggerCalls.push({ tabId, sessionId });
+      },
+    });
+    expect(triggerCalls).toEqual([{ tabId: 555, sessionId: 'netint-stub-1' }]);
+  });
+
   test('skips non-JSON intercepted bodies without crashing', async () => {
     const { dispatcher } = makeDispatcher({
       drainQueues: [

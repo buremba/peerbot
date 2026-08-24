@@ -99,7 +99,16 @@ describe('sync embedding path batches per chunk (Finding #12)', () => {
       // One chunk, three events. The third has empty text (no embeddable
       // content) — it must still stream through, just without a vector.
       await capturedHooks!.onEventChunk([
-        { origin_id: 'a', payload_text: 'aa', occurred_at: new Date(), origin_type: 'post' },
+        {
+          origin_id: 'a',
+          payload_type: 'media',
+          payload_text: 'aa',
+          payload_data: { layout: 'gallery' },
+          payload_template: { type: 'image-grid' },
+          attachments: [{ kind: 'image', url: 'https://example.test/photo.jpg' }],
+          occurred_at: new Date(),
+          origin_type: 'post',
+        },
         { origin_id: 'b', payload_text: 'bbbb', occurred_at: new Date(), origin_type: 'post' },
         { origin_id: 'c', payload_text: '', title: '', occurred_at: new Date(), origin_type: 'post' },
       ]);
@@ -132,6 +141,12 @@ describe('sync embedding path batches per chunk (Finding #12)', () => {
     const byId = new Map(client.streamed.map((it) => [it.id, it]));
     expect(byId.get('a')!.embedding).toEqual([2, 0, 0]);
     expect(byId.get('a')!.embedding_model).toBe('stub-model-v1');
+    expect(byId.get('a')).toMatchObject({
+      payload_type: 'media',
+      payload_data: { layout: 'gallery' },
+      payload_template: { type: 'image-grid' },
+      attachments: [{ kind: 'image', url: 'https://example.test/photo.jpg' }],
+    });
     expect(byId.get('b')!.embedding).toEqual([4, 0, 0]);
     expect(byId.get('b')!.embedding_model).toBe('stub-model-v1');
     expect(byId.get('c')!.embedding).toBeUndefined();

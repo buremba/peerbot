@@ -571,7 +571,12 @@ export interface FeedDefinition {
   >;
 }
 
-export type EventAttributionRole = 'authored_by' | 'about' | 'mentions' | 'belongs_to';
+export type EventAttributionRole =
+  | 'authored_by'
+  | 'performed_by'
+  | 'about'
+  | 'mentions'
+  | 'belongs_to';
 
 /**
  * Declarative event attribution target. The identity selectors are normalized

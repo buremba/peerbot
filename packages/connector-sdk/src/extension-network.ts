@@ -163,7 +163,11 @@ export async function extensionNetworkSync<TItem>(opts: {
    * Custom pagination trigger. Defaults to dispatching an `evaluate`
    * action that runs `window.scrollTo(0, document.documentElement.scrollHeight)`.
    */
-  triggerNextPage?: (tabId: number, dispatcher: ChromeActionDispatcher) => Promise<void>;
+  triggerNextPage?: (
+    tabId: number,
+    dispatcher: ChromeActionDispatcher,
+    sessionId: string
+  ) => Promise<void>;
 }): Promise<ExtensionNetworkResult<TItem>> {
   const cfg = { ...DEFAULT_CONFIG, ...opts.config };
   const items: TItem[] = [];
@@ -254,7 +258,7 @@ export async function extensionNetworkSync<TItem>(opts: {
             ...allowedOriginsInput,
           });
         });
-      await trigger(tabId, opts.dispatcher);
+      await trigger(tabId, opts.dispatcher, liveSessionId);
       await sleep(cfg.scrollDelayMs);
       apiCallCount += await drainInto(items, opts, liveSessionId);
 

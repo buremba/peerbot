@@ -10,9 +10,13 @@ let parseBrowserSearchResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let parseBrowserTimelineResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let parseBrowserTimelinePage: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let extractTweetsFromInstructions: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let finalizeSyncResult: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let finalizeLikedTweetsResult: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let finalizeDmSyncResult: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
@@ -37,14 +41,22 @@ let prepareXReply: any;
 let truncateHandoffReason: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let buildInjectHandoffBannerExpression: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let extractBottomCursor: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let readGraphqlCursor: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let replaceGraphqlCursor: any;
 
 beforeAll(async () => {
 	const mod = await import("../x");
 	parseBrowserSearchResponse = mod.parseBrowserSearchResponse;
 	parseBrowserTimelineResponse = mod.parseBrowserTimelineResponse;
+	parseBrowserTimelinePage = mod.parseBrowserTimelinePage;
 	parseBrowserDmResponse = mod.parseBrowserDmResponse;
 	extractTweetsFromInstructions = mod.extractTweetsFromInstructions;
 	finalizeSyncResult = mod.finalizeSyncResult;
+	finalizeLikedTweetsResult = mod.finalizeLikedTweetsResult;
 	finalizeDmSyncResult = mod.finalizeDmSyncResult;
 	buildHomeFeedTweets = mod.buildHomeFeedTweets;
 	parseUsernameFromStatusPath = mod.parseUsernameFromStatusPath;
@@ -56,6 +68,9 @@ beforeAll(async () => {
 	prepareXReply = mod.prepareXReply;
 	truncateHandoffReason = mod.truncateHandoffReason;
 	buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
+	extractBottomCursor = mod.extractBottomCursor;
+	readGraphqlCursor = mod.readGraphqlCursor;
+	replaceGraphqlCursor = mod.replaceGraphqlCursor;
 });
 
 // A tweet_results.result node in x.com's GraphQL shape. `restId`/`legacy` is
@@ -80,6 +95,70 @@ function tweetResult(
 			quote_count: 0,
 			conversation_id_str: restId,
 			...extra,
+		},
+	};
+}
+
+function likesTimelineUrl(cursor?: string): string {
+	return `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
+		JSON.stringify({
+			userId: "1000000001",
+			count: 20,
+			...(cursor ? { cursor } : {}),
+		}),
+	)}`;
+}
+
+function likesTimelineResponse(id: string, bottomCursor?: string) {
+	return {
+		data: {
+			user: {
+				result: {
+					rest_id: "1000000001",
+					core: { screen_name: "testuser", name: "Test User" },
+					timeline_v2: {
+						timeline: {
+							instructions: [
+								{
+									entries: [
+										{
+											entryId: `tweet-${id}`,
+											content: {
+												itemContent: {
+													tweet_results: {
+														result: tweetResult(
+															id,
+															"alice",
+															`post ${id}`,
+															id === "100"
+																? {
+																		created_at:
+																			"Wed Jun 04 12:00:00 +0000 2024",
+																	}
+																: {},
+														),
+													},
+												},
+											},
+										},
+										...(bottomCursor
+											? [
+													{
+														entryId: "cursor-bottom",
+														content: {
+															cursorType: "Bottom",
+															value: bottomCursor,
+														},
+													},
+												]
+											: []),
+									],
+								},
+							],
+						},
+					},
+				},
+			},
 		},
 	};
 }
@@ -264,6 +343,173 @@ describe("parseBrowserTimelineResponse", () => {
 		expect(bookmarks).toHaveLength(1);
 		expect(bookmarks[0].text).toBe("profile tweet");
 	});
+
+	test("extracts the timeline owner and resumable bottom cursor", () => {
+		const instructions = [
+			{
+				entries: [
+					{
+						entryId: "tweet-9",
+						content: {
+							itemContent: {
+								tweet_results: {
+									result: tweetResult("9", "alice", "liked post"),
+								},
+							},
+						},
+					},
+					{
+						entryId: "cursor-bottom-1",
+						content: { cursorType: "Bottom", value: "cursor-page-2" },
+					},
+				],
+			},
+		];
+		const page = parseBrowserTimelinePage(
+			"https://x.com/i/api/graphql/q/Likes",
+			{
+				data: {
+					user: {
+						result: {
+							rest_id: "1000000001",
+							core: { screen_name: "testuser", name: "Test User" },
+							timeline_v2: { timeline: { instructions } },
+						},
+					},
+				},
+			},
+		);
+		expect(page).toMatchObject({
+			recognized: true,
+			bottomCursor: "cursor-page-2",
+			owner: {
+				id: "1000000001",
+				handle: "testuser",
+				displayName: "Test User",
+			},
+		});
+		expect(page.tweets).toHaveLength(1);
+		expect(extractBottomCursor(instructions)).toBe("cursor-page-2");
+	});
+
+	test("keeps long-form text, media, links, and every post reference", () => {
+		const rich = tweetResult("100", "alice", "short fallback", {
+			in_reply_to_status_id_str: "90",
+			conversation_id_str: "80",
+			is_quote_status: true,
+			entities: {
+				urls: [
+					{
+						url: "https://t.co/a",
+						expanded_url: "https://example.com/article",
+						display_url: "example.com/article",
+					},
+				],
+			},
+			extended_entities: {
+				media: [
+					{
+						type: "video",
+						media_key: "7_abc",
+						media_url_https: "https://pbs.twimg.com/media/preview.jpg",
+						ext_alt_text: "demo video",
+						original_info: { width: 1920, height: 1080 },
+						video_info: {
+							duration_millis: 1234,
+							variants: [
+								{
+									content_type: "video/mp4",
+									bitrate: 256000,
+									url: "https://video.twimg.com/low.mp4",
+								},
+								{
+									content_type: "video/mp4",
+									bitrate: 832000,
+									url: "https://video.twimg.com/high.mp4",
+								},
+							],
+						},
+					},
+				],
+			},
+			retweeted_status_result: {
+				result: tweetResult("70", "bob", "original repost"),
+			},
+		});
+		const richResult = {
+			...rich,
+			note_tweet: {
+				note_tweet_results: { result: { text: "complete long-form text" } },
+			},
+			quoted_status_result: {
+				result: tweetResult("60", "carol", "quoted source"),
+			},
+		};
+		const tweets = extractTweetsFromInstructions([
+			{
+				entries: [
+					{
+						entryId: "tweet-100",
+						content: {
+							itemContent: { tweet_results: { result: richResult } },
+						},
+					},
+				],
+			},
+		]);
+		expect(tweets[0]).toMatchObject({
+			text: "complete long-form text",
+			conversationId: "80",
+			inReplyToId: "90",
+			quotedTweetId: "60",
+			repostedTweetId: "70",
+			attachments: [
+				{
+					kind: "video",
+					url: "https://video.twimg.com/high.mp4",
+					preview_url: "https://pbs.twimg.com/media/preview.jpg",
+					alt_text: "demo video",
+					width: 1920,
+					height: 1080,
+					duration_ms: 1234,
+				},
+			],
+			urls: [
+				{
+					url: "https://t.co/a",
+					expanded_url: "https://example.com/article",
+				},
+			],
+		});
+	});
+});
+
+describe("X likes GraphQL cursor URLs", () => {
+	test("replaces only the cursor in a captured same-origin request", () => {
+		const url = `https://x.com/i/api/graphql/hash/Likes?variables=${encodeURIComponent(
+			JSON.stringify({ userId: "1000000001", cursor: "old", count: 20 }),
+		)}&features=${encodeURIComponent(JSON.stringify({ feature: true }))}`;
+		const replaced = replaceGraphqlCursor(url, "next-page");
+		expect(readGraphqlCursor(replaced)).toBe("next-page");
+		const parsed = new URL(replaced);
+		expect(JSON.parse(parsed.searchParams.get("features")!)).toEqual({
+			feature: true,
+		});
+	});
+
+	test("accepts a captured twitter.com request", () => {
+		const url = `https://api.twitter.com/graphql?variables=${encodeURIComponent(
+			JSON.stringify({ cursor: "old" }),
+		)}`;
+		expect(readGraphqlCursor(replaceGraphqlCursor(url, "next"))).toBe("next");
+	});
+
+	test("refuses a captured request outside X", () => {
+		const url = `https://evil.example/graphql?variables=${encodeURIComponent(
+			JSON.stringify({ cursor: "old" }),
+		)}`;
+		expect(() => replaceGraphqlCursor(url, "next")).toThrow(/non-X request/i);
+	});
 });
 
 describe("parseBrowserSearchResponse", () => {
@@ -366,6 +612,7 @@ describe("finalizeSyncResult", () => {
 			originType: "liked_tweet",
 		});
 		expect(liked.events[0].origin_type).toBe("liked_tweet");
+		expect(liked.events[0].attachments).toBeUndefined();
 
 		const bookmarked = finalizeSyncResult(tweets as any, {}, {}, {
 			originType: "bookmark",
@@ -383,6 +630,139 @@ describe("finalizeSyncResult", () => {
 			last_tweet_id: "7",
 			last_timestamp: "old",
 		});
+	});
+});
+
+describe("finalizeLikedTweetsResult", () => {
+	test("emits complete liked-post evidence and a resumable historical checkpoint", () => {
+		const tweets = [
+			{
+				id: "100",
+				text: "liked reply with media",
+				username: "alice",
+				authorId: "10",
+				authorDisplayName: "Alice",
+				likes: 12,
+				retweets: 3,
+				replies: 4,
+				quotes: 2,
+				publishedAt: new Date("2025-06-01T00:00:00Z"),
+				isRetweet: false,
+				isReply: true,
+				isQuote: true,
+				conversationId: "90",
+				inReplyToId: "90",
+				quotedTweetId: "80",
+				attachments: [
+					{
+						kind: "image",
+						url: "https://pbs.twimg.com/media/a.jpg",
+						alt_text: "diagram",
+					},
+				],
+				likedByUserId: "1000000001",
+				likedByHandle: "testuser",
+				likedByDisplayName: "Test User",
+			},
+		];
+		const result = finalizeLikedTweetsResult(
+			tweets,
+			{},
+			{ backend: "extension" },
+			{
+				status: "in_progress",
+				nextCursor: "page-2",
+				pagesRead: 1,
+				historicalItemsRead: 1,
+			},
+		);
+		expect(result.events[0]).toMatchObject({
+			origin_id: "100",
+			origin_type: "liked_tweet",
+			origin_parent_id: "90",
+			attachments: [
+				{
+					kind: "image",
+					url: "https://pbs.twimg.com/media/a.jpg",
+					alt_text: "diagram",
+				},
+			],
+			metadata: {
+				author_id: "10",
+				author_handle: "alice",
+				liked_by_id: "1000000001",
+				liked_by_handle: "testuser",
+				conversation_id: "90",
+				in_reply_to_id: "90",
+				quoted_tweet_id: "80",
+			},
+		});
+		expect(result.checkpoint).toMatchObject({
+			last_tweet_id: "100",
+			likes_backfill_cursor: "page-2",
+			likes_backfill_status: "in_progress",
+			likes_backfill_pages: 1,
+			likes_oldest_tweet_id: "100",
+		});
+	});
+
+	test("removes the cursor only after a liked-post boundary is complete", () => {
+		const result = finalizeLikedTweetsResult(
+			[],
+			{
+				likes_backfill_cursor: "old-cursor",
+				likes_backfill_pages: 4,
+				likes_oldest_tweet_id: "100",
+			},
+			{},
+			{
+				status: "complete",
+				pagesRead: 1,
+				historicalItemsRead: 0,
+			},
+		);
+		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
+		expect(result.checkpoint.likes_backfill_status).toBe("complete");
+		expect(result.checkpoint.likes_backfill_completed_at).toBeDefined();
+	});
+
+	test("keeps a fresh empty capture retryable", () => {
+		const result = finalizeLikedTweetsResult(
+			[],
+			{
+				likes_backfill_cursor: "old-cursor",
+				likes_backfill_pages: 4,
+			},
+			{},
+			{
+				status: "complete",
+				pagesRead: 1,
+				historicalItemsRead: 0,
+			},
+		);
+		expect(result.checkpoint.likes_backfill_cursor).toBe("old-cursor");
+		expect(result.checkpoint.likes_backfill_status).toBe("in_progress");
+		expect(result.checkpoint.likes_backfill_completed_at).toBeUndefined();
+		expect(result.metadata.collection_status).toBe("in_progress");
+	});
+
+	test("does not downgrade an already-completed empty incremental run", () => {
+		const completedAt = "2025-06-01T00:00:00Z";
+		const result = finalizeLikedTweetsResult(
+			[],
+			{
+				likes_backfill_status: "complete",
+				likes_backfill_completed_at: completedAt,
+			},
+			{},
+			{
+				status: "complete",
+				pagesRead: 0,
+				historicalItemsRead: 0,
+			},
+		);
+		expect(result.checkpoint.likes_backfill_status).toBe("complete");
+		expect(result.checkpoint.likes_backfill_completed_at).toBe(completedAt);
 	});
 });
 
@@ -455,13 +835,28 @@ describe("XConnector definition", () => {
 			role: "authored_by",
 			target: { entityType: "person" },
 		});
-		expect(def.feeds.direct_messages.eventKinds.dm_message.attributions).toEqual(
+		expect(
+			def.feeds.direct_messages.eventKinds.dm_message.attributions,
+		).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ role: "authored_by" }),
 				expect.objectContaining({ role: "about" }),
 			]),
 		);
 		expect(def.feeds.liked_tweets.requiredScopes).toBeUndefined();
+		expect(def.feeds.liked_tweets.configSchema.required).toBeUndefined();
+		expect(
+			def.feeds.liked_tweets.configSchema.properties.backfill_pages_per_run
+				.type,
+		).toBe("integer");
+		expect(
+			def.feeds.liked_tweets.eventKinds.liked_tweet.attributions.map(
+				(rule: { name?: string }) => rule.name,
+			),
+		).toEqual(["author", "liker"]);
+		expect(
+			def.feeds.liked_tweets.eventKinds.liked_tweet.relationships,
+		).toBeUndefined();
 		expect(def.feeds.bookmarks.requiredScopes).toBeUndefined();
 		expect(def.feeds.home_feed.description).toMatch(/home timeline/i);
 		// Extension is the browser fallback method (no public API for the timeline).
@@ -521,9 +916,646 @@ describe("parseBrowserDmResponse", () => {
 });
 
 describe("XConnector browser-first routing", () => {
+	test("keeps an existing empty-config OAuth Likes feed on the API path", async () => {
+		const originalFetch = globalThis.fetch;
+		const requested: string[] = [];
+		globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			requested.push(url);
+			if (url.includes("/2/users/me")) {
+				return new Response(
+					JSON.stringify({ data: { id: "1000000001", username: "testuser" } }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			if (url.includes("/2/users/1000000001/liked_tweets")) {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "500",
+								text: "liked through OAuth",
+								author_id: "123",
+								created_at: "2026-08-23T12:00:00.000Z",
+								public_metrics: {},
+							},
+						],
+						includes: { users: [{ id: "123", username: "alice" }] },
+						meta: {},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		try {
+			const connector = new XConnector();
+			const result = await connector.sync({
+				feedKey: "liked_tweets",
+				config: {},
+				checkpoint: {},
+				credentials: {
+					provider: "twitter",
+					accessToken: "oauth-token",
+					scope: "like.read tweet.read users.read",
+				},
+				entityIds: [],
+			});
+
+			expect(result.metadata.backend).toBe("oauth_api");
+			expect(result.events).toEqual([
+				expect.objectContaining({
+					origin_id: "500",
+					origin_type: "liked_tweet",
+				}),
+			]);
+			expect(requested.some((url) => url.includes("/liked_tweets"))).toBeTrue();
+			// Both actors must land in metadata: the `liker` attribution reads
+			// liked_by_*, the `author` attribution reads author_*. A missing liker
+			// silently halves the feed's people graph on the OAuth backend.
+			expect(result.events[0].metadata).toMatchObject({
+				author_id: "123",
+				author_handle: "alice",
+				liked_by_id: "1000000001",
+				liked_by_handle: "testuser",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	test("carries extension backfill checkpoint state through an OAuth run", async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.includes("/2/users/me")) {
+				return new Response(
+					JSON.stringify({ data: { id: "1000000001", username: "testuser" } }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			if (url.includes("/liked_tweets")) {
+				return new Response(JSON.stringify({ data: [], meta: {} }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		try {
+			const connector = new XConnector();
+			const result = await connector.sync({
+				feedKey: "liked_tweets",
+				config: {},
+				checkpoint: {
+					likes_backfill_cursor: "resume-cursor",
+					likes_backfill_status: "in_progress",
+					likes_backfill_pages: 4,
+					likes_oldest_tweet_id: "7",
+				},
+				credentials: {
+					provider: "twitter",
+					accessToken: "oauth-token",
+					scope: "like.read tweet.read users.read",
+				},
+				entityIds: [],
+			});
+
+			// An OAuth run must not erase the resumable browser backfill state, or
+			// the next extension run restarts the whole history from scratch.
+			expect(result.checkpoint).toMatchObject({
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+				likes_backfill_pages: 4,
+				likes_oldest_tweet_id: "7",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	test("distinguishes a missing Likes response from a parser shape mismatch", async () => {
+		const connector = new XConnector();
+		const dispatcher = {
+			dispatch: async () => ({ result: { responses: [] } }),
+		};
+
+		await expect(
+			connector.sync({
+				feedKey: "liked_tweets",
+				config: {
+					account_handle: "testuser",
+					use_extension: true,
+					backfill_pages_per_run: 1,
+				},
+				checkpoint: {},
+				credentials: {},
+				entityIds: [],
+				sessionState: { chrome_dispatcher: dispatcher },
+			}),
+		).rejects.toThrow(/captured no matching GraphQL responses/i);
+	});
+
+	test("reports only bounded key paths when the live Likes shape changes", async () => {
+		const connector = new XConnector();
+		const dispatcher = {
+			dispatch: async () => ({
+				result: {
+					responses: [
+						{
+							url: "https://x.com/i/api/graphql/hash-with-dash/Likes",
+							body: JSON.stringify({
+								data: {
+									account: {
+										likesTimeline: [],
+										privateValue: "never include this value",
+										...Object.fromEntries(
+											Array.from({ length: 30 }, (_, index) => [
+												`z${String(index).padStart(2, "0")}`,
+												index,
+											]),
+										),
+									},
+								},
+							}),
+						},
+					],
+				},
+			}),
+		};
+
+		let message = "";
+		try {
+			await connector.sync({
+				feedKey: "liked_tweets",
+				config: {
+					account_handle: "testuser",
+					use_extension: true,
+					backfill_pages_per_run: 1,
+				},
+				checkpoint: {},
+				credentials: {},
+				entityIds: [],
+				sessionState: { chrome_dispatcher: dispatcher },
+			});
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+
+		expect(message).toContain("captured 1 matching response(s)");
+		expect(message).toContain("data.account.likesTimeline[]");
+		expect(message).not.toContain("never include this value");
+		const shape = message.match(/\(keys=([^)]*)\)/)?.[1];
+		expect(shape?.split(",")).toHaveLength(20);
+	});
+
+	test("collects signed-in likes with the liker identity", async () => {
+		const instructions = [
+			{
+				entries: [
+					{
+						entryId: "tweet-500",
+						content: {
+							itemContent: {
+								tweet_results: {
+									result: tweetResult("500", "alice", "liked by tester"),
+								},
+							},
+						},
+					},
+				],
+			},
+		];
+		const dispatcher = {
+			dispatch: async () => ({
+				result: {
+					responses: [
+						{
+							body: JSON.stringify({
+								data: {
+									user: {
+										result: {
+											rest_id: "1000000001",
+											core: {
+												screen_name: "testuser",
+												name: "Test User",
+											},
+											timeline_v2: { timeline: { instructions } },
+										},
+									},
+								},
+							}),
+						},
+					],
+				},
+			}),
+		};
+		const connector = new XConnector();
+		const result = await connector.sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				backfill_pages_per_run: 1,
+			},
+			checkpoint: {},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+		expect(result.events).toHaveLength(1);
+		expect(result.events[0]).toMatchObject({
+			origin_id: "500",
+			origin_type: "liked_tweet",
+			metadata: {
+				author_handle: "alice",
+				liked_by_id: "1000000001",
+				liked_by_handle: "testuser",
+				liked_by_name: "Test User",
+			},
+		});
+		expect(result.metadata.collection_status).toBe("complete");
+	});
+
+	test("retries after a recognized but empty first Likes page", async () => {
+		const dispatcher = {
+			dispatch: async () => ({
+				result: {
+					responses: [
+						{
+							url: likesTimelineUrl(),
+							body: JSON.stringify({
+								data: {
+									user: {
+										result: {
+											timeline_v2: { timeline: { instructions: [] } },
+										},
+									},
+								},
+							}),
+						},
+					],
+				},
+			}),
+		};
+
+		const result = await new XConnector().sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				backfill_pages_per_run: 1,
+			},
+			checkpoint: {},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(result.events).toHaveLength(0);
+		expect(result.metadata.collection_status).toBe("in_progress");
+		expect(result.checkpoint.likes_backfill_status).toBe("in_progress");
+		expect(result.checkpoint.likes_backfill_completed_at).toBeUndefined();
+	});
+
+	test("counts the initial page toward the incremental page budget", async () => {
+		const calls: string[] = [];
+		const dispatcher = {
+			dispatch: async (action: string) => {
+				calls.push(action);
+				if (action === "navigate") {
+					return {
+						tab_id: 42,
+						result: {
+							responses: [
+								{
+									url: likesTimelineUrl(),
+									body: JSON.stringify(
+										likesTimelineResponse("500", "older-cursor"),
+									),
+								},
+							],
+						},
+					};
+				}
+				return {};
+			},
+		};
+
+		const result = await new XConnector().sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				incremental_pages: 1,
+			},
+			checkpoint: { likes_backfill_status: "complete" },
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(result.events.map((event: any) => event.origin_id)).toEqual(["500"]);
+		expect(calls).not.toContain("network_intercept_replay");
+	});
+
+	test("resumes historical likes from the checkpointed GraphQL cursor", async () => {
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+		let drainCount = 0;
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				if (action === "navigate") {
+					return {
+						tab_id: 42,
+						result: {
+							responses: [
+								{
+									url: likesTimelineUrl(),
+									body: JSON.stringify(
+										likesTimelineResponse("500", "fresh-cursor"),
+									),
+								},
+							],
+						},
+					};
+				}
+				if (action === "network_intercept_replay") {
+					return { ok: true, status: 200 };
+				}
+				if (action === "network_intercept_drain") {
+					drainCount += 1;
+					if (drainCount === 1) {
+						return {
+							result: {
+								responses: [
+									{
+										url: likesTimelineUrl("resume-cursor"),
+										body: JSON.stringify(
+											likesTimelineResponse("200", "deep-cursor"),
+										),
+									},
+									// A late duplicate of the newest page must not move the
+									// checkpoint back from deep-cursor to fresh-cursor.
+									{
+										url: likesTimelineUrl(),
+										body: JSON.stringify(
+											likesTimelineResponse("500", "fresh-cursor"),
+										),
+									},
+								],
+							},
+						};
+					}
+					return {
+						result: {
+							responses: [
+								{
+									url: likesTimelineUrl("deep-cursor"),
+									body: JSON.stringify(likesTimelineResponse("100")),
+								},
+							],
+						},
+					};
+				}
+				return {};
+			},
+		};
+		const connector = new XConnector();
+		const result = await connector.sync({
+			feedKey: "liked_tweets",
+			config: {
+				account_handle: "testuser",
+				use_extension: true,
+				backfill_pages_per_run: 2,
+			},
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+				likes_backfill_pages: 3,
+			},
+			credentials: {},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+		const replays = calls.filter(
+			(call) => call.action === "network_intercept_replay",
+		);
+		expect(replays.map((call) => call.input)).toEqual([
+			expect.objectContaining({
+				session_id: "test-network-session",
+				url: likesTimelineUrl("resume-cursor"),
+			}),
+			expect.objectContaining({
+				session_id: "test-network-session",
+				url: likesTimelineUrl("deep-cursor"),
+			}),
+		]);
+		expect(JSON.stringify(replays)).not.toMatch(/authorization|csrf|cookie/i);
+		expect(result.events.map((event: any) => event.origin_id).sort()).toEqual([
+			"100",
+			"200",
+			"500",
+		]);
+		expect(result.metadata).toMatchObject({
+			collection_status: "complete",
+			pages_requested: 2,
+			pages_received: 2,
+			pages_unconfirmed: 0,
+			backfill_pages_this_run: 2,
+			backfill_items_this_run: 2,
+		});
+		expect(result.checkpoint).toMatchObject({
+			likes_backfill_status: "complete",
+			likes_backfill_pages: 5,
+			likes_oldest_tweet_id: "100",
+		});
+		expect(result.checkpoint.likes_backfill_cursor).toBeUndefined();
+	});
+
+	for (const scenario of [
+		{
+			name: "keeps a retryable cursor when the final replay response is late",
+			replayResult: { ok: true, status: 200 },
+			replayThrows: false,
+			parserErrors: [],
+			checkpoint: {},
+			expectedCursor: "retry-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
+		},
+		{
+			name: "keeps collected likes when cursor replay is rejected",
+			replayResult: { ok: false, status: 429 },
+			replayThrows: false,
+			parserErrors: ["X likes cursor request failed (429)"],
+			checkpoint: {},
+			expectedCursor: "retry-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
+		},
+		{
+			name: "keeps a resumed cursor when its replay is rejected",
+			replayResult: { ok: false, status: 429 },
+			replayThrows: false,
+			parserErrors: ["X likes cursor request failed (429)"],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "resume-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [],
+		},
+		{
+			name: "counts a retried in-flight cursor once",
+			replayResult: { ok: true, status: 200 },
+			replayThrows: false,
+			parserErrors: [],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "deep-cursor",
+			expectedEvents: ["200", "400", "500"],
+			expectedPages: { requested: 1, received: 1, unconfirmed: 0 },
+			drainResponses: [
+				[
+					{
+						url: likesTimelineUrl(),
+						body: JSON.stringify(likesTimelineResponse("400", "fresh-cursor")),
+					},
+				],
+				[
+					{
+						url: likesTimelineUrl("resume-cursor"),
+						body: JSON.stringify(likesTimelineResponse("200", "deep-cursor")),
+					},
+				],
+			],
+		},
+		{
+			name: "keeps a resumed cursor when GraphQL returns partial data with errors",
+			replayResult: { ok: true, status: 200 },
+			replayThrows: false,
+			parserErrors: ["rate limited"],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "resume-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+			drainResponses: [
+				[
+					{
+						url: likesTimelineUrl("resume-cursor"),
+						body: JSON.stringify({
+							...likesTimelineResponse("200", "deep-cursor"),
+							errors: [{ message: "rate limited" }],
+						}),
+					},
+				],
+			],
+		},
+			{
+				name: "keeps a resumed cursor when replay transport fails",
+			replayResult: { ok: false, status: 0 },
+			replayThrows: true,
+			parserErrors: ["X likes cursor request failed (transport_error)"],
+			checkpoint: {
+				likes_backfill_cursor: "resume-cursor",
+				likes_backfill_status: "in_progress",
+			},
+			expectedCursor: "resume-cursor",
+			expectedEvents: ["500"],
+			expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+				drainResponses: [],
+			},
+			{
+				name: "keeps collected likes when the captured cursor URL cannot be rewritten",
+				initialUrl: "https://x.com/i/api/graphql/hash/Likes",
+				replayResult: { ok: true, status: 200 },
+				replayThrows: false,
+				parserErrors: ["X likes cursor rewrite failed"],
+				checkpoint: {},
+				expectedCursor: "retry-cursor",
+				expectedEvents: ["500"],
+				expectedPages: { requested: 1, received: 0, unconfirmed: 1 },
+				drainResponses: [],
+			},
+		]) {
+		test(scenario.name, async () => {
+			let drainCount = 0;
+			const dispatcher = {
+				dispatch: async (action: string) => {
+					if (action === "navigate") {
+						return {
+							tab_id: 42,
+							result: {
+								responses: [
+									{
+									url: scenario.initialUrl ?? likesTimelineUrl(),
+										body: JSON.stringify(
+											likesTimelineResponse("500", "retry-cursor"),
+										),
+									},
+								],
+							},
+						};
+					}
+					if (action === "network_intercept_replay") {
+						if (scenario.replayThrows) throw new Error("network down");
+						return scenario.replayResult;
+					}
+					if (action === "network_intercept_drain") {
+						return {
+							result: {
+								responses: scenario.drainResponses[drainCount++] ?? [],
+							},
+						};
+					}
+					return {};
+				},
+			};
+
+			const result = await new XConnector().sync({
+				feedKey: "liked_tweets",
+				config: {
+					account_handle: "testuser",
+					use_extension: true,
+					backfill_pages_per_run: 2,
+				},
+				checkpoint: scenario.checkpoint,
+				credentials: {},
+				entityIds: [],
+				sessionState: { chrome_dispatcher: dispatcher },
+			});
+
+			expect(
+				result.events.map((event: any) => event.origin_id).sort(),
+			).toEqual(scenario.expectedEvents);
+			expect(result.metadata).toMatchObject({
+				collection_status: "in_progress",
+				pages_requested: scenario.expectedPages.requested,
+				pages_received: scenario.expectedPages.received,
+				pages_unconfirmed: scenario.expectedPages.unconfirmed,
+				parser_errors: scenario.parserErrors,
+			});
+			expect(result.checkpoint).toMatchObject({
+				likes_backfill_status: "in_progress",
+				likes_backfill_cursor: scenario.expectedCursor,
+			});
+		});
+	}
+
 	test("uses extension for bookmarks when OAuth lacks bookmark.read", async () => {
-		const calls: Array<{ action: string; input: Record<string, unknown> }> =
-			[];
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -565,8 +1597,7 @@ describe("XConnector browser-first routing", () => {
 	});
 
 	test("honors use_extension even when OAuth scopes are sufficient", async () => {
-		const calls: Array<{ action: string; input: Record<string, unknown> }> =
-			[];
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -577,7 +1608,7 @@ describe("XConnector browser-first routing", () => {
 		const connector = new XConnector();
 		await connector.sync({
 			feedKey: "my_tweets",
-			config: { use_extension: "true", account_handle: "buremba" },
+			config: { use_extension: "true", account_handle: "testuser" },
 			checkpoint: {},
 			credentials: {
 				provider: "twitter",
@@ -589,12 +1620,11 @@ describe("XConnector browser-first routing", () => {
 		});
 
 		expect(calls).toHaveLength(1);
-		expect(calls[0].input.url).toBe("https://x.com/buremba");
+		expect(calls[0].input.url).toBe("https://x.com/testuser");
 	});
 
 	test("uses extension for direct_messages when OAuth lacks dm.read", async () => {
-		const calls: Array<{ action: string; input: Record<string, unknown> }> =
-			[];
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 		const dispatcher = {
 			dispatch: async (action: string, input: Record<string, unknown>) => {
 				calls.push({ action, input });
@@ -984,9 +2014,9 @@ describe("isXAuthWall", () => {
 	// @LoginRadius is a real account. A substring test reads its permalink as an
 	// auth wall and kills the run on a signed-in page.
 	test("does not mistake a handle that starts with 'login' for the login page", () => {
-		expect(isXAuthWall("https://x.com/LoginRadius/status/2083959735481716957")).toBe(
-			false,
-		);
+		expect(
+			isXAuthWall("https://x.com/LoginRadius/status/2083959735481716957"),
+		).toBe(false);
 		expect(isXAuthWall("https://x.com/LoginRadius")).toBe(false);
 		expect(isXAuthWall("https://x.com/i/web/status/2083959735481716957")).toBe(
 			false,
@@ -1003,7 +2033,12 @@ describe("isReplySubmitLabel", () => {
 	});
 
 	test("does not match the composer or unrelated chrome", () => {
-		for (const label of ["Post text", "5 Replies. Reply", "Reply to thread", ""]) {
+		for (const label of [
+			"Post text",
+			"5 Replies. Reply",
+			"Reply to thread",
+			"",
+		]) {
 			expect(isReplySubmitLabel(label)).toBe(false);
 		}
 	});
@@ -1011,7 +2046,7 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.12.1");
+		expect(new XConnector().definition.version).toBe("3.13.6");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is
@@ -1027,7 +2062,8 @@ describe("prepare_reply action contract", () => {
 	});
 
 	test("accepts either tweet_url or tweet_id, and always a body", () => {
-		const schema = new XConnector().definition.actions.prepare_reply.inputSchema;
+		const schema = new XConnector().definition.actions.prepare_reply
+			.inputSchema;
 		expect(schema.required).toEqual(["body"]);
 		expect(schema.anyOf).toEqual([
 			{ required: ["tweet_url"] },
@@ -1270,7 +2306,10 @@ describe("prepareXReply", () => {
 	test("still rejects an empty body without touching the browser", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 		await expect(
-			prepareXReply(dispatcher, { tweetUrl: "2083959735481716957", body: "   " }),
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "   ",
+			}),
 		).rejects.toThrow(/must be non-empty/);
 		expect(calls).toHaveLength(0);
 	});
@@ -1354,7 +2393,8 @@ describe("prepare_reply handoff banner", () => {
 		const result = await prepareXReply(dispatcher, {
 			tweetUrl: "2083959735481716957",
 			body: "a draft",
-			reason: "he is asking exactly the question your event-sourcing post answers",
+			reason:
+				"he is asking exactly the question your event-sourcing post answers",
 		});
 
 		const banner = calls.find(
@@ -1432,7 +2472,9 @@ describe("prepare_reply handoff banner", () => {
 	});
 
 	test("keeps the context visible until the user dismisses it", () => {
-		const expr = buildInjectHandoffBannerExpression({ reason: "read this later" });
+		const expr = buildInjectHandoffBannerExpression({
+			reason: "read this later",
+		});
 		expect(expr).not.toContain("setTimeout");
 		expect(expr).toContain("root.remove()");
 	});

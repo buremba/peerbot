@@ -880,7 +880,11 @@ function toContentItem(event: EventEnvelope): ContentItem {
   return {
     id: event.origin_id,
     title: event.title,
+    payload_type: event.payload_type,
     payload_text: event.payload_text,
+    payload_data: event.payload_data,
+    payload_template: event.payload_template,
+    attachments: event.attachments,
     author_name: event.author_name,
     occurred_at: occurredAtIso,
     source_url: event.source_url ?? undefined,

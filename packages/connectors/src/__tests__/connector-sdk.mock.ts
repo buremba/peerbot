@@ -97,42 +97,86 @@ export function connectorSdkMock() {
       };
       url: string;
       parseResponse: (url: string, json: unknown) => unknown[];
+      config?: { maxScrolls?: number };
+      triggerNextPage?: (
+        tabId: number,
+        dispatcher: {
+          dispatch: (
+            action: string,
+            input: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+        },
+        sessionId: string,
+      ) => Promise<void>;
     }) => {
       const observation = await opts.dispatcher.dispatch('navigate', {
         network_intercept: true,
         url: opts.url,
       });
       const responses =
-        (observation?.result as { responses?: Array<{ body?: string }> })
-          ?.responses ?? [];
+        (observation?.result as {
+          responses?: Array<{ body?: string; url?: string }>;
+        })?.responses ?? [];
       const items: unknown[] = [];
+      let apiCallCount = responses.length;
       for (const response of responses) {
         if (!response.body) continue;
         items.push(
           ...opts.parseResponse(
-            opts.url,
+            response.url ?? opts.url,
             JSON.parse(response.body) as unknown,
           ),
         );
       }
+      // This stub models response parsing and custom pagination only. It does not
+      // model the real SDK's checkAuth or responseTimeoutMs semantics.
+      if (opts.triggerNextPage) {
+        const tabId = Number(observation?.tab_id ?? 1);
+        for (let page = 0; page < (opts.config?.maxScrolls ?? 0); page++) {
+          const before = items.length;
+          await opts.triggerNextPage(tabId, opts.dispatcher, 'test-network-session');
+          const drained = await opts.dispatcher.dispatch('network_intercept_drain', {});
+          const nextResponses =
+            (drained?.result as {
+              responses?: Array<{ body?: string; url?: string }>;
+            })?.responses ?? [];
+          apiCallCount += nextResponses.length;
+          for (const response of nextResponses) {
+            if (!response.body) continue;
+            items.push(
+              ...opts.parseResponse(
+                response.url ?? opts.url,
+                JSON.parse(response.body) as unknown,
+              ),
+            );
+          }
+          if (items.length === before) break;
+        }
+      }
       return {
         items,
         backend: 'extension-network',
-        apiCallCount: responses.length,
+        apiCallCount,
       };
     },
     // Connectors create their HTTP client as a class field at construction, so a
-    // throwing stub would break `new XConnector()`. Return an inert client whose
-    // network methods throw only IF actually called — tests that exercise a
-    // request path override `connector.http` / `connector.requestJson` first.
+    // throwing stub would break `new XConnector()`. `get`/`post` are faithful
+    // minimal implementations over global fetch (HttpStatusError on non-2xx,
+    // mirroring connector-sdk/src/http-client.ts) so tests can drive a
+    // connector's real request and error paths by stubbing `globalThis.fetch`.
+    // The remaining methods throw only IF actually called — tests that need
+    // them override `connector.http` / `connector.requestJson` first.
     createHttpClient: () => ({
-      get: notUsed('http.get'),
+      get: async (url: string) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new HttpStatusError({ status: response.status, body: await response.text() });
+        }
+        return response.json();
+      },
       json: notUsed('http.json'),
       request: notUsed('http.request'),
       raw: notUsed('http.raw'),
-      // Faithful minimal `post`: JSON body via global fetch, HttpStatusError on
-      // non-2xx — mirrors connector-sdk/src/http-client.ts semantics so tests
-      // can drive a connector's sync error paths by stubbing globalThis.fetch.
       post: async (url: string, body?: unknown) => {
         const response = await fetch(url, {
           method: 'POST',

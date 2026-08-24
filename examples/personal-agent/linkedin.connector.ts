@@ -26,7 +26,7 @@
  * themselves — Lobu never submits the comment.
  *
  * Closed-loop (optional): `verify_staged_comment` re-opens the post and scrapes
- * visible comments to check whether the human actually posted the draft.
+ * comments to check whether the human actually posted the draft.
  * Staging ≠ verified posted.
  */
 
@@ -350,6 +350,27 @@ const LINKEDIN_HOME_COMMENT_ATTRIBUTIONS: EventAttributionRule[] = [
       },
     },
   },
+  {
+    name: "parent_comment_author",
+    role: "in_reply_to",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "metadata.parent_comment_author",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.parent_comment_author_linkedin_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.parent_comment_author_profile_url",
+        mergeStrategy: "prefer_non_empty",
+      },
+    },
+  },
 ];
 
 // ── Home-feed content-script scrape contract ────────────────────
@@ -411,6 +432,18 @@ interface HomeFeedRow {
   comment_count_label?: string;
   repost_count_text?: string;
   repost_count_label?: string;
+  /** Explicit browser-runtime proof that the post's thread was fully expanded. */
+  comment_coverage?: HomeFeedCommentCoverage;
+  /** Durable identity of an enclosing comment when this row is a nested reply. */
+  parent_comment_identity?: string;
+}
+
+interface HomeFeedCommentCoverage {
+  expected: number;
+  collected: number;
+  complete: boolean;
+  clicks: number;
+  capped: boolean;
 }
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
@@ -428,6 +461,49 @@ const HOME_FEED_SCRAPE_CONFIG = {
   },
   rowSelector:
     'div[componentkey*="FeedType_MAIN_FEED_RELEVANCE"], [id^="replaceableComment_urn:li:comment:"]',
+  expandRows: {
+    // Only actual post containers start with `expanded`; helper/component rows
+    // share the FeedType suffix but must never drive another post's controls.
+    rowSelector:
+      'div[componentkey^="expanded"][componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
+    expected: {
+      selector: '[role="button"], button, a',
+      textRegex: "^\\d[\\d,.]*(?:\\s*[kmb])?\\s+comments?",
+      textRegexFlags: "i",
+      regex: "(\\d[\\d,.]*(?:\\s*[kmb])?)\\s+comments?",
+      regexFlags: "i",
+    },
+    items: {
+      selector: '[id^="replaceableComment_urn:li:comment:"]',
+      idAttr: "id",
+    },
+    open: {
+      selector: '[role="button"], button, a',
+      textRegex: "^\\d[\\d,.]*(?:\\s*[kmb])?\\s+comments?",
+      textRegexFlags: "i",
+    },
+    sort: {
+      triggerSelector: '[role="button"], button',
+      triggerTextRegex: "^Most relevant$|^Most recent$",
+      triggerTextRegexFlags: "i",
+      selectedTextRegex: "^Most recent$",
+      selectedTextRegexFlags: "i",
+      optionSelector: '[role="menuitem"]',
+      optionTextRegex: "^Most recent\\b",
+      optionTextRegexFlags: "i",
+      maxWaitMs: 1500,
+    },
+    more: {
+      selector: '[role="button"], button, a',
+      textRegex:
+        "^(?:(?:See|Load|View)\\s+\\d[\\d,.]*\\s+(?:more\\s+)?comments?|(?:See|Load|View)\\s+(?:more|previous)\\s+(?:comments?|replies)|\\d[\\d,.]*\\s+replies)\\b",
+      textRegexFlags: "i",
+    },
+    maxPasses: 40,
+    stall: 2,
+    waitMs: 350,
+    outputField: "comment_coverage",
+  },
   id: {
     source: "attr",
     // Posts identify themselves with componentkey; native comments use their
@@ -514,6 +590,14 @@ const HOME_FEED_SCRAPE_CONFIG = {
         url: { take: "attr", attr: "src" },
         alt_text: { take: "attr", attr: "alt" },
       },
+    },
+    parent_comment_identity: {
+      // Replies are nested beneath their parent comment on the current feed.
+      // Starting the closest lookup at parentElement keeps top-level comments
+      // empty while recording the enclosing durable comment id for replies.
+      closestSelector: '[id^="replaceableComment_urn:li:comment:"]',
+      take: "attr",
+      attr: "id",
     },
     // Engagement comes only from LinkedIn's dedicated social-count controls.
     // Keep both visible text and accessible-label variants because the current
@@ -926,6 +1010,81 @@ export function parseHomeFeedEngagement(row: HomeFeedRow): HomeFeedEngagement {
   };
 }
 
+interface HomeFeedCommentCoverageSummary {
+  threads: number;
+  expected: number;
+  collected: number;
+  incomplete: number;
+  unsupported: number;
+  details: string[];
+}
+
+/**
+ * Prove completeness from the browser runtime's per-post expansion result.
+ * The independently parsed LinkedIn counter is authoritative: a stale runtime
+ * that omits coverage, or an expansion selector that reads a different count,
+ * fails closed instead of silently persisting a visible-only comment subset.
+ */
+function summarizeHomeFeedCommentCoverage(
+  rows: HomeFeedRow[]
+): HomeFeedCommentCoverageSummary {
+  const byPost = new Map<
+    string,
+    { advertised: number; coverage?: HomeFeedCommentCoverage }
+  >();
+  for (const row of rows) {
+    if (!row?.id || parseHomeFeedCommentIdentity(row.id)) continue;
+    const advertised = parseHomeFeedEngagement(row).comments ?? 0;
+    const expected = Math.max(advertised, row.comment_coverage?.expected ?? 0);
+    if (expected <= 0) continue;
+    const context = buildHomeFeedRowContext(row);
+    if (isHomeFeedRowNoise(row, context)) continue;
+    const identityKey = homeFeedPostIdentityKey(row, context);
+    if (!identityKey) continue;
+    const existing = byPost.get(identityKey);
+    if (!existing || (!existing.coverage && row.comment_coverage)) {
+      byPost.set(identityKey, {
+        advertised: expected,
+        ...(row.comment_coverage ? { coverage: row.comment_coverage } : {}),
+      });
+    }
+  }
+
+  let expected = 0;
+  let collected = 0;
+  let incomplete = 0;
+  let unsupported = 0;
+  const details: string[] = [];
+  for (const thread of byPost.values()) {
+    expected += thread.advertised;
+    if (!thread.coverage) {
+      unsupported++;
+      incomplete++;
+      details.push(`${thread.advertised}/unknown/unknown`);
+      continue;
+    }
+    collected += Math.min(thread.coverage.collected, thread.advertised);
+    if (
+      !thread.coverage.complete ||
+      thread.coverage.expected !== thread.advertised ||
+      thread.coverage.collected < thread.advertised
+    ) {
+      incomplete++;
+      details.push(
+        `${thread.advertised}/${thread.coverage.expected}/${thread.coverage.collected}`
+      );
+    }
+  }
+  return {
+    threads: byPost.size,
+    expected,
+    collected,
+    incomplete,
+    unsupported,
+    details,
+  };
+}
+
 function homeFeedEngagementMetadata(
   counts: HomeFeedEngagement
 ): Record<string, number> {
@@ -1084,11 +1243,20 @@ export function buildHomeFeedEvents(
     body: string;
     context: HomeFeedRowContext;
     nativeIdentity?: HomeFeedCommentIdentity;
+    parentCommentIdentity?: HomeFeedCommentIdentity;
   }> = [];
   const postContextsByIdentity = new Map<string, HomeFeedRowContext>();
+  const commentContextsById = new Map<string, HomeFeedRowContext>();
   for (const row of rows) {
     if (!row?.id || !row.body) continue;
     const nativeIdentity = parseHomeFeedCommentIdentity(row.id);
+    const enclosingCommentIdentity = parseHomeFeedCommentIdentity(
+      row.parent_comment_identity
+    );
+    const parentCommentIdentity =
+      enclosingCommentIdentity?.commentId !== nativeIdentity?.commentId
+        ? enclosingCommentIdentity
+        : undefined;
     const context = buildHomeFeedRowContext(row);
     if (!nativeIdentity && isHomeFeedRowNoise(row, context)) {
       continue;
@@ -1098,22 +1266,37 @@ export function buildHomeFeedEvents(
       body: row.body,
       context,
       ...(nativeIdentity ? { nativeIdentity } : {}),
+      ...(parentCommentIdentity ? { parentCommentIdentity } : {}),
     });
-    if (!nativeIdentity) {
+    if (nativeIdentity) {
+      commentContextsById.set(nativeIdentity.commentId, context);
+    } else {
       const identityKey = homeFeedPostIdentityKey(row, context);
       if (identityKey && !postContextsByIdentity.has(identityKey)) {
         postContextsByIdentity.set(identityKey, context);
       }
     }
   }
-  for (const { row, body, context, nativeIdentity } of prepared) {
+  for (const {
+    row,
+    body,
+    context,
+    nativeIdentity,
+    parentCommentIdentity,
+  } of prepared) {
     if (nativeIdentity) {
       const originId = `li_comment_${nativeIdentity.commentId}`;
       if (seenOrigins.has(originId)) continue;
       seenOrigins.add(originId);
       const parentIdentityKey = `${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`;
       const parentOriginId = homeFeedPostOriginId(parentIdentityKey);
+      const immediateParentOriginId = parentCommentIdentity
+        ? `li_comment_${parentCommentIdentity.commentId}`
+        : parentOriginId;
       const parent = postContextsByIdentity.get(parentIdentityKey);
+      const parentComment = parentCommentIdentity
+        ? commentContextsById.get(parentCommentIdentity.commentId)
+        : undefined;
       const sourceUrl =
         parent?.postUrl ??
         normalizeLinkedInPostUrl(
@@ -1129,6 +1312,19 @@ export function buildHomeFeedEvents(
         parent_activity_id: nativeIdentity.parentId,
         parent_activity_namespace: nativeIdentity.parentNamespace,
       };
+      if (parentCommentIdentity) {
+        commentMetadata.parent_comment_origin_id = immediateParentOriginId;
+        commentMetadata.parent_comment_id = parentCommentIdentity.commentId;
+        commentMetadata.is_reply = true;
+        if (parentComment) {
+          commentMetadata.parent_comment_author = parentComment.author;
+          if (parentComment.authorSlug) {
+            commentMetadata.parent_comment_author_linkedin_slug =
+              parentComment.authorSlug;
+            commentMetadata.parent_comment_author_profile_url = `https://www.linkedin.com/in/${parentComment.authorSlug}`;
+          }
+        }
+      }
       if (parent) {
         commentMetadata.parent_author = parent.author;
         if (parent.authorSlug) {
@@ -1138,7 +1334,7 @@ export function buildHomeFeedEvents(
       }
       events.push({
         origin_id: originId,
-        origin_parent_id: parentOriginId,
+        origin_parent_id: immediateParentOriginId,
         payload_text: body,
         attachments: normalizeHomeFeedMedia(row.comment_media),
         author_name: context.author,
@@ -2650,7 +2846,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.4",
+    version: "3.11.5",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2706,7 +2902,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
             },
           },
           comment: {
-            description: "A visible comment on a personalized feed post",
+            description:
+              "A complete comment or reply on a personalized feed post",
             attributions: LINKEDIN_HOME_COMMENT_ATTRIBUTIONS,
             metadataSchema: {
               type: "object",
@@ -2722,6 +2919,12 @@ export default class LinkedInConnector extends ConnectorRuntime<
                 comment_id: { type: "string" },
                 parent_activity_id: { type: "string" },
                 parent_activity_namespace: { type: "string" },
+                parent_comment_origin_id: { type: "string" },
+                parent_comment_id: { type: "string" },
+                parent_comment_author: { type: "string" },
+                parent_comment_author_linkedin_slug: { type: "string" },
+                parent_comment_author_profile_url: { type: "string" },
+                is_reply: { type: "boolean" },
                 reactions: { type: "number" },
                 comments: { type: "number" },
                 reposts: { type: "number" },
@@ -3297,6 +3500,16 @@ export default class LinkedInConnector extends ConnectorRuntime<
       );
     }
 
+    const commentCoverage = summarizeHomeFeedCommentCoverage(resolvedRows);
+    if (commentCoverage.incomplete > 0) {
+      const runtimeHint = commentCoverage.unsupported
+        ? ` The paired Owletto extension omitted expansion coverage for ${commentCoverage.unsupported} thread${commentCoverage.unsupported === 1 ? "" : "s"}; reload the current extension build.`
+        : "";
+      throw new Error(
+        `LinkedIn captured ${commentCoverage.collected} of ${commentCoverage.expected} advertised comments across ${commentCoverage.incomplete} incomplete post thread${commentCoverage.incomplete === 1 ? "" : "s"} (advertised/runtime/collected: ${commentCoverage.details.join(", ")}).${runtimeHint} No partial home-feed batch was persisted.`
+      );
+    }
+
     const events = buildHomeFeedEvents(resolvedRows, new Date());
     if (events.length === 0) {
       throw new Error(
@@ -3321,6 +3534,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
         scrolls_this_run: maxScrolls,
         backend: "extension-cs-scrape",
         object_all_supported: objectAllSupported,
+        comment_threads_complete: true,
+        comment_threads_checked: commentCoverage.threads,
+        comments_expected: commentCoverage.expected,
+        comments_collected: commentCoverage.collected,
       },
     };
   }

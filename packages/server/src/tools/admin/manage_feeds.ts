@@ -792,7 +792,7 @@ async function handleCreateFeed(
   const feedsSchema = conn.feeds_schema;
   if (feedsSchema && !feedsSchema[args.feed_key]) {
     return {
-      error: `Invalid feed_key '${args.feed_key}'. Available: ${Object.keys(feedsSchema).join(", ")}`,
+      error: `Invalid feed_key '${args.feed_key}'. Available: ${Object.keys(feedsSchema).join(', ')}`,
     };
   }
 

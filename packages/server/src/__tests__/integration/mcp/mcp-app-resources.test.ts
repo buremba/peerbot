@@ -209,7 +209,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?.text).not.toContain('<base');
     expect(content?._meta?.ui?.csp).toEqual({
       connectDomains: [],
-      resourceDomains: ['http://localhost'],
+      resourceDomains: ['https://t2.gstatic.com', 'http://localhost'],
       frameDomains: [],
     });
     expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
@@ -372,7 +372,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource.mimeType).toBe('text/html;profile=mcp-app');
     expect(resource._meta?.ui?.csp).toEqual({
       connectDomains: [],
-      resourceDomains: ['http://localhost'],
+      resourceDomains: ['https://t2.gstatic.com', 'http://localhost'],
       frameDomains: [],
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
@@ -1772,6 +1772,65 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     ]);
     expect(body.result?.content?.[0]?.text).toContain('before → null');
     expect(body.result?.content?.[0]?.text).toContain('before → —');
+  });
+
+  it('includes the scoped connector identity used by the approval card', async () => {
+    const connectorKey = 'github.approval-card';
+    await getDb()`
+      INSERT INTO connector_definitions (
+        organization_id, key, name, favicon_domain, status
+      ) VALUES (
+        ${org.id}, ${connectorKey}, 'GitHub', 'github.com', 'active'
+      )
+    `;
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', ${connectorKey}, 'update_issue'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_connector_identity_${runId}`,
+      title: 'Update issue — pending approval',
+      content: 'Review this issue update.',
+      semanticType: 'operation',
+      connectorKey,
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      metadata: {
+        approval_context: { kind: 'connector', impact: { level: 'normal' } },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 215,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent).toMatchObject({
+      icon: 'connector',
+      connector: {
+        key: connectorKey,
+        name: 'GitHub',
+        favicon_domain: 'github.com',
+      },
+    });
   });
 
   it('uses the warning tone only for an elevated-impact pending action', async () => {

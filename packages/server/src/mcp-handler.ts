@@ -222,7 +222,11 @@ const MCP_APP_RESOURCES: Record<
     description:
       'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
+    csp: {
+      connectDomains: [],
+      resourceDomains: ['https://t2.gstatic.com'],
+      frameDomains: [],
+    },
     prefersBorder: true,
   },
 };

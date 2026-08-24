@@ -6,6 +6,7 @@ import {
   REDACTED_SENTINEL,
 } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
+import { getScopedConnectorDefinition } from '../catalog/connector-definitions';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import {
@@ -51,6 +52,9 @@ const APPROVAL_CAPABILITY_TTL_MS = 10 * 60 * 1_000;
 const APPROVAL_IMPACT_REASON_MAX_LENGTH = 500;
 const APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH = 500;
 const APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS = 5;
+const CONNECTOR_KEY_MAX_LENGTH = 200;
+const CONNECTOR_NAME_MAX_LENGTH = 200;
+const CONNECTOR_FAVICON_DOMAIN_MAX_LENGTH = 253;
 const DISPLAY_REDACTION = '[redacted]';
 const SECRET_SCHEMA_VALUE_KEYS = new Set(['const', 'default', 'enum', 'example', 'examples']);
 
@@ -102,6 +106,18 @@ const ApprovalImpactSchema = Type.Object({
   consequences: Type.Optional(
     Type.Array(Type.String({ maxLength: APPROVAL_IMPACT_CONSEQUENCE_MAX_LENGTH }), {
       maxItems: APPROVAL_IMPACT_CONSEQUENCE_MAX_ITEMS,
+    })
+  ),
+});
+
+const ConnectorIdentitySchema = Type.Object({
+  key: Type.String({ minLength: 1, maxLength: CONNECTOR_KEY_MAX_LENGTH }),
+  name: Type.String({ minLength: 1, maxLength: CONNECTOR_NAME_MAX_LENGTH }),
+  favicon_domain: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: CONNECTOR_FAVICON_DOMAIN_MAX_LENGTH,
+      pattern: '^[A-Za-z0-9.-]+$',
     })
   ),
 });
@@ -170,6 +186,7 @@ export const LobuViewSchema = Type.Object({
   version: Type.Literal(1),
   title: Type.Optional(Type.String({ maxLength: TITLE_MAX_LENGTH })),
   icon: Type.Optional(ApprovalKindSchema),
+  connector: Type.Optional(ConnectorIdentitySchema),
   impact: Type.Optional(ApprovalImpactSchema),
   tone: Type.Optional(
     Type.Union([Type.Literal('warning'), Type.Literal('default'), Type.Literal('bare')])
@@ -541,6 +558,38 @@ function stringOrNull(value: unknown): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+function safeFaviconDomain(value: unknown): string | null {
+  const domain = stringOrNull(value);
+  if (
+    !domain ||
+    domain.length > CONNECTOR_FAVICON_DOMAIN_MAX_LENGTH ||
+    !/^[A-Za-z0-9.-]+$/.test(domain)
+  ) {
+    return null;
+  }
+  return domain;
+}
+
+async function approvalConnectorIdentity(
+  row: ApprovalContentItem,
+  kind: ApprovalKind,
+  ctx: ToolContext
+): Promise<NonNullable<LobuView['connector']> | null> {
+  if (kind !== ApprovalKind.Connector) return null;
+  const connectorKey = stringOrNull(row.platform) ?? stringOrNull(row.metadata?.connector_key);
+  if (!connectorKey) return null;
+  const definition = await getScopedConnectorDefinition({
+    organizationId: ctx.organizationId,
+    connectorKey,
+  });
+  const faviconDomain = safeFaviconDomain(definition?.favicon_domain);
+  return {
+    key: truncate(connectorKey, CONNECTOR_KEY_MAX_LENGTH),
+    name: truncate(definition?.name ?? connectorKey, CONNECTOR_NAME_MAX_LENGTH),
+    ...(faviconDomain ? { favicon_domain: faviconDomain } : {}),
+  };
+}
+
 function approvalDecisionBlock(
   row: ApprovalContentItem,
   status: string
@@ -748,13 +797,15 @@ async function findApprovalRow(
 
 async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Promise<LobuView> {
   const row = await findApprovalRow(runId, env, ctx);
-  const origin = await approvalOrigin(row, ctx).catch(() => ({
-    kind: 'direct' as const,
-    label: 'Direct request',
-  }));
-
   const status = row.interaction_status ?? 'pending';
   const approvalContext = approvalContextForView(row, status);
+  const [origin, connector] = await Promise.all([
+    approvalOrigin(row, ctx).catch(() => ({
+      kind: 'direct' as const,
+      label: 'Direct request',
+    })),
+    approvalConnectorIdentity(row, approvalContext.kind, ctx).catch(() => null),
+  ]);
   const decisionBlock = approvalDecisionBlock(row, status);
   const baseTitle = displayValue(row.title ?? `Approval run ${runId}`, TITLE_MAX_LENGTH).replace(
     /\s+—\s+(?:pending approval|approved|rejected|completed|failed|cancelled)$/i,
@@ -810,6 +861,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
       TITLE_MAX_LENGTH
     ),
     icon: approvalContext.kind,
+    ...(connector ? { connector } : {}),
     impact: approvalContext.impact,
     tone: approvalContext.impact.level === 'high' ? 'warning' : 'default',
     blocks: [

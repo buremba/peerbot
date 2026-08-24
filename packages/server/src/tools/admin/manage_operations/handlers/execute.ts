@@ -1,5 +1,10 @@
 import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtime";
-import { getErrorMessage } from "@lobu/core";
+import {
+	deepRedactSecrets,
+	getErrorMessage,
+	isSecretKey,
+	REDACTED_SENTINEL,
+} from "@lobu/core";
 import { ExecuteAction, type ManageOperationsResult } from "../schemas";
 import type { Static } from "@sinclair/typebox";
 import { readGrantedScopesFromAuthData } from "../../../../auth/oauth/scopes";
@@ -127,7 +132,10 @@ function connectorApprovalReviewFields(
 ): Array<{ key: string; value: unknown }> {
 	const inputFields = Object.entries(input).map(([key, value]) => ({
 		key: `input_${key}`,
-		value,
+		value:
+			value != null && isSecretKey(key)
+				? REDACTED_SENTINEL
+				: deepRedactSecrets(value),
 	}));
 	return [
 		{ key: "resource", value: "Connector operation" },

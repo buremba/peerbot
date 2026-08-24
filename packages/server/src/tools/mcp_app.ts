@@ -272,13 +272,22 @@ function displayRedacted(value: unknown): unknown {
   );
 }
 
+function isDisplaySecretKey(key: string): boolean {
+  let candidate = key;
+  while (true) {
+    if (isSecretKey(candidate)) return true;
+    if (!candidate.startsWith('input_')) return false;
+    candidate = candidate.slice('input_'.length);
+  }
+}
+
 /**
  * Approval metadata is stored for execution, not presentation. Redact by the
  * field name before detaching a primitive value from its key, then deep-walk
  * nested objects and URI userinfo using the shared Lobu secret classifier.
  */
 function redactForDisplay(value: unknown, key?: string): unknown {
-  if (key && value != null && isSecretKey(key)) return DISPLAY_REDACTION;
+  if (key && value != null && isDisplaySecretKey(key)) return DISPLAY_REDACTION;
   return displayRedacted(deepRedactSecrets(value));
 }
 
@@ -294,7 +303,7 @@ function stripSecretSchemaValues(value: unknown): unknown {
 
 function sanitizeFormFieldSchema(name: string, value: unknown): unknown {
   const sanitized = sanitizeFormSchema(value);
-  if (!isSecretKey(name)) return sanitized;
+  if (!isDisplaySecretKey(name)) return sanitized;
   if (!isRecord(sanitized)) return DISPLAY_REDACTION;
 
   const field = stripSecretSchemaValues(sanitized) as Record<string, unknown>;
@@ -330,7 +339,7 @@ function sanitizeFormInitialValue(value: unknown): unknown {
   if (!isRecord(value)) return redactForDisplay(value);
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => !isSecretKey(key))
+      .filter(([key]) => !isDisplaySecretKey(key))
       .map(([key, inner]) => [key, sanitizeFormInitialValue(inner)])
   );
 }

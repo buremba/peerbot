@@ -1723,6 +1723,65 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
+  it('redacts prefixed connector review credentials in the rendered approval view', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_connector_secret_approval_${run.id}`,
+      title: 'Connector operation — pending approval',
+      content: 'Review the connector operation.',
+      semanticType: 'operation',
+      runId: Number(run.id),
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      metadata: {
+        approval_context: { kind: 'connector', impact: { level: 'normal' } },
+        review_fields: [
+          { key: 'input_authorization', value: 'Bearer plaintext-review-authorization' },
+          { key: 'input_cookie', value: 'session=plaintext-review-cookie' },
+          {
+            key: 'input_database_url',
+            value: 'postgres://user:plaintext-review-password@db.example/app',
+          },
+          { key: 'input_summary', value: 'Safe review summary' },
+        ],
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 211,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: Number(run.id) },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    const serialized = JSON.stringify(body.result?.structuredContent);
+    expect(serialized).not.toContain('plaintext-review-authorization');
+    expect(serialized).not.toContain('plaintext-review-cookie');
+    expect(serialized).not.toContain('plaintext-review-password');
+    expect(serialized).toContain('Safe review summary');
+    expect(body.result?.structuredContent?.blocks?.[0]?.fields).toEqual([
+      { label: 'Input authorization', after: '[redacted]' },
+      { label: 'Input cookie', after: '[redacted]' },
+      { label: 'Input database url', after: '[redacted]' },
+      { label: 'Input summary', after: 'Safe review summary' },
+    ]);
+  });
+
   it('keeps explicit null distinct from an empty string in approval diffs', async () => {
     const [run] = await getDb()<{ id: number }>`
       INSERT INTO runs (

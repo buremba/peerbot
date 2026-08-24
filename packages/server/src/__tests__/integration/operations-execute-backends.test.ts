@@ -1,5 +1,5 @@
 import GoogleCalendarConnector from "@lobu/connectors/google_calendar";
-import { MCP_PROTOCOL_VERSION } from "@lobu/core";
+import { MCP_PROTOCOL_VERSION, REDACTED_SENTINEL } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../index";
 import { createAutomationRun } from "../../runs/queue-service";
@@ -894,6 +894,49 @@ describe("operations.execute backend lifecycle", () => {
 			{ key: "input_connection", value: "input-connection" },
 			{ key: "input_operation", value: "preview" },
 			{ key: "input_issue", value: "synthetic-issue-001" },
+		]);
+	});
+
+	it("redacts connector credentials before prefixing approval review keys", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "needs_approval",
+				input: {
+					authorization: "Bearer plaintext-authorization",
+					cookie: "session=plaintext-cookie",
+					database_url: "postgres://user:plaintext-password@db.example/app",
+					settings: {
+						client_secret: "plaintext-nested-secret",
+						region: "eu-west-1",
+					},
+				},
+			},
+			{} as Env,
+			ctx,
+		);
+		const [approval] = await getTestDb()`
+			SELECT metadata->'review_fields' AS review_fields
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${result.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(approval.review_fields).toEqual([
+			{ key: "resource", value: "Connector operation" },
+			{ key: "connection", value: `Test Connection ${LOCAL}` },
+			{ key: "operation", value: "Needs approval" },
+			{ key: "input_authorization", value: REDACTED_SENTINEL },
+			{ key: "input_cookie", value: REDACTED_SENTINEL },
+			{ key: "input_database_url", value: REDACTED_SENTINEL },
+			{
+				key: "input_settings",
+				value: {
+					client_secret: REDACTED_SENTINEL,
+					region: "eu-west-1",
+				},
+			},
 		]);
 	});
 

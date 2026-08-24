@@ -8,6 +8,7 @@
 import { Hono } from 'hono';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Env } from '../../index';
+import { __resetPublicOriginCachesForTests } from '../../utils/public-origin';
 import { mintDeviceChildToken } from '../../worker-api/device-management';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import {
@@ -23,6 +24,29 @@ const TEST_ENV = {
   BETTER_AUTH_SECRET: 'test-auth-secret-for-testing-only',
   RATE_LIMIT_ENABLED: 'false',
 } as unknown as Env;
+
+async function withPublicGatewayUrl<T>(
+  value: string | undefined,
+  run: () => Promise<T>
+): Promise<T> {
+  const previous = process.env.PUBLIC_GATEWAY_URL;
+  if (value === undefined) {
+    delete process.env.PUBLIC_GATEWAY_URL;
+  } else {
+    process.env.PUBLIC_GATEWAY_URL = value;
+  }
+  __resetPublicOriginCachesForTests();
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PUBLIC_GATEWAY_URL;
+    } else {
+      process.env.PUBLIC_GATEWAY_URL = previous;
+    }
+    __resetPublicOriginCachesForTests();
+  }
+}
 
 async function markPersonalOrg(orgId: string, userId: string): Promise<void> {
   const sql = getTestDb();
@@ -62,14 +86,16 @@ describe('device mint (mint-child-token)', () => {
     await markPersonalOrg(personalOrg.id, user.id);
     await addUserToOrganization(user.id, personalOrg.id, 'owner');
 
-    const res = await mintApp(user.id).request(
-      '/api/me/devices/mint-child-token',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ platform: 'headless', label: 'herdr-test' }),
-      },
-      TEST_ENV
+    const res = await withPublicGatewayUrl(undefined, () =>
+      mintApp(user.id).request(
+        '/api/me/devices/mint-child-token',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ platform: 'headless', label: 'herdr-test' }),
+        },
+        TEST_ENV
+      )
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -77,10 +103,12 @@ describe('device mint (mint-child-token)', () => {
       access_token: string;
       platform: string;
       label: string;
+      gateway_url: string;
     };
     expect(body.platform).toBe('headless');
     expect(body.label).toBe('herdr-test');
     expect(body.access_token.startsWith('owl_pat_')).toBe(true);
+    expect(body.gateway_url).toBe('http://localhost');
 
     // The persisted device row is platform- and personal-org-bound.
     const rows = (await sql`
@@ -91,6 +119,29 @@ describe('device mint (mint-child-token)', () => {
     expect(rows[0].platform).toBe('headless');
     expect(rows[0].label).toBe('herdr-test');
     expect(rows[0].organization_id).toBe(personalOrg.id);
+  });
+
+  it('stamps the configured public origin when the request uses an internal ingress URL', async () => {
+    const personalOrg = await createTestOrganization({ name: 'Personal Public Origin' });
+    const user = await createTestUser({ email: 'public-origin-mint@test.example.com' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+
+    const res = await withPublicGatewayUrl('https://app.lobu.ai/lobu', () =>
+      mintApp(user.id).request(
+        'http://app.lobu.ai/api/me/devices/mint-child-token',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ platform: 'macos', label: 'Public origin test' }),
+        },
+        TEST_ENV
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { gateway_url: string };
+    expect(body.gateway_url).toBe('https://app.lobu.ai');
   });
 
   it('uses a first-party login caller requested worker_id for a new headless device', async () => {

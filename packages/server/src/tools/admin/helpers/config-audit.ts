@@ -10,7 +10,11 @@
 
 import type { ConfigResourceKind } from '../../../utils/config-redaction';
 import { deriveToolActorSource } from '../../../utils/apply-context';
-import { recordConfigChangeEvent } from '../../../utils/insert-event';
+import type { DbClient } from '../../../db/client';
+import {
+  insertConfigChangeEventInTransaction,
+  recordConfigChangeEvent,
+} from '../../../utils/insert-event';
 import type { ToolContext } from '../../registry';
 
 interface ToolConfigChangeParams {
@@ -42,4 +46,23 @@ export function recordToolConfigChange(
     createdBy: ctx.userId ?? null,
     clientId: ctx.clientId ?? null,
   });
+}
+
+/** Awaited variant for mutations whose state and audit must share a commit. */
+export async function insertToolConfigChange(
+  ctx: ToolContext,
+  params: ToolConfigChangeParams,
+  sql: DbClient
+): Promise<void> {
+  await insertConfigChangeEventInTransaction(
+    {
+      organizationId: ctx.organizationId,
+      ...params,
+      applyId: ctx.applyId ?? null,
+      actorSource: deriveToolActorSource(ctx),
+      createdBy: ctx.userId ?? null,
+      clientId: ctx.clientId ?? null,
+    },
+    sql
+  );
 }

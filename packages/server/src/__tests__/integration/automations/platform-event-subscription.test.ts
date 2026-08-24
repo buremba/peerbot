@@ -106,6 +106,63 @@ describe('platform event subscriptions', () => {
     expect(Number(created.automation_id)).toBeGreaterThan(0);
   });
 
+  it('rolls an entity update back when its subscribed activation task cannot be persisted', async () => {
+    const sql = getTestDb();
+    const { agent, api, workspace } = await orgWithAgent('Entity Activation Atomic Org');
+    await api.entity_schema.createType({ slug: 'invoice', name: 'Invoice' });
+    await api.automations.create({
+      slug: 'invoice-atomic-consumer',
+      prompt: 'Handle invoice updates.',
+      triggers: workspaceTrigger(['entity.updated'], 'invoice'),
+      agent_id: agent.agentId,
+    });
+    const created = (await api.entities.create({
+      type: 'invoice',
+      name: 'Atomic Invoice',
+      metadata: { status: 'draft' },
+    })) as { entity: { id: number } };
+
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_workspace_activation_task() RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.run_type = 'task' AND NEW.action_key = 'activate-workspace-event' THEN
+          RAISE EXCEPTION 'simulated activation task persistence failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_fail_workspace_activation_task_trg
+        BEFORE INSERT ON runs
+        FOR EACH ROW EXECUTE FUNCTION test_fail_workspace_activation_task();
+    `);
+    try {
+      await expect(
+        api.entities.update({
+          entity_id: created.entity.id,
+          metadata: { status: 'posted' },
+        })
+      ).rejects.toThrow(/activation task persistence failure/i);
+    } finally {
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS test_fail_workspace_activation_task_trg ON runs;
+        DROP FUNCTION IF EXISTS test_fail_workspace_activation_task();
+      `);
+    }
+
+    const [row] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM entities
+      WHERE organization_id = ${workspace.org.id} AND id = ${created.entity.id}
+    `;
+    expect(row.metadata).toEqual({ status: 'draft' });
+    const events = await sql`
+      SELECT id FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND ${created.entity.id} = ANY(entity_ids)
+        AND metadata->>'_lobu_event_type' = 'entity.updated'
+    `;
+    expect(events).toHaveLength(0);
+  });
+
   it('refuses to let an entity type redeclare a platform event type', async () => {
     const { api } = await orgWithAgent('Collision Org');
     // `event_kinds` is what `save_content` validates against, so declaring

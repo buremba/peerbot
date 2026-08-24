@@ -1639,6 +1639,7 @@ export type ManageEntitySchemaResponses = {
     | {
         schema_type: "entity_type";
         action: "create";
+        status: "applied";
         entity_type: {
           id: number;
           slug: string;
@@ -1682,25 +1683,66 @@ export type ManageEntitySchemaResponses = {
         };
       }
     | {
-        schema_type: "entity_type";
-        action: "create";
+        schema_type: "entity_type" | "relationship_type";
+        action: "create" | "update" | "delete" | "add_rule" | "remove_rule";
         status: "pending_approval";
         run_id: number;
         event_id: number;
         approval_url?: string;
         message: string;
         proposal: {
-          schema_type: "entity_type";
-          action: "create";
+          version: 1;
+          resource_class: "entity_schema";
+          policy_action:
+            | "create_type"
+            | "update_type"
+            | "delete_type"
+            | "create_relationship_type"
+            | "update_relationship_type"
+            | "delete_relationship_type";
+          schema_type: "entity_type" | "relationship_type";
+          action: "create" | "update" | "delete" | "add_rule" | "remove_rule";
           args: {
             [key: string]: unknown;
           };
+          current: {
+            [key: string]: unknown;
+          } | null;
+          precondition: {
+            target_kind:
+              | "entity_type"
+              | "relationship_type"
+              | "relationship_rule";
+            target_id: number | null;
+            updated_at: string | null;
+            related_id?: number;
+            related_updated_at?: string;
+          };
+          policy_principal_kind: "agent" | "automation";
+          policy_principal_id: string | null;
+          owner_agent_id: string | null;
+          owner_resolved: boolean;
         };
-        current: null;
+        current: {
+          [key: string]: unknown;
+        } | null;
+      }
+    | {
+        schema_type: "entity_type" | "relationship_type";
+        action: "create" | "update" | "delete" | "add_rule" | "remove_rule";
+        status: "denied";
+        message: string;
+      }
+    | {
+        schema_type: "entity_type" | "relationship_type";
+        action: "create" | "update" | "delete" | "add_rule" | "remove_rule";
+        status: "failed";
+        message: string;
       }
     | {
         schema_type: "entity_type";
         action: "update";
+        status: "applied";
         entity_type: {
           id: number;
           slug: string;
@@ -1746,6 +1788,7 @@ export type ManageEntitySchemaResponses = {
     | {
         schema_type: "entity_type";
         action: "delete";
+        status: "applied";
         success: boolean;
         message: string;
       }
@@ -1827,6 +1870,7 @@ export type ManageEntitySchemaResponses = {
     | {
         schema_type: "relationship_type";
         action: "create";
+        status: "applied";
         relationship_type: {
           id: number;
           slug: string;
@@ -1855,6 +1899,7 @@ export type ManageEntitySchemaResponses = {
     | {
         schema_type: "relationship_type";
         action: "update";
+        status: "applied";
         relationship_type: {
           id: number;
           slug: string;
@@ -1883,12 +1928,14 @@ export type ManageEntitySchemaResponses = {
     | {
         schema_type: "relationship_type";
         action: "delete";
+        status: "applied";
         success: boolean;
         message: string;
       }
     | {
         schema_type: "relationship_type";
         action: "add_rule";
+        status: "applied";
         rule: {
           id: number;
           relationship_type_id: number;
@@ -1900,6 +1947,7 @@ export type ManageEntitySchemaResponses = {
     | {
         schema_type: "relationship_type";
         action: "remove_rule";
+        status: "applied";
         success: boolean;
         message: string;
       }

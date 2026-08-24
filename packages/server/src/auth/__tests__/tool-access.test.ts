@@ -609,11 +609,7 @@ describe('checkToolAccess', () => {
     ).not.toThrow();
   });
 
-  it('makes only entity-type create proposals write-tier', () => {
-    // Opening query_sql to read-tier must not have widened the real admin
-    // actions. The inner action-router receives no schema discriminator and
-    // keeps direct creates admin-only; relationship-type creates also remain
-    // admin because they still mutate immediately.
+  it('keeps every entity-schema mutation admin-tier', () => {
     expect(requiresOwnerAdmin('manage_entity_schema', { action: 'create' }, false)).toBe(true);
     expect(
       getRequiredAccessLevel(
@@ -621,7 +617,7 @@ describe('checkToolAccess', () => {
         { action: 'create', schema_type: 'entity_type' },
         false
       )
-    ).toBe('write');
+    ).toBe('admin');
     expect(
       getRequiredAccessLevel(
         'manage_entity_schema',
@@ -647,7 +643,7 @@ describe('checkToolAccess', () => {
         { action: 'create', schema_type: 'entity_type' },
         owner
       )
-    ).toBe('write');
+    ).toBe('admin');
   });
 });
 

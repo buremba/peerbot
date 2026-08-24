@@ -39,13 +39,14 @@ export const ManageEntitySchemaSchema = Type.Object({
       Type.Literal("get", { description: "Fetch one type by slug." }),
       Type.Literal("create", {
         description:
-          "Create an entity type or relationship type. MCP ClientSDK entity-type creates are queued for human approval; direct owner/admin calls and relationship-type creates apply immediately.",
+          "Create an entity or relationship type through entity_schema write governance. Without a matching policy, owner/admin calls apply immediately.",
       }),
       Type.Literal("update", {
-        description: "Patch a type.",
+        description: "Patch a type through entity_schema write governance.",
       }),
       Type.Literal("delete", {
-        description: "Soft-delete a type; refuses if rows still reference it.",
+        description:
+          "Soft-delete a type through entity_schema write governance; refuses if rows still reference it.",
       }),
       // Entity type only
       Type.Literal("audit", {
@@ -54,10 +55,11 @@ export const ManageEntitySchemaSchema = Type.Object({
       // Relationship type only
       Type.Literal("add_rule", {
         description:
-          "Add an allowed source→target type rule (relationship_type only).",
+          "Add an allowed source→target type rule (relationship_type only), governed as update_relationship_type.",
       }),
       Type.Literal("remove_rule", {
-        description: "Soft-delete a rule (relationship_type only).",
+        description:
+          "Soft-delete a rule (relationship_type only), governed as update_relationship_type.",
       }),
       Type.Literal("list_rules", {
         description: "List allowed type rules (relationship_type only).",
@@ -329,11 +331,54 @@ export type RelationshipTypeRuleRow = Static<
   typeof RelationshipTypeRuleRowSchema
 >;
 
-/** Held MCP-authored entity-type create, persisted until a human decides it. */
+export const EntitySchemaPolicyActionSchema = Type.Union([
+  Type.Literal("create_type"),
+  Type.Literal("update_type"),
+  Type.Literal("delete_type"),
+  Type.Literal("create_relationship_type"),
+  Type.Literal("update_relationship_type"),
+  Type.Literal("delete_relationship_type"),
+]);
+
+/** Prepared, durable schema command persisted until a human decides it. */
 export const ManageEntitySchemaProposalSchema = Type.Object({
-  schema_type: Type.Literal("entity_type"),
-  action: Type.Literal("create"),
+  version: Type.Literal(1),
+  resource_class: Type.Literal("entity_schema"),
+  policy_action: EntitySchemaPolicyActionSchema,
+  schema_type: Type.Union([
+    Type.Literal("entity_type"),
+    Type.Literal("relationship_type"),
+  ]),
+  action: Type.Union([
+    Type.Literal("create"),
+    Type.Literal("update"),
+    Type.Literal("delete"),
+    Type.Literal("add_rule"),
+    Type.Literal("remove_rule"),
+  ]),
   args: Type.Record(Type.String(), Type.Unknown()),
+  current: Type.Union([
+    Type.Record(Type.String(), Type.Unknown()),
+    Type.Null(),
+  ]),
+  precondition: Type.Object({
+    target_kind: Type.Union([
+      Type.Literal("entity_type"),
+      Type.Literal("relationship_type"),
+      Type.Literal("relationship_rule"),
+    ]),
+    target_id: Type.Union([Type.Integer(), Type.Null()]),
+    updated_at: Type.Union([Type.String(), Type.Null()]),
+    related_id: Type.Optional(Type.Integer()),
+    related_updated_at: Type.Optional(Type.String()),
+  }),
+  policy_principal_kind: Type.Union([
+    Type.Literal("agent"),
+    Type.Literal("automation"),
+  ]),
+  policy_principal_id: Type.Union([Type.String(), Type.Null()]),
+  owner_agent_id: Type.Union([Type.String(), Type.Null()]),
+  owner_resolved: Type.Boolean(),
 });
 export type ManageEntitySchemaProposal = Static<
   typeof ManageEntitySchemaProposalSchema
@@ -377,27 +422,72 @@ export const ManageEntitySchemaResultSchema = Type.Union([
   Type.Object({
     schema_type: Type.Literal("entity_type"),
     action: Type.Literal("create"),
+    status: Type.Literal("applied"),
     entity_type: EntityTypeRowSchema,
   }),
   Type.Object({
-    schema_type: Type.Literal("entity_type"),
-    action: Type.Literal("create"),
+    schema_type: Type.Union([
+      Type.Literal("entity_type"),
+      Type.Literal("relationship_type"),
+    ]),
+    action: Type.Union([
+      Type.Literal("create"),
+      Type.Literal("update"),
+      Type.Literal("delete"),
+      Type.Literal("add_rule"),
+      Type.Literal("remove_rule"),
+    ]),
     status: Type.Literal("pending_approval"),
     run_id: Type.Integer(),
     event_id: Type.Integer(),
     approval_url: Type.Optional(Type.String()),
     message: Type.String(),
     proposal: ManageEntitySchemaProposalSchema,
-    current: Type.Null(),
+    current: Type.Union([
+      Type.Record(Type.String(), Type.Unknown()),
+      Type.Null(),
+    ]),
+  }),
+  Type.Object({
+    schema_type: Type.Union([
+      Type.Literal("entity_type"),
+      Type.Literal("relationship_type"),
+    ]),
+    action: Type.Union([
+      Type.Literal("create"),
+      Type.Literal("update"),
+      Type.Literal("delete"),
+      Type.Literal("add_rule"),
+      Type.Literal("remove_rule"),
+    ]),
+    status: Type.Literal("denied"),
+    message: Type.String(),
+  }),
+  Type.Object({
+    schema_type: Type.Union([
+      Type.Literal("entity_type"),
+      Type.Literal("relationship_type"),
+    ]),
+    action: Type.Union([
+      Type.Literal("create"),
+      Type.Literal("update"),
+      Type.Literal("delete"),
+      Type.Literal("add_rule"),
+      Type.Literal("remove_rule"),
+    ]),
+    status: Type.Literal("failed"),
+    message: Type.String(),
   }),
   Type.Object({
     schema_type: Type.Literal("entity_type"),
     action: Type.Literal("update"),
+    status: Type.Literal("applied"),
     entity_type: EntityTypeRowSchema,
   }),
   Type.Object({
     schema_type: Type.Literal("entity_type"),
     action: Type.Literal("delete"),
+    status: Type.Literal("applied"),
     success: Type.Boolean(),
     message: Type.String(),
   }),
@@ -425,27 +515,32 @@ export const ManageEntitySchemaResultSchema = Type.Union([
   Type.Object({
     schema_type: Type.Literal("relationship_type"),
     action: Type.Literal("create"),
+    status: Type.Literal("applied"),
     relationship_type: RelationshipTypeRowSchema,
   }),
   Type.Object({
     schema_type: Type.Literal("relationship_type"),
     action: Type.Literal("update"),
+    status: Type.Literal("applied"),
     relationship_type: RelationshipTypeRowSchema,
   }),
   Type.Object({
     schema_type: Type.Literal("relationship_type"),
     action: Type.Literal("delete"),
+    status: Type.Literal("applied"),
     success: Type.Boolean(),
     message: Type.String(),
   }),
   Type.Object({
     schema_type: Type.Literal("relationship_type"),
     action: Type.Literal("add_rule"),
+    status: Type.Literal("applied"),
     rule: RelationshipTypeRuleRowSchema,
   }),
   Type.Object({
     schema_type: Type.Literal("relationship_type"),
     action: Type.Literal("remove_rule"),
+    status: Type.Literal("applied"),
     success: Type.Boolean(),
     message: Type.String(),
   }),

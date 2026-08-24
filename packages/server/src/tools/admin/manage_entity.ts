@@ -79,8 +79,8 @@ import {
 import { ToolUserError } from "../../utils/errors";
 import { persistEntityWritePolicyDenial } from "../../utils/entity-write-denial-audit";
 import {
-	recordChangeEvent,
-	recordEdgeChangeEvent,
+	insertChangeEventInTransaction,
+	insertEdgeChangeEventInTransaction,
 	stableJson,
 } from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
@@ -612,77 +612,72 @@ async function handleUpdate(
 		parentRunId: updateAttribution.runId,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
+		afterPersist: async (lockedBefore, after, tx) => {
+			const beforeMetadata = lockedBefore.metadata ?? {};
+			const afterMetadata = after.metadata ?? {};
+			const changes: Array<{ field: string; old: unknown; new: unknown }> = [];
+			if (lockedBefore.name !== after.name) {
+				changes.push({
+					field: "name",
+					old: lockedBefore.name,
+					new: after.name,
+				});
+			}
+			if (lockedBefore.slug !== after.slug) {
+				changes.push({
+					field: "slug",
+					old: lockedBefore.slug,
+					new: after.slug,
+				});
+			}
+			if (lockedBefore.parent_id !== (after.parent_id ?? null)) {
+				changes.push({
+					field: "parent_id",
+					old: lockedBefore.parent_id,
+					new: after.parent_id ?? null,
+				});
+			}
+			if (args.content !== undefined) {
+				changes.push({ field: "content", old: "[changed]", new: "[changed]" });
+			}
+			for (const key of new Set([
+				...Object.keys(beforeMetadata),
+				...Object.keys(afterMetadata),
+			])) {
+				if (
+					stableJson(beforeMetadata[key] ?? null) !==
+					stableJson(afterMetadata[key] ?? null)
+				) {
+					changes.push({
+						field: key,
+						old: beforeMetadata[key] ?? null,
+						new: afterMetadata[key] ?? null,
+					});
+				}
+			}
+			if (changes.length === 0) return;
+			const contentLines = changes.map(
+				(change) =>
+					`- ${change.field}: ${JSON.stringify(change.old)} → ${JSON.stringify(change.new)}`,
+			);
+			await insertChangeEventInTransaction(
+				{
+					entityIds: [entityId],
+					organizationId: ctx.organizationId,
+					subject: "entity",
+					op: "updated",
+					title: `Entity updated: ${changes.map((change) => change.field).join(", ")}`,
+					content: `Entity "${after.name}" (id: ${entityId}) updated:\n${contentLines.join("\n")}`,
+					metadata: { changes },
+					createdBy: ctx.userId ?? null,
+					clientId: ctx.clientId ?? null,
+				},
+				tx,
+			);
+		},
 	});
 	const entityDetails =
 		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
-
-	// Record field changes as a system event
-	const beforeMetadata =
-		typeof before.metadata === "string"
-			? JSON.parse(before.metadata as string)
-			: (before.metadata ?? {});
-	const afterMetadata =
-		typeof entityDetails.metadata === "string"
-			? JSON.parse(entityDetails.metadata as string)
-			: (entityDetails.metadata ?? {});
-
-	const changes: Array<{ field: string; old: unknown; new: unknown }> = [];
-
-	if (before.name !== entityDetails.name) {
-		changes.push({ field: "name", old: before.name, new: entityDetails.name });
-	}
-	if (before.slug !== entityDetails.slug) {
-		changes.push({ field: "slug", old: before.slug, new: entityDetails.slug });
-	}
-	const beforeParentId =
-		before.parent_id != null ? Number(before.parent_id) : null;
-	const afterParentId = entityDetails.parent_id ?? null;
-	if (beforeParentId !== afterParentId) {
-		changes.push({
-			field: "parent_id",
-			old: beforeParentId,
-			new: afterParentId,
-		});
-	}
-	if (args.content !== undefined) {
-		changes.push({ field: "content", old: "[changed]", new: "[changed]" });
-	}
-
-	// Diff metadata keys (includes convenience fields like domain, category, etc.)
-	const allMetadataKeys = new Set([
-		...Object.keys(beforeMetadata),
-		...Object.keys(afterMetadata),
-	]);
-	for (const key of allMetadataKeys) {
-		if (
-			JSON.stringify(beforeMetadata[key]) !== JSON.stringify(afterMetadata[key])
-		) {
-			changes.push({
-				field: key,
-				old: beforeMetadata[key] ?? null,
-				new: afterMetadata[key] ?? null,
-			});
-		}
-	}
-
-	if (changes.length > 0) {
-		const contentLines = changes.map(
-			(c) =>
-				`- ${c.field}: ${JSON.stringify(c.old)} → ${JSON.stringify(c.new)}`,
-		);
-
-		recordChangeEvent({
-			entityIds: [entityId],
-			organizationId: ctx.organizationId,
-			subject: "entity",
-			op: "updated",
-			title: `Entity updated: ${changes.map((c) => c.field).join(", ")}`,
-			content: `Entity "${entityDetails.name}" (id: ${entityId}) updated:\n${contentLines.join("\n")}`,
-			metadata: { changes },
-			createdBy: ctx.userId ?? null,
-			clientId: ctx.clientId ?? null,
-		});
-	}
 
 	const viewUrl = await buildEntityViewUrl(ctx, entityDetails);
 
@@ -1768,6 +1763,17 @@ async function lockEdgeForMutation(
 	return rows[0];
 }
 
+async function lockOrganizationForSemanticEvent(
+	tx: DbClient,
+	organizationId: string,
+): Promise<void> {
+	await tx`
+		SELECT 1 FROM organization
+		WHERE id = ${organizationId}
+		FOR KEY SHARE
+	`;
+}
+
 async function handleLink(
 	args: ManageEntityArgs,
 	env: Env,
@@ -1854,7 +1860,9 @@ async function handleLink(
 	const confidence =
 		args.confidence ?? (source === "ui" || source === "api" ? 1.0 : null);
 
-	const inserted = await sql`
+	const created = await sql.begin(async (tx) => {
+		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
+		const inserted = await tx`
     INSERT INTO entity_relationships (
       organization_id, from_entity_id, to_entity_id, relationship_type_id,
       metadata, confidence, source, created_by, updated_by,
@@ -1864,7 +1872,7 @@ async function handleLink(
       ${fromId},
       ${toId},
       ${typeId},
-      ${args.metadata ? sql.json(args.metadata) : null},
+			${args.metadata ? tx.json(args.metadata) : null},
       ${confidence},
       ${source},
       ${ctx.userId},
@@ -1874,32 +1882,37 @@ async function handleLink(
     )
     RETURNING id
   `;
-  const relationshipId = Number((inserted[0] as { id: unknown }).id);
+		const relationshipId = Number((inserted[0] as { id: unknown }).id);
 
-  const created = await sql.unsafe<RelationshipRow>(
+		const createdRows = await tx.unsafe<RelationshipRow>(
     `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
-		[relationshipId],
+			[relationshipId],
   );
 
-	recordEdgeChangeEvent({
-		organizationId: ctx.organizationId,
-		relationshipId,
-		fromEntityId: fromId,
-		toEntityId: toId,
-		relationshipTypeId: typeId,
-		relationshipTypeSlug: args.relationship_type_slug,
-		op: "link",
-		changes: [
-			{ field: "exists", old: false, new: true },
-			{ field: "metadata", old: null, new: args.metadata ?? null },
-			{ field: "confidence", old: null, new: confidence },
-			{ field: "source", old: null, new: source },
-		],
-		createdBy: ctx.userId,
-		clientId: ctx.clientId,
+		await insertEdgeChangeEventInTransaction(
+			{
+				organizationId: ctx.organizationId,
+				relationshipId,
+				fromEntityId: fromId,
+				toEntityId: toId,
+				relationshipTypeId: typeId,
+				relationshipTypeSlug: args.relationship_type_slug ?? null,
+				op: "link",
+				changes: [
+					{ field: "exists", old: false, new: true },
+					{ field: "metadata", old: null, new: args.metadata ?? null },
+					{ field: "confidence", old: null, new: confidence },
+					{ field: "source", old: null, new: source },
+				],
+				createdBy: ctx.userId,
+				clientId: ctx.clientId,
+			},
+			tx,
+		);
+		return createdRows[0];
 	});
 
-	return { action: "link", relationship: created[0] };
+	return { action: "link", relationship: created };
 }
 
 async function handleUnlink(
@@ -1911,7 +1924,8 @@ async function handleUnlink(
 
   const sql = getDb();
 
-	const before = await sql.begin(async (tx) => {
+	await sql.begin(async (tx) => {
+		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
 		const edge = await lockEdgeForMutation(
 			tx,
 			args.relationship_id!,
@@ -1923,25 +1937,26 @@ async function handleUnlink(
       SET deleted_at = current_timestamp, updated_at = current_timestamp, updated_by = ${ctx.userId}
       WHERE id = ${args.relationship_id} AND deleted_at IS NULL
     `;
-		return edge;
-	});
-
-	recordEdgeChangeEvent({
-		organizationId: ctx.organizationId,
-		relationshipId: Number(before.id),
-		fromEntityId: Number(before.from_entity_id),
-		toEntityId: Number(before.to_entity_id),
-		relationshipTypeId: Number(before.relationship_type_id),
-		relationshipTypeSlug: before.relationship_type_slug,
-		op: "unlink",
-		changes: [
-			{ field: "exists", old: true, new: false },
-			{ field: "metadata", old: before.metadata, new: null },
-			{ field: "confidence", old: before.confidence, new: null },
-			{ field: "source", old: before.source, new: null },
-		],
-		createdBy: ctx.userId,
-		clientId: ctx.clientId,
+		await insertEdgeChangeEventInTransaction(
+			{
+				organizationId: ctx.organizationId,
+				relationshipId: Number(edge.id),
+				fromEntityId: Number(edge.from_entity_id),
+				toEntityId: Number(edge.to_entity_id),
+				relationshipTypeId: Number(edge.relationship_type_id),
+				relationshipTypeSlug: edge.relationship_type_slug,
+				op: "unlink",
+				changes: [
+					{ field: "exists", old: true, new: false },
+					{ field: "metadata", old: edge.metadata, new: null },
+					{ field: "confidence", old: edge.confidence, new: null },
+					{ field: "source", old: edge.source, new: null },
+				],
+				createdBy: ctx.userId,
+				clientId: ctx.clientId,
+			},
+			tx,
+		);
 	});
 
 	return {
@@ -1960,7 +1975,8 @@ async function handleUpdateLink(
 
   const sql = getDb();
 
-	const { before, after, updated } = await sql.begin(async (tx) => {
+	const updated = await sql.begin(async (tx) => {
+		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
 		const edge = await lockEdgeForMutation(
 			tx,
 			args.relationship_id!,
@@ -1997,33 +2013,34 @@ async function handleUpdateLink(
 			`SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
 			[args.relationship_id],
 		);
-		return {
-			before: edge,
-			after: updatedRows[0],
-			updated: relationship[0],
-		};
+		const after = updatedRows[0];
+		const changes = [
+			{ field: "metadata", old: edge.metadata, new: after.metadata },
+			{ field: "confidence", old: edge.confidence, new: after.confidence },
+			{ field: "source", old: edge.source, new: after.source },
+		].filter(
+			(change) =>
+				stableJson(change.old ?? null) !== stableJson(change.new ?? null),
+		);
+		if (changes.length > 0) {
+			await insertEdgeChangeEventInTransaction(
+				{
+					organizationId: ctx.organizationId,
+					relationshipId: Number(edge.id),
+					fromEntityId: Number(edge.from_entity_id),
+					toEntityId: Number(edge.to_entity_id),
+					relationshipTypeId: Number(edge.relationship_type_id),
+					relationshipTypeSlug: edge.relationship_type_slug,
+					op: "update_link",
+					changes,
+					createdBy: ctx.userId,
+					clientId: ctx.clientId,
+				},
+				tx,
+			);
+		}
+		return relationship[0];
 	});
-
-	const changes = [
-		{ field: "metadata", old: before.metadata, new: after.metadata },
-		{ field: "confidence", old: before.confidence, new: after.confidence },
-		{ field: "source", old: before.source, new: after.source },
-	].filter((c) => stableJson(c.old ?? null) !== stableJson(c.new ?? null));
-
-	if (changes.length > 0) {
-		recordEdgeChangeEvent({
-			organizationId: ctx.organizationId,
-			relationshipId: Number(before.id),
-			fromEntityId: Number(before.from_entity_id),
-			toEntityId: Number(before.to_entity_id),
-			relationshipTypeId: Number(before.relationship_type_id),
-			relationshipTypeSlug: before.relationship_type_slug,
-			op: "update_link",
-			changes,
-			createdBy: ctx.userId,
-			clientId: ctx.clientId,
-		});
-	}
 
 	return { action: "update_link", relationship: updated };
 }

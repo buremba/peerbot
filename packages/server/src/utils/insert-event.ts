@@ -13,6 +13,7 @@ import {
   findSubscribedWorkspaceEventTypes,
   loadRunEventCausality,
 } from '../automations/workspace-event-enqueue';
+import { WorkspaceEventCausalityLimitError } from '../automations/workspace-event-contract';
 import {
   AUDIT_EVENT_TYPE_METADATA_KEY,
   type AuditEventType,
@@ -1004,7 +1005,7 @@ export async function insertEvent(
 // Change Event (fire-and-forget audit trail)
 // ============================================
 
-interface ChangeEventParams {
+export interface ChangeEventParams {
   entityIds: number[];
   organizationId: string;
   /**
@@ -1051,37 +1052,9 @@ async function queueWorkspaceEventActivation(args: {
   actingRunId: number | null;
 }): Promise<void> {
   try {
-    const subscribed = await findSubscribedWorkspaceEventTypes(
-      args.organizationId,
-      [args.eventType]
-    );
-    if (!subscribed.has(args.eventType)) return;
-    // Inherit the producing run's chain when there is one; otherwise this row
-    // genuinely starts a chain. Resolved only after the subscription check, so
-    // an unsubscribed org never pays for the lookup.
-    const inherited =
-      args.producerAutomationId == null || args.actingRunId == null
-        ? null
-        : await loadRunEventCausality(
-            args.organizationId,
-            args.actingRunId,
-            args.producerAutomationId
-          );
     const sql = getDb();
     await sql.begin(async (tx) => {
-      await enqueueWorkspaceEventActivations(tx, [
-        {
-          organizationId: args.organizationId,
-          eventId: args.eventId,
-          rootEventIds: inherited?.rootEventIds ?? [args.eventId],
-          causalAutomationIds:
-            inherited?.causalAutomationIds ??
-            (args.producerAutomationId == null
-              ? []
-              : [args.producerAutomationId]),
-          depth: inherited?.depth ?? 1,
-        },
-      ]);
+      await queueWorkspaceEventActivationInTransaction(args, tx);
     });
   } catch (err) {
     logger.error(
@@ -1096,9 +1069,64 @@ async function queueWorkspaceEventActivation(args: {
   }
 }
 
+/** Append the activation task on the same transaction as its platform event. */
+async function queueWorkspaceEventActivationInTransaction(
+  args: {
+    organizationId: string;
+    eventId: number;
+    eventType: string;
+    producerAutomationId: number | null;
+    actingRunId: number | null;
+  },
+  tx: DbClient
+): Promise<void> {
+  const subscribed = await findSubscribedWorkspaceEventTypes(
+    args.organizationId,
+    [args.eventType],
+    tx
+  );
+  if (!subscribed.has(args.eventType)) return;
+  let inherited: Awaited<ReturnType<typeof loadRunEventCausality>> = null;
+  if (args.producerAutomationId != null && args.actingRunId != null) {
+    try {
+      inherited = await loadRunEventCausality(
+        args.organizationId,
+        args.actingRunId,
+        args.producerAutomationId,
+        tx
+      );
+    } catch (error) {
+      if (!(error instanceof WorkspaceEventCausalityLimitError)) throw error;
+      logger.warn(
+        {
+          eventId: args.eventId,
+          eventType: args.eventType,
+          organizationId: args.organizationId,
+          error: error.message,
+        },
+        '[insert-event] workspace-event causality cap reached; activation chain terminated'
+      );
+      return;
+    }
+  }
+  await enqueueWorkspaceEventActivations(tx, [
+    {
+      organizationId: args.organizationId,
+      eventId: args.eventId,
+      rootEventIds: inherited?.rootEventIds ?? [args.eventId],
+      causalAutomationIds:
+        inherited?.causalAutomationIds ??
+        (args.producerAutomationId == null ? [] : [args.producerAutomationId]),
+      depth: inherited?.depth ?? 1,
+    },
+  ]);
+}
+
 const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
 
 interface ConnectionlessAuditInsertOptions {
+  /** Join the state mutation transaction and make event + activation atomic. */
+  sql?: DbClient;
   /**
    * Serialize this insert against a concurrent force-delete of the entities it
    * references, and omit ids that lost the race. Whichever side commits first
@@ -1124,10 +1152,12 @@ interface ConnectionlessAuditInsertOptions {
  * ordinary readers and non-key updates never wait on an audit write.
  */
 async function insertAuditEventPruningDeletedEntityRefs(
-  params: InsertEventParams
+  params: InsertEventParams,
+  db: DbClient,
+  afterPersist?: (event: InsertedEvent, tx: DbClient) => Promise<void>
 ): Promise<InsertedEvent> {
   const entityIdsLiteral = `{${params.entityIds.join(',')}}`;
-  return getDb().begin(async (tx) => {
+  const write = async (tx: DbClient) => {
     await tx`
       SELECT 1 FROM organization WHERE id = ${params.organizationId} FOR KEY SHARE
     `;
@@ -1144,9 +1174,12 @@ async function insertAuditEventPruningDeletedEntityRefs(
         ...params,
         entityIds: params.entityIds.filter((id) => survivingIds.has(id)),
       },
-      { sql: tx }
+      { sql: tx, afterPersist }
     );
-  }) as Promise<InsertedEvent>;
+  };
+  return (
+    typeof db.savepoint === 'function' ? write(db) : db.begin(write)
+  ) as Promise<InsertedEvent>;
 }
 
 /**
@@ -1186,6 +1219,10 @@ export async function insertConnectionlessAuditEvent(
   const actingScope = getActingAutomationScope();
   const producerAutomationId =
     params.automationId ?? actingScope?.automationId ?? null;
+  const actingRunId =
+    actingScope != null && actingScope.automationId === producerAutomationId
+      ? actingScope.runId
+      : null;
 
   try {
     const eventParams = {
@@ -1194,26 +1231,43 @@ export async function insertConnectionlessAuditEvent(
       automationId: producerAutomationId,
       metadata,
     };
+    const afterPersist = options?.sql
+      ? (event: InsertedEvent, tx: DbClient) =>
+          queueWorkspaceEventActivationInTransaction(
+            {
+              organizationId: params.organizationId,
+              eventId: event.id,
+              eventType: formattedEventType,
+              producerAutomationId,
+              actingRunId,
+            },
+            tx
+          )
+      : undefined;
     const inserted =
       options?.lockAndPruneEntityRefs && params.entityIds.length > 0
-        ? await insertAuditEventPruningDeletedEntityRefs(eventParams)
-        : await insertEvent(eventParams);
-    await queueWorkspaceEventActivation({
-      organizationId: params.organizationId,
-      eventId: inserted.id,
-      eventType: formattedEventType,
-      producerAutomationId,
-      // Only the ambient scope knows the run; an explicitly-passed producer
-      // carries no run reference, so such a row starts its own chain.
-      actingRunId:
-        actingScope != null &&
-        actingScope.automationId === producerAutomationId
-          ? actingScope.runId
-          : null,
-    });
+        ? await insertAuditEventPruningDeletedEntityRefs(
+            eventParams,
+            options?.sql ?? getDb(),
+            afterPersist
+          )
+        : await insertEvent(eventParams, {
+            ...(options?.sql ? { sql: options.sql } : {}),
+            ...(afterPersist ? { afterPersist } : {}),
+          });
+    if (!options?.sql) {
+      await queueWorkspaceEventActivation({
+        organizationId: params.organizationId,
+        eventId: inserted.id,
+        eventType: formattedEventType,
+        producerAutomationId,
+        actingRunId,
+      });
+    }
     return inserted;
   } catch (error) {
     if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX)) throw error;
+    if (options?.sql) throw error;
     const sql = getDb();
     const existing = await sql`
       SELECT id, entity_ids, origin_id, title, semantic_type, created_at
@@ -1290,13 +1344,36 @@ export function recordChangeEvent(params: ChangeEventParams): void {
   });
 }
 
+/** Canonical entity.updated event joined to its semantic mutation transaction. */
+export async function insertChangeEventInTransaction(
+  params: ChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent | null> {
+  if (params.entityIds.length === 0) return null;
+  return insertConnectionlessAuditEvent(
+    {
+      entityIds: params.entityIds,
+      organizationId: params.organizationId,
+      originId: `change_${crypto.randomUUID()}`,
+      title: params.title,
+      content: params.content,
+      semanticType: 'change',
+      metadata: params.metadata,
+      createdBy: params.createdBy ?? null,
+      clientId: params.clientId ?? null,
+    },
+    { subject: params.subject, op: params.op },
+    { sql }
+  );
+}
+
 interface EdgeFieldChange {
   field: string;
   old: unknown;
   new: unknown;
 }
 
-interface EdgeChangeEventParams {
+export interface EdgeChangeEventParams {
   organizationId: string;
   relationshipId: number;
   fromEntityId: number;
@@ -1309,73 +1386,37 @@ interface EdgeChangeEventParams {
   clientId?: string | null;
 }
 
-/**
- * Record a relationship (edge) change for audit.
- *
- * Fire-and-forget with the same retry-then-log-and-drop contract as
- * `recordChangeEvent`, and for the same reason: `entity_relationships` remains
- * the source of truth for what is currently linked, so a dropped row costs
- * history, never state.
- *
- * Metadata shape (all ids stringified so `metadata->>'...'` comparisons work):
- *   {
- *     "op": "update_link",
- *     "relationshipId": "42",
- *     "fromEntityId": "10",
- *     "toEntityId": "11",
- *     "relationshipTypeId": "3",
- *     "relationshipTypeSlug": "invoice_customer",
- *     "changes": [{ "field": "confidence", "old": 0.5, "new": 0.9 }]
- *   }
- */
-export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
-  // Keep this stable across the retry below, while allowing a relationship
-  // revived by unmerge to record the same operation again later.
-  const originId = `edge:${params.relationshipId}:${params.op}:${crypto.randomUUID()}`;
+/** Canonical relationship transition event joined to its edge transaction. */
+export async function insertEdgeChangeEventInTransaction(
+  params: EdgeChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent> {
   const verb: EdgeOp =
     params.op === 'link' ? 'linked' : params.op === 'unlink' ? 'unlinked' : 'updated';
-
-  retryWithBackoff(
-    () =>
-      insertConnectionlessAuditEvent({
-        organizationId: params.organizationId,
-        // Both endpoints, so the change surfaces on either entity's timeline.
-        entityIds: [params.fromEntityId, params.toEntityId],
-        originId,
-        semanticType: 'change',
-        title: `Relationship ${verb}: ${params.relationshipTypeSlug ?? params.relationshipTypeId}`,
-        metadata: {
-          _lobu_relationship_change: true,
-          category: 'relationship',
-          op: params.op,
-          relationshipId: String(params.relationshipId),
-          fromEntityId: String(params.fromEntityId),
-          toEntityId: String(params.toEntityId),
-          relationshipTypeId: String(params.relationshipTypeId),
-          relationshipTypeSlug: params.relationshipTypeSlug,
-          changes: params.changes,
-        },
-        createdBy: params.createdBy ?? null,
-        clientId: params.clientId ?? null,
-      },
-      // `verb` not `op`: the stored op is imperative (link/unlink/update_link)
-      // while the shared vocabulary is past-tense.
-      { subject: 'relationship', op: verb },
-      { lockAndPruneEntityRefs: true }),
-    AUDIT_EVENT_RETRY
-  ).catch((err) => {
-    logger.error(
-      {
-        err,
-        originId,
-        organizationId: params.organizationId,
-        relationshipId: params.relationshipId,
+  return insertConnectionlessAuditEvent(
+    {
+      organizationId: params.organizationId,
+      entityIds: [params.fromEntityId, params.toEntityId],
+      originId: `edge:${params.relationshipId}:${params.op}:${crypto.randomUUID()}`,
+      semanticType: 'change',
+      title: `Relationship ${verb}: ${params.relationshipTypeSlug ?? params.relationshipTypeId}`,
+      metadata: {
+        _lobu_relationship_change: true,
+        category: 'relationship',
         op: params.op,
+        relationshipId: String(params.relationshipId),
+        fromEntityId: String(params.fromEntityId),
+        toEntityId: String(params.toEntityId),
+        relationshipTypeId: String(params.relationshipTypeId),
+        relationshipTypeSlug: params.relationshipTypeSlug,
         changes: params.changes,
       },
-      '[insert-event] edge change audit event DROPPED after retry — edge history is missing this row'
-    );
-  });
+      createdBy: params.createdBy ?? null,
+      clientId: params.clientId ?? null,
+    },
+    { subject: 'relationship', op: verb },
+    { lockAndPruneEntityRefs: true, sql }
+  );
 }
 
 // ============================================
@@ -1448,9 +1489,9 @@ interface StateChangeEventParams<ResourceKind extends AuditResourceKind> {
   clientId?: string | null;
 }
 
-interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
+export interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
 
-interface WorkspaceChangeEventParams
+export interface WorkspaceChangeEventParams
   extends StateChangeEventParams<WorkspaceAuditResourceKind> {}
 
 /**
@@ -1522,6 +1563,65 @@ function recordStateChangeEvent(
 
 export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
   recordStateChangeEvent(params, 'config');
+}
+
+/**
+ * Durable config audit seam for semantic mutations that already own a
+ * transaction. The config event and any subscribed Automation activation task
+ * commit with the state change; failures roll the whole mutation back.
+ */
+export async function insertConfigChangeEventInTransaction(
+  params: ConfigChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent> {
+  return insertStateChangeEventInTransaction(params, 'config', sql);
+}
+
+/**
+ * Durable workspace audit seam for identity mutations that already own a
+ * transaction. The audit row and its Automation activation task commit with
+ * the invitation/member state they describe.
+ */
+export async function insertWorkspaceChangeEventInTransaction(
+  params: WorkspaceChangeEventParams,
+  sql: DbClient
+): Promise<InsertedEvent> {
+  return insertStateChangeEventInTransaction(params, 'workspace', sql);
+}
+
+async function insertStateChangeEventInTransaction(
+  params: StateChangeEventParams<AuditResourceKind>,
+  category: 'config' | 'workspace',
+  sql: DbClient
+): Promise<InsertedEvent> {
+  const originId = `${category}_${params.resourceKind}_${params.op}_${params.resourceId}_${crypto.randomUUID()}`;
+  const state = redactConfigState(params.resourceKind, params.state);
+  return insertConnectionlessAuditEvent(
+    {
+      entityIds: [],
+      organizationId: params.organizationId,
+      originId,
+      title: params.summary,
+      semanticType: 'change',
+      originType: `${category}_${params.resourceKind}_${params.op}`,
+      payloadType: 'empty',
+      payloadData: { state },
+      metadata: {
+        category,
+        ...(category === 'workspace' ? { _lobu_workspace_audit: true } : {}),
+        resource_kind: params.resourceKind,
+        resource_id: String(params.resourceId),
+        op: params.op,
+        ...(params.changedFields?.length ? { changed_fields: params.changedFields } : {}),
+        ...(params.applyId ? { apply_id: params.applyId } : {}),
+        ...(params.actorSource ? { actor_source: params.actorSource } : {}),
+      },
+      createdBy: params.createdBy ?? null,
+      clientId: params.clientId ?? null,
+    },
+    { subject: params.resourceKind, op: params.op },
+    { sql }
+  );
 }
 
 export function recordWorkspaceChangeEvent(params: WorkspaceChangeEventParams): void {

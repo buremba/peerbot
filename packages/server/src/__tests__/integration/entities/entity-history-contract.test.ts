@@ -7,10 +7,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import {
-  insertConnectionlessAuditEvent,
-  recordEdgeChangeEvent,
-} from '../../../utils/insert-event';
+import { insertConnectionlessAuditEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEvent } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
@@ -34,11 +31,6 @@ async function waitForChangeEvent(entityId: number) {
 
 /**
  * Wait for a relationship audit event to land.
- *
- * `recordEdgeChangeEvent` is deliberately fire-and-forget — an audit write must
- * not fail the mutation that caused it — so the row appears some time AFTER
- * link/unlink has already returned. A test that deletes the entity in between
- * races the delete's entity_ids detach sweep against the arriving event.
  *
  * Keyed on the relationship rather than the entity, because `waitForChangeEvent`
  * would return the metadata update's own change event immediately and prove
@@ -145,6 +137,57 @@ describe('entity history contracts', () => {
         AND semantic_type = 'change'
     `;
     expect(after[0].count).toBe(before[0].count);
+  });
+
+  it('rolls a relationship link back when its canonical event cannot be appended', async () => {
+    const sql = getTestDb();
+    await workspace.owner.entity_schema.createRelType({
+      slug: 'atomic-related-brand',
+      name: 'Atomic Related Brand',
+    });
+    const from = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Atomic From',
+    })) as { entity: { id: number } };
+    const to = (await workspace.owner.entities.create({
+      type: 'brand',
+      name: 'Atomic To',
+    })) as { entity: { id: number } };
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_relationship_link_event() RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.metadata->>'_lobu_event_type' = 'relationship.linked' THEN
+          RAISE EXCEPTION 'simulated relationship event persistence failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_fail_relationship_link_event_trg
+        BEFORE INSERT ON events
+        FOR EACH ROW EXECUTE FUNCTION test_fail_relationship_link_event();
+    `);
+    try {
+      await expect(
+        workspace.owner.entities.link({
+          from_entity_id: from.entity.id,
+          to_entity_id: to.entity.id,
+          relationship_type_slug: 'atomic-related-brand',
+        })
+      ).rejects.toThrow(/relationship event persistence failure/i);
+    } finally {
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS test_fail_relationship_link_event_trg ON events;
+        DROP FUNCTION IF EXISTS test_fail_relationship_link_event();
+      `);
+    }
+    const edges = await sql`
+      SELECT id FROM entity_relationships
+      WHERE organization_id = ${workspace.org.id}
+        AND from_entity_id = ${from.entity.id}
+        AND to_entity_id = ${to.entity.id}
+        AND deleted_at IS NULL
+    `;
+    expect(edges).toHaveLength(0);
   });
 
   it('force-deletes a tree with event history by detaching event references, not deleting events', async () => {
@@ -275,59 +318,6 @@ describe('entity history contracts', () => {
         AND ${a.entity.id} = ANY(entity_ids)
     `;
     expect(changeEvents).toHaveLength(0);
-  });
-
-  it('does not attach a late edge audit to an already hard-deleted endpoint (#2812)', async () => {
-    const deleted = (await workspace.owner.entities.create({
-      type: 'brand',
-      name: 'Deleted Before Audit',
-    })) as { entity: { id: number } };
-    const survivor = (await workspace.owner.entities.create({
-      type: 'brand',
-      name: 'Surviving Audit Endpoint',
-    })) as { entity: { id: number } };
-
-    await workspace.owner.entities.delete({
-      entity_id: deleted.entity.id,
-      force_delete_tree: true,
-    });
-
-    // Drive the audit writer directly with a synthetic edge: no
-    // `entity_relationships` row is needed (or wanted — the real one would have
-    // been cascaded by the delete above), and the writer FKs on none of these
-    // ids. The offset only keeps the id clear of relationships other tests mint.
-    const relationshipId = deleted.entity.id + 1_000_000_000;
-    recordEdgeChangeEvent({
-      organizationId: workspace.org.id,
-      relationshipId,
-      fromEntityId: deleted.entity.id,
-      toEntityId: survivor.entity.id,
-      relationshipTypeId: 1,
-      relationshipTypeSlug: 'related-brand',
-      op: 'unlink',
-      changes: [{ field: 'exists', old: true, new: false }],
-      createdBy: workspace.users.owner.id,
-    });
-    await waitForEdgeChangeEvent(relationshipId, 'unlink');
-
-    const rows = await getTestDb()<{
-      deleted_still_linked: boolean;
-      survivor_linked: boolean;
-    }[]>`
-      SELECT
-        ${deleted.entity.id} = ANY(entity_ids) AS deleted_still_linked,
-        ${survivor.entity.id} = ANY(entity_ids) AS survivor_linked
-      FROM events
-      WHERE semantic_type = 'change'
-        AND metadata->>'category' = 'relationship'
-        AND metadata->>'relationshipId' = ${String(relationshipId)}
-        AND metadata->>'op' = 'unlink'
-    `;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual({
-      deleted_still_linked: false,
-      survivor_linked: true,
-    });
   });
 
   /**

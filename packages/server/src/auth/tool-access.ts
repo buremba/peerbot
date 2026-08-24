@@ -231,21 +231,6 @@ function actionMatches(
 	return !!action && allowedActions.has(action);
 }
 
-/**
- * Entity-type creation is write-visible because an MCP call only creates an
- * approval proposal. Relationship-type creation shares the same internal
- * `create` action but still mutates immediately and therefore remains admin.
- * The handler's inner action gate receives only `{ action }`, so direct
- * browser/CLI calls continue through the canonical admin check.
- */
-function isEntityTypeCreateProposal(toolName: string, args: unknown): boolean {
-	if (toolName !== "manage_entity_schema" || !args || typeof args !== "object") {
-		return false;
-	}
-	const input = args as { action?: unknown; schema_type?: unknown };
-	return input.action === "create" && input.schema_type === "entity_type";
-}
-
 export function requiresMemberWrite(
 	toolName: string,
 	args: unknown,
@@ -279,7 +264,6 @@ export function getRequiredAccessLevel(
 	readOnlyHint: boolean
 ): ToolAccessLevel {
 	if (toolName === "list_organizations") return "read";
-	if (isEntityTypeCreateProposal(toolName, args)) return "write";
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return "admin";
 	if (requiresMemberWrite(toolName, args, readOnlyHint)) return "write";
 	return "read";

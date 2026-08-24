@@ -16,6 +16,7 @@ import {
 	resolveEntityApprovalPolicy,
 	resolveWriteEffect,
 	resolveWritePolicyDecision,
+	upsertEntityApprovalPolicy,
 } from "../../../authz/entity-policy";
 import { isLegalActionEffect } from "../../../authz/write-action-manifest";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -316,6 +317,16 @@ describe("write-policy action/effect decision parity", () => {
 		expect(isLegalActionEffect("entity", "create", "disabled")).toBe(false); // illegal effect
 		expect(isLegalActionEffect("connector_action", "execute", "disabled")).toBe(true);
 		expect(isLegalActionEffect("connector_action", "create", "auto")).toBe(false);
+		expect(isLegalActionEffect("entity_schema", "create_type", "approval")).toBe(true);
+		expect(isLegalActionEffect("entity_schema", "update_relationship_type", "deny")).toBe(true);
+		expect(isLegalActionEffect("entity_schema", "create", "auto")).toBe(false);
+		expect(isLegalActionEffect("entity_schema", "delete_type", "disabled")).toBe(false);
+	});
+
+	it("entity_schema policy writes fail loudly when the effects map is omitted", async () => {
+		await expect(
+			upsertEntityApprovalPolicy(orgId, { resourceClass: "entity_schema" }),
+		).rejects.toThrow("entity_schema policies require an explicit effects map");
 	});
 
 	it("fail-closed: a stored effect illegal for the class resolves to deny, not the default", async () => {

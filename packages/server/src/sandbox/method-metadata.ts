@@ -198,7 +198,7 @@ export default async (_ctx, client) => {
 	// entitySchema
 	"entitySchema.manage": {
 		summary: "Raw manage_entity_schema action wrapper. Prefer named methods.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.listTypes": {
 		summary:
@@ -216,8 +216,8 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.createType": {
 		summary:
-			"Propose an entity type for human approval. Returns a run_id for `get_approval` plus an approval_url. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT top-level `properties`.",
-		access: "write",
+			"Create an entity type through the workspace write policy. The result is applied, pending_approval, or denied. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT top-level `properties`.",
+		access: "admin",
 		example:
 			"await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
 	},

@@ -22,6 +22,7 @@ import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { insertEvent } from "../../../../utils/insert-event";
+import logger from "../../../../utils/logger";
 import { isAdminOrOwnerRole } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import {
@@ -56,7 +57,7 @@ import {
 	applyManageEntitySchemaProposal,
 	isManageEntitySchemaProposal,
 	MANAGE_ENTITY_SCHEMA_ACTION_KEY,
-	type ManageEntitySchemaProposal,
+	type StoredManageEntitySchemaProposal,
 } from "../../manage_entity_schema";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
@@ -176,13 +177,25 @@ async function resolveReviewer(
   return { userId: ctx.userId, name: rows[0]?.name ?? null };
 }
 
+async function lockOrganizationForApproval(
+	tx: DbClient,
+	organizationId: string,
+): Promise<void> {
+	await tx`
+		SELECT 1 FROM organization
+		WHERE id = ${organizationId}
+		FOR KEY SHARE
+	`;
+}
+
 /**
  * Builder-gate approval handler: the per-family knobs the ONE generic
  * claim/approve/reject path varies over. manage_agents and manage_automations both
  * queue a pending `run_type='internal'` run keyed by `action_key`, hold the
- * proposal in `action_input`, and apply it via `apply(proposal, ctx, env,
- * ownerUserId)` on approval — so the whole lifecycle is shared and only these
- * fields differ. Add a new builder family by registering another handler here.
+ * proposal in `action_input`, and apply it via the handler's transactional or
+ * non-transactional apply seam on approval — so the whole lifecycle is shared
+ * and only these fields differ. Add a new builder family by registering another
+ * handler here.
  */
 interface BuilderApprovalHandler {
 	/** `runs.action_key` this family's pending rows carry. */
@@ -204,12 +217,21 @@ interface BuilderApprovalHandler {
 	 * the tool contract and then dropped on the floor here, so a form-shaped
 	 * approval reported success while discarding everything the reviewer typed.
 	 */
-	apply(
+	apply?(
 		proposal: unknown,
 		ctx: ToolContext,
 		env: Env,
 		ownerUserId: string | null,
 		input: Record<string, unknown> | null,
+	): Promise<unknown>;
+	/** DB-only apply that must share claim, mutation, terminal card, and run commit. */
+	applyInTransaction?(
+		proposal: unknown,
+		ctx: ToolContext,
+		env: Env,
+		ownerUserId: string | null,
+		input: Record<string, unknown> | null,
+		db: DbClient,
 	): Promise<unknown>;
 	/** One-line action id for event summaries, e.g. `create agent-7`. */
 	describe(proposal: unknown): string;
@@ -300,17 +322,18 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 		},
 		{
 			actionKey: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
-			nounLabel: "Entity type",
+			nounLabel: "Entity schema",
 			isValidProposal: isManageEntitySchemaProposal,
-			apply: (p, ctx, env, owner) =>
+			applyInTransaction: (p, ctx, env, owner, _input, db) =>
 				applyManageEntitySchemaProposal(
-					p as ManageEntitySchemaProposal,
+					p as StoredManageEntitySchemaProposal,
 					ctx,
 					env,
 					owner,
+					db,
 				),
 			describe: (p) => {
-				const proposal = p as ManageEntitySchemaProposal;
+				const proposal = p as StoredManageEntitySchemaProposal;
 				return `${proposal.action} ${String(proposal.args.slug)}`;
 			},
 		},
@@ -494,37 +517,127 @@ async function tryApproveBuilderRun(
 	if (refusal) return { error: refusal };
 
 	const reviewer = await resolveReviewer(ctx);
+	const input = (args.input as Record<string, unknown> | undefined) ?? null;
+	const transaction = {
+		attempt: null as { nounLabel: string; desc: string } | null,
+	};
+	let phaseOne;
+	try {
+		// Every builder family shares one claim + confirmed-card transaction.
+		// DB-only mutations finish inside it; external/slow handlers return a
+		// continuation that runs after this short transaction commits.
+		phaseOne = await getDb().begin(async (tx) => {
+			await lockOrganizationForApproval(tx, ctx.organizationId);
+			const claim = await claimBuilderRun(
+				args.run_id,
+				ctx.organizationId,
+				"approved",
+				undefined,
+				tx,
+			);
+			if (!claim) return null;
+			const desc = claim.handler.describe(claim.proposal);
+			const confirmedEventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"confirmed",
+				`${claim.handler.nounLabel}: ${desc} — executing`,
+				`Builder action confirmed: ${desc}`,
+				{},
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
 
-	// Phase 1 (atomic): claim the run AND write the 'confirmed' card in ONE
-	// transaction. If the card INSERT fails (or the card is missing), the claim
-	// rolls back and the run stays pending — never an approved run with no card
-	// (or a card with no run).
-	const claimed = await getDb().begin(async (tx) => {
-		const claim = await claimBuilderRun(
-			args.run_id,
-			ctx.organizationId,
-			"approved",
-			undefined,
-			tx,
-		);
-		if (!claim) return null;
-		const desc = claim.handler.describe(claim.proposal);
-		const confirmedEventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"confirmed",
-			`${claim.handler.nounLabel}: ${desc} — executing`,
-			`Builder action confirmed: ${desc}`,
-			{},
-			reviewer,
-			tx,
-		);
-		requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
-		return { ...claim, desc };
-	});
-	if (!claimed) return null;
+			const applyInTransaction = claim.handler.applyInTransaction;
+			if (!applyInTransaction) {
+				const apply = claim.handler.apply;
+				if (!apply) {
+					throw new Error(`Approval handler ${claim.handler.actionKey} has no apply seam`);
+				}
+				return { kind: "external" as const, ...claim, apply, desc };
+			}
 
-	const { handler, proposal, requesterUserId, desc } = claimed;
+			transaction.attempt = { nounLabel: claim.handler.nounLabel, desc };
+			const output = await applyInTransaction(
+				claim.proposal,
+				ctx,
+				env,
+				claim.requesterUserId,
+				input,
+				tx,
+			);
+			const softFailure = claim.handler.detectSoftFailure?.(output) ?? null;
+			if (softFailure) throw new Error(softFailure);
+			await tx`
+				UPDATE runs SET status = 'completed', completed_at = NOW(),
+				  action_output = ${tx.json(output as Record<string, unknown>)}
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+			`;
+			const eventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"completed",
+				`${claim.handler.nounLabel}: ${desc} — completed`,
+				`Builder action completed: ${desc}`,
+				{ output: output as Record<string, unknown> },
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, eventId, "completed");
+			return {
+				kind: "completed" as const,
+				result: {
+					action: "approve" as const,
+					approved: true as const,
+					run_id: args.run_id,
+					event_id: eventId,
+					message: `${claim.handler.nounLabel} ${desc} approved and applied.`,
+				},
+			};
+		});
+	} catch (error) {
+		const attempt = transaction.attempt;
+		if (!attempt) throw error;
+		const message = error instanceof Error ? error.message : String(error);
+		const eventId = await getDb().begin(async (tx) => {
+			await lockOrganizationForApproval(tx, ctx.organizationId);
+			const reset = await tx`
+				UPDATE runs SET approval_status = 'pending', status = 'pending',
+				  error_message = ${message}
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+				  AND approval_status = 'pending' AND status = 'pending'
+				RETURNING id
+			`;
+			if (reset.length === 0) return null;
+			const failedEventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"apply_failed",
+				`${attempt.nounLabel}: ${attempt.desc} — apply failed, still pending`,
+				`Applying the approved mutation failed: ${message}`,
+				{ error_message: message },
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, failedEventId, "apply_failed");
+			return failedEventId;
+		});
+		if (eventId === null) {
+			return {
+				error:
+					"The approval was already decided while this request was in flight. Refresh before acting.",
+			};
+		}
+		return {
+			error: `Failed to apply ${attempt.nounLabel.toLowerCase()}: ${message}. The approval is still pending.`,
+			event_id: eventId,
+		};
+	}
+	if (!phaseOne) return null;
+	if (phaseOne.kind === "completed") return phaseOne.result;
+
+	const { handler, apply, proposal, requesterUserId, desc } = phaseOne;
 
 	// Apply runs OUTSIDE any transaction — the family's write can be
 	// slow/network-bound and must not hold a DB transaction open. The catch
@@ -534,12 +647,12 @@ async function tryApproveBuilderRun(
 	// failBuilderRun.
 	let output: unknown;
 	try {
-		output = await handler.apply(
+		output = await apply(
 			proposal,
 			ctx,
 			env,
 			requesterUserId,
-			(args.input as Record<string, unknown> | undefined) ?? null,
+			input,
 		);
 		// Some handlers return `{ error }` / partial-failure summaries instead of
 		// throwing — treat those as failures so the run isn't marked completed
@@ -853,6 +966,7 @@ async function tryApproveEntityChangeRun(
 		db: DbClient,
 		proposal: EntityChangeProposal,
 		mergeResolution?: MergeApprovalResolution,
+		postCommitEffects?: Array<() => Promise<void>>,
 	): Promise<ManageOperationsResult> => {
 		const operation = entityChangeOperation(proposal);
 		const description = describeEntityChange(proposal);
@@ -879,6 +993,7 @@ async function tryApproveEntityChangeRun(
 			db,
 			mergeResolution,
 			pending.parent_run_id == null ? null : Number(pending.parent_run_id),
+			postCommitEffects,
 		);
 		const staleFields =
 			operation === "update" &&
@@ -1009,6 +1124,7 @@ async function tryApproveEntityChangeRun(
 		// reset and the 'apply_failed' card share one transaction so a card
 		// failure cannot leave a pending run with no card.
 		const reset = await sql.begin(async (tx) => {
+			await lockOrganizationForApproval(tx, ctx.organizationId);
 			const resetRows = await tx`
 				UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${errorMessage}
 				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
@@ -1149,11 +1265,13 @@ async function tryApproveEntityChangeRun(
 	try {
 		// The non-merge family runs claim + confirm + apply + terminal write +
 		// completed card in ONE transaction, exactly like the merge family
-		// above: `applyEntityChangeProposal` is DB-only (never network-bound),
-		// so no external work is held open across the tx. The claim inside the
-		// tx is authoritative — returning null falls through to the connector
-		// path, and a rollback leaves the run exactly as it was.
-		return await sql.begin(async (tx) => {
+		// above. Lifecycle hooks join that transaction; network effects are
+		// collected and run only after it commits. The claim inside the tx is
+		// authoritative — returning null falls through to the connector path,
+		// and a rollback leaves the run exactly as it was.
+		const postCommitEffects: Array<() => Promise<void>> = [];
+		const result = await sql.begin(async (tx) => {
+			await lockOrganizationForApproval(tx, ctx.organizationId);
 			const claimedInTx = await claimEntityChangeRun(
 				args.run_id,
 				ctx.organizationId,
@@ -1162,8 +1280,24 @@ async function tryApproveEntityChangeRun(
 				tx,
 			);
 			if (!claimedInTx) return null;
-			return await completeApproval(tx, claimedInTx.proposal);
+			return await completeApproval(
+				tx,
+				claimedInTx.proposal,
+				undefined,
+				postCommitEffects,
+			);
 		});
+		for (const effect of postCommitEffects) {
+			try {
+				await effect();
+			} catch (error) {
+				logger.error(
+					{ error, runId: args.run_id },
+					"Post-commit entity approval effect failed",
+				);
+			}
+		}
+		return result;
 	} catch (error) {
 		return applyFailure(error);
 	}

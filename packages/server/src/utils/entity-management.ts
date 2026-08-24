@@ -29,13 +29,7 @@ import {
 	mutationPrincipalId,
 	automationIdFromPrincipalId,
 } from "../authz/entity-policy";
-import {
-	createDbClientFromEnv,
-	type DbClient,
-	getDb,
-	pgBigintArray,
-	pgTextArray,
-} from "../db/client";
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from "../db/client";
 import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
@@ -74,8 +68,9 @@ export type EntityTypeCountInput = {
 export async function countStoredEntitiesOfType(
 	typeId: number,
 	organizationId: string,
+	db: DbClient = getDb(),
 ): Promise<number> {
-	const sql = getDb();
+	const sql = db;
 	const rows = await sql`
     SELECT COUNT(*)::int as count
     FROM entities e
@@ -193,6 +188,8 @@ export async function getEntityCountsByTypes(
 interface EntityCreateOptions {
 	skipHooks?: boolean;
 	hookContext?: EntityHookContext;
+	/** Join an existing semantic mutation transaction when supplied. */
+	sql?: DbClient;
 	/**
 	 * Fields a human already approved on a create card. Absent means none, so an
 	 * escalate throws and the caller routes the create into an approval.
@@ -203,6 +200,23 @@ interface EntityCreateOptions {
 }
 
 interface EntityUpdateOptions {
+	/** Join an existing semantic mutation transaction when supplied. */
+	sql?: DbClient;
+	/**
+	 * Semantic caller hook executed after the row write but before commit. Low-level
+	 * projection writers omit it; manage_entity uses it for canonical entity.updated.
+	 */
+	afterPersist?: (
+		before: {
+			name: string | null;
+			slug: string | null;
+			parent_id: number | null;
+			metadata: Record<string, unknown> | null;
+			content: string | null;
+		},
+		after: CreatedEntity,
+		tx: DbClient,
+	) => Promise<void>;
 	policyPrincipalKind?: MutationPrincipalKind;
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
@@ -784,10 +798,11 @@ export async function fullProposalVerdict(params: {
 async function preventEntityCycles(
 	entityId: number | null,
 	parentId: number | null,
+	db: DbClient = getDb(),
 ): Promise<void> {
   if (parentId === null) return;
 
-  const sql = getDb();
+  const sql = db;
   const MAX_DEPTH = 10;
   let currentId: number | null = parentId;
   let depth = 0;
@@ -883,78 +898,54 @@ export async function createEntity(
 		throw new Error("Organization ID is required");
 	}
 
-	// Run beforeCreate hook
-	if (!opts?.skipHooks && opts?.hookContext) {
-		const hooks = getEntityHooks(data.entity_type);
-		if (hooks?.beforeCreate) {
-			data = await hooks.beforeCreate(data, opts.hookContext);
-		}
-	}
-
-	const sql = getDb();
-
-	// Resolve entity_type slug → entity_types(id) via the schema search path:
-	//   1. The entity's own org (the user's tenant — local types win).
-	//   2. Any org with visibility='public' (canonical/world-knowledge catalogs).
-	// First match wins. The resolved id is materialized on the row so reads
-	// never need to repeat the search. `ORDER BY (et.organization_id = own_org)
-	// DESC` keeps tenant-local types ahead of public ones when both exist.
-	//
-	// KNOWN LIMITATION: this trusts every visibility='public' org as a curated
-	// catalog. If a tenant can flip their own org public *and* register types
-	// before another tenant references the same slug, they could squat on
-	// common slugs (`brand`, `tax_filing`). Operationally we restrict
-	// visibility flips to admins; long-term the right fix is either an
-	// explicit `is_catalog` flag on `organization` or per-agent `uses_catalog`
-	// declarations narrowing the search scope.
-	const typeRow = await sql<{ id: number; backing_sql: string | null }>`
-    SELECT et.id, et.backing_sql
-    FROM entity_types et
-    LEFT JOIN organization o ON o.id = et.organization_id
-    WHERE et.slug = ${data.entity_type}
-      AND et.deleted_at IS NULL
-      AND (
-        et.organization_id = ${data.organization_id}
-        OR o.visibility = 'public'
-      )
-    ORDER BY (et.organization_id = ${data.organization_id}) DESC, et.id ASC
-    LIMIT 1
-  `;
-	if (typeRow.length === 0) {
-		throw new ToolUserError(
-			`Unknown entity type '${data.entity_type}'. Use client.entitySchema.listTypes() to list available types or client.entitySchema.createType(...) to create a custom type first.`,
-			400,
-		);
-	}
-	// A derived (view-backed) type has no stored rows — its data is its backing_sql
-	// view. Reject inserts here (the single chokepoint; covers tenant + public
-	// catalog types) so a row the view ignores can't be orphaned.
-	if (typeRow[0].backing_sql) {
-		throw new ToolUserError(
-			`Entity type '${data.entity_type}' is derived (a SQL view) and has no stored rows. Edit its backing view instead of creating entities.`,
-			400,
-		);
-	}
-	const entityTypeId = typeRow[0].id;
-
-	// Generate slug from name if not provided
-	const slug = data.slug || slugify(data.name);
-
-	const metadata = mergeConvenienceFields(data, data.metadata || {}, "create");
-
-	const createdBy = data.created_by || "system";
-
-	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
-	if (data.parent_id) {
-		await preventEntityCycles(null, data.parent_id);
-	}
-
-	const contentValue = data.content?.trim() || null;
-	const contentHash = data.content_hash || null;
+	const sql = opts?.sql ?? getDb();
 
 	try {
-		const inserted = await sql.begin(async (tx) => {
-			return insertEntityRow({
+		const created = await withEntityWriteTransaction(sql, async (tx) => {
+			let createData = data;
+			if (!opts?.skipHooks && opts?.hookContext) {
+				const hooks = getEntityHooks(createData.entity_type);
+				if (hooks?.beforeCreate) {
+					createData = await hooks.beforeCreate(createData, {
+						...opts.hookContext,
+						sql: tx,
+					});
+				}
+			}
+
+			// Resolve entity_type slug → entity_types(id) via the schema search path:
+			// tenant-local types win, then public catalog types.
+			const typeRow = await tx<{ id: number; backing_sql: string | null }>`
+        SELECT et.id, et.backing_sql
+        FROM entity_types et
+        LEFT JOIN organization o ON o.id = et.organization_id
+        WHERE et.slug = ${createData.entity_type}
+          AND et.deleted_at IS NULL
+          AND (
+            et.organization_id = ${createData.organization_id}
+            OR o.visibility = 'public'
+          )
+        ORDER BY (et.organization_id = ${createData.organization_id}) DESC, et.id ASC
+        LIMIT 1
+      `;
+			if (typeRow.length === 0) {
+				throw new ToolUserError(
+					`Unknown entity type '${createData.entity_type}'. Use client.entitySchema.listTypes() to list available types or client.entitySchema.createType(...) to create a custom type first.`,
+					400,
+				);
+			}
+			if (typeRow[0].backing_sql) {
+				throw new ToolUserError(
+					`Entity type '${createData.entity_type}' is derived (a SQL view) and has no stored rows. Edit its backing view instead of creating entities.`,
+					400,
+				);
+			}
+
+			if (createData.parent_id) {
+				await preventEntityCycles(null, createData.parent_id, tx);
+			}
+
+			const inserted = await insertEntityRow({
 				tx,
 				// THE create path. Everything a tenant, an agent or the API creates
 				// arrives here, so this is where a rule has to be able to reject a row
@@ -962,29 +953,27 @@ export async function createEntity(
 				row: await validateEntityRowInsertGrantingApprovedFields({
 					tx,
 					row: {
-						organizationId: data.organization_id as string,
-						entityTypeId,
-						name: data.name.trim(),
-						slug,
-						parentId: data.parent_id || null,
-						metadata,
-						enabledClassifiers: data.enabled_classifiers,
-						createdBy,
-						content: contentValue,
-						embedding: data.embedding,
-						contentHash,
+						organizationId: createData.organization_id as string,
+						entityTypeId: typeRow[0].id,
+						name: createData.name.trim(),
+						slug: createData.slug || slugify(createData.name),
+						parentId: createData.parent_id || null,
+						metadata: mergeConvenienceFields(
+							createData,
+							createData.metadata || {},
+							"create",
+						),
+						enabledClassifiers: createData.enabled_classifiers,
+						createdBy: createData.created_by || "system",
+						content: createData.content?.trim() || null,
+						embedding: createData.embedding,
+						contentHash: createData.content_hash || null,
 					},
 					approvedFields: opts?.approvedFields ?? [],
 				}),
 			});
+			return { ...inserted, entity_type: createData.entity_type };
 		});
-
-		// The validator above already resolved data.entity_type → entityTypeId.
-		// Pass the slug back through directly rather than JOIN-ing on every insert.
-		const created: CreatedEntity = {
-			...inserted,
-			entity_type: data.entity_type,
-		};
 
 		// Run afterCreate hook
 		if (!opts?.skipHooks && opts?.hookContext) {
@@ -1026,21 +1015,20 @@ export async function createEntity(
 export async function updateEntity(
 	entityId: number,
 	data: Partial<EntityData>,
-	env: Env,
+	_env: Env,
 	ctx: ToolContext,
 	opts?: EntityUpdateOptions,
 ): Promise<
 	CreatedEntity & { fieldMerge?: FieldMergeInfo; deferred?: DeferredMutation }
 > {
-	const pgSql = createDbClientFromEnv(env);
-	const sql = getDb();
+	const sql = opts?.sql ?? getDb();
 
 	// Validate write access (uses PG for auth tables)
-	await requireWriteAccess(pgSql, entityId, ctx);
+	await requireWriteAccess(sql, entityId, ctx);
 
 	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
 	if (data.parent_id !== undefined && data.parent_id !== null) {
-		await preventEntityCycles(entityId, data.parent_id);
+		await preventEntityCycles(entityId, data.parent_id, sql);
 	}
 
 	// Generate new slug if provided or name is being updated
@@ -1084,10 +1072,18 @@ export async function updateEntity(
 	// Lock the entity row, merge metadata, and write in ONE transaction: concurrent
 	// updates to the same entity serialize on the row lock, fixing the pre-existing
 	// non-transactional read-modify-write race on entities.metadata.
-	const result = await sql.begin(async (tx) => {
+	const result = await withEntityWriteTransaction(sql, async (tx) => {
+		// Canonical change events take an organization FK lock before commit. Claim
+		// it before the entity row so organization deletion cannot hold the parent
+		// while waiting on this row in the opposite order.
+		await tx`
+			SELECT 1 FROM organization
+			WHERE id = ${ctx.organizationId}
+			FOR KEY SHARE
+		`;
 		const current = await tx`
       SELECT e.metadata, e.field_controls, e.organization_id, et.slug AS entity_type,
-             e.name, e.parent_id, e.content
+             e.name, e.slug, e.parent_id, e.content
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.id = ${entityId} AND e.deleted_at IS NULL
@@ -1394,7 +1390,7 @@ export async function updateEntity(
 		if (sel.length === 0) {
 			throw new Error(`Entity ${entityId} not found`);
 		}
-		return {
+		const updated = {
 			...sel[0],
 			fieldMerge,
 			deferWholeWrite,
@@ -1408,6 +1404,20 @@ export async function updateEntity(
 			proposedFields: Record<string, unknown>;
 			proposedCurrent: Record<string, unknown>;
 		};
+		await opts?.afterPersist?.(
+			{
+				name: (current[0].name as string | null) ?? null,
+				slug: (current[0].slug as string | null) ?? null,
+				parent_id:
+					current[0].parent_id == null ? null : Number(current[0].parent_id),
+				metadata:
+					(current[0].metadata as Record<string, unknown> | null) ?? null,
+				content: (current[0].content as string | null) ?? null,
+			},
+			updated,
+			tx,
+		);
+		return updated;
 	});
 
 	// Split the deferral inputs off the returned row: they are this function's
@@ -1563,11 +1573,13 @@ export interface ForceDeleteTreeReport {
 export async function deleteEntity(
 	entityId: number,
 	force: boolean = false,
-	env: Env,
+	_env: Env,
 	ctx: ToolContext,
 	opts?: {
 		skipHooks?: boolean;
 		dryRun?: boolean;
+		/** Join an existing semantic mutation transaction when supplied. */
+		sql?: DbClient;
 		/**
 		 * Set only when this call IS the application of a delete a human already
 		 * approved, so a rule that escalates on the delete does not escalate the
@@ -1589,39 +1601,35 @@ export async function deleteEntity(
    */
   refused?: true;
 }> {
-  const pgSql = createDbClientFromEnv(env);
-  const sql = getDb();
+	const sql = opts?.sql ?? getDb();
 
   // Validate write access (uses PG for auth tables)
-  await requireWriteAccess(pgSql, entityId, ctx);
+	await requireWriteAccess(sql, entityId, ctx);
 
-  // Resolve the hook now, but do not run its cleanup until the row rule has
-  // accepted the delete. The write transaction validates again under lock.
-  let runBeforeDeleteHook: (() => Promise<void>) | null = null;
-  if (!opts?.skipHooks && !opts?.dryRun) {
-    const entityRow = await sql`
-      SELECT et.slug AS entity_type, e.metadata
-      FROM entities e
-      JOIN entity_types et ON et.id = e.entity_type_id
-      WHERE e.id = ${entityId} AND e.deleted_at IS NULL
-    `;
-    if (entityRow.length > 0) {
-      const beforeDelete = getEntityHooks(
-        entityRow[0].entity_type as string
-      )?.beforeDelete;
-      if (beforeDelete) {
-        runBeforeDeleteHook = () =>
-          beforeDelete(
-            {
-              id: entityId,
-              entity_type: entityRow[0].entity_type as string,
-              metadata: entityRow[0].metadata as Record<string, unknown> | null,
-            },
-            { organizationId: ctx.organizationId, userId: ctx.userId }
+  // Resolve and run the hook only after the row rule has accepted the delete.
+  // Reloading the row inside the write transaction keeps hook cleanup aligned
+  // with the metadata version that is actually deleted.
+  const runBeforeDeleteHook =
+    !opts?.skipHooks && !opts?.dryRun
+      ? async (tx: DbClient): Promise<void> => {
+          const [entityRow] = await tx<{
+            entity_type: string;
+            metadata: Record<string, unknown> | null;
+          }>`
+            SELECT et.slug AS entity_type, e.metadata
+            FROM entities e
+            JOIN entity_types et ON et.id = e.entity_type_id
+            WHERE e.id = ${entityId} AND e.deleted_at IS NULL
+          `;
+          if (!entityRow) return;
+          const beforeDelete = getEntityHooks(entityRow.entity_type)?.beforeDelete;
+          if (!beforeDelete) return;
+          await beforeDelete(
+            { id: entityId, ...entityRow },
+            { organizationId: ctx.organizationId, userId: ctx.userId, sql: tx }
           );
-      }
-    }
-  }
+        }
+      : null;
 
   // Check if entity has children
   if (!force) {
@@ -1709,23 +1717,13 @@ export async function deleteEntity(
       };
     }
 
-    if (runBeforeDeleteHook) {
-      await validateEntityRowPatchGrantingApprovedFields({
-        tx: sql,
-        ids: entityTreeIds,
-        patch: { softDelete: true },
-        approvedFields: opts?.approvedFields ?? [],
-      });
-      await runBeforeDeleteHook();
-    }
-
     // Deletion predicate for automations/feeds: only rows whose entity set is
     // non-empty AND fully inside the tree. Requiring the overlap (&&) first is
     // load-bearing — a bare `entity_ids <@ tree` (or a COALESCE to '{}') also
     // matches every empty/NULL-linked row IN EVERY ORG (empty set ⊂ anything),
     // and lets the GIN index on entity_ids drive the scan instead of a
     // full-table pass.
-    await sql.begin(async (tx) => {
+		await withEntityWriteTransaction(sql, async (tx) => {
       // Parent row first: this locks the entity tree below and then bumps the
       // org generation, the reverse of organization deletion's parent-then-
       // cascade order unless the org is claimed up front.
@@ -1757,6 +1755,7 @@ export async function deleteEntity(
         patch: { softDelete: true },
         approvedFields: opts?.approvedFields ?? [],
       });
+      if (runBeforeDeleteHook) await runBeforeDeleteHook(tx);
       // Force-delete removes ACL edges along with everything else. That is
       // correct — the entity is gone, so its membership projection must go too —
       // but the `entity_relationships` trigger refuses authorization-bearing
@@ -1967,15 +1966,6 @@ export async function deleteEntity(
       dry_run: true,
     };
   }
-  if (runBeforeDeleteHook) {
-    await validateEntityRowPatchGrantingApprovedFields({
-      tx: sql,
-      ids: [entityId],
-      patch: { softDelete: true },
-      approvedFields: opts?.approvedFields ?? [],
-    });
-    await runBeforeDeleteHook();
-  }
   // Soft delete: stamp deleted_at, governed by the type's write rules.
   //
   // The rule sees `$deleted` flip to true, so freezing a row stops it being
@@ -2010,15 +2000,17 @@ export async function deleteEntity(
     // `deleted_at IS NULL` guard, exactly as the unlocked statement did; stopping
     // here also keeps a tenant rule from judging a row this call cannot write.
     if (locked.length === 0) return;
+    const patch = await validateEntityRowPatchGrantingApprovedFields({
+      tx,
+      ids: [entityId],
+      patch: { softDelete: true },
+      approvedFields: opts?.approvedFields ?? [],
+    });
+    if (runBeforeDeleteHook) await runBeforeDeleteHook(tx);
     await patchEntityRows({
       tx,
       ids: [entityId],
-      patch: await validateEntityRowPatchGrantingApprovedFields({
-        tx,
-        ids: [entityId],
-        patch: { softDelete: true },
-        approvedFields: opts?.approvedFields ?? [],
-      }),
+      patch,
     });
   });
 

@@ -28,6 +28,7 @@ import {
 	type EntityApprovalPolicy,
 	type EntityMutationMode,
 	isEntityMutationMode,
+	isWriteResourceClass,
 	listEntityApprovalPolicies,
 	upsertEntityApprovalPolicy,
 } from "./authz/entity-policy";
@@ -1477,10 +1478,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		);
 	}
 
-	const resourceClass =
-		body.resource_class === "entity" ||
-		body.resource_class === "agent_config" ||
-		body.resource_class === "connector_action"
+	const resourceClass = isWriteResourceClass(body.resource_class)
 			? body.resource_class
 			: null;
 	if (!resourceClass) {
@@ -1488,7 +1486,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			{
 				error: "invalid_request",
 				message:
-					"resource_class must be entity, agent_config, or connector_action.",
+					"resource_class must be entity, agent_config, connector_action, or entity_schema.",
 			},
 			400,
 		);
@@ -1719,10 +1717,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	}
 	const agentId = c.req.param("agentId");
 	const resourceClassRaw = c.req.query("resource_class")?.trim();
-	const resourceClass =
-		resourceClassRaw === "entity" ||
-		resourceClassRaw === "agent_config" ||
-		resourceClassRaw === "connector_action"
+	const resourceClass = isWriteResourceClass(resourceClassRaw)
 			? resourceClassRaw
 			: null;
 	if (!resourceClass) {
@@ -1939,10 +1934,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 		);
 	}
 
-	const resourceClass =
-		body.resource_class === "entity" ||
-		body.resource_class === "agent_config" ||
-		body.resource_class === "connector_action"
+	const resourceClass = isWriteResourceClass(body.resource_class)
 			? body.resource_class
 			: null;
 	if (!resourceClass) {
@@ -1950,7 +1942,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 			{
 				error: "invalid_request",
 				message:
-					"resource_class must be entity, agent_config, or connector_action.",
+					"resource_class must be entity, agent_config, connector_action, or entity_schema.",
 			},
 			400,
 		);
@@ -2141,10 +2133,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 		return c.json({ error: "Organization context required" }, 401);
 	}
 	const resourceClassRaw = c.req.query("resource_class")?.trim();
-	const resourceClass =
-		resourceClassRaw === "entity" ||
-		resourceClassRaw === "agent_config" ||
-		resourceClassRaw === "connector_action"
+	const resourceClass = isWriteResourceClass(resourceClassRaw)
 			? resourceClassRaw
 			: null;
 	if (!resourceClass) {

@@ -84,7 +84,7 @@ export const AUDIT_LIFECYCLE_SUBJECTS = [
 
 export type AuditLifecycleSubject = (typeof AUDIT_LIFECYCLE_SUBJECTS)[number];
 
-/** Transitions `recordEdgeChangeEvent` reports, past-tense. */
+/** Transitions `insertEdgeChangeEventInTransaction` reports, past-tense. */
 export const EDGE_OPS = ["linked", "unlinked", "updated"] as const;
 
 export type EdgeOp = (typeof EDGE_OPS)[number];

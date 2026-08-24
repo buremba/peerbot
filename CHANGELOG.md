@@ -1,5 +1,47 @@
 # Changelog
 
+## [16.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.8.0...lobu-v16.0.0) (2026-08-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** drop legacy --inside-claude daemon flag ([#3105](https://github.com/lobu-ai/lobu/issues/3105))
+
+### Features
+
+* **cli:** drop legacy --inside-claude daemon flag ([#3105](https://github.com/lobu-ai/lobu/issues/3105)) ([b18c150](https://github.com/lobu-ai/lobu/commit/b18c1502cd70e592722da865cab69835a973b26e))
+* **cli:** rotate headless device credentials ([#3107](https://github.com/lobu-ai/lobu/issues/3107)) ([5318365](https://github.com/lobu-ai/lobu/commit/53183655246be0e3cc1b8d79aa76105a73a0324b))
+* **connector-worker:** add supervised native bridge ([#3089](https://github.com/lobu-ai/lobu/issues/3089)) ([24cbc5d](https://github.com/lobu-ai/lobu/commit/24cbc5dba2e96e5d4c31d929745f9c6eb8f448d1))
+* **connector-worker:** package lean macOS device daemon ([#3080](https://github.com/lobu-ai/lobu/issues/3080)) ([f0e32f8](https://github.com/lobu-ai/lobu/commit/f0e32f8e6f8b9b894c7189db8fcf8fa19402b019))
+* **device-connectors:** add canonical Mac device connectors ([#3086](https://github.com/lobu-ai/lobu/issues/3086)) ([3391815](https://github.com/lobu-ai/lobu/commit/339181527dd06774fed967229f310f925cf889cc))
+* **device-daemon:** run Codex automations over ACP ([#3118](https://github.com/lobu-ai/lobu/issues/3118)) ([87edc5b](https://github.com/lobu-ai/lobu/commit/87edc5b3c98c207f69ee8716f97870fd754bbbde))
+* **lobu-team:** manage engineering task dogfood runner ([#3112](https://github.com/lobu-ai/lobu/issues/3112)) ([3c5aebe](https://github.com/lobu-ai/lobu/commit/3c5aebee767cb50f9ee522ea868c40f53aba6997))
+* **mac:** bundle native device daemon ([#3098](https://github.com/lobu-ai/lobu/issues/3098)) ([871a6b6](https://github.com/lobu-ai/lobu/commit/871a6b609018cc1a472bf9c098bbaa0d631b3795))
+* **server:** propagate browser execution context ([#3084](https://github.com/lobu-ai/lobu/issues/3084)) ([df77635](https://github.com/lobu-ai/lobu/commit/df77635adf696a5c3ab07ee617fa47a2cb35d1a6))
+* **worker:** add poll capacity semantics ([#3087](https://github.com/lobu-ai/lobu/issues/3087)) ([c052253](https://github.com/lobu-ai/lobu/commit/c052253a1805d0685f7fa6d4ac3c9bc61e11bfec))
+
+
+### Bug Fixes
+
+* **automations:** expose trigger execution ownership ([#3115](https://github.com/lobu-ai/lobu/issues/3115)) ([52f774b](https://github.com/lobu-ai/lobu/commit/52f774b5b6001252395bfb0d6b60dcbd7180dc2e))
+* **automations:** preserve device catch-up scheduling ([#3117](https://github.com/lobu-ai/lobu/issues/3117)) ([898cd9a](https://github.com/lobu-ai/lobu/commit/898cd9af248597465ba688830843d8d585a11c0c))
+* **automations:** support run-bound external completion ([#3078](https://github.com/lobu-ai/lobu/issues/3078)) ([d117e15](https://github.com/lobu-ai/lobu/commit/d117e152e468b78bb2aaeb80ae1184f5f3870ee9))
+* **ci:** preflight kubeconfig before deploys ([#3094](https://github.com/lobu-ai/lobu/issues/3094)) ([74f3da6](https://github.com/lobu-ai/lobu/commit/74f3da68b65c83b13ef9b40fa11df183e90dfc39))
+* complete cross-workspace MCP handoff ([#3101](https://github.com/lobu-ai/lobu/issues/3101)) ([3663e06](https://github.com/lobu-ai/lobu/commit/3663e06cd20d3709d3f8f6b0779b279222398def))
+* contain browser callback secrets on ingestion ([#3092](https://github.com/lobu-ai/lobu/issues/3092)) ([cdfb191](https://github.com/lobu-ai/lobu/commit/cdfb1913b31052f36a0c31da89f176ad79151537))
+* defer device schedules until workers reconnect ([#3108](https://github.com/lobu-ai/lobu/issues/3108)) ([d91b2ce](https://github.com/lobu-ai/lobu/commit/d91b2ce3a3a5a22da46d12d5372ae9f201b4771f))
+* **mcp:** bound proxy transport responses ([#3091](https://github.com/lobu-ai/lobu/issues/3091)) ([20e16b2](https://github.com/lobu-ai/lobu/commit/20e16b2f36d608defff56a5fa06a68da33042db5))
+* **mcp:** cap diagnostic preview allocation ([#3095](https://github.com/lobu-ai/lobu/issues/3095)) ([12a5175](https://github.com/lobu-ai/lobu/commit/12a517571404fbe26482ab85f272cc47d48dedcc))
+* **oauth:** enforce device verifier ownership ([#3099](https://github.com/lobu-ai/lobu/issues/3099)) ([51b0aff](https://github.com/lobu-ai/lobu/commit/51b0aff59582e6ea486e7bb908fd42be96b49e4f))
+* recover automation windows with fenced claims ([#3090](https://github.com/lobu-ai/lobu/issues/3090)) ([bb33aef](https://github.com/lobu-ai/lobu/commit/bb33aef04788c44141fdadc29e84ba01e346013a))
+* **search:** reclaim a superseded event's vectors ([#3074](https://github.com/lobu-ai/lobu/issues/3074)) ([b42407f](https://github.com/lobu-ai/lobu/commit/b42407fb6112db26cad0db3fcdf7051b3e77bef7))
+* **server:** allow dry runs on paused feeds ([#3110](https://github.com/lobu-ai/lobu/issues/3110)) ([6fa1ccf](https://github.com/lobu-ai/lobu/commit/6fa1ccf1f6a82e2c572adaca83e3d338f6d6bef6))
+* **server:** authorize exact device manifest artifacts ([#3079](https://github.com/lobu-ai/lobu/issues/3079)) ([32e17aa](https://github.com/lobu-ai/lobu/commit/32e17aaeed117ba00cf13637b316f4727a85abf8))
+* **server:** raise the inline attachment cap so screenshots survive it ([#3055](https://github.com/lobu-ai/lobu/issues/3055)) ([461cc46](https://github.com/lobu-ai/lobu/commit/461cc4670f2bee8b00b7bb1f1fd41b7695a1a818))
+* **server:** stop accepting HTTP work before gateway/db teardown ([#3077](https://github.com/lobu-ai/lobu/issues/3077)) ([bf87f09](https://github.com/lobu-ai/lobu/commit/bf87f092579bfb5f0067f8df4a7e904a2c346615))
+* validate sdk dry-run actions ([#3093](https://github.com/lobu-ai/lobu/issues/3093)) ([4cd13ba](https://github.com/lobu-ai/lobu/commit/4cd13baf2c0d8af2be17b3bd8e247dba90b2a701))
+* **worker:** validate poll requests at runtime ([#3088](https://github.com/lobu-ai/lobu/issues/3088)) ([b87a7bf](https://github.com/lobu-ai/lobu/commit/b87a7bf72aa588d26cb5bab65bf6577e8a94d5e1))
+
 ## [15.8.0](https://github.com/lobu-ai/lobu/compare/lobu-v15.7.0...lobu-v15.8.0) (2026-08-22)
 
 

@@ -303,6 +303,15 @@
             <enclosure url="https://github.com/lobu-ai/lobu/releases/download/lobu-v9.4.0/Owletto.dmg" sparkle:edSignature="/ywQLXNMfII6pQlKi0B6DejPP6Yq6Vdqs4pecqeGj0HXC1xrfasdUjvgbxkeopbR+Euqw9QfL7jkH5rIb/92BA==" length="2254258" type="application/octet-stream" />
         </item>
         <item>
+            <title>Version 16.1.0</title>
+            <pubDate>Mon, 24 Aug 2026 16:36:09 GMT</pubDate>
+            <sparkle:version>16.1.0</sparkle:version>
+            <sparkle:shortVersionString>16.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://github.com/lobu-ai/lobu/releases/tag/lobu-v16.1.0</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/lobu-ai/lobu/releases/download/lobu-v16.1.0/Owletto.dmg" sparkle:edSignature="49HzYzOoy2yrJCUUaraXBxclqzqARtq6+8VuXHbC29UEh2qLemNcWjxp97xvYLKSkOm+qfc2+Kp4+vwQAi9hBw==" length="27134104" type="application/octet-stream" />
+        </item>
+        <item>
             <title>Version 16.0.0</title>
             <pubDate>Mon, 24 Aug 2026 00:40:28 GMT</pubDate>
             <sparkle:version>16.0.0</sparkle:version>

@@ -5,6 +5,8 @@ export async function readSnapshotJsonl(args: {
 	agentId: string;
 	organizationId: string | undefined;
 	conversationId: string;
+	/** Read only the leading characters when the caller needs the session header. */
+	prefixChars?: number;
 	/** Keep completion read + append on the caller's transaction snapshot. */
 	client?: DbClient;
 }): Promise<string | null> {
@@ -12,8 +14,11 @@ export async function readSnapshotJsonl(args: {
 	if (!organizationId) return null;
 
 	const sql = args.client ?? getDb();
+	const snapshotJsonl = args.prefixChars
+		? sql`left(snapshot_jsonl, ${args.prefixChars})`
+		: sql`snapshot_jsonl`;
 	const rows = await sql<{ snapshot_jsonl: string }>`
-    SELECT snapshot_jsonl
+    SELECT ${snapshotJsonl} AS snapshot_jsonl
     FROM public.agent_transcript_snapshot
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}

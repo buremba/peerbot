@@ -222,9 +222,11 @@ describe('dispatchAutomationResumeLoop', () => {
   });
 });
 
-function makeSafetyNetClient() {
+function makeSafetyNetClient(options: { failFirstDeviceChat?: boolean } = {}) {
   const completes: Array<Record<string, unknown>> = [];
   const automationCompletes: Array<{ runId: number; req: Record<string, unknown> }> = [];
+  const deviceChatCompletes: Array<{ runId: number; req: Record<string, unknown> }> = [];
+  let deviceChatAttempts = 0;
   const client = {
     id: 'test-worker',
     version: 'test',
@@ -238,12 +240,20 @@ function makeSafetyNetClient() {
     async pollAuthSignal() { return { signal: null }; },
     async fetchEventsForEmbedding() { return []; },
     async dispatchChromeAction() { return {}; },
+    async completeDeviceChat(runId: number, req: Record<string, unknown>) {
+      deviceChatAttempts++;
+      deviceChatCompletes.push({ runId, req });
+      if (options.failFirstDeviceChat && deviceChatAttempts === 1) {
+        throw new Error('device chat completion failed');
+      }
+      return { ok: true, status: 'failed' };
+    },
     async completeAutomation(runId: number, req: Record<string, unknown>) {
       automationCompletes.push({ runId, req });
       return { ok: true, status: 'completed' };
     },
   };
-  return { client, completes, automationCompletes };
+  return { client, completes, automationCompletes, deviceChatCompletes };
 }
 
 describe('executeRun try/catch safety net', () => {
@@ -285,6 +295,33 @@ describe('executeRun try/catch safety net', () => {
     expect(automationCompletes[0]!.runId).toBe(12);
     expect(automationCompletes[0]!.req.exit_reason).toBe('crash');
     expect(String(automationCompletes[0]!.req.error)).toBeTruthy();
+  });
+
+  test('device-chat completion failures retry through complete-chat, never the sync endpoint', async () => {
+    const { client, completes, deviceChatCompletes } = makeSafetyNetClient({
+      failFirstDeviceChat: true,
+    });
+
+    const result = await executeRun(
+      client as any,
+      {
+        run_id: 14,
+        run_type: 'chat_message',
+        payload: { chat: { agent_kind: 'pi' } },
+      } as any,
+      {}
+    );
+
+    expect(result.error).toContain('device chat completion failed');
+    expect(completes).toHaveLength(0);
+    expect(deviceChatCompletes).toHaveLength(2);
+    expect(deviceChatCompletes[1]).toMatchObject({
+      runId: 14,
+      req: { exit_reason: 'crash' },
+    });
+    expect(String(deviceChatCompletes[1]!.req.error)).toContain(
+      'device chat completion failed'
+    );
   });
 
   test('a chat envelope on the automation lane is reported, not crashed', async () => {

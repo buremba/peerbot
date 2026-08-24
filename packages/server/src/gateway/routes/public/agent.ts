@@ -133,16 +133,14 @@ const DeviceExecutionTargetSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+const SNAPSHOT_HEADER_CHARS = 8192;
 
 function executionTargetFromSnapshot(
 	snapshot: string | null,
 ): DeviceExecutionTarget | undefined {
-	// Placement is in the small leading session record; do not split a whole
-	// multi-megabyte transcript just to recover that header after session expiry.
-	const header = snapshot
-		?.slice(0, 8192)
-		.split("\n")
-		.find((line) => line.trim());
+	// Placement is in the leading session record. The caller only fetches this
+	// prefix, so parsing never materializes the whole transcript.
+	const header = snapshot?.split("\n").find((line) => line.trim());
 	if (!header) return undefined;
 	try {
 		const parsed = JSON.parse(header) as { executionTarget?: unknown };
@@ -1030,8 +1028,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     }
 
 		// Session state has a TTL; the transcript is the durable conversation
-		// substrate. Recover a device placement from its session header so an old
-		// device thread cannot silently fall back to the managed runtime.
+		// substrate. Recover the last completed turn's device placement from its
+		// session header so the thread cannot silently fall back to managed runtime.
 		let candidateExecutionTarget = executionTarget as
 			| DeviceExecutionTarget
 			| undefined;
@@ -1050,6 +1048,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 					agentId,
 					organizationId: tokenOrganizationId,
 					conversationId,
+					prefixChars: SNAPSHOT_HEADER_CHARS,
 				}),
 			);
 		}

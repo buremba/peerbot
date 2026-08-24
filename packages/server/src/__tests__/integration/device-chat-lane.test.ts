@@ -362,6 +362,24 @@ describe("device chat execution lane", () => {
       WHERE id = ${runningId}
     `;
 
+		const genericCompletion = await post("/api/workers/complete", {
+			token: selected.token,
+			body: {
+				run_id: runningId,
+				worker_id: "stale-device",
+				status: "failed",
+				error_message: "old daemon used generic completion",
+			},
+		});
+		expect(genericCompletion.status).toBe(409);
+		await expect(genericCompletion.json()).resolves.toEqual({
+			error: "Device chat runs must use the complete-chat endpoint",
+		});
+		const [stillRunning] = await sql<{ status: string }>`
+      SELECT status FROM runs WHERE id = ${runningId}
+    `;
+		expect(stillRunning.status).toBe("running");
+
 		expect(await sweepStaleDeviceChatRuns(60)).toBe(2);
 		const terminal = await sql<{
 			id: number;

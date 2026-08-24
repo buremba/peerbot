@@ -817,6 +817,19 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
+		const runKinds = await sql<{ run_type: string }>`
+      SELECT run_type FROM runs WHERE id = ${req.run_id} LIMIT 1
+    `;
+		if (runKinds[0]?.run_type === "chat_message") {
+			// Device chat has a dedicated completion adapter that persists the
+			// transcript and publishes the thread_response awaited by Activity. Keep
+			// the run in progress when an older daemon calls the generic sync route;
+			// the stale-run sweep can then produce a visible terminal response.
+			return c.json(
+				{ error: "Device chat runs must use the complete-chat endpoint" },
+				409,
+			);
+		}
 		const isBrowserRun = await runUsesBrowserConnector(sql, req.run_id);
 		if (isBrowserRun) {
 			req.error_message = sanitizeBrowserText(req.error_message) ?? undefined;

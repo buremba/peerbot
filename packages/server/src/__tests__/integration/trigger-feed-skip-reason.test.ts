@@ -1,14 +1,15 @@
 /**
  * `trigger_feed` must say WHY no run was queued.
  *
- * `createSyncRun` declines for five distinct reasons — an active run already
- * exists, the feed is gone, the connector is cloud-restricted, the connector was
- * uninstalled, or its version has no runnable code — and it used to signal all
- * five with a bare `null`. `handleTriggerFeed` rendered that as:
+ * `createSyncRun` declines for six distinct reasons — an active run already
+ * exists, the feed is gone, the feed does not support sync, the connector is
+ * cloud-restricted, the connector was uninstalled, or its version has no
+ * runnable code — and it used to signal all of them with a bare `null`.
+ * `handleTriggerFeed` rendered that as:
  *
  *     "Sync already pending or running for this feed"
  *
- * which is true for exactly one of them. For the other four an operator is told
+ * which is true for exactly one of them. For the other five an operator is told
  * to wait for a run that does not exist and never will. This is not
  * hypothetical: it cost a debugging cycle in this repo when a fixture created a
  * globally-scoped connector definition, `resolveActiveConnectorVersion` found
@@ -31,14 +32,19 @@ import {
   seedOwnerContext,
 } from '../setup/test-fixtures';
 
-async function seedFeed(opts: { orgScopedDefinition: boolean }) {
+async function seedFeed(opts: {
+  orgScopedDefinition: boolean;
+  operations?: Array<'sync' | 'read'>;
+}) {
   const sql = getTestDb();
   const { org, ctx } = await seedOwnerContext();
 
   await createTestConnectorDefinition({
     key: 'rss',
     name: 'RSS',
-    feeds_schema: { items: {} },
+    feeds_schema: {
+      items: opts.operations ? { operations: opts.operations } : {},
+    },
     // The switch under test. Org-scoped resolves and the run queues; global-only
     // is invisible to resolveActiveConnectorVersion, which retires the feed as
     // an orphan and declines — the case that used to report "already pending".
@@ -103,5 +109,27 @@ describe('trigger_feed skip reasons', () => {
 
     expect(second.triggered).toBeUndefined();
     expect(second.message).toContain('already pending or running');
+  });
+
+  it('reports that a read-only feed does not support sync', async () => {
+    const { feedId, ctx } = await seedFeed({
+      orgScopedDefinition: true,
+      operations: ['read'],
+    });
+
+    const res = (await manageFeeds(
+      { action: 'trigger_feed', feed_id: feedId },
+      {} as Env,
+      ctx,
+    )) as { error?: string; triggered?: boolean };
+
+    expect(res.triggered).toBeUndefined();
+    expect(res.error).toContain('does not support sync');
+
+    const sql = getTestDb();
+    const [feed] = await sql<Array<{ deleted_at: Date | null }>>`
+      SELECT deleted_at FROM feeds WHERE id = ${feedId}
+    `;
+    expect(feed?.deleted_at).toBeNull();
   });
 });

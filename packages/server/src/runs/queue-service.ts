@@ -101,9 +101,7 @@ export interface AutomationRunPayload {
   source_fingerprint?: string;
 }
 
-function automationEventTriggerKey(
-  trigger: AutomationActivationTrigger,
-): string {
+function automationEventTriggerKey(trigger: AutomationActivationTrigger): string {
   if (trigger.source === 'workspace') {
     return stableJson({
       kind: trigger.kind,
@@ -144,7 +142,7 @@ export async function claimPendingAutomationRun(
     claimedBy: string;
     status: 'claimed' | 'running';
     expiresAt?: Date | null;
-  },
+  }
 ): Promise<boolean> {
   const automation = await tx`
     SELECT id
@@ -182,15 +180,14 @@ export async function claimPendingAutomationRun(
               AND active.status IN ('claimed', 'running')
           )
         RETURNING r.id
-      `,
+      `
     );
     return claimed.length > 0;
   } catch (error) {
     // During a rolling deployment an older replica may still claim without
     // taking the automation row lock. The unique index remains authoritative;
     // contain that expected contention inside the savepoint and skip the run.
-    if (isUniqueViolation(error, AUTOMATION_EXECUTION_UNIQUE_INDEX))
-      return false;
+    if (isUniqueViolation(error, AUTOMATION_EXECUTION_UNIQUE_INDEX)) return false;
     throw error;
   }
 }
@@ -212,7 +209,7 @@ async function softDeleteOrphanFeed(
   sql: DbClient,
   feedId: number,
   feed: { connector_key: string; organization_id: string },
-  reason: string,
+  reason: string
 ): Promise<void> {
   await sql`
     UPDATE feeds
@@ -220,12 +217,8 @@ async function softDeleteOrphanFeed(
     WHERE id = ${feedId}
   `;
   logger.warn(
-    {
-      feedId,
-      connector_key: feed.connector_key,
-      organization_id: feed.organization_id,
-    },
-    `[queue] Soft-deleted orphan feed — ${reason}`,
+    { feedId, connector_key: feed.connector_key, organization_id: feed.organization_id },
+    `[queue] Soft-deleted orphan feed — ${reason}`
   );
 }
 
@@ -237,12 +230,7 @@ async function softDeleteOrphanFeed(
  * own automation (sync soft-deletes the orphan feed; auth/action throw).
  */
 type ConnectorVersionResolution =
-  | {
-      ok: true;
-      version: string;
-      compiledCode: string | null;
-      sourcePath: string | null;
-    }
+  | { ok: true; version: string; compiledCode: string | null; sourcePath: string | null }
   | { ok: false; reason: 'no-definition' }
   | { ok: false; reason: 'no-version'; version: string }
   | { ok: false; reason: 'not-runnable'; version: string };
@@ -254,7 +242,7 @@ async function resolveActiveConnectorVersion(
     connectorKey: string;
     requireRunnable: boolean;
     pinnedVersion?: string | null;
-  },
+  }
 ): Promise<ConnectorVersionResolution> {
   let version: string;
   if (params.pinnedVersion) {
@@ -303,12 +291,7 @@ async function resolveActiveConnectorVersion(
   ) {
     return { ok: false, reason: 'not-runnable', version };
   }
-  return {
-    ok: true,
-    version,
-    compiledCode: compiled_code,
-    sourcePath: source_path,
-  };
+  return { ok: true, version, compiledCode: compiled_code, sourcePath: source_path };
 }
 
 /**
@@ -358,7 +341,7 @@ export function describeSyncRunSkip(reason: SyncRunSkipReason): string {
 async function createSyncRunWithClient(
   sql: DbClient,
   feedId: number,
-  dryRun = false,
+  dryRun = false
 ): Promise<CreateSyncRunResult> {
   // Check if there's already a pending/running run for this feed
   const existing = await sql`
@@ -371,7 +354,7 @@ async function createSyncRunWithClient(
 
   if (existing.length > 0) {
     logger.info(
-      `[queue] Skipping run creation for feed ${feedId} - already has pending/running run`,
+      `[queue] Skipping run creation for feed ${feedId} - already has pending/running run`
     );
     return { ok: false, reason: 'already_active' };
   }
@@ -440,13 +423,10 @@ async function createSyncRunWithClient(
   // keep queueing. The feed is left intact (NOT soft-deleted) — it's a valid feed
   // that simply can't run on cloud until hardening lands; self-hosted is
   // unaffected. pollWorkerJob gates again as the hard execution boundary.
-  if (
-    isCloudMode() &&
-    CLOUD_RESTRICTED_CONNECTOR_KEYS.has(feed.connector_key)
-  ) {
+  if (isCloudMode() && CLOUD_RESTRICTED_CONNECTOR_KEYS.has(feed.connector_key)) {
     logger.warn(
       { feedId, connector_key: feed.connector_key },
-      '[queue] Skipping sync run for cloud-restricted connector under LOBU_CLOUD_MODE',
+      '[queue] Skipping sync run for cloud-restricted connector under LOBU_CLOUD_MODE'
     );
     return { ok: false, reason: 'cloud_restricted' };
   }
@@ -469,13 +449,13 @@ async function createSyncRunWithClient(
         sql,
         feedId,
         feed,
-        'no active connector_definition for (connector_key, org).',
+        'no active connector_definition for (connector_key, org).'
       );
       return { ok: false, reason: 'connector_uninstalled' };
     }
     if (resolved.reason === 'no-version') {
       throw new Error(
-        `No connector version '${resolved.version}' found for '${feed.connector_key}'. Build/register connector code first.`,
+        `No connector version '${resolved.version}' found for '${feed.connector_key}'. Build/register connector code first.`
       );
     }
     // not-runnable: version is registered but has neither persisted compiled
@@ -487,7 +467,7 @@ async function createSyncRunWithClient(
       sql,
       feedId,
       feed,
-      `no compiled code and no bundled source for version '${resolved.version}'.`,
+      `no compiled code and no bundled source for version '${resolved.version}'.`
     );
     return { ok: false, reason: 'connector_version_unrunnable' };
   }
@@ -539,7 +519,7 @@ async function createSyncRunWithClient(
   const runId = Number((inserted[0] as { id: unknown }).id);
 
   logger.info(
-    `[queue] Created sync run ${runId} for feed ${feedId} (${feed.connector_key}, version=${connectorVersion})`,
+    `[queue] Created sync run ${runId} for feed ${feedId} (${feed.connector_key}, version=${connectorVersion})`
   );
   return { ok: true, runId };
 }
@@ -551,7 +531,7 @@ export async function createSyncRun(
   // Defaults false so all four existing call sites (connect/routes, app-install,
   // check-due-feeds, manage_feeds) keep persisting. Only an explicit opt-in is
   // dry — a flag that defaulted the other way would silently stop real syncs.
-  opts?: { dryRun?: boolean },
+  opts?: { dryRun?: boolean }
 ): Promise<CreateSyncRunResult> {
   const sql = db ?? getDb();
   const dryRun = opts?.dryRun === true;
@@ -562,28 +542,23 @@ export async function createSyncRun(
     }
 
     return await sql.begin(async (tx) =>
-      createSyncRunWithClient(tx, feedId, dryRun),
+      createSyncRunWithClient(tx, feedId, dryRun)
     );
   } catch (error) {
     if (isUniqueViolation(error, 'idx_runs_active_sync_per_feed')) {
-      logger.info(
-        `[queue] Skipping run creation for feed ${feedId} - duplicate active sync run`,
-      );
+      logger.info(`[queue] Skipping run creation for feed ${feedId} - duplicate active sync run`);
       // Lost the race against a concurrent trigger — indistinguishable, from
       // here, from having found that run on the way in.
       return { ok: false, reason: 'already_active' };
     }
-    logger.error(
-      { error },
-      `[queue] Failed to create sync run for feed ${feedId}`,
-    );
+    logger.error({ error }, `[queue] Failed to create sync run for feed ${feedId}`);
     throw error;
   }
 }
 
 async function findActiveAutomationRun(
   sql: DbClient,
-  automationId: number,
+  automationId: number
 ): Promise<{ id: number; status: string } | null> {
   const existing = await sql`
     SELECT id, status
@@ -615,12 +590,12 @@ async function createAutomationRunWithClient(
     deviceWorkerId?: string | null;
     agentKind?: string | null;
     sourceFingerprint?: string;
-  },
+  }
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const existing = await findActiveAutomationRun(sql, params.automationId);
   if (existing) {
     logger.info(
-      `[queue] Reusing active automation run ${existing.id} for automation ${params.automationId}`,
+      `[queue] Reusing active automation run ${existing.id} for automation ${params.automationId}`
     );
     return { runId: existing.id, status: existing.status, created: false };
   }
@@ -638,7 +613,7 @@ async function createAutomationRunWithClient(
       ? Number(versionRows[0].current_version_id)
       : null;
   const snapshotGranularity = inferAutomationGranularityFromSchedule(
-    versionRows[0]?.schedule as string | null | undefined,
+    versionRows[0]?.schedule as string | null | undefined
   );
 
   // device_worker_id + agent_kind get persisted into approved_input so the
@@ -647,8 +622,7 @@ async function createAutomationRunWithClient(
   // branch without a runs-schema migration. Empty strings are normalized to
   // null so the dispatcher's `OR '' = ''` guard treats them as un-pinned.
   const normalizedDeviceWorkerId =
-    typeof params.deviceWorkerId === 'string' &&
-    params.deviceWorkerId.trim() !== ''
+    typeof params.deviceWorkerId === 'string' && params.deviceWorkerId.trim() !== ''
       ? params.deviceWorkerId.trim()
       : null;
   const normalizedAgentKind =
@@ -703,7 +677,7 @@ async function createAutomationRunWithClient(
   const status = String((inserted[0] as { status: unknown }).status);
 
   logger.info(
-    `[queue] Created automation run ${runId} for automation ${params.automationId} (${params.dispatchSource})`,
+    `[queue] Created automation run ${runId} for automation ${params.automationId} (${params.dispatchSource})`
   );
 
   return { runId, status, created: true };
@@ -724,7 +698,7 @@ interface CreateAutomationRunParams {
 async function createAutomationRunInternal(
   params: CreateAutomationRunParams,
   db: DbClient | undefined,
-  useSavepoint: boolean,
+  useSavepoint: boolean
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const sql = db ?? getDb();
 
@@ -735,9 +709,7 @@ async function createAutomationRunInternal(
         : await createAutomationRunWithClient(sql, params);
     }
 
-    return await sql.begin(async (tx) =>
-      createAutomationRunWithClient(tx, params),
-    );
+    return await sql.begin(async (tx) => createAutomationRunWithClient(tx, params));
   } catch (error) {
     if (isUniqueViolation(error, 'runs_idempotency_key_uniq')) {
       const idempotencyKey = [
@@ -754,13 +726,12 @@ async function createAutomationRunInternal(
           AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
         LIMIT 1
       `;
-      const existing =
-        rows.length > 0
+      const existing = rows.length > 0
         ? { id: Number(rows[0]?.id), status: String(rows[0]?.status) }
         : null;
       if (existing) {
         logger.info(
-          `[queue] Reusing concurrent automation run ${existing.id} for automation ${params.automationId}`,
+          `[queue] Reusing concurrent automation run ${existing.id} for automation ${params.automationId}`
         );
         return { runId: existing.id, status: existing.status, created: false };
       }
@@ -780,29 +751,25 @@ async function createAutomationRunInternal(
           AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
         LIMIT 1
       `;
-      const existing =
-        rows.length > 0
+      const existing = rows.length > 0
         ? { id: Number(rows[0]?.id), status: String(rows[0]?.status) }
         : null;
       if (existing) {
         logger.info(
-          `[queue] Reusing concurrent pending non-event automation run ${existing.id} for automation ${params.automationId}`,
+          `[queue] Reusing concurrent pending non-event automation run ${existing.id} for automation ${params.automationId}`
         );
         return { runId: existing.id, status: existing.status, created: false };
       }
     }
 
-    logger.error(
-      { error, automationId: params.automationId },
-      '[queue] Failed to create automation run',
-    );
+    logger.error({ error, automationId: params.automationId }, '[queue] Failed to create automation run');
     throw error;
   }
 }
 
 export async function createAutomationRun(
   params: CreateAutomationRunParams,
-  db?: DbClient,
+  db?: DbClient
 ): Promise<{ runId: number; status: string; created: boolean }> {
   return createAutomationRunInternal(params, db, false);
 }
@@ -810,7 +777,7 @@ export async function createAutomationRun(
 /** Create inside a caller-owned transaction without poisoning it on a unique race. */
 export async function createAutomationRunInTransaction(
   params: CreateAutomationRunParams,
-  tx: DbClient,
+  tx: DbClient
 ): Promise<{ runId: number; status: string; created: boolean }> {
   return createAutomationRunInternal(params, tx, true);
 }
@@ -854,7 +821,7 @@ export async function createAutomationEventRun(
     deviceWorkerId?: string | null;
     agentKind?: string | null;
   },
-  db?: DbClient,
+  db?: DbClient
 ): Promise<AutomationEventRunResult> {
   const sql = db ?? getDb();
   const execute = async (tx: DbClient): Promise<AutomationEventRunResult> => {
@@ -879,8 +846,7 @@ export async function createAutomationEventRun(
       };
     }
 
-    const policy =
-      params.trigger.active_run ??
+    const policy = params.trigger.active_run ??
       (params.trigger.source === 'workspace' ? 'coalesce' : 'queue');
     const triggerKey = automationEventTriggerKey(params.trigger);
     const occurredAt = params.signal.occurred_at
@@ -890,9 +856,7 @@ export async function createAutomationEventRun(
       ? new Date()
       : occurredAt;
     const signalWindowStart = safeOccurredAt.toISOString();
-    const signalWindowEnd = new Date(
-      safeOccurredAt.getTime() + 1,
-    ).toISOString();
+    const signalWindowEnd = new Date(safeOccurredAt.getTime() + 1).toISOString();
     if (policy === 'coalesce') {
       const pending = await tx`
         SELECT id, status, approved_input
@@ -918,23 +882,20 @@ export async function createAutomationEventRun(
         FOR UPDATE
       `;
       if (pending.length > 0) {
-        const input = (pending[0]?.approved_input ??
-          {}) as AutomationRunPayload;
+        const input = (pending[0]?.approved_input ?? {}) as AutomationRunPayload;
         const signals = automationTriggerSignals(input);
-        const deliveryIds =
-          input.delivery_ids ?? signals.map((signal) => signal.delivery_id);
+        const deliveryIds = input.delivery_ids ??
+          signals.map((signal) => signal.delivery_id);
         const nextSignals = [...signals, params.signal];
         const nextWorkspaceSignals = nextSignals.filter(
-          isWorkspaceEventTriggerSignal,
+          isWorkspaceEventTriggerSignal
         );
         const causalAutomationIds = new Set(
-          nextWorkspaceSignals.flatMap(
-            (signal) => signal.causal_automation_ids,
-          ),
+          nextWorkspaceSignals.flatMap((signal) => signal.causal_automation_ids)
         );
         causalAutomationIds.add(params.automationId);
         const rootEventIds = new Set(
-          nextWorkspaceSignals.flatMap((signal) => signal.root_event_ids),
+          nextWorkspaceSignals.flatMap((signal) => signal.root_event_ids)
         );
         // A coalesced run inherits the union of every incoming causal path when
         // it emits a downstream event. Split into another durable run before
@@ -949,13 +910,11 @@ export async function createAutomationEventRun(
           const currentWindowEnd = Date.parse(input.window_end);
           const nextInput: AutomationRunPayload = {
             ...input,
-            window_start:
-              Number.isFinite(currentWindowStart) &&
+            window_start: Number.isFinite(currentWindowStart) &&
                 currentWindowStart <= safeOccurredAt.getTime()
               ? input.window_start
               : signalWindowStart,
-            window_end:
-              Number.isFinite(currentWindowEnd) &&
+            window_end: Number.isFinite(currentWindowEnd) &&
                 currentWindowEnd >= safeOccurredAt.getTime() + 1
               ? input.window_end
               : signalWindowEnd,
@@ -1006,8 +965,7 @@ export async function createAutomationEventRun(
       WHERE id = ${params.automationId}
       LIMIT 1
     `;
-    const versionId =
-      versionRows[0]?.current_version_id == null
+    const versionId = versionRows[0]?.current_version_id == null
       ? null
       : Number(versionRows[0]?.current_version_id);
     const payload: AutomationRunPayload = {
@@ -1017,7 +975,7 @@ export async function createAutomationEventRun(
       window_end: signalWindowEnd,
       dispatch_source: 'event',
       granularity: inferAutomationGranularityFromSchedule(
-        versionRows[0]?.schedule as string | null | undefined,
+        versionRows[0]?.schedule as string | null | undefined
       ),
       version_id: versionId,
       device_worker_id: params.deviceWorkerId ?? null,
@@ -1026,8 +984,7 @@ export async function createAutomationEventRun(
       trigger_signals: [params.signal],
       delivery_ids: [params.signal.delivery_id],
       trigger_execution: resolvedEventExecution(params.trigger),
-      trigger_output:
-        params.trigger.source === 'workspace'
+      trigger_output: params.trigger.source === 'workspace'
         ? 'silent'
         : (params.trigger.output ?? 'silent'),
       trigger_key: triggerKey,
@@ -1090,15 +1047,12 @@ export async function createAutomationEventRun(
  * Create an auth run to drive a connector's interactive authenticate() flow.
  * The auth profile must already exist (typically in 'pending_auth' status).
  */
-export async function createAuthRun(
-  params: {
+export async function createAuthRun(params: {
   organizationId: string;
   connectorKey: string;
   authProfileId: number;
   createdByUserId: string;
-  },
-  db: DbClient = getDb(),
-): Promise<number> {
+}, db: DbClient = getDb()): Promise<number> {
   const sql = db;
 
   // Resolve + verify the connector version is runnable.
@@ -1109,17 +1063,15 @@ export async function createAuthRun(
   });
   if (!resolved.ok) {
     if (resolved.reason === 'no-definition') {
-      throw new Error(
-        `No active connector definition found for '${params.connectorKey}'.`,
-      );
+      throw new Error(`No active connector definition found for '${params.connectorKey}'.`);
     }
     if (resolved.reason === 'no-version') {
       throw new Error(
-        `No connector version '${resolved.version}' found for '${params.connectorKey}'.`,
+        `No connector version '${resolved.version}' found for '${params.connectorKey}'.`
       );
     }
     throw new Error(
-      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${resolved.version}'.`,
+      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${resolved.version}'.`
     );
   }
   const connectorVersion = resolved.version;
@@ -1137,7 +1089,7 @@ export async function createAuthRun(
     `;
     const runId = Number((inserted[0] as { id: unknown }).id);
     logger.info(
-      `[queue] Created auth run ${runId} (${params.connectorKey}, profile=${params.authProfileId})`,
+      `[queue] Created auth run ${runId} (${params.connectorKey}, profile=${params.authProfileId})`
     );
     return runId;
   } catch (error) {
@@ -1151,16 +1103,10 @@ export async function createAuthRun(
         LIMIT 1
       `;
       if (existing.length > 0) {
-        const row = existing[0] as {
-          id: unknown;
-          created_by_user_id: string | null;
-        };
-        if (
-          row.created_by_user_id &&
-          row.created_by_user_id !== params.createdByUserId
-        ) {
+        const row = existing[0] as { id: unknown; created_by_user_id: string | null };
+        if (row.created_by_user_id && row.created_by_user_id !== params.createdByUserId) {
           throw new Error(
-            'An authentication flow is already in progress for this profile by another user.',
+            'An authentication flow is already in progress for this profile by another user.'
           );
         }
         return Number(row.id);
@@ -1232,15 +1178,13 @@ export async function createConnectorOperationRun(params: {
   const sql = params.db ?? getDb();
   if (params.activation && params.approvalMode !== 'inline') {
     throw new Error(
-      'Page activation requires inline execution; device and approval-queued operations cannot be parked.',
+      'Page activation requires inline execution; device and approval-queued operations cannot be parked.'
     );
   }
 
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
   const status =
-    params.activation || params.approvalMode !== 'inline'
-      ? 'pending'
-      : 'running';
+    params.activation || params.approvalMode !== 'inline' ? 'pending' : 'running';
 
   // Ephemeral device/browser/shell action runs get a bounded claim horizon:
   // a `device` run waits for a device worker to claim it via /poll, and an
@@ -1268,17 +1212,15 @@ export async function createConnectorOperationRun(params: {
   });
   if (!resolved.ok) {
     if (resolved.reason === 'no-definition') {
-      throw new Error(
-        `No active connector definition found for '${params.connectorKey}'.`,
-      );
+      throw new Error(`No active connector definition found for '${params.connectorKey}'.`);
     }
     if (resolved.reason === 'no-version') {
       throw new Error(
-        `No connector version '${resolved.version}' found for '${params.connectorKey}'. Build/register connector code first.`,
+        `No connector version '${resolved.version}' found for '${params.connectorKey}'. Build/register connector code first.`
       );
     }
     throw new Error(
-      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${resolved.version}'.`,
+      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${resolved.version}'.`
     );
   }
   const connectorVersion = resolved.version;
@@ -1308,11 +1250,9 @@ export async function createConnectorOperationRun(params: {
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
       ${params.createdByUserId ?? null},
       ${params.idempotencyKey ?? null},
-      ${
-        expiresAtSeconds == null
+      ${expiresAtSeconds == null
         ? null
-          : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`
-      },
+        : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`},
       ${params.activation?.kind ?? null},
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
@@ -1326,9 +1266,7 @@ export async function createConnectorOperationRun(params: {
 
   if (inserted.length === 0) {
     if (!params.idempotencyKey) {
-      throw new Error(
-        'Action run insert returned no row without an idempotency key.',
-      );
+      throw new Error('Action run insert returned no row without an idempotency key.');
     }
     const existing = await sql<{
       id: number;
@@ -1368,8 +1306,7 @@ export async function createConnectorOperationRun(params: {
       Number(prior.connection_id) === params.connectionId &&
       prior.connector_key === params.connectorKey &&
       prior.action_key === params.operationKey &&
-      stableJson(prior.action_input ?? {}) ===
-        stableJson(params.operationInput) &&
+      stableJson(prior.action_input ?? {}) === stableJson(params.operationInput) &&
       prior.policy_principal_kind === (params.policyPrincipalKind ?? null) &&
       prior.policy_principal_id === (params.policyPrincipalId ?? null) &&
       prior.created_by_user_id === (params.createdByUserId ?? null);
@@ -1377,8 +1314,7 @@ export async function createConnectorOperationRun(params: {
       prior.activation_kind === (params.activation?.kind ?? null) &&
       stableJson(parsePgTextArray(prior.activation_target_urls)) ===
         stableJson(params.activation?.urls ?? []);
-    const priorAutomationId =
-      prior.automation_id == null ? null : Number(prior.automation_id);
+    const priorAutomationId = prior.automation_id == null ? null : Number(prior.automation_id);
     const priorParentRunId =
       prior.parent_run_id == null ? null : Number(prior.parent_run_id);
     const requestedAutomationId = params.automationId ?? null;
@@ -1393,18 +1329,12 @@ export async function createConnectorOperationRun(params: {
       requestedBrowserContext == null ||
       stableJson(priorBrowserContext) === stableJson(requestedBrowserContext);
     const compatibleProvenance =
-      (priorAutomationId == null ||
-        priorAutomationId === requestedAutomationId) &&
+      (priorAutomationId == null || priorAutomationId === requestedAutomationId) &&
       (priorParentRunId == null || priorParentRunId === requestedParentRunId);
-    if (
-      !sameRequest ||
-      !sameActivation ||
-      !compatibleProvenance ||
-      !compatibleBrowserContext
-    ) {
+    if (!sameRequest || !sameActivation || !compatibleProvenance || !compatibleBrowserContext) {
       throw new ToolUserError(
         `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
-        409,
+        409
       );
     }
     // Runs missing trusted provenance can be hydrated on an exact idempotent
@@ -1448,7 +1378,7 @@ export async function createConnectorOperationRun(params: {
       if (hydrated.length === 0) {
         throw new ToolUserError(
           `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
-          409,
+          409
         );
       }
     }
@@ -1465,7 +1395,7 @@ export async function createConnectorOperationRun(params: {
   const row = inserted[0];
   const runId = Number(row.id);
   logger.info(
-    `[queue] Created action run ${runId} (${params.connectorKey}/${params.operationKey}, approval=${approvalStatus})`,
+    `[queue] Created action run ${runId} (${params.connectorKey}/${params.operationKey}, approval=${approvalStatus})`
   );
   return {
     runId,

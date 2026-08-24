@@ -4,6 +4,7 @@ import {
   planAutomationActivations,
 } from "../../automations/activation.js";
 import { matchingAutomationTriggers } from "../../automations/event-trigger.js";
+import { normalizeStatefulChatCommand } from "../commands/command-spelling.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
 import {
   buildAttachmentTranscriptText,
@@ -163,6 +164,22 @@ describe("isEarlyDispatchableChatCommand", () => {
     expect(isEarlyDispatchableChatCommand("/lobu clear")).toBe(false);
     expect(isEarlyDispatchableChatCommand("/HELP")).toBe(false);
     expect(isEarlyDispatchableChatCommand("help")).toBe(false);
+  });
+});
+
+describe("normalizeStatefulChatCommand", () => {
+  test.each([
+    ["/new", "new"],
+    ["/lobu new", "new"],
+    ["/clear", "clear"],
+    ["/lobu clear", "clear"],
+  ] as const)("normalizes %s", (input, expected) => {
+    expect(normalizeStatefulChatCommand(input)).toBe(expected);
+  });
+
+  test("does not consume arguments or unrelated commands", () => {
+    expect(normalizeStatefulChatCommand("/lobu clear now")).toBeNull();
+    expect(normalizeStatefulChatCommand("/lobu help")).toBeNull();
   });
 });
 
@@ -973,6 +990,49 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(tryHandleSlashText.mock.calls[0]?.[0]).toBe("/help");
     expect(enqueueMessage).not.toHaveBeenCalled();
     expect(thread.post).not.toHaveBeenCalled();
+  });
+
+  test("Google Chat /lobu clear clears the scoped history without an agent turn", async () => {
+    const { bridge, conversationState, enqueueMessage } = makePreviewHarness({
+      platform: "gchat",
+      previewMode: false,
+    });
+    const thread = makeThread(undefined);
+    await conversationState.appendHistory(CONN_ID, CHANNEL_ID, THREAD_ID, {
+      role: "user",
+      content: "remember this",
+      timestamp: Date.now(),
+    });
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "/lobu clear" }),
+      "dm",
+    );
+
+    expect(
+      await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID),
+    ).toEqual([]);
+    expect(thread.post).toHaveBeenCalledWith({ text: "Chat history cleared." });
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("Google Chat /lobu new reaches the worker as a real session reset", async () => {
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "gchat",
+      previewMode: false,
+    });
+
+    await bridge.handleMessage(
+      makeThread(undefined),
+      makeMessage({ text: "/lobu new" }),
+      "dm",
+    );
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    expect(payload.messageText).toBe("Starting new session.");
+    expect(payload.platformMetadata?.sessionReset).toBe(true);
   });
 
   test("linked chat → routes to the Automation's agent, no notice", async () => {

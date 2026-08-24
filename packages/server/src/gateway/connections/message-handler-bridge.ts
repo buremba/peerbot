@@ -18,6 +18,7 @@ import {
 } from "../../preview/slack.js";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
+import { normalizeStatefulChatCommand } from "../commands/command-spelling.js";
 import type { ArtifactStore } from "../files/artifact-store.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import type { CoreServices } from "../platform.js";
@@ -1056,15 +1057,15 @@ export class MessageHandlerBridge {
     // A bare `!` / `!!` with no command falls through as ordinary text.
     const bangBash = parseBangBashCommand(messageText);
 
-    // Intercept /new and /clear before slash dispatch. A `!`-bash message is a
-    // control action, not model input: it skips /new, /clear, and slash dispatch
-    // entirely and enqueues as its own worker turn.
+    // Intercept bare and `/lobu`-wrapped new/clear commands before slash
+    // dispatch. A `!`-bash message is a control action, not model input: it skips
+    // stateful commands and slash dispatch, then enqueues as its own worker turn.
     let sessionReset = false;
-    const trimmedLower = messageText.trim().toLowerCase();
-    if (!bangBash && trimmedLower === "/new") {
+    const statefulCommand = normalizeStatefulChatCommand(messageText);
+    if (!bangBash && statefulCommand === "new") {
       messageText = "Starting new session.";
       sessionReset = true;
-    } else if (!bangBash && trimmedLower === "/clear") {
+    } else if (!bangBash && statefulCommand === "clear") {
       await this.conversationState()?.clearHistory(
         this.connection.id,
         channelId,

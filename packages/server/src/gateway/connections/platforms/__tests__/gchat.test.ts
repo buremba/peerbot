@@ -80,6 +80,10 @@ async function dispatchAndWait(chat: Chat, request: Request) {
 }
 
 describe("Google Chat platform compatibility", () => {
+  test("welcome points users to the registered /lobu wrapper", () => {
+    expect(GOOGLE_CHAT_WELCOME_TEXT).toContain("/lobu help");
+  });
+
   test("accepts only this project's Workspace Add-on token at the canonical connection webhook", async () => {
     const endpointUrl =
       "https://gateway.test/api/v1/webhooks/gchat-addon-test";

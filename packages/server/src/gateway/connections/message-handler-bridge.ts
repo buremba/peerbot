@@ -410,6 +410,15 @@ export function isSenderAllowed(
   return allowFrom.includes(userId);
 }
 
+export function isEarlyDispatchableChatCommand(text: string): boolean {
+  const tokens = text.trim().split(/\s+/);
+  const firstToken = tokens[0];
+  if (!firstToken?.startsWith("/")) return false;
+  const first = firstToken.replace(/^\/+/, "");
+  const command = first === "lobu" ? tokens[1] : first;
+  return ["help", "status", "try", "agents", "link"].includes(command ?? "");
+}
+
 /**
  * Register Chat SDK event handlers for a connection.
  *
@@ -801,6 +810,34 @@ export class MessageHandlerBridge {
         }
       : fallbackResolved;
     if (!resolved) {
+      // App-level commands still work when no Automation matches. Keep this
+      // early path to commands whose complete implementation lives in the
+      // dispatcher: /new and /clear have real state handling later in the
+      // resolved path and must not be falsely acknowledged here.
+      const unroutedCommandText = this.stripBotMention(
+        typeof message.text === "string" ? message.text : ""
+      );
+      if (
+        this.commandDispatcher &&
+        isEarlyDispatchableChatCommand(unroutedCommandText)
+      ) {
+        const handled = await this.commandDispatcher.tryHandleSlashText(
+          unroutedCommandText,
+          {
+            platform,
+            userId,
+            channelId,
+            teamId,
+            isGroup,
+            conversationId,
+            connectionId: this.connection.id,
+            organizationId: this.connection.organizationId,
+            reply: createChatReply((content) => thread.post(content)),
+          }
+        );
+        if (handled) return;
+      }
+
       // Linked channel but trigger filters rejected this message (e.g.
       // mention_only on a non-mention). The planner is the authority for
       // activation; do not fall through to the "unlinked" notice or the notice
@@ -822,31 +859,6 @@ export class MessageHandlerBridge {
         return;
       }
 
-      // An unrouted chat still has to honor commands: the unlinked notice
-      // below tells the user to paste `/link <code>` (or `/lobu link <code>`)
-      // into this same chat. Slack delivers those natively via the
-      // `onSlashCommand` ingress, but every other platform delivers them as
-      // plain message text — which used to die in this dead end before the
-      // dispatcher ever saw it (#2230).
-      if (this.commandDispatcher) {
-        const handled = await this.commandDispatcher.tryHandleSlashText(
-          this.stripBotMention(
-            typeof message.text === "string" ? message.text : ""
-          ),
-          {
-            platform,
-            userId,
-            channelId,
-            teamId,
-            isGroup,
-            conversationId,
-            connectionId: this.connection.id,
-            organizationId: this.connection.organizationId,
-            reply: createChatReply((content) => thread.post(content)),
-          }
-        );
-        if (handled) return;
-      }
       if (
         !isPreview &&
         (await this.postUnlinkedChatNotice(thread, channelId, teamId))
@@ -972,7 +984,12 @@ export class MessageHandlerBridge {
     if (
       source === "subscribed" &&
       message.isMention !== true &&
-      connection.settings?.recordChannelMessages === true
+      connection.settings?.recordChannelMessages === true &&
+      !isEarlyDispatchableChatCommand(
+        this.stripBotMention(
+          typeof message.text === "string" ? message.text : ""
+        ),
+      )
     ) {
       return;
     }

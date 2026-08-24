@@ -21,8 +21,21 @@ import type {
 
 type JsonObject = Record<string, any>;
 
+export const GOOGLE_CHAT_WELCOME_TEXT = [
+  "Welcome 👋",
+  "",
+  "In a direct message, just ask. In a space, mention this app when you want a response.",
+  "Use `/help` at any time to see commands and setup options.",
+].join("\n");
+
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function commandId(value: unknown): string | undefined {
+  return typeof value === "string" || typeof value === "number"
+    ? String(value)
+    : undefined;
 }
 
 function actionParameters(value: unknown): Record<string, string> | undefined {
@@ -45,9 +58,236 @@ function actionParameters(value: unknown): Record<string, string> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
-/** Translate standalone Chat API events into Chat SDK's Add-on envelope. */
-function normalizeGoogleChatInteractionEvent(body: unknown): unknown {
-  if (!isObject(body) || isObject(body.chat)) return body;
+/**
+ * Canonicalize the Marketplace help command before Chat SDK parses the event.
+ * Google can deliver it as plain message text or slash-form text, and users can
+ * vary casing. Keeping this translation here prevents the shared message
+ * pipeline from needing Google-specific command rules.
+ */
+function isDirectSpace(space: unknown): boolean {
+  return (
+    isObject(space) &&
+    (space.type === "DM" || space.spaceType === "DIRECT_MESSAGE")
+  );
+}
+
+function normalizeGoogleChatHelpMessage(
+  message: JsonObject,
+  allowBareHelp: boolean,
+): JsonObject {
+  const text = typeof message.text === "string" ? message.text : undefined;
+  if (!text) return message;
+
+  if (allowBareHelp && /^\/?help$/i.test(text.trim())) {
+    return { ...message, text: "/help" };
+  }
+
+  const annotations = Array.isArray(message.annotations)
+    ? message.annotations
+    : [];
+  for (const annotation of annotations) {
+    if (
+      !isObject(annotation) ||
+      annotation.type !== "USER_MENTION" ||
+      !isObject(annotation.userMention) ||
+      !isObject(annotation.userMention.user) ||
+      annotation.userMention.user.type !== "BOT" ||
+      typeof annotation.startIndex !== "number" ||
+      typeof annotation.length !== "number"
+    ) {
+      continue;
+    }
+
+    const mentionStart = annotation.startIndex;
+    const mentionEnd = mentionStart + annotation.length;
+    if (
+      text.slice(0, mentionStart).trim().length === 0 &&
+      /^\/?help$/i.test(text.slice(mentionEnd).trim())
+    ) {
+      // Preserve the original mention span so the pinned adapter can normalize
+      // it from its annotation without invalidating the recorded offsets.
+      return {
+        ...message,
+        text: `${text.slice(0, mentionEnd)} /help`,
+      };
+    }
+  }
+
+  return message;
+}
+
+/**
+ * Workspace Events arrive through Pub/Sub with the Chat resource encoded in
+ * message.data. Normalize that embedded resource too: the Pub/Sub and direct
+ * webhook copies share a message ID, so whichever arrives first wins Chat
+ * SDK's deduplication.
+ */
+function normalizePubSubHelpMessage(body: JsonObject): JsonObject {
+  const pushMessage = isObject(body.message) ? body.message : undefined;
+  if (
+    !pushMessage ||
+    typeof pushMessage.data !== "string" ||
+    typeof body.subscription !== "string"
+  ) {
+    return body;
+  }
+
+  try {
+    const decoded: unknown = JSON.parse(
+      Buffer.from(pushMessage.data, "base64").toString("utf8"),
+    );
+    if (!isObject(decoded) || !isObject(decoded.message)) return body;
+
+    const message = normalizeGoogleChatHelpMessage(
+      decoded.message,
+      isDirectSpace(decoded.message.space),
+    );
+    if (message === decoded.message) return body;
+
+    return {
+      ...body,
+      message: {
+        ...pushMessage,
+        data: Buffer.from(
+          JSON.stringify({ ...decoded, message }),
+          "utf8",
+        ).toString("base64"),
+      },
+    };
+  } catch {
+    // Leave malformed envelopes untouched so the adapter keeps ownership of
+    // validation and its existing retry/acknowledgement semantics.
+    return body;
+  }
+}
+
+function normalizeWorkspaceAddOnAppCommand(
+  body: JsonObject,
+  botUserName: string,
+  helpCommandId?: string,
+): JsonObject {
+  const chat = isObject(body.chat) ? body.chat : undefined;
+  const payload = isObject(chat?.appCommandPayload)
+    ? chat.appCommandPayload
+    : undefined;
+  const metadata = isObject(payload?.appCommandMetadata)
+    ? payload.appCommandMetadata
+    : undefined;
+  const message = isObject(payload?.message) ? payload.message : undefined;
+  const space = isObject(payload?.space) ? payload.space : undefined;
+  if (!(chat && payload && metadata && space)) return body;
+
+  const commandType = metadata.appCommandType;
+  // Workspace Add-ons deliver registered commands as appCommandPayload, which
+  // the current @chat-adapter/gchat release does not parse. Command IDs are
+  // local to each Google Cloud project, so the connection owns the mapping.
+  // Keep the text fallback for legacy payloads where Google supplies it.
+  const messageText = typeof message?.text === "string" ? message.text : "";
+  const invokedCommandId = commandId(metadata.appCommandId);
+  const matchesConfiguredId =
+    helpCommandId !== undefined &&
+    invokedCommandId === helpCommandId;
+  if (
+    (commandType !== "SLASH_COMMAND" && commandType !== "QUICK_COMMAND") ||
+    (!matchesConfiguredId && !/^\/?help$/i.test(messageText.trim()))
+  ) {
+    return body;
+  }
+
+  const eventTime =
+    typeof message?.createTime === "string"
+      ? message.createTime
+      : typeof chat.eventTime === "string"
+        ? chat.eventTime
+        : undefined;
+  if (!eventTime) return body;
+
+  const isDm = isDirectSpace(space);
+  // Chat SDK routes group messages only when the bot is mentioned. Commands
+  // are already explicitly addressed to this app but don't carry a mention,
+  // so use its normalized mention form at the adapter boundary. The message
+  // bridge removes this prefix again before command dispatch.
+  const text = isDm ? "/help" : `@${botUserName} /help`;
+  const sender = isObject(message?.sender)
+    ? message.sender
+    : isObject(chat.user)
+      ? chat.user
+      : undefined;
+  const thread = isObject(message?.thread)
+    ? message.thread
+    : isObject(payload.thread)
+      ? payload.thread
+      : undefined;
+  const messageName =
+    typeof message?.name === "string"
+      ? message.name
+      : `${space.name}/messages/app-command-${Buffer.from(
+          JSON.stringify([
+            invokedCommandId,
+            commandType,
+            eventTime,
+            typeof sender?.name === "string" ? sender.name : "unknown",
+          ]),
+          "utf8",
+        ).toString("base64url")}`;
+
+  return {
+    ...body,
+    chat: {
+      ...chat,
+      messagePayload: {
+        space,
+        message: {
+          ...(message ? normalizeGoogleChatHelpMessage(message, isDm) : {}),
+          name: messageName,
+          createTime: eventTime,
+          text,
+          ...(sender ? { sender } : {}),
+          space,
+          ...(thread ? { thread } : {}),
+        },
+      },
+    },
+  };
+}
+
+/** Translate Google interaction events into the envelope Chat SDK parses. */
+function normalizeGoogleChatInteractionEvent(
+  body: unknown,
+  botUserName: string,
+  helpCommandId?: string,
+): unknown {
+  if (!isObject(body)) return body;
+  const normalizedPubSub = normalizePubSubHelpMessage(body);
+  if (normalizedPubSub !== body) return normalizedPubSub;
+  if (isObject(body.chat)) {
+    const normalizedCommand = normalizeWorkspaceAddOnAppCommand(
+      body,
+      botUserName,
+      helpCommandId,
+    );
+    const chat = isObject(normalizedCommand.chat)
+      ? normalizedCommand.chat
+      : undefined;
+    const payload = isObject(chat?.messagePayload)
+      ? chat.messagePayload
+      : undefined;
+    const message = isObject(payload?.message) ? payload.message : undefined;
+    if (!(chat && payload && message)) return normalizedCommand;
+    return {
+      ...normalizedCommand,
+      chat: {
+        ...chat,
+        messagePayload: {
+          ...payload,
+          message: normalizeGoogleChatHelpMessage(
+            message,
+            isDirectSpace(payload.space),
+          ),
+        },
+      },
+    };
+  }
 
   const eventType =
     typeof body.type === "string"
@@ -57,12 +297,71 @@ function normalizeGoogleChatInteractionEvent(body: unknown): unknown {
         : undefined;
   if (!eventType) return body;
 
-  const message = isObject(body.message) ? body.message : undefined;
+  if (eventType === "APP_COMMAND") {
+    const metadata = isObject(body.appCommandMetadata)
+      ? body.appCommandMetadata
+      : undefined;
+    const space = isObject(body.space) ? body.space : undefined;
+    if (!(metadata && space)) return body;
+    const user = isObject(body.user) ? body.user : undefined;
+    const message = isObject(body.message) ? body.message : undefined;
+    const thread = isObject(body.thread) ? body.thread : undefined;
+    return normalizeWorkspaceAddOnAppCommand(
+      {
+        ...body,
+        chat: {
+          ...(user ? { user } : {}),
+          ...(typeof body.eventTime === "string"
+            ? { eventTime: body.eventTime }
+            : {}),
+          appCommandPayload: {
+            appCommandMetadata: metadata,
+            space,
+            ...(message ? { message } : {}),
+            ...(thread ? { thread } : {}),
+          },
+        },
+      },
+      botUserName,
+      helpCommandId,
+    );
+  }
+
+  const rawMessage = isObject(body.message) ? body.message : undefined;
   const space = isObject(body.space)
     ? body.space
-    : isObject(message?.space)
-      ? message.space
+    : isObject(rawMessage?.space)
+      ? rawMessage.space
       : undefined;
+  let message = rawMessage
+    ? normalizeGoogleChatHelpMessage(rawMessage, isDirectSpace(space))
+    : undefined;
+  const annotationCommandId = Array.isArray(rawMessage?.annotations)
+    ? rawMessage.annotations
+        .map((annotation: unknown) =>
+          isObject(annotation) &&
+          annotation.type === "SLASH_COMMAND" &&
+          isObject(annotation.slashCommand)
+            ? commandId(annotation.slashCommand.commandId)
+            : undefined,
+        )
+        .find((value: string | undefined) => value !== undefined)
+    : undefined;
+  const standaloneCommandId = isObject(rawMessage?.slashCommand)
+    ? commandId(rawMessage.slashCommand.commandId)
+    : annotationCommandId;
+  if (
+    eventType === "MESSAGE" &&
+    message &&
+    space &&
+    helpCommandId !== undefined &&
+    standaloneCommandId === helpCommandId
+  ) {
+    message = {
+      ...message,
+      text: isDirectSpace(space) ? "/help" : `@${botUserName} /help`,
+    };
+  }
   const user = isObject(body.user)
     ? body.user
     : isObject(message?.sender)
@@ -120,22 +419,51 @@ function normalizeGoogleChatInteractionEvent(body: unknown): unknown {
   };
 }
 
-async function normalizeWebhookRequest(request: Request): Promise<Request> {
+async function normalizeWebhookRequest(
+  request: Request,
+  botUserName: string,
+  helpCommandId?: string,
+): Promise<{
+  request: Request;
+  addedToSpaceEnvelope: "standalone" | "workspaceAddOn" | null;
+}> {
   const rawBody = await request.text();
   let body: unknown;
+  let addedToSpaceEnvelope: "standalone" | "workspaceAddOn" | null = null;
   try {
-    body = normalizeGoogleChatInteractionEvent(JSON.parse(rawBody));
+    const originalBody: unknown = JSON.parse(rawBody);
+    const workspaceAddOnAddedToSpace =
+      isObject(originalBody) &&
+      isObject(originalBody.chat) &&
+      isObject(originalBody.chat.addedToSpacePayload);
+    body = normalizeGoogleChatInteractionEvent(
+      originalBody,
+      botUserName,
+      helpCommandId,
+    );
+    const addedToSpace =
+      isObject(body) &&
+      isObject(body.chat) &&
+      isObject(body.chat.addedToSpacePayload);
+    if (addedToSpace) {
+      addedToSpaceEnvelope = workspaceAddOnAddedToSpace
+        ? "workspaceAddOn"
+        : "standalone";
+    }
   } catch {
     body = rawBody;
   }
   const headers = new Headers(request.headers);
   headers.delete("content-length");
-  return new Request(request.url, {
-    method: request.method,
-    headers,
-    body: typeof body === "string" ? body : JSON.stringify(body),
-    signal: request.signal,
-  });
+  return {
+    request: new Request(request.url, {
+      method: request.method,
+      headers,
+      body: typeof body === "string" ? body : JSON.stringify(body),
+      signal: request.signal,
+    }),
+    addedToSpaceEnvelope,
+  };
 }
 
 export function parseGoogleChatCredentials(
@@ -171,6 +499,13 @@ async function createAdapter(
   const { createGoogleChatAdapter } = await import("@chat-adapter/gchat");
   const adapterConfig = { ...config };
   delete adapterConfig.platform;
+  const helpCommandId =
+    typeof adapterConfig.helpCommandId === "string"
+      ? adapterConfig.helpCommandId.trim()
+      : undefined;
+  // Lobu consumes this project-local mapping at its compatibility boundary;
+  // it is not a @chat-adapter/gchat configuration option.
+  delete adapterConfig.helpCommandId;
 
   // Workspace Add-on webhooks use the manager-owned connection URL as their
   // JWT audience and sign as the Google-managed identity derived from the
@@ -200,13 +535,37 @@ async function createAdapter(
     normalizedConfig as GoogleChatAdapterConfig
   );
   const handleWebhook = adapter.handleWebhook.bind(adapter);
-  adapter.handleWebhook = (
+  adapter.handleWebhook = async (
     request: Request,
     options?: WebhookOptions
-  ): Promise<Response> =>
-    normalizeWebhookRequest(request).then((normalized) =>
-      handleWebhook(normalized, options)
+  ): Promise<Response> => {
+    const normalized = await normalizeWebhookRequest(
+      request,
+      adapter.userName || "lobu",
+      helpCommandId,
     );
+    const response = await handleWebhook(normalized.request, options);
+    if (normalized.addedToSpaceEnvelope && response.ok) {
+      // Marketplace review requires an unprompted welcome when a DM starts or
+      // the app is added to a space. Keep the adapter's subscription side
+      // effect above, then replace its empty success body with the synchronous
+      // Google Chat response so the welcome cannot depend on agent/model
+      // availability.
+      if (normalized.addedToSpaceEnvelope === "workspaceAddOn") {
+        return Response.json({
+          hostAppDataAction: {
+            chatDataAction: {
+              createMessageAction: {
+                message: { text: GOOGLE_CHAT_WELCOME_TEXT },
+              },
+            },
+          },
+        });
+      }
+      return Response.json({ text: GOOGLE_CHAT_WELCOME_TEXT });
+    }
+    return response;
+  };
   return adapter;
 }
 

@@ -29,7 +29,7 @@ export type TeamsAdapterConfig = NonNullable<
 > & { platform: "teams" };
 export type GoogleChatAdapterConfig = NonNullable<
   Parameters<typeof createGoogleChatAdapter>[0]
-> & { platform: "gchat" };
+> & { platform: "gchat"; helpCommandId?: string };
 
 /**
  * `rest` is the always-on HTTP Agent API

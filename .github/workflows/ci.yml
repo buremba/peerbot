@@ -1074,7 +1074,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/setup-submodule
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
@@ -1167,6 +1168,13 @@ jobs:
         # dispatch in release-please.yml would otherwise only surface at the
         # next release.
         run: bun test scripts/__tests__/release-publish-order.test.ts --timeout 30000
+
+      - name: Sparkle updater freshness
+        # RFC 2822 pubDate values begin with a weekday, so string sorting is
+        # not chronological and breaks the feed's newest-first contract.
+        env:
+          OWLETTO_SUBMODULE_STUBBED: ${{ steps.submodule.outputs.stubbed }}
+        run: bun test scripts/__tests__/sparkle-appcast-order.test.ts --timeout 30000
 
       - name: Release image audit decision table
         # The scheduled audit (release-image-audit.yml) is the only thing that

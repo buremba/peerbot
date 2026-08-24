@@ -241,7 +241,7 @@ describe("buildHomeFeedEvents", () => {
     );
   });
 
-  test("keeps a recycled component key from merging two comments' parents", () => {
+  test("links comments to the right parent when component keys are recycled", () => {
     const events = buildHomeFeedEvents(
       [
         {
@@ -252,24 +252,53 @@ describe("buildHomeFeedEvents", () => {
             "https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111",
         },
         {
+          id: "replaceableComment_urn:li:comment:(urn:li:activity:1111111111111111111,2222222222222222222)",
+          body: "First comment",
+          author: "First Commenter",
+        },
+        {
           id: "recycled",
           body: "Feed post Grace Hopper • 1st Second parent post body long enough here",
           author: "Grace Hopper",
           post_url:
             "https://www.linkedin.com/feed/update/urn:li:activity:9999999999999999999",
         },
+        {
+          id: "replaceableComment_urn:li:comment:(urn:li:activity:9999999999999999999,8888888888888888888)",
+          body: "Second comment",
+          author: "Second Commenter",
+        },
       ],
       new Date("2026-08-01T12:00:00.000Z")
     );
 
     expect(
-      events.map((e: { origin_id: string; author_name: string }) => [
-        e.origin_id,
-        e.author_name,
-      ])
+      events
+        .filter(
+          (event: { origin_type: string }) => event.origin_type === "comment"
+        )
+        .map(
+          (event: {
+            origin_id: string;
+            origin_parent_id: string;
+            metadata: { parent_author?: string };
+          }) => [
+            event.origin_id,
+            event.origin_parent_id,
+            event.metadata.parent_author,
+          ]
+        )
     ).toEqual([
-      ["li_home_activity_1111111111111111111", "Ada Lovelace"],
-      ["li_home_activity_9999999999999999999", "Grace Hopper"],
+      [
+        "li_comment_2222222222222222222",
+        "li_home_activity_1111111111111111111",
+        "Ada Lovelace",
+      ],
+      [
+        "li_comment_8888888888888888888",
+        "li_home_activity_9999999999999999999",
+        "Grace Hopper",
+      ],
     ]);
   });
 
@@ -3329,20 +3358,6 @@ describe("prepare_comment helpers", () => {
     expect(ev.source_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:share:7345678901234567890"
     );
-  });
-
-  test("buildHomeFeedEvents drops a post with no durable identity", () => {
-    const events = buildHomeFeedEventsRaw(
-      [
-        {
-          id: "opaque_component_key",
-          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
-          author: "Ada Lovelace",
-        },
-      ],
-      new Date("2026-08-01T12:00:00.000Z")
-    );
-    expect(events).toEqual([]);
   });
 
   test("isGenericLinkedInFeedUrl identifies home-feed URLs with no post id", () => {

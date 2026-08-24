@@ -292,10 +292,32 @@ export async function unwrapIncomingChatConfig(params: {
 		params.stored,
 	) as PlatformAdapterConfig;
 
-	return (await orgContext.run(
-		{ organizationId: params.organizationId },
-		() => params.resolveRefs(params.stableId, restored),
-	)) as unknown as Record<string, unknown>;
+	return (await resolveChatConfigRefsForOrg({
+		organizationId: params.organizationId,
+		runtimeId: params.stableId,
+		config: restored,
+		resolveRefs: params.resolveRefs,
+	})) as unknown as Record<string, unknown>;
+}
+
+/**
+ * Resolve stored chat secret references inside the explicit tenant context.
+ * The Postgres secret store scopes `secret://` lookups through orgContext, so
+ * request paths that already carry organizationId must install it here rather
+ * than relying on ambient middleware context.
+ */
+async function resolveChatConfigRefsForOrg(params: {
+	organizationId: string;
+	runtimeId: string;
+	config: PlatformAdapterConfig;
+	resolveRefs: (
+		runtimeId: string,
+		config: PlatformAdapterConfig,
+	) => Promise<PlatformAdapterConfig>;
+}): Promise<PlatformAdapterConfig> {
+	return orgContext.run({ organizationId: params.organizationId }, () =>
+		params.resolveRefs(params.runtimeId, params.config),
+	);
 }
 
 export async function upsertByoChatConnection(
@@ -495,8 +517,17 @@ export async function updateChatConnection(input: {
 				...currentConfig,
 				...restored,
 			} as PlatformAdapterConfig;
-			const resolved = await manager.resolveConnectionConfig(runtimeId, merged);
-			const config = parseConfig(row.connector_key, resolved);
+			const resolved = await resolveChatConfigRefsForOrg({
+				organizationId: input.organizationId,
+				runtimeId,
+				config: merged,
+				resolveRefs: (id, config) =>
+					manager.resolveConnectionConfig(id, config),
+			});
+			const config = parseConfig(
+				row.connector_key,
+				resolved as unknown as Record<string, unknown>,
+			);
 			const providerMetadata = await validateProviderIdentity(config);
 			await orgContext.run({ organizationId: input.organizationId }, () =>
 				manager.updateConnection(runtimeId, {

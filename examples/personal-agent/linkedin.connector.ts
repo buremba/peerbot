@@ -814,13 +814,19 @@ function homeFeedPostIdentityKey(
   row: HomeFeedRow,
   context: HomeFeedRowContext
 ): string | undefined {
-  const raw = row.post_identity || context.postUrl;
-  if (!raw) return undefined;
-  const match = raw.match(
-    /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
-  );
-  if (!match) return undefined;
-  return `${linkedInUrnNamespace(match[1] ?? match[2] ?? "")}:${match[3]}`;
+  for (const raw of [context.postUrl, row.post_identity]) {
+    if (!raw) continue;
+    const match = raw.match(
+      /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
+    );
+    if (!match) continue;
+    return `${linkedInUrnNamespace(match[1] ?? match[2] ?? "")}:${match[3]}`;
+  }
+  return undefined;
+}
+
+function homeFeedPostOriginId(identityKey: string): string {
+  return `li_home_${identityKey.replace(":", "_")}`;
 }
 
 function parseHomeFeedCommentIdentity(
@@ -1020,12 +1026,12 @@ function buildHomeFeedRowContext(row: HomeFeedRow): HomeFeedRowContext {
 }
 
 /**
- * Map cs_scrape home-feed rows to event envelopes. Prefer the permalink
- * recovered from LinkedIn's Copy-link action or a stable activity id embedded
- * in the card DOM; when no durable identity is recoverable, source_url is
- * OMITTED (never a generic /feed/ URL — that would look like a specific post
- * id). source_url is the single durable post identifier; action callers
- * (prepare_comment) resolve it directly.
+ * Map cs_scrape home-feed rows to event envelopes. The permalink recovered
+ * from LinkedIn's Copy-link action is the canonical post identity; an embedded
+ * activity/share/ugcPost id is used when the permalink is unavailable. The
+ * scrape-only componentkey never becomes an event origin, and a post without
+ * either durable identity is not emitted. Native comments carry their own
+ * durable id and point at the stable parent-post origin.
  * Home-feed posts expose no reliable timestamp, so the caller stamps
  * occurred_at with the sync time.
  */
@@ -1033,46 +1039,44 @@ export function buildHomeFeedEvents(
   rows: HomeFeedRow[],
   occurredAt: Date
 ): EventEnvelope[] {
-  const seen = new Set<string>();
+  const seenOrigins = new Set<string>();
   const events: EventEnvelope[] = [];
-  const contexts = new Map<string, HomeFeedRowContext>();
-  const postRowsByIdentity = new Map<string, string>();
+  // Each row carries its own context: LinkedIn recycles the componentkey, so
+  // keying per-row state on row.id would let one card's author and permalink
+  // stand in for a different post that reused the key.
+  const prepared: Array<{
+    row: HomeFeedRow;
+    body: string;
+    context: HomeFeedRowContext;
+    nativeIdentity?: HomeFeedCommentIdentity;
+  }> = [];
+  const postContextsByIdentity = new Map<string, HomeFeedRowContext>();
   for (const row of rows) {
-    const nativeIdentity = row?.id
-      ? parseHomeFeedCommentIdentity(row.id)
-      : undefined;
-    if (
-      row?.id &&
-      row.body &&
-      (nativeIdentity || !isHomeFeedNoise(row.body)) &&
-      !contexts.has(row.id)
-    ) {
-      const context = buildHomeFeedRowContext(row);
-      contexts.set(row.id, context);
-      if (!nativeIdentity) {
-        const identityKey = homeFeedPostIdentityKey(row, context);
-        if (identityKey && !postRowsByIdentity.has(identityKey)) {
-          postRowsByIdentity.set(identityKey, row.id);
-        }
+    if (!row?.id || !row.body) continue;
+    const nativeIdentity = parseHomeFeedCommentIdentity(row.id);
+    if (!nativeIdentity && isHomeFeedNoise(row.body)) continue;
+    const context = buildHomeFeedRowContext(row);
+    prepared.push({
+      row,
+      body: row.body,
+      context,
+      ...(nativeIdentity ? { nativeIdentity } : {}),
+    });
+    if (!nativeIdentity) {
+      const identityKey = homeFeedPostIdentityKey(row, context);
+      if (identityKey && !postContextsByIdentity.has(identityKey)) {
+        postContextsByIdentity.set(identityKey, context);
       }
     }
   }
-  for (const row of rows) {
-    if (!row?.id || !row.body || seen.has(row.id)) continue;
-    const nativeIdentity = parseHomeFeedCommentIdentity(row.id);
-    if (!nativeIdentity && isHomeFeedNoise(row.body)) continue;
-    seen.add(row.id);
-    const context = contexts.get(row.id)!;
+  for (const { row, body, context, nativeIdentity } of prepared) {
     if (nativeIdentity) {
-      const parentToken = postRowsByIdentity.get(
-        `${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`
-      );
-      const parentOriginToken =
-        parentToken ??
-        `${nativeIdentity.parentNamespace}_${nativeIdentity.parentId}`;
-      const parent = parentToken ? contexts.get(parentToken) : undefined;
-      const payloadText = row.body;
       const originId = `li_comment_${nativeIdentity.commentId}`;
+      if (seenOrigins.has(originId)) continue;
+      seenOrigins.add(originId);
+      const parentIdentityKey = `${nativeIdentity.parentNamespace}:${nativeIdentity.parentId}`;
+      const parentOriginId = homeFeedPostOriginId(parentIdentityKey);
+      const parent = postContextsByIdentity.get(parentIdentityKey);
       const sourceUrl =
         parent?.postUrl ??
         normalizeLinkedInPostUrl(
@@ -1082,7 +1086,7 @@ export function buildHomeFeedEvents(
       const commentMetadata: Record<string, unknown> = {
         ...context.metadata,
         ...homeFeedEngagementMetadata(counts),
-        parent_post_origin_id: `li_home_${parentOriginToken}`,
+        parent_post_origin_id: parentOriginId,
         comment_urn: nativeIdentity.urn,
         comment_id: nativeIdentity.commentId,
         parent_activity_id: nativeIdentity.parentId,
@@ -1097,8 +1101,8 @@ export function buildHomeFeedEvents(
       }
       events.push({
         origin_id: originId,
-        origin_parent_id: `li_home_${parentOriginToken}`,
-        payload_text: payloadText,
+        origin_parent_id: parentOriginId,
+        payload_text: body,
         attachments: normalizeHomeFeedMedia(row.comment_media),
         author_name: context.author,
         occurred_at: occurredAt,
@@ -1110,22 +1114,31 @@ export function buildHomeFeedEvents(
       continue;
     }
 
+    const identityKey = homeFeedPostIdentityKey(row, context);
+    if (!identityKey) continue;
+    const originId = homeFeedPostOriginId(identityKey);
+    if (seenOrigins.has(originId)) continue;
+    seenOrigins.add(originId);
     const counts = parseHomeFeedEngagement(row);
+    // The identity key already proved a durable post id, so a canonical URL is
+    // always derivable. Deriving it from the key covers the case where the
+    // scraped permalink did not normalize (post_url held the bare /feed/
+    // surface) but post_identity still carried the urn.
+    const sourceUrl =
+      context.postUrl ?? normalizeLinkedInPostUrl(`urn:li:${identityKey}`);
 
     events.push({
-      origin_id: `li_home_${row.id}`,
-      payload_text: row.body,
+      origin_id: originId,
+      payload_text: body,
       attachments: normalizeHomeFeedMedia(row.post_media),
       author_name: context.author,
       // Feed posts expose no reliable timestamp; use the sync time.
       occurred_at: occurredAt,
       origin_type: "post",
       score: homeFeedEngagementScore(counts),
-      // Omitted when no durable identity was recoverable — a missing
-      // source_url is the explicit "this event has no canonical post URL"
-      // signal, not a bug. source_url is the durable identifier; action
-      // callers (prepare_comment) resolve it directly.
-      ...(context.postUrl ? { source_url: context.postUrl } : {}),
+      // source_url is the durable post handle action callers (prepare_comment)
+      // resolve directly.
+      ...(sourceUrl ? { source_url: sourceUrl } : {}),
       metadata: context.metadata,
     });
   }
@@ -2507,7 +2520,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.10.0",
+    version: "3.11.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

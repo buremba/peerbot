@@ -10,7 +10,7 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
 let LinkedInConnector: any;
-let buildHomeFeedEvents: any;
+let buildHomeFeedEventsRaw: any;
 let homeFeedObjectAllSupported: any;
 let parseHomeFeedAuthor: any;
 let parseHomeFeedEngagement: any;
@@ -39,10 +39,46 @@ let genericScrape: (
   config: Record<string, unknown>
 ) => Promise<Record<string, unknown>>;
 
+// Most tests below exercise author, engagement, media, or noise parsing rather
+// than post identity recovery. Give those synthetic rows a durable URN derived
+// from the fixture's own row id, so they satisfy the production invariant
+// without repeating identity boilerplate and without depending on row order.
+// Tests that assert identity recovery itself pass post_url / post_identity
+// explicitly; tests for MISSING identity call buildHomeFeedEventsRaw.
+// Deterministic per-row-id digits: a stable hash keeps the URN independent of
+// row order and of which other tests ran first.
+function syntheticActivityId(rowId: string): string {
+  let hash = 0;
+  for (const char of rowId) hash = (hash * 31 + char.charCodeAt(0)) % 1_000_000;
+  return `74000000000000${String(hash).padStart(6, "0")}`;
+}
+
+function buildHomeFeedEvents(rows: any[], occurredAt: Date): any[] {
+  return buildHomeFeedEventsRaw(
+    rows.map((row) => {
+      const id = String(row?.id ?? "");
+      // Comment rows carry identity in the row id itself (production parses the
+      // `urn:li:comment:(parent,comment)` urn), so they need no injection.
+      if (
+        row?.post_url ||
+        row?.post_identity ||
+        /urn:li:comment:\(/i.test(id)
+      ) {
+        return row;
+      }
+      return {
+        ...row,
+        post_identity: `urn:li:activity:${syntheticActivityId(id)}`,
+      };
+    }),
+    occurredAt
+  );
+}
+
 beforeAll(async () => {
   const mod = await import("../linkedin.connector");
   LinkedInConnector = mod.default;
-  buildHomeFeedEvents = mod.buildHomeFeedEvents;
+  buildHomeFeedEventsRaw = mod.buildHomeFeedEvents;
   homeFeedObjectAllSupported = mod.homeFeedObjectAllSupported;
   parseHomeFeedAuthor = mod.parseHomeFeedAuthor;
   parseHomeFeedEngagement = mod.parseHomeFeedEngagement;
@@ -153,6 +189,86 @@ describe("filterPostsSinceCheckpoint", () => {
 });
 
 describe("buildHomeFeedEvents", () => {
+  test("dedupes changing component keys by the durable post identity", () => {
+    const events = buildHomeFeedEvents(
+      [
+        {
+          id: "first_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_url:
+            "/feed/update/urn:li:activity:7345678901234567890?utm_source=feed",
+        },
+        {
+          id: "replacement_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0].origin_id).toBe("li_home_activity_7345678901234567890");
+  });
+
+  test("derives source_url from the embedded urn when post_url does not normalize", () => {
+    const [event] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          // The scraped href is the bare feed surface — it carries no post id,
+          // so the durable identity has to come from post_identity, and
+          // source_url must still be the canonical permalink for that id.
+          post_url: "https://www.linkedin.com/feed/",
+          post_identity: "urn:li:share:7485276857911828480",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(event.origin_id).toBe("li_home_share_7485276857911828480");
+    expect(event.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:share:7485276857911828480"
+    );
+  });
+
+  test("keeps a recycled component key from merging two comments' parents", () => {
+    const events = buildHomeFeedEvents(
+      [
+        {
+          id: "recycled",
+          body: "Feed post Ada Lovelace • 1st First parent post body long enough here",
+          author: "Ada Lovelace",
+          post_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111",
+        },
+        {
+          id: "recycled",
+          body: "Feed post Grace Hopper • 1st Second parent post body long enough here",
+          author: "Grace Hopper",
+          post_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:9999999999999999999",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(
+      events.map((e: { origin_id: string; author_name: string }) => [
+        e.origin_id,
+        e.author_name,
+      ])
+    ).toEqual([
+      ["li_home_activity_1111111111111111111", "Ada Lovelace"],
+      ["li_home_activity_9999999999999999999", "Grace Hopper"],
+    ]);
+  });
+
   test("uses the scraped post permalink when LinkedIn exposes one", () => {
     const [event] = buildHomeFeedEvents(
       [
@@ -167,6 +283,28 @@ describe("buildHomeFeedEvents", () => {
       new Date("2026-08-01T12:00:00.000Z")
     );
 
+    expect(event.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
+    );
+    expect(event.origin_id).toBe("li_home_activity_7345678901234567890");
+  });
+
+  test("prefers the copied activity URL over a different embedded identity", () => {
+    const [event] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_url:
+            "/feed/update/urn:li:activity:7345678901234567890?utm_source=feed",
+          post_identity: "urn:li:share:7485276857911828480",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(event.origin_id).toBe("li_home_activity_7345678901234567890");
     expect(event.source_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
     );
@@ -190,6 +328,7 @@ describe("buildHomeFeedEvents", () => {
     expect(event.source_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:share:7485276857911828480"
     );
+    expect(event.origin_id).toBe("li_home_share_7485276857911828480");
   });
 
   test("keeps the ugcPost namespace for ugcPostId feed cards", () => {
@@ -208,11 +347,12 @@ describe("buildHomeFeedEvents", () => {
     expect(event.source_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:ugcPost:7485276857911828481"
     );
+    expect(event.origin_id).toBe("li_home_ugcPost_7485276857911828481");
   });
 
-  test("maps a token-id row to li_home_<token> with no durable source_url", () => {
+  test("drops a component-key row with no durable post identity", () => {
     const occurredAt = new Date("2026-05-29T12:00:00.000Z");
-    const events = buildHomeFeedEvents(
+    const events = buildHomeFeedEventsRaw(
       [
         {
           id: "aBc123_token",
@@ -223,22 +363,7 @@ describe("buildHomeFeedEvents", () => {
       occurredAt
     );
 
-    expect(events).toHaveLength(1);
-    const [ev] = events;
-    expect(ev.origin_id).toBe("li_home_aBc123_token");
-    expect(ev.payload_text).toBe(
-      "Hello from the home feed, this body is long enough"
-    );
-    expect(ev.author_name).toBe("Jane Doe");
-    expect(ev.origin_type).toBe("post");
-    // Token id is NOT numeric and no post_url/post_identity is exposed → no
-    // durable post identity. The event must NOT emit the generic home-feed URL
-    // as source_url (it would look like a specific post id and get passed to
-    // prepare_comment as if it identified a post). Absent source_url is the
-    // explicit "no durable identity" signal.
-    expect(ev.source_url).toBeUndefined();
-    expect(ev.occurred_at).toBe(occurredAt);
-    expect(ev.metadata).toEqual({ author: "Jane Doe" });
+    expect(events).toEqual([]);
   });
 
   test("links a native comment to its copied-link parent when post identity is empty", () => {
@@ -285,7 +410,7 @@ describe("buildHomeFeedEvents", () => {
     const comment = events[1];
     expect(comment).toMatchObject({
       origin_id: "li_comment_2222222222222222222",
-      origin_parent_id: "li_home_parent_token",
+      origin_parent_id: "li_home_activity_1111111111111111111",
       origin_type: "comment",
       author_name: "Fixture Commenter",
       source_url:
@@ -303,7 +428,7 @@ describe("buildHomeFeedEvents", () => {
     expect(comment.metadata).toMatchObject({
       author: "Fixture Commenter",
       author_linkedin_slug: "fixture-commenter",
-      parent_post_origin_id: "li_home_parent_token",
+      parent_post_origin_id: "li_home_activity_1111111111111111111",
       parent_author: "Fixture Post Author",
       parent_author_linkedin_slug: "fixture-post-author",
       comment_id: "2222222222222222222",
@@ -1103,7 +1228,7 @@ describe("buildHomeFeedEvents", () => {
     expect(ev.metadata).toEqual({ author: "Acme Corp" });
   });
 
-  test("drops rows without id or body and dedupes by id", () => {
+  test("drops rows without id or body and keeps posts sharing a component key", () => {
     const longBody =
       "this body is definitely longer than thirty characters for the test";
     const events = buildHomeFeedEvents(
@@ -1121,9 +1246,12 @@ describe("buildHomeFeedEvents", () => {
         },
         { id: "b" }, // no body
         {
+          // Same component key as the first row: LinkedIn recycles the key, so
+          // the durable activity id decides identity and both posts survive
+          // with their own author and permalink.
           id: "a",
-          body: "dup id with a sufficiently long body to pass the noise filter",
-          author: "Duplicate Author",
+          body: "recycled key with a sufficiently long body to pass the filter",
+          author: "Second Author",
           post_url:
             "https://www.linkedin.com/feed/update/urn:li:activity:5555555555555555555",
         },
@@ -1131,7 +1259,8 @@ describe("buildHomeFeedEvents", () => {
       new Date()
     );
     expect(events.map((e: { origin_id: string }) => e.origin_id)).toEqual([
-      "li_home_a",
+      "li_home_activity_4444444444444444444",
+      "li_home_activity_5555555555555555555",
     ]);
     expect(events[0]).toMatchObject({
       payload_text: longBody,
@@ -1139,6 +1268,12 @@ describe("buildHomeFeedEvents", () => {
       source_url:
         "https://www.linkedin.com/feed/update/urn:li:activity:4444444444444444444",
       metadata: { author: "First Author" },
+    });
+    expect(events[1]).toMatchObject({
+      author_name: "Second Author",
+      source_url:
+        "https://www.linkedin.com/feed/update/urn:li:activity:5555555555555555555",
+      metadata: { author: "Second Author" },
     });
   });
 
@@ -1149,10 +1284,12 @@ describe("buildHomeFeedEvents", () => {
         {
           id: "keep1",
           body: "Feed post Hugo Lu • 1st Founder at Orchestra 4h • Yesterday Snowflake popped",
+          post_identity: "urn:li:activity:6111111111111111111",
         },
         {
           id: "keep2",
           body: "Feed post Sabri Karagönen reposted this Hardal 17h • Follow Hardal is now integrated with Bruin",
+          post_identity: "urn:li:activity:6222222222222222222",
         },
         {
           id: "ad",
@@ -1167,8 +1304,8 @@ describe("buildHomeFeedEvents", () => {
       occurredAt
     );
     expect(events.map((e: { origin_id: string }) => e.origin_id)).toEqual([
-      "li_home_keep1",
-      "li_home_keep2",
+      "li_home_activity_6111111111111111111",
+      "li_home_activity_6222222222222222222",
     ]);
     expect(events.map((e: { author_name: string }) => e.author_name)).toEqual([
       "Hugo Lu",
@@ -1619,13 +1756,13 @@ describe("LinkedInConnector home_feed", () => {
 
     expect(res.events).toHaveLength(3);
     expect(res.events[0]).toMatchObject({
-      origin_id: "li_home_parent_token",
+      origin_id: "li_home_activity_1111111111111111111",
       score: 24,
       metadata: { reactions: 12, comments: 3, reposts: 2 },
     });
     expect(res.events[1]).toMatchObject({
       origin_id: "li_comment_2222222222222222222",
-      origin_parent_id: "li_home_parent_token",
+      origin_parent_id: "li_home_activity_1111111111111111111",
       origin_type: "comment",
       author_name: "Fixture Commenter One",
       attachments: [
@@ -1638,7 +1775,7 @@ describe("LinkedInConnector home_feed", () => {
     });
     expect(res.events[2]).toMatchObject({
       origin_id: "li_comment_3333333333333333333",
-      origin_parent_id: "li_home_parent_token",
+      origin_parent_id: "li_home_activity_1111111111111111111",
       origin_type: "comment",
       author_name: "Fixture Commenter Two",
       attachments: [
@@ -2157,7 +2294,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.10.0");
+    expect(c.definition.version).toBe("3.11.0");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );
@@ -2754,8 +2891,8 @@ describe("prepare_comment helpers", () => {
     );
   });
 
-  test("buildHomeFeedEvents does NOT emit the generic feed URL as a fake post identity", () => {
-    const [ev] = buildHomeFeedEvents(
+  test("buildHomeFeedEvents drops a post with no durable identity", () => {
+    const events = buildHomeFeedEventsRaw(
       [
         {
           id: "opaque_component_key",
@@ -2765,8 +2902,7 @@ describe("prepare_comment helpers", () => {
       ],
       new Date("2026-08-01T12:00:00.000Z")
     );
-    // No post_url / post_identity → no source_url at all (not the /feed/ root).
-    expect(ev.source_url).toBeUndefined();
+    expect(events).toEqual([]);
   });
 
   test("isGenericLinkedInFeedUrl identifies home-feed URLs with no post id", () => {

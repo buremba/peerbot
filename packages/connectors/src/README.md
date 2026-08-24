@@ -1,6 +1,6 @@
 # Connector SDK
 
-Connectors are TypeScript modules that sync data from external services into Lobu, read configured feeds directly from their source, and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is created with `defineConnector({ ... })` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
+Connectors are TypeScript modules that sync data from external services into Lobu, read configured feeds directly from their source, and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is either a `defineConnector({ ... })` spec or a class extending `ConnectorRuntime` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
 
 ## Quick Start
 

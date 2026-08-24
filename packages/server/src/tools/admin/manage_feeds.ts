@@ -243,8 +243,8 @@ async function handleListFeeds(
     where = sql`${where} AND f.status = 'active' AND c.status <> 'paused'`;
     const overdue = sql`
       COALESCE(f.schedule, '') <> ''
-      AND EXISTS (
-        SELECT 1
+      AND COALESCE((
+        SELECT health_cd.feeds_schema -> f.feed_key -> 'operations'
         FROM connector_definitions health_cd
         WHERE health_cd.key = c.connector_key
           AND health_cd.organization_id = f.organization_id
@@ -258,9 +258,12 @@ async function handleListFeeds(
               AND (health_cd.version = f.pinned_version OR health_cd.status = 'active')
             )
           )
-          AND COALESCE(health_cd.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
-            @> '["sync"]'::jsonb
-      )
+        ORDER BY (health_cd.version = f.pinned_version) DESC,
+                 (health_cd.status = 'active') DESC,
+                 health_cd.updated_at DESC,
+                 health_cd.id DESC
+        LIMIT 1
+      ), '[]'::jsonb) @> '["sync"]'::jsonb
       AND f.next_run_at IS NOT NULL
       AND f.next_run_at < now() - interval '1 hour'
       AND NOT EXISTS (

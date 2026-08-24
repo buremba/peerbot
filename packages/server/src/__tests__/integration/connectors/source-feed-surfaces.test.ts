@@ -86,6 +86,13 @@ describe('explicit feed source reads', () => {
       VALUES ('postgres', '1.0.1', NULL, NULL, NOW())
       ON CONFLICT DO NOTHING
     `;
+    await db`
+      INSERT INTO connector_definitions
+        (key, name, version, feeds_schema, auth_schema, organization_id, status, created_at, updated_at)
+      VALUES ('postgres', 'PostgreSQL', '1.0.0',
+        ${db.json({ query: { key: 'query', operations: ['sync'] } })},
+        ${db.json({})}, ${orgId}, 'archived', NOW(), NOW())
+    `;
 
     const createConnection = async (slug: string, visibility: 'org' | 'private') => {
       const [row] = await db`
@@ -98,13 +105,20 @@ describe('explicit feed source reads', () => {
     };
     const publicConnectionId = await createConnection('explicit-public', 'org');
     const privateConnectionId = await createConnection('explicit-private', 'private');
+    const pinnedConnectionId = await createConnection('explicit-pinned', 'org');
 
-    const createFeed = async (connectionId: number, feedKey: string) => {
+    const createFeed = async (
+      connectionId: number,
+      feedKey: string,
+      pinnedVersion?: string,
+    ) => {
       const [row] = await db`
         INSERT INTO feeds
-          (organization_id, connection_id, feed_key, display_name, status, config, created_at, updated_at)
+          (organization_id, connection_id, feed_key, display_name, status, config,
+            pinned_version, created_at, updated_at)
         VALUES (${orgId}, ${connectionId}, ${feedKey}, ${feedKey}, 'active',
-          ${db.json({ query: SOURCE_SQL, primary_key: 'id', cursor_column: 'id' })}, NOW(), NOW())
+          ${db.json({ query: SOURCE_SQL, primary_key: 'id', cursor_column: 'id' })},
+          ${pinnedVersion ?? null}, NOW(), NOW())
         RETURNING id
       `;
       return Number((row as { id: number }).id);
@@ -112,13 +126,14 @@ describe('explicit feed source reads', () => {
     publicFeedId = await createFeed(publicConnectionId, 'query');
     privateFeedId = await createFeed(privateConnectionId, 'query');
     collectedFeedId = await createFeed(publicConnectionId, 'collected');
+    await createFeed(pinnedConnectionId, 'query', '1.0.0');
   }, 120_000);
 
   afterAll(async () => {
     await getTestDb()`DROP TABLE IF EXISTS vfsurf_ext`;
   });
 
-  it('search stays local and reports source feeds as not queried under the visibility fence', async () => {
+  it('search stays local and applies visibility plus pinned-capability fences', async () => {
     const owner = await gatherLocalRecall(ownerScope(), recallContext());
     expect(owner.coverage).toMatchObject({
       source_queried: false,
@@ -128,7 +143,6 @@ describe('explicit feed source reads', () => {
       [publicFeedId, privateFeedId].sort()
     );
     expect(owner.coverage?.source_feeds.every((feed) => feed.status === 'not_queried')).toBe(true);
-
     const member = await gatherLocalRecall(memberScope(), recallContext());
     expect(member.coverage?.source_feeds.map((feed) => feed.feed_id)).toEqual([publicFeedId]);
   });

@@ -5,14 +5,23 @@ import {
   isLegacyNonManifestConnector,
   isLegacyNativeChromeExtensionConnectorKey,
   isNativeChromeExtensionConnector,
+  legacyNativeChromeExtensionRequiredCapability,
+  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS,
   LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS,
 } from '../../utils/connector-execution-placement';
 
 describe('Chrome-extension connector execution placement', () => {
   it('keeps the legacy native allowlist exact', () => {
+    expect(LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS).toEqual({
+      'whatsapp.local': { requiredCapability: 'browser.whatsapp' },
+    });
     expect(LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS).toEqual(['whatsapp.local']);
     expect(isLegacyNativeChromeExtensionConnectorKey('whatsapp.local')).toBe(true);
     expect(isLegacyNativeChromeExtensionConnectorKey('whatsapp')).toBe(false);
+    expect(legacyNativeChromeExtensionRequiredCapability('whatsapp.local')).toBe(
+      'browser.whatsapp'
+    );
+    expect(legacyNativeChromeExtensionRequiredCapability('whatsapp')).toBeNull();
   });
 
   it('recognizes only the exact Chrome namespace intrinsically', () => {

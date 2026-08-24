@@ -9,6 +9,7 @@ import type { ConnectorMetadata } from '../utils/connector-compiler';
 import {
   isChromeNamespaceConnectorKey,
   isLegacyNativeChromeExtensionConnectorKey,
+  legacyNativeChromeExtensionRequiredCapability,
 } from '../utils/connector-execution-placement';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import logger from '../utils/logger';
@@ -136,6 +137,18 @@ function validateDeviceConnectorManifestsInternal(
 
       if (!connectorKeyAllowedForPlatform(platform, manifest.key)) {
         throw new Error(`connector key '${manifest.key}' is not allowed for platform '${platform}'`);
+      }
+      const legacyChromeCapability =
+        platform === 'chrome-extension'
+          ? legacyNativeChromeExtensionRequiredCapability(manifest.key)
+          : null;
+      if (
+        legacyChromeCapability !== null &&
+        manifest.required_capability !== legacyChromeCapability
+      ) {
+        throw new Error(
+          `chrome-extension connector '${manifest.key}' requires required_capability '${legacyChromeCapability}'`
+        );
       }
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);

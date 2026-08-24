@@ -131,6 +131,17 @@ describe('WhatsApp Browser manifest capability', () => {
     expect(result.manifests).toHaveLength(0);
   });
 
+  it('rejects a Chrome whatsapp.local manifest with an unrelated allowed capability', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.tabs'],
+      manifests: [{ ...chromeManifest, required_capability: 'browser.tabs' }],
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.manifests).toHaveLength(0);
+  });
+
   it('rejects a Chrome whatsapp.local manifest that does not include the Chrome runtime', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',

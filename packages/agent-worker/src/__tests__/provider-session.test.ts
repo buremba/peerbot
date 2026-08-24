@@ -7,10 +7,18 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import {
+  type BashOperations,
+  SessionManager,
+} from "@mariozechner/pi-coding-agent";
+import { buildDynamicOpenAIModel } from "../runtime/model-resolver";
 import { resetSessionForProviderChange } from "../runtime/provider-session";
+import {
+  buildAgentSession,
+  persistBangBashSession,
+} from "../runtime/session-runner";
 
 const temporaryDirectories: string[] = [];
 
@@ -137,5 +145,72 @@ describe("durable provider isolation", () => {
 
     expect(note).toContain("provider metadata was unavailable");
     await expect(stat(session.sessionFile)).rejects.toThrow();
+  });
+
+  test("provider reset followed by !-bash keeps model metadata for the next run", async () => {
+    const previous = await durableSession("anthropic");
+    const summary = await resetSessionForProviderChange({
+      sessionFile: previous.sessionFile,
+      sessionManager: previous.sessionManager,
+      provider: "openai",
+    });
+    expect(summary).toContain("changed from anthropic to openai");
+
+    const sessionManager = SessionManager.create(
+      previous.directory,
+      dirname(previous.sessionFile)
+    );
+    sessionManager.setSessionFile(previous.sessionFile);
+    const { session } = await buildAgentSession({
+      cwd: previous.directory,
+      model: buildDynamicOpenAIModel({
+        rawProvider: "openai",
+        registryProvider: "openai",
+        modelId: "stub-model",
+        providerBaseUrl: "http://127.0.0.1:1/v1",
+      }) as never,
+      sessionManager,
+      customTools: [],
+      providerChangeSummary: summary,
+    });
+    const localOps: BashOperations = {
+      exec: async (...args) => {
+        args[2].onData(Buffer.from("provider-reset-bash\n"));
+        return { exitCode: 0 };
+      },
+    };
+
+    await session.executeBash("echo provider-reset-bash", undefined, {
+      operations: localOps,
+    });
+    await persistBangBashSession(sessionManager, previous.sessionFile);
+    session.dispose();
+
+    const branch = SessionManager.open(previous.sessionFile).getBranch();
+    expect(branch.map((entry) => entry.type)).toEqual([
+      "model_change",
+      "thinking_level_change",
+      "custom_message",
+      "message",
+    ]);
+    expect(
+      branch.find(
+        (entry) =>
+          entry.type === "custom_message" &&
+          entry.customType === "lobu.provider_change"
+      )
+    ).toBeDefined();
+
+    const nextRunManager = SessionManager.open(previous.sessionFile);
+    expect(
+      await resetSessionForProviderChange({
+        sessionFile: previous.sessionFile,
+        sessionManager: nextRunManager,
+        provider: "openai",
+      })
+    ).toBeUndefined();
+    expect(await readFile(previous.sessionFile, "utf-8")).toContain(
+      "provider-reset-bash"
+    );
   });
 });

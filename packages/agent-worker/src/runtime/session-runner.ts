@@ -136,12 +136,18 @@ type BuildAgentSessionOptions = Omit<
    * it into Pi's provider-only context copy, never the persisted user message.
    */
   getTransientTurnContext?: () => string | undefined;
+  /**
+   * Durable provider-isolation note for a session Pi is about to initialize.
+   * It must be appended only after Pi records the new session's model_change.
+   */
+  providerChangeSummary?: string;
 };
 
 export async function buildAgentSession({
   builtinOverrides,
   renderSystemPrompt,
   getTransientTurnContext,
+  providerChangeSummary,
   ...options
 }: BuildAgentSessionOptions): Promise<CreateAgentSessionResult> {
   // Pi's defaults persist under ~/.pi and discover resources/config from cwd.
@@ -171,6 +177,17 @@ export async function buildAgentSession({
     resourceLoader,
   });
   const { session } = result;
+
+  if (providerChangeSummary) {
+    await session.sendCustomMessage(
+      {
+        customType: "lobu.provider_change",
+        content: providerChangeSummary,
+        display: false,
+      },
+      { triggerTurn: false }
+    );
+  }
 
   const lobuBuiltins = new Map<string, AgentTool<any>>();
   for (const tool of builtinOverrides ?? []) {
@@ -1037,16 +1054,6 @@ export async function runAISession(
   // for a normal session (has an assistant). Must run on the FINAL manager,
   // after any provider-change reopen above.
   await normalizeHydratedSessionFile(sessionManager, sessionFile);
-  if (sessionSummary) {
-    // Provider isolation is a durable conversation event, unlike per-run
-    // attention/recall/channel context. Pi custom messages participate in LLM
-    // context but remain hidden from the normal transcript surface.
-    sessionManager.appendCustomMessageEntry(
-      "lobu.provider_change",
-      sessionSummary,
-      false
-    );
-  }
   const settingsManager = SettingsManager.inMemory();
 
   const toolsPolicy = buildToolPolicy({
@@ -1358,6 +1365,10 @@ user references earlier discussion or you need prior context.`);
       // tools are bounded identically to the built-ins.
       customTools: wrapToolsWithTurnGuard(customTools, turnController),
       sessionManager,
+      // Provider isolation is a durable conversation event, unlike per-run
+      // attention/recall/channel context. buildAgentSession adds the hidden Pi
+      // custom message only AFTER Pi records this new session's model_change.
+      providerChangeSummary: sessionSummary,
       settingsManager,
       authStorage,
       modelRegistry,

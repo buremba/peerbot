@@ -47,7 +47,7 @@ async function markPersonalOrg(orgId: string, userId: string): Promise<void> {
   `;
 }
 
-type AuthShape = { scopes: string[]; workerId?: string } | null;
+type AuthShape = { scopes: string[]; workerId?: string; resource?: string } | null;
 
 type MintApp = Hono<{
   Bindings: Env;
@@ -198,6 +198,97 @@ describe('device child-token lifecycle', () => {
     `) as unknown as Array<{ token_prefix: string }>;
     expect(live).toHaveLength(1);
     expect(String(rotated.json.access_token)).toContain(live[0].token_prefix);
+  });
+
+  it('requires device scope without an MCP resource audience for macOS minting', async () => {
+    const sql = getTestDb();
+    const userId = await seedUser('child-lifecycle-auth-fences@test.example.com');
+    const workerId = 'mac-auth-fence-device';
+
+    const missingScope = await mint(
+      userId,
+      { scopes: [] },
+      { platform: 'macos', worker_id: workerId }
+    );
+    expect(missingScope.status).toBe(403);
+    expect(missingScope.json).toMatchObject({
+      error: 'insufficient_scope',
+      required: 'device_worker:run',
+    });
+
+    const mcpAudience = await mint(
+      userId,
+      { scopes: ['device_worker:run'], resource: 'https://app.lobu.ai/mcp' },
+      { platform: 'macos', worker_id: workerId }
+    );
+    expect(mcpAudience.status).toBe(403);
+    expect(mcpAudience.json).toMatchObject({
+      error: 'insufficient_scope',
+      required: 'device-bound token without MCP resource',
+    });
+
+    const pats = (await sql`
+      SELECT id FROM personal_access_tokens WHERE user_id = ${userId}
+    `) as unknown as Array<{ id: number }>;
+    expect(pats).toEqual([]);
+    const devices = (await sql`
+      SELECT id FROM device_workers WHERE user_id = ${userId}
+    `) as unknown as Array<{ id: number }>;
+    expect(devices).toEqual([]);
+  });
+
+  it('keeps the old child valid when replacement mint cannot commit', async () => {
+    const sql = getTestDb();
+    const userId = await seedUser('child-lifecycle-rollback@test.example.com');
+    const first = await mint(userId, PARENT_AUTH, {
+      platform: 'macos',
+      worker_id: 'mac-rollback-device',
+      label: 'Mac rollback probe',
+    });
+    expect(first.status).toBe(200);
+    const workerId = first.json.worker_id as string;
+    const childAuth = await verifyPat(first.json.access_token);
+
+    // Force the old-token revocation to fail after the replacement INSERT.
+    // Both writes live in one transaction, so the new PAT must roll back and
+    // the old bearer must remain usable rather than stranding the device.
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_device_child_rotation_revoke()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL THEN
+          RAISE EXCEPTION 'forced device child rotation revoke failure';
+        END IF;
+        RETURN NEW;
+      END
+      $$;
+      CREATE TRIGGER test_fail_device_child_rotation_revoke_trg
+      BEFORE UPDATE ON personal_access_tokens
+      FOR EACH ROW EXECUTE FUNCTION test_fail_device_child_rotation_revoke();
+    `);
+    try {
+      const failed = await mint(userId, childAuth, {
+        platform: 'macos',
+        worker_id: workerId,
+      });
+      expect(failed.status).toBe(500);
+    } finally {
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS test_fail_device_child_rotation_revoke_trg
+          ON personal_access_tokens;
+        DROP FUNCTION IF EXISTS test_fail_device_child_rotation_revoke();
+      `);
+    }
+
+    expect(await verifyPat(first.json.access_token)).toEqual({
+      scopes: ['device_worker:run'],
+      workerId,
+    });
+    const rows = (await sql`
+      SELECT revoked_at FROM personal_access_tokens
+      WHERE user_id = ${userId} AND worker_id = ${workerId}
+    `) as unknown as Array<{ revoked_at: Date | null }>;
+    expect(rows).toEqual([{ revoked_at: null }]);
   });
 
   it('a LEGACY child (bare scope, worker-bound) is still held to the depth-1 gate', async () => {

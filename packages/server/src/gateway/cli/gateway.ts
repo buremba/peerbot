@@ -7,6 +7,8 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { isAllowedCorsOrigin } from "../../utils/cors-origin.js";
+import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
 import {
   pairAdminGrant,
   takePendingTool,
@@ -152,9 +154,21 @@ export function createGatewayApp(
   app.use(
     "*",
     cors({
-      origin: process.env.ALLOWED_ORIGINS
-        ? process.env.ALLOWED_ORIGINS.split(",")
-        : [],
+      // Same browser-origin boundary as the main app (packages/server/src/index.ts)
+      // so a workspace host like `acme.lobu.ai` can call the Agent API mounted at
+      // /lobu, plus the operator's exact ALLOWED_ORIGINS for standalone clients.
+      // Reads process.env, not c.env: standalone `lobu run` has no env-injecting
+      // wrapper, so c.env only carries the Node adapter's fields there.
+      origin: (origin, c) => {
+        if (!origin) {
+          return getConfiguredPublicOrigin() ?? new URL(c.req.url).origin;
+        }
+        return isAllowedCorsOrigin(origin, process.env, c.req.url, {
+          allowConfiguredOrigins: true,
+        })
+          ? origin
+          : undefined;
+      },
       credentials: true,
 		}),
   );

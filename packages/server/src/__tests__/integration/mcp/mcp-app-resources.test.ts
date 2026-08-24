@@ -1324,7 +1324,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         }),
         expect.objectContaining({
           id: 'review',
-          label: 'Open in Lobu',
+          label: 'Review in Lobu',
           href: expect.stringMatching(/^https?:\/\//),
         }),
       ])
@@ -1678,6 +1678,16 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(serialized).toContain('[redacted]');
     expect(view.blocks).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          type: 'diff',
+          fields: expect.arrayContaining([
+            expect.objectContaining({ label: expect.stringMatching(/^Field 0 /) }),
+          ]),
+        }),
+      ])
+    );
+    expect(view.blocks).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({ label: 'Source', value: 'Direct request' }),
       ])
     );
@@ -1708,6 +1718,117 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       expect(field.before?.length ?? 0).toBeLessThanOrEqual(20_000);
       expect(field.after.length).toBeLessThanOrEqual(20_000);
     }
+  });
+
+  it('keeps explicit null distinct from an empty string in approval diffs', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', 'github', 'update_issue'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_null_approval_${runId}`,
+      title: 'Update issue — pending approval',
+      content: 'Review this issue update.',
+      semanticType: 'operation',
+      connectorKey: 'github',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { cleared: null, emptied: '' },
+      metadata: {
+        proposal: { cleared: null, emptied: '' },
+        current: { cleared: 'before', emptied: 'before' },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 214,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.blocks?.[0]?.fields).toEqual([
+      { label: 'Cleared', before: 'before', after: 'null' },
+      { label: 'Emptied', before: 'before', after: '' },
+    ]);
+    expect(body.result?.content?.[0]?.text).toContain('before → null');
+    expect(body.result?.content?.[0]?.text).toContain('before → —');
+  });
+
+  it('keeps user-authored envelope-shaped fields in an ordinary approval proposal', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'internal', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_user_args_approval_${runId}`,
+      title: 'Create entity — pending approval',
+      content: 'Review this entity proposal.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { action: 'create' },
+      metadata: {
+        tool: 'entity_change',
+        proposal: {
+          args: { mode: 'careful' },
+          title: 'Visible sibling field',
+          schema_type: 'Visible user field',
+          version: 'Visible user version',
+        },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 215,
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    const ordinaryFields = body.result?.structuredContent?.blocks?.[0]?.fields;
+    expect(ordinaryFields).toHaveLength(4);
+    expect(ordinaryFields).toEqual(
+      expect.arrayContaining([
+        {
+          label: 'Args',
+          after: '{\n  "mode": "careful"\n}',
+          format: 'code',
+        },
+        { label: 'Title', after: 'Visible sibling field' },
+        { label: 'Schema type', after: 'Visible user field' },
+        { label: 'Version', after: 'Visible user version' },
+      ]),
+    );
   });
 
   it('does not render an approval from another member private connection', async () => {

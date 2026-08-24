@@ -63,6 +63,7 @@ const DiffBlockSchema = Type.Object({
       label: Type.String({ minLength: 1, maxLength: TEXT_LABEL_MAX_LENGTH }),
       before: Type.Optional(Type.String({ maxLength: TEXT_VALUE_MAX_LENGTH })),
       after: Type.String({ maxLength: TEXT_VALUE_MAX_LENGTH }),
+      format: Type.Optional(Type.Literal('code')),
     }),
     { maxItems: DIFF_FIELD_MAX_ITEMS }
   ),
@@ -183,7 +184,18 @@ const DIFF_ROUTING_KEYS = new Set([
   'id',
   'owner_user_id',
   'reason',
-  'automation_id',
+]);
+
+const DIFF_ENVELOPE_ROUTING_KEYS = new Set([
+  'owner_agent_id',
+  'owner_resolved',
+  'policy_action',
+  'policy_principal_id',
+  'policy_principal_kind',
+  'precondition',
+  'resource_class',
+  'schema_type',
+  'version',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -275,7 +287,8 @@ function sanitizeFormInitialValues(value: Record<string, unknown>): Record<strin
 }
 
 function displayValue(value: unknown, maxLength: number, key?: string): string {
-  if (value === undefined || value === null) return '';
+  if (value === undefined) return '';
+  if (value === null) return 'null';
   const redacted = redactForDisplay(value, key);
   let rendered: string;
   if (typeof redacted === 'string') {
@@ -290,6 +303,30 @@ function displayValue(value: unknown, maxLength: number, key?: string): string {
   return truncate(rendered, maxLength);
 }
 
+function displayFieldLabel(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  if (!words) return 'Field';
+  return truncate(`${words.charAt(0).toUpperCase()}${words.slice(1)}`, TEXT_LABEL_MAX_LENGTH);
+}
+
+function displayFieldFormat(key: string, value: unknown): 'code' | undefined {
+  if (
+    Array.isArray(value) ||
+    isRecord(value) ||
+    key === 'slug' ||
+    key.endsWith('_slug') ||
+    key === 'rule_id' ||
+    key === 'rules_source' ||
+    (key === 'write_rules' && value !== 'None')
+  ) {
+    return 'code';
+  }
+  return undefined;
+}
+
 function approvalBlocks(row: {
   content: string | null;
   interaction_input_schema: Record<string, unknown> | null;
@@ -299,21 +336,47 @@ function approvalBlocks(row: {
 }): LobuViewBlock[] {
   const metadata = row.metadata ?? {};
   const proposal = isRecord(metadata.proposal) ? metadata.proposal : null;
-  const current = isRecord(metadata.current) ? metadata.current : null;
+  // Only platform producers with this durable shape store execution envelopes
+  // in `proposal`. An ordinary proposal may legitimately contain user fields
+  // named `args`, `schema_type`, or `version` and must keep them visible.
+  const hasArgumentEnvelope =
+    metadata.tool === 'manage_automations' || metadata.tool === 'manage_entity_schema';
+  const proposalArgs =
+    hasArgumentEnvelope && proposal && isRecord(proposal.args) ? proposal.args : null;
+  const proposalCurrent =
+    metadata.tool === 'manage_entity_schema' && proposal && isRecord(proposal.current)
+      ? proposal.current
+      : null;
+  const current = isRecord(metadata.current) ? metadata.current : proposalCurrent;
   const fields = isRecord(metadata.fields) ? metadata.fields : null;
-  const proposed = fields ?? proposal;
+  const reviewFields = Array.isArray(metadata.review_fields)
+    ? metadata.review_fields.flatMap((item) => {
+        if (!isRecord(item) || typeof item.key !== 'string' || item.value === undefined) return [];
+        return [[item.key, item.value] as [string, unknown]];
+      })
+    : null;
+  // Durable proposals may be execution envelopes. Prefer producer-authored
+  // review fields, then their public args; routing and policy state belongs in
+  // the run/audit record, not in a human confirmation card.
+  const proposed = fields ?? proposalArgs ?? proposal ?? row.interaction_input;
   const blocks: LobuViewBlock[] = [];
 
-  if (proposed) {
-    const diffFields = Object.entries(proposed)
-      .filter(([key, value]) => !DIFF_ROUTING_KEYS.has(key) && value !== undefined)
+  if (reviewFields || proposed) {
+    const diffFields = (reviewFields ?? Object.entries(proposed ?? {}))
+      .filter(
+        ([key, value]) =>
+          !DIFF_ROUTING_KEYS.has(key) &&
+          !(hasArgumentEnvelope && DIFF_ENVELOPE_ROUTING_KEYS.has(key)) &&
+          value !== undefined
+      )
       .slice(0, DIFF_FIELD_MAX_ITEMS)
       .map(([key, value]) => ({
-        label: truncate(key || 'field', TEXT_LABEL_MAX_LENGTH),
+        label: displayFieldLabel(key),
         ...(current && current[key] !== undefined
           ? { before: displayValue(current[key], TEXT_VALUE_MAX_LENGTH, key) }
           : {}),
         after: displayValue(value, TEXT_VALUE_MAX_LENGTH, key),
+        ...(displayFieldFormat(key, value) ? { format: 'code' as const } : {}),
       }));
     if (diffFields.length > 0) blocks.push({ type: 'diff', fields: diffFields });
   }
@@ -332,7 +395,11 @@ function approvalBlocks(row: {
           }
         : {}),
     });
-  } else if (row.interaction_input && Object.keys(row.interaction_input).length > 0) {
+  } else if (
+    blocks.length === 0 &&
+    row.interaction_input &&
+    Object.keys(row.interaction_input).length > 0
+  ) {
     blocks.push({
       type: 'code',
       value: displayValue(row.interaction_input, CODE_VALUE_MAX_LENGTH),
@@ -625,7 +692,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
     }
     actions.push({
       id: 'review',
-      label: 'Open in Lobu',
+      label: 'Review in Lobu',
       variant: appCanResolve ? 'outline' : 'primary',
       icon: 'external',
       terminal: false,

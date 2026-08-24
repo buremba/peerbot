@@ -310,6 +310,94 @@ function entitySchemaPolicyAction(args: ManageEntitySchemaArgs): WriteAction | n
   return 'update_relationship_type';
 }
 
+function entitySchemaApprovalLabel(proposal: ManageEntitySchemaProposal): string {
+  const action = proposal.action === 'add_rule'
+    ? 'add'
+    : proposal.action === 'remove_rule'
+      ? 'remove'
+      : proposal.action.replaceAll('_', ' ');
+  const subject = proposal.action === 'add_rule' || proposal.action === 'remove_rule'
+    ? 'relationship rule'
+    : proposal.schema_type.replace('_', ' ');
+  const target =
+    proposal.args.name ??
+    proposal.current?.name ??
+    proposal.args.slug ??
+    proposal.current?.slug ??
+    proposal.args.rule_id;
+  const title = `${action.charAt(0).toUpperCase()}${action.slice(1)} ${subject}`;
+  return target == null || String(target).trim() === '' ? title : `${title}: ${String(target)}`;
+}
+
+function entitySchemaApprovalFields(
+  proposal: ManageEntitySchemaProposal
+): Array<{ key: string; value: unknown }> {
+  const resource =
+    proposal.action === 'add_rule' || proposal.action === 'remove_rule'
+      ? 'Relationship rule'
+      : proposal.schema_type === 'entity_type'
+        ? 'Entity type'
+        : 'Relationship type';
+  const entries = Object.entries(proposal.args).filter(
+    ([key, value]) => key !== 'action' && key !== 'schema_type' && value !== undefined
+  );
+  const byKey = new Map(entries);
+  const ordered: Array<[string, unknown]> = [['resource', resource]];
+  const take = (key: string): void => {
+    if (!byKey.has(key)) return;
+    ordered.push([key, byKey.get(key)]);
+    byKey.delete(key);
+  };
+
+  for (const key of ['name', 'slug', 'description', 'icon', 'color']) {
+    take(key);
+  }
+
+  if (proposal.action === 'create' && proposal.schema_type === 'entity_type') {
+    ordered.push([
+      'metadata_schema',
+      byKey.get('metadata_schema') ?? 'Any metadata (no schema)',
+    ]);
+    byKey.delete('metadata_schema');
+    const backing = byKey.get('backing');
+    const backingConnection =
+      backing && typeof backing === 'object' && !Array.isArray(backing)
+        ? (backing as Record<string, unknown>).connection
+        : null;
+    ordered.push([
+      'storage',
+      backing && typeof backing === 'object'
+        ? backingConnection
+          ? `Derived view via ${String(backingConnection)}`
+          : 'Derived view'
+        : 'Stored',
+    ]);
+    if (backing && typeof backing === 'object') ordered.push(['backing', backing]);
+    byKey.delete('backing');
+    ordered.push(['event_kinds', byKey.get('event_kinds') ?? 'None declared']);
+    byKey.delete('event_kinds');
+    ordered.push(['metrics', byKey.get('metrics_config') ?? 'None declared']);
+    byKey.delete('metrics_config');
+    ordered.push(['write_rules', byKey.get('rules_source') ?? 'None']);
+    byKey.delete('rules_source');
+  } else if (proposal.action === 'create' && proposal.schema_type === 'relationship_type') {
+    ordered.push([
+      'metadata_schema',
+      byKey.get('metadata_schema') ?? 'Any relationship metadata (no schema)',
+    ]);
+    byKey.delete('metadata_schema');
+    ordered.push(['direction', byKey.get('is_symmetric') === true ? 'Symmetric' : 'Directional']);
+    byKey.delete('is_symmetric');
+    ordered.push(['inverse_type', byKey.get('inverse_type_slug') ?? 'None']);
+    byKey.delete('inverse_type_slug');
+    ordered.push(['status', byKey.get('status') ?? 'Active']);
+    byKey.delete('status');
+  }
+
+  ordered.push(...byKey.entries());
+  return ordered.map(([key, value]) => ({ key, value }));
+}
+
 function timestamp(value: unknown): string | null {
   if (value == null) return null;
   // PROD_PG_VALUE_OPTIONS returns untyped timestamptz values as strings. Keep
@@ -617,8 +705,7 @@ async function governEntitySchemaMutation(
         result: await applyPreparedEntitySchemaMutation(proposal, ctx, tx),
       };
     }
-    const label =
-      `${proposal.action} ${proposal.schema_type.replace('_', ' ')} ${String(proposal.args.slug ?? proposal.args.rule_id ?? '')}`.trim();
+    const label = entitySchemaApprovalLabel(proposal);
     const inserted = await tx`
       INSERT INTO runs (
         organization_id, run_type, action_key, action_input,
@@ -648,7 +735,7 @@ async function governEntitySchemaMutation(
         runId,
         interactionType: 'approval',
         interactionStatus: 'pending',
-        interactionInput: proposal as unknown as Record<string, unknown>,
+        interactionInput: proposal.args,
         metadata: {
           tool: 'manage_entity_schema',
           action_key: MANAGE_ENTITY_SCHEMA_ACTION_KEY,
@@ -657,7 +744,8 @@ async function governEntitySchemaMutation(
           policy_action: proposal.policy_action,
           slug: proposal.args.slug ?? null,
           proposal,
-          current: null,
+          review_fields: entitySchemaApprovalFields(proposal),
+          current: proposal.current,
           initiator: {
             kind: initiator.initiatorKind,
             ...initiator.initiatorRef,

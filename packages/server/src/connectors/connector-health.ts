@@ -259,9 +259,10 @@ interface FeedHealthRow {
   connection_created_at: Date | string;
   connection_status: string | null;
   credential_mode: string | null;
-  /** Whether the installed definition declares a sync operation that Lobu
-   *  can create without user-supplied instance config. NULL means no active
-   *  definition was found, preserving the fail-closed zero-feed alert. */
+  /** Whether the selected definition declares a sync operation that Lobu can
+   *  create without user-supplied instance config. A zero-feed row necessarily
+   *  selects the active definition. NULL means no selectable definition was
+   *  found, preserving the fail-closed zero-feed alert. */
   connector_has_auto_syncable_feeds: boolean | null;
   auth_profile_status: string | null;
   /** Device pinned but silent for longer than `cfg.deviceOfflineHours`, or its
@@ -349,16 +350,25 @@ async function loadConnectionHealthRows(
         COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
           AS feed_operations,
         EXISTS (
-        SELECT 1
-        FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)
-        WHERE COALESCE(declared.config -> 'operations', '[]'::jsonb) @> '["sync"]'::jsonb
-          AND COALESCE((declared.config ->> 'userManaged')::boolean, false) = false
-      ) AS has_auto_syncable_feeds
+          SELECT 1
+          FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)
+          WHERE COALESCE(declared.config -> 'operations', '[]'::jsonb) @> '["sync"]'::jsonb
+            AND COALESCE((declared.config ->> 'userManaged')::boolean, false) = false
+        ) AS has_auto_syncable_feeds
       FROM connector_definitions definition
       WHERE definition.key = c.connector_key
-        AND definition.status = 'active'
         AND definition.organization_id = c.organization_id
-      ORDER BY definition.updated_at DESC
+        AND (
+          (f.pinned_version IS NULL AND definition.status = 'active')
+          OR (
+            f.pinned_version IS NOT NULL
+            AND (definition.version = f.pinned_version OR definition.status = 'active')
+          )
+        )
+      ORDER BY (definition.version = f.pinned_version) DESC,
+               (definition.status = 'active') DESC,
+               definition.updated_at DESC,
+               definition.id DESC
       LIMIT 1
     ) cd ON TRUE
     LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id

@@ -694,8 +694,8 @@ async function discoverSourceFeeds(gate: AuthzScope) {
        AND f.status = 'active'
        AND c.deleted_at IS NULL
        AND c.status = 'active'
-       AND EXISTS (
-         SELECT 1
+       AND COALESCE((
+         SELECT definition.feeds_schema -> f.feed_key -> 'operations'
          FROM connector_definitions definition
          WHERE definition.key = c.connector_key
            AND definition.organization_id = f.organization_id
@@ -709,9 +709,12 @@ async function discoverSourceFeeds(gate: AuthzScope) {
                AND (definition.version = f.pinned_version OR definition.status = 'active')
              )
            )
-           AND COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
-             @> '["read"]'::jsonb
-       )
+         ORDER BY (definition.version = f.pinned_version) DESC,
+                  (definition.status = 'active') DESC,
+                  definition.updated_at DESC,
+                  definition.id DESC
+         LIMIT 1
+       ), '[]'::jsonb) @> '["read"]'::jsonb
        ${vis}
      ORDER BY f.id
      LIMIT ${MAX_SOURCE_FEEDS_IN_COVERAGE + 1}`,

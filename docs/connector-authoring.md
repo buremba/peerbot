@@ -24,8 +24,9 @@ conclude "no integration exists" — author a custom connector in the project.
 
 ## The contract
 
-A connector default-exports `defineConnector({ ... })` from
-`@lobu/connector-sdk`. Feed and action keys come from their record keys, and
+A connector default-exports either a `defineConnector({ ... })` spec or a class
+extending `ConnectorRuntime` from `@lobu/connector-sdk`. In the functional
+form below, feed and action keys come from their record keys. In both forms,
 each feed declares its own `sync` and/or `read` handler:
 
 ```ts

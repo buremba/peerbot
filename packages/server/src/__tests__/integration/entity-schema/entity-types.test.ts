@@ -108,7 +108,7 @@ describe('entity schema CRUD', () => {
       expect(got.entity_type?.slug).toBe('$member');
     });
 
-    it('accepts event_kinds with a jsonTemplate, and event_kinds:null to clear (lobu apply)', async () => {
+    it('accepts declared jsonTemplate interactions, and event_kinds:null to clear (lobu apply)', async () => {
       // `lobu apply` sends event_kinds on every upsert: an object to declare,
       // `null` to clear. The schema must accept BOTH — a regression here halted
       // apply for every type that declares no event kinds (caught by sdk-e2e).
@@ -119,14 +119,58 @@ describe('entity schema CRUD', () => {
           valuation: {
             description: 'A snapshot',
             metadataSchema: { type: 'object', properties: { amount: {} } },
-            jsonTemplate: { type: 'card', children: [] },
+            jsonTemplate: {
+              type: 'card',
+              children: [
+                { type: 'button', props: { label: 'Refresh', onClick: '@refresh' } },
+              ],
+            },
+            interactions: { refresh: { emits: 'valuation_requested' } },
           },
+          valuation_requested: { description: 'A verified refresh request' },
         },
       });
       const got = (await owner.entity_schema.getType('deal-ek')) as {
         entity_type?: { event_kinds?: Record<string, unknown> | null };
       };
       expect(got.entity_type?.event_kinds).toMatchObject({ valuation: { description: 'A snapshot' } });
+
+      await expect(
+        owner.entity_schema.updateType({
+          slug: 'deal-ek',
+          event_kinds: {
+            valuation: {
+              jsonTemplate: { type: 'button', props: { onClick: '@refresh' } },
+              interactions: { refresh: { emits: 'missing_kind' } },
+            },
+          },
+        })
+      ).rejects.toThrow(/must name another declared event kind/i);
+
+      await expect(
+        owner.entity_schema.updateType({
+          slug: 'deal-ek',
+          event_kinds: {
+            valuation: {
+              jsonTemplate: { type: 'button', props: { onClick: '@different' } },
+              interactions: { refresh: { emits: 'valuation_requested' } },
+            },
+            valuation_requested: {},
+          },
+        })
+      ).rejects.toThrow(/no portable @refresh button\/select handler/i);
+
+      await expect(
+        owner.entity_schema.updateType({
+          slug: 'deal-ek',
+          event_kinds: {
+            valuation: {
+              interactions: { refresh: { emits: 'valuation_requested' } },
+            },
+            valuation_requested: {},
+          },
+        })
+      ).rejects.toThrow(/requires jsonTemplate/i);
 
       // Clearing via null must validate and wipe the column.
       await owner.entity_schema.updateType({ slug: 'deal-ek', event_kinds: null });

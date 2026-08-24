@@ -45,6 +45,8 @@ export interface KnowledgeSaveInput {
   source_url?: string;
   /** Event this content answers; stored as a durable thread edge. */
   parent_event_id?: number;
+  /** Replace the current event while preserving its append-only row and lineage. */
+  supersedes_event_id?: number;
   /** Stable producer key used to collapse reaction retries. */
   idempotency_key?: string;
   occurred_at?: string;
@@ -95,6 +97,7 @@ export interface EntityLinkInput {
 
 export interface EntityListFilter {
   entity_type?: string;
+  parent_id?: number;
   search?: string;
   limit?: number;
   offset?: number;
@@ -206,7 +209,7 @@ export interface ReactionClient {
 
   entities: {
     list(filter?: EntityListFilter): Promise<unknown>;
-    get(entity_id: number): Promise<unknown>;
+    get(input: { entity_id: number; include_deleted?: boolean }): Promise<unknown>;
     create(input: EntityCreateInput): Promise<{ id: number }>;
     update(input: EntityUpdateInput): Promise<unknown>;
     delete(entity_id: number, options?: { force_delete_tree?: boolean }): Promise<unknown>;

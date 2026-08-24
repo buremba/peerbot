@@ -33,6 +33,11 @@ import {
   resolveApproval,
 } from './mcp_app';
 import { ListOrganizationsSchema } from './organizations';
+import {
+  InvokeEventActionResultSchema,
+  InvokeEventActionSchema,
+  invokeEventAction,
+} from './invoke_event_action';
 import { ResolvePathResultSchema, ResolvePathSchema, resolvePath } from './resolve_path';
 import { SaveContentResultSchema, SaveContentSchema, saveContent } from './save_content';
 import {
@@ -125,6 +130,8 @@ export interface ToolContext {
   headlessResult?: boolean | null;
   /** Host-only encrypted token supplied by the Lobu MCP App for one approval click. */
   mcpAppApprovalCapability?: string | null;
+  /** Host-only encrypted token proving an event action came from a rendered MCP App result. */
+  mcpAppEventActionCapability?: string | null;
   /**
    * Server-derived side-effect mode for the run driving these tool calls,
    * carried as a signed worker-token claim. `capture` marks an eval replay:
@@ -370,6 +377,27 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
       },
     },
     handler: resolveApproval,
+  },
+  {
+    name: 'invoke_event_action',
+    description:
+      'Append the declared event for a JSON-template interaction using the signed-in MCP App user as the actor. The server revalidates the source event, rendered action/value, and event-kind registry.',
+    inputSchema: InvokeEventActionSchema,
+    outputSchema: InvokeEventActionResultSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+      title: 'Invoke event action',
+    },
+    securityScopes: ['mcp:write'],
+    mcpMeta: {
+      ui: {
+        visibility: ['app'],
+      },
+    },
+    handler: invokeEventAction,
   },
 ];
 

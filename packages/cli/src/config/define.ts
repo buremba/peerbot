@@ -97,6 +97,11 @@ export interface EntityEventKind {
    * events of this kind render a default field card built from `metadataSchema`.
    */
   jsonTemplate?: Record<string, unknown>;
+  /**
+   * Presentation-neutral user interactions declared by this kind. A template
+   * references a key as `@name`; activating it appends the configured event.
+   */
+  interactions?: Record<string, { emits: string }>;
 }
 
 /**

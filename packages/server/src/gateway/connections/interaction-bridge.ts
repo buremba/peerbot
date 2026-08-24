@@ -46,6 +46,10 @@ import {
 import { resolveChatTarget } from "./platforms/shared.js";
 import type { PlatformConnection } from "./types.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
+import {
+	invokeTemplateEventAction,
+	parseTemplateEventActionId,
+} from "../../interactions/template-event-actions.js";
 
 const logger = createLogger("chat-interaction-bridge");
 
@@ -933,6 +937,32 @@ export function registerInteractionBridge(
 			interactionId: interactionDeliveryId(actionEvent),
       });
     },
+		async (sourceEventId, action, value, actionEvent) => {
+			const organizationId = connection.organizationId;
+			const platformUserId = actionEvent.user?.userId;
+			if (!organizationId || !platformUserId) {
+				throw new Error("A verified chat actor and workspace are required.");
+			}
+			return invokeTemplateEventAction({
+				organizationId,
+				sourceEventId,
+				action,
+				value,
+				interactionId: interactionDeliveryId(actionEvent),
+				surface: connection.platform,
+				actor: {
+					platform: connection.platform,
+					platformUserId,
+					name:
+						actionEvent.user?.fullName ?? actionEvent.user?.userName ?? null,
+				},
+				source: {
+					connectionId: connection.id,
+					messageId: actionEvent.messageId,
+					threadId: actionEvent.threadId,
+				},
+			});
+		},
   );
 
   logger.info({ connectionId, platform }, "Interaction bridge registered");
@@ -986,6 +1016,13 @@ type OnSuggestionClickFn = (
 	actionEvent: any,
 ) => Promise<void>;
 
+type OnTemplateEventActionFn = (
+	sourceEventId: number,
+	action: string,
+	value: string | null,
+	actionEvent: any,
+) => Promise<unknown>;
+
 /**
  * Exported for testing. Wires chat.onAction to tool-approval and question flows.
  *
@@ -1012,6 +1049,7 @@ export function registerActionHandlers(
 		conversationId: string,
 	) => Promise<any | null>,
   onSuggestionClick?: OnSuggestionClickFn,
+	onTemplateEventAction?: OnTemplateEventActionFn,
 ): void {
 	chat.onAction(async (event: any) => {
 		const actionId: string = event.actionId ?? "";
@@ -1019,6 +1057,41 @@ export function registerActionHandlers(
 		const thread = event.thread;
 
 		if (!thread || !actionId) return;
+
+		const templateAction = parseTemplateEventActionId(actionId);
+		if (templateAction) {
+			if (!onTemplateEventAction) return;
+			try {
+				const result = (await onTemplateEventAction(
+					templateAction.sourceEventId,
+					templateAction.action,
+					event.value === undefined || event.value === null
+						? null
+						: String(event.value),
+					event,
+				)) as { created?: boolean } | undefined;
+				// Exact webhook retries are silent; the first accepted click gets a
+				// compact receipt without routing through the agent/LLM.
+				if (result?.created !== false) {
+					await thread.post("Recorded.");
+				}
+			} catch (error) {
+				logger.info(
+					{ connectionId: connection.id, actionId, error: String(error) },
+					"Template event action rejected",
+				);
+				try {
+					await thread.post(
+						error instanceof Error
+							? error.message
+							: "I couldn’t record that interaction.",
+					);
+				} catch {
+					// best effort
+				}
+			}
+			return;
+		}
 
 		// Handle durable run approvals from notification cards. Scope is enforced
 		// by resolveEntityApprovalRun's query, not here.

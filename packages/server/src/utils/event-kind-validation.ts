@@ -14,6 +14,7 @@ import { formatAjvError, getAjv } from './ajv-singleton';
 import { exceedsValidationLimits, isEmptyObject } from './metadata-limits';
 import { resolvePlatformNotificationKind } from './platform-notification-kinds';
 import { TtlCache } from './ttl-cache';
+import type { TemplateInteractionRegistry } from '@lobu/core/json-template';
 
 // ============================================
 // Types
@@ -36,6 +37,8 @@ export interface EventKindDefinition {
    * `metadataSchema` — mirroring the entity resolution tail.
    */
   jsonTemplate?: Record<string, unknown>;
+  /** Template action name -> append-only event kind. */
+  interactions?: TemplateInteractionRegistry;
 }
 
 // ============================================

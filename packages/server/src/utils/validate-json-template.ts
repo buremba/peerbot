@@ -68,7 +68,11 @@ function validateComponentHandlers(
 	if (explicitProps) validateHandlerProps(explicitProps, `${path}.props`);
 }
 
-function validateNode(node: unknown, path: string): void {
+function validateNode(
+	node: unknown,
+	path: string,
+	portableActions?: Set<string>,
+): void {
 	if (!isPlainObject(node)) {
 		fail(path, "each node must be an object");
 	}
@@ -110,8 +114,10 @@ function validateNode(node: unknown, path: string): void {
 			if (node.then === undefined) {
 				fail(path, "an if node requires a `then` branch");
 			}
-			validateNode(node.then, `${path}.then`);
-			if (node.else !== undefined) validateNode(node.else, `${path}.else`);
+			validateNode(node.then, `${path}.then`, portableActions);
+			if (node.else !== undefined) {
+				validateNode(node.else, `${path}.else`, portableActions);
+			}
 			return;
 		}
 		case "each": {
@@ -126,7 +132,7 @@ function validateNode(node: unknown, path: string): void {
 			if (node.render === undefined) {
 				fail(path, "an each node requires a `render` (node or string)");
 			}
-			validateNode(node.render, `${path}.render`);
+			validateNode(node.render, `${path}.render`, portableActions);
 			return;
 		}
 		default: {
@@ -136,12 +142,14 @@ function validateNode(node: unknown, path: string): void {
 				fail(`${path}.props`, "props must be an object");
 			}
 			validateComponentHandlers(node, path);
+			const action = portableActionName(node);
+			if (action) portableActions?.add(action);
 			if (node.children !== undefined) {
 				if (!Array.isArray(node.children)) {
 					fail(`${path}.children`, "children must be an array of nodes");
 				}
 				node.children.forEach((child, i) => {
-					validateNode(child, `${path}.children[${i}]`);
+					validateNode(child, `${path}.children[${i}]`, portableActions);
 				});
 			}
 			return;
@@ -157,7 +165,7 @@ function validateNode(node: unknown, path: string): void {
  * a wrapper would double-nest it and render nothing. `data_sources` is validated
  * separately by the caller. Throws a path-qualified Error on the first problem.
  */
-export function validateJsonTemplate(template: unknown): void {
+export function validateJsonTemplate(template: unknown): Set<string> {
 	if (!isPlainObject(template)) {
 		fail("", "must be an object");
 	}
@@ -169,38 +177,67 @@ export function validateJsonTemplate(template: unknown): void {
 			"expected a bare root node, not a { version, root } wrapper — store `template.root` directly (consumers add the version wrapper)",
 		);
 	}
-	validateNode(template, "");
+	const portableActions = new Set<string>();
+	validateNode(template, "", portableActions);
+	return portableActions;
 }
 
-/** Validate handler bindings without imposing a storage shape on the template. */
-export function validateTemplateHandlers(template: unknown): void {
-	if (!isPlainObject(template)) return;
+function portableActionName(node: Record<string, unknown>): string | null {
+	const props = isPlainObject(node.props) ? node.props : {};
+	const handler =
+		node.type === "button"
+			? props.onClick ?? node.onClick
+			: node.type === "select"
+				? props.onChange ?? node.onChange ?? props.onSelect ?? node.onSelect
+				: null;
+	return typeof handler === "string" && handler.startsWith("@")
+		? handler.slice(1)
+		: null;
+}
+
+/**
+ * Validate handler bindings and return the portable button/select actions in
+ * the same strict traversal. This avoids parsing an authored template again
+ * when an event-kind interaction registry is installed.
+ */
+export function validateTemplateHandlers(template: unknown): Set<string> {
+	const portableActions = new Set<string>();
+	if (!isPlainObject(template)) return portableActions;
 	if ("type" in template) {
-		walkHandlers(template, "");
+		walkHandlers(template, "", portableActions);
 	} else if (isPlainObject(template.root)) {
-		walkHandlers(template.root, ".root");
+		walkHandlers(template.root, ".root", portableActions);
 	}
+	return portableActions;
 }
 
-function walkHandlers(node: unknown, path: string): void {
+function walkHandlers(
+	node: unknown,
+	path: string,
+	portableActions: Set<string>,
+): void {
 	if (!isPlainObject(node)) return;
 	if (node.type === "if") {
-		walkHandlers(node.then, `${path}.then`);
-		if (node.else !== undefined) walkHandlers(node.else, `${path}.else`);
+		walkHandlers(node.then, `${path}.then`, portableActions);
+		if (node.else !== undefined) {
+			walkHandlers(node.else, `${path}.else`, portableActions);
+		}
 		return;
 	}
 	if (node.type === "each") {
 		if (typeof node.render !== "string") {
-			walkHandlers(node.render, `${path}.render`);
+			walkHandlers(node.render, `${path}.render`, portableActions);
 		}
 		return;
 	}
 	if (node.type === "text" || node.type === "data") return;
 
 	validateComponentHandlers(node, path);
+	const action = portableActionName(node);
+	if (action) portableActions.add(action);
 	if (Array.isArray(node.children)) {
 		node.children.forEach((child, i) => {
-			walkHandlers(child, `${path}.children[${i}]`);
+			walkHandlers(child, `${path}.children[${i}]`, portableActions);
 		});
 	}
 }

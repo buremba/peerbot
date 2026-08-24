@@ -995,6 +995,65 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     ).toBe(true);
   });
 
+  test("Google Chat typed messages preserve the verified sender at Automation ingress", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "gchat",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "gchat",
+      automations: [
+        {
+          automationId: 90,
+          organizationId: "org-connection",
+          agentId: "poll-agent",
+          deviceWorkerId: null,
+          agentKind: null,
+          model: null,
+          instructions: "Interpret typed poll responses.",
+          minCooldownSeconds: 0,
+          trigger,
+        },
+      ],
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({
+        id: "spaces/AAAA/messages/vote-typed-1",
+        text: "Vote B",
+        author: {
+          userId: "users/typed-voter",
+          userName: "typed-voter",
+          fullName: "Typed Voter",
+          isBot: false,
+          isMe: false,
+        },
+      }),
+      "mention",
+    );
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    expect(enqueueMessage.mock.calls[0]?.[0]).toMatchObject({
+      userId: "users/typed-voter",
+      messageId: "spaces/AAAA/messages/vote-typed-1:automation:90",
+      platformMetadata: {
+        senderId: "users/typed-voter",
+        senderDisplayName: "Typed Voter",
+        automationId: 90,
+        automationDeliveryId: `chat:${CONN_ID}:spaces/AAAA/messages/vote-typed-1`,
+      },
+    });
+  });
+
   test("stamps authoritative directness on messages but not interaction clicks", async () => {
     const { bridge, enqueueMessage } = makePreviewHarness({
       linkedAutomation: { agentId: "linked-agent" },

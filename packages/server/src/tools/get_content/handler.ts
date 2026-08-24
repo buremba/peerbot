@@ -23,6 +23,11 @@ import { AUTOMATION_RUN_SOURCE } from '../../gateway/automation-run-session';
 import { ArtifactStore } from '../../gateway/files/artifact-store';
 import { parseAutomationRunConversationId } from '../../gateway/permissions/automation-run-intent';
 import type { Env } from '../../index';
+import {
+  canIssueTemplateActionCapability,
+  issueTemplateActionCapability,
+  TEMPLATE_ACTION_CAPABILITY_META_KEY,
+} from '../../interactions/template-action-capability';
 import { getLobuCoreServices } from '../../lobu/gateway';
 import { ToolUserError } from '../../utils/errors';
 import {
@@ -42,6 +47,7 @@ import {
   getPublicWebUrl,
 } from '../../utils/url-builder';
 import type { ToolContext } from '../registry';
+import { attachMcpResultMeta } from '../mcp-result-meta';
 import {
   fetchByContentIds,
   fetchClassificationStats,
@@ -60,6 +66,17 @@ import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
 const MAX_EXACT_CONTENT_IDS = 2000;
+
+function interactiveEventIds(items: ContentItem[]): number[] {
+  return items.flatMap((item) => {
+    if (item.is_superseded) return [];
+    const template = item.payload_template;
+    if (!template || typeof template !== 'object' || Array.isArray(template)) return [];
+    const interactions = (template as Record<string, unknown>).interactions;
+    if (!interactions || typeof interactions !== 'object' || Array.isArray(interactions)) return [];
+    return Object.keys(interactions).length > 0 ? [item.id] : [];
+  });
+}
 
 async function loadClaimedAutomationWindow(
   sql: DbClient,
@@ -889,6 +906,12 @@ async function getContentImpl(
     }
     if (hints.length > 0) result.hints = hints;
 
+    const eventIds = interactiveEventIds(contentItems);
+    if (eventIds.length > 0 && canIssueTemplateActionCapability(ctx)) {
+      return attachMcpResultMeta(result, {
+        [TEMPLATE_ACTION_CAPABILITY_META_KEY]: issueTemplateActionCapability(eventIds, ctx),
+      });
+    }
     return result;
   } catch (error) {
     logger.error({ err: error }, 'get_content error:');

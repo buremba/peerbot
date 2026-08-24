@@ -111,10 +111,24 @@ function approvalCapabilityFromMeta(value: unknown): string | null {
   return trimmed && trimmed.length <= 4_096 ? trimmed : null;
 }
 
+function eventActionCapabilityFromMeta(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const token = (value as Record<string, unknown>)['lobu/event-action-capability'];
+  if (typeof token !== 'string') return null;
+  const trimmed = token.trim();
+  return trimmed && trimmed.length <= 4_096 ? trimmed : null;
+}
+
 function approvalCapabilityFromCompatArgs(value: unknown): string | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const compatMeta = (value as Record<string, unknown>)._meta;
   return approvalCapabilityFromMeta(compatMeta);
+}
+
+function eventActionCapabilityFromCompatArgs(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const compatMeta = (value as Record<string, unknown>)._meta;
+  return eventActionCapabilityFromMeta(compatMeta);
 }
 
 function stripApprovalCompatMeta(
@@ -441,13 +455,21 @@ function createServerForContext(
     const { name, arguments: args } = request.params;
     const compatApprovalCapability =
       name === 'resolve_approval' ? approvalCapabilityFromCompatArgs(args) : null;
-    const callArgs = compatApprovalCapability ? stripApprovalCompatMeta(args) : args;
+    const compatEventActionCapability =
+      name === 'invoke_event_action' ? eventActionCapabilityFromCompatArgs(args) : null;
+    const callArgs =
+      compatApprovalCapability || compatEventActionCapability
+        ? stripApprovalCompatMeta(args)
+        : args;
     const callAuthCtx = {
       ...authCtx,
       mcpAppsSupported,
       mcpConversationId: hostConversationIdFromMeta(request.params._meta),
       mcpAppApprovalCapability:
         approvalCapabilityFromMeta(request.params._meta) ?? compatApprovalCapability,
+      mcpAppEventActionCapability:
+        eventActionCapabilityFromMeta(request.params._meta) ??
+        compatEventActionCapability,
     };
     const tool = getTool(name);
     // Every App-facing result carries the viewer's org role because the app

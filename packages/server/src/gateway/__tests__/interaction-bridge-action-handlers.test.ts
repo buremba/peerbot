@@ -433,6 +433,99 @@ describe("registerActionHandlers — guards", () => {
   });
 });
 
+describe("registerActionHandlers — declared template event action", () => {
+  function setupTemplateAction(
+    result: { created: boolean } | Error = { created: true }
+  ): {
+    handler: ActionHandler;
+    onTemplateEventAction: ReturnType<typeof mock>;
+    thread: { post: ReturnType<typeof mock> };
+  } {
+    let captured: ActionHandler | undefined;
+    const chat = {
+      onAction: mock((handler: ActionHandler) => {
+        captured = handler;
+      }),
+    };
+    const onTemplateEventAction = mock(async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    });
+    const thread = { post: mock(async () => undefined) };
+
+    registerActionHandlers(
+      chat as any,
+      { id: "conn-1", platform: "gchat" } as PlatformConnection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onTemplateEventAction as any
+    );
+    if (!captured) throw new Error("onAction handler not registered");
+    return { handler: captured, onTemplateEventAction, thread };
+  }
+
+  test("parses source/action/value and posts one receipt", async () => {
+    const h = setupTemplateAction();
+    const event = {
+      actionId: "event-action:42:vote",
+      value: "B",
+      messageId: "spaces/one/messages/poll",
+      thread: h.thread,
+      user: { userId: "users/ada" },
+    };
+    await h.handler(event);
+
+    expect(h.onTemplateEventAction).toHaveBeenCalledWith(42, "vote", "B", event);
+    expect(h.thread.post).toHaveBeenCalledWith("Recorded.");
+  });
+
+  test("keeps a valueless button null through the chat bridge", async () => {
+    const h = setupTemplateAction();
+    const event = {
+      actionId: "event-action:42:refresh",
+      thread: h.thread,
+      user: { userId: "users/ada" },
+    };
+    await h.handler(event);
+
+    expect(h.onTemplateEventAction).toHaveBeenCalledWith(
+      42,
+      "refresh",
+      null,
+      event
+    );
+  });
+
+  test("keeps exact retry silent after the durable rail reports unchanged", async () => {
+    const h = setupTemplateAction({ created: false });
+    await h.handler({
+      actionId: "event-action:42:vote",
+      value: "A",
+      thread: h.thread,
+    });
+    expect(h.onTemplateEventAction).toHaveBeenCalledTimes(1);
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+
+  test("surfaces a closed interaction without escaping the webhook handler", async () => {
+    const h = setupTemplateAction(
+      new Error("This interaction is closed or has been replaced.")
+    );
+    await h.handler({
+      actionId: "event-action:42:vote",
+      value: "A",
+      thread: h.thread,
+    });
+    expect(h.thread.post).toHaveBeenCalledWith(
+      "This interaction is closed or has been replaced."
+    );
+  });
+});
+
 describe("registerActionHandlers — suggestion", () => {
   function setup(withCallback: boolean): {
     handler: ActionHandler;

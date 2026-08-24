@@ -4,7 +4,7 @@ import {
 	type CardElement,
 } from "chat";
 import { loadConfiguredAutomationDeliveryTarget } from "../automations/delivery-target";
-import { getDb, pgBigintArray, pgTextArray } from "../db/client";
+import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
@@ -637,6 +637,76 @@ export function queueApprovalNotificationCardRefresh(
 }
 
 /**
+ * Replace every persisted chat copy of an event after an append-only
+ * superseding event is committed. The original delivery addresses remain on
+ * the source row; the replacement kind owns the new card and any new actions.
+ */
+export async function refreshSupersededEventCard(
+	organizationId: string,
+	replacementEventId: number,
+	supersededEventId: number,
+): Promise<void> {
+	const manager = getChatInstanceManager();
+	if (!manager) return;
+	const [replacement] = await getDb()<{
+		title: string | null;
+		entity_ids: unknown;
+		semantic_type: string;
+		payload_data: unknown;
+		metadata: unknown;
+	}>`
+    SELECT title, entity_ids, semantic_type, payload_data, metadata
+    FROM events
+    WHERE id = ${replacementEventId}
+      AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+	const [source] = await getDb()<{ metadata: unknown }>`
+    SELECT metadata
+    FROM events
+    WHERE id = ${supersededEventId}
+      AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+	if (!replacement || !source) return;
+
+	const entityIds = parsePgNumberArray(replacement.entity_ids);
+	const kind = await resolveEventKindDefinition(
+		replacement.semantic_type,
+		organizationId,
+		entityIds,
+	);
+	if (!kind) return;
+	const metadata = jsonRecord(replacement.metadata);
+	const data =
+		typeof metadata.notification_type === "string"
+			? jsonRecord(replacement.payload_data)
+			: metadata;
+	const card = buildKindCard({
+		metadataSchema: kind.metadataSchema,
+		jsonTemplate: kind.jsonTemplate,
+		data,
+		title: replacement.title ?? replacement.semantic_type,
+		sourceEventId: replacementEventId,
+		interactions: kind.interactions,
+	});
+	if (!card) return;
+	const content: AdapterPostableMessage = {
+		card,
+		fallbackText: replacement.title ?? replacement.semantic_type,
+	};
+	await Promise.all(
+		deliveryRecords(jsonRecord(source.metadata)).map((delivery) =>
+			manager.editMessageContent(delivery.connectionId, {
+				threadId: delivery.threadId,
+				messageId: delivery.messageId,
+				content,
+			}),
+		),
+	);
+}
+
+/**
  * Build the chat card for a notification from its event kind.
  *
  * Only kind-bearing notifications qualify: without a `semanticType` there is no
@@ -644,14 +714,16 @@ export function queueApprovalNotificationCardRefresh(
  * never fatal — the caller falls back to the markdown body, so a missing kind
  * costs formatting, never delivery.
  */
-async function resolveNotificationKindCard(
+export async function resolveNotificationKindCard(
 	params: Omit<CreateNotificationParams, "userId">,
+	eventId: number,
 ): Promise<CardElement | null> {
 	if (!params.semanticType) return null;
 	try {
 		const kind = await resolveEventKindDefinition(
 			params.semanticType,
 			params.organizationId,
+			params.entityIds,
 		);
 		if (!kind) return null;
 		return buildKindCard({
@@ -666,6 +738,8 @@ async function resolveNotificationKindCard(
 			// inbox; only the card gets the absolute form.
 			url: toAbsolutePermalink(params.resourceUrl),
 			decisionRunId: params.decisionRunId,
+			sourceEventId: eventId,
+			interactions: kind.interactions,
 		});
 	} catch (err) {
 		logger.warn(
@@ -692,7 +766,7 @@ async function deliverToBotConnections(
 	//      authoring its content twice (`payloadData` for web, a hand-built card
 	//      for chat) and drifting between them;
 	//   3. the markdown body.
-	const baseCard = params.card ?? (await resolveNotificationKindCard(params));
+	const baseCard = params.card ?? (await resolveNotificationKindCard(params, eventId));
 	const card = baseCard ? addActionOrigin(baseCard, params.actionOrigin) : null;
 	const content = card ? { card } : { markdown: text };
 	const deliveryPlan = await resolveNotificationDeliveryPlan({

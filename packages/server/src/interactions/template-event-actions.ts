@@ -1,0 +1,286 @@
+import {
+	collectTemplateActionInvocations,
+	type TemplateActionInvocation,
+} from "@lobu/core/json-template";
+import { getDb, parsePgNumberArray } from "../db/client";
+import { resolveEntityRender } from "../utils/default-entity-template";
+import { ToolUserError } from "../utils/errors";
+import {
+	resolveEventKindDefinition,
+	validateSaveContentSemanticType,
+} from "../utils/event-kind-validation";
+import { insertConnectionlessWorkspaceEvent } from "../utils/insert-event";
+
+const TEMPLATE_EVENT_ACTION_PREFIX = "event-action";
+const ACTION_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+const INTERACTION_ID = /^[A-Za-z0-9._:-]{1,256}$/;
+const MAX_VALUE_LENGTH = 1_000;
+
+export interface TrustedTemplateActor {
+	/** Host whose authentication produced this identity. */
+	platform: string;
+	/** Platform identity (Google/Slack user id, or Lobu user id on web/MCP). */
+	platformUserId: string;
+	/** Lobu user id when this surface has one; used for events.created_by. */
+	userId?: string | null;
+	name?: string | null;
+}
+
+export interface TemplateActionSource {
+	connectionId?: string | null;
+	messageId?: string | null;
+	threadId?: string | null;
+	clientId?: string | null;
+}
+
+export interface InvokeTemplateEventActionParams
+	extends TemplateActionInvocation {
+	organizationId: string;
+	sourceEventId: number;
+	interactionId: string;
+	surface: string;
+	actor: TrustedTemplateActor;
+	source?: TemplateActionSource;
+}
+
+export interface InvokedTemplateEventAction {
+	created: boolean;
+	eventId: number;
+	eventType: string;
+}
+
+export function templateEventActionId(
+	sourceEventId: number,
+	action: string,
+): string {
+	return `${TEMPLATE_EVENT_ACTION_PREFIX}:${sourceEventId}:${action}`;
+}
+
+export function parseTemplateEventActionId(
+	actionId: string,
+): { sourceEventId: number; action: string } | null {
+	const match = /^event-action:([1-9]\d*):([a-z][a-z0-9_-]{0,63})$/.exec(
+		actionId,
+	);
+	if (!match) return null;
+	const sourceEventId = Number(match[1]);
+	return Number.isSafeInteger(sourceEventId)
+		? { sourceEventId, action: match[2] }
+		: null;
+}
+
+function record(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: {};
+}
+
+function stringOrNull(value: unknown): string | null {
+	return typeof value === "string" ? value : null;
+}
+
+function deliveryMatches(
+	metadata: Record<string, unknown>,
+	source: Required<Pick<TemplateActionSource, "connectionId" | "messageId">> &
+		Pick<TemplateActionSource, "threadId">,
+): boolean {
+	if (!Array.isArray(metadata.delivery)) return false;
+	return metadata.delivery.some((raw) => {
+		const delivery = record(raw);
+		if (
+			stringOrNull(delivery.connectionId) !== source.connectionId ||
+			stringOrNull(delivery.messageId) !== source.messageId
+		) {
+			return false;
+		}
+		return (
+			!source.threadId || stringOrNull(delivery.threadId) === source.threadId
+		);
+	});
+}
+
+function validateInvocation(params: InvokeTemplateEventActionParams): void {
+	if (
+		!Number.isSafeInteger(params.sourceEventId) ||
+		params.sourceEventId <= 0
+	) {
+		throw new ToolUserError("source_event_id must be a positive integer", 400);
+	}
+	if (!ACTION_NAME.test(params.action)) {
+		throw new ToolUserError("Invalid template action name", 400);
+	}
+	if (!INTERACTION_ID.test(params.interactionId)) {
+		throw new ToolUserError("interaction_id has an invalid format", 400);
+	}
+	if (!params.actor.platformUserId.trim()) {
+		throw new ToolUserError("A verified interaction actor is required", 401);
+	}
+	if (params.value !== null && params.value.length > MAX_VALUE_LENGTH) {
+		throw new ToolUserError(
+			`Interaction value exceeds ${MAX_VALUE_LENGTH} characters`,
+			400,
+		);
+	}
+}
+
+/**
+ * Validate and append one presentation-declared event action.
+ *
+ * The actor is constructed by the authenticated host adapter, never read from
+ * tool/request arguments. The source event, registry entry, rendered value,
+ * and (for chat) exact delivery binding are all re-checked from Postgres before
+ * the append-only event and Automation activation commit together.
+ */
+export async function invokeTemplateEventAction(
+	params: InvokeTemplateEventActionParams,
+): Promise<InvokedTemplateEventAction> {
+	validateInvocation(params);
+	const sql = getDb();
+	const rows = await sql<{
+		id: number;
+		origin_id: string;
+		title: string | null;
+		entity_ids: Array<number | string> | null;
+		semantic_type: string;
+		payload_data: unknown;
+		metadata: unknown;
+	}>`
+    SELECT id, origin_id, title, entity_ids, semantic_type, payload_data, metadata
+    FROM events
+    WHERE id = ${params.sourceEventId}
+      AND organization_id = ${params.organizationId}
+      AND superseded_by IS NULL
+    LIMIT 1
+  `;
+	const sourceEvent = rows[0];
+	if (!sourceEvent) {
+		const stale = await sql`
+      SELECT 1 FROM events
+      WHERE id = ${params.sourceEventId}
+        AND organization_id = ${params.organizationId}
+      LIMIT 1
+    `;
+		throw new ToolUserError(
+			stale.length > 0
+				? "This interaction is closed or has been replaced."
+				: "Interactive event not found.",
+			stale.length > 0 ? 409 : 404,
+		);
+	}
+
+	const source = params.source;
+	if (source?.connectionId || source?.messageId) {
+		if (!source.connectionId || !source.messageId) {
+			throw new ToolUserError(
+				"Chat interactions require connection and message identity",
+				403,
+			);
+		}
+		if (
+			!deliveryMatches(record(sourceEvent.metadata), {
+				connectionId: source.connectionId,
+				messageId: source.messageId,
+				threadId: source.threadId,
+			})
+		) {
+			throw new ToolUserError(
+				"This action does not belong to this chat delivery.",
+				403,
+			);
+		}
+	}
+
+	const entityIds = parsePgNumberArray(sourceEvent.entity_ids);
+	const kind = await resolveEventKindDefinition(
+		sourceEvent.semantic_type,
+		params.organizationId,
+		entityIds,
+	);
+	const interaction = kind?.interactions?.[params.action];
+	if (!kind || !interaction) {
+		throw new ToolUserError(
+			"This event kind does not declare that interaction.",
+			403,
+		);
+	}
+
+	const template = resolveEntityRender(
+		kind.jsonTemplate ?? null,
+		kind.metadataSchema,
+	);
+	const sourceMetadata = record(sourceEvent.metadata);
+	// Match get_content's rendering contract exactly: notification events render
+	// their payload, while ordinary typed events render their metadata.
+	const sourceData =
+		typeof sourceMetadata.notification_type === "string"
+			? record(sourceEvent.payload_data)
+			: sourceMetadata;
+	const rendered = template
+		? collectTemplateActionInvocations(template, sourceData)
+		: [];
+	if (
+		!rendered.some(
+			(candidate) =>
+				candidate.action === params.action && candidate.value === params.value,
+		)
+	) {
+		throw new ToolUserError(
+			"That action value is not present in the rendered event.",
+			400,
+		);
+	}
+
+	const interactionEnvelope = {
+		action: params.action,
+		value: params.value,
+		interaction_id: params.interactionId,
+		surface: params.surface,
+		actor: {
+			platform: params.actor.platform,
+			id: params.actor.platformUserId,
+			...(params.actor.name ? { name: params.actor.name } : {}),
+		},
+		source_event_id: sourceEvent.id,
+		source_origin_id: sourceEvent.origin_id,
+		...(source?.connectionId ? { connection_id: source.connectionId } : {}),
+		...(source?.messageId ? { message_id: source.messageId } : {}),
+		...(source?.threadId ? { thread_id: source.threadId } : {}),
+	};
+	const eventData = { ...sourceData, interaction: interactionEnvelope };
+	const kindValidation = await validateSaveContentSemanticType(
+		interaction.emits,
+		eventData,
+		params.organizationId,
+		entityIds,
+	);
+	if (!kindValidation.valid) {
+		throw new ToolUserError(kindValidation.errors.join("\n"), 422);
+	}
+
+	const idempotencyKey = `event-action:${sourceEvent.id}:${params.surface}:${params.interactionId}`;
+	const inserted = await insertConnectionlessWorkspaceEvent(
+		{
+			entityIds,
+			organizationId: params.organizationId,
+			originId: idempotencyKey,
+			title: sourceEvent.title
+				? `${sourceEvent.title}: ${params.action}`
+				: params.action,
+			payloadType: "empty",
+			payloadData: eventData,
+			semanticType: interaction.emits,
+			originType: "template_interaction",
+			parentOriginId: sourceEvent.origin_id,
+			authorName: params.actor.name ?? null,
+			createdBy: params.actor.userId ?? null,
+			clientId: source?.clientId ?? null,
+			metadata: eventData,
+		},
+		idempotencyKey,
+	);
+	return {
+		created: inserted.change !== "unchanged",
+		eventId: inserted.id,
+		eventType: interaction.emits,
+	};
+}

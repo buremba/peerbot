@@ -18,6 +18,7 @@
  */
 import {
 	formatValue,
+	type TemplateInteractionRegistry,
 	type TemplateNode,
 	type TemplateVisitor,
 	titleCaseWords,
@@ -43,6 +44,7 @@ import {
 	SelectOption,
 	Table,
 } from "chat";
+import { templateEventActionId } from "../interactions/template-event-actions";
 import { resolveEntityRender } from "../utils/default-entity-template";
 import { escapeSlackText } from "../utils/slack-text";
 import { toAbsolutePermalink } from "../utils/url-builder";
@@ -151,6 +153,19 @@ const ROUTABLE_ACTION_PREFIXES = ["run-approval", "tool", "suggestion", "questio
 
 function isRoutableAction(action: string): boolean {
 	return ROUTABLE_ACTION_PREFIXES.some((prefix) => action.startsWith(`${prefix}:`));
+}
+
+function routedActionId(
+	action: string,
+	eventActions?: {
+		sourceEventId: number;
+		interactions: TemplateInteractionRegistry;
+	},
+): string | null {
+	if (isRoutableAction(action)) return action;
+	return eventActions?.interactions[action]
+		? templateEventActionId(eventActions.sourceEventId, action)
+		: null;
 }
 
 const str = (value: unknown, fallback = ""): string =>
@@ -262,7 +277,13 @@ const textOf = (frags: Frag[]): string =>
 		.join("")
 		.trim();
 
-const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
+const makeCardVisitor = (
+	unroutable: Set<string>,
+	eventActions?: {
+		sourceEventId: number;
+		interactions: TemplateInteractionRegistry;
+	},
+): TemplateVisitor<Frag> => ({
 	text: (content) => [{ kind: "text", text: content }],
 	value: (rendered) => [{ kind: "text", text: rendered }],
 	component: (type, props, children, { actions }) => {
@@ -272,7 +293,8 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 			// A dead control in an approval card is worse than an absent one, so a
 			// button is drawn only when the click has somewhere to go.
 			if (!action) return [];
-			if (!isRoutableAction(action)) {
+			const actionId = routedActionId(action, eventActions);
+			if (!actionId) {
 				unroutable.add(str(props.label) || textOf(children) || action);
 				return [];
 			}
@@ -280,10 +302,12 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 				{
 					kind: "action",
 					element: Button({
-						id: action,
+						id: actionId,
 						label: clamp(str(props.label) || textOf(children) || action, 75),
 						style: buttonStyle(props.style),
-						value: str(props.value, action),
+						...(props.value === undefined || props.value === null
+							? {}
+							: { value: str(props.value) }),
 					}),
 				},
 			];
@@ -308,7 +332,8 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 		if (type === "select") {
 			const action = actions.onChange ?? actions.onSelect;
 			if (!action || !Array.isArray(props.options)) return [];
-			if (!isRoutableAction(action)) {
+			const actionId = routedActionId(action, eventActions);
+			if (!actionId) {
 				unroutable.add(str(props.label) || str(props.placeholder) || action);
 				return [];
 			}
@@ -326,7 +351,7 @@ const makeCardVisitor = (unroutable: Set<string>): TemplateVisitor<Frag> => ({
 				{
 					kind: "action",
 					element: Select({
-						id: action,
+						id: actionId,
 						label: clamp(str(props.label) || str(props.placeholder) || action, 75),
 						placeholder: str(props.placeholder) || undefined,
 						options,
@@ -657,6 +682,10 @@ export function buildKindCard(params: {
 	 * `manage_operations approve|reject` the web review uses.
 	 */
 	decisionRunId?: number | null;
+	/** Durable source used to bind declared template actions to this exact event. */
+	sourceEventId?: number | null;
+	/** Action registry declared by the resolved event kind. */
+	interactions?: TemplateInteractionRegistry;
 }): CardElement | null {
 	const template = resolveEntityRender(
 		params.jsonTemplate ?? null,
@@ -666,12 +695,24 @@ export function buildKindCard(params: {
 
 	const unsupported = new Set<string>();
 	const unroutable = new Set<string>();
+	const eventActions =
+		params.sourceEventId && params.interactions
+			? {
+					sourceEventId: params.sourceEventId,
+					interactions: params.interactions,
+				}
+			: undefined;
 	const {
 		children,
 		actions: templateActions,
 		context,
 	} = fragsToChildren(
-		walkTemplate(template, params.data, makeCardVisitor(unroutable), unsupported),
+		walkTemplate(
+			template,
+			params.data,
+			makeCardVisitor(unroutable, eventActions),
+			unsupported,
+		),
 	);
 
 	if (unroutable.size > 0) {

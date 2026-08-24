@@ -1,7 +1,5 @@
 import {
-  decrypt,
   deepRedactSecrets,
-  encrypt,
   isSecretKey,
   REDACTED_SENTINEL,
 } from '@lobu/core';
@@ -33,6 +31,14 @@ import {
 import { getContent } from './get_content';
 import { manageOperations } from './admin/manage_operations';
 import { attachMcpResultMeta } from './mcp-result-meta';
+import {
+  type McpAppCapabilityBinding,
+  canIssueMcpAppCapability,
+  isMcpAppCapabilityBinding,
+  issueMcpAppCapability,
+  mcpAppCapabilityMatchesHost,
+  readMcpAppCapability,
+} from './mcp-app-capability';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 import { getOrgUrlContext } from './view-urls';
@@ -706,30 +712,19 @@ function belongsToApprovalBatch(row: ApprovalContentItem): boolean {
   return sourceRunId !== undefined && sourceRunId !== null;
 }
 
-type ApprovalCapability = {
+type ApprovalCapability = McpAppCapabilityBinding & {
   v: 2;
   runId: number;
   eventId: number;
-  organizationId: string;
-  userId: string;
-  clientId: string;
-  sessionId: string;
-  conversationId?: string | null;
-  expiresAt: number;
 };
 
 function isApprovalCapability(value: unknown): value is ApprovalCapability {
   if (!isRecord(value)) return false;
   return (
+    isMcpAppCapabilityBinding(value) &&
     value.v === 2 &&
     Number.isInteger(value.runId) &&
-    Number.isInteger(value.eventId) &&
-    typeof value.organizationId === 'string' &&
-    typeof value.userId === 'string' &&
-    typeof value.clientId === 'string' &&
-    typeof value.sessionId === 'string' &&
-    (value.conversationId === null || typeof value.conversationId === 'string') &&
-    typeof value.expiresAt === 'number'
+    Number.isInteger(value.eventId)
   );
 }
 
@@ -755,45 +750,31 @@ function canIssueApprovalCapability(
   // `tools/call`. The conditions kept below are the ones carrying real weight.
   return (
     status === 'pending' &&
-    ctx.tokenType === 'oauth' &&
-    Boolean(ctx.userId && ctx.clientId && ctx.mcpSessionId) &&
+    canIssueMcpAppCapability(ctx) &&
     !belongsToApprovalBatch(row)
   );
 }
 
 function issueApprovalCapability(row: ApprovalContentItem, ctx: ToolContext): string {
-  const payload: ApprovalCapability = {
-    v: 2,
-    runId: row.run_id,
-    eventId: row.id,
-    organizationId: ctx.organizationId,
-    userId: ctx.userId!,
-    clientId: ctx.clientId!,
-    sessionId: ctx.mcpSessionId!,
-    conversationId: ctx.mcpConversationId ?? null,
-    expiresAt: Date.now() + APPROVAL_CAPABILITY_TTL_MS,
-  };
-  return encrypt(JSON.stringify(payload));
-}
-
-function approvalCapabilityMatchesHost(capability: ApprovalCapability, ctx: ToolContext): boolean {
-  if (capability.conversationId) {
-    return capability.conversationId === ctx.mcpConversationId;
+  if (!canIssueMcpAppCapability(ctx)) {
+    throw new ToolUserError('This MCP App host cannot receive an approval capability.', 403);
   }
-  return capability.sessionId === ctx.mcpSessionId;
+  return issueMcpAppCapability(
+    { v: 2, runId: row.run_id, eventId: row.id },
+    ctx,
+    APPROVAL_CAPABILITY_TTL_MS
+  );
 }
 
 function readApprovalCapability(token: string | null | undefined): ApprovalCapability {
   if (!token || token.length > APPROVAL_CAPABILITY_MAX_LENGTH) {
     throw new ToolUserError('A valid MCP App approval capability is required.', 403);
   }
-  try {
-    const parsed: unknown = JSON.parse(decrypt(token));
-    if (!isApprovalCapability(parsed)) throw new Error('invalid payload');
-    return parsed;
-  } catch {
+  const parsed = readMcpAppCapability(token, APPROVAL_CAPABILITY_MAX_LENGTH);
+  if (!isApprovalCapability(parsed)) {
     throw new ToolUserError('The MCP App approval capability is invalid or expired.', 403);
   }
+  return parsed;
 }
 
 async function findApprovalRow(
@@ -968,8 +949,7 @@ const resolveApprovalImpl = async (
     capability.runId !== args.run_id ||
     capability.userId !== ctx.userId ||
     capability.clientId !== ctx.clientId ||
-    !approvalCapabilityMatchesHost(capability, ctx) ||
-    capability.expiresAt <= Date.now()
+    !mcpAppCapabilityMatchesHost(capability, ctx)
   ) {
     throw new ToolUserError('The MCP App approval capability is stale or does not match.', 403);
   }

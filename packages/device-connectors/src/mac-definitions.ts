@@ -7,7 +7,7 @@ import type { DeviceConnectorSpec } from "@lobu/connector-sdk";
 export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   {
     key: "apple.screen_time",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Apple Screen Time",
     description:
       "Daily per-app usage totals from Lobu for Mac, sourced from the Apple Knowledge store. Captures both Mac usage and (if Screen Time iCloud sync is on) the user's iOS device usage.",
@@ -79,7 +79,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "local.directory",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Local Folder",
     description:
       "Sync text files (txt/md/json/csv/html) from a folder on your Mac via Lobu for Mac.",
@@ -161,7 +161,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "apple.health",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Apple Health",
     description:
       "Sync Apple Health daily activity summaries and workouts from Lobu on your device. macOS reads HealthKit data synced from the user's iPhone (and Apple Watch) via iCloud Health.",
@@ -330,7 +330,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       library: {
         key: "library",
         name: "Library",
-        operations: ["sync", "read"],
+        operations: ["sync"],
         description:
           "Every photo in your library. Each event carries the photo's metadata (date taken, location, people, albums, captions, OCR text) plus stable asset identifiers so agents can fetch the image bytes on demand.",
         configSchema: {
@@ -486,7 +486,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
       recordings: {
         key: "recordings",
         name: "Recordings",
-        operations: ["sync", "read"],
+        operations: ["sync"],
         description:
           "System-audio segments captured while recording; transcribed server-side.",
         configSchema: {
@@ -523,7 +523,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "apple.calendar",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Calendar",
     description:
       "Sync your calendar events (titles, times, locations, attendees) from this Mac via Lobu for Mac. Events stay on the device.",
@@ -595,7 +595,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "apple.reminders",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Reminders",
     description:
       "Sync your reminders (titles, notes, due dates, completion) from this Mac via Lobu for Mac. Reminders stay on the device.",

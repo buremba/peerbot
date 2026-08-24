@@ -10,21 +10,21 @@ import {
 
 const expectedOriginHashes: Record<string, string> = {
   "apple.calendar":
-    "651726471a9460e3219b762019ee0e0de24e7c254c4d0a9bb65337c6dab4092e",
+    "934f8866eae6b13db330ec784e9f731ac57684726fa9c8d1f57f4de07aa09adc",
   "apple.computer_use":
     "de92336c43209145199c8155213d7834016b9fcbcccd19979600b0a9a98b8c60",
   "apple.health":
-    "7730cc6494b352f6eca7d9c7c75c01af63af791019846b48c39c714b068a93a8",
+    "95d01cbd942d6af5f201656e2b6ed320e3e6559723ad3f9de619b524451f70e4",
   "apple.photos":
-    "24f880e5464959e04a9e7067b78d8eca99f6ecd7efd55a8f7f32a8cd97117592",
+    "1ca01291d17d0386a0dbc70546a0697a81290cf6a842fdaa035cc244c953009a",
   "apple.reminders":
-    "cd2536c7227fb9961f3b0e33befd346b17fa71d41aac44e7b763fd304c71649a",
+    "ccaf18f1c403ce2ae125388a7d5a720f33a0ef656c69a2a4bde45d7b364c5de1",
   "apple.screen_time":
-    "4c0b696a51bd101b76da3a2e3444b0a87e74e0f7e8a03c2e13113e2af1c19d78",
+    "882dc20d30bfa79387b6fc88dfa0a97719823bf29ea9dacb6e53fd881198e084",
   "apple.system_audio":
-    "81e7f98165717c71ae6438b21da4de56eec1fc4478559fadba0b34681c09b378",
+    "5e75caaea536caa05a71f983180786369faa1a3e211537a965aaa1e2420607e6",
   "local.directory":
-    "c8c30ae1f994edae5a53caa228beca07b3706c79afa4c07de2fe358be1864bcf",
+    "6846173d4a56d58677375f654cb10f04844b275280ec1cfb18d4d24b0fca89ee",
   "os.shell":
     "4d9446e6bfb7ec6a7d2c4decfb74fe45fc683d42fa37c0e88af29e572d7621ea",
 };

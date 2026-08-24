@@ -1827,6 +1827,7 @@ describe("LinkedInConnector home_feed", () => {
         post_media: { selector: string; take: string };
         comment_media: { selector: string; take: string };
         reaction_count_text: { selector: string; take: string };
+        comment_count_text: { selector: string; take: string };
         comment_count_label: { selector: string; attr: string };
         repost_count_label: { selector: string; attr: string };
       };
@@ -1834,6 +1835,12 @@ describe("LinkedInConnector home_feed", () => {
     expect(cfg.rowSelector).toContain("replaceableComment_urn:li:comment");
     expect(cfg.expandRows.rowSelector).toContain('[componentkey^="expanded"]');
     expect(cfg.expandRows.expected.textRegex).toContain("comments?");
+    expect(cfg.expandRows.expected.selector).toContain(
+      cfg.fields.comment_count_text.selector
+    );
+    expect(cfg.expandRows.expected.selector).toContain(
+      cfg.fields.comment_count_label.selector
+    );
     expect(cfg.expandRows.items).toEqual({
       selector: '[id^="replaceableComment_urn:li:comment:"]',
       idAttr: "id",
@@ -2144,7 +2151,7 @@ describe("LinkedInConnector home_feed", () => {
           </div>
         </div>
         <span aria-label="140 reactions"></span>
-        <div role="button" aria-label="65 comments"></div>
+        <span aria-label="65 comments"></span>
         <span aria-label="49 reposts"></span>
         ${Array.from(
           { length: 64 },
@@ -2163,6 +2170,11 @@ describe("LinkedInConnector home_feed", () => {
       reactions: 140,
       comments: 65,
       reposts: 49,
+    });
+    expect(res.metadata).toMatchObject({
+      comment_threads_complete: true,
+      comments_expected: 65,
+      comments_collected: 65,
     });
     // The comment scores from its own reactions only; reply and repost counts
     // stay post-only quantities.
@@ -2183,7 +2195,7 @@ describe("LinkedInConnector home_feed", () => {
             <span>Fixture Reactor and 236 others</span>
           </a>
           <div>
-            <div role="button"><p><span>15 comments</span><span>15 comments</span></p></div>
+            <div><p><span>15 comments</span><span>15 comments</span></p></div>
             <p>•</p>
             <a href="https://www.linkedin.com/"><p><span>2 reposts</span><span>2 reposts</span></p></a>
           </div>
@@ -2228,7 +2240,7 @@ describe("LinkedInConnector home_feed", () => {
         <button aria-label="Open control menu for post by Comment Only Author"></button>
         <span id="translatable-commentary-urn:li:activity:9000000000000000002"></span>
         <p>A comment-only current post with enough useful text for the filter</p>
-        <div><div><div role="button"><p><span>1 comment</span><span>1 comment</span></p></div></div></div>
+        <div><div><div><p><span>1 comment</span><span>1 comment</span></p></div></div></div>
         <hr />
         <div><div><button aria-label="Reaction button state: no reaction">Like</button><button aria-label="Open reactions menu"></button></div></div>
         <div id="replaceableComment_urn:li:comment:(urn:li:activity:9000000000000000002,9000000000000000003)">

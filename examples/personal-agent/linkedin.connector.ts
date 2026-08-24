@@ -442,12 +442,15 @@ interface HomeFeedCommentCoverage {
   expected: number;
   collected: number;
   complete: boolean;
-  clicks: number;
-  capped: boolean;
 }
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
 const LINKEDIN_ALLOWED_ORIGINS = ["linkedin.com", "*.linkedin.com"];
+
+const HOME_FEED_COMMENT_COUNT_TEXT_SELECTOR =
+  ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > div:first-child, .social-details-social-counts__comments, .social-details-social-counts__comments-count';
+const HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR =
+  '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comment" i]:not([id^="replaceableComment_"] *), [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)';
 
 /**
  * Selectors for the virtualized linkedin.com/feed/ DOM. Home-feed posts are
@@ -467,7 +470,10 @@ const HOME_FEED_SCRAPE_CONFIG = {
     rowSelector:
       'div[componentkey^="expanded"][componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
     expected: {
-      selector: '[role="button"], button, a',
+      // Keep this aligned with the post-level comment count fields below. The
+      // count is not always interactive: LinkedIn also renders it as a plain
+      // counter wrapper or an aria-labelled span.
+      selector: `${HOME_FEED_COMMENT_COUNT_TEXT_SELECTOR}, ${HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR}, [role="button"], button, a`,
       textRegex: "^\\d[\\d,.]*(?:\\s*[kmb])?\\s+comments?",
       textRegexFlags: "i",
       regex: "(\\d[\\d,.]*(?:\\s*[kmb])?)\\s+comments?",
@@ -630,13 +636,11 @@ const HOME_FEED_SCRAPE_CONFIG = {
       attr: "aria-label",
     },
     comment_count_text: {
-      selector:
-        ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > div:first-child, .social-details-social-counts__comments, .social-details-social-counts__comments-count',
+      selector: HOME_FEED_COMMENT_COUNT_TEXT_SELECTOR,
       take: "text",
     },
     comment_count_label: {
-      selector:
-        '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)',
+      selector: HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR,
       take: "attr",
       attr: "aria-label",
     },

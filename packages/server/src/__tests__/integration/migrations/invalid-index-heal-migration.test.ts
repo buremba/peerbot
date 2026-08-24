@@ -99,6 +99,22 @@ const HEAL_MIGRATIONS = [
         ON notification_targets (event_id)
     `,
 	},
+	{
+		files: ["20260824160000_event_metadata_linkedin_identity_indexes.sql"],
+		index: "idx_events_metadata_linkedin_slug",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS idx_events_metadata_linkedin_slug
+        ON events (id)
+    `,
+	},
+	{
+		files: ["20260824160000_event_metadata_linkedin_identity_indexes.sql"],
+		index: "idx_events_metadata_linkedin_member_id",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS idx_events_metadata_linkedin_member_id
+        ON events (id)
+    `,
+	},
 ] as const;
 
 function resolveMigrationsDir(): string {

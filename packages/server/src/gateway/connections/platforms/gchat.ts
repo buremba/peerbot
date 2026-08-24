@@ -25,7 +25,7 @@ export const GOOGLE_CHAT_WELCOME_TEXT = [
   "Welcome 👋",
   "",
   "In a direct message, just ask. In a space, mention this app when you want a response.",
-  "Use `/help` at any time to see commands and setup options.",
+  "Use `/lobu help` at any time to see commands and setup options.",
 ].join("\n");
 
 function isObject(value: unknown): value is JsonObject {
@@ -114,6 +114,41 @@ function normalizeGoogleChatHelpMessage(
   }
 
   return message;
+}
+
+/**
+ * Convert the one registered Google command into Lobu's shared command text.
+ * Google projects own their numeric command IDs, while Lobu intentionally uses
+ * the same `/lobu <subcommand>` wrapper as Slack. Older projects that registered
+ * this ID as `/help` keep their existing mapping.
+ */
+function registeredGoogleChatCommandText(
+  message: JsonObject | undefined,
+): string {
+  const messageText =
+    typeof message?.text === "string" ? message.text.trim() : "";
+  const lobuCommand = messageText.match(/^\/?lobu(?:\s+([\s\S]*))?$/i);
+  if (lobuCommand) {
+    const args = lobuCommand[1]?.trim() || "";
+    return args ? `/lobu ${args}` : "/help";
+  }
+  if (/^\/?help$/i.test(messageText)) return "/help";
+
+  // Google exposes a mention-free copy of the message in argumentText. Use it
+  // when text is absent, and accept both full `/lobu ...` and args-only forms.
+  const argumentText =
+    typeof message?.argumentText === "string"
+      ? message.argumentText.trim()
+      : "";
+  if (argumentText) {
+    const withoutWrapper = argumentText
+      .replace(/^\/?lobu(?:\s+|$)/i, "")
+      .trim();
+    if (!withoutWrapper || /^\/?help$/i.test(withoutWrapper)) return "/help";
+    return `/lobu ${withoutWrapper}`;
+  }
+
+  return "/help";
 }
 
 /**
@@ -207,7 +242,8 @@ function normalizeWorkspaceAddOnAppCommand(
   // are already explicitly addressed to this app but don't carry a mention,
   // so use its normalized mention form at the adapter boundary. The message
   // bridge removes this prefix again before command dispatch.
-  const text = isDm ? "/help" : `@${botUserName} /help`;
+  const commandText = registeredGoogleChatCommandText(message);
+  const text = isDm ? commandText : `@${botUserName} ${commandText}`;
   const sender = isObject(message?.sender)
     ? message.sender
     : isObject(chat.user)
@@ -357,9 +393,12 @@ function normalizeGoogleChatInteractionEvent(
     helpCommandId !== undefined &&
     standaloneCommandId === helpCommandId
   ) {
+    const commandText = registeredGoogleChatCommandText(rawMessage);
     message = {
       ...message,
-      text: isDirectSpace(space) ? "/help" : `@${botUserName} /help`,
+      text: isDirectSpace(space)
+        ? commandText
+        : `@${botUserName} ${commandText}`,
     };
   }
   const user = isObject(body.user)

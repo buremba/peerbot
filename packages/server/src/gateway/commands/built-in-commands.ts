@@ -12,6 +12,7 @@ import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.j
 import {
   resolveEffectiveModelRef,
 } from "../auth/settings/model-selection.js";
+import { formatChatCommand } from "./command-spelling.js";
 
 interface BuiltInCommandDeps {
   agentSettingsStore: AgentSettingsStore;
@@ -47,7 +48,10 @@ export function registerBuiltInCommands(
     description: "Show available commands",
     handler: async (ctx: CommandContext) => {
       const commands = registry.getAll();
-      const lines = commands.map((c) => `/${c.name} - ${c.description}`);
+      const lines = commands.map(
+        (command) =>
+          `${formatChatCommand(ctx.platform, command.name)} - ${command.description}`,
+      );
       await ctx.reply(
 				`Available commands:\n${lines.join("\n")}\n\nYou can also just send a message to start a conversation with the agent.`,
       );
@@ -84,9 +88,8 @@ export function registerBuiltInCommands(
   });
 
   // Public preview: bind this chat to one of the demo agents in the preview
-  // connection's org. `/lobu try <agentId>` (no code, no CLI); `/lobu try` /
-  // `/lobu agents` with no arg lists them. Re-running with another agent
-  // rebinds. (Reached as the `try` / `agents` subcommand on Slack.)
+  // connection's org. Re-running with another agent rebinds; wrapped-command
+  // platforms reach these handlers as the `try` / `agents` subcommands.
   const replyDemoMenu = async (ctx: CommandContext, prefix?: string) => {
     if (!ctx.connectionId) {
 			await ctx.reply(
@@ -154,18 +157,17 @@ export function registerBuiltInCommands(
     },
   });
 
-  // Slack Preview: redeem a `/lobu link <code>` minted by `lobu run` and bind
-  // this channel/DM to that agent. Re-running it with a different code rebinds.
-  // (Slack only delivers the natively-registered `/lobu` slash command, so this
-  // is reached as the `link` subcommand — not a bare `/link`.)
+  // Redeem a link code minted by `lobu run` and bind this channel/DM to that
+  // agent. Wrapped-command platforms reach this as the `link` subcommand;
+  // re-running it with a different code rebinds.
   registry.register({
     name: "link",
-    // `/help` renders this on every platform, so it stays code-only; the
+    // The help command renders this on every platform, so it stays code-only; the
     // Slack-only `<agentId>` shortcut is surfaced by `agentIdHint` below.
     description: "Link this chat to a Lobu agent with a `<code>` from `lobu run`",
     handler: async (ctx: CommandContext) => {
       const arg = ctx.args.trim();
-      const cmd = ctx.platform === "slack" ? "/lobu link" : "/link";
+      const cmd = formatChatCommand(ctx.platform, "link");
       // The codeless `<agentId>` shortcut needs a workspace-scoped Slack
       // identity, which only Slack sign-in and the install claim write — so it
       // never applies on other platforms. Don't promise it there.
@@ -248,7 +250,7 @@ export function registerBuiltInCommands(
               return;
             }
             await ctx.reply(
-							`No agent \`${arg}\` you can manage in your orgs. Either run \`lobu apply\` to register it, or paste a fresh \`/lobu link <code>\` from \`lobu run\`.`,
+						`No agent \`${arg}\` you can manage in your orgs. Either run \`lobu apply\` to register it, or paste a fresh \`${formatChatCommand(ctx.platform, "link")} <code>\` from \`lobu run\`.`,
             );
             return;
           }

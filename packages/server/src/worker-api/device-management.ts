@@ -28,6 +28,7 @@ import {
 } from '../utils/device-pin-tombstones';
 import { getWorkspaceRole } from '../utils/organization-access';
 import { parseJsonBody } from '../gateway/routes/shared/helpers';
+import { resolvePublicOrigin } from '../utils/public-origin';
 import { buildAutomationUrl, getPublicWebUrl } from '../utils/url-builder';
 
 const DEVICE_WORKER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -481,7 +482,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       }
     }
 
-    const gatewayUrl = new URL(c.req.url).origin;
+    const gatewayUrl = resolvePublicOrigin(c.req.url);
     if (reused) {
       logger.info(
         { userId, workerId, platform },

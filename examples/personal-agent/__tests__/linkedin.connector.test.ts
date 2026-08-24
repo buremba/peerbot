@@ -21,6 +21,8 @@ let normalizeLinkedInSlug: any;
 let normalizeLinkedInMemberId: any;
 let LINKEDIN_IDENTITY: any;
 let normalizeLinkedInPostUrl: any;
+let resolveLinkedInShortPostUrl: any;
+let resolveHomeFeedPostUrls: any;
 let isGenericLinkedInFeedUrl: any;
 let isLinkedInAuthWall: any;
 let pickCommentButtonRef: any;
@@ -86,6 +88,8 @@ beforeAll(async () => {
   filterPostsSinceCheckpoint = mod.filterPostsSinceCheckpoint;
   parseCompanyUpdates = mod.parseCompanyUpdates;
   normalizeLinkedInPostUrl = mod.normalizeLinkedInPostUrl;
+  resolveLinkedInShortPostUrl = mod.resolveLinkedInShortPostUrl;
+  resolveHomeFeedPostUrls = mod.resolveHomeFeedPostUrls;
   isGenericLinkedInFeedUrl = mod.isGenericLinkedInFeedUrl;
   isLinkedInAuthWall = mod.isLinkedInAuthWall;
   pickCommentButtonRef = mod.pickCommentButtonRef;
@@ -2033,6 +2037,7 @@ describe("LinkedInConnector home_feed", () => {
               {
                 id: "scroll-budget-fixture",
                 body: "A loaded feed row used only to verify the scroll budget",
+                post_identity: "urn:li:activity:7497353023476916224",
               },
             ],
           },
@@ -2070,6 +2075,32 @@ describe("LinkedInConnector home_feed", () => {
         sessionState: { chrome_dispatcher: dispatcher },
       })
     ).rejects.toThrow(/no post rows/i);
+  });
+
+  test("fails the whole batch when an organic post has no durable identity", async () => {
+    const dispatcher = {
+      dispatch: async () => ({
+        result: {
+          loggedIn: true,
+          rows: [
+            {
+              id: "opaque-component-key",
+              body: "Fixture Author • 1st A real organic post with enough text",
+              post_url: "https://example.com/not-a-linkedin-post",
+            },
+          ],
+        },
+      }),
+    };
+    const connector = new LinkedInConnector();
+    await expect(
+      connector.sync({
+        feedKey: "home_feed",
+        config: {},
+        checkpoint: {},
+        sessionState: { chrome_dispatcher: dispatcher },
+      })
+    ).rejects.toThrow(/No partial home-feed batch was persisted/i);
   });
 
   test("throws a clear error when not logged into LinkedIn", async () => {
@@ -2454,6 +2485,70 @@ describe("prepare_comment helpers", () => {
     expect(normalizeLinkedInPostUrl("")).toBeNull();
   });
 
+  test("resolves a Copy-link short URL to the durable LinkedIn share id", async () => {
+    const calls: Array<{ input: string; init: RequestInit }> = [];
+    const fetchImpl = async (input: URL, init: RequestInit) => {
+      calls.push({ input: input.href, init });
+      return new Response(null, {
+        status: 301,
+        headers: {
+          location:
+            "https://www.linkedin.com/posts/jsduncan98_example-share-7497353023476916224-wb8S/?utm_source=share",
+        },
+      });
+    };
+
+    await expect(
+      resolveLinkedInShortPostUrl("https://lnkd.in/p/eeCQdN3n", fetchImpl)
+    ).resolves.toBe(
+      "https://www.linkedin.com/feed/update/urn:li:share:7497353023476916224"
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].input).toBe("https://lnkd.in/p/eeCQdN3n");
+    expect(calls[0].init.method).toBe("HEAD");
+    expect(calls[0].init.redirect).toBe("manual");
+  });
+
+  test("resolves only LinkedIn post short links and leaves other rows untouched", async () => {
+    let fetchCount = 0;
+    const fetchImpl = async () => {
+      fetchCount += 1;
+      return new Response(null, {
+        status: 301,
+        headers: {
+          location:
+            "https://www.linkedin.com/posts/example_activity-7497353023476916224-x",
+        },
+      });
+    };
+    const rows = [
+      {
+        id: "short",
+        body: "Short URL fixture",
+        post_url: "https://lnkd.in/p/example",
+      },
+      {
+        id: "canonical",
+        body: "Canonical fixture",
+        post_url:
+          "https://www.linkedin.com/feed/update/urn:li:activity:7497353023476916225",
+      },
+      {
+        id: "unsupported",
+        body: "Unsupported fixture",
+        post_url: "https://example.com/post/1",
+      },
+    ];
+
+    const resolved = await resolveHomeFeedPostUrls(rows, fetchImpl);
+    expect(fetchCount).toBe(1);
+    expect(resolved[0].post_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7497353023476916224"
+    );
+    expect(resolved[1]).toBe(rows[1]);
+    expect(resolved[2]).toBe(rows[2]);
+  });
+
   test("isLinkedInAuthWall detects login walls", () => {
     expect(isLinkedInAuthWall("https://www.linkedin.com/login")).toBe(true);
     expect(isLinkedInAuthWall("https://www.linkedin.com/authwall")).toBe(true);
@@ -2543,7 +2638,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.2");
+    expect(c.definition.version).toBe("3.11.3");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

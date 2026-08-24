@@ -1283,6 +1283,66 @@ export function normalizeLinkedInPostUrl(input: string): string | null {
   }
 }
 
+/** Resolve LinkedIn's Copy-link short URL to its durable post URN URL. */
+export async function resolveLinkedInShortPostUrl(
+  input: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string | null> {
+  let shortUrl: URL;
+  try {
+    shortUrl = new URL(input);
+  } catch {
+    return null;
+  }
+  if (
+    shortUrl.protocol !== "https:" ||
+    shortUrl.hostname !== "lnkd.in" ||
+    !shortUrl.pathname.startsWith("/p/")
+  ) {
+    return null;
+  }
+
+  try {
+    const response = await fetchImpl(shortUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: AbortSignal.timeout(5_000),
+    });
+    const location = response.headers.get("location");
+    if (!location) return normalizeLinkedInPostUrl(response.url);
+    return normalizeLinkedInPostUrl(new URL(location, shortUrl).href);
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveHomeFeedPostUrls(
+  rows: HomeFeedRow[],
+  fetchImpl: typeof fetch = fetch
+): Promise<HomeFeedRow[]> {
+  return Promise.all(
+    rows.map(async (row) => {
+      const postUrl = row.post_url?.trim();
+      if (!postUrl || normalizeLinkedInPostUrl(postUrl)) return row;
+      const resolved = await resolveLinkedInShortPostUrl(postUrl, fetchImpl);
+      return resolved ? { ...row, post_url: resolved } : row;
+    })
+  );
+}
+
+function unresolvedHomeFeedPostCount(rows: HomeFeedRow[]): number {
+  let count = 0;
+  for (const row of rows) {
+    if (!row?.id || !row.body) continue;
+    if (parseHomeFeedCommentIdentity(row.id) || isHomeFeedNoise(row.body)) {
+      continue;
+    }
+    const context = buildHomeFeedRowContext(row);
+    if (!homeFeedPostIdentityKey(row, context)) count += 1;
+  }
+  return count;
+}
+
 /** True when navigate landed on login / authwall rather than the post. */
 export function isLinkedInAuthWall(url: string | null | undefined): boolean {
   if (!url) return false;
@@ -2539,7 +2599,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.2",
+    version: "3.11.3",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -3158,13 +3218,21 @@ export default class LinkedInConnector extends ConnectorRuntime<
       );
     }
 
-    const events = buildHomeFeedEvents(rows, new Date());
+    const resolvedRows = await resolveHomeFeedPostUrls(rows);
+    const unresolvedPostCount = unresolvedHomeFeedPostCount(resolvedRows);
+    if (unresolvedPostCount > 0) {
+      throw new Error(
+        `LinkedIn scraped ${unresolvedPostCount} post row${unresolvedPostCount === 1 ? "" : "s"} without a durable activity/share/ugcPost identity. No partial home-feed batch was persisted.`
+      );
+    }
+
+    const events = buildHomeFeedEvents(resolvedRows, new Date());
 
     // Capability gate: author/engager slugs need the `objectAll` scrape take. An
     // older extension can't produce it, so identity degrades to name-only.
     // Surface it in metadata (rather than failing) so a stale extension is
     // observable — events still flow, just without slugs.
-    const objectAllSupported = homeFeedObjectAllSupported(rows);
+    const objectAllSupported = homeFeedObjectAllSupported(resolvedRows);
 
     return {
       events,

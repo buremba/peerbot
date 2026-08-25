@@ -682,9 +682,10 @@ function matchingLoopbackEndpoints(leftRaw: string, rightRaw: string): boolean {
       ) {
         return null;
       }
+      // No `host` in the shape: the guard above already established both
+      // sides are loopback, so comparing them would be vacuously true.
       return {
         scheme,
-        host: "loopback",
         port: url.port || (scheme === "https:" ? "443" : "80"),
       };
     } catch {
@@ -698,9 +699,33 @@ function matchingLoopbackEndpoints(leftRaw: string, rightRaw: string): boolean {
     left !== null &&
     right !== null &&
     left.scheme === right.scheme &&
-    left.host === right.host &&
     left.port === right.port
   );
+}
+
+// Whether `contextName` names a credential slot this local runner may write.
+// Two ways to qualify: an already-configured context whose lifecycle marks it
+// runner-managed and whose URL is this same loopback endpoint, or a brand-new
+// name whose spawning process pinned the identical endpoint via LOBU_API_URL
+// (how Owletto Debug claims its build-scoped slot on first boot). A bare
+// LOBU_CONTEXT must never repurpose a cloud or user-managed name.
+async function isRunnerOwnedContext(
+  dependencies: LocalSignInDependencies,
+  contextName: string,
+  gatewayUrl: string
+): Promise<boolean> {
+  const configured = await dependencies.inspectContextImpl(contextName);
+  if (configured) {
+    const hasRunnerOwnedLifecycle =
+      configured.lifecycle === "managed" ||
+      (contextName === "local" && configured.lifecycle === undefined);
+    return (
+      hasRunnerOwnedLifecycle &&
+      matchingLoopbackEndpoints(configured.url, gatewayUrl)
+    );
+  }
+  const pinnedUrl = process.env.LOBU_API_URL?.trim();
+  return !!pinnedUrl && matchingLoopbackEndpoints(pinnedUrl, gatewayUrl);
 }
 
 export async function announceLocalSignIn(
@@ -829,35 +854,32 @@ export async function announceLocalSignIn(
   }
 
   const requestedContextName = process.env.LOBU_CONTEXT?.trim();
-  const contextName = requestedContextName || "local";
+  // An explicit LOBU_CONTEXT is honored only when it names a slot this runner
+  // owns. Refusing an unowned name must NOT abort the bootstrap, though: the
+  // Mac runner derives LOBU_CONTEXT from the CLI's ambient `currentContext`
+  // (owletto apps/mac/Owletto/LocalLobuRunner.swift), and only pins
+  // LOBU_API_URL on Debug builds — so a Release user whose selected context is
+  // a cloud entry would otherwise lose the local context, its credentials, the
+  // deep link, and auto-apply outright. Fall back to the pre-existing `local`
+  // bootstrap instead, which is exactly what a bare `lobu run` does.
+  // Assigned inside the try so a throwing context probe still reports the
+  // slot the failure is about.
+  let contextName = "local";
   try {
-    if (requestedContextName) {
-      const configured = await dependencies.inspectContextImpl(contextName);
-      if (configured) {
-        const hasRunnerOwnedLifecycle =
-          configured.lifecycle === "managed" ||
-          (contextName === "local" && configured.lifecycle === undefined);
-        if (
-          !hasRunnerOwnedLifecycle ||
-          !matchingLoopbackEndpoints(configured.url, gatewayUrl)
-        ) {
-          throw new Error("explicit context is not owned by this local runner");
-        }
-      } else {
-        // Owletto Debug deliberately uses a new build-scoped credential
-        // context on first boot. Only allow that new slot when the spawning
-        // process also pins the same loopback endpoint explicitly; a bare
-        // LOBU_CONTEXT must never repurpose a cloud or user-managed name.
-        const pinnedUrl = process.env.LOBU_API_URL?.trim();
-        if (!pinnedUrl || !matchingLoopbackEndpoints(pinnedUrl, gatewayUrl)) {
-          throw new Error("new explicit context is not pinned to this runner");
-        }
-      }
-    }
+    const pinnedContextName =
+      requestedContextName &&
+      (await isRunnerOwnedContext(
+        dependencies,
+        requestedContextName,
+        gatewayUrl
+      ))
+        ? requestedContextName
+        : undefined;
+    contextName = pinnedContextName ?? "local";
     await dependencies.addContextImpl(
       contextName,
       gatewayUrl,
-      requestedContextName ? { lifecycle: "managed" } : undefined
+      pinnedContextName ? { lifecycle: "managed" } : undefined
     );
     const creds: Credentials = {
       accessToken: cliToken,

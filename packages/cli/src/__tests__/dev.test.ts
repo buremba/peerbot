@@ -758,36 +758,67 @@ describe("lobu run local sign-in diagnostics", () => {
     }
   });
 
-  test("refuses to overwrite an explicit remote context", async () => {
+  // The Mac runner exports LOBU_CONTEXT straight from the CLI's ambient
+  // `currentContext` and only pins LOBU_API_URL on Debug builds, so both of
+  // these are what a shipped Release app actually produces for a user whose
+  // selected context is a cloud entry. Refusing to repurpose that name is
+  // correct; abandoning local sign-in because of it is not — the fallback has
+  // to leave the user with a credentialed `local` context, a deep link, and
+  // auto-apply, exactly as a bare `lobu run` does.
+  test.each([
+    {
+      name: "an explicit remote context",
+      contextName: "production",
+      configured: {
+        url: "https://app.lobu.ai/api/v1",
+        lifecycle: "external" as const,
+      },
+    },
+    {
+      name: "an unknown context with no pinned endpoint",
+      contextName: "lobu",
+      configured: undefined,
+    },
+  ])("falls back to local rather than repurposing $name", async ({
+    contextName,
+    configured,
+  }) => {
     const previousContext = process.env.LOBU_CONTEXT;
     const previousApiUrl = process.env.LOBU_API_URL;
-    process.env.LOBU_CONTEXT = "production";
+    process.env.LOBU_CONTEXT = contextName;
     delete process.env.LOBU_API_URL;
     const calls: string[] = [];
     try {
       const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
         ...dependencies(),
-        inspectContextImpl: async () => ({
-          url: "https://app.lobu.ai/api/v1",
-          lifecycle: "external",
-        }),
-        addContextImpl: async () => {
-          calls.push("context");
+        inspectContextImpl: async () => configured,
+        addContextImpl: async (name, url, server) => {
+          calls.push(`context:${name}:${url}:${server?.lifecycle}`);
         },
-        saveCredentialsImpl: async () => {
-          calls.push("credentials");
+        saveCredentialsImpl: async (_credentials, name) => {
+          calls.push(`credentials:${name}`);
         },
-        setActiveOrgImpl: async () => {
-          calls.push("org");
+        setActiveOrgImpl: async (_slug, name) => {
+          calls.push(`org:${name}`);
+        },
+        setCurrentContextImpl: async (name) => {
+          calls.push(`current:${name}`);
         },
       });
 
-      expect(result).toEqual({
-        ready: false,
-        stage: "context_setup",
-        detail: 'could not register or persist the "production" context',
-      });
-      expect(calls).toEqual([]);
+      expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+      // Registered as the plain `local` slot — no `managed` lifecycle, since
+      // this runner was never handed a name it owns.
+      expect(calls).toEqual([
+        "context:local:http://127.0.0.1:8787:undefined",
+        "credentials:local",
+        "org:local",
+      ]);
+      // The rejected name is never written...
+      expect(calls.some((call) => call.includes(contextName))).toBe(false);
+      // ...and an explicit LOBU_CONTEXT still pins this process only: the
+      // user's global default must not be retargeted behind their back.
+      expect(calls.some((call) => call.startsWith("current:"))).toBe(false);
     } finally {
       if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
       else process.env.LOBU_CONTEXT = previousContext;

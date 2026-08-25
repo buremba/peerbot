@@ -25,6 +25,9 @@ export interface DeviceConnectorReadiness {
 export interface DeviceConnectorReadinessTarget {
   ownerUserId: string | null;
   connectorKey: string;
+  /** Exact artifact selected by the operation or feed. */
+  connectorVersion: string | null;
+  manifestHash?: string | null;
   /** Exact execution pin. Null/absent means any device in the owner's fleet. */
   deviceWorkerId?: string | null;
 }
@@ -37,9 +40,11 @@ export type DeviceConnectorReadinessIndex = Map<
 function readinessKey(
   ownerUserId: string,
   connectorKey: string,
+  connectorVersion: string,
+  manifestHash?: string | null,
   deviceWorkerId?: string | null
 ): string {
-  return `${ownerUserId}\u0000${connectorKey}\u0000${deviceWorkerId ?? ''}`;
+  return `${ownerUserId}\u0000${connectorKey}\u0000${connectorVersion}\u0000${manifestHash ?? ''}\u0000${deviceWorkerId ?? ''}`;
 }
 
 export function classifyDeviceConnectorReadiness(
@@ -72,8 +77,14 @@ export async function loadDeviceConnectorReadiness(params: {
   const targets = params.targets.filter(
     (
       target,
-    ): target is DeviceConnectorReadinessTarget & { ownerUserId: string } =>
-      typeof target.ownerUserId === 'string' && target.ownerUserId.length > 0,
+    ): target is DeviceConnectorReadinessTarget & {
+      ownerUserId: string;
+      connectorVersion: string;
+    } =>
+      typeof target.ownerUserId === 'string' &&
+      target.ownerUserId.length > 0 &&
+      typeof target.connectorVersion === 'string' &&
+      target.connectorVersion.length > 0,
   );
   const ownerUserIds = [
     ...new Set(targets.map((target) => target.ownerUserId)),
@@ -84,6 +95,7 @@ export async function loadDeviceConnectorReadiness(params: {
       sources: await getDeviceManifestSourcesForUser({
         sql: params.sql,
         userId: ownerUserId,
+        includeRetainedVersions: true,
       }),
     })),
   );
@@ -92,8 +104,21 @@ export async function loadDeviceConnectorReadiness(params: {
   for (const { ownerUserId, sources } of sourcesByOwner) {
     for (const source of sources) {
       for (const target of targets) {
-        if (target.ownerUserId !== ownerUserId || target.connectorKey !== source.key) continue;
-        const key = readinessKey(ownerUserId, source.key, target.deviceWorkerId);
+        if (
+          target.ownerUserId !== ownerUserId ||
+          target.connectorKey !== source.key ||
+          target.connectorVersion !== source.metadata.version ||
+          (target.manifestHash != null && target.manifestHash !== source.manifestHash)
+        ) {
+          continue;
+        }
+        const key = readinessKey(
+          ownerUserId,
+          source.key,
+          target.connectorVersion,
+          target.manifestHash,
+          target.deviceWorkerId
+        );
         readiness.set(
           key,
           classifyDeviceConnectorReadiness(source, target.deviceWorkerId)
@@ -108,9 +133,15 @@ export function findDeviceConnectorReadiness(
   index: DeviceConnectorReadinessIndex,
   target: DeviceConnectorReadinessTarget,
 ): DeviceConnectorReadiness | undefined {
-  if (!target.ownerUserId) return undefined;
+  if (!target.ownerUserId || !target.connectorVersion) return undefined;
   return index.get(
-    readinessKey(target.ownerUserId, target.connectorKey, target.deviceWorkerId)
+    readinessKey(
+      target.ownerUserId,
+      target.connectorKey,
+      target.connectorVersion,
+      target.manifestHash,
+      target.deviceWorkerId
+    )
   );
 }
 

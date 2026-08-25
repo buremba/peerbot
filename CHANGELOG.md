@@ -1,5 +1,25 @@
 # Changelog
 
+## [17.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v17.0.0...lobu-v17.1.0) (2026-08-25)
+
+
+### Features
+
+* **connectors:** derive device setup readiness ([#3160](https://github.com/lobu-ai/lobu/issues/3160)) ([4fbd4fa](https://github.com/lobu-ai/lobu/commit/4fbd4fa419e58d74a81e01c90737f7a311242738))
+* **gchat:** add native Lobu command parity ([#3158](https://github.com/lobu-ai/lobu/issues/3158)) ([4b7526d](https://github.com/lobu-ai/lobu/commit/4b7526d332a10fde2209055b3f67f4a6c238e48c))
+* **linkedin:** collect complete comment threads ([#3153](https://github.com/lobu-ai/lobu/issues/3153)) ([60d7414](https://github.com/lobu-ai/lobu/commit/60d74141030fdc9ea4d58d3d8269f6b3b49dc456))
+
+
+### Bug Fixes
+
+* **ci:** allow AppKit behavior properties in naming gate ([#3165](https://github.com/lobu-ai/lobu/issues/3165)) ([4bccd1c](https://github.com/lobu-ai/lobu/commit/4bccd1cbc80214cc26cf3c4f08484afa9d60e2f8))
+* **gchat:** align native command behavior [client-regen-not-needed] ([#3167](https://github.com/lobu-ai/lobu/issues/3167)) ([a39c9db](https://github.com/lobu-ai/lobu/commit/a39c9dbc1bdbd7eca9c220a66e78d57061e70c93))
+* **linkedin:** ignore feed helper rows ([#3159](https://github.com/lobu-ai/lobu/issues/3159)) ([60544fd](https://github.com/lobu-ai/lobu/commit/60544fd375c59e4e424b3e1eeeb8184c3502261e))
+* **linkedin:** recover complete comment scraping ([#3157](https://github.com/lobu-ai/lobu/issues/3157)) ([f135edc](https://github.com/lobu-ai/lobu/commit/f135edc006c78d45aa82e656b80eb864c9821fc6))
+* **release:** keep Mac updater current ([#3156](https://github.com/lobu-ai/lobu/issues/3156)) ([f2d74ab](https://github.com/lobu-ai/lobu/commit/f2d74abc27c497721668f1a0ba2145e8a6bf651e))
+* **server:** replace real content id in search_memory example with synthetic one ([#3169](https://github.com/lobu-ai/lobu/issues/3169)) ([52c4eb5](https://github.com/lobu-ai/lobu/commit/52c4eb5210d00d160f5f753683253c80b0ff1062))
+* **worker:** keep transient context out of transcripts ([#3154](https://github.com/lobu-ai/lobu/issues/3154)) ([4c087a4](https://github.com/lobu-ai/lobu/commit/4c087a4c75b87789db7f092f0771c0dc32b0b6ab))
+
 ## [17.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v16.1.0...lobu-v17.0.0) (2026-08-24)
 
 

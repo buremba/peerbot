@@ -129,11 +129,7 @@ function executionTargetFromRow(
 			status: "device_offline",
 			executable: false,
 			reason:
-				row.device_worker_id && !row.device_online
-					? `The connection's paired device is offline (${describeDeviceLastSeen(
-							row.device_last_seen_at,
-						)}).`
-					: "No online device is advertising the connector's current manifest.",
+				"No online device is advertising the connector's current manifest.",
 		};
 	}
 	if (row.device_bound && !row.device_online) {

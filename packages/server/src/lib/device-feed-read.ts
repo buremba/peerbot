@@ -98,6 +98,9 @@ export interface DeviceFeedReadParams {
   feedConfig: Record<string, unknown>;
   connectionId: number;
   connectorKey: string;
+  /** Exact connector artifact selected for this read. */
+  connectorVersion: string | null;
+  manifestHash: string | null;
   /** User whose device fleet is authorized to serve this connection. */
   deviceOwnerUserId: string | null;
   /** `connections.device_worker_id` — the execution pin, or null when unpinned. */
@@ -240,6 +243,8 @@ async function describeUnservableDevice(
       {
         ownerUserId: p.deviceOwnerUserId,
         connectorKey: p.connectorKey,
+        connectorVersion: p.connectorVersion,
+        manifestHash: p.manifestHash,
         deviceWorkerId: p.deviceWorkerId,
       },
     ],
@@ -247,6 +252,8 @@ async function describeUnservableDevice(
   const connectorReadiness = findDeviceConnectorReadiness(readinessIndex, {
     ownerUserId: p.deviceOwnerUserId,
     connectorKey: p.connectorKey,
+    connectorVersion: p.connectorVersion,
+    manifestHash: p.manifestHash,
     deviceWorkerId: p.deviceWorkerId,
   });
   if (connectorReadiness?.state === 'setup_required') {

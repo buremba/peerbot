@@ -1855,6 +1855,7 @@ describe("LinkedInConnector home_feed", () => {
     });
     expect(cfg.expandRows.more.textRegex).toContain("replies");
     expect(cfg.expandRows.maxDurationMs).toBe(55_000);
+    expect(cfg.expandRows.stall).toBe(12);
     expect(cfg.expandRows.outputField).toBe("comment_coverage");
     expect(cfg.id.name).toEqual(["componentkey", "id"]);
     expect(
@@ -3081,7 +3082,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.7");
+    expect(c.definition.version).toBe("3.11.8");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

@@ -511,7 +511,10 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // watchdog. This leaves time for row harvesting and guarantees that a
     // large thread cannot strand a content script in the user's tab.
     maxDurationMs: 55_000,
-    stall: 2,
+    // LinkedIn removes its controls before the requested comments finish
+    // rendering. Allow a short control-free settling window; the shared
+    // maxDurationMs budget still caps the whole expansion pass.
+    stall: 12,
     waitMs: 350,
     outputField: "comment_coverage",
   },
@@ -2859,7 +2862,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.7",
+    version: "3.11.8",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

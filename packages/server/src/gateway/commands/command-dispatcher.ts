@@ -42,12 +42,10 @@ export class CommandDispatcher {
     if (!match?.[1]) return false;
     let commandName = match[1];
     let commandArgs = match[2]?.trim() || "";
-    // Slack registers a single `/lobu` wrapper, so its subcommands arrive as
-    // `/lobu link <code>`. Slack only dispatches that as a native slash command
-    // in channels — in an "Agents & AI Apps" DM it is delivered as plain
-    // message text instead (no slash-command UI). Unwrap the wrapper here so
-    // `/lobu link <code>` typed or pasted from `lobu run` in a DM dispatches the
-    // `link` subcommand, matching the native slash-command path.
+    // Slack and Google Chat register a single `/lobu` wrapper, so subcommands
+    // arrive as `/lobu link <code>`. Slack also delivers this as plain message
+    // text in an "Agents & AI Apps" DM (no slash-command UI). Unwrap at the
+    // shared boundary so native and pasted command paths dispatch identically.
     if (commandName.toLowerCase() === "lobu" && commandArgs) {
       const sub = commandArgs.match(/^(\S+)(?:\s+(.*))?$/);
       if (sub?.[1]) {

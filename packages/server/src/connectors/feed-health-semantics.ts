@@ -31,6 +31,8 @@
  *   ordered so the most actionable state wins:
  *   - `needs_auth` — the connection/auth profile is not usable (pending_auth,
  *     revoked, auth profile not active).
+ *   - `setup_required` — a manifest-backed device connector is online but has
+ *     not granted its declared capability.
  *   - `paused` — operator- or auto-paused; not running until resumed.
  *   - `misconfigured` — the connection is in an error state.
  *   - `device_offline` — the feed is pinned to a device that has not polled
@@ -61,6 +63,7 @@ type FeedAttentionState =
   | "healthy"
   | "paused"
   | "needs_auth"
+  | "setup_required"
   | "last_attempt_failed"
   | "overdue"
   | "never_run"
@@ -96,6 +99,12 @@ interface FeedHealthSemanticsInput {
   device_worker_id?: string | null;
   /** Derived `device_online` flag (device polled within the liveness window). */
   device_online?: boolean | null;
+  /** Canonical manifest/capability/liveness projection for a device connector. */
+  device_connector_readiness?:
+    | "ready"
+    | "setup_required"
+    | "device_offline"
+    | null;
 }
 
 interface FeedHealthSemantics {
@@ -126,13 +135,25 @@ function needsAuth(input: FeedHealthSemanticsInput): boolean {
   );
 }
 
-/** The feed is pinned to a device that has not recently polled. */
-function deviceOffline(input: FeedHealthSemanticsInput): boolean {
+function pinnedDeviceOffline(input: FeedHealthSemanticsInput): boolean {
   return (
     input.device_worker_id != null &&
     input.device_worker_id.length > 0 &&
     input.device_online === false
   );
+}
+
+/** The feed is pinned to a device that has not recently polled. */
+function deviceOffline(input: FeedHealthSemanticsInput): boolean {
+  // A connection pin is narrower than fleet readiness. Another ready device
+  // cannot execute a feed that remains pinned to this offline device.
+  if (pinnedDeviceOffline(input)) return true;
+  if (input.device_connector_readiness == null) return false;
+  return input.device_connector_readiness === "device_offline";
+}
+
+function setupRequired(input: FeedHealthSemanticsInput): boolean {
+  return !pinnedDeviceOffline(input) && input.device_connector_readiness === "setup_required";
 }
 
 /** The most recent attempt failed, or a failure episode is underway. */
@@ -168,6 +189,7 @@ function nonCollectorAttention(
   input: FeedHealthSemanticsInput
 ): FeedAttentionState {
   if (needsAuth(input)) return "needs_auth";
+  if (setupRequired(input)) return "setup_required";
   if (isPaused(input)) return "paused";
   if (input.status === "error" || input.connection_status === "error") {
     return "misconfigured";
@@ -213,6 +235,8 @@ export function deriveFeedHealthSemantics(
   let attention: FeedAttentionState;
   if (needsAuth(input)) {
     attention = "needs_auth";
+  } else if (setupRequired(input)) {
+    attention = "setup_required";
   } else if (isPaused(input)) {
     attention = "paused";
   } else if (input.status === "error" || input.connection_status === "error") {

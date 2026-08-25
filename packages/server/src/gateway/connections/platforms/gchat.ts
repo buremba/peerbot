@@ -25,7 +25,7 @@ export const GOOGLE_CHAT_WELCOME_TEXT = [
   "Welcome 👋",
   "",
   "In a direct message, just ask. In a space, mention this app when you want a response.",
-  "Use `/help` at any time to see commands and setup options.",
+  "Use `/lobu help` at any time to see commands and setup options.",
 ].join("\n");
 
 function isObject(value: unknown): value is JsonObject {

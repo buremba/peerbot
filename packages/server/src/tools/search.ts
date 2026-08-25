@@ -922,7 +922,7 @@ async function searchImpl(
   });
 
   // Preserve compatibility with reviewer prompts and user language such as
-  // "open memory 4939822". The public schema already accepts a query string,
+  // "open memory 1234". The public schema already accepts a query string,
   // so this server-side exact-read fast path fixes existing clients without a
   // metadata rescan. The canonical knowledge reader enforces tenant, connector,
   // entity-policy, and supersede-chain visibility before anything is returned.

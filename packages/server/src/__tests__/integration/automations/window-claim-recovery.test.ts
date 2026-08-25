@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { clearAuthCacheForTests } from '../../../auth';
 import { closeDbSingleton, type DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
@@ -317,6 +318,7 @@ describe('Automation window claim and recovery', () => {
   it('loads claimed source context with a one-connection database pool', async () => {
     const previousPoolMax = process.env.DB_POOL_MAX;
     await closeDbSingleton();
+    clearAuthCacheForTests();
     process.env.DB_POOL_MAX = '1';
     try {
       const claimed = (await manageAutomations(
@@ -331,6 +333,7 @@ describe('Automation window claim and recovery', () => {
       expect(claimed.context.window_start).toBe(dayStart(1).toISOString());
     } finally {
       await closeDbSingleton();
+      clearAuthCacheForTests();
       if (previousPoolMax === undefined) delete process.env.DB_POOL_MAX;
       else process.env.DB_POOL_MAX = previousPoolMax;
     }

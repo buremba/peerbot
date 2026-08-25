@@ -26,6 +26,13 @@ import {
 	describeDeviceLastSeen,
 } from "../../../../utils/device-liveness";
 import { buildConnectionsUrl } from "../../../../utils/url-builder";
+import {
+	describeDeviceConnectorSetupRequired,
+	findDeviceConnectorReadiness,
+	loadDeviceConnectorReadiness,
+	type DeviceConnectorReadiness,
+	type DeviceConnectorReadinessIndex,
+} from "../../../../worker-api/device-connector-readiness";
 import { isSystemContext } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
@@ -60,12 +67,14 @@ type OperationTargetRow = {
 	device_online: boolean;
 	device_last_seen_at: Date | string | null;
 	device_bound: boolean;
+	device_owner_user_id: string | null;
 	auth_profile_kind: string | null;
 	auth_profile_slug: string | null;
 	auth_data: Record<string, unknown> | null;
 };
 function executionTargetFromRow(
 	row: OperationTargetRow,
+	deviceReadiness?: DeviceConnectorReadiness,
 ): InternalExecutionTarget {
 	const base = {
 		connection_id: Number(row.id),
@@ -84,6 +93,43 @@ function executionTargetFromRow(
 			status: row.status,
 			executable: false,
 			reason: `Connection status is ${row.status}.`,
+		};
+	}
+	if (row.device_worker_id && !row.device_online) {
+		// Fleet readiness cannot override an execution pin: dispatch remains
+		// restricted to this exact device even when another owner device is ready.
+		return {
+			...base,
+			status: "device_offline",
+			executable: false,
+			reason: `The connection's paired device is offline (${describeDeviceLastSeen(
+				row.device_last_seen_at,
+			)}).`,
+		};
+	}
+	if (deviceReadiness?.state === "setup_required") {
+		return {
+			...base,
+			status: "setup_required",
+			executable: false,
+			reason: describeDeviceConnectorSetupRequired(deviceReadiness),
+		};
+	}
+	if (deviceReadiness?.state === "ready") {
+		return {
+			...base,
+			status: "ready",
+			executable: true,
+			reason: "Connection is ready for execution.",
+		};
+	}
+	if (deviceReadiness?.state === "device_offline") {
+		return {
+			...base,
+			status: "device_offline",
+			executable: false,
+			reason:
+				"No online device is advertising the connector's current manifest.",
 		};
 	}
 	if (row.device_bound && !row.device_online) {
@@ -110,11 +156,21 @@ function executionTargetFromRow(
 
 function groupExecutionTargets(
 	rows: OperationTargetRow[],
+	deviceReadiness: DeviceConnectorReadinessIndex,
 ): Map<string, InternalExecutionTarget[]> {
 	const grouped = new Map<string, InternalExecutionTarget[]>();
 	for (const row of rows) {
 		const targets = grouped.get(row.connector_key) ?? [];
-		targets.push(executionTargetFromRow(row));
+		targets.push(
+			executionTargetFromRow(
+				row,
+				findDeviceConnectorReadiness(deviceReadiness, {
+					ownerUserId: row.device_owner_user_id,
+					connectorKey: row.connector_key,
+					deviceWorkerId: row.device_worker_id,
+				}),
+			),
+		);
 		grouped.set(row.connector_key, targets);
 	}
 	return grouped;
@@ -133,6 +189,9 @@ function operationReadinessReason(
 	}
 	if (readiness === "device_offline") {
 		return "Every visible active device-bound connection is offline.";
+	}
+	if (readiness === "setup_required") {
+		return "Connector setup is incomplete on every otherwise-available device.";
 	}
 	if (readiness === "scope_upgrade_required") {
 		return "This operation needs OAuth scopes the connection has not granted. Reauthorize to grant them.";
@@ -520,6 +579,7 @@ async function loadVisibleOperationTargets(
 		        c.status,
 		        c.config,
 		        c.device_worker_id,
+		        COALESCE(dw.user_id, (o.metadata::jsonb)->>'personal_org_for_user_id') AS device_owner_user_id,
 		        ap.profile_kind AS auth_profile_kind,
 		        ap.slug AS auth_profile_slug,
 		        ap.auth_data AS auth_data,
@@ -527,6 +587,7 @@ async function loadVisibleOperationTargets(
 		        dw.last_seen_at AS device_last_seen_at,
 		        (c.device_worker_id IS NOT NULL OR latest.runtime IS NOT NULL) AS device_bound
 		 FROM connections c
+		 JOIN "organization" o ON o.id = c.organization_id
 		 LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
 		 LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
 		 LEFT JOIN LATERAL (
@@ -595,7 +656,15 @@ export async function handleListAvailable(
 		};
 	}
 
-	const targetsByConnector = groupExecutionTargets(targetRows);
+	const deviceReadiness = await loadDeviceConnectorReadiness({
+		sql: getDb(),
+		targets: targetRows.map((row) => ({
+			ownerUserId: row.device_owner_user_id,
+			connectorKey: row.connector_key,
+			deviceWorkerId: row.device_worker_id,
+		})),
+	});
+	const targetsByConnector = groupExecutionTargets(targetRows, deviceReadiness);
 
   // A `disabled` connector_action effect turns an operation OFF for this principal
   // — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval

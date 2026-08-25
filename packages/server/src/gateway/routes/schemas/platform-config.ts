@@ -200,7 +200,7 @@ const GoogleChatConfigSchema = Type.Object({
 		Type.String({
 			pattern: "^(?:[1-9][0-9]{0,2}|1000)$",
 			description:
-				"Google Chat command ID (1-1000) mapped to Lobu help for this project.",
+				"Google Chat command ID (1-1000) mapped to this project's registered /lobu command (or legacy /help command).",
 		}),
 	),
 	userName: Type.Optional(

@@ -9,7 +9,9 @@ import type { ConnectorMetadata } from '../utils/connector-compiler';
 import {
   isChromeNamespaceConnectorKey,
   isLegacyNativeChromeExtensionConnectorKey,
+  legacyNativeChromeExtensionRequiredCapability,
 } from '../utils/connector-execution-placement';
+import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import logger from '../utils/logger';
 
 const MAX_MANIFESTS_PER_POLL = 32;
@@ -27,8 +29,12 @@ export interface StoredDeviceManifest {
 export interface DeviceConnectorSource {
   key: string;
   requiredCapability: string;
-  /** Fresh, capable devices advertising the exact manifest selected for this key. */
+  /** Retained, capable devices advertising the exact manifest selected for this key. */
   advertiserDeviceIds: string[];
+  /** Online devices advertising the selected manifest, whether setup is complete or not. */
+  onlineManifestDeviceIds: string[];
+  /** Online devices advertising the selected manifest and its required capability. */
+  onlineAdvertiserDeviceIds: string[];
   feedKeys: string[];
   metadata: ConnectorMetadata;
   sourcePath: string;
@@ -132,13 +138,16 @@ function validateDeviceConnectorManifestsInternal(
       if (!connectorKeyAllowedForPlatform(platform, manifest.key)) {
         throw new Error(`connector key '${manifest.key}' is not allowed for platform '${platform}'`);
       }
+      const legacyChromeCapability =
+        platform === 'chrome-extension'
+          ? legacyNativeChromeExtensionRequiredCapability(manifest.key)
+          : null;
       if (
-        platform === 'chrome-extension' &&
-        isLegacyNativeChromeExtensionConnectorKey(manifest.key) &&
-        manifest.required_capability !== 'browser.scripting'
+        legacyChromeCapability !== null &&
+        manifest.required_capability !== legacyChromeCapability
       ) {
         throw new Error(
-          `chrome-extension connector '${manifest.key}' requires required_capability 'browser.scripting'`
+          `chrome-extension connector '${manifest.key}' requires required_capability '${legacyChromeCapability}'`
         );
       }
       if (!manifest.runtime.platforms.includes(platform)) {
@@ -178,7 +187,8 @@ export async function getDeviceManifestSourcesForUser(params: {
   connectorKey?: string;
 }): Promise<DeviceConnectorSource[]> {
   const rows = (await params.sql`
-    SELECT id, platform, capabilities, connector_manifests
+    SELECT id, platform, capabilities, connector_manifests,
+           last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS}) AS online
     FROM device_workers
     WHERE user_id = ${params.userId}
       AND last_seen_at > now() - '7 days'::interval
@@ -191,12 +201,14 @@ export async function getDeviceManifestSourcesForUser(params: {
     platform: string | null;
     capabilities: unknown;
     connector_manifests: unknown;
+    online: boolean;
   }>;
 
   type ManifestCandidate = {
     stored: StoredDeviceManifest;
     deviceId: string;
     platform: string | null;
+    online: boolean;
   };
   const candidates: ManifestCandidate[] = [];
   const liveCapabilities = new Map<string, Set<string>>();
@@ -210,7 +222,7 @@ export async function getDeviceManifestSourcesForUser(params: {
     for (const value of Object.values(map)) {
       const stored = parseStoredManifest(value);
       if (!stored) continue;
-      candidates.push({ stored, deviceId: row.id, platform: row.platform });
+      candidates.push({ stored, deviceId: row.id, platform: row.platform, online: row.online });
       const existing = winners.get(stored.manifest.key);
       if (!existing || compareManifestWinner(stored, existing) > 0) {
         winners.set(stored.manifest.key, stored);
@@ -229,6 +241,8 @@ export async function getDeviceManifestSourcesForUser(params: {
       (candidate) =>
         liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
     );
+    const onlineManifestCandidates = exactCandidates.filter((candidate) => candidate.online);
+    const onlineAdvertiserCandidates = advertiserCandidates.filter((candidate) => candidate.online);
     // Provenance must describe the platform that actually validated and
     // advertised this manifest. `runtime.platforms` is a compatibility set, not
     // an ordered ownership declaration; using element zero can misroute a valid
@@ -259,6 +273,12 @@ export async function getDeviceManifestSourcesForUser(params: {
         key: stored.manifest.key,
         requiredCapability: stored.manifest.required_capability,
         advertiserDeviceIds: advertiserCandidates
+          .map((candidate) => candidate.deviceId)
+          .sort(),
+        onlineManifestDeviceIds: onlineManifestCandidates
+          .map((candidate) => candidate.deviceId)
+          .sort(),
+        onlineAdvertiserDeviceIds: onlineAdvertiserCandidates
           .map((candidate) => candidate.deviceId)
           .sort(),
         feedKeys: manifestFeedKeys(stored.manifest),
@@ -526,10 +546,10 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
     );
   }
   if (platform === 'chrome-extension') {
-    // Compatibility cutover: the extension intentionally keeps the legacy
-    // internal key so the existing connection/feed/event identity survives.
-    // This is the sole non-chrome namespace admitted for Chrome; validation
-    // above additionally binds it to browser.scripting.
+    // The extension intentionally keeps the stable connector key so existing
+    // connection/feed/event identity survives the move from Mac to Chrome.
+    // This is the sole non-chrome namespace admitted for Chrome; capability
+    // semantics remain manifest-declared and platform-allowlisted.
     return (
       isChromeNamespaceConnectorKey(key) || isLegacyNativeChromeExtensionConnectorKey(key)
     );

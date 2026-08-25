@@ -35,12 +35,18 @@
  * read is uncopied, not un-transmitted.
  */
 
+import { ToolError } from '@lobu/core';
 import { getDb, pgTextArray } from '../db/client';
 import { createConnectorOperationRun } from '../runs/queue-service';
 import { classifyRunOutcome } from '../runs/run-outcome';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
 import { DEVICE_ONLINE_WINDOW_SECONDS, describeDeviceLastSeen } from '../utils/device-liveness';
 import logger from '../utils/logger';
+import {
+  describeDeviceConnectorSetupRequired,
+  findDeviceConnectorReadiness,
+  loadDeviceConnectorReadiness,
+} from '../worker-api/device-connector-readiness';
 import { DEVICE_FEED_READ_ACTION_KEY } from './device-feed-read-protocol';
 
 /**
@@ -92,8 +98,12 @@ export interface DeviceFeedReadParams {
   feedConfig: Record<string, unknown>;
   connectionId: number;
   connectorKey: string;
+  /** User whose device fleet is authorized to serve this connection. */
+  deviceOwnerUserId: string | null;
   /** `connections.device_worker_id` — the execution pin, or null when unpinned. */
   deviceWorkerId: string | null;
+  /** Stored feed lifecycle. Setup diagnostics may still be read while auto-paused. */
+  feedStatus: string;
   /** `connector_definitions.required_capability` for the capability pre-check. */
   requiredCapability: string | null;
   query?: string;
@@ -224,6 +234,30 @@ async function describeUnservableDevice(
   p: DeviceFeedReadParams
 ): Promise<string | null> {
   const sql = getDb();
+  const readinessIndex = await loadDeviceConnectorReadiness({
+    sql,
+    targets: [
+      {
+        ownerUserId: p.deviceOwnerUserId,
+        connectorKey: p.connectorKey,
+        deviceWorkerId: p.deviceWorkerId,
+      },
+    ],
+  });
+  const connectorReadiness = findDeviceConnectorReadiness(readinessIndex, {
+    ownerUserId: p.deviceOwnerUserId,
+    connectorKey: p.connectorKey,
+    deviceWorkerId: p.deviceWorkerId,
+  });
+  if (connectorReadiness?.state === 'setup_required') {
+    throw new ToolError(
+      'PERMISSION',
+      `Live read of feed '${p.feedKey}' requires setup. ${describeDeviceConnectorSetupRequired(
+        connectorReadiness
+      )}`
+    );
+  }
+
   if (p.deviceWorkerId) {
     // Reached THROUGH the connection, not by device id alone. The id comes off
     // a row this caller may not own end-to-end, and the diagnostic below quotes
@@ -331,7 +365,13 @@ export async function readDeviceFeed(
   if (unservable) {
     throw new Error(
       `Live read of feed '${p.feedKey}' is unavailable: ${unservable}. ` +
-        'Open the Lobu/Owletto app on the paired Mac and try again.'
+        'Open the paired device app and try again.'
+    );
+  }
+  if (p.feedStatus !== 'active') {
+    throw new ToolError(
+      'VALIDATION',
+      `Feed '${p.feedKey}' is ${p.feedStatus}; resume it before reading from its source.`
     );
   }
 

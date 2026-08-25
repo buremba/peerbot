@@ -215,15 +215,18 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
   // SQL seam uses.
   const vis = compileConnectionRowVisibility(p.scope, 'c');
   const feedRows = (await sql.unsafe(
-    `SELECT f.id, f.feed_key, f.config, f.pinned_version,
+    `SELECT f.id, f.feed_key, f.config, f.pinned_version, f.status AS feed_status,
             c.id AS connection_id, c.connector_key,
             c.auth_profile_id, c.app_auth_profile_id,
             c.device_worker_id,
+            COALESCE(pinned_dw.user_id, (o.metadata::jsonb)->>'personal_org_for_user_id') AS device_owner_user_id,
             COALESCE(c.config, '{}'::jsonb) AS connection_config,
             cd.version AS definition_version, cd.feed_operations,
             cd.mcp_config, cd.runtime, cd.required_capability, cd.has_compiled_code
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
+     JOIN "organization" o ON o.id = c.organization_id
+     LEFT JOIN device_workers pinned_dw ON pinned_dw.id = c.device_worker_id
      LEFT JOIN LATERAL (
        SELECT cd0.version, cd0.mcp_config, cd0.runtime, cd0.required_capability,
               COALESCE(cd0.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
@@ -281,7 +284,6 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
      WHERE f.id = $1
        AND f.organization_id = $2
        AND f.deleted_at IS NULL
-       AND f.status = 'active'
        AND c.deleted_at IS NULL
        AND c.status = 'active'
        ${vis}
@@ -292,6 +294,7 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
     feed_key: string;
     config: Record<string, unknown> | null;
     pinned_version: string | null;
+    feed_status: string;
     definition_version: string | null;
     feed_operations: unknown;
     connection_id: number;
@@ -299,6 +302,7 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
     device_worker_id: string | null;
+    device_owner_user_id: string | null;
     connection_config: Record<string, unknown>;
     mcp_config: Record<string, unknown> | null;
     runtime: Record<string, unknown> | null;
@@ -324,8 +328,53 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
   const feedConfig = (feed.config ?? {}) as Record<string, unknown>;
   remainingReadMs(p);
 
+  // Native device connectors (whatsapp.local, apple.*, os.shell, …) are
+  // metadata-only on the server: there is no compiled bundle to run, so their
+  // live reads are served natively over the device action queue. `runtime` is
+  // descriptive; the absence of executable code is the deciding fact.
+  // Bundled connectors may have no stored compiled_code, so include the bundle
+  // catalog in that check.
+  const hasConnectorCode =
+    feed.has_compiled_code === true || findBundledConnectorFile(feed.connector_key) !== null;
+  const metadataOnlyDeviceConnector = isMetadataOnlyDeviceConnector(
+    feed.runtime,
+    hasConnectorCode
+  );
+  // Preserve the existing active-only contract for ordinary source adapters.
+  // A metadata-only device feed gets one exception: its canonical readiness
+  // preflight may explain why reconciliation auto-paused it. It still cannot
+  // dispatch while paused.
+  if (feed.feed_status !== 'active' && !metadataOnlyDeviceConnector) {
+    throw new ToolError('NOT_FOUND', `feed '${p.feedId}' not found or not accessible`);
+  }
+
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
+
+  if (metadataOnlyDeviceConnector) {
+    remainingReadMs(p);
+    return readDeviceFeed({
+      organizationId: p.scope.organizationId,
+      feedId: Number(feed.id),
+      feedKey: feed.feed_key,
+      // Same precedence as the compiled path below: connection config first,
+      // feed config wins. No credentials — a device connector authenticates as
+      // the logged-in desktop app, and the worker never receives secrets.
+      feedConfig: mergeExecutionConfig(feed.connection_config, feedConfig),
+      connectionId: Number(feed.connection_id),
+      connectorKey: feed.connector_key,
+      deviceOwnerUserId: feed.device_owner_user_id,
+      deviceWorkerId: feed.device_worker_id,
+      feedStatus: feed.feed_status,
+      requiredCapability: feed.required_capability,
+      query: p.query,
+      cursor: p.cursor,
+      limit: p.limit,
+      offset: p.offset,
+      sort: p.sort,
+      signal: p.signal,
+    });
+  }
 
   const adapterResult = await readSourceFeedFromAdapter({
     organizationId: p.scope.organizationId,
@@ -345,49 +394,6 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
   });
   if (adapterResult) {
     return { ...adapterResult, columns: adapterResult.columns ?? [] };
-  }
-
-  // Native device connectors (whatsapp.local, apple.*, os.shell, …) are
-  // metadata-only on the server: there is no compiled bundle to run, so
-  // `resolveConnectorCodeForKey` below would throw. Their live reads are served
-  // natively by the paired device over the device action queue.
-  //
-  // The discriminator is runtime metadata AND the absence of compiled code, not
-  // `runtime != null` on its own: `runtime` is descriptive (platforms, nix
-  // inputs) and a compiled connector may legitimately carry it while still
-  // having a bundle. Such a connector keeps the compiled pushdown, which is a
-  // strictly better read path than a device round-trip. A pin is not part of
-  // this either — it says which machine executes, not whether server code
-  // exists.
-  //
-  // "Has code" is deliberately BROADER than the stored artifact: a BUNDLED
-  // connector ships as source in the image and legitimately has
-  // `connector_versions.compiled_code IS NULL` (resolveConnectorCode falls
-  // through to `findBundledConnectorFile`). Reading only the column would route
-  // every bundled connector that declares a runtime onto the device queue.
-  const hasConnectorCode =
-    feed.has_compiled_code === true || findBundledConnectorFile(feed.connector_key) !== null;
-  if (isMetadataOnlyDeviceConnector(feed.runtime, hasConnectorCode)) {
-    remainingReadMs(p);
-    return readDeviceFeed({
-      organizationId: p.scope.organizationId,
-      feedId: Number(feed.id),
-      feedKey: feed.feed_key,
-      // Same precedence as the compiled path below: connection config first,
-      // feed config wins. No credentials — a device connector authenticates as
-      // the logged-in desktop app, and the worker never receives secrets.
-      feedConfig: mergeExecutionConfig(feed.connection_config, feedConfig),
-      connectionId: Number(feed.connection_id),
-      connectorKey: feed.connector_key,
-      deviceWorkerId: feed.device_worker_id,
-      requiredCapability: feed.required_capability,
-      query: p.query,
-      cursor: p.cursor,
-      limit: p.limit,
-      offset: p.offset,
-      sort: p.sort,
-      signal: p.signal,
-    });
   }
 
   const compiledCode = await resolveConnectorCodeForKey(

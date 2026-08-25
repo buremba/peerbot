@@ -139,7 +139,7 @@ function validateDeviceConnectorManifestsInternal(
         !(manifest.key === 'whatsapp.local' && manifest.required_capability === 'browser.whatsapp')
       ) {
         throw new Error(
-          `chrome-extension connector '${manifest.key}' has an unsupported required_capability`
+          `chrome-extension connector '${manifest.key}' requires required_capability 'browser.scripting' or 'browser.whatsapp'`
         );
       }
       if (!manifest.runtime.platforms.includes(platform)) {

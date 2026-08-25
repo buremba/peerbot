@@ -22,7 +22,6 @@ export const BROWSER_CAPABILITIES = [
   "browser.downloads",
   "browser.notifications",
   "browser.debugger",
-  "browser.whatsapp",
   // browser.cookies intentionally absent in v1 — high-trust, not approved
 ] as const;
 
@@ -83,7 +82,7 @@ const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {
     ...MAC_DEVICE_CAPABILITIES,
   ],
   ios: IOS_CAPABILITIES,
-  "chrome-extension": BROWSER_CAPABILITIES,
+  "chrome-extension": [...BROWSER_CAPABILITIES, "browser.whatsapp"],
   headless: HEADLESS_CAPABILITIES,
 };
 

@@ -175,83 +175,18 @@ jobs:
             fi
           done
 
-          # 6. PRODUCT_BUNDLE_IDENTIFIER in project.pbxproj is pinned PER BUILD
-          #    CONFIGURATION. CFBundleIdentifier in Info.plist resolves to
-          #    $(PRODUCT_BUNDLE_IDENTIFIER) at build time, so the real value
-          #    lives in the pbxproj build settings. The URL scheme, Keychain
-          #    service name, and Sparkle update path are all keyed off this —
-          #    a change to the Release identity breaks the upgrade contract for
-          #    every installed app.
+          # 6. PRODUCT_BUNDLE_IDENTIFIER is pinned PER BUILD CONFIGURATION:
+          #    Release must be com.owletto.mac, Debug may additionally be the
+          #    build-scoped com.owletto.mac.debug. The URL scheme, Keychain
+          #    service name, and Sparkle update path are keyed off the Release
+          #    identity, so drift there breaks every installed app's upgrade.
           #
-          #    Release must be exactly com.owletto.mac. Debug is allowed to
-          #    carry the build-scoped com.owletto.mac.debug identity so a
-          #    developer build installs and stores credentials beside the
-          #    Release app instead of colliding with it.
-          #
-          #    Checked per configuration rather than as a set of distinct
-          #    values: a set check cannot tell "Release=mac, Debug=mac.debug"
-          #    apart from the swapped "Release=mac.debug, Debug=mac", and the
-          #    swapped form would ship a release DMG under the debug identity.
-          EXPECTED_RELEASE_BUNDLE_ID="com.owletto.mac"
-          EXPECTED_DEBUG_BUNDLE_ID="com.owletto.mac.debug"
-
-          # Emit "<config name>=<bundle id>" for every XCBuildConfiguration
-          # block that sets one. The setting always precedes the block's
-          # closing `name = <config>;` line.
-          config_ids=$(awk '
-            /isa = XCBuildConfiguration;/ { id = "" }
-            /PRODUCT_BUNDLE_IDENTIFIER = / {
-              line = $0
-              sub(/.*PRODUCT_BUNDLE_IDENTIFIER = /, "", line)
-              sub(/;.*/, "", line)
-              id = line
-            }
-            /^[[:space:]]*name = / {
-              if (id != "") {
-                cfg = $0
-                sub(/.*name = /, "", cfg)
-                sub(/;.*/, "", cfg)
-                print cfg "=" id
-                id = ""
-              }
-            }
-          ' packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj)
-
-          # An empty result means the setting moved, was renamed, or the awk
-          # no longer matches the file's shape — fail loudly instead of
-          # vacuously passing a guard that checked nothing.
-          if [ -z "$config_ids" ]; then
-            echo "::error::no PRODUCT_BUNDLE_IDENTIFIER found per build configuration in project.pbxproj — the bundle id guard is not actually checking anything"
-            exit 1
-          fi
-
-          # The Release configuration is the one that ships; it must exist.
-          if ! grep -q '^Release=' <<<"$config_ids"; then
-            echo "::error::no Release build configuration sets PRODUCT_BUNDLE_IDENTIFIER (got: $(tr '\n' ' ' <<<"$config_ids"))"
-            exit 1
-          fi
-
-          while IFS='=' read -r cfg id; do
-            [ -n "$cfg" ] || continue
-            case "$cfg" in
-              Release)
-                if [ "$id" != "$EXPECTED_RELEASE_BUNDLE_ID" ]; then
-                  echo "::error::Release PRODUCT_BUNDLE_IDENTIFIER is '$id', expected '${EXPECTED_RELEASE_BUNDLE_ID}'. Bundle id drift breaks installed-app upgrades."
-                  exit 1
-                fi
-                ;;
-              Debug)
-                if [ "$id" != "$EXPECTED_RELEASE_BUNDLE_ID" ] && [ "$id" != "$EXPECTED_DEBUG_BUNDLE_ID" ]; then
-                  echo "::error::Debug PRODUCT_BUNDLE_IDENTIFIER is '$id', expected '${EXPECTED_RELEASE_BUNDLE_ID}' or '${EXPECTED_DEBUG_BUNDLE_ID}'."
-                  exit 1
-                fi
-                ;;
-              *)
-                echo "::error::unexpected build configuration '$cfg' sets PRODUCT_BUNDLE_IDENTIFIER='$id'; only Debug and Release are known."
-                exit 1
-                ;;
-            esac
-          done <<<"$config_ids"
+          #    The rule lives in a script rather than inline here so it can be
+          #    tested: a release-only workflow step never executes on a PR, so
+          #    an inline guard is unverifiable until a tag run exercises it.
+          #    See scripts/__tests__/check-mac-bundle-ids.test.ts.
+          node scripts/check-mac-bundle-ids.mjs \
+            packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj
 
           # 7. Sparkle public key must still be in Info.plist. Installed apps
           #    verify update signatures against SUPublicEDKey; if the key is

@@ -148,14 +148,8 @@ function deviceOffline(input: FeedHealthSemanticsInput): boolean {
   // A connection pin is narrower than fleet readiness. Another ready device
   // cannot execute a feed that remains pinned to this offline device.
   if (pinnedDeviceOffline(input)) return true;
-  if (input.device_connector_readiness != null) {
-    return input.device_connector_readiness === "device_offline";
-  }
-  return (
-    input.device_worker_id != null &&
-    input.device_worker_id.length > 0 &&
-    input.device_online === false
-  );
+  if (input.device_connector_readiness == null) return false;
+  return input.device_connector_readiness === "device_offline";
 }
 
 function setupRequired(input: FeedHealthSemanticsInput): boolean {

@@ -177,15 +177,20 @@ jobs:
 
           # 6. PRODUCT_BUNDLE_IDENTIFIER is pinned PER BUILD CONFIGURATION:
           #    Release must be com.owletto.mac, Debug may additionally be the
-          #    build-scoped com.owletto.mac.debug. The URL scheme, Keychain
-          #    service name, and Sparkle update path are keyed off the Release
-          #    identity, so drift there breaks every installed app's upgrade.
+          #    build-scoped com.owletto.mac.debug. The bundle id is the app's
+          #    identity to macOS, so a release shipped under a different id
+          #    installs a second copy beside the existing app rather than
+          #    upgrading it, stranding every install with no update path.
           #
           #    The rule lives in a script rather than inline here so it can be
           #    tested: a release-only workflow step never executes on a PR, so
           #    an inline guard is unverifiable until a tag run exercises it.
           #    See scripts/__tests__/check-mac-bundle-ids.test.ts.
-          node scripts/check-mac-bundle-ids.mjs \
+          # `bun`, not `node`: this job pins bun via setup-bun and never runs
+          # actions/setup-node, so `node` would be whatever the macos-15 image
+          # happens to preinstall. Every other `node scripts/*.mjs` call in
+          # this repo is on an ubuntu runner where node is guaranteed.
+          bun scripts/check-mac-bundle-ids.mjs \
             packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj
 
           # 7. Sparkle public key must still be in Info.plist. Installed apps

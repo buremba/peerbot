@@ -4,17 +4,25 @@
  *
  * `PRODUCT_BUNDLE_IDENTIFIER` in `project.pbxproj` is the real bundle id:
  * `CFBundleIdentifier` in Info.plist resolves to `$(PRODUCT_BUNDLE_IDENTIFIER)`
- * at build time. The URL scheme, the Keychain service name, and the Sparkle
- * update path are all keyed off it, so the Release identity is part of the
- * upgrade contract for every installed app — change it and existing installs
- * stop updating and lose their stored secrets.
+ * at build time.
+ *
+ * The bundle id IS the app's identity to macOS. LaunchServices keys on it, code
+ * signing is scoped to it, and Sparkle replaces the bundle it is embedded in —
+ * so shipping a release under a different id does not upgrade the installed
+ * app, it installs a second copy beside it and strands the original with no
+ * update path. That is the whole reason the Release value is pinned here.
+ *
+ * (It is NOT what keys the URL scheme or the Keychain: Info.plist registers the
+ * static scheme `owletto` and the bundle id appears only as CFBundleURLName,
+ * and KeychainTokenStore hardcodes the service `ai.lobu.mac`. Isolating the
+ * Debug build's stored secrets is a separate, context-keyed mechanism.)
  *
  * The identity is pinned PER BUILD CONFIGURATION rather than globally:
  *
  *   Release  must be exactly `com.owletto.mac`.
  *   Debug    may be `com.owletto.mac` or the build-scoped
- *            `com.owletto.mac.debug`, so a developer build installs and stores
- *            credentials beside the Release app instead of colliding with it.
+ *            `com.owletto.mac.debug`, so a developer build is a distinct app to
+ *            macOS and installs beside the Release app instead of replacing it.
  *
  * Why per-configuration and not "the set of distinct values must be
  * {com.owletto.mac, com.owletto.mac.debug}": a set cannot tell

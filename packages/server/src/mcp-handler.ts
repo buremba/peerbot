@@ -286,6 +286,7 @@ function mcpAppUiMeta(
   authCtx: SessionAuthContext,
   app: (typeof MCP_APP_RESOURCES)[string]
 ): {
+  domain?: string;
   csp: {
     connectDomains: string[];
     resourceDomains: string[];
@@ -296,6 +297,23 @@ function mcpAppUiMeta(
 } {
   const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
   return {
+    // `_meta.ui.domain` is the view's dedicated sandbox origin, and it is not a
+    // request to serve the view from ours: the host derives its own sandbox
+    // hostname from it (ChatGPT renders at
+    // `<domain>.web-sandbox.oaiusercontent.com`) and owns the resulting
+    // document. ChatGPT requires the field for submission, and the derived
+    // subdomain is what its fullscreen punch-out needs. The value must be
+    // unique per app, so it is the one origin that already identifies this
+    // deployment.
+    //
+    // Only a host that negotiated the UI extension gets it. Claude renders the
+    // same App without advertising the extension, but treats the field as an
+    // unusable iframe origin and leaves the card on a spinner. Omitted, its
+    // view lands on the host's default per-conversation origin — where the card
+    // rendered before this field existed. The negotiated capability is
+    // persisted with the MCP session, so the decision survives cross-replica
+    // recovery without a user-agent or client-name allowlist.
+    ...(authCtx.supportsMcpApps ? { domain: publicOrigin } : {}),
     csp: {
       ...app.csp,
       resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],

@@ -150,13 +150,20 @@ describe('worker-token MCP auth without the direct-auth header', () => {
     });
   });
 
-  it('does not promote a worker token on non-MCP routes', async () => {
-    const response = await post(`/api/${org.slug}/query_sdk`, {
-      body: { sql: 'return lobu.organization.id' },
-      token: workerToken,
-      headers: { 'X-Lobu-Memory-Direct-Auth': '1' },
-    });
-    expect(response.status).toBe(401);
+  it('fast-rejects a worker token on non-MCP routes with or without the direct-auth header', async () => {
+    for (const headers of [undefined, { 'X-Lobu-Memory-Direct-Auth': '1' }]) {
+      const label = headers ? 'with direct-auth header' : 'headerless';
+      const response = await post(`/api/${org.slug}/query_sdk`, {
+        body: { sql: 'return lobu.organization.id' },
+        token: workerToken,
+        headers,
+      });
+      expect(response.status, label).toBe(401);
+      expect(await response.json(), label).toMatchObject({
+        error: 'invalid_token',
+        error_description: 'Worker tokens are only valid on MCP routes',
+      });
+    }
   });
 
   it('a bearer that is not a worker token still falls through to OAuth auth', async () => {

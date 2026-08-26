@@ -1042,7 +1042,9 @@ export class MessageConsumer {
         logger.info({ traceId, deploymentName }, "Worker is ready");
       },
       {
-        maxRetries: 3,
+        // Three total startup attempts fit inside the 60s turn-liveness
+        // deadline when each readiness probe uses the 15s default timeout.
+        maxRetries: 2,
         baseDelay: 2000,
         strategy: "linear",
         jitter: true,

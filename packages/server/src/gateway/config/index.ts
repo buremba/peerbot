@@ -25,7 +25,11 @@ const GATEWAY_DEFAULTS = {
   PUBLIC_GATEWAY_URL: "",
   QUEUE_DIRECT_MESSAGE: "direct_message",
   QUEUE_MESSAGE_QUEUE: "message_queue",
-  WORKER_STARTUP_TIMEOUT_SECONDS: 90,
+  // A worker normally establishes its local SSE connection in under two
+  // seconds. Bound the cold-start watchdog below the 60s turn-liveness
+  // deadline so a wedged child can be recycled and retried while the original
+  // user turn is still live.
+  WORKER_STARTUP_TIMEOUT_SECONDS: 15,
   WORKER_IDLE_CLEANUP_MINUTES: 60,
   MAX_WORKER_DEPLOYMENTS: 100,
   WORKER_STALE_TIMEOUT_MINUTES: 10,

@@ -16,7 +16,8 @@
  * 11. Child-process exit during killWorker (double-exit safety).
  * 12. invalidateGrantSyncCache / clearAllGrantSyncCaches.
  * 13. generateDeploymentName / buildCanonicalConversationKey determinism.
- * 14. backoffSeconds correctness.
+ * 14. Worker startup readiness watchdog.
+ * 15. backoffSeconds correctness.
  */
 
 import {
@@ -591,7 +592,81 @@ describe("maxDeployments concurrency limit", () => {
 });
 
 // ============================================================================
-// 6. WORKSPACE DIR CREATION
+// 6. WORKER STARTUP READINESS
+// ============================================================================
+
+describe("worker startup readiness", () => {
+  test("requires an authenticated worker connection before reporting ready", async () => {
+    const mgr = makeManager({
+      worker: { ...TEST_CONFIG.worker, startupTimeoutSeconds: 0.2 },
+    });
+    let connected = false;
+    mgr.setDeploymentReadinessProbe(() => connected);
+    const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+    try {
+      setTimeout(() => {
+        connected = true;
+      }, 10);
+      await mgr.ensureDeployment(
+        "worker-ready",
+        "user-1",
+        "user-1",
+        makePayload(),
+      );
+      expect(await mgr.listDeployments()).toHaveLength(1);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+
+  test("recycles a spawned child that never connects so a retry can start fresh", async () => {
+    const mgr = makeManager({
+      worker: { ...TEST_CONFIG.worker, startupTimeoutSeconds: 0.001 },
+    });
+    mgr.setDeploymentReadinessProbe(() => false);
+    const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+    try {
+      await expect(
+        mgr.ensureDeployment(
+          "worker-stuck",
+          "user-1",
+          "user-1",
+          makePayload(),
+        ),
+      ).rejects.toThrow("did not connect");
+      expect(await mgr.listDeployments()).toHaveLength(0);
+      expect(mockChildProcesses.at(-1)?.killed).toBe(true);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+
+  test("recycles an existing child that remains disconnected on scale-up", async () => {
+    const mgr = makeManager({
+      worker: { ...TEST_CONFIG.worker, startupTimeoutSeconds: 0.001 },
+    });
+    const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+    try {
+      await mgr.ensureDeployment(
+        "worker-stale",
+        "user-1",
+        "user-1",
+        makePayload(),
+      );
+      mgr.setDeploymentReadinessProbe(() => false);
+      await expect(mgr.scaleDeployment("worker-stale", 1)).rejects.toThrow(
+        "did not connect",
+      );
+      expect(await mgr.listDeployments()).toHaveLength(0);
+      expect(mockChildProcesses.at(-1)?.killed).toBe(true);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+});
+
+// ============================================================================
+// 7. WORKSPACE DIR CREATION
 // ============================================================================
 
 describe("workspace dir creation", () => {

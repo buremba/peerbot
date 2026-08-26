@@ -335,6 +335,25 @@ describe("method-metadata", () => {
 		);
 	});
 
+	it("documents the nullable payload of both entitySchema getters", () => {
+		// Unlike entities.get, agents.get and conversations.get — which throw 404
+		// when the row is missing — these two report "not found" as a null payload
+		// field. The wrapper itself is always truthy, so `if (await getType(slug))`
+		// silently reports every missing type as present.
+		const nullable: Array<[string, string, string]> = [
+			["entitySchema.getType", "entity_type", "'company'"],
+			["entitySchema.getRelType", "relationship_type", "'works-at'"],
+		];
+		for (const [path, field, slug] of nullable) {
+			const meta = METHOD_METADATA[path];
+			expect(meta.summary, path).toContain(`nullable \`${field}\` field`);
+			expect(meta.summary, path).toContain("do not truth-test the wrapper");
+			expect(meta.example ?? "", path).toContain(`const { ${field} }`);
+			expect(meta.example ?? "", path).toContain(`${path}(${slug})`);
+			expect(meta.example ?? "", path).toContain("null when absent");
+		}
+	});
+
 	it("documents the exact positional signature AND the accepted object form for every positional-id method", () => {
 		// #2046: these methods take a positional id at runtime but were described
 		// like named-object methods, so discovery and runtime disagreed. Every one

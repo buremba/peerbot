@@ -452,6 +452,8 @@ const HOME_FEED_COMMENT_COUNT_TEXT_SELECTOR =
   ':scope:not([id^="replaceableComment_"]) div:has(+ hr + div button[aria-label="Open reactions menu"]):not([id^="replaceableComment_"] *) > div:last-child > div:first-child, .social-details-social-counts__comments, .social-details-social-counts__comments-count';
 const HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR =
   '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comment" i]:not([id^="replaceableComment_"] *), [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)';
+const HOME_FEED_POST_CONTROL_SELECTOR =
+  '[role="button"]:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *), button:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *), a:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *)';
 
 /**
  * Selectors for the virtualized linkedin.com/feed/ DOM. Home-feed posts are
@@ -474,7 +476,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
       // Keep this aligned with the post-level comment count fields below. The
       // count is not always interactive: LinkedIn also renders it as a plain
       // counter wrapper or an aria-labelled span.
-      selector: `${HOME_FEED_COMMENT_COUNT_TEXT_SELECTOR}, ${HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR}, [role="button"], button, a`,
+      selector: `${HOME_FEED_COMMENT_COUNT_TEXT_SELECTOR}, ${HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR}, ${HOME_FEED_POST_CONTROL_SELECTOR}`,
       textRegex: "^\\d[\\d,.]*(?:\\s*[kmb])?\\s+comments?",
       textRegexFlags: "i",
       regex: "(\\d[\\d,.]*(?:\\s*[kmb])?)\\s+comments?",

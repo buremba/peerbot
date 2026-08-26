@@ -44,7 +44,10 @@ import {
 	SelectOption,
 	Table,
 } from "chat";
-import { templateEventActionId } from "../interactions/template-event-actions";
+import {
+	resolveTemplateInteraction,
+	templateEventActionId,
+} from "../interactions/template-event-actions";
 import { resolveEntityRender } from "../utils/default-entity-template";
 import { escapeSlackText } from "../utils/slack-text";
 import { toAbsolutePermalink } from "../utils/url-builder";
@@ -163,7 +166,8 @@ function routedActionId(
 	},
 ): string | null {
 	if (isRoutableAction(action)) return action;
-	return eventActions?.interactions[action]
+	if (!eventActions) return null;
+	return resolveTemplateInteraction(eventActions.interactions, action)
 		? templateEventActionId(eventActions.sourceEventId, action)
 		: null;
 }

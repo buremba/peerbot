@@ -25,7 +25,7 @@ import { parseAutomationRunConversationId } from '../../gateway/permissions/auto
 import type { Env } from '../../index';
 import {
   canIssueTemplateActionCapability,
-  issueTemplateActionCapability,
+  issueTemplateActionCapabilityWindow,
   TEMPLATE_ACTION_CAPABILITY_META_KEY,
 } from '../../interactions/template-action-capability';
 import { getLobuCoreServices } from '../../lobu/gateway';
@@ -908,8 +908,22 @@ async function getContentImpl(
 
     const eventIds = interactiveEventIds(contentItems);
     if (eventIds.length > 0 && canIssueTemplateActionCapability(ctx)) {
+      const issued = issueTemplateActionCapabilityWindow(eventIds, ctx);
+      if (!issued) {
+        result.hints = [
+          ...(result.hints ?? []),
+          'Interactive actions could not be enabled for this page: this host\'s session identifiers leave no room for the capability token.',
+        ];
+        return result;
+      }
+      if (issued.sourceEventIds.length < eventIds.length) {
+        result.hints = [
+          ...(result.hints ?? []),
+          `Interactive actions are enabled for the first ${issued.sourceEventIds.length} interactive results. Paginate or narrow the result set to act on later items.`,
+        ];
+      }
       return attachMcpResultMeta(result, {
-        [TEMPLATE_ACTION_CAPABILITY_META_KEY]: issueTemplateActionCapability(eventIds, ctx),
+        [TEMPLATE_ACTION_CAPABILITY_META_KEY]: issued.token,
       });
     }
     return result;

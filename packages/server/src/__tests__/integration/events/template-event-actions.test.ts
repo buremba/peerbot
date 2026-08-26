@@ -10,6 +10,7 @@ import {
 import { invokeTemplateEventAction } from "../../../interactions/template-event-actions";
 import {
 	assertTemplateActionCapability,
+	MAX_TEMPLATE_ACTION_SOURCE_EVENTS,
 	TEMPLATE_ACTION_CAPABILITY_META_KEY,
 } from "../../../interactions/template-action-capability";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway";
@@ -170,6 +171,63 @@ describe("template event actions", () => {
 			),
 		).not.toThrow();
 
+		const extraSources = await Promise.all(
+			Array.from({ length: MAX_TEMPLATE_ACTION_SOURCE_EVENTS }, (_, index) =>
+				insertEvent({
+					entityIds: [poll.id],
+					organizationId: workspace.org.id,
+					originId: `template-action-window-${index}`,
+					title: `Release poll ${index}`,
+					payloadType: "empty",
+					payloadData: { poll_id: `poll-${index + 2}`, quorum: 2 },
+					semanticType: "poll_opened",
+					metadata: { notification_type: "generic" },
+				}),
+			),
+		);
+		const paged = await getContent(
+			{
+				content_ids: [source.id, ...extraSources.map((item) => item.id)],
+				limit: MAX_TEMPLATE_ACTION_SOURCE_EVENTS + 1,
+			},
+			{} as never,
+			mcpAppCtx,
+		);
+		const pagedCapability =
+			getMcpResultMeta(paged)?.[TEMPLATE_ACTION_CAPABILITY_META_KEY];
+		expect(typeof pagedCapability).toBe("string");
+		const pageEventIds = (paged.content as Array<{ id: number }>).map(
+			(item) => item.id,
+		);
+		const interactivePageIds = (
+			paged.content as Array<{
+				id: number;
+				payload_template?: { interactions?: Record<string, unknown> };
+			}>
+		)
+			.filter((item) =>
+				Boolean(Object.keys(item.payload_template?.interactions ?? {}).length),
+			)
+			.map((item) => item.id);
+		expect(interactivePageIds).toHaveLength(
+			MAX_TEMPLATE_ACTION_SOURCE_EVENTS + 1,
+		);
+		expect(paged.hints?.join(" ")).toMatch(/paginate or narrow/i);
+		const authorized = pageEventIds.filter((eventId) => {
+			try {
+				assertTemplateActionCapability(
+					pagedCapability as string,
+					eventId,
+					mcpAppCtx,
+				);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+		expect(authorized).toHaveLength(MAX_TEMPLATE_ACTION_SOURCE_EVENTS);
+		expect(pageEventIds).toHaveLength(MAX_TEMPLATE_ACTION_SOURCE_EVENTS + 1);
+
 		const invoke = (overrides: Record<string, unknown> = {}) =>
 			invokeTemplateEventAction({
 				organizationId: workspace.org.id,
@@ -227,6 +285,12 @@ describe("template event actions", () => {
 		await expect(
 			invoke({ value: "C", interactionId: "forged-value" }),
 		).rejects.toThrow(/not present in the rendered event/i);
+		// `interactions` is raw JSONB with a live prototype and `constructor`
+		// matches the action-name grammar, so a bare index would admit it and
+		// then append an event whose semantic type is `undefined`.
+		await expect(
+			invoke({ action: "constructor", interactionId: "prototype-probe" }),
+		).rejects.toThrow(/does not declare that interaction/i);
 		await api.knowledge.save({
 			entity_ids: [poll.id],
 			content: "Poisoned retry key",

@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
 	assertTemplateActionCapability,
 	issueTemplateActionCapability,
+	issueTemplateActionCapabilityWindow,
+	MAX_TEMPLATE_ACTION_SOURCE_EVENTS,
 } from "../../../interactions/template-action-capability";
+import { MCP_APP_CAPABILITY_MAX_LENGTH } from "../../../tools/mcp-app-capability";
 import type { ToolContext } from "../../../tools/registry";
 
 const TEST_KEY =
@@ -72,9 +75,66 @@ describe("MCP App template-action capability", () => {
 	it("refuses to mint a capability the verifier would reject", () => {
 		expect(() =>
 			issueTemplateActionCapability(
-				Array.from({ length: 201 }, (_, index) => index + 1),
+				Array.from(
+					{ length: MAX_TEMPLATE_ACTION_SOURCE_EVENTS + 1 },
+					(_, index) => index + 1,
+				),
 				ctx,
 			),
-		).toThrow(/1-200 positive integer source event ids/i);
+		).toThrow(/positive integer source event ids/i);
+	});
+
+	it("mints a full-window token the MCP `_meta` ceiling still carries", () => {
+		// `mcp-handler` drops a `_meta` capability longer than 4096 characters, so
+		// a maximum-size token must stay under it with worst-case (safe-integer)
+		// event ids or every click 403s.
+		const token = issueTemplateActionCapability(
+			Array.from(
+				{ length: MAX_TEMPLATE_ACTION_SOURCE_EVENTS },
+				(_, index) => Number.MAX_SAFE_INTEGER - index,
+			),
+			ctx,
+		);
+		expect(token.length).toBeLessThanOrEqual(MCP_APP_CAPABILITY_MAX_LENGTH);
+		expect(() =>
+			assertTemplateActionCapability(token, Number.MAX_SAFE_INTEGER, ctx),
+		).not.toThrow();
+	});
+
+	it("shrinks the event window when long host bindings would overflow `_meta`", () => {
+		const longCtx = {
+			...ctx,
+			organizationId: "o".repeat(64),
+			userId: "u".repeat(64),
+			clientId: "c".repeat(64),
+			mcpSessionId: "s".repeat(128),
+			mcpConversationId: "x".repeat(512),
+		};
+		const ids = Array.from(
+			{ length: MAX_TEMPLATE_ACTION_SOURCE_EVENTS },
+			(_, index) => Number.MAX_SAFE_INTEGER - index,
+		);
+
+		expect(() => issueTemplateActionCapability(ids, longCtx)).toThrow(
+			/MCP transport limit/i,
+		);
+		const issued = issueTemplateActionCapabilityWindow(ids, longCtx);
+		expect(issued).not.toBeNull();
+		expect(issued?.token.length).toBeLessThanOrEqual(
+			MCP_APP_CAPABILITY_MAX_LENGTH,
+		);
+		expect(issued?.sourceEventIds.length).toBeLessThan(ids.length);
+		for (const id of issued?.sourceEventIds ?? []) {
+			expect(() =>
+				assertTemplateActionCapability(issued?.token, id, longCtx),
+			).not.toThrow();
+		}
+		expect(() =>
+			assertTemplateActionCapability(
+				issued?.token,
+				ids[issued?.sourceEventIds.length ?? 0] as number,
+				longCtx,
+			),
+		).toThrow(/valid MCP App event-action capability/i);
 	});
 });

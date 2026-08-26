@@ -72,7 +72,9 @@ function canonicalJson(value: unknown): string {
  * normally put a per-delivery timestamp/id in `raw`, so intentional taps with
  * distinct envelopes remain distinct without branching on provider fields. If
  * a provider repeats an identical envelope, the server has no honest signal
- * that can distinguish a retry from another tap.
+ * that can distinguish a retry from another tap. An adapter that surfaces no
+ * `raw` at all gives nothing to hash, so each delivery gets a fresh id and is
+ * treated as a distinct tap rather than silently collapsing unrelated clicks.
  */
 export function interactionDeliveryId(event: any): string {
 	if (!event?.raw) return `interaction-${randomUUID()}`;

@@ -585,6 +585,19 @@ describe("template-declared controls", () => {
 		expect(buttons(card)[0].value).toBeUndefined();
 	});
 
+	it("does not route an action the registry inherits from Object.prototype", () => {
+		// `event_kinds` is raw JSONB, so `interactions` carries a live prototype
+		// and `ACTION_NAME` admits `constructor`. A bare index would render a
+		// live button whose registry entry has no `emits`.
+		const card = buildKindCard({
+			jsonTemplate: bound({ label: "Pwn", onClick: "@constructor" }),
+			data: {},
+			interactions: JSON.parse('{"vote":{"emits":"poll_vote_cast"}}'),
+			sourceEventId: 42,
+		});
+		expect(buttons(card)).toEqual([]);
+	});
+
 	it("drops a control bound to an action nothing routes, and says so", () => {
 		const card = buildKindCard({
 			jsonTemplate: {

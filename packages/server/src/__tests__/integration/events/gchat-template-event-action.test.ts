@@ -3,10 +3,6 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { getDb } from "../../../db/client.js";
 import { InMemoryStateAdapter } from "../../../gateway/__tests__/fixtures/in-memory-state-adapter.js";
 import {
-	ensureDbForGatewayTests,
-	resetTestDatabase,
-} from "../../../gateway/__tests__/helpers/db-setup.js";
-import {
 	interactionDeliveryId,
 	registerActionHandlers,
 } from "../../../gateway/connections/interaction-bridge.js";
@@ -19,6 +15,7 @@ import {
 import { resolveNotificationKindCard } from "../../../notifications/service.js";
 import { insertEvent } from "../../../utils/insert-event.js";
 import { initWorkspaceProvider } from "../../../workspace/index.js";
+import { cleanupTestDatabase } from "../../setup/test-db.js";
 import {
 	addUserToOrganization,
 	createTestEntity,
@@ -76,12 +73,11 @@ async function dispatchAndWait(chat: Chat, request: Request): Promise<Response> 
 
 describe("Google Chat declared event action adapter", () => {
 	beforeAll(async () => {
-		await ensureDbForGatewayTests();
 		await initWorkspaceProvider();
 	});
 
 	beforeEach(async () => {
-		await resetTestDatabase();
+		await cleanupTestDatabase();
 	});
 
 	test("routes a native card click to one actor-bound event and rejects a stale card", async () => {

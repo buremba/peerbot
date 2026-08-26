@@ -1,6 +1,8 @@
 import { decrypt, encrypt } from "@lobu/core";
 import type { ToolContext } from "./registry";
 
+export const MCP_APP_CAPABILITY_MAX_LENGTH = 4_096;
+
 export interface McpAppCapabilityBinding {
 	organizationId: string;
 	userId: string;
@@ -66,7 +68,7 @@ export function issueMcpAppCapability<T extends Record<string, unknown>>(
 
 export function readMcpAppCapability(
 	token: string | null | undefined,
-	maxLength = 4_096,
+	maxLength = MCP_APP_CAPABILITY_MAX_LENGTH,
 ): unknown {
 	if (!token || token.length > maxLength) return null;
 	try {

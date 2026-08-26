@@ -60,6 +60,7 @@ import {
 } from './tools/execute';
 import { getMcpResultContent } from './tools/mcp-result-content';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
+import { MCP_APP_CAPABILITY_MAX_LENGTH } from './tools/mcp-app-capability';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { validateToolResult } from './tools/validate-args';
@@ -110,7 +111,7 @@ function capabilityFromMeta(value: unknown, key: string): string | null {
   const token = (value as Record<string, unknown>)[key];
   if (typeof token !== 'string') return null;
   const trimmed = token.trim();
-  return trimmed && trimmed.length <= 4_096 ? trimmed : null;
+  return trimmed && trimmed.length <= MCP_APP_CAPABILITY_MAX_LENGTH ? trimmed : null;
 }
 
 /**

@@ -5,6 +5,7 @@ import {
 	canIssueMcpAppCapability,
 	isMcpAppCapabilityBinding,
 	issueMcpAppCapability,
+	MCP_APP_CAPABILITY_MAX_LENGTH,
 	mcpAppCapabilityMatchesHost,
 	readMcpAppCapability,
 } from "../tools/mcp-app-capability";
@@ -12,7 +13,14 @@ import {
 export const TEMPLATE_ACTION_CAPABILITY_META_KEY =
 	"lobu/event-action-capability";
 const TEMPLATE_ACTION_CAPABILITY_TTL_MS = 10 * 60 * 1_000;
-const MAX_TEMPLATE_ACTION_SOURCE_EVENTS = 200;
+/**
+ * The capability travels in MCP `_meta`, so the id set needs both a count bound
+ * and the encoded-length check below. The actual fit also depends on the host
+ * binding fields (especially the optional conversation id); callers that page
+ * multiple events use `issueTemplateActionCapabilityWindow` to select the
+ * largest leading window the transport can carry.
+ */
+export const MAX_TEMPLATE_ACTION_SOURCE_EVENTS = 64;
 
 type TemplateActionCapability = {
 	v: 1;
@@ -60,7 +68,7 @@ export function issueTemplateActionCapability(
 			`Template action capabilities require 1-${MAX_TEMPLATE_ACTION_SOURCE_EVENTS} positive integer source event ids.`,
 		);
 	}
-	return issueMcpAppCapability(
+	const token = issueMcpAppCapability(
 		{
 			v: 1,
 			sourceEventIds: normalizedSourceEventIds,
@@ -68,6 +76,62 @@ export function issueTemplateActionCapability(
 		ctx,
 		TEMPLATE_ACTION_CAPABILITY_TTL_MS,
 	);
+	if (token.length > MCP_APP_CAPABILITY_MAX_LENGTH) {
+		throw new Error(
+			`Template action capability exceeds the ${MCP_APP_CAPABILITY_MAX_LENGTH}-character MCP transport limit.`,
+		);
+	}
+	return token;
+}
+
+export interface TemplateActionCapabilityWindow {
+	token: string;
+	sourceEventIds: number[];
+}
+
+/**
+ * Issue a token for the largest leading event-id window that fits MCP `_meta`.
+ * Returns null only when the host binding alone leaves no room for one event;
+ * a content read must remain useful even when its actions cannot be enabled.
+ */
+export function issueTemplateActionCapabilityWindow(
+	sourceEventIds: number[],
+	ctx: ToolContext & {
+		userId: string;
+		clientId: string;
+		mcpSessionId: string;
+	},
+): TemplateActionCapabilityWindow | null {
+	const uniqueSourceEventIds = [...new Set(sourceEventIds)];
+	if (
+		uniqueSourceEventIds.length === 0 ||
+		!uniqueSourceEventIds.every(
+			(id) => Number.isSafeInteger(id) && Number(id) > 0,
+		)
+	) {
+		return null;
+	}
+
+	let low = 1;
+	let high = Math.min(
+		uniqueSourceEventIds.length,
+		MAX_TEMPLATE_ACTION_SOURCE_EVENTS,
+	);
+	let issued: TemplateActionCapabilityWindow | null = null;
+	while (low <= high) {
+		const size = Math.floor((low + high) / 2);
+		const ids = uniqueSourceEventIds.slice(0, size);
+		try {
+			issued = {
+				token: issueTemplateActionCapability(ids, ctx),
+				sourceEventIds: ids,
+			};
+			low = size + 1;
+		} catch {
+			high = size - 1;
+		}
+	}
+	return issued;
 }
 
 export function assertTemplateActionCapability(

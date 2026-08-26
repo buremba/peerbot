@@ -1140,13 +1140,12 @@ interface ConnectionlessAuditInsertOptions {
 async function findConnectionlessEventByIdempotencyKey(
   organizationId: string,
   idempotencyKey: string,
-  expected?: Pick<
+  expected: Pick<
     InsertEventParams,
     'semanticType' | 'originType' | 'originId' | 'parentOriginId'
-  >,
-  sql: DbClient = getDb()
+  >
 ): Promise<InsertedEvent | null> {
-  const existing = await sql`
+  const existing = await getDb()`
     SELECT id, entity_ids, origin_id, origin_type, origin_parent_id,
            title, semantic_type, created_at
     FROM events
@@ -1170,11 +1169,10 @@ async function findConnectionlessEventByIdempotencyKey(
     | undefined;
   if (!row) return null;
   if (
-    expected &&
-    (row.semantic_type !== expected.semanticType ||
-      row.origin_type !== (expected.originType ?? null) ||
-      row.origin_id !== expected.originId ||
-      row.origin_parent_id !== (expected.parentOriginId ?? null))
+    row.semantic_type !== expected.semanticType ||
+    row.origin_type !== (expected.originType ?? null) ||
+    row.origin_id !== expected.originId ||
+    row.origin_parent_id !== (expected.parentOriginId ?? null)
   ) {
     return null;
   }

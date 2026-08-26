@@ -414,11 +414,15 @@ interface NotificationDeliveryRecord {
 	threadId: string;
 }
 
+/**
+ * Delivery metadata read back from `events`. Readers validate only the
+ * addressing triple because every consumer can address the message without a
+ * channel key; preserve `channelKey` when the stored JSON includes it.
+ */
 type PersistedNotificationDeliveryRecord = Omit<
 	NotificationDeliveryRecord,
 	"channelKey"
 > & {
-	/** Old delivery metadata predates channel-key persistence. */
 	channelKey?: string;
 };
 
@@ -435,14 +439,6 @@ type PersistedNotificationDeliveryRecord = Omit<
  * Best-effort: losing the record costs a later in-place edit, not the
  * notification itself.
  */
-async function recordDelivery(
-	eventId: number,
-	deliveries: NotificationDeliveryRecord[],
-	card?: CardElement,
-): Promise<void> {
-	return persistDeliveryMetadata(eventId, deliveries, card);
-}
-
 async function persistDeliveryMetadata(
 	eventId: number,
 	deliveries: PersistedNotificationDeliveryRecord[],
@@ -675,10 +671,9 @@ async function refreshInteractiveEventCard(
 		source_semantic_type: string;
 		source_metadata: unknown;
 	}>`
-	    SELECT replacement.title, replacement.entity_ids,
-	           replacement.semantic_type, replacement.payload_text,
-	           replacement.payload_data,
-           replacement.metadata,
+    SELECT replacement.title, replacement.entity_ids,
+           replacement.semantic_type, replacement.payload_text,
+           replacement.payload_data, replacement.metadata,
            source.entity_ids AS source_entity_ids,
            source.semantic_type AS source_semantic_type,
            source.metadata AS source_metadata
@@ -761,6 +756,10 @@ async function refreshInteractiveEventCard(
 		(delivery): delivery is PersistedNotificationDeliveryRecord =>
 			delivery !== null,
 	);
+	// Carry the delivery pointer to the replacement only while it is still
+	// interactive: that record exists to let the NEXT supersede find these chat
+	// copies. Once a kind stops declaring interactions the chain has nothing
+	// left to refresh, so stamping it would be dead metadata.
 	if (kind.interactions && Object.keys(kind.interactions).length > 0) {
 		await persistDeliveryMetadata(
 			replacementEventId,
@@ -889,7 +888,7 @@ async function deliverToBotConnections(
 					dm.slackUserId,
 					content,
 				);
-				await recordDelivery(
+				await persistDeliveryMetadata(
 					eventId,
 					[
 						{
@@ -958,7 +957,7 @@ async function deliverToBotConnections(
 				"[Notifications] Failed to post to bot connection channel",
 			);
 		});
-		await recordDelivery(eventId, delivered, card ?? undefined);
+		await persistDeliveryMetadata(eventId, delivered, card ?? undefined);
 		if (deliveryPlan.strictAutomationTarget && delivered.length === 0) {
 			await recordDeliveryError(eventId, "automation_target_post_failed");
 		}

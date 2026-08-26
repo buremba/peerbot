@@ -1,6 +1,8 @@
 import {
 	collectTemplateActionInvocations,
 	type TemplateActionInvocation,
+	type TemplateInteractionDefinition,
+	type TemplateInteractionRegistry,
 } from "@lobu/core/json-template";
 import { getDb, parsePgNumberArray } from "../db/client";
 import { resolveEntityRender } from "../utils/default-entity-template";
@@ -56,16 +58,39 @@ export function templateEventActionId(
 	return `${TEMPLATE_EVENT_ACTION_PREFIX}:${sourceEventId}:${action}`;
 }
 
+const TEMPLATE_EVENT_ACTION_ID = new RegExp(
+	`^${TEMPLATE_EVENT_ACTION_PREFIX}:([1-9]\\d*):(${ACTION_NAME.source.slice(1, -1)})$`,
+);
+
 export function parseTemplateEventActionId(
 	actionId: string,
 ): { sourceEventId: number; action: string } | null {
-	const match = /^event-action:([1-9]\d*):([a-z][a-z0-9_-]{0,63})$/.exec(
-		actionId,
-	);
+	const match = TEMPLATE_EVENT_ACTION_ID.exec(actionId);
 	if (!match) return null;
 	const sourceEventId = Number(match[1]);
 	return Number.isSafeInteger(sourceEventId)
 		? { sourceEventId, action: match[2] }
+		: null;
+}
+
+/**
+ * Look up a declared interaction by name.
+ *
+ * `event_kinds` is raw JSONB — connector-supplied feed definitions reach
+ * `resolveEventKindDefinition` without passing `manage_entity_schema`'s
+ * write-time validator — so the registry is a plain object with a live
+ * prototype. A bare index would resolve `@constructor` to `Object`, which
+ * `ACTION_NAME` happily admits, and hand the caller an entry whose `emits` is
+ * undefined. Own keys and a string `emits` are the whole contract.
+ */
+export function resolveTemplateInteraction(
+	interactions: TemplateInteractionRegistry | undefined,
+	action: string,
+): TemplateInteractionDefinition | null {
+	if (!interactions || !Object.hasOwn(interactions, action)) return null;
+	const interaction = interactions[action];
+	return interaction && typeof interaction.emits === "string"
+		? interaction
 		: null;
 }
 
@@ -196,7 +221,10 @@ export async function invokeTemplateEventAction(
 		params.organizationId,
 		entityIds,
 	);
-	const interaction = kind?.interactions?.[params.action];
+	const interaction = resolveTemplateInteraction(
+		kind?.interactions,
+		params.action,
+	);
 	if (!kind || !interaction) {
 		throw new ToolUserError(
 			"This event kind does not declare that interaction.",

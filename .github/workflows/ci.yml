@@ -1191,6 +1191,8 @@ jobs:
         # and a broken guard would surface first at release time. Pin its rules
         # here instead, including the swapped Release/Debug case that a
         # set-of-distinct-values check structurally cannot detect.
+        env:
+          OWLETTO_SUBMODULE_STUBBED: ${{ steps.submodule.outputs.stubbed }}
         run: bun test scripts/__tests__/check-mac-bundle-ids.test.ts --timeout 30000
 
       - name: Merge integrity decision table

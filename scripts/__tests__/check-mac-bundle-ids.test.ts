@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "bun:test";
 
 // @ts-expect-error — plain .mjs gate, no type declarations by design.
 import {
@@ -13,6 +13,8 @@ const PBXPROJ = join(
   REPO_ROOT,
   "packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj"
 );
+const owlettoSubmoduleStubbed =
+  process.env.OWLETTO_SUBMODULE_STUBBED === "true";
 
 /** A minimal pbxproj shaped like the real one: settings, then the block's name. */
 function pbxproj(configs: Array<{ name: string; bundleId?: string }>) {
@@ -33,21 +35,29 @@ function pbxproj(configs: Array<{ name: string; bundleId?: string }>) {
 }
 
 describe("check-mac-bundle-ids", () => {
-  it("accepts the real checked-in pbxproj", () => {
-    expect(checkBundleIds(readFileSync(PBXPROJ, "utf8"))).toEqual([]);
-  });
+  it.skipIf(owlettoSubmoduleStubbed)(
+    "accepts the real checked-in pbxproj",
+    () => {
+      expect(checkBundleIds(readFileSync(PBXPROJ, "utf8"))).toEqual([]);
+    }
+  );
 
   // Guard the guard: if this ever returns nothing, every `toEqual([])` above
   // and below passes vacuously.
-  it("actually finds an identity in the real pbxproj", () => {
-    const found = parseBundleIdsByConfiguration(readFileSync(PBXPROJ, "utf8"));
-    expect(found.length).toBeGreaterThan(0);
-    expect(
-      found.some(
-        (e: { configuration: string }) => e.configuration === "Release"
-      )
-    ).toBe(true);
-  });
+  it.skipIf(owlettoSubmoduleStubbed)(
+    "actually finds an identity in the real pbxproj",
+    () => {
+      const found = parseBundleIdsByConfiguration(
+        readFileSync(PBXPROJ, "utf8")
+      );
+      expect(found.length).toBeGreaterThan(0);
+      expect(
+        found.some(
+          (e: { configuration: string }) => e.configuration === "Release"
+        )
+      ).toBe(true);
+    }
+  );
 
   it("accepts Release pinned with a build-scoped Debug identity", () => {
     const source = pbxproj([

@@ -151,6 +151,33 @@ describe('validateJsonTemplate', () => {
       ).not.toThrow();
     });
 
+    it('collects portable actions during the same strict validation walk', () => {
+      expect(
+        validateJsonTemplate({
+          type: 'card',
+          children: [
+            {
+              type: 'button',
+              onClick: '@shadowed',
+              props: { onClick: '@vote' },
+            },
+            {
+              type: 'select',
+              props: { onChange: '@choose', options: [] },
+            },
+            {
+              type: 'button',
+              props: { onPress: '@press' },
+            },
+            {
+              type: 'button',
+              onSubmit: '@submit',
+            },
+          ],
+        })
+      ).toEqual(new Set(['vote', 'choose', 'press', 'submit']));
+    });
+
     it('reports the path of a nested handler failure', () => {
       expect(() =>
         validateJsonTemplate({

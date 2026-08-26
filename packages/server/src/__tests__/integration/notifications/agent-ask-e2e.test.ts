@@ -18,8 +18,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { pgTextArray } from "../../../db/client";
 import type { Env } from "../../../index";
-import { buildClientSDK } from "../../../sandbox/client-sdk";
 import { createAutomationRun } from "../../../runs/queue-service";
+import { buildClientSDK } from "../../../sandbox/client-sdk";
+import { WORKSPACE_EVENT_ACTIVATION_TASK } from "../../../scheduled/task-definitions";
 import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
@@ -28,9 +29,11 @@ import { initWorkspaceProvider } from "../../../workspace";
 import { getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
+	createTestAgent,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
+import { TestApiClient } from "../../setup/test-mcp-client";
 
 const TEST_ENV: Env = {
 	ENVIRONMENT: "test",
@@ -116,14 +119,17 @@ describe("notify input_schema — agent asks a human", () => {
 			`;
 		});
 		automationId = Number(automation.id);
-		const sourceRun = await createAutomationRun({
-			organizationId: org.id,
-			automationId,
-			agentId: "asking-agent",
-			windowStart: "2026-08-10T00:00:00.000Z",
-			windowEnd: "2026-08-10T01:00:00.000Z",
-			dispatchSource: "manual",
-		}, sql);
+		const sourceRun = await createAutomationRun(
+			{
+				organizationId: org.id,
+				automationId,
+				agentId: "asking-agent",
+				windowStart: "2026-08-10T00:00:00.000Z",
+				windowEnd: "2026-08-10T01:00:00.000Z",
+				dispatchSource: "manual",
+			},
+			sql,
+		);
 		sourceRunId = sourceRun.runId;
 		automationCtx = {
 			...baseCtx(owner.id, null),
@@ -450,6 +456,152 @@ describe("notify input_schema — agent asks a human", () => {
 		};
 		expect(completed.run.status).toBe("completed");
 		expect(completed.run.output).toEqual({ answer: { lane: "stable" } });
+	});
+
+	it("can reduce 2-of-3 by polling separate ask runs, but a vote does not wake the reducer", async () => {
+		const sql = getTestDb();
+		const reducerAgent = await createTestAgent({
+			organizationId: orgId,
+			ownerUserId: String(humanCtx.userId),
+			agentId: `quorum-reducer-${Date.now()}`,
+		});
+		const api = await TestApiClient.for({
+			organizationId: orgId,
+			userId: String(humanCtx.userId),
+			memberRole: "owner",
+		});
+		const proofSlug = `quorum-proof-${Date.now()}`;
+		await api.entity_schema.createType({
+			slug: proofSlug,
+			name: "Quorum proof",
+			metadata_schema: { type: "object", properties: {} },
+			event_kinds: {
+				operation: { description: "An approval interaction changed state" },
+			},
+		});
+		await api.automations.create({
+			slug: `quorum-reducer-${Date.now()}`,
+			prompt: "Recompute the approval quorum.",
+			triggers: [
+				{
+					kind: "event",
+					source: "workspace",
+					event_types: ["operation"],
+					execution: "window",
+					active_run: "queue",
+				},
+			],
+			agent_id: reducerAgent.agentId,
+		});
+
+		const tasksBefore = await sql`
+			SELECT id FROM runs
+			WHERE organization_id = ${orgId}
+			  AND run_type = 'task'
+			  AND action_key = ${WORKSPACE_EVENT_ACTIVATION_TASK}
+		`;
+		const asks = (await Promise.all(
+			["Ada", "Grace", "Linus"].map((reviewer) =>
+				executeTool(
+					"notify",
+					{
+						action: "send",
+						title: `${reviewer}: approve the production rollout?`,
+						input_schema: {
+							type: "object",
+							properties: { vote: { enum: ["approve", "reject"] } },
+							required: ["vote"],
+						},
+						automation_source: {
+							automation_id: automationId,
+							run_id: sourceRunId,
+						},
+					},
+					TEST_ENV,
+					automationCtx,
+				),
+			),
+		)) as SendResult[];
+
+		for (const ask of asks.slice(0, 2)) {
+			await executeTool(
+				"manage_operations",
+				{
+					action: "approve",
+					run_id: ask.run_id,
+					input: { vote: "approve" },
+				},
+				TEST_ENV,
+				humanCtx,
+			);
+		}
+
+		const client = buildClientSDK(automationCtx, TEST_ENV);
+		const runs = (await Promise.all(
+			asks.map((ask) => client.operations.getRun(Number(ask.run_id))),
+		)) as Array<{
+			run: { status: string; output?: { answer?: { vote?: string } } };
+		}>;
+		const state = {
+			approved: runs.filter(({ run }) => run.output?.answer?.vote === "approve")
+				.length,
+			pending: runs.filter(({ run }) => run.status === "pending").length,
+			required: 2,
+		};
+		expect({ ...state, reached: state.approved >= state.required }).toEqual({
+			approved: 2,
+			pending: 1,
+			required: 2,
+			reached: true,
+		});
+
+		const tasksAfter = await sql`
+			SELECT id FROM runs
+			WHERE organization_id = ${orgId}
+			  AND run_type = 'task'
+			  AND action_key = ${WORKSPACE_EVENT_ACTIVATION_TASK}
+		`;
+		expect(tasksAfter).toHaveLength(tasksBefore.length);
+	});
+
+	it("recipients route an ask but do not bind one vote to one reviewer", async () => {
+		const recipient = await createTestUser({
+			email: `quorum-recipient-${Date.now()}@test.com`,
+		});
+		const otherAdmin = await createTestUser({
+			email: `quorum-admin-${Date.now()}@test.com`,
+		});
+		await addUserToOrganization(recipient.id, orgId, "member");
+		await addUserToOrganization(otherAdmin.id, orgId, "admin");
+		const recipientCtx = {
+			...baseCtx(recipient.id, null),
+			memberRole: "member" as const,
+		};
+		const otherAdminCtx = {
+			...baseCtx(otherAdmin.id, null),
+			memberRole: "admin" as const,
+		};
+		const sent = await send({
+			title: "Recipient-only approval proof",
+			recipients: [recipient.id],
+			input_schema: {},
+		});
+
+		await expect(
+			executeTool(
+				"manage_operations",
+				{ action: "approve", run_id: sent.run_id },
+				TEST_ENV,
+				recipientCtx,
+			),
+		).rejects.toThrow(/requires admin or owner access/i);
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id },
+			TEST_ENV,
+			otherAdminCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
 	});
 
 	it("refuses a blank answer to a required field and keeps the run answerable", async () => {
@@ -1087,14 +1239,17 @@ describe("notify input_schema — agent asks a human", () => {
 			`;
 		});
 		const victimAutomationId = Number(victimAutomation.id);
-		const victimRun = await createAutomationRun({
-			organizationId: victimOrg.id,
-			automationId: victimAutomationId,
-			agentId: "victim-agent",
-			windowStart: "2026-08-10T00:00:00.000Z",
-			windowEnd: "2026-08-10T01:00:00.000Z",
-			dispatchSource: "manual",
-		}, sql);
+		const victimRun = await createAutomationRun(
+			{
+				organizationId: victimOrg.id,
+				automationId: victimAutomationId,
+				agentId: "victim-agent",
+				windowStart: "2026-08-10T00:00:00.000Z",
+				windowEnd: "2026-08-10T01:00:00.000Z",
+				dispatchSource: "manual",
+			},
+			sql,
+		);
 
 		const sent = await send({
 			title: "Forged cross-org review",

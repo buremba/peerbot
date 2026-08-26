@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import {
 	Actions,
@@ -45,8 +46,50 @@ import {
 import { resolveChatTarget } from "./platforms/shared.js";
 import type { PlatformConnection } from "./types.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
+import {
+	invokeTemplateEventAction,
+	parseTemplateEventActionId,
+} from "../../interactions/template-event-actions.js";
+import { ToolUserError } from "../../utils/errors.js";
 
 const logger = createLogger("chat-interaction-bridge");
+
+function canonicalJson(value: unknown): string {
+	if (value === null || typeof value !== "object") {
+		return JSON.stringify(value) ?? "null";
+	}
+	if (Array.isArray(value)) {
+		return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+	}
+	return `{${Object.entries(value as Record<string, unknown>)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+		.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+		.join(",")}}`;
+}
+
+/**
+ * Exact webhook retries must converge on one Automation delivery id. Platforms
+ * normally put a per-delivery timestamp/id in `raw`, so intentional taps with
+ * distinct envelopes remain distinct without branching on provider fields. If
+ * a provider repeats an identical envelope, the server has no honest signal
+ * that can distinguish a retry from another tap. An adapter that surfaces no
+ * `raw` at all gives nothing to hash, so each delivery gets a fresh id and is
+ * treated as a distinct tap rather than silently collapsing unrelated clicks.
+ */
+export function interactionDeliveryId(event: any): string {
+	if (!event?.raw) return `interaction-${randomUUID()}`;
+	const digest = createHash("sha256")
+		.update(
+			canonicalJson({
+				actionId: event.actionId,
+				messageId: event.messageId,
+				userId: event.user?.userId,
+				raw: event.raw,
+			}),
+		)
+		.digest("hex");
+	return `interaction-${digest}`;
+}
 
 /** Signature for the direct tool execution function injected from the MCP proxy. */
 type ExecuteToolDirectFn = (
@@ -814,6 +857,7 @@ export function registerInteractionBridge(
           thread,
           responseThreadId:
             typeof thread?.id === "string" ? thread.id : undefined,
+          interactionId: interactionDeliveryId(actionEvent),
         });
       })().catch((error) => {
         logger.error(
@@ -824,7 +868,7 @@ export function registerInteractionBridge(
     },
     async (channelId, conversationId) =>
 			resolveThread(manager, connectionId, channelId, conversationId),
-    async (suggestionId, promptIndex, thread, author) => {
+    async (suggestionId, promptIndex, thread, author, actionEvent) => {
       // A suggestion click is just a new user message — no claim, no receipt,
       // no card edit. The chips intentionally stay clickable: nothing is
       // suspended on their response, so a second tap is a legitimate follow-up
@@ -894,8 +938,35 @@ export function registerInteractionBridge(
         value: prompt.message,
         thread: routedThread ?? thread,
         responseThreadId: suggestion.conversationId,
+        interactionId: interactionDeliveryId(actionEvent),
       });
     },
+		async (sourceEventId, action, value, actionEvent) => {
+			const organizationId = connection.organizationId;
+			const platformUserId = actionEvent.user?.userId;
+			if (!organizationId || !platformUserId) {
+				throw new Error("A verified chat actor and workspace are required.");
+			}
+			return invokeTemplateEventAction({
+				organizationId,
+				sourceEventId,
+				action,
+				value,
+				interactionId: interactionDeliveryId(actionEvent),
+				surface: connection.platform,
+				actor: {
+					platform: connection.platform,
+					platformUserId,
+					name:
+						actionEvent.user?.fullName ?? actionEvent.user?.userName ?? null,
+				},
+				source: {
+					connectionId: connection.id,
+					messageId: actionEvent.messageId,
+					threadId: actionEvent.threadId,
+				},
+			});
+		},
   );
 
   logger.info({ connectionId, platform }, "Interaction bridge registered");
@@ -946,7 +1017,15 @@ type OnSuggestionClickFn = (
   promptIndex: number,
   thread: any,
 	author: { userId?: string; userName?: string; fullName?: string } | undefined,
+	actionEvent: any,
 ) => Promise<void>;
+
+type OnTemplateEventActionFn = (
+	sourceEventId: number,
+	action: string,
+	value: string | null,
+	actionEvent: any,
+) => Promise<unknown>;
 
 /**
  * Exported for testing. Wires chat.onAction to tool-approval and question flows.
@@ -974,6 +1053,7 @@ export function registerActionHandlers(
 		conversationId: string,
 	) => Promise<any | null>,
   onSuggestionClick?: OnSuggestionClickFn,
+	onTemplateEventAction?: OnTemplateEventActionFn,
 ): void {
 	chat.onAction(async (event: any) => {
 		const actionId: string = event.actionId ?? "";
@@ -981,6 +1061,41 @@ export function registerActionHandlers(
 		const thread = event.thread;
 
 		if (!thread || !actionId) return;
+
+		const templateAction = parseTemplateEventActionId(actionId);
+		if (templateAction) {
+			if (!onTemplateEventAction) return;
+			try {
+				const result = (await onTemplateEventAction(
+					templateAction.sourceEventId,
+					templateAction.action,
+					event.value === undefined || event.value === null
+						? null
+						: String(event.value),
+					event,
+				)) as { created?: boolean } | undefined;
+				// Exact webhook retries are silent; the first accepted click gets a
+				// compact receipt without routing through the agent/LLM.
+				if (result?.created !== false) {
+					await thread.post("Recorded.");
+				}
+			} catch (error) {
+				logger.info(
+					{ connectionId: connection.id, actionId, error: String(error) },
+					"Template event action rejected",
+				);
+				try {
+					await thread.post(
+						error instanceof ToolUserError
+							? error.message
+							: "I couldn’t record that interaction.",
+					);
+				} catch {
+					// best effort
+				}
+			}
+			return;
+		}
 
 		// Handle durable run approvals from notification cards. Scope is enforced
 		// by resolveEntityApprovalRun's query, not here.
@@ -1348,7 +1463,13 @@ export function registerActionHandlers(
         return;
       }
       try {
-        await onSuggestionClick(suggestionId, promptIndex, thread, event.user);
+        await onSuggestionClick(
+          suggestionId,
+          promptIndex,
+          thread,
+          event.user,
+          event,
+        );
       } catch (error) {
         logger.error(
           { connectionId: connection.id, error: String(error) },

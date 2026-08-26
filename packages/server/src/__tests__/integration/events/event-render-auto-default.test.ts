@@ -57,6 +57,15 @@ describe('get_content render — event auto-default template', () => {
               },
             },
           },
+          decision: {
+            description: 'An interactive decision',
+            jsonTemplate: {
+              type: 'button',
+              props: { label: 'Choose A', onClick: '@choose', value: 'A' },
+            },
+            interactions: { choose: { emits: 'decision_cast' } },
+          },
+          decision_cast: { description: 'A verified decision' },
           note: { description: 'A free-form note' },
         })},
         NOW(), NOW()
@@ -97,6 +106,30 @@ describe('get_content render — event auto-default template', () => {
     expect(serialized).toContain('"path":"stage"');
     // payload_data is the event metadata so the bindings resolve.
     expect(item.payload_data).toMatchObject({ amount: 50000, stage: 'negotiation' });
+  });
+
+  it('carries the resolved interaction registry with an authored event template', async () => {
+    const [item] = await buildContentItems({
+      sql: getTestDb(),
+      organizationId: orgId,
+      ownerSlug: null,
+      baseUrl: undefined,
+      excerptsMap: new Map(),
+      rawContent: [
+        row({
+          id: 5,
+          semantic_type: 'decision',
+          payload_type: 'empty',
+          entity_ids: [dealEntityId],
+          metadata: { choice: null },
+        }),
+      ],
+    });
+
+    expect(item.payload_template).toMatchObject({
+      root: { type: 'button' },
+      interactions: { choose: { emits: 'decision_cast' } },
+    });
   });
 
   it('leaves a kind without a metadataSchema as a plain empty event', async () => {

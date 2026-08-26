@@ -118,6 +118,37 @@ describe("runWakeAgentTask chat delivery dispatch", () => {
     expect(msg.platformMetadata.source).toBe("scheduled-job");
   });
 
+  test("posts a one-shot wake back to Google Chat", async () => {
+    await seedChatConnection({ id: "gchat-real", platform: "gchat" });
+    const enqueued: MessagePayload[] = [];
+
+    await runWakeAgentTask(
+      fakeCoreServices(enqueued),
+      payload({
+        platform: "gchat",
+        connectionId: "gchat-real",
+        channelId: "spaces/AAAA-test",
+        conversationId: "gchat:spaces/AAAA-test:dm",
+        teamId: null,
+        userId: "users/clicker-a",
+      })
+    );
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]).toMatchObject({
+      platform: "gchat",
+      userId: "users/clicker-a",
+      channelId: "spaces/AAAA-test",
+      conversationId: "gchat:spaces/AAAA-test:dm",
+      messageText: "wake up",
+    });
+    expect(enqueued[0].platformMetadata).toMatchObject({
+      connectionId: "gchat-real",
+      senderId: "users/clicker-a",
+      source: "scheduled-job",
+    });
+  });
+
   test("injects the per-schedule model override into agentOptions", async () => {
     await seedChatConnection({ id: "conn-real" });
     const enqueued: MessagePayload[] = [];

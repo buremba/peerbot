@@ -119,12 +119,15 @@ export const ManageEntitySchemaSchema = Type.Object({
             jsonTemplate: Type.Optional(
               Type.Record(Type.String(), Type.Unknown())
             ),
+            interactions: Type.Optional(
+              Type.Record(Type.String(), Type.Object({ emits: Type.String() }))
+            ),
           })
         ),
       ],
       {
         description:
-          "[entity_type: create/update] Event semantic types this type produces, keyed by semantic_type slug. Each entry can have a description, optional metadataSchema (JSON Schema), and optional jsonTemplate (render template). Supplying an object replaces the entire registry: read the current value and merge before updating. `null` clears all kinds; omit to leave unchanged.",
+          "[entity_type: create/update] Event semantic types this type produces, keyed by semantic_type slug. Each entry can have a description, optional metadataSchema (JSON Schema), optional jsonTemplate (render template), and optional interactions registry mapping template action names to emitted event kinds. Supplying an object replaces the entire registry: read the current value and merge before updating. `null` clears all kinds; omit to leave unchanged.",
       }
     )
   ),

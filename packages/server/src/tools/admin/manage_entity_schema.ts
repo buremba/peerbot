@@ -81,6 +81,7 @@ import { resolveUsernames } from '../../utils/resolve-usernames';
 import { ToolUserError } from '../../utils/errors';
 import { isUniqueViolation } from '../../utils/pg-errors';
 import { buildResourcePermalink } from '../../utils/url-builder';
+import { validateJsonTemplate } from '../../utils/validate-json-template';
 import type { ToolContext } from '../registry';
 import { resolveRunInitiator } from '../initiator';
 import { withValidatedArgs } from '../validate-args';
@@ -957,6 +958,83 @@ function assertEventKindsAvoidPlatformVocabulary(
   }
 }
 
+const TEMPLATE_INTERACTION_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+
+/**
+ * Validate the declarative interaction graph at the same boundary that stores
+ * the event-kind registry. Runtime invocation still re-checks the rendered
+ * action/value against the source event; this prevents broken registries from
+ * being installed in the first place.
+ */
+function assertValidEventKindInteractions(
+  eventKinds: Record<string, unknown> | null | undefined
+): void {
+  if (!eventKinds || typeof eventKinds !== 'object' || Array.isArray(eventKinds)) return;
+
+  for (const [kind, rawDefinition] of Object.entries(eventKinds)) {
+    if (!rawDefinition || typeof rawDefinition !== 'object' || Array.isArray(rawDefinition)) {
+      continue;
+    }
+    const definition = rawDefinition as Record<string, unknown>;
+    let declaredHandlers = new Set<string>();
+    if (definition.jsonTemplate !== undefined) {
+      try {
+        declaredHandlers = validateJsonTemplate(definition.jsonTemplate);
+      } catch (error) {
+        throw invalidSchema(
+          `event_kinds.${kind}.jsonTemplate is invalid: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    const interactions = definition.interactions;
+    if (interactions === undefined) {
+      if (declaredHandlers.size > 0) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions must declare every portable jsonTemplate action`
+        );
+      }
+      continue;
+    }
+    if (!interactions || typeof interactions !== 'object' || Array.isArray(interactions)) {
+      throw invalidSchema(`event_kinds.${kind}.interactions must be an object`);
+    }
+    if (definition.jsonTemplate === undefined) {
+      throw invalidSchema(
+        `event_kinds.${kind}.interactions requires jsonTemplate with matching @action handlers`
+      );
+    }
+    for (const [action, rawInteraction] of Object.entries(interactions)) {
+      if (!TEMPLATE_INTERACTION_NAME.test(action)) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions action '${action}' must match ${TEMPLATE_INTERACTION_NAME}`
+        );
+      }
+      if (!declaredHandlers.has(action)) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions.${action} has no portable @${action} button/select handler in jsonTemplate`
+        );
+      }
+      const emits =
+        rawInteraction && typeof rawInteraction === 'object' && !Array.isArray(rawInteraction)
+          ? (rawInteraction as Record<string, unknown>).emits
+          : null;
+      if (typeof emits !== 'string' || !Object.hasOwn(eventKinds, emits)) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions.${action}.emits must name another declared event kind`
+        );
+      }
+    }
+    for (const action of declaredHandlers) {
+      if (!Object.hasOwn(interactions, action)) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions must declare portable @${action} from jsonTemplate`
+        );
+      }
+    }
+  }
+}
+
 function validateEntityMetadataSchemaDisplayConfig(
   metadataSchema: Record<string, unknown> | undefined
 ): void {
@@ -1296,6 +1374,7 @@ async function prepareEntityTypeCreate(
   // a derived type are classified ON READ (see etHandleGet), never persisted.
   assertValidMetricsConfig(args.metrics_config);
   assertEventKindsAvoidPlatformVocabulary(args.event_kinds);
+  assertValidEventKindInteractions(args.event_kinds);
   // Compile during validation so malformed rules never become approval cards;
   // apply-time validation repeats the check against the current proposal.
   const rulesCompiled = await compileRulesOrThrow(args.rules_source ?? null);
@@ -1423,6 +1502,7 @@ async function etHandleUpdate(
   assertValidMetricsConfig(args.metrics_config);
   assertValidBacking(args.backing);
   assertEventKindsAvoidPlatformVocabulary(args.event_kinds);
+  assertValidEventKindInteractions(args.event_kinds);
   // Converting a populated stored type to a derived (view-backed) type would
   // orphan its existing rows (the view ignores them). Reject it.
   if (args.backing?.sql) {

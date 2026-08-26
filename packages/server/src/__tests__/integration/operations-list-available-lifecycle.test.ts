@@ -69,6 +69,7 @@ const KEY_DISCONNECTED = "demo.ops.disconnected";
 const KEY_INACTIVE = "demo.ops.inactive";
 const KEY_DEVICE = "demo.ops.device";
 const KEY_DEVICE_SETUP = "chrome.test_readiness";
+const KEY_COMPILED_LEGACY = "whatsapp.local";
 
 const ACTIONS_SCHEMA = {
 	create_issue: {
@@ -107,7 +108,14 @@ async function seedConnector(
 
 async function purge(organizationId: string): Promise<void> {
 	const sql = getTestDb();
-	const keys = [KEY_READY, KEY_DISCONNECTED, KEY_INACTIVE, KEY_DEVICE, KEY_DEVICE_SETUP];
+	const keys = [
+		KEY_READY,
+		KEY_DISCONNECTED,
+		KEY_INACTIVE,
+		KEY_DEVICE,
+		KEY_DEVICE_SETUP,
+		KEY_COMPILED_LEGACY,
+	];
 	await sql`DELETE FROM feeds WHERE connection_id IN (SELECT id FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId})`;
 	await sql`DELETE FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
 	await sql`DELETE FROM connector_definitions WHERE key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
@@ -624,6 +632,81 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 				{ connection_id: conn.id, status: "device_offline", executable: false },
 			],
 		});
+	});
+
+	it("does not apply newer device inventory to a compiled legacy connector", async () => {
+		const { org, user } = await setupOwner("Ops Compiled Legacy Org");
+		await seedConnector(org.id, KEY_COMPILED_LEGACY, "Compiled WhatsApp");
+		const sql = getTestDb();
+		await sql`
+			UPDATE connector_definitions
+			SET runtime = ${sql.json({ platforms: ["chrome-extension"] })},
+			    required_capability = 'browser.scripting'
+			WHERE organization_id = ${org.id} AND key = ${KEY_COMPILED_LEGACY}
+		`;
+		const inventoryManifest = {
+			key: KEY_COMPILED_LEGACY,
+			version: "2.0.0",
+			name: "WhatsApp Personal",
+			required_capability: "browser.whatsapp",
+			runtime: { platforms: ["chrome-extension"] },
+			auth_schema: { methods: [{ type: "none" }] },
+			feeds_schema: {},
+			actions_schema: ACTIONS_SCHEMA,
+		};
+		const [device] = (await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, connector_manifests,
+				label, organization_id, last_seen_at
+			) VALUES (
+				${user.id}, ${`ext-${Math.random().toString(36).slice(2, 10)}`},
+				'chrome-extension', ${sql.json(["browser.scripting"])},
+				${sql.json({
+					[KEY_COMPILED_LEGACY]: {
+						manifest: inventoryManifest,
+						manifest_hash: deviceManifestHash(
+							inventoryManifest as DeviceConnectorManifest,
+						),
+						received_at: new Date().toISOString(),
+					},
+				})},
+				'Compiled Test Ext', ${org.id}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: string }>;
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_COMPILED_LEGACY,
+			status: "active",
+			createDefaultFeed: false,
+		});
+		await sql`UPDATE connections SET device_worker_id = ${device.id}::uuid WHERE id = ${conn.id}`;
+		await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, display_name, status
+			) VALUES (${org.id}, ${conn.id}, 'items', 'Items', 'paused')
+		`;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_COMPILED_LEGACY,
+		});
+		expect(getOperation(operations, "create_issue")).toMatchObject({
+			executable: true,
+			readiness: "ready",
+			execution_targets: [
+				{ connection_id: conn.id, status: "ready", executable: true },
+			],
+		});
+
+		const listed = (await manageFeeds(
+			{ action: "list_feeds", connection_id: conn.id },
+			TEST_ENV(),
+			ctxFor(org.id, user.id),
+		)) as { feeds: Array<Record<string, unknown>> };
+		expect(listed.feeds).toContainEqual(
+			expect.objectContaining({ attention: "paused" }),
+		);
+		expect(listed.feeds[0]).not.toHaveProperty("attention_reason");
 	});
 
 	it("query search matches connector name + operation name across disconnected connectors", async () => {

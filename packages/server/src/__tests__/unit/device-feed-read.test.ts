@@ -195,6 +195,8 @@ describe('device feed read — outcome mapping', () => {
     feedConfig: {},
     connectionId: 3,
     connectorKey: 'whatsapp.local',
+    connectorVersion: '2.0.0',
+    manifestHash: null,
     deviceOwnerUserId: 'user-1',
     deviceWorkerId: null,
     feedStatus: 'active',

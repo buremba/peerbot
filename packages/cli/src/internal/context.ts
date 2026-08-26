@@ -212,8 +212,13 @@ export async function addContext(
   }
 
   const config = await loadContextConfig();
+  const previous = config.contexts[trimmedName];
+  // Re-registering a running named context must not erase lifecycle ownership.
+  // Org and memory targeting are still reset by the refreshed registration.
   const entry: LobuContextEntry = {
     url: normalizeAndValidateApiUrl(url),
+    ...(previous?.lifecycle ? { lifecycle: previous.lifecycle } : {}),
+    ...(previous?.cwd ? { cwd: previous.cwd } : {}),
   };
   const lifecycle = normalizeLifecycle(server?.lifecycle);
   const cwd = server?.cwd?.trim();
@@ -224,6 +229,7 @@ export async function addContext(
     throw new Error("`cwd` can only be set on managed contexts.");
   }
   if (lifecycle) entry.lifecycle = lifecycle;
+  if (entry.lifecycle !== "managed") delete entry.cwd;
   if (cwd) entry.cwd = cwd;
 
   config.contexts[trimmedName] = entry;

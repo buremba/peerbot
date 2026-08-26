@@ -277,7 +277,7 @@ describe("lobu run backend bundle resolution", () => {
 });
 
 describe("shouldAutoApplyLocalProject", () => {
-  test("applies for an embedded run once the local context is ready", () => {
+  test("applies for an embedded run once the selected context is ready", () => {
     expect(
       shouldAutoApplyLocalProject({
         mode: "embedded",
@@ -287,7 +287,7 @@ describe("shouldAutoApplyLocalProject", () => {
     ).toBe(true);
   });
 
-  test("skips when sign-in did not establish the local context", () => {
+  test("skips when sign-in did not establish the selected context", () => {
     // The guard that stops `lobu run` applying a local project to whatever
     // cloud/prod context happened to be active.
     expect(
@@ -338,6 +338,7 @@ describe("lobu run local sign-in diagnostics", () => {
     addContextImpl: async () => undefined,
     saveCredentialsImpl: async () => undefined,
     setActiveOrgImpl: async () => undefined,
+    inspectContextImpl: async () => undefined,
     getCurrentContextNameImpl: async () => "local",
     setCurrentContextImpl: async () => undefined,
   });
@@ -622,6 +623,208 @@ describe("lobu run local sign-in diagnostics", () => {
         hasLobuConfig: true,
       })
     ).toBeNull();
+  });
+
+  test("isolates an explicit process context without changing the global default", async () => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = "__owletto_debug_v2__5:local";
+    process.env.LOBU_API_URL = "http://localhost:8788";
+    const calls: string[] = [];
+    try {
+      const result = await announceLocalSignIn("http://127.0.0.1:8788", true, {
+        ...dependencies(),
+        addContextImpl: async (name, url, server) => {
+          calls.push(`context:${name}:${url}:${server?.lifecycle}`);
+        },
+        saveCredentialsImpl: async (_credentials, name) => {
+          calls.push(`credentials:${name}`);
+        },
+        setActiveOrgImpl: async (slug, name) => {
+          calls.push(`org:${slug}:${name}`);
+        },
+        getCurrentContextNameImpl: async () => {
+          calls.push("read-current");
+          return "local";
+        },
+        setCurrentContextImpl: async (name) => {
+          calls.push(`set-current:${name}`);
+        },
+      });
+
+      expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(calls).toEqual([
+        "context:__owletto_debug_v2__5:local:http://127.0.0.1:8788:managed",
+        "credentials:__owletto_debug_v2__5:local",
+        "org:local-install:__owletto_debug_v2__5:local",
+      ]);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
+  });
+
+  test("keeps a new explicit runner context ready across restarts", async () => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = "__owletto_debug_v2__5:local";
+    process.env.LOBU_API_URL = "http://localhost:8788";
+    let storedContext:
+      | { url: string; lifecycle?: "managed" | "external" }
+      | undefined;
+    const testDependencies = {
+      ...dependencies(),
+      inspectContextImpl: async () => storedContext,
+      addContextImpl: async (
+        _name: string,
+        url: string,
+        server?: { lifecycle?: "managed" | "external" }
+      ) => {
+        storedContext = { url, lifecycle: server?.lifecycle };
+      },
+    };
+
+    try {
+      const first = await announceLocalSignIn(
+        "http://127.0.0.1:8788",
+        true,
+        testDependencies
+      );
+      const second = await announceLocalSignIn(
+        "http://127.0.0.1:8788",
+        true,
+        testDependencies
+      );
+
+      expect(first).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(second).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(storedContext).toEqual({
+        url: "http://127.0.0.1:8788",
+        lifecycle: "managed",
+      });
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
+  });
+
+  test.each([
+    {
+      name: "legacy lifecycle-less local context",
+      contextName: "local",
+      configured: { url: "http://localhost:8788" },
+    },
+    {
+      name: "managed context with an API base path",
+      contextName: "__owletto_debug_v2__5:local",
+      configured: {
+        url: "http://localhost:8788/api/v1",
+        lifecycle: "managed" as const,
+      },
+    },
+  ])("refreshes credentials for a $name", async ({
+    contextName,
+    configured,
+  }) => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = contextName;
+    process.env.LOBU_API_URL = "http://127.0.0.1:8788";
+    const calls: string[] = [];
+
+    try {
+      const result = await announceLocalSignIn("http://127.0.0.1:8788", true, {
+        ...dependencies(),
+        inspectContextImpl: async () => configured,
+        addContextImpl: async (name, url, server) => {
+          calls.push(`context:${name}:${url}:${server?.lifecycle}`);
+        },
+        saveCredentialsImpl: async (_credentials, name) => {
+          calls.push(`credentials:${name}`);
+        },
+      });
+
+      expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+      expect(calls).toContain(`credentials:${contextName}`);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
+  });
+
+  // The Mac runner exports LOBU_CONTEXT straight from the CLI's ambient
+  // `currentContext` and only pins LOBU_API_URL on Debug builds, so both of
+  // these are what a shipped Release app actually produces for a user whose
+  // selected context is a cloud entry. Refusing to repurpose that name is
+  // correct; abandoning local sign-in because of it is not — the fallback has
+  // to leave the user with a credentialed `local` context, a deep link, and
+  // auto-apply, exactly as a bare `lobu run` does.
+  test.each([
+    {
+      name: "an explicit remote context",
+      contextName: "production",
+      configured: {
+        url: "https://app.lobu.ai/api/v1",
+        lifecycle: "external" as const,
+      },
+    },
+    {
+      name: "an unknown context with no pinned endpoint",
+      contextName: "lobu",
+      configured: undefined,
+    },
+  ])("falls back to local rather than repurposing $name", async ({
+    contextName,
+    configured,
+  }) => {
+    const previousContext = process.env.LOBU_CONTEXT;
+    const previousApiUrl = process.env.LOBU_API_URL;
+    process.env.LOBU_CONTEXT = contextName;
+    delete process.env.LOBU_API_URL;
+    const calls: string[] = [];
+    try {
+      const result = await announceLocalSignIn("http://127.0.0.1:8787", true, {
+        ...dependencies(),
+        inspectContextImpl: async () => configured,
+        addContextImpl: async (name, url, server) => {
+          calls.push(`context:${name}:${url}:${server?.lifecycle}`);
+        },
+        saveCredentialsImpl: async (_credentials, name) => {
+          calls.push(`credentials:${name}`);
+        },
+        setActiveOrgImpl: async (_slug, name) => {
+          calls.push(`org:${name}`);
+        },
+        setCurrentContextImpl: async (name) => {
+          calls.push(`current:${name}`);
+        },
+      });
+
+      expect(result).toEqual({ ready: true, localOrgSlug: "local-install" });
+      // Registered as the plain `local` slot — no `managed` lifecycle, since
+      // this runner was never handed a name it owns.
+      expect(calls).toEqual([
+        "context:local:http://127.0.0.1:8787:undefined",
+        "credentials:local",
+        "org:local",
+      ]);
+      // The rejected name is never written...
+      expect(calls.some((call) => call.includes(contextName))).toBe(false);
+      // ...and an explicit LOBU_CONTEXT still pins this process only: the
+      // user's global default must not be retargeted behind their back.
+      expect(calls.some((call) => call.startsWith("current:"))).toBe(false);
+    } finally {
+      if (previousContext === undefined) delete process.env.LOBU_CONTEXT;
+      else process.env.LOBU_CONTEXT = previousContext;
+      if (previousApiUrl === undefined) delete process.env.LOBU_API_URL;
+      else process.env.LOBU_API_URL = previousApiUrl;
+    }
   });
 
   test("warns only when an embedded project will skip auto-apply", () => {

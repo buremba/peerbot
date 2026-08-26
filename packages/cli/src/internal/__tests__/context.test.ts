@@ -313,6 +313,60 @@ describe("context management", () => {
     });
   });
 
+  test("addContext preserves omitted lifecycle metadata when refreshing a context", async () => {
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        currentContext: "release",
+        contexts: {
+          release: { url: "https://app.lobu.ai/api/v1" },
+          debug: {
+            url: "http://localhost:8787",
+            activeOrg: "local-install",
+            memoryUrl: "http://localhost:8787/api/v1",
+            lifecycle: "managed",
+            cwd: "/tmp/lobu-debug",
+          },
+        },
+      })
+    );
+
+    await addContext("debug", "http://127.0.0.1:8788");
+
+    const [, written] = writeFileSpy.mock.calls.at(-1)!;
+    const saved = JSON.parse(written as string);
+    expect(saved.currentContext).toBe("release");
+    expect(saved.contexts.debug).toEqual({
+      url: "http://127.0.0.1:8788",
+      lifecycle: "managed",
+      cwd: "/tmp/lobu-debug",
+    });
+  });
+
+  test("changing a managed context to external removes its managed cwd", async () => {
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        contexts: {
+          local: {
+            url: "http://localhost:8787",
+            lifecycle: "managed",
+            cwd: "/tmp/lobu-local",
+          },
+        },
+      })
+    );
+
+    await addContext("local", "http://localhost:8787", {
+      lifecycle: "external",
+    });
+
+    const [, written] = writeFileSpy.mock.calls.at(-1)!;
+    const saved = JSON.parse(written as string);
+    expect(saved.contexts.local).toEqual({
+      url: "http://localhost:8787",
+      lifecycle: "external",
+    });
+  });
+
   test("addContext rejects cwd on a non-managed context", async () => {
     readFileSpy.mockResolvedValue(JSON.stringify({ contexts: {} }));
 

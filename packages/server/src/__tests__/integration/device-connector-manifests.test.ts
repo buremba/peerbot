@@ -89,7 +89,7 @@ function whatsappManifest(
     version: platform === 'macos' ? '1.9.0' : '2.0.0',
     name: platform === 'macos' ? 'WhatsApp (this Mac)' : 'WhatsApp Personal',
     description: `WhatsApp implementation for ${platform}`,
-    required_capability: platform === 'macos' ? 'whatsapp_local' : 'browser.scripting',
+    required_capability: platform === 'macos' ? 'whatsapp_local' : 'browser.whatsapp',
     runtime: { platforms: [platform] },
     auth_schema: { methods: [{ type: 'none' }] },
     feeds_schema: {
@@ -129,7 +129,7 @@ async function readWhatsAppRows(orgId: string) {
     ORDER BY id
   `) as unknown as Array<{ id: number; device_worker_id: string | null }>;
   const feeds = (await sql`
-    SELECT f.id, f.connection_id, f.feed_key, f.next_run_at
+    SELECT f.id, f.connection_id, f.feed_key, f.status, f.next_run_at
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE c.organization_id = ${orgId}
@@ -140,6 +140,7 @@ async function readWhatsAppRows(orgId: string) {
     id: number;
     connection_id: number;
     feed_key: string;
+    status: string;
     next_run_at: Date | string | null;
   }>;
   return { connections, feeds };
@@ -517,7 +518,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(workerId, [chromeManifest], 'chrome-extension', {
-          'browser.scripting': true,
+          'browser.whatsapp': true,
         })
       ).status
     ).toBe(200);
@@ -545,7 +546,7 @@ describe('device connector manifests', () => {
     });
 
     const response = await poll(workerId, [chromeManifest], 'chrome-extension', {
-      'browser.scripting': true,
+      'browser.whatsapp': true,
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { run_id?: number; compiled_code?: string };
@@ -577,7 +578,7 @@ describe('device connector manifests', () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
     const chromeManifest = whatsappManifest('chrome-extension');
-    const pollOptions = { 'browser.scripting': true };
+    const pollOptions = { 'browser.whatsapp': true };
 
     expect((await poll(workerId, [chromeManifest], 'chrome-extension', pollOptions)).status).toBe(
       200,
@@ -1229,17 +1230,39 @@ describe('device connector manifests', () => {
     expect(afterRun).toEqual(beforeRun);
   });
 
-  it('keeps manifest inventory separate from live permission state so revoked capabilities pause feeds', async () => {
-    const { orgId, workerId } = await seedDeviceOwner();
-    const connectorManifest = manifest();
+  it('keeps WhatsApp inventory while permission is revoked and reuses rows when granted again', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
+    const connectorManifest = whatsappManifest('chrome-extension');
 
-    const first = await poll(workerId, [connectorManifest], 'macos', { screentime: true });
+    const first = await poll(workerId, [connectorManifest], 'chrome-extension', {
+      'browser.whatsapp': true,
+    });
     expect(first.status).toBe(200);
-    expect(await readFeedStatus(orgId)).toBe('active');
+    const before = await readWhatsAppRows(orgId);
+    expect(before.feeds).toHaveLength(1);
+    expect(before.feeds[0]?.status).toBe('active');
 
-    const second = await poll(workerId, [connectorManifest], 'macos', {});
+    const second = await poll(workerId, [connectorManifest], 'chrome-extension', {});
     expect(second.status).toBe(200);
-    expect(await readFeedStatus(orgId)).toBe('paused');
+    const revoked = await readWhatsAppRows(orgId);
+    expect(revoked.feeds[0]?.status).toBe('paused');
+    expect(revoked.connections.map((row) => Number(row.id))).toEqual(
+      before.connections.map((row) => Number(row.id))
+    );
+    expect(revoked.feeds.map((row) => Number(row.id))).toEqual(
+      before.feeds.map((row) => Number(row.id))
+    );
+
+    const third = await poll(workerId, [connectorManifest], 'chrome-extension', {
+      'browser.whatsapp': true,
+    });
+    expect(third.status).toBe(200);
+    const restored = await readWhatsAppRows(orgId);
+    expect(restored.feeds[0]?.status).toBe('active');
+    expect(restored.connections).toEqual(before.connections);
+    expect(restored.feeds.map((row) => Number(row.id))).toEqual(
+      before.feeds.map((row) => Number(row.id))
+    );
   });
 
   it('cuts an existing WhatsApp connection over to its sole Chrome advertiser without replacing rows', async () => {
@@ -1300,7 +1323,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(advertiserWorkerId, [chromeManifest], 'chrome-extension', {
-          'browser.scripting': true,
+          'browser.whatsapp': true,
         })
       ).status
     ).toBe(200);
@@ -1331,7 +1354,7 @@ describe('device connector manifests', () => {
     const definition = await readDefinition(orgId, 'whatsapp.local');
     expect(definition?.name).toBe('WhatsApp Personal');
     expect(definition?.version).toBe('2.0.0');
-    expect(definition?.required_capability).toBe('browser.scripting');
+    expect(definition?.required_capability).toBe('browser.whatsapp');
     expect(definition?.runtime).toEqual({ platforms: ['macos', 'chrome-extension'] });
     const [artifact] = (await sql`
       SELECT source_path
@@ -1371,7 +1394,7 @@ describe('device connector manifests', () => {
       advertiserWorkerId,
       [chromeManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(advertiserPoll.status).toBe(200);
     expect((await advertiserPoll.json()).run_id).toBe(Number(run.id));
@@ -1383,7 +1406,7 @@ describe('device connector manifests', () => {
     const chromeManifest = whatsappManifest('chrome-extension');
 
     expect(
-      (await poll(workerA, [chromeManifest], 'chrome-extension', { 'browser.scripting': true }))
+      (await poll(workerA, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
         .status
     ).toBe(200);
     const [deviceA] = (await sql`
@@ -1398,7 +1421,7 @@ describe('device connector manifests', () => {
       platform: 'chrome-extension',
     });
     expect(
-      (await poll(workerB, [chromeManifest], 'chrome-extension', { 'browser.scripting': true }))
+      (await poll(workerB, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
         .status
     ).toBe(200);
 
@@ -1413,7 +1436,7 @@ describe('device connector manifests', () => {
       UPDATE connections SET device_worker_id = ${deviceB}::uuid WHERE id = ${connectionId}
     `;
     expect(
-      (await poll(workerA, [chromeManifest], 'chrome-extension', { 'browser.scripting': true }))
+      (await poll(workerA, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
         .status
     ).toBe(200);
     expect((await readWhatsAppRows(orgId)).connections[0].device_worker_id).toBe(deviceB);
@@ -1422,7 +1445,7 @@ describe('device connector manifests', () => {
     // principled winner, so leave the connection unpinned.
     await sql`UPDATE connections SET device_worker_id = NULL WHERE id = ${connectionId}`;
     expect(
-      (await poll(workerB, [chromeManifest], 'chrome-extension', { 'browser.scripting': true }))
+      (await poll(workerB, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
         .status
     ).toBe(200);
     expect((await readWhatsAppRows(orgId)).connections[0].device_worker_id).toBeNull();
@@ -1463,7 +1486,7 @@ describe('device connector manifests', () => {
     expect((await genericPoll.json()).run_id).toBeUndefined();
 
     const advertiserPoll = await poll(workerA, [chromeManifest], 'chrome-extension', {
-      'browser.scripting': true,
+      'browser.whatsapp': true,
     });
     expect(advertiserPoll.status).toBe(200);
     expect((await advertiserPoll.json()).run_id).toBe(Number(run.id));
@@ -1478,7 +1501,7 @@ describe('device connector manifests', () => {
       name: 'WhatsApp Chrome v1',
     });
     expect(
-      (await poll(v1WorkerId, [v1Manifest], 'chrome-extension', { 'browser.scripting': true }))
+      (await poll(v1WorkerId, [v1Manifest], 'chrome-extension', { 'browser.whatsapp': true }))
         .status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
@@ -1495,7 +1518,7 @@ describe('device connector manifests', () => {
       name: 'WhatsApp Chrome v2',
     });
     expect(
-      (await poll(v2WorkerId, [v2Manifest], 'chrome-extension', { 'browser.scripting': true }))
+      (await poll(v2WorkerId, [v2Manifest], 'chrome-extension', { 'browser.whatsapp': true }))
         .status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
@@ -1510,7 +1533,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(v2SecondWorkerId, [v2Manifest], 'chrome-extension', {
-          'browser.scripting': true,
+          'browser.whatsapp': true,
         })
       ).status
     ).toBe(200);
@@ -1544,7 +1567,7 @@ describe('device connector manifests', () => {
     `) as unknown as Array<{ id: number }>;
 
     const v2Poll = await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
-      'browser.scripting': true,
+      'browser.whatsapp': true,
     });
     expect(v2Poll.status).toBe(200);
     expect(((await v2Poll.json()) as { run_id?: number }).run_id).toBeUndefined();
@@ -1554,7 +1577,7 @@ describe('device connector manifests', () => {
     expect(stillPending).toEqual({ status: 'pending', claimed_by: null });
 
     const v1Poll = await poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
-      'browser.scripting': true,
+      'browser.whatsapp': true,
     });
     expect(v1Poll.status).toBe(200);
     expect(((await v1Poll.json()) as { run_id?: number }).run_id).toBe(Number(run.id));
@@ -1600,7 +1623,7 @@ describe('device connector manifests', () => {
       chromeWorkerId,
       [chromeManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(oldRunPoll.status).toBe(200);
     const oldRunBody = (await oldRunPoll.json()) as { run_id?: number; skipped_run_id?: number };
@@ -1625,7 +1648,7 @@ describe('device connector manifests', () => {
       chromeWorkerId,
       [chromeManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(pinnedFeedPoll.status).toBe(200);
     const pinnedFeedBody = (await pinnedFeedPoll.json()) as {
@@ -1687,7 +1710,7 @@ describe('device connector manifests', () => {
       chromeWorkerId,
       [chromeManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(chromeRunPoll.status).toBe(200);
     const chromeRunBody = (await chromeRunPoll.json()) as {
@@ -1724,7 +1747,7 @@ describe('device connector manifests', () => {
       chromeWorkerId,
       [chromeManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(chromeActionPoll.status).toBe(200);
     expect(((await chromeActionPoll.json()) as { run_id?: number }).run_id).toBeUndefined();
@@ -1752,7 +1775,7 @@ describe('device connector manifests', () => {
       chromeWorkerId,
       [chromeManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(chromePinnedPoll.status).toBe(200);
     const chromePinnedBody = (await chromePinnedPoll.json()) as {
@@ -1803,7 +1826,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(losingWorkerId, [losingManifest], 'chrome-extension', {
-          'browser.scripting': true,
+          'browser.whatsapp': true,
         })
       ).status
     ).toBe(200);
@@ -1817,7 +1840,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(winningWorkerId, [winningManifest], 'chrome-extension', {
-          'browser.scripting': true,
+          'browser.whatsapp': true,
         })
       ).status
     ).toBe(200);
@@ -1841,7 +1864,7 @@ describe('device connector manifests', () => {
       losingWorkerId,
       [losingManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(losingPoll.status).toBe(200);
     expect(((await losingPoll.json()) as { run_id?: number }).run_id).toBeUndefined();
@@ -1854,7 +1877,7 @@ describe('device connector manifests', () => {
       winningWorkerId,
       [winningManifest],
       'chrome-extension',
-      { 'browser.scripting': true }
+      { 'browser.whatsapp': true }
     );
     expect(winningPoll.status).toBe(200);
     expect(((await winningPoll.json()) as { run_id?: number }).run_id).toBe(runId);
@@ -1897,12 +1920,12 @@ describe('device connector manifests', () => {
         )
       `;
       v1PollPromise = poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
-        'browser.scripting': true,
+        'browser.whatsapp': true,
       });
       v1PollPromise.catch(() => undefined);
       await waitForAutowireWaiters(userId, 'whatsapp.local', 1);
       v2PollPromise = poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
-        'browser.scripting': true,
+        'browser.whatsapp': true,
       });
       v2PollPromise.catch(() => undefined);
       await waitForAutowireWaiters(userId, 'whatsapp.local', 2);
@@ -1938,7 +1961,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(workerId, [chromeManifest], 'chrome-extension', {
-          'browser.scripting': true,
+          'browser.whatsapp': true,
         })
       ).status
     ).toBe(200);
@@ -1979,7 +2002,7 @@ describe('device connector manifests', () => {
     `);
     try {
       const response = await poll(workerId, [chromeManifest], 'chrome-extension', {
-        'browser.scripting': true,
+        'browser.whatsapp': true,
       });
       expect(response.status).toBe(200);
       const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };

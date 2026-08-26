@@ -17,6 +17,7 @@
 export const BROWSER_CAPABILITIES = [
   "browser.tabs",
   "browser.scripting",
+  "browser.whatsapp",
   "browser.history",
   "browser.bookmarks",
   "browser.downloads",

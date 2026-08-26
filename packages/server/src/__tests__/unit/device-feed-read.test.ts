@@ -21,8 +21,10 @@ import {
 import { DEVICE_FEED_READ_ACTION_KEY } from '../../lib/device-feed-read-protocol';
 import {
   RESERVED_ACTION_KEY_PREFIX,
+  type DeviceConnectorSource,
   validateDeviceConnectorManifests,
 } from '../../worker-api/device-manifests';
+import { classifyDeviceConnectorReadiness } from '../../worker-api/device-connector-readiness';
 
 describe('device feed read — reserved action key', () => {
   it('lives in the gateway-reserved namespace so a manifest can never claim it', () => {
@@ -94,19 +96,19 @@ describe('device manifest feed operations', () => {
   });
 });
 
-describe('WhatsApp Browser manifest compatibility', () => {
+describe('WhatsApp Browser manifest capability', () => {
   const chromeManifest = {
     key: 'whatsapp.local',
     version: '2.0.0',
     name: 'WhatsApp Personal',
-    required_capability: 'browser.scripting',
+    required_capability: 'browser.whatsapp',
     runtime: { platforms: ['chrome-extension'] },
     feeds_schema: {
       messages: { key: 'messages', name: 'Messages', operations: ['sync', 'read'] },
     },
   };
 
-  it('accepts whatsapp.local from Chrome with browser.scripting', () => {
+  it('keeps manifest inventory while the dedicated capability is not granted', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',
       capabilities: ['browser.scripting'],
@@ -118,11 +120,22 @@ describe('WhatsApp Browser manifest compatibility', () => {
     expect(result.manifests[0]?.manifest.key).toBe('whatsapp.local');
   });
 
-  it('rejects a Chrome whatsapp.local manifest with another allowed browser capability', () => {
+  it('rejects a Chrome manifest with a capability outside the platform allowlist', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',
-      capabilities: ['browser.history'],
-      manifests: [{ ...chromeManifest, required_capability: 'browser.history' }],
+      capabilities: ['browser.scripting'],
+      manifests: [{ ...chromeManifest, required_capability: 'browser.cookies' }],
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.manifests).toHaveLength(0);
+  });
+
+  it('rejects a Chrome whatsapp.local manifest with an unrelated allowed capability', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.tabs'],
+      manifests: [{ ...chromeManifest, required_capability: 'browser.tabs' }],
     });
 
     expect(result.accepted).toBe(false);
@@ -141,6 +154,39 @@ describe('WhatsApp Browser manifest compatibility', () => {
   });
 });
 
+describe('device connector readiness', () => {
+  const source = (
+    onlineManifestDeviceIds: string[],
+    onlineAdvertiserDeviceIds: string[]
+  ) => ({
+    onlineManifestDeviceIds,
+    onlineAdvertiserDeviceIds,
+  }) as DeviceConnectorSource;
+
+  it('derives setup from one online manifest without its declared capability', () => {
+    expect(classifyDeviceConnectorReadiness(source(['device-1'], [])).state).toBe(
+      'setup_required'
+    );
+  });
+
+  it('derives ready only from an online capable advertiser', () => {
+    expect(classifyDeviceConnectorReadiness(source(['device-1'], ['device-1'])).state).toBe(
+      'ready'
+    );
+  });
+
+  it('derives offline when the selected manifest has no online advertiser', () => {
+    expect(classifyDeviceConnectorReadiness(source([], [])).state).toBe('device_offline');
+  });
+
+  it('classifies an execution pin independently from the rest of the fleet', () => {
+    const fleet = source(['device-2'], []);
+    expect(classifyDeviceConnectorReadiness(fleet).state).toBe('setup_required');
+    expect(classifyDeviceConnectorReadiness(fleet, 'device-1').state).toBe('device_offline');
+    expect(classifyDeviceConnectorReadiness(fleet, 'device-2').state).toBe('setup_required');
+  });
+});
+
 describe('device feed read — outcome mapping', () => {
   const params = {
     organizationId: 'org-1',
@@ -149,7 +195,9 @@ describe('device feed read — outcome mapping', () => {
     feedConfig: {},
     connectionId: 3,
     connectorKey: 'whatsapp.local',
+    deviceOwnerUserId: 'user-1',
     deviceWorkerId: null,
+    feedStatus: 'active',
     requiredCapability: 'whatsapp_local',
   };
 

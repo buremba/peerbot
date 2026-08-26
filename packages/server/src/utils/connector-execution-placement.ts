@@ -10,7 +10,15 @@ interface SqlTag<TFragment> {
  * namespace, so adding one changes a Chrome pin from delegated browser
  * affinity into an execution pin.
  */
-export const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS = ['whatsapp.local'] as const;
+export const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS: Readonly<
+  Record<string, { requiredCapability: string }>
+> = {
+  'whatsapp.local': { requiredCapability: 'browser.whatsapp' },
+};
+
+export const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS = Object.keys(
+  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS
+);
 
 const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEY_SET: ReadonlySet<string> = new Set(
   LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS
@@ -18,6 +26,12 @@ const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEY_SET: ReadonlySet<string> = ne
 
 export function isLegacyNativeChromeExtensionConnectorKey(connectorKey: string): boolean {
   return LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEY_SET.has(connectorKey);
+}
+
+export function legacyNativeChromeExtensionRequiredCapability(
+  connectorKey: string
+): string | null {
+  return LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS[connectorKey]?.requiredCapability ?? null;
 }
 
 export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {

@@ -49,6 +49,9 @@ describe("platform allowlist lookups ignore inherited keys", () => {
     expect(
       authorizeCapabilities("macos", ["automations.execute"]).authorized
     ).toContain("automations.execute");
+    expect(
+      authorizeCapabilities("chrome-extension", ["browser.whatsapp"]).authorized
+    ).toContain("browser.whatsapp");
   });
 
   test("headless devices authorize shell+files+automation execution but nothing browser-ish", () => {

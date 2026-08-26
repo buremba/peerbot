@@ -420,6 +420,25 @@ export function isEarlyDispatchableChatCommand(text: string): boolean {
   return ["help", "status", "try", "agents", "link"].includes(command ?? "");
 }
 
+type MessageSource = "mention" | "dm" | "subscribed" | "interaction";
+
+type MessageRouting = {
+  channelId: string;
+  conversationId: string;
+  responseThreadId?: string;
+  payloadTeamId?: string;
+  spanName?: string;
+  logMessage?: string;
+  logExtra?: Record<string, unknown>;
+};
+
+type MessageSourceAndRouting =
+  | [source: "interaction", routing: MessageRouting]
+  | [
+      source: Exclude<MessageSource, "interaction">,
+      routing?: MessageRouting,
+    ];
+
 /**
  * Register Chat SDK event handlers for a connection.
  *
@@ -668,18 +687,13 @@ export class MessageHandlerBridge {
   async handleMessage(
     thread: any,
     message: any,
-    source: "mention" | "dm" | "subscribed" | "interaction",
-    routing?: {
-      channelId: string;
-      conversationId: string;
-      responseThreadId?: string;
-      payloadTeamId?: string;
-      spanName?: string;
-      logMessage?: string;
-      logExtra?: Record<string, unknown>;
-    }
+    ...[source, routing]: MessageSourceAndRouting
   ): Promise<void> {
     const { connection } = this;
+
+    if (source === "interaction" && !routing) {
+      throw new Error("Interaction messages require explicit routing context");
+    }
 
     // Guard: drop messages if the connection was stopped/removed
     if (!this.manager.has(connection.id)) {
@@ -697,7 +711,7 @@ export class MessageHandlerBridge {
     const messageId = message.id ?? String(Date.now());
     const isGroup =
       source === "interaction"
-        ? routing?.conversationId !== channelId
+        ? routing!.conversationId !== channelId
         : source === "mention" || source === "subscribed";
     // Collapse to the canonical `thread.id` whenever we're inside an existing
     // thread — group thread reply OR DM thread reply alike. Slack encodes

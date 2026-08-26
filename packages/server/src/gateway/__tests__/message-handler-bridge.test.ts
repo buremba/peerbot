@@ -1137,6 +1137,21 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(clickPayload.platformMetadata.isDirect).toBeUndefined();
   });
 
+  test("fails closed when an interaction has no routing context", async () => {
+    const { bridge } = makePreviewHarness({
+      linkedAutomation: { agentId: "linked-agent" },
+    });
+
+    await expect(
+      bridge.handleMessage(
+        makeThread(undefined),
+        makeMessage(),
+        "interaction",
+        undefined as never,
+      ),
+    ).rejects.toThrow("Interaction messages require explicit routing context");
+  });
+
   test("routes suggestion clicks through message.created Automation ingress with a replay-stable identity", async () => {
     const trigger = {
       kind: "event" as const,

@@ -35,6 +35,7 @@ import { createDbClientFromEnv } from './db/client';
 import { type AbortableStream, bindRequestAbortToStream } from './events/sse-abort-bridge';
 import { formatToolResult } from './formatting/markdown-formatter';
 import type { Env } from './index';
+import { TEMPLATE_ACTION_CAPABILITY_META_KEY } from './interactions/template-action-capability';
 import {
   agentExistsInOrganization,
   isValidAgentId,
@@ -76,7 +77,6 @@ const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
 const APPROVAL_CAPABILITY_META_KEY = 'lobu/approval-capability';
-const EVENT_ACTION_CAPABILITY_META_KEY = 'lobu/event-action-capability';
 // ---------------------------------------------------------------------------
 // Session store
 // ---------------------------------------------------------------------------
@@ -472,7 +472,7 @@ function createServerForContext(
         : null;
     const compatEventActionCapability =
       name === 'invoke_event_action'
-        ? capabilityFromCompatArgs(args, EVENT_ACTION_CAPABILITY_META_KEY)
+        ? capabilityFromCompatArgs(args, TEMPLATE_ACTION_CAPABILITY_META_KEY)
         : null;
     const callArgs =
       compatApprovalCapability || compatEventActionCapability
@@ -486,7 +486,7 @@ function createServerForContext(
         capabilityFromMeta(request.params._meta, APPROVAL_CAPABILITY_META_KEY) ??
         compatApprovalCapability,
       mcpAppEventActionCapability:
-        capabilityFromMeta(request.params._meta, EVENT_ACTION_CAPABILITY_META_KEY) ??
+        capabilityFromMeta(request.params._meta, TEMPLATE_ACTION_CAPABILITY_META_KEY) ??
         compatEventActionCapability,
     };
     const tool = getTool(name);

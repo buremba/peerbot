@@ -307,10 +307,8 @@ export class MultiTenantProvider implements WorkspaceProvider {
     // without that header. Ordinary worker tokens are rejected on both paths;
     // non-worker bearers still fall through to PAT, OAuth, or session auth.
     const directAuthHeader = c.req.header('x-lobu-memory-direct-auth') === '1';
-    const directAuthBearer =
-      authHeader?.startsWith('Bearer ') && isMcpRoute
-        ? authHeader.slice(7)
-        : null;
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const directAuthBearer = bearerToken && isMcpRoute ? bearerToken : null;
     const gatewayMcpTokenData =
       directAuthBearer && directAuthHeader && looksLikeWorkerToken(directAuthBearer)
         ? verifyGatewayMcpToken(directAuthBearer)
@@ -464,6 +462,22 @@ export class MultiTenantProvider implements WorkspaceProvider {
         memberRole: directAuthRole,
         authSource: 'pat',
       });
+    }
+
+    // Worker tokens are valid only on MCP routes, so on every other route the
+    // fall-through below is pure waste — an OAuth verify (a DB read) and a
+    // session lookup that cannot succeed. Claiming the bearer on envelope
+    // shape alone is safe: no other credential class can produce that shape,
+    // since PATs carry an `owl_pat_` prefix, and OAuth access tokens and
+    // Better Auth session tokens are base64url, which never emits `:`. A
+    // forged or expired envelope lands on the same 401 the fall-through
+    // would have returned.
+    if (bearerToken && !isMcpRoute && looksLikeWorkerToken(bearerToken)) {
+      return c.json(
+        { error: 'invalid_token', error_description: 'Worker tokens are only valid on MCP routes' },
+        401,
+        { 'WWW-Authenticate': bearerChallenge('invalid_token') }
+      );
     }
 
     // 2) Bearer token auth (PAT or OAuth)

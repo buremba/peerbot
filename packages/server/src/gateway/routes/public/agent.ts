@@ -1064,12 +1064,14 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 					403,
 				);
 			}
+			// `capabilities` is a jsonb array of capability names, so test
+			// membership with the jsonb `?` operator used by worker dispatch.
 			const devices = await getDb()<{
 				id: string;
 				agent_kinds: string[] | string | null;
-				capabilities: Record<string, unknown> | null;
+				can_execute: boolean;
 			}>`
-        SELECT id, agent_kinds, capabilities
+        SELECT id, agent_kinds, capabilities ? 'automations.execute' AS can_execute
         FROM device_workers
         WHERE id = ${candidateExecutionTarget.deviceWorkerId}::uuid
           AND user_id = ${access.callerUserId}
@@ -1081,7 +1083,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 				device?.agent_kinds == null ? [] : parsePgTextArray(device.agent_kinds);
 			if (
 				!device ||
-				device.capabilities?.["automations.execute"] !== true ||
+				!device.can_execute ||
 				!advertisedKinds.includes(candidateExecutionTarget.agentKind)
 			) {
 				return c.json(
@@ -1116,9 +1118,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 				const existingTarget = existing.executionTarget;
 				if (
 					verifiedExecutionTarget &&
-					(verifiedExecutionTarget?.deviceWorkerId !==
+					(verifiedExecutionTarget.deviceWorkerId !==
 						existingTarget?.deviceWorkerId ||
-						verifiedExecutionTarget?.agentKind !== existingTarget?.agentKind)
+						verifiedExecutionTarget.agentKind !== existingTarget?.agentKind)
 				) {
 					return c.json(
 						{

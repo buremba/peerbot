@@ -239,7 +239,7 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
       ) VALUES (
-        ${MEMBER_ID}, 'member-device-chat', 'macos', ${sql.json({ "automations.execute": true })},
+		${MEMBER_ID}, 'member-device-chat', 'macos', ${sql.json(["automations.execute"])},
         'Member Mac', ${AGENT_ORG}, '{pi}'::text[]
       )
       RETURNING id
@@ -248,7 +248,7 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
       ) VALUES (
-        ${AGENT_OWNER_ID}, 'owner-device-chat', 'macos', ${sql.json({ "automations.execute": true })},
+		${AGENT_OWNER_ID}, 'owner-device-chat', 'macos', ${sql.json(["automations.execute"])},
         'Owner Mac', ${AGENT_ORG}, '{pi}'::text[]
       )
       RETURNING id
@@ -257,7 +257,7 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
       ) VALUES (
-        ${MEMBER_ID}, 'member-device-chat-2', 'macos', ${sql.json({ "automations.execute": true })},
+		${MEMBER_ID}, 'member-device-chat-2', 'macos', ${sql.json(["automations.execute"])},
         'Member Mac 2', ${AGENT_ORG}, '{pi}'::text[]
       )
       RETURNING id

@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   dispatchAutomationResumeLoop,
-  resolveAutomationRunAccess,
+  resolveDeviceAgentRunAccess,
   type AutomationRunIo,
   type ExecutorResult,
 } from '../daemon/automation.js';
@@ -341,7 +341,7 @@ describe('executeRun try/catch safety net', () => {
   });
 });
 
-describe('resolveAutomationRunAccess', () => {
+describe('resolveDeviceAgentRunAccess', () => {
   const daemonWiring = { url: 'http://daemon.local/api/mcp', bearer: 'daemon-pat' };
   const basePayload = (
     session?: NonNullable<AutomationPollPayload['context']['agent_session']>
@@ -362,7 +362,10 @@ describe('resolveAutomationRunAccess', () => {
       token: 'run-scoped-token',
       expires_at: Date.now() + 60_000,
     };
-    const access = resolveAutomationRunAccess(basePayload(session), daemonWiring);
+    const access = resolveDeviceAgentRunAccess(
+      basePayload(session).context.agent_session,
+      daemonWiring
+    );
     expect(access.wiring).toEqual({
       url: 'https://gateway.test/lobu/mcp/lobu-memory',
       bearer: 'run-scoped-token',
@@ -374,7 +377,10 @@ describe('resolveAutomationRunAccess', () => {
   });
 
   test('falls back to the daemon wiring (and no env override) without a session', () => {
-    const access = resolveAutomationRunAccess(basePayload(), daemonWiring);
+    const access = resolveDeviceAgentRunAccess(
+      basePayload().context.agent_session,
+      daemonWiring
+    );
     expect(access.wiring).toBe(daemonWiring);
     expect(access.env).toEqual({});
   });

@@ -281,8 +281,6 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         action_output: Record<string, unknown> | null;
       }>;
       let approvalActionsReaped = 0;
-			const deviceChatsReaped =
-				await sweepStaleDeviceChatRuns(thresholdSeconds);
       for (const candidate of approvedActionCandidates) {
         const runId = Number(candidate.id);
         try {
@@ -539,6 +537,11 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         sync_eligible: number;
         dispatch_failures: unknown;
       }>;
+
+      // Device-placed chat turns are claimed by the device's own poller, so the
+      // connector reaper above never sees them; they terminalize through the
+      // adapter that also publishes their thread_response.
+      const deviceChatsReaped = await sweepStaleDeviceChatRuns(thresholdSeconds);
 
       const reapedRow = reaped[0];
       const reapedCount =

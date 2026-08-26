@@ -41,7 +41,7 @@ async function insertDevice(args: {
       user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
     ) VALUES (
       ${args.userId}, ${args.workerId}, 'headless',
-      ${sql.json({ "automations.execute": true })}, ${args.workerId},
+		${sql.json(["automations.execute"])}, ${args.workerId},
       ${args.organizationId}, ${`{${args.kinds.join(",")}}`}::text[]
     )
     RETURNING id

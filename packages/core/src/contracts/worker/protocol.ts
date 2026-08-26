@@ -3,8 +3,9 @@
  *
  * Single source of truth for the device/connector-worker job protocol:
  * `POST /api/workers/poll`, `/api/workers/complete`, `/complete-action`,
- * `/complete-embeddings`, `/complete-automation`, `/emit-auth-artifact`,
- * `/poll-auth-signal`, `/stream`, and the chrome-action dispatch.
+ * `/complete-embeddings`, `/complete-automation`, `/complete-chat`,
+ * `/emit-auth-artifact`, `/poll-auth-signal`, `/stream`, and the chrome-action
+ * dispatch.
  *
  * Before this module the wire shapes were typed twice with no compiler link:
  *   - the SERVER, inline as `c.req.json<{…}>()` in `worker-api/*` handlers, and
@@ -176,7 +177,7 @@ export const AutomationPollEventSchema = Type.Object({
   payload: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 });
 
-/** Identity context for a device automation run. */
+/** Identity context for a device-local CLI run (automation or chat). */
 export const AutomationPollContextSchema = Type.Object({
   device: Type.Object({ worker_id: Type.Optional(Type.String()) }),
   user: Type.Object({
@@ -184,14 +185,14 @@ export const AutomationPollContextSchema = Type.Object({
   }),
   // Device execution: the per-run lobu-memory MCP session when the worker
   // advertises automations.execute. Legacy Mac bridge workers omit it.
-  // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
-  // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
+  // `token` is a WorkerToken minted for the run's ASSIGNED AGENT — never the
+  // polling device's PAT (a child
   // PAT is bound to the user's personal org and can't authenticate to a
   // team-org Automation). `mcp_url` is the org-scoped direct MCP endpoint
   // (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own session.
   // The daemon hands both to the spawned CLI as its MCP wiring and as
-  // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
-  // agent for this run. Absent when the run has no usable assigned agent or
+  // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the run's agent.
+  // Absent when the run has no usable assigned agent or
   // when the legacy worker did not advertise automations.execute. A capable
   // standalone daemon fails closed instead of falling back to its device PAT.
   agent_session: Type.Optional(
@@ -302,13 +303,12 @@ export const PollResponseSchema = Type.Object({
       metadata: Type.Record(Type.String(), Type.Unknown()),
     })
   ),
-  /** Owning org of a claimed automation run; sent on the automation lane only. */
+  /** Owning org of a claimed device-local CLI run. */
   organization_id: Type.Optional(Type.String()),
   /**
-   * Automation-run envelope. Present only when `run_type === 'automation'`: the
-   * gateway composes the payload a device-local CLI executor needs to build a
-   * prompt, and the device returns its process exit via `/complete-automation`.
-   * No connector code, credentials, or compiled_code are shipped on this lane.
+   * Device-local CLI envelope for `automation` or `chat_message` runs. The
+   * gateway composes the prompt context and the device reports through the
+   * matching completion endpoint. No connector code or credentials are shipped.
    */
   payload: Type.Optional(
     Type.Union([AutomationPollPayloadSchema, DeviceChatPollPayloadSchema])
@@ -481,7 +481,7 @@ export const CompleteAutomationResponseSchema = Type.Object({
   idempotent: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
 });
 
-/** Device-side terminal report for a `chat_message` turn. */
+/** `POST .../complete-chat` terminal report for a `chat_message` turn. */
 export const CompleteDeviceChatRequestSchema = Type.Object({
   worker_id: Type.String(),
   output: Type.Optional(Type.String()),

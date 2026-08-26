@@ -19,7 +19,7 @@
  * spawned agent CLI runs in the user's environment (PATH, HOME) minus the
  * `WORKER_API_TOKEN` env var, so the child cannot act as the worker/poll loop.
  * Its Lobu credential is the poll envelope's per-run `agent_session` when the
- * server minted one (see `resolveAutomationRunAccess`): the run authenticates
+ * server minted one (see `resolveDeviceAgentRunAccess`): the run authenticates
  * as the Automation's assigned agent, not as the daemon or the user's ambient
  * CLI session. Capable standalone Mac daemons fail closed when that session is
  * absent; legacy workers retain the pre-session fallback.
@@ -408,26 +408,16 @@ function claudeSessionMeta(
 }
 
 /**
- * Resolve what credential the spawned CLI runs with. When the poll envelope
- * carries a per-run `agent_session`, the CLI authenticates as the automation's
- * assigned agent for exactly this run: the session token goes into the MCP
+ * Resolve what credential the spawned CLI runs with — the boundary shared by
+ * Automation and device-chat CLIs. When the poll envelope carries a per-run
+ * `agent_session`, the CLI authenticates as the run's assigned agent for
+ * exactly this run: the session token goes into the MCP
  * wiring AND into LOBU_API_TOKEN/LOBU_MEMORY_URL, which `lobu memory` prefers
  * over the device's ambient CLI session — so an unattended run never acts as
  * the human user or the daemon. Without a session (older server, or a run with
  * no usable assigned agent) fall back to the daemon's own wiring, the
  * pre-session dispatch path.
  */
-export function resolveAutomationRunAccess(
-  payload: AutomationPollPayload,
-  daemonWiring: { url: string; bearer?: string } | undefined
-): DeviceAgentRunAccess {
-  return resolveDeviceAgentRunAccess(
-    payload.context.agent_session,
-    daemonWiring
-  );
-}
-
-/** Resolve the credential boundary shared by Automation and device chat CLIs. */
 export function resolveDeviceAgentRunAccess(
   session: AutomationPollPayload['context']['agent_session'],
   daemonWiring: { url: string; bearer?: string } | undefined
@@ -924,7 +914,10 @@ export async function executeAutomationRun(
         spec,
         prompt,
         payload.automation.execution_config,
-        resolveAutomationRunAccess(payload, client.mcpWiring),
+        resolveDeviceAgentRunAccess(
+          payload.context.agent_session,
+          client.mcpWiring
+        ),
         timeoutMs,
         cfg.binaryOverrides?.[spec.kind],
         runAbort.signal,

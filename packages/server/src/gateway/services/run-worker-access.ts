@@ -74,6 +74,13 @@ export function buildAutomationRunWorkerAccess(args: {
 	});
 }
 
+/**
+ * The one name for "this turn is a device-placed chat turn", stamped into the
+ * signed worker token and read back by the direct-MCP auth lane so a spawned
+ * local CLI can reach Lobu tools with the same per-run identity Automations use.
+ */
+export const DEVICE_CHAT_RUN_SOURCE = "device-chat";
+
 /** Mint the same run-scoped agent identity for a device-placed chat turn. */
 export function buildDeviceChatRunWorkerAccess(args: {
 	agentId: string;
@@ -83,5 +90,5 @@ export function buildDeviceChatRunWorkerAccess(args: {
 	userId: string;
 	channelId: string;
 }): RunWorkerAccess {
-	return buildRunWorkerAccess({ ...args, source: "device-chat" });
+	return buildRunWorkerAccess({ ...args, source: DEVICE_CHAT_RUN_SOURCE });
 }

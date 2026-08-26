@@ -39,13 +39,15 @@ describe('notify > semantic_type (kind) payload', () => {
       name: 'Notify Kind Entity',
       organization_id: org.id,
     });
-    // A notification is validated against $member kinds even when entity-anchored.
+    // An entity-anchored notification renders from the same entity kind that
+    // owns its native chat card and interactions. Unanchored notifications
+    // continue to use the workspace $member registry.
     await sql`
       UPDATE entity_types
       SET event_kinds = ${sql.json({
         funnel_digest: {
-          description: 'Entity-scoped digest with an incompatible renderer',
-          jsonTemplate: { type: 'markdown', content: 'Wrong registry' },
+          description: 'Entity-scoped digest renderer',
+          jsonTemplate: { type: 'markdown', content: 'Entity-local registry' },
         },
       })}
       WHERE id = (
@@ -171,7 +173,7 @@ describe('notify > semantic_type (kind) payload', () => {
     expect(meta[0].metadata).not.toHaveProperty('mcp_session_id');
   });
 
-  it('renders a chart template for a kind notification via get_content', async () => {
+  it('renders the owning kind template for notifications via get_content', async () => {
     await insertEvent({
       organizationId: org.id,
       originId: 'notify-kind-non-notification-control',
@@ -234,8 +236,8 @@ describe('notify > semantic_type (kind) payload', () => {
     });
     expect(chartItem?.payload_template).toEqual({
       root: {
-        type: 'bar-chart',
-        data: '{{rows}}',
+        type: 'markdown',
+        content: 'Entity-local registry',
       },
     });
     const noDataItem = content.content?.find(

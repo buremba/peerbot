@@ -4,7 +4,7 @@ import {
 	type CardElement,
 } from "chat";
 import { loadConfiguredAutomationDeliveryTarget } from "../automations/delivery-target";
-import { getDb, pgBigintArray, pgTextArray } from "../db/client";
+import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
@@ -415,6 +415,18 @@ interface NotificationDeliveryRecord {
 }
 
 /**
+ * Delivery metadata read back from `events`. Readers validate only the
+ * addressing triple because every consumer can address the message without a
+ * channel key; preserve `channelKey` when the stored JSON includes it.
+ */
+type PersistedNotificationDeliveryRecord = Omit<
+	NotificationDeliveryRecord,
+	"channelKey"
+> & {
+	channelKey?: string;
+};
+
+/**
  * Stamp where the notification was delivered onto the event that represents it.
  *
  * Post-hoc metadata UPDATE, matching the routing stamp in
@@ -427,9 +439,9 @@ interface NotificationDeliveryRecord {
  * Best-effort: losing the record costs a later in-place edit, not the
  * notification itself.
  */
-async function recordDelivery(
+async function persistDeliveryMetadata(
 	eventId: number,
-	deliveries: NotificationDeliveryRecord[],
+	deliveries: PersistedNotificationDeliveryRecord[],
 	card?: CardElement,
 ): Promise<void> {
 	// A record exists to be addressed later, and `editMessage(threadId, messageId)`
@@ -490,20 +502,24 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 
 function deliveryRecords(
 	metadata: Record<string, unknown>,
-): Array<
-	Pick<NotificationDeliveryRecord, "connectionId" | "messageId" | "threadId">
-> {
+): PersistedNotificationDeliveryRecord[] {
 	return (Array.isArray(metadata.delivery) ? metadata.delivery : []).flatMap(
 		(entry) => {
 			const row = jsonRecord(entry);
 			const connectionId = row.connectionId;
+			const channelKey = row.channelKey;
 			const messageId = row.messageId;
 			const threadId = row.threadId;
 			return typeof connectionId === "string" &&
 				typeof messageId === "string" &&
 				messageId !== "" &&
 				typeof threadId === "string"
-				? [{ connectionId, messageId, threadId }]
+				? [{
+						connectionId,
+						...(typeof channelKey === "string" ? { channelKey } : {}),
+						messageId,
+						threadId,
+					}]
 				: [];
 		},
 	);
@@ -636,6 +652,141 @@ export function queueApprovalNotificationCardRefresh(
 	);
 }
 
+/** Replace persisted chat copies only when the superseded event was interactive. */
+async function refreshInteractiveEventCard(
+	organizationId: string,
+	replacementEventId: number,
+	supersededEventId: number,
+): Promise<void> {
+	const manager = getChatInstanceManager();
+	if (!manager) return;
+	const [row] = await getDb()<{
+		title: string | null;
+		entity_ids: unknown;
+		semantic_type: string;
+		payload_text: string | null;
+		payload_data: unknown;
+		metadata: unknown;
+		source_entity_ids: unknown;
+		source_semantic_type: string;
+		source_metadata: unknown;
+	}>`
+    SELECT replacement.title, replacement.entity_ids,
+           replacement.semantic_type, replacement.payload_text,
+           replacement.payload_data, replacement.metadata,
+           source.entity_ids AS source_entity_ids,
+           source.semantic_type AS source_semantic_type,
+           source.metadata AS source_metadata
+    FROM events replacement
+    JOIN events source
+      ON source.id = ${supersededEventId}
+     AND source.organization_id = replacement.organization_id
+    WHERE replacement.id = ${replacementEventId}
+      AND replacement.organization_id = ${organizationId}
+    LIMIT 1
+  `;
+	if (!row) return;
+	const sourceMetadata = jsonRecord(row.source_metadata);
+	const deliveries = deliveryRecords(sourceMetadata);
+	if (deliveries.length === 0) return;
+	const sourceKind = await resolveEventKindDefinition(
+		row.source_semantic_type,
+		organizationId,
+		parsePgNumberArray(row.source_entity_ids),
+	);
+	if (!sourceKind?.interactions || Object.keys(sourceKind.interactions).length === 0) {
+		return;
+	}
+
+	const entityIds = parsePgNumberArray(row.entity_ids);
+	const kind = await resolveEventKindDefinition(
+		row.semantic_type,
+		organizationId,
+		entityIds,
+	);
+	if (!kind) return;
+	const metadata = jsonRecord(row.metadata);
+	const data =
+		typeof metadata.notification_type === "string"
+			? jsonRecord(row.payload_data)
+			: metadata;
+	const card = buildKindCard({
+		metadataSchema: kind.metadataSchema,
+		jsonTemplate: kind.jsonTemplate,
+		data,
+		title: row.title ?? row.semantic_type,
+		body: row.payload_text ?? undefined,
+		url: toAbsolutePermalink(
+			typeof metadata.resource_url === "string"
+				? metadata.resource_url
+				: typeof sourceMetadata.resource_url === "string"
+					? sourceMetadata.resource_url
+					: undefined,
+		),
+		sourceEventId: replacementEventId,
+		interactions: kind.interactions,
+	});
+	if (!card) return;
+	const content: AdapterPostableMessage = {
+		card,
+		fallbackText: row.payload_text
+			? `${row.title ?? row.semantic_type}\n\n${row.payload_text}`
+			: row.title ?? row.semantic_type,
+	};
+	const successfulDeliveries = (
+		await Promise.all(
+			deliveries.map(async (delivery) => {
+				try {
+					await manager.editMessageContent(delivery.connectionId, {
+						threadId: delivery.threadId,
+						messageId: delivery.messageId,
+						content,
+					});
+					return delivery;
+				} catch (err) {
+					logger.warn(
+						{ err, replacementEventId, connectionId: delivery.connectionId },
+						"[Notifications] Failed to refresh interactive event card",
+					);
+					return null;
+				}
+			}),
+		)
+	).filter(
+		(delivery): delivery is PersistedNotificationDeliveryRecord =>
+			delivery !== null,
+	);
+	// Carry the delivery pointer to the replacement only while it is still
+	// interactive: that record exists to let the NEXT supersede find these chat
+	// copies. Once a kind stops declaring interactions the chain has nothing
+	// left to refresh, so stamping it would be dead metadata.
+	if (kind.interactions && Object.keys(kind.interactions).length > 0) {
+		await persistDeliveryMetadata(
+			replacementEventId,
+			successfulDeliveries,
+			card,
+		);
+	}
+}
+
+/** Best-effort post-commit refresh, mirroring approval-card settlement. */
+export function queueInteractiveEventCardRefresh(
+	organizationId: string,
+	replacementEventId: number,
+	supersededEventId: number,
+): void {
+	void refreshInteractiveEventCard(
+		organizationId,
+		replacementEventId,
+		supersededEventId,
+	).catch((err) =>
+		logger.warn(
+			{ err, organizationId, replacementEventId, supersededEventId },
+			"[Notifications] Failed to refresh interactive event card",
+		),
+	);
+}
+
 /**
  * Build the chat card for a notification from its event kind.
  *
@@ -644,14 +795,16 @@ export function queueApprovalNotificationCardRefresh(
  * never fatal — the caller falls back to the markdown body, so a missing kind
  * costs formatting, never delivery.
  */
-async function resolveNotificationKindCard(
+export async function resolveNotificationKindCard(
 	params: Omit<CreateNotificationParams, "userId">,
+	eventId: number,
 ): Promise<CardElement | null> {
 	if (!params.semanticType) return null;
 	try {
 		const kind = await resolveEventKindDefinition(
 			params.semanticType,
 			params.organizationId,
+			params.entityIds,
 		);
 		if (!kind) return null;
 		return buildKindCard({
@@ -666,6 +819,8 @@ async function resolveNotificationKindCard(
 			// inbox; only the card gets the absolute form.
 			url: toAbsolutePermalink(params.resourceUrl),
 			decisionRunId: params.decisionRunId,
+			sourceEventId: eventId,
+			interactions: kind.interactions,
 		});
 	} catch (err) {
 		logger.warn(
@@ -692,7 +847,7 @@ async function deliverToBotConnections(
 	//      authoring its content twice (`payloadData` for web, a hand-built card
 	//      for chat) and drifting between them;
 	//   3. the markdown body.
-	const baseCard = params.card ?? (await resolveNotificationKindCard(params));
+	const baseCard = params.card ?? (await resolveNotificationKindCard(params, eventId));
 	const card = baseCard ? addActionOrigin(baseCard, params.actionOrigin) : null;
 	const content = card ? { card } : { markdown: text };
 	const deliveryPlan = await resolveNotificationDeliveryPlan({
@@ -733,7 +888,7 @@ async function deliverToBotConnections(
 					dm.slackUserId,
 					content,
 				);
-				await recordDelivery(
+				await persistDeliveryMetadata(
 					eventId,
 					[
 						{
@@ -802,7 +957,7 @@ async function deliverToBotConnections(
 				"[Notifications] Failed to post to bot connection channel",
 			);
 		});
-		await recordDelivery(eventId, delivered, card ?? undefined);
+		await persistDeliveryMetadata(eventId, delivered, card ?? undefined);
 		if (deliveryPlan.strictAutomationTarget && delivered.length === 0) {
 			await recordDeliveryError(eventId, "automation_target_post_failed");
 		}

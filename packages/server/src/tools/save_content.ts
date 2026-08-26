@@ -15,6 +15,7 @@ import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
 import type { Env } from '../index';
+import { queueInteractiveEventCardRefresh } from '../notifications/service';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
@@ -707,6 +708,14 @@ async function saveContentImpl(
     }).catch((err) => {
       logger.warn({ err, eventId: row.id }, 'autoLinkEvent failed');
     });
+  }
+
+  if (inserted && args.supersedes_event_id) {
+    queueInteractiveEventCardRefresh(
+      ctx.organizationId,
+      Number(row.id),
+      args.supersedes_event_id
+    );
   }
 
   logger.info(

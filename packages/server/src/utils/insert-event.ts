@@ -90,7 +90,7 @@ export async function lockEventDedupIdentity(
 // Types
 // ============================================
 
-interface InsertEventParams {
+export interface InsertEventParams {
   entityIds: number[];
   organizationId: string;
   originId: string;
@@ -1137,6 +1137,118 @@ interface ConnectionlessAuditInsertOptions {
   lockAndPruneEntityRefs?: boolean;
 }
 
+async function findConnectionlessEventByIdempotencyKey(
+  organizationId: string,
+  idempotencyKey: string,
+  expected: Pick<
+    InsertEventParams,
+    'semanticType' | 'originType' | 'originId' | 'parentOriginId'
+  >
+): Promise<InsertedEvent | null> {
+  const existing = await getDb()`
+    SELECT id, entity_ids, origin_id, origin_type, origin_parent_id,
+           title, semantic_type, created_at
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND metadata ? '_lobu_idempotency_key'
+      AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+    ORDER BY id ASC
+    LIMIT 1
+  `;
+  const row = existing[0] as
+    | {
+        id: number | string;
+        entity_ids: number[] | null;
+        origin_id: string;
+        origin_type: string | null;
+        origin_parent_id: string | null;
+        title: string | null;
+        semantic_type: string;
+        created_at: string;
+      }
+    | undefined;
+  if (!row) return null;
+  if (
+    row.semantic_type !== expected.semanticType ||
+    row.origin_type !== (expected.originType ?? null) ||
+    row.origin_id !== expected.originId ||
+    row.origin_parent_id !== (expected.parentOriginId ?? null)
+  ) {
+    return null;
+  }
+  return {
+    id: Number(row.id),
+    entity_ids: row.entity_ids,
+    origin_id: row.origin_id,
+    title: row.title,
+    semantic_type: row.semantic_type,
+    created_at: row.created_at,
+    change: 'unchanged',
+  };
+}
+
+/**
+ * Append a user/platform-authored workspace event and enqueue matching
+ * Automations in the same transaction.
+ *
+ * `idempotencyKey` is server-derived by the producer (for example from a
+ * verified webhook delivery). The reserved org-wide unique index makes exact
+ * retries converge across replicas; callers never need process-local state.
+ */
+export async function insertConnectionlessWorkspaceEvent(
+  params: InsertEventParams,
+  idempotencyKey: string,
+  options?: { sql?: DbClient }
+): Promise<InsertedEvent> {
+  const normalizedKey = stripNul(idempotencyKey);
+  const actingScope = getActingAutomationScope();
+  const producerAutomationId = params.automationId ?? actingScope?.automationId ?? null;
+  const actingRunId =
+    actingScope != null && actingScope.automationId === producerAutomationId
+      ? actingScope.runId
+      : null;
+  const write = (tx: DbClient) =>
+    insertEvent(
+      {
+        ...params,
+        connectionId: null,
+        automationId: producerAutomationId,
+        metadata: {
+          ...(params.metadata ?? {}),
+          _lobu_idempotency_key: normalizedKey,
+        },
+      },
+      {
+        sql: tx,
+        afterPersist: (event, activeTx) =>
+          queueWorkspaceEventActivationInTransaction(
+            {
+              organizationId: params.organizationId,
+              eventId: event.id,
+              eventType: params.semanticType,
+              producerAutomationId,
+              actingRunId,
+            },
+            activeTx
+          ),
+      }
+    );
+
+  try {
+    if (options?.sql) return await write(options.sql);
+    return (await getDb().begin(write)) as InsertedEvent;
+  } catch (error) {
+    if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX) || options?.sql) throw error;
+    const existing = await findConnectionlessEventByIdempotencyKey(
+      params.organizationId,
+      normalizedKey,
+      params
+    );
+    if (!existing) throw error;
+    return existing;
+  }
+}
+
 /**
  * Insert an audit row under the same row locks the force-delete path takes,
  * dropping any referenced entity that has already been hard-deleted.
@@ -1268,34 +1380,18 @@ export async function insertConnectionlessAuditEvent(
   } catch (error) {
     if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX)) throw error;
     if (options?.sql) throw error;
-    const sql = getDb();
-    const existing = await sql`
-      SELECT id, entity_ids, origin_id, title, semantic_type, created_at
-      FROM events
-      WHERE organization_id = ${params.organizationId}
-        AND metadata ? '_lobu_idempotency_key'
-        AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
-      ORDER BY id ASC
-      LIMIT 1
-    `;
-    if (!existing[0]) throw error;
-    const row = existing[0] as {
-      id: number | string;
-      entity_ids: number[] | null;
-      origin_id: string;
-      title: string | null;
-      semantic_type: string;
-      created_at: string;
-    };
-    return {
-      id: Number(row.id),
-      entity_ids: row.entity_ids,
-      origin_id: row.origin_id,
-      title: row.title,
-      semantic_type: row.semantic_type,
-      created_at: row.created_at,
-      change: 'unchanged',
-    };
+    const existing = await findConnectionlessEventByIdempotencyKey(
+      params.organizationId,
+      idempotencyKey,
+      {
+        semanticType: params.semanticType,
+        originType: params.originType,
+        originId: params.originId,
+        parentOriginId: params.parentOriginId,
+      }
+    );
+    if (!existing) throw error;
+    return existing;
   }
 }
 

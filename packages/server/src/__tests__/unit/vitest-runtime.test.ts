@@ -1,13 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { assertNodeVitestRuntime } from "../setup/vitest-runtime.js";
+
+const packageRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 const readPackageFile = (relativePath: string) =>
   readFileSync(
     fileURLToPath(new URL(`../../../${relativePath}`, import.meta.url)),
     "utf8"
   );
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${directory}/${entry.name}`;
+    return entry.isDirectory() ? sourceFiles(path) : [path];
+  });
+}
 
 describe("server Vitest runtime", () => {
   test("rejects a simulated Bun runtime with the canonical Node command", () => {
@@ -49,5 +58,16 @@ describe("server Vitest runtime", () => {
 
     expect(guardCall).toBeGreaterThanOrEqual(0);
     expect(databaseDecision).toBeGreaterThan(guardCall);
+  });
+
+  test("Vitest integration files do not invoke the Bun database bootstrap", () => {
+    const offenders = sourceFiles(`${packageRoot}src/__tests__/integration`)
+      .filter((path) => path.endsWith(".test.ts"))
+      .filter((path) =>
+        readFileSync(path, "utf8").includes("gateway/__tests__/helpers/db-setup")
+      )
+      .map((path) => path.slice(packageRoot.length));
+
+    expect(offenders).toEqual([]);
   });
 });

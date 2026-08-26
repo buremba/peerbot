@@ -809,10 +809,10 @@ describe("Google Chat platform compatibility", () => {
 
   test("dispatches standalone CARD_CLICKED action metadata", async () => {
     const chat = await createTestChat();
-    const delivered: Array<{ actionId: string; value?: string }> = [];
+    const delivered: any[] = [];
     const completion = Promise.withResolvers<void>();
     chat.onAction("approve", async (event) => {
-      delivered.push({ actionId: event.actionId, value: event.value });
+      delivered.push(event);
       completion.resolve();
     });
     const messageEvent = standardDirectMessage();
@@ -834,7 +834,17 @@ describe("Google Chat platform compatibility", () => {
     await waitForDelivery(completion.promise);
 
     expect(response.status).toBe(200);
-    expect(delivered).toEqual([{ actionId: "approve", value: "invoice-42" }]);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      actionId: "approve",
+      value: "invoice-42",
+      user: {
+        userId: "users/123",
+        fullName: "Test User",
+      },
+      messageId: "spaces/AAAA-test/messages/message-1",
+    });
+    expect(delivered[0].raw.chat.eventTime).toBe(messageEvent.eventTime);
   });
 
   test("retains credential mode for impersonation and Workspace Events", async () => {

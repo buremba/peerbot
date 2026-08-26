@@ -323,6 +323,107 @@ export interface TemplateVisitor<T> {
 }
 
 /**
+ * One event a template action is allowed to append. The action name is the
+ * registry key; the template references it as `@name` and never names a tool
+ * or executable handler.
+ */
+export interface TemplateInteractionDefinition {
+  emits: string;
+}
+
+export type TemplateInteractionRegistry = Record<
+  string,
+  TemplateInteractionDefinition
+>;
+
+/** The presentation-neutral result of a user activating a rendered control. */
+export interface TemplateActionInvocation {
+  action: string;
+  value: string | null;
+}
+
+export function templateInteractionValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  return null;
+}
+
+/** Convert a declarative `@action` handler and resolved control value to the shared wire shape. */
+export function templateActionInvocation(
+  handler: unknown,
+  value: unknown
+): TemplateActionInvocation | null {
+  if (
+    typeof handler !== "string" ||
+    !handler.startsWith("@") ||
+    handler.length === 1
+  ) {
+    return null;
+  }
+  return { action: handler.slice(1), value: templateInteractionValue(value) };
+}
+
+/**
+ * Resolve every action/value pair a rendered template actually exposes.
+ *
+ * This deliberately walks the same conditionals, loops, bindings, and handler
+ * syntax as every renderer. Server-side invocation validation can therefore
+ * reject a forged value without maintaining a second JSON-template parser.
+ */
+export function collectTemplateActionInvocations(
+  node: unknown,
+  data: Record<string, unknown>
+): TemplateActionInvocation[] {
+  const invocations: TemplateActionInvocation[] = [];
+  const seen = new Set<string>();
+  const add = (action: string, value: string | null) => {
+    const key = JSON.stringify([action, value]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    invocations.push({ action, value });
+  };
+
+  walkTemplate(node, data, {
+    text: () => [],
+    value: () => [],
+    component: (type, props, _children, { actions }) => {
+      const names =
+        type === "button"
+          ? [actions.onClick ?? actions.onPress ?? actions.onSubmit].filter(
+              (name): name is string => Boolean(name)
+            )
+          : type === "select"
+            ? [actions.onChange ?? actions.onSelect].filter(
+                (name): name is string => Boolean(name)
+              )
+            : [];
+      if (type === "select" && Array.isArray(props.options)) {
+        for (const option of props.options) {
+          if (!option || typeof option !== "object" || Array.isArray(option)) {
+            continue;
+          }
+          const record = option as Record<string, unknown>;
+          const value = templateInteractionValue(record.value ?? record.label);
+          if (value === null) continue;
+          for (const action of names) add(action, value);
+        }
+        return [];
+      }
+      const value = templateInteractionValue(props.value);
+      for (const action of names) add(action, value);
+      return [];
+    },
+  });
+  return invocations;
+}
+
+/**
  * Walk a template against `data`, emitting whatever the visitor builds.
  *
  * `unsupported` collects the component types the visitor refused — signalled by

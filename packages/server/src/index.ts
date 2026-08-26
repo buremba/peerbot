@@ -110,6 +110,7 @@ import {
 	publicRestSearchKnowledge,
 	restGetAutomations,
 	restHealth,
+	restInvokeEventAction,
 	restListTools,
 	restSearchKnowledge,
 	restToolAction,
@@ -1079,6 +1080,11 @@ app.post(
 	restMarkAllAsRead,
 );
 app.delete("/api/:orgSlug/notifications/:id", mcpAuth, restDeleteNotification);
+app.post(
+	"/api/:orgSlug/events/:eventId/actions/:action",
+	mcpAuth,
+	restInvokeEventAction,
+);
 
 app.get("/api/:orgSlug/knowledge/search", mcpAuth, restSearchKnowledge);
 app.get("/api/:orgSlug/public/knowledge/search", publicRestSearchKnowledge);

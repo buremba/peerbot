@@ -447,12 +447,15 @@ export async function buildContentItems(opts: {
       const kind = await resolveEventKindDefinition(
         item.semantic_type,
         organizationId,
-        isNotification ? undefined : item.entity_ids
+        item.entity_ids
       );
       if (!kind) return;
       const root = resolveEntityRender(kind.jsonTemplate, kind.metadataSchema);
       if (!root) return;
-      item.payload_template = { root };
+      item.payload_template = {
+        root,
+        ...(kind.interactions ? { interactions: kind.interactions } : {}),
+      };
       item.payload_type = 'json_template';
       item.payload_data = renderData;
     })

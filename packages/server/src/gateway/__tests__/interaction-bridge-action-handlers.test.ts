@@ -1,10 +1,39 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { ToolUserError } from "../../utils/errors.js";
 import { storePendingTool, type PendingToolInvocation } from "../auth/mcp/pending-tool-store.js";
-import { registerActionHandlers } from "../connections/interaction-bridge.js";
+import {
+  interactionDeliveryId,
+  registerActionHandlers,
+} from "../connections/interaction-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 type ActionHandler = (event: any) => Promise<void>;
+
+test("interaction delivery ids collapse exact retries but not later clicks", () => {
+  const first = interactionDeliveryId({
+    actionId: "suggestion:s_poll:0",
+    messageId: "spaces/one/messages/card",
+    user: { userId: "users/a" },
+    raw: { chat: { eventTime: "2026-08-24T18:00:00Z", value: "A" } },
+  });
+  const retry = interactionDeliveryId({
+    user: { userId: "users/a" },
+    messageId: "spaces/one/messages/card",
+    actionId: "suggestion:s_poll:0",
+    raw: { chat: { value: "A", eventTime: "2026-08-24T18:00:00Z" } },
+  });
+  const laterClick = interactionDeliveryId({
+    actionId: "suggestion:s_poll:0",
+    messageId: "spaces/one/messages/card",
+    user: { userId: "users/a" },
+    raw: { chat: { eventTime: "2026-08-24T18:00:01Z", value: "A" } },
+  });
+
+  expect(first).toBe(retry);
+  expect(first).toMatch(/^interaction-[a-f0-9]{64}$/);
+  expect(laterClick).not.toBe(first);
+});
 
 interface Harness {
   handler: ActionHandler;
@@ -405,6 +434,111 @@ describe("registerActionHandlers — guards", () => {
   });
 });
 
+describe("registerActionHandlers — declared template event action", () => {
+  function setupTemplateAction(
+    result: { created: boolean } | Error = { created: true }
+  ): {
+    handler: ActionHandler;
+    onTemplateEventAction: ReturnType<typeof mock>;
+    thread: { post: ReturnType<typeof mock> };
+  } {
+    let captured: ActionHandler | undefined;
+    const chat = {
+      onAction: mock((handler: ActionHandler) => {
+        captured = handler;
+      }),
+    };
+    const onTemplateEventAction = mock(async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    });
+    const thread = { post: mock(async () => undefined) };
+
+    registerActionHandlers(
+      chat as any,
+      { id: "conn-1", platform: "gchat" } as PlatformConnection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onTemplateEventAction as any
+    );
+    if (!captured) throw new Error("onAction handler not registered");
+    return { handler: captured, onTemplateEventAction, thread };
+  }
+
+  test("parses source/action/value and posts one receipt", async () => {
+    const h = setupTemplateAction();
+    const event = {
+      actionId: "event-action:42:vote",
+      value: "B",
+      messageId: "spaces/one/messages/poll",
+      thread: h.thread,
+      user: { userId: "users/ada" },
+    };
+    await h.handler(event);
+
+    expect(h.onTemplateEventAction).toHaveBeenCalledWith(42, "vote", "B", event);
+    expect(h.thread.post).toHaveBeenCalledWith("Recorded.");
+  });
+
+  test("keeps a valueless button null through the chat bridge", async () => {
+    const h = setupTemplateAction();
+    const event = {
+      actionId: "event-action:42:refresh",
+      thread: h.thread,
+      user: { userId: "users/ada" },
+    };
+    await h.handler(event);
+
+    expect(h.onTemplateEventAction).toHaveBeenCalledWith(
+      42,
+      "refresh",
+      null,
+      event
+    );
+  });
+
+  test("keeps exact retry silent after the durable rail reports unchanged", async () => {
+    const h = setupTemplateAction({ created: false });
+    await h.handler({
+      actionId: "event-action:42:vote",
+      value: "A",
+      thread: h.thread,
+    });
+    expect(h.onTemplateEventAction).toHaveBeenCalledTimes(1);
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+
+  test("surfaces a closed interaction without escaping the webhook handler", async () => {
+    const h = setupTemplateAction(
+      new ToolUserError("This interaction is closed or has been replaced.", 409)
+    );
+    await h.handler({
+      actionId: "event-action:42:vote",
+      value: "A",
+      thread: h.thread,
+    });
+    expect(h.thread.post).toHaveBeenCalledWith(
+      "This interaction is closed or has been replaced."
+    );
+  });
+
+  test("does not expose unexpected server errors to the chat user", async () => {
+    const h = setupTemplateAction(new Error("postgres password leaked"));
+    await h.handler({
+      actionId: "event-action:42:vote",
+      value: "A",
+      thread: h.thread,
+    });
+    expect(h.thread.post).toHaveBeenCalledWith(
+      "I couldn’t record that interaction."
+    );
+  });
+});
+
 describe("registerActionHandlers — suggestion", () => {
   function setup(withCallback: boolean): {
     handler: ActionHandler;
@@ -442,12 +576,13 @@ describe("registerActionHandlers — suggestion", () => {
     await h.handler({
       actionId: "suggestion:s_ab12cd34ef56:2",
       value: "",
+      messageId: "message-card-1",
       thread: h.thread,
       user: { userId: "U_clicker", userName: "ada", fullName: "Ada Lovelace" },
     });
 
     expect(h.onSuggestionClick).toHaveBeenCalledTimes(1);
-    const [suggestionId, promptIndex, threadArg, author] =
+    const [suggestionId, promptIndex, threadArg, author, actionEvent] =
       h.onSuggestionClick.mock.calls[0];
     expect(suggestionId).toBe("s_ab12cd34ef56");
     expect(promptIndex).toBe(2);
@@ -456,6 +591,10 @@ describe("registerActionHandlers — suggestion", () => {
       userId: "U_clicker",
       userName: "ada",
       fullName: "Ada Lovelace",
+    });
+    expect(actionEvent).toMatchObject({
+      actionId: "suggestion:s_ab12cd34ef56:2",
+      messageId: "message-card-1",
     });
     // No bare post — the message must go through the turn pipeline.
     expect(h.thread.post).not.toHaveBeenCalled();

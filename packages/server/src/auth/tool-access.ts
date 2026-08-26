@@ -21,6 +21,10 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// boundary would make the card unusable for normal Apps clients, whose
 	// approval grant is intentionally mcp:write.
 	resolve_approval: null,
+	// App-only JSON-template interactions append the event kind declared by the
+	// source template. The handler derives the actor from OAuth/session context
+	// and accepts no caller-supplied identity.
+	invoke_event_action: null,
 	// `run_sdk` reaches admin handlers inside the script; per-call gates fire
 	// on each SDK method, so the entry-point check is just write-tier.
 	run_sdk: null,

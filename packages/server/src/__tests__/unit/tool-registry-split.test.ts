@@ -70,6 +70,7 @@ describe("tool registry split", () => {
 		expect(names).toEqual(
 			[
 				"get_approval",
+				"invoke_event_action",
 				"query_sdk",
 				"query_sql",
 				"resolve_approval",

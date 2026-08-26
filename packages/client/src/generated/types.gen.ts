@@ -3154,7 +3154,7 @@ export type ManageFeedsData = {
            */
           feed_id: number;
           /**
-           * Connector-native search query. Omit for an unfiltered source read.
+           * Connector-native filter/search query. Omit for an unfiltered source read; use `sort` for ordering.
            */
           query?: string;
           /**
@@ -6380,6 +6380,11 @@ export type PostApiV1AgentsData = {
       runId: number;
       automationId: number;
     };
+    executionTarget?: {
+      kind: "device";
+      deviceWorkerId: string;
+      agentKind: string;
+    };
     networkConfig?: {
       allowedDomains?: Array<string>;
       deniedDomains?: Array<string>;
@@ -6435,6 +6440,11 @@ export type PostApiV1AgentsResponses = {
     expiresAt: number;
     sseUrl: string;
     messagesUrl: string;
+    executionTarget?: {
+      kind: "device";
+      deviceWorkerId: string;
+      agentKind: string;
+    };
   };
 };
 

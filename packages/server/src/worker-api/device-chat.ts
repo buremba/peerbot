@@ -15,7 +15,10 @@ import {
 	classifyConversation,
 	upsertConversation,
 } from "../gateway/services/conversations-store";
-import { readSnapshotJsonl } from "../gateway/services/transcript-snapshot";
+import {
+	MAX_SNAPSHOT_BYTES,
+	readSnapshotJsonl,
+} from "../gateway/services/transcript-snapshot";
 import type { Env } from "../index";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { stripNul } from "../utils/strip-nul";
@@ -24,13 +27,16 @@ import {
 	authorizeRunForWorker,
 } from "./shared";
 
-const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_REPLY_BYTES = 512 * 1024;
 
-function boundedReply(value: string): string {
+export function boundedReply(value: string): string {
 	const buffer = Buffer.from(value, "utf8");
 	if (buffer.byteLength <= MAX_REPLY_BYTES) return value;
-	return `${buffer.subarray(0, MAX_REPLY_BYTES).toString("utf8")}\n\n[Reply truncated by Lobu]`;
+	// Back off the cut to a code-point boundary: slicing mid-sequence would
+	// render the last character of a truncated reply as U+FFFD.
+	let end = MAX_REPLY_BYTES;
+	while (end > 0 && (buffer[end] ?? 0) >> 6 === 0b10) end -= 1;
+	return `${buffer.subarray(0, end).toString("utf8")}\n\n[Reply truncated by Lobu]`;
 }
 
 function deviceSessionHeader(payload: MessagePayload, now: string): string {

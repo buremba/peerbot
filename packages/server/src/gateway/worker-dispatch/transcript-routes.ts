@@ -28,16 +28,9 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
+import { MAX_SNAPSHOT_BYTES } from "../services/transcript-snapshot.js";
 
 const logger = createLogger("worker-transcript");
-
-/**
- * Soft cap for inbound snapshots. Production p99 is 1.3 KB; the largest row
- * we've seen across 2050 real session.jsonl entries is 633 KB. 4 MB leaves
- * comfortable headroom for one or two future LLM context-window expansions
- * before we have to introduce R2 spill.
- */
-const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 
 interface SnapshotRow {
   snapshot_jsonl: string;

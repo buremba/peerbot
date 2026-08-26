@@ -173,7 +173,8 @@ const OPENCODE_DIAGNOSTIC_CAP = 32 * 1024;
  * was killed and its output discarded.
  */
 const OPENCODE_DIAGNOSTIC_SETTLE_MS = 1_500;
-const DEFAULT_TIMEOUT_MS = 600_000;
+/** Wall-clock cap for a device-local agent CLI without a per-run override. */
+export const DEFAULT_DEVICE_AGENT_TIMEOUT_MS = 600_000;
 /** Cap on the CLI-output tail folded into `runs.error_message`. */
 const DETAIL_TAIL_CHARS = 500;
 const LOCAL_MAX_ROUNDS = 8;
@@ -777,7 +778,7 @@ export async function executeAutomationRun(
   const timeoutMs =
     configuredTimeout != null && configuredTimeout > 0
       ? configuredTimeout * 1000
-      : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      : (cfg.timeoutMs ?? DEFAULT_DEVICE_AGENT_TIMEOUT_MS);
 
   // Daemon startup detects the inherited session once and attaches it
   // internally; per-run detection is not repeated here.

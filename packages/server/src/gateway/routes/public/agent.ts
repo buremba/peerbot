@@ -145,7 +145,7 @@ function executionTargetFromSnapshot(
   try {
     const parsed = JSON.parse(header) as { executionTarget?: unknown };
     return Value.Check(DeviceExecutionTargetSchema, parsed.executionTarget)
-      ? (parsed.executionTarget as DeviceExecutionTarget)
+      ? parsed.executionTarget
       : undefined;
   } catch {
     return undefined;
@@ -1030,9 +1030,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // Session state has a TTL; the transcript is the durable conversation
     // substrate. Recover the last completed turn's device placement from its
     // session header so the thread cannot silently fall back to managed runtime.
-    let candidateExecutionTarget = executionTarget as
-      | DeviceExecutionTarget
-      | undefined;
+    let candidateExecutionTarget: DeviceExecutionTarget | undefined =
+      executionTarget;
     if (!candidateExecutionTarget && effectiveForceNew) {
       candidateExecutionTarget = existing?.executionTarget;
     }

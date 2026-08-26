@@ -9,13 +9,12 @@ import type {
 } from '@lobu/core/contracts/worker/protocol';
 import {
   type AutomationExecutorConfig,
+  DEFAULT_DEVICE_AGENT_TIMEOUT_MS,
   monitorDeviceAgentRun,
   resolveDeviceAgentRunAccess,
   runCli,
 } from './automation.js';
 import type { ExecutorClient } from './client.js';
-
-const DEFAULT_TIMEOUT_MS = 600_000;
 
 function isDeviceChatPayload(value: unknown): value is DeviceChatPollPayload {
   return !!value && typeof value === 'object' && 'chat' in value;
@@ -60,18 +59,16 @@ export async function executeDeviceChatRun(
     );
   }
 
-  const configuredTimeout = payload.chat.execution_config?.timeout_seconds;
-  const timeoutMs =
-    configuredTimeout != null && configuredTimeout > 0
-      ? configuredTimeout * 1000
-      : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const timeoutMs = cfg.timeoutMs ?? DEFAULT_DEVICE_AGENT_TIMEOUT_MS;
   const monitor = monitorDeviceAgentRun(client, runId, cfg, 'Device chat');
 
   try {
     const result = await runCli(
       spec,
       buildDeviceChatPrompt(payload),
-      payload.chat.execution_config,
+      // Chat turns carry no per-run CLI overrides: placement (device + agent
+      // kind) is the only thing the composer picks.
+      undefined,
       resolveDeviceAgentRunAccess(
         payload.context.agent_session,
         client.mcpWiring,

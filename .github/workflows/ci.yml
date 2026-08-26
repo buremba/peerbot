@@ -166,7 +166,7 @@ jobs:
       # this cache exists to save, on exactly the runs where the image just
       # changed.
       - name: Cache bubblewrap package
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/lobu-bwrap
           key: bwrap-deb-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-v1
@@ -192,13 +192,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-unit-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist
@@ -370,13 +370,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-sdk-cli-build-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist
@@ -421,7 +421,7 @@ jobs:
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
@@ -454,7 +454,7 @@ jobs:
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
@@ -535,7 +535,7 @@ jobs:
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
@@ -578,7 +578,7 @@ jobs:
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
@@ -669,13 +669,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-frontend-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist
@@ -783,13 +783,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-integration-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist
@@ -915,13 +915,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-integration-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist
@@ -1090,7 +1090,7 @@ jobs:
           LOCK=$(git hash-object bun.lock 2>/dev/null || echo no-lock)
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
@@ -1343,13 +1343,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-typecheck-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist
@@ -1880,13 +1880,13 @@ jobs:
           echo "bun-key=bun-$LOCK" >> "$GITHUB_OUTPUT"
           echo "dist-key=dist-connector-parity-$PKG_TREE-$LOCK-$ROOT" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bun-cache
         with:
           path: node_modules
           key: ${{ steps.cache-keys.outputs.bun-key }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: dist-cache
         with:
           path: packages/*/dist

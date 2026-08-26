@@ -25,6 +25,7 @@ import { markShuttingDown } from "./lifecycle-state";
 import type { Env } from "./index";
 import { app as mainApp } from "./index";
 import {
+	activateLobuWorkerReadinessWatchdog,
 	getLobuCoreServices,
 	initLobuGateway,
 	stopLobuGateway,
@@ -514,6 +515,7 @@ export function createServerLifecycle(
 					{ host, port, mode },
 					`Lobu running at http://${host}:${port}`,
 				);
+				activateLobuWorkerReadinessWatchdog();
 				for (const hook of postListenHooks) {
 					hook();
 				}

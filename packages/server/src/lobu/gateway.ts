@@ -348,7 +348,6 @@ export async function initLobuGateway(): Promise<Hono | null> {
 		logger.info("[Lobu] DATABASE_URL not set — embedded gateway disabled");
 		return null;
 	}
-
 	ensureEmbeddedGatewaySecrets();
 	ensureEmbeddedWorkerLauncher();
 	try {
@@ -421,8 +420,8 @@ export async function initLobuGateway(): Promise<Hono | null> {
 		// here for the same reason as the tracker above — the gateway and the
 		// orchestrator are built separately.
 		//
-		// Both wirings are announced, and their absence is announced louder. Each
-		// only takes effect when a worker gateway exists, and both features are
+		// All three integrations are announced, and their absence is announced louder.
+		// Each only takes effect when a worker gateway exists, and all features are
 		// invisible when they silently do not: a missing tracker shows up as a
 		// worker killed mid-turn, and a missing recycle gate shows up as 401s an
 		// hour into a warm conversation. Neither symptom points back here, and
@@ -430,18 +429,19 @@ export async function initLobuGateway(): Promise<Hono | null> {
 		// the skip is logged rather than swallowed by the optional chain.
 		const workerGatewayToWire = coreServices.getWorkerGateway();
 		if (workerGatewayToWire) {
+			const deploymentManager = orchestrator.getDeploymentManager();
 			workerGatewayToWire.setDeploymentActivityTracker(
-				orchestrator.getDeploymentManager(),
+				deploymentManager,
 			);
 			workerGatewayToWire.setDispatchRecycler(
-				orchestrator.getDeploymentManager(),
+				deploymentManager,
 			);
 			logger.info(
-				"[Lobu] Worker idle-clock tracker and claim-side recycle gate wired into the worker gateway",
+				"[Lobu] Worker idle-clock tracker and claim-side recycle gate wired; readiness watchdog awaiting HTTP listener startup",
 			);
 		} else {
 			logger.warn(
-				"[Lobu] No worker gateway on this pod — the idle-clock tracker and the claim-side recycle gate are BOTH inactive; warm workers will not be recycled when their connector lease or tooling goes stale",
+				"[Lobu] No worker gateway on this pod — the readiness watchdog, idle-clock tracker, and claim-side recycle gate are ALL inactive; workers can be reported ready before connecting, and warm workers will not be recycled when their connector lease or tooling goes stale",
 			);
 		}
 
@@ -596,6 +596,26 @@ export async function initLobuGateway(): Promise<Hono | null> {
 		);
 		return null;
 	}
+}
+
+/**
+ * Activate worker connection checks only after the local HTTP listener is live.
+ * The orchestrator consumes persisted turns during gateway initialization; if
+ * this probe were armed then, a boot-recovered worker could not reach its SSE
+ * route yet and would be recycled as though it were wedged.
+ */
+export function activateLobuWorkerReadinessWatchdog(): void {
+	const workerGateway = coreServices?.getWorkerGateway();
+	if (!workerGateway || !orchestrator) return;
+	const workerConnectionManager = workerGateway.getConnectionManager();
+	orchestrator
+		.getDeploymentManager()
+		.setDeploymentReadinessProbe((deploymentName: string) =>
+			workerConnectionManager.isConnected(deploymentName),
+		);
+	logger.info(
+		"[Lobu] Worker readiness watchdog activated after HTTP listener startup",
+	);
 }
 
 /**

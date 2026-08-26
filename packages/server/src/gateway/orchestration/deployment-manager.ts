@@ -161,6 +161,9 @@ export type ModuleEnvVarsBuilder = (
   context?: ProviderCredentialContext
 ) => Promise<Record<string, string>>;
 
+/** Pod-local probe for the worker's authenticated SSE registration. */
+type DeploymentReadinessProbe = (deploymentName: string) => boolean;
+
 // Orchestrator configuration
 export interface OrchestratorConfig {
   queues: {
@@ -227,6 +230,13 @@ export class DeploymentManager {
    * contribute their packages and domains but no credentials.
    */
   protected leaseRegistry?: CredentialLeaseRegistry;
+  /**
+   * Authenticated worker-connection probe, wired at the composition root once
+   * WorkerGateway exists. A spawned child is not ready merely because spawn()
+   * returned: it must establish its SSE stream before its durable queue can be
+   * consumed.
+   */
+  private readinessProbe?: DeploymentReadinessProbe;
   /**
    * Per-(org, agent) cache of the last-synced `preApprovedTools` patterns,
    * used to diff tool grants/revokes (domains reconcile against Postgres
@@ -471,6 +481,58 @@ export class DeploymentManager {
     this.leaseRegistry = registry;
   }
 
+  setDeploymentReadinessProbe(probe: DeploymentReadinessProbe): void {
+    this.readinessProbe = probe;
+  }
+
+  /**
+   * Wait until a newly spawned/scaled worker has authenticated and registered
+   * its SSE stream. When the watchdog lapses, tear the child down under the
+   * same deployment name before throwing: MessageConsumer's existing retry
+   * loop can then create a genuinely fresh process instead of repeatedly
+   * accepting the same live-but-never-connected child from `workers`.
+   *
+   * A missing probe is a deliberate no-op for SDK hosts that construct the
+   * orchestrator without WorkerGateway. The embedded server activates its
+   * probe after the local HTTP listener is live.
+   */
+  private async requireDeploymentReady(deploymentName: string): Promise<void> {
+    const probe = this.readinessProbe;
+    if (!probe) return;
+
+    const timeoutMs = Math.max(
+      1,
+      Math.round((this.config.worker.startupTimeoutSeconds ?? 10) * 1000),
+    );
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (probe(deploymentName)) return;
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))),
+      );
+    }
+    if (probe(deploymentName)) return;
+
+    logger.warn(
+      { deploymentName, timeoutMs },
+      "Worker did not establish its authenticated SSE connection before the startup deadline; recycling",
+    );
+    try {
+      await this.deleteWorkerDeployment(deploymentName);
+    } catch (error) {
+      logger.error(
+        { deploymentName, error: getErrorMessage(error) },
+        "Failed to tear down worker after startup-readiness timeout",
+      );
+    }
+    throw new OrchestratorError(
+      ErrorCode.DEPLOYMENT_CREATE_FAILED,
+      `Worker ${deploymentName} did not connect within ${timeoutMs}ms`,
+      { deploymentName, timeoutMs },
+      true,
+    );
+  }
+
   protected getDispatcherHost(): string {
     // Match the systemd-run scope's IPAddressAllow=127.0.0.1 — IPv6 ::1
     // resolution would be blocked under the hardened scope.
@@ -503,12 +565,15 @@ export class DeploymentManager {
       return inFlight;
     }
 
-    const promise = this.spawnDeployment(
-      deploymentName,
-      username,
-      userId,
-      messageData
-    ).finally(() => {
+    const promise = (async () => {
+      await this.spawnDeployment(
+        deploymentName,
+        username,
+        userId,
+        messageData,
+      );
+      await this.requireDeploymentReady(deploymentName);
+    })().finally(() => {
       this.inFlightCreates.delete(deploymentName);
     });
     this.inFlightCreates.set(deploymentName, promise);
@@ -2168,6 +2233,11 @@ export class DeploymentManager {
     if (replicas === 0 && entry) {
       await this.killWorker(entry, deploymentName);
       logger.info(`Stopped embedded worker ${deploymentName}`);
+    } else if (replicas === 1 && entry) {
+      // A live child is not necessarily a usable worker. Every scale-up path
+      // (new message, lock handoff, warm resume) must wait for its authenticated
+      // SSE registration or recycle it so the caller can create a fresh child.
+      await this.requireDeploymentReady(deploymentName);
     } else if (replicas === 1 && !entry) {
       // The worker process is gone (crashed, or exited between a stale
       // listDeployments() snapshot and this call). Throwing here lets the

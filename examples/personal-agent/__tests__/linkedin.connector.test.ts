@@ -1797,6 +1797,7 @@ describe("LinkedInConnector home_feed", () => {
       rowSelector: string;
       expandRows: {
         rowSelector: string;
+        identity: { selector: string; take: string; attr: string };
         expected: { selector: string; textRegex: string };
         items: { selector: string; idAttr: string };
         open: { selector: string; textRegex: string };
@@ -1825,6 +1826,7 @@ describe("LinkedInConnector home_feed", () => {
           actionSelector: string;
           actionText: string;
         };
+        post_identity: { selector: string; take: string; attr: string };
         post_media: { selector: string; take: string };
         comment_media: { selector: string; take: string };
         reaction_count_text: { selector: string; take: string };
@@ -1835,6 +1837,13 @@ describe("LinkedInConnector home_feed", () => {
     };
     expect(cfg.rowSelector).toContain("replaceableComment_urn:li:comment");
     expect(cfg.expandRows.rowSelector).toContain('[componentkey^="expanded"]');
+    expect(cfg.expandRows.identity).toEqual({
+      selector:
+        '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]',
+      take: "attr",
+      attr: "id",
+    });
+    expect(cfg.fields.post_identity).toEqual(cfg.expandRows.identity);
     expect(cfg.expandRows.expected.textRegex).toContain("comments?");
     expect(cfg.expandRows.expected.selector).toContain(
       cfg.fields.comment_count_text.selector

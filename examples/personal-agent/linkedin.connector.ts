@@ -454,6 +454,8 @@ const HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR =
   '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comment" i]:not([id^="replaceableComment_"] *), [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)';
 const HOME_FEED_POST_CONTROL_SELECTOR =
   '[role="button"]:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *), button:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *), a:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *)';
+const HOME_FEED_POST_IDENTITY_SELECTOR =
+  '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]';
 
 /**
  * Selectors for the virtualized linkedin.com/feed/ DOM. Home-feed posts are
@@ -472,6 +474,11 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // share the FeedType suffix but must never drive another post's controls.
     rowSelector:
       'div[componentkey^="expanded"][componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
+    identity: {
+      selector: HOME_FEED_POST_IDENTITY_SELECTOR,
+      take: "attr",
+      attr: "id",
+    },
     expected: {
       // Keep this aligned with the post-level comment count fields below. The
       // count is not always interactive: LinkedIn also renders it as a plain
@@ -568,8 +575,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
     post_identity: {
       // Current feed cards embed the durable id in a translatable-commentary
       // element id even when every visible anchor points back to /feed/.
-      selector:
-        '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]',
+      selector: HOME_FEED_POST_IDENTITY_SELECTOR,
       take: "attr",
       attr: "id",
     },

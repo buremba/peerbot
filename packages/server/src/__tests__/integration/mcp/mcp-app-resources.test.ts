@@ -343,6 +343,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
 
   it('advertises description, CSP, and the app domain on resources/list', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
+    // Recover from the persisted row rather than the live map, so this asserts
+    // the negotiated flag survives a replica hop in the direction that emits
+    // the field too — not only the direction that withholds it.
+    clearInMemoryMcpSessionsForTests();
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
@@ -379,6 +383,53 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toBe('http://localhost');
+  });
+
+  it('omits the app domain for a host that renders Apps without advertising the UI extension', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      advertiseMcpApps: false,
+    });
+    // Exercise the persisted capability across a replica-local session miss:
+    // the compatibility decision must not depend on process affinity.
+    clearInMemoryMcpSessionsForTests();
+
+    const listResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'claude-resources-list',
+        method: 'resources/list',
+      },
+      headers: {
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+    expect(listResponse.status).toBe(200);
+    const listBody = await listResponse.json();
+    const listed = listBody.result?.resources?.find(
+      (resource: { uri?: string }) => resource.uri === LOBU_INTERACTION_RESOURCE_URI
+    );
+    expect(listed?._meta?.ui?.domain).toBeUndefined();
+    expect(listed?._meta?.ui?.csp).toBeTruthy();
+
+    const readResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'claude-resources-read',
+        method: 'resources/read',
+        params: { uri: LOBU_INTERACTION_RESOURCE_URI },
+      },
+      headers: {
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+    expect(readResponse.status).toBe(200);
+    const readBody = await readResponse.json();
+    expect(readBody.result?.contents?.[0]?._meta?.ui?.domain).toBeUndefined();
+    expect(readBody.result?.contents?.[0]?._meta?.ui?.csp).toBeTruthy();
   });
 
   it('links direct saves and approval tools to the App resource', async () => {

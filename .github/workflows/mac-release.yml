@@ -175,27 +175,23 @@ jobs:
             fi
           done
 
-          # 6. PRODUCT_BUNDLE_IDENTIFIER in project.pbxproj must stay
-          #    com.owletto.mac across ALL build configurations. CFBundleIdentifier
-          #    in Info.plist resolves to $(PRODUCT_BUNDLE_IDENTIFIER) at build
-          #    time, so the real value lives in the pbxproj build settings.
-          #    The URL scheme, Keychain service name, and Sparkle update path
-          #    are all keyed off this — a change here breaks the upgrade
-          #    contract for installed apps.
+          # 6. PRODUCT_BUNDLE_IDENTIFIER is pinned PER BUILD CONFIGURATION:
+          #    Release must be com.owletto.mac, Debug may additionally be the
+          #    build-scoped com.owletto.mac.debug. The bundle id is the app's
+          #    identity to macOS, so a release shipped under a different id
+          #    installs a second copy beside the existing app rather than
+          #    upgrading it, stranding every install with no update path.
           #
-          #    Assert the set of distinct values is exactly {com.owletto.mac},
-          #    not "some occurrence equals com.owletto.mac". A simple grep
-          #    would still pass if one config drifted while another stale
-          #    occurrence stayed correct.
-          EXPECTED_BUNDLE_ID="com.owletto.mac"
-          distinct_ids=$(grep -E 'PRODUCT_BUNDLE_IDENTIFIER = ' \
-            packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj \
-            | sed -E 's/.*PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);.*/\1/' \
-            | sort -u)
-          if [ "$distinct_ids" != "$EXPECTED_BUNDLE_ID" ]; then
-            echo "::error::PRODUCT_BUNDLE_IDENTIFIER must be exactly '${EXPECTED_BUNDLE_ID}' across all configs (got: $distinct_ids). Bundle id drift breaks installed-app upgrades."
-            exit 1
-          fi
+          #    The rule lives in a script rather than inline here so it can be
+          #    tested: a release-only workflow step never executes on a PR, so
+          #    an inline guard is unverifiable until a tag run exercises it.
+          #    See scripts/__tests__/check-mac-bundle-ids.test.ts.
+          # `bun`, not `node`: this job pins bun via setup-bun and never runs
+          # actions/setup-node, so `node` would be whatever the macos-15 image
+          # happens to preinstall. Every other `node scripts/*.mjs` call in
+          # this repo is on an ubuntu runner where node is guaranteed.
+          bun scripts/check-mac-bundle-ids.mjs \
+            packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj
 
           # 7. Sparkle public key must still be in Info.plist. Installed apps
           #    verify update signatures against SUPublicEDKey; if the key is

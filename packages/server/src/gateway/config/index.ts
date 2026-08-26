@@ -25,7 +25,9 @@ const GATEWAY_DEFAULTS = {
   PUBLIC_GATEWAY_URL: "",
   QUEUE_DIRECT_MESSAGE: "direct_message",
   QUEUE_MESSAGE_QUEUE: "message_queue",
-  WORKER_STARTUP_TIMEOUT_SECONDS: 90,
+  // Leave enough of the default 60s turn-liveness budget for the worst-case
+  // warm path: a stale-worker check, two fresh starts, teardown, and backoff.
+  WORKER_STARTUP_TIMEOUT_SECONDS: 10,
   WORKER_IDLE_CLEANUP_MINUTES: 60,
   MAX_WORKER_DEPLOYMENTS: 100,
   WORKER_STALE_TIMEOUT_MINUTES: 10,

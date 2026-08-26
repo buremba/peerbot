@@ -1400,6 +1400,83 @@ describe('device connector manifests', () => {
     expect((await advertiserPoll.json()).run_id).toBe(Number(run.id));
   });
 
+  it('keeps an online capable v1 feed active while a newer v2 manifest awaits setup', async () => {
+    const { userId, orgId, workerId: v1WorkerId } =
+      await seedDeviceOwner('chrome-extension');
+    const sql = getTestDb();
+    const v1Manifest = whatsappManifest('chrome-extension', {
+      version: '1.0.0',
+      name: 'WhatsApp Chrome v1',
+    });
+    expect(
+      (
+        await poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
+          'browser.whatsapp': true,
+        })
+      ).status
+    ).toBe(200);
+    await settleRunsAndFeeds(orgId);
+
+    const before = await readWhatsAppRows(orgId);
+    expect(before.feeds).toHaveLength(1);
+    expect(before.feeds[0]?.status).toBe('active');
+    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('1.0.0');
+
+    const v2WorkerId = `chrome-wa-v2-setup-${generateSecureToken(4)}`;
+    const v2DeviceId = await seedAdditionalDevice({
+      userId,
+      orgId,
+      workerId: v2WorkerId,
+      platform: 'chrome-extension',
+    });
+    const v2Manifest = whatsappManifest('chrome-extension', {
+      version: '2.0.0',
+      name: 'WhatsApp Chrome v2',
+    });
+    expect(
+      (
+        await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
+          'browser.scripting': true,
+        })
+      ).status
+    ).toBe(200);
+
+    const awaitingSetup = await readWhatsAppRows(orgId);
+    expect(awaitingSetup.feeds[0]?.status).toBe('active');
+    expect(awaitingSetup.connections[0]?.device_worker_id).toBe(
+      before.connections[0]?.device_worker_id
+    );
+    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('1.0.0');
+
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = NOW() - INTERVAL '10 minutes'
+      WHERE id = ${before.connections[0]?.device_worker_id}::uuid
+    `;
+    expect(
+      (
+        await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
+          'browser.scripting': true,
+        })
+      ).status
+    ).toBe(200);
+    const noRunnableVersion = await readWhatsAppRows(orgId);
+    expect(noRunnableVersion.feeds[0]?.status).toBe('paused');
+    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('1.0.0');
+
+    expect(
+      (
+        await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
+          'browser.whatsapp': true,
+        })
+      ).status
+    ).toBe(200);
+    const upgraded = await readWhatsAppRows(orgId);
+    expect(upgraded.feeds[0]?.status).toBe('active');
+    expect(upgraded.connections[0]?.device_worker_id).toBe(v2DeviceId);
+    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('2.0.0');
+  });
+
   it('uses only identical winning advertisers for multi-device pinning and unpinned claims', async () => {
     const { userId, orgId, workerId: workerA } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();

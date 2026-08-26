@@ -1183,6 +1183,18 @@ jobs:
         # disables that alarm, so it is pinned by tests like the tag logic above.
         run: bun test scripts/__tests__/audit-release-images.test.ts --timeout 30000
 
+      - name: Mac bundle-identity gate
+        # The Release bundle id keys the URL scheme, the Keychain service name,
+        # and the Sparkle update path, so drift there stops every installed app
+        # from updating. The gate that pins it lives in mac-release.yml, which
+        # only ever runs on a lobu-v* tag — meaning nothing on a PR executes it
+        # and a broken guard would surface first at release time. Pin its rules
+        # here instead, including the swapped Release/Debug case that a
+        # set-of-distinct-values check structurally cannot detect.
+        env:
+          OWLETTO_SUBMODULE_STUBBED: ${{ steps.submodule.outputs.stubbed }}
+        run: bun test scripts/__tests__/check-mac-bundle-ids.test.ts --timeout 30000
+
       - name: Merge integrity decision table
         # #2273 was based on another feature branch; squashing that base away
         # left GitHub reporting it MERGED with its fix absent from main, while

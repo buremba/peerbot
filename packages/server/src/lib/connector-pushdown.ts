@@ -222,7 +222,8 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
             COALESCE(pinned_dw.user_id, (o.metadata::jsonb)->>'personal_org_for_user_id') AS device_owner_user_id,
             COALESCE(c.config, '{}'::jsonb) AS connection_config,
             cd.version AS definition_version, cd.feed_operations,
-            cd.mcp_config, cd.runtime, cd.required_capability, cd.has_compiled_code
+            cd.mcp_config, cd.runtime, cd.required_capability,
+            cd.has_compiled_code, cd.selected_artifact_hash
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
      JOIN "organization" o ON o.id = c.organization_id
@@ -231,6 +232,16 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
        SELECT cd0.version, cd0.mcp_config, cd0.runtime, cd0.required_capability,
               COALESCE(cd0.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
                 AS feed_operations,
+              (
+                SELECT cv.compiled_code_hash
+                FROM connector_versions cv
+                WHERE cv.connector_key = cd0.key
+                  AND cv.version = COALESCE(f.pinned_version, cd0.version)
+                  AND (cv.organization_id = cd0.organization_id
+                       OR cv.organization_id IS NULL)
+                ORDER BY cv.organization_id NULLS LAST
+                LIMIT 1
+              ) AS selected_artifact_hash,
               EXISTS (
                 -- Does the SELECTED version ship code THIS path can execute?
                 --
@@ -308,6 +319,7 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
     runtime: Record<string, unknown> | null;
     required_capability: string | null;
     has_compiled_code: boolean | null;
+    selected_artifact_hash: string | null;
   }>;
 
   if (feedRows.length === 0) {
@@ -363,6 +375,8 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
       feedConfig: mergeExecutionConfig(feed.connection_config, feedConfig),
       connectionId: Number(feed.connection_id),
       connectorKey: feed.connector_key,
+      connectorVersion: feed.pinned_version ?? feed.definition_version,
+      manifestHash: feed.selected_artifact_hash,
       deviceOwnerUserId: feed.device_owner_user_id,
       deviceWorkerId: feed.device_worker_id,
       feedStatus: feed.feed_status,

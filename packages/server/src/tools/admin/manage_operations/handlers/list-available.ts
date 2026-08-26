@@ -21,6 +21,7 @@ import {
 import { listOperations } from "../../../../operations/connector-operations";
 import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
 import type { AvailableOperation, OperationDescriptor } from "../../../../operations/types";
+import { isChromeNamespaceConnectorKey } from "../../../../utils/connector-execution-placement";
 import {
 	DEVICE_ONLINE_WINDOW_SECONDS,
 	describeDeviceLastSeen,
@@ -68,6 +69,9 @@ type OperationTargetRow = {
 	device_last_seen_at: Date | string | null;
 	device_bound: boolean;
 	device_owner_user_id: string | null;
+	connector_version: string | null;
+	connector_manifest_backed: boolean;
+	connector_manifest_hash: string | null;
 	auth_profile_kind: string | null;
 	auth_profile_slug: string | null;
 	auth_data: Record<string, unknown> | null;
@@ -128,8 +132,7 @@ function executionTargetFromRow(
 			...base,
 			status: "device_offline",
 			executable: false,
-			reason:
-				"No online device is advertising the connector's current manifest.",
+			reason: "No online device is advertising the connector's selected manifest.",
 		};
 	}
 	if (row.device_bound && !row.device_online) {
@@ -167,6 +170,8 @@ function groupExecutionTargets(
 				findDeviceConnectorReadiness(deviceReadiness, {
 					ownerUserId: row.device_owner_user_id,
 					connectorKey: row.connector_key,
+					connectorVersion: row.connector_version,
+					manifestHash: row.connector_manifest_hash,
 					deviceWorkerId: row.device_worker_id,
 				}),
 			),
@@ -580,6 +585,9 @@ async function loadVisibleOperationTargets(
 		        c.config,
 		        c.device_worker_id,
 		        COALESCE(dw.user_id, (o.metadata::jsonb)->>'personal_org_for_user_id') AS device_owner_user_id,
+		        latest.version AS connector_version,
+		        COALESCE(latest.manifest_backed, false) AS connector_manifest_backed,
+		        latest.artifact_hash AS connector_manifest_hash,
 		        ap.profile_kind AS auth_profile_kind,
 		        ap.slug AS auth_profile_slug,
 		        ap.auth_data AS auth_data,
@@ -591,8 +599,25 @@ async function loadVisibleOperationTargets(
 		 LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
 		 LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
 		 LEFT JOIN LATERAL (
-		   SELECT cd.runtime
+		   SELECT cd.version, cd.runtime,
+		          artifact.manifest_backed, artifact.artifact_hash
 		   FROM connector_definitions cd
+		   LEFT JOIN LATERAL (
+		     SELECT
+		       (
+		         cv.source_path LIKE 'device-manifest://%'
+		         AND cv.compiled_code IS NULL
+		         AND cv.compile_config_hash IS NULL
+		         AND cv.source_code IS NULL
+		       ) AS manifest_backed,
+		       cv.compiled_code_hash AS artifact_hash
+		     FROM connector_versions cv
+		     WHERE cv.connector_key = cd.key
+		       AND cv.version = cd.version
+		       AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+		     ORDER BY cv.organization_id NULLS LAST
+		     LIMIT 1
+		   ) artifact ON TRUE
 		   WHERE cd.organization_id = c.organization_id
 		     AND cd.key = c.connector_key
 		     AND cd.status = 'active'
@@ -658,11 +683,17 @@ export async function handleListAvailable(
 
 	const deviceReadiness = await loadDeviceConnectorReadiness({
 		sql: getDb(),
-		targets: targetRows.map((row) => ({
-			ownerUserId: row.device_owner_user_id,
-			connectorKey: row.connector_key,
-			deviceWorkerId: row.device_worker_id,
-		})),
+		targets: targetRows.flatMap((row) =>
+			row.connector_manifest_backed || isChromeNamespaceConnectorKey(row.connector_key)
+				? [{
+						ownerUserId: row.device_owner_user_id,
+						connectorKey: row.connector_key,
+						connectorVersion: row.connector_version,
+						manifestHash: row.connector_manifest_hash,
+						deviceWorkerId: row.device_worker_id,
+					}]
+				: [],
+		),
 	});
 	const targetsByConnector = groupExecutionTargets(targetRows, deviceReadiness);
 

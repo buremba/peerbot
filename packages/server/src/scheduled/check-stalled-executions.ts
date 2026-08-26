@@ -60,6 +60,7 @@ import {
   DEVICE_FEED_READ_SCRUB_GRACE_SECONDS,
 } from '../lib/device-feed-read-protocol';
 import { buildStaleRunWhereSql } from './stale-run-sweeper';
+import { sweepStaleDeviceChatRuns } from '../worker-api/device-chat';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
  *  Picked from the >2^31 range to avoid collisions with the queue-NOTIFY
@@ -280,6 +281,8 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         action_output: Record<string, unknown> | null;
       }>;
       let approvalActionsReaped = 0;
+			const deviceChatsReaped =
+				await sweepStaleDeviceChatRuns(thresholdSeconds);
       for (const candidate of approvedActionCandidates) {
         const runId = Number(candidate.id);
         try {
@@ -539,7 +542,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
 
       const reapedRow = reaped[0];
       const reapedCount =
-        approvalActionsReaped + (reapedRow?.reaped ?? 0);
+        deviceChatsReaped + approvalActionsReaped + (reapedRow?.reaped ?? 0);
       const retriesCreated = reapedRow?.retries_created ?? 0;
       const syncEligible = reapedRow?.sync_eligible ?? 0;
 
@@ -599,6 +602,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         {
           reaped: reapedCount,
           approvalActionsReaped,
+					deviceChatsReaped,
           retriesCreated,
           thresholdSeconds,
         },

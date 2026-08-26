@@ -10,6 +10,7 @@
 
 // Polling (device registration + run claiming)
 export { pollWorkerJob } from './worker-api/poll';
+export { completeDeviceChatRun } from './worker-api/device-chat';
 export { activatePageRun } from './worker-api/page-activation';
 
 // Run lifecycle (heartbeat, stream, complete, Automation/auth/action/embedding)

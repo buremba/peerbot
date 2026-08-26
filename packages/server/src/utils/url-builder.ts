@@ -84,11 +84,9 @@ export async function getOrganizationSlug(
  * credentials). Returns null when any required piece is missing; callers fall
  * back to a non-linked message.
  *
- * The `/settings` suffix is load-bearing: the bare `/agents/<id>` route
- * redirects to the agent's Chat page (`redirectBareAgentToChat`), which is the
- * surface the user just failed on — not where the model is fixed. `/settings`
- * lands on the tab that hosts the models allow-list editor, so the CTA drops
- * the admin exactly where they pick a model / connect a provider.
+ * The `/settings` suffix names the exact configuration surface instead of
+ * relying on the bare agent route's default destination. A `run_id` query can
+ * additionally open a held manage_agents proposal for review.
  *
  * `publicGatewayUrl` is the gateway base, which in embedded mode carries the
  * `/lobu` path suffix (the gateway is mounted at `/lobu` under the web app).

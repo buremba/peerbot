@@ -410,12 +410,16 @@ routes.get("/", async (c) => {
 	);
 
 	const [
+		systemRows,
 		runtimeClientCounts,
 		automationCounts,
 		userCounts,
 		platformRows,
 		providerRows,
 	] = await Promise.all([
+		sql<{ system_agent_id: string | null }>`
+			SELECT system_agent_id FROM organization WHERE id = ${orgId} LIMIT 1
+		`,
 		countRuntimeMessagingClientsByAgent(orgId),
 		// Automations owned by each agent (active only).
 		sql`
@@ -452,6 +456,7 @@ routes.get("/", async (c) => {
         WHERE organization_id = ${orgId}
       `,
 	]);
+	const systemAgentId = systemRows[0]?.system_agent_id ?? null;
 
 	const clientCountMap = new Map<string, Set<string>>();
 	for (const [agentId, runtimeIds] of runtimeClientCounts.entries()) {
@@ -485,6 +490,7 @@ routes.get("/", async (c) => {
 	return c.json({
 		agents: agents.map((a) => ({
 			...a,
+			system: a.agentId === systemAgentId,
 			connectionCount: countMap.get(a.agentId) ?? 0,
 			activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
 			clientCount: clientCountMap.get(a.agentId)?.size ?? 0,

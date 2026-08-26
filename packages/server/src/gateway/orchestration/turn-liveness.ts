@@ -436,7 +436,7 @@ export async function sweepExpiredTurns(
  * the owner-gate re-queue (see TERMINAL_DELIVERY_SEND_OPTS). The caller does the
  * `pg_notify` after the transaction commits.
  */
-async function insertThreadResponseRow(
+export async function insertThreadResponseRow(
   tx: DbClient,
   payload: unknown,
   organizationId: string | null
@@ -595,7 +595,7 @@ export async function commitTerminalReply(
 }
 
 /** Wake thread_response consumers immediately after committing an emit. */
-async function notifyThreadResponse(): Promise<void> {
+export async function notifyThreadResponse(): Promise<void> {
   try {
     const sql = getDb();
     await sql`SELECT pg_notify(${THREAD_RESPONSE_CHANNEL}, 'thread_response')`;

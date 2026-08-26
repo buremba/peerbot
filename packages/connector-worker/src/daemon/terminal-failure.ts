@@ -25,6 +25,17 @@ export async function reportTerminalFailure(
     });
     return;
   }
+  if (job.run_type === 'chat_message') {
+    // Device chat completes through its adapter so the waiting Activity turn
+    // receives a thread_response. Generic sync completion would finalize the
+    // row without publishing that response.
+    await client.completeDeviceChat(job.run_id, {
+      worker_id: client.id,
+      error: message,
+      exit_reason: exitReason,
+    });
+    return;
+  }
   if (job.run_type === 'automation') {
     await client.completeAutomation(job.run_id, {
       worker_id: client.id,

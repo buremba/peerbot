@@ -613,6 +613,7 @@ describe("worker startup readiness", () => {
         "user-1",
         makePayload(),
       );
+      expect(connected).toBe(true);
       expect(await mgr.listDeployments()).toHaveLength(1);
     } finally {
       mkdirSpy.mockRestore();

@@ -162,7 +162,7 @@ export type ModuleEnvVarsBuilder = (
 ) => Promise<Record<string, string>>;
 
 /** Pod-local probe for the worker's authenticated SSE registration. */
-export type DeploymentReadinessProbe = (deploymentName: string) => boolean;
+type DeploymentReadinessProbe = (deploymentName: string) => boolean;
 
 // Orchestrator configuration
 export interface OrchestratorConfig {
@@ -493,8 +493,8 @@ export class DeploymentManager {
    * accepting the same live-but-never-connected child from `workers`.
    *
    * A missing probe is a deliberate no-op for SDK hosts that construct the
-   * orchestrator without WorkerGateway. The embedded production composition
-   * root wires the probe before platform connections are initialized.
+   * orchestrator without WorkerGateway. The embedded server activates its
+   * probe after the local HTTP listener is live.
    */
   private async requireDeploymentReady(deploymentName: string): Promise<void> {
     const probe = this.readinessProbe;
@@ -502,7 +502,7 @@ export class DeploymentManager {
 
     const timeoutMs = Math.max(
       1,
-      Math.round((this.config.worker.startupTimeoutSeconds ?? 15) * 1000),
+      Math.round((this.config.worker.startupTimeoutSeconds ?? 10) * 1000),
     );
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {

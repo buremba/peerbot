@@ -1042,13 +1042,13 @@ export class MessageConsumer {
         logger.info({ traceId, deploymentName }, "Worker is ready");
       },
       {
-        // Three total startup attempts fit inside the 60s turn-liveness
-        // deadline when each readiness probe uses the 15s default timeout.
-        maxRetries: 2,
+        // Two orchestration attempts leave room inside the default 60s
+        // turn-liveness budget for stale-worker checks, teardown, and backoff.
+        maxRetries: 1,
         baseDelay: 2000,
         strategy: "linear",
         jitter: true,
-        // Don't burn retries (~14s) on the cross-pod handled-elsewhere signal:
+        // Don't burn the remaining retry on the cross-pod handled-elsewhere signal:
         // the winning replica holds the session-level advisory lock for the
         // whole worker subprocess lifetime, so a retry here can never win.
         // Abort immediately and let the `.catch` above drop silently.
@@ -1056,7 +1056,7 @@ export class MessageConsumer {
           !(error instanceof ConversationOwnedElsewhereError),
         onRetry: (attempt, error) => {
           logger.warn(
-            { traceId, deploymentName, attempt, maxAttempts: 3 },
+            { traceId, deploymentName, attempt, maxAttempts: 2 },
             `Retry attempt failed: ${error.message}`
           );
         },

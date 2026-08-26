@@ -21,6 +21,7 @@ import {
 	type TemplateInteractionRegistry,
 	type TemplateNode,
 	type TemplateVisitor,
+	templateInteractionValue,
 	titleCaseWords,
 	walkTemplate,
 } from "@lobu/core/json-template";
@@ -302,6 +303,7 @@ const makeCardVisitor = (
 				unroutable.add(str(props.label) || textOf(children) || action);
 				return [];
 			}
+			const value = templateInteractionValue(props.value);
 			return [
 				{
 					kind: "action",
@@ -309,9 +311,7 @@ const makeCardVisitor = (
 						id: actionId,
 						label: clamp(str(props.label) || textOf(children) || action, 75),
 						style: buttonStyle(props.style),
-						...(props.value === undefined || props.value === null
-							? {}
-							: { value: str(props.value) }),
+						...(value === null ? {} : { value }),
 					}),
 				},
 			];
@@ -344,10 +344,10 @@ const makeCardVisitor = (
 			const options = (props.options as unknown[])
 				.map((opt) => {
 					const o = (opt ?? {}) as Record<string, unknown>;
-					const value = str(o.value ?? o.label);
-					return value
-						? SelectOption({ label: clamp(str(o.label, value), 75), value })
-						: null;
+					const value = templateInteractionValue(o.value ?? o.label);
+					return value === null
+						? null
+						: SelectOption({ label: clamp(str(o.label, value), 75), value });
 				})
 				.filter((o): o is NonNullable<typeof o> => o !== null);
 			if (options.length === 0) return [];

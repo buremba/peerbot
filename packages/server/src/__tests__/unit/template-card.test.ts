@@ -585,6 +585,44 @@ describe("template-declared controls", () => {
 		expect(buttons(card)[0].value).toBeUndefined();
 	});
 
+	it("does not stringify non-primitive action values", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					bound({ label: "Refresh", onClick: "@refresh", value: { id: 1 } }),
+					{
+						type: "select",
+						props: {
+							label: "Choice",
+							onChange: "@choose",
+							options: [
+								{ label: "Invalid", value: { id: 1 } },
+								{ label: "Valid", value: 2 },
+							],
+						},
+					},
+				],
+			},
+			data: {},
+			interactions: {
+				refresh: { emits: "refresh_requested" },
+				choose: { emits: "choice_selected" },
+			},
+			sourceEventId: 42,
+		});
+
+		expect(buttons(card)[0]).toMatchObject({
+			id: "event-action:42:refresh",
+			label: "Refresh",
+		});
+		expect(buttons(card)[0].value).toBeUndefined();
+		expect(buttons(card)[1]).toMatchObject({
+			id: "event-action:42:choose",
+			options: [{ label: "Valid", value: "2" }],
+		});
+	});
+
 	it("does not route an action the registry inherits from Object.prototype", () => {
 		// `event_kinds` is raw JSONB, so `interactions` carries a live prototype
 		// and `ACTION_NAME` admits `constructor`. A bare index would render a

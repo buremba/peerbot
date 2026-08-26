@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { collectTemplateActionInvocations } from "../json-template";
+import {
+  collectTemplateActionInvocations,
+  templateInteractionValue,
+} from "../json-template";
+
+test("templateInteractionValue accepts only shared wire primitives", () => {
+  expect([
+    templateInteractionValue("yes"),
+    templateInteractionValue(2),
+    templateInteractionValue(false),
+    templateInteractionValue(null),
+    templateInteractionValue({ id: 1 }),
+  ]).toEqual(["yes", "2", "false", null, null]);
+});
 
 describe("collectTemplateActionInvocations", () => {
   test("uses the same portable button aliases as every renderer", () => {

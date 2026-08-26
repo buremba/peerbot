@@ -342,7 +342,7 @@ export interface TemplateActionInvocation {
   value: string | null;
 }
 
-function interactionValue(value: unknown): string | null {
+export function templateInteractionValue(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (
     typeof value === "string" ||
@@ -366,7 +366,7 @@ export function templateActionInvocation(
   ) {
     return null;
   }
-  return { action: handler.slice(1), value: interactionValue(value) };
+  return { action: handler.slice(1), value: templateInteractionValue(value) };
 }
 
 /**
@@ -409,13 +409,13 @@ export function collectTemplateActionInvocations(
             continue;
           }
           const record = option as Record<string, unknown>;
-          const value = interactionValue(record.value ?? record.label);
+          const value = templateInteractionValue(record.value ?? record.label);
           if (value === null) continue;
           for (const action of names) add(action, value);
         }
         return [];
       }
-      const value = interactionValue(props.value);
+      const value = templateInteractionValue(props.value);
       for (const action of names) add(action, value);
       return [];
     },

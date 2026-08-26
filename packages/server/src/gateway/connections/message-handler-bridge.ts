@@ -432,13 +432,6 @@ type MessageRouting = {
   logExtra?: Record<string, unknown>;
 };
 
-type MessageSourceAndRouting =
-  | [source: "interaction", routing: MessageRouting]
-  | [
-      source: Exclude<MessageSource, "interaction">,
-      routing?: MessageRouting,
-    ];
-
 /**
  * Register Chat SDK event handlers for a connection.
  *
@@ -687,7 +680,8 @@ export class MessageHandlerBridge {
   async handleMessage(
     thread: any,
     message: any,
-    ...[source, routing]: MessageSourceAndRouting
+    source: MessageSource,
+    routing?: MessageRouting
   ): Promise<void> {
     const { connection } = this;
 
@@ -711,7 +705,7 @@ export class MessageHandlerBridge {
     const messageId = message.id ?? String(Date.now());
     const isGroup =
       source === "interaction"
-        ? routing!.conversationId !== channelId
+        ? routing?.conversationId !== channelId
         : source === "mention" || source === "subscribed";
     // Collapse to the canonical `thread.id` whenever we're inside an existing
     // thread — group thread reply OR DM thread reply alike. Slack encodes

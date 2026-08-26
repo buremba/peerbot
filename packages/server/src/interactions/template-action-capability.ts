@@ -12,6 +12,7 @@ import {
 export const TEMPLATE_ACTION_CAPABILITY_META_KEY =
 	"lobu/event-action-capability";
 const TEMPLATE_ACTION_CAPABILITY_TTL_MS = 10 * 60 * 1_000;
+const MAX_TEMPLATE_ACTION_SOURCE_EVENTS = 200;
 
 type TemplateActionCapability = {
 	v: 1;
@@ -29,7 +30,8 @@ function isTemplateActionCapability(
 	return (
 		payload.v === 1 &&
 		Array.isArray(payload.sourceEventIds) &&
-		payload.sourceEventIds.length <= 200 &&
+		payload.sourceEventIds.length > 0 &&
+		payload.sourceEventIds.length <= MAX_TEMPLATE_ACTION_SOURCE_EVENTS &&
 		payload.sourceEventIds.every(
 			(id) => Number.isSafeInteger(id) && Number(id) > 0,
 		)
@@ -46,10 +48,24 @@ export function issueTemplateActionCapability(
 		mcpSessionId: string;
 	},
 ): string {
+	const normalizedSourceEventIds = [...new Set(sourceEventIds)].sort(
+		(a, b) => a - b,
+	);
+	if (
+		normalizedSourceEventIds.length === 0 ||
+		normalizedSourceEventIds.length > MAX_TEMPLATE_ACTION_SOURCE_EVENTS ||
+		!normalizedSourceEventIds.every(
+			(id) => Number.isSafeInteger(id) && Number(id) > 0,
+		)
+	) {
+		throw new Error(
+			`Template action capabilities require 1-${MAX_TEMPLATE_ACTION_SOURCE_EVENTS} positive integer source event ids.`,
+		);
+	}
 	return issueMcpAppCapability(
 		{
 			v: 1,
-			sourceEventIds: [...new Set(sourceEventIds)].sort((a, b) => a - b),
+			sourceEventIds: normalizedSourceEventIds,
 		},
 		ctx,
 		TEMPLATE_ACTION_CAPABILITY_TTL_MS,

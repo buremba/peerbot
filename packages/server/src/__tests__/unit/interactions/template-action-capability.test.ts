@@ -68,4 +68,13 @@ describe("MCP App template-action capability", () => {
 			/valid MCP App event-action capability/i,
 		);
 	});
+
+	it("refuses to mint a capability the verifier would reject", () => {
+		expect(() =>
+			issueTemplateActionCapability(
+				Array.from({ length: 201 }, (_, index) => index + 1),
+				ctx,
+			),
+		).toThrow(/1-200 positive integer source event ids/i);
+	});
 });

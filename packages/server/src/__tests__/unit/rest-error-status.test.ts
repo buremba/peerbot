@@ -85,4 +85,41 @@ describe("REST ToolUserError responses", () => {
 			error: "This interaction requires write access.",
 		});
 	});
+
+	it("does not let an authenticated public reader append an interaction event", async () => {
+		const app = new Hono<{ Bindings: Env }>();
+		app.use("*", async (c, next) => {
+			c.set("organizationId" as never, "test-org" as never);
+			c.set("memberRole" as never, null as never);
+			c.set("mcpIsAuthenticated" as never, true as never);
+			c.set(
+				"mcpAuthInfo" as never,
+				{
+					tokenType: "access_token",
+					organizationId: "test-org",
+					userId: "public-reader",
+					scopes: ["mcp:read", "mcp:write"],
+				} as never,
+			);
+			await next();
+		});
+		app.post(
+			"/api/:orgSlug/events/:eventId/actions/:action",
+			restInvokeEventAction,
+		);
+
+		const response = await app.request(
+			"/api/test-org/events/42/actions/vote",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ value: "A", interaction_id: "attempt-2" }),
+			},
+		);
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: "This interaction requires write access.",
+		});
+	});
 });

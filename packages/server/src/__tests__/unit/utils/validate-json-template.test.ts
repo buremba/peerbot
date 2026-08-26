@@ -165,9 +165,17 @@ describe('validateJsonTemplate', () => {
               type: 'select',
               props: { onChange: '@choose', options: [] },
             },
+            {
+              type: 'button',
+              props: { onPress: '@press' },
+            },
+            {
+              type: 'button',
+              onSubmit: '@submit',
+            },
           ],
         })
-      ).toEqual(new Set(['vote', 'choose']));
+      ).toEqual(new Set(['vote', 'choose', 'press', 'submit']));
     });
 
     it('reports the path of a nested handler failure', () => {

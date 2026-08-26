@@ -186,7 +186,12 @@ function portableActionName(node: Record<string, unknown>): string | null {
 	const props = isPlainObject(node.props) ? node.props : {};
 	const handler =
 		node.type === "button"
-			? props.onClick ?? node.onClick
+			? props.onClick ??
+				node.onClick ??
+				props.onPress ??
+				node.onPress ??
+				props.onSubmit ??
+				node.onSubmit
 			: node.type === "select"
 				? props.onChange ?? node.onChange ?? props.onSelect ?? node.onSelect
 				: null;

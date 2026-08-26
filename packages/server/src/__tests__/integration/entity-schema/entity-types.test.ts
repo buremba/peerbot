@@ -172,6 +172,48 @@ describe('entity schema CRUD', () => {
         })
       ).rejects.toThrow(/requires jsonTemplate/i);
 
+      await expect(
+        owner.entity_schema.updateType({
+          slug: 'deal-ek',
+          event_kinds: {
+            valuation: {
+              jsonTemplate: { type: 'button', props: { onClick: '@refresh' } },
+            },
+          },
+        })
+      ).rejects.toThrow(/interactions must declare every portable jsonTemplate action/i);
+
+      await expect(
+        owner.entity_schema.updateType({
+          slug: 'deal-ek',
+          event_kinds: {
+            valuation: {
+              jsonTemplate: {
+                type: 'card',
+                children: [
+                  { type: 'button', props: { onClick: '@refresh' } },
+                  { type: 'button', props: { onPress: '@archive' } },
+                ],
+              },
+              interactions: { refresh: { emits: 'valuation_requested' } },
+            },
+            valuation_requested: {},
+          },
+        })
+      ).rejects.toThrow(/must declare portable @archive/i);
+
+      await expect(
+        owner.entity_schema.updateType({
+          slug: 'deal-ek',
+          event_kinds: {
+            valuation: {
+              jsonTemplate: { type: 'button', props: { onClick: '@refresh' } },
+              interactions: { refresh: { emits: 'toString' } },
+            },
+          },
+        })
+      ).rejects.toThrow(/must name another declared event kind/i);
+
       // Clearing via null must validate and wipe the column.
       await owner.entity_schema.updateType({ slug: 'deal-ek', event_kinds: null });
       const cleared = (await owner.entity_schema.getType('deal-ek')) as {

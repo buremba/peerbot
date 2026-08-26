@@ -50,6 +50,7 @@ import {
 	invokeTemplateEventAction,
 	parseTemplateEventActionId,
 } from "../../interactions/template-event-actions.js";
+import { ToolUserError } from "../../utils/errors.js";
 
 const logger = createLogger("chat-interaction-bridge");
 
@@ -1082,7 +1083,7 @@ export function registerActionHandlers(
 				);
 				try {
 					await thread.post(
-						error instanceof Error
+						error instanceof ToolUserError
 							? error.message
 							: "I couldn’t record that interaction.",
 					);

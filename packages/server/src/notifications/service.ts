@@ -408,8 +408,8 @@ export async function findNotificationByIdempotencyKey(
  */
 interface NotificationDeliveryRecord {
 	connectionId: string;
-	/** Platform-prefixed channel id, or `dm` for the owner-routed tier. */
-	channelKey: string;
+	/** Platform-prefixed channel id, or `dm`; absent only on legacy records. */
+	channelKey?: string;
 	messageId: string;
 	threadId: string;
 }
@@ -490,20 +490,24 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 
 function deliveryRecords(
 	metadata: Record<string, unknown>,
-): Array<
-	Pick<NotificationDeliveryRecord, "connectionId" | "messageId" | "threadId">
-> {
+): NotificationDeliveryRecord[] {
 	return (Array.isArray(metadata.delivery) ? metadata.delivery : []).flatMap(
 		(entry) => {
 			const row = jsonRecord(entry);
 			const connectionId = row.connectionId;
+			const channelKey = row.channelKey;
 			const messageId = row.messageId;
 			const threadId = row.threadId;
 			return typeof connectionId === "string" &&
 				typeof messageId === "string" &&
 				messageId !== "" &&
 				typeof threadId === "string"
-				? [{ connectionId, messageId, threadId }]
+				? [{
+						connectionId,
+						...(typeof channelKey === "string" ? { channelKey } : {}),
+						messageId,
+						threadId,
+					}]
 				: [];
 		},
 	);
@@ -705,15 +709,29 @@ async function refreshInteractiveEventCard(
 		card,
 		fallbackText: row.title ?? row.semantic_type,
 	};
-	await Promise.all(
-		deliveries.map((delivery) =>
-			manager.editMessageContent(delivery.connectionId, {
-				threadId: delivery.threadId,
-				messageId: delivery.messageId,
-				content,
+	const successfulDeliveries = (
+		await Promise.all(
+			deliveries.map(async (delivery) => {
+				try {
+					await manager.editMessageContent(delivery.connectionId, {
+						threadId: delivery.threadId,
+						messageId: delivery.messageId,
+						content,
+					});
+					return delivery;
+				} catch (err) {
+					logger.warn(
+						{ err, replacementEventId, connectionId: delivery.connectionId },
+						"[Notifications] Failed to refresh interactive event card",
+					);
+					return null;
+				}
 			}),
-		),
-	);
+		)
+	).filter((delivery): delivery is NotificationDeliveryRecord => delivery !== null);
+	if (kind.interactions && Object.keys(kind.interactions).length > 0) {
+		await recordDelivery(replacementEventId, successfulDeliveries, card);
+	}
 }
 
 /** Best-effort post-commit refresh, mirroring approval-card settlement. */

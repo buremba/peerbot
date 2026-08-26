@@ -70,9 +70,17 @@ describe("template event actions", () => {
 				description: "A closed poll",
 				jsonTemplate: {
 					type: "card",
-					children: [{ type: "text", content: "Poll closed" }],
+					children: [
+						{ type: "text", content: "Poll closed" },
+						{
+							type: "button",
+							props: { label: "Reopen", onClick: "@reopen" },
+						},
+					],
 				},
+				interactions: { reopen: { emits: "poll_reopen_requested" } },
 			},
+			poll_reopen_requested: { description: "A verified reopen request" },
 		};
 		await sql`
       UPDATE entity_types
@@ -277,6 +285,56 @@ describe("template event actions", () => {
 			threadId: "gchat:spaces/AAA:threads/thread-1",
 			messageId: "spaces/AAA/messages/poll-1",
 			content: expect.objectContaining({ card: expect.anything() }),
+		});
+		const [closed] = await sql<{
+			id: number;
+			metadata: { delivery?: unknown };
+		}>`
+      SELECT id, metadata
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND semantic_type = 'poll_closed'
+      ORDER BY id DESC
+		LIMIT 1
+    `;
+		if (!closed) throw new Error("Expected a poll_closed replacement event");
+		await vi.waitFor(async () => {
+			const [refreshed] = await sql<{ metadata: { delivery?: unknown } }>`
+        SELECT metadata
+        FROM events
+        WHERE id = ${closed.id}
+      `;
+			expect(refreshed.metadata.delivery).toEqual([
+				{
+					connectionId: "91",
+					channelKey: "gchat:spaces/AAA",
+					messageId: "spaces/AAA/messages/poll-1",
+					threadId: "gchat:spaces/AAA:threads/thread-1",
+				},
+			]);
+		});
+		await expect(
+			invokeTemplateEventAction({
+				organizationId: workspace.org.id,
+				sourceEventId: closed.id,
+				action: "reopen",
+				value: null,
+				interactionId: "google-reopen-1",
+				surface: "gchat",
+				actor: {
+					platform: "gchat",
+					platformUserId: "users/ada",
+					name: "Ada",
+				},
+				source: {
+					connectionId: "91",
+					messageId: "spaces/AAA/messages/poll-1",
+					threadId: "gchat:spaces/AAA:threads/thread-1",
+				},
+			}),
+		).resolves.toMatchObject({
+			created: true,
+			eventType: "poll_reopen_requested",
 		});
 		await expect(invoke({ interactionId: "late-click" })).rejects.toThrow(
 			/closed|replaced/i,

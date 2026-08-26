@@ -988,7 +988,14 @@ function assertValidEventKindInteractions(
     }
 
     const interactions = definition.interactions;
-    if (interactions === undefined) continue;
+    if (interactions === undefined) {
+      if (declaredHandlers.size > 0) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions must declare every portable jsonTemplate action`
+        );
+      }
+      continue;
+    }
     if (!interactions || typeof interactions !== 'object' || Array.isArray(interactions)) {
       throw invalidSchema(`event_kinds.${kind}.interactions must be an object`);
     }
@@ -1012,9 +1019,16 @@ function assertValidEventKindInteractions(
         rawInteraction && typeof rawInteraction === 'object' && !Array.isArray(rawInteraction)
           ? (rawInteraction as Record<string, unknown>).emits
           : null;
-      if (typeof emits !== 'string' || !eventKinds[emits]) {
+      if (typeof emits !== 'string' || !Object.hasOwn(eventKinds, emits)) {
         throw invalidSchema(
           `event_kinds.${kind}.interactions.${action}.emits must name another declared event kind`
+        );
+      }
+    }
+    for (const action of declaredHandlers) {
+      if (!Object.hasOwn(interactions, action)) {
+        throw invalidSchema(
+          `event_kinds.${kind}.interactions must declare portable @${action} from jsonTemplate`
         );
       }
     }

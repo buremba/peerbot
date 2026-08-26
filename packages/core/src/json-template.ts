@@ -395,7 +395,9 @@ export function collectTemplateActionInvocations(
     component: (type, props, _children, { actions }) => {
       const names =
         type === "button"
-          ? [actions.onClick].filter((name): name is string => Boolean(name))
+          ? [actions.onClick ?? actions.onPress ?? actions.onSubmit].filter(
+              (name): name is string => Boolean(name)
+            )
           : type === "select"
             ? [actions.onChange ?? actions.onSelect].filter(
                 (name): name is string => Boolean(name)

@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { ToolUserError } from "../../utils/errors.js";
 import { storePendingTool, type PendingToolInvocation } from "../auth/mcp/pending-tool-store.js";
 import {
   interactionDeliveryId,
@@ -513,7 +514,7 @@ describe("registerActionHandlers — declared template event action", () => {
 
   test("surfaces a closed interaction without escaping the webhook handler", async () => {
     const h = setupTemplateAction(
-      new Error("This interaction is closed or has been replaced.")
+      new ToolUserError("This interaction is closed or has been replaced.", 409)
     );
     await h.handler({
       actionId: "event-action:42:vote",
@@ -522,6 +523,18 @@ describe("registerActionHandlers — declared template event action", () => {
     });
     expect(h.thread.post).toHaveBeenCalledWith(
       "This interaction is closed or has been replaced."
+    );
+  });
+
+  test("does not expose unexpected server errors to the chat user", async () => {
+    const h = setupTemplateAction(new Error("postgres password leaked"));
+    await h.handler({
+      actionId: "event-action:42:vote",
+      value: "A",
+      thread: h.thread,
+    });
+    expect(h.thread.post).toHaveBeenCalledWith(
+      "I couldn’t record that interaction."
     );
   });
 });

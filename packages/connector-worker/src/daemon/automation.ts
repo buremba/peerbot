@@ -20,8 +20,8 @@
  * `WORKER_API_TOKEN` env var, so the child cannot act as the worker/poll loop.
  * Its Lobu credential is the poll envelope's per-run `agent_session` when the
  * server minted one (see `resolveDeviceAgentRunAccess`): the run authenticates
- * as the Automation's assigned agent, not as the daemon or the user's ambient
- * CLI session. Capable standalone Mac daemons fail closed when that session is
+ * as the run's assigned agent, not as the daemon or the user's ambient CLI
+ * session. Capable standalone Mac daemons fail closed when that session is
  * absent; legacy workers retain the pre-session fallback.
  */
 
@@ -108,44 +108,44 @@ export interface AutomationExecutorConfig {
 
 /** Shared liveness/cancellation control for every device-local agent run. */
 export function monitorDeviceAgentRun(
-	client: ExecutorClient,
-	runId: number,
-	cfg: AutomationExecutorConfig,
-	label: string,
+  client: ExecutorClient,
+  runId: number,
+  cfg: AutomationExecutorConfig,
+  label: string,
 ) {
-	const abortController = new AbortController();
-	let shutdownRequested = false;
-	const onShutdown = () => {
-		shutdownRequested = true;
-		abortController.abort();
-	};
-	cfg.shutdownSignal?.addEventListener("abort", onShutdown, { once: true });
-	if (cfg.shutdownSignal?.aborted) onShutdown();
+  const abortController = new AbortController();
+  let shutdownRequested = false;
+  const onShutdown = () => {
+    shutdownRequested = true;
+    abortController.abort();
+  };
+  cfg.shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
+  if (cfg.shutdownSignal?.aborted) onShutdown();
 
-	const heartbeat = setInterval(() => {
-		client.heartbeat(runId).catch((error) => {
-			if (error instanceof WorkerHttpError && error.status === 409) {
-				if (!abortController.signal.aborted) {
-					log.info(
-						`[executor] ${label} run ${runId} is no longer active; stopping the local CLI`,
-					);
-					abortController.abort();
-					clearInterval(heartbeat);
-				}
-				return;
-			}
-			log.debug(`[executor] ${label} heartbeat failed:`, error);
-		});
-	}, cfg.heartbeatIntervalMs ?? 30_000);
+  const heartbeat = setInterval(() => {
+    client.heartbeat(runId).catch((error) => {
+      if (error instanceof WorkerHttpError && error.status === 409) {
+        if (!abortController.signal.aborted) {
+          log.info(
+            `[executor] ${label} run ${runId} is no longer active; stopping the local CLI`,
+          );
+          abortController.abort();
+          clearInterval(heartbeat);
+        }
+        return;
+      }
+      log.debug(`[executor] ${label} heartbeat failed:`, error);
+    });
+  }, cfg.heartbeatIntervalMs ?? 30_000);
 
-	return {
-		abortController,
-		shutdownRequested: () => shutdownRequested,
-		stop: () => {
-			clearInterval(heartbeat);
-			cfg.shutdownSignal?.removeEventListener("abort", onShutdown);
-		},
-	};
+  return {
+    abortController,
+    shutdownRequested: () => shutdownRequested,
+    stop: () => {
+      clearInterval(heartbeat);
+      cfg.shutdownSignal?.removeEventListener('abort', onShutdown);
+    },
+  };
 }
 
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
@@ -411,8 +411,8 @@ function claudeSessionMeta(
  * Resolve what credential the spawned CLI runs with — the boundary shared by
  * Automation and device-chat CLIs. When the poll envelope carries a per-run
  * `agent_session`, the CLI authenticates as the run's assigned agent for
- * exactly this run: the session token goes into the MCP
- * wiring AND into LOBU_API_TOKEN/LOBU_MEMORY_URL, which `lobu memory` prefers
+ * exactly this run: the session token goes into the MCP wiring AND into
+ * LOBU_API_TOKEN/LOBU_MEMORY_URL, which `lobu memory` prefers
  * over the device's ambient CLI session — so an unattended run never acts as
  * the human user or the daemon. Without a session (older server, or a run with
  * no usable assigned agent) fall back to the daemon's own wiring, the
@@ -746,9 +746,9 @@ export async function executeAutomationRun(
     await completeAutomationWithError(client, runId, message, 'error_message');
     return { itemsCollected: 0, error: message };
   }
-  if (!("automation" in payload)) {
-    const message = "automation run received a non-automation payload envelope";
-    await completeAutomationWithError(client, runId, message, "error_message");
+  if (!('automation' in payload)) {
+    const message = 'automation run received a non-automation payload envelope';
+    await completeAutomationWithError(client, runId, message, 'error_message');
     return { itemsCollected: 0, error: message };
   }
 

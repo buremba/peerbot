@@ -186,15 +186,14 @@ export const AutomationPollContextSchema = Type.Object({
   // Device execution: the per-run lobu-memory MCP session when the worker
   // advertises automations.execute. Legacy Mac bridge workers omit it.
   // `token` is a WorkerToken minted for the run's ASSIGNED AGENT — never the
-  // polling device's PAT (a child
-  // PAT is bound to the user's personal org and can't authenticate to a
-  // team-org Automation). `mcp_url` is the org-scoped direct MCP endpoint
-  // (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own session.
-  // The daemon hands both to the spawned CLI as its MCP wiring and as
+  // polling device's PAT (a child PAT is bound to the user's personal org and
+  // can't authenticate to a team org). `mcp_url` is the org-scoped direct MCP
+  // endpoint (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own
+  // session. The daemon hands both to the spawned CLI as its MCP wiring and as
   // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the run's agent.
-  // Absent when the run has no usable assigned agent or
-  // when the legacy worker did not advertise automations.execute. A capable
-  // standalone daemon fails closed instead of falling back to its device PAT.
+  // Absent when the run has no usable assigned agent, or when the legacy worker
+  // did not advertise automations.execute. A capable standalone daemon fails
+  // closed instead of falling back to its device PAT.
   agent_session: Type.Optional(
     Type.Object({
       conversation_id: Type.String(),

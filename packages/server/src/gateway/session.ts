@@ -1,7 +1,7 @@
 import type {
-	DeviceExecutionTarget,
-	NetworkConfig,
-	NixConfig,
+  DeviceExecutionTarget,
+  NetworkConfig,
+  NixConfig,
 } from "@lobu/core";
 import type { ExecutionMode } from "../runs/run-types.js";
 
@@ -34,8 +34,8 @@ export interface ThreadSession {
   provider?: string;
   /** Model to use for the agent (e.g., claude-sonnet-4-20250514) */
   model?: string;
-	/** Immutable execution placement for app chat; absence means managed Lobu. */
-	executionTarget?: DeviceExecutionTarget;
+  /** Immutable execution placement for app chat; absence means managed Lobu. */
+  executionTarget?: DeviceExecutionTarget;
   /** Per-agent network configuration for sandbox isolation */
   networkConfig?: NetworkConfig;
   /** Nix environment configuration for agent workspace */

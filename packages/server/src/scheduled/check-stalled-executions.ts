@@ -605,7 +605,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         {
           reaped: reapedCount,
           approvalActionsReaped,
-					deviceChatsReaped,
+          deviceChatsReaped,
           retriesCreated,
           thresholdSeconds,
         },

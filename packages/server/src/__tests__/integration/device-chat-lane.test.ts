@@ -41,7 +41,7 @@ async function insertDevice(args: {
       user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
     ) VALUES (
       ${args.userId}, ${args.workerId}, 'headless',
-		${sql.json(["automations.execute"])}, ${args.workerId},
+      ${sql.json(["automations.execute"])}, ${args.workerId},
       ${args.organizationId}, ${`{${args.kinds.join(",")}}`}::text[]
     )
     RETURNING id
@@ -163,13 +163,44 @@ describe("device chat execution lane", () => {
 			workerId: "other-device",
 			kinds: ["pi"],
 		});
-		const conversationId = buildApiConversationId({
-			agentId: agent.agentId,
-			userId,
-			organizationId,
-			threadId: "thread-1",
-		});
-		const runId = await enqueueDeviceChat({
+    const conversationId = buildApiConversationId({
+      agentId: agent.agentId,
+      userId,
+      organizationId,
+      threadId: "thread-1",
+    });
+    const priorTimestamp = new Date(Date.now() - 60_000).toISOString();
+    const priorSnapshot = `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "managed-prior",
+      timestamp: priorTimestamp,
+      cwd: "/managed",
+    })}\n${JSON.stringify({
+      type: "message",
+      id: "managed-assistant",
+      parentId: null,
+      timestamp: priorTimestamp,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Existing managed reply." }],
+      },
+    })}\n`;
+    const [priorRun] = await sql<{ id: number }>`
+      INSERT INTO runs (run_type, status, organization_id, created_at, completed_at, run_at)
+      VALUES ('chat_message', 'completed', ${organizationId}, ${priorTimestamp}, ${priorTimestamp}, ${priorTimestamp})
+      RETURNING id
+    `;
+    if (!priorRun) throw new Error("Failed to seed prior managed transcript");
+    await sql`
+      INSERT INTO agent_transcript_snapshot
+        (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
+      VALUES (
+        ${organizationId}, ${agent.agentId}, ${conversationId}, ${priorRun.id},
+        ${priorSnapshot}, ${Buffer.byteLength(priorSnapshot)}, 'completed', ${priorTimestamp}
+      )
+    `;
+    const runId = await enqueueDeviceChat({
 			organizationId,
 			agentId: agent.agentId,
 			userId,
@@ -198,11 +229,11 @@ describe("device chat execution lane", () => {
 			};
 			context: { agent_session: { token: string; conversation_id: string } };
 		};
-		expect(payload.chat).toMatchObject({
-			agent_kind: "pi",
-			message: "What is the latest on Atlas?",
-			history: [],
-			agent: { identity_md: "A careful local agent" },
+    expect(payload.chat).toMatchObject({
+      agent_kind: "pi",
+      message: "What is the latest on Atlas?",
+      history: [{ role: "assistant", content: "Existing managed reply." }],
+      agent: { identity_md: "A careful local agent" },
 		});
 		expect(payload.context.agent_session.conversation_id).toBe(conversationId);
 		expect(
@@ -254,10 +285,17 @@ describe("device chat execution lane", () => {
 			status: string;
 		}>`SELECT status FROM runs WHERE id = ${runId}`;
 		expect(run.status).toBe("completed");
-		const [snapshot] = await sql<{ snapshot_jsonl: string }>`
+    const [snapshot] = await sql<{ snapshot_jsonl: string }>`
       SELECT snapshot_jsonl FROM agent_transcript_snapshot WHERE run_id = ${runId}
     `;
-		const transcript = parseSessionEntries(snapshot.snapshot_jsonl).entries;
+    expect(JSON.parse(snapshot.snapshot_jsonl.split("\n", 1)[0] ?? "{}")).toMatchObject({
+      executionTarget: {
+        kind: "device",
+        deviceWorkerId: selected.id,
+        agentKind: "pi",
+      },
+    });
+    const transcript = parseSessionEntries(snapshot.snapshot_jsonl).entries;
 		expect(
 			transcript.map((entry) => JSON.stringify(entry.message?.content)),
 		).toEqual(
@@ -293,10 +331,11 @@ describe("device chat execution lane", () => {
 
 		const secondJob = await poll(selected.token, "selected-device", ["pi"]);
 		expect(secondJob.run_id).toBe(secondRunId);
-		expect(
-			(secondJob.payload as { chat: { history: unknown[] } }).chat.history,
-		).toEqual([
-			{ role: "user", content: "What is the latest on Atlas?" },
+    expect(
+      (secondJob.payload as { chat: { history: unknown[] } }).chat.history,
+    ).toEqual([
+      { role: "assistant", content: "Existing managed reply." },
+      { role: "user", content: "What is the latest on Atlas?" },
 			{
 				role: "assistant",
 				content: "Atlas shipped its device chat milestone.",

@@ -7,8 +7,8 @@ import { Value } from "@sinclair/typebox/value";
 import type { Context } from "hono";
 import { getDb } from "../db/client";
 import {
-	notifyThreadResponse,
 	insertThreadResponseRow,
+	notifyThreadResponse,
 } from "../gateway/orchestration/turn-liveness";
 import { threadIdFromApiConversationId } from "../gateway/services/api-conversation-id";
 import {
@@ -33,6 +33,44 @@ function boundedReply(value: string): string {
 	return `${buffer.subarray(0, MAX_REPLY_BYTES).toString("utf8")}\n\n[Reply truncated by Lobu]`;
 }
 
+function deviceSessionHeader(payload: MessagePayload, now: string): string {
+	return JSON.stringify({
+		type: "session",
+		version: 3,
+		id: `device-chat-${payload.conversationId}`,
+		timestamp: now,
+		cwd: "/device",
+		executionTarget: payload.executionTarget,
+	});
+}
+
+/** Persist device placement in the durable session header on every turn. */
+function stampExecutionTarget(
+	previous: string | null,
+	payload: MessagePayload,
+	now: string,
+): string {
+	const prefix = previous?.endsWith("\n")
+		? previous
+		: previous
+			? `${previous}\n`
+			: "";
+	if (!prefix) return `${deviceSessionHeader(payload, now)}\n`;
+	const lineEnd = prefix.indexOf("\n");
+	try {
+		const header = JSON.parse(prefix.slice(0, lineEnd)) as Record<
+			string,
+			unknown
+		>;
+		if (header.type === "session") {
+			return `${JSON.stringify({ ...header, executionTarget: payload.executionTarget })}${prefix.slice(lineEnd)}`;
+		}
+	} catch {
+		// A malformed legacy prefix remains readable after a fresh session header.
+	}
+	return `${deviceSessionHeader(payload, now)}\n${prefix}`;
+}
+
 function buildSnapshot(
 	previous: string | null,
 	payload: MessagePayload,
@@ -40,21 +78,7 @@ function buildSnapshot(
 	runId: number,
 ): string {
 	const now = new Date().toISOString();
-	let prefix = previous?.endsWith("\n")
-		? previous
-		: previous
-			? `${previous}\n`
-			: "";
-	if (!prefix) {
-		prefix = `${JSON.stringify({
-			type: "session",
-			version: 3,
-			id: `device-chat-${payload.conversationId}`,
-			timestamp: now,
-			cwd: "/device",
-			executionTarget: payload.executionTarget,
-		})}\n`;
-	}
+	const prefix = stampExecutionTarget(previous, payload, now);
 	const priorEntries = parseSessionEntries(prefix).entries;
 	const parentId = priorEntries[priorEntries.length - 1]?.id ?? null;
 	const userId = `device-user-${runId}`;
@@ -86,14 +110,7 @@ function buildSnapshot(
 		return snapshot;
 	// A very old/large transcript must not make the current turn fail. Start a
 	// compact continuation snapshot; the durable prior run remains queryable.
-	const session = `${JSON.stringify({
-		type: "session",
-		version: 3,
-		id: `device-chat-${payload.conversationId}`,
-		timestamp: now,
-		cwd: "/device",
-		executionTarget: payload.executionTarget,
-	})}\n`;
+	const session = `${deviceSessionHeader(payload, now)}\n`;
 	return `${session}${buildUser(null)}\n${assistant}\n`;
 }
 

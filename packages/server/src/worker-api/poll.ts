@@ -84,18 +84,18 @@ const DISPATCH_FAILURE_OUTCOME: RunOutcome = 'infra_error';
 const DUE_FEEDS_LOCK_KEY = 71001;
 
 function transcriptText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((part) =>
-			part &&
-			typeof part === "object" &&
-			(part as Record<string, unknown>).type === "text"
-				? String((part as Record<string, unknown>).text ?? "")
-				: "",
-		)
-		.filter(Boolean)
-		.join("\n");
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) =>
+      part &&
+      typeof part === 'object' &&
+      (part as Record<string, unknown>).type === 'text'
+        ? String((part as Record<string, unknown>).text ?? '')
+        : ''
+    )
+    .filter(Boolean)
+    .join('\n');
 }
 
 /**
@@ -1053,12 +1053,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     automation_prompt: string | null;
     automation_skills: unknown;
     automation_outputs: Record<string, unknown> | string | null;
-		// Device chat fields (derived from the ordinary MessagePayload row)
-		chat_agent_id: string | null;
-		chat_agent_name: string | null;
-		chat_agent_identity_md: string | null;
-		chat_agent_soul_md: string | null;
-		chat_agent_user_md: string | null;
+    // Device chat fields (derived from the ordinary MessagePayload row)
+    chat_agent_id: string | null;
+    chat_agent_name: string | null;
+    chat_agent_identity_md: string | null;
+    chat_agent_soul_md: string | null;
+    chat_agent_user_md: string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;

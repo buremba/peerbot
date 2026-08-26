@@ -5,7 +5,7 @@ import {
   type AgentConfigStore,
   createLogger,
   createRootSpan,
-	type DeviceExecutionTarget,
+  type DeviceExecutionTarget,
   generateWorkerToken,
   type NetworkConfig,
   normalizeDomainPatterns,
@@ -123,33 +123,33 @@ const AutomationRunIntentSchema = Type.Object({
 });
 
 const DeviceExecutionTargetSchema = Type.Object(
-	{
-		kind: Type.Literal("device"),
-		deviceWorkerId: Type.String({
-			pattern:
-				"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-		}),
-		agentKind: Type.String({ minLength: 1, maxLength: 64 }),
-	},
-	{ additionalProperties: false },
+  {
+    kind: Type.Literal("device"),
+    deviceWorkerId: Type.String({
+      pattern:
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+    }),
+    agentKind: Type.String({ minLength: 1, maxLength: 64 }),
+  },
+  { additionalProperties: false },
 );
 const SNAPSHOT_HEADER_CHARS = 8192;
 
 function executionTargetFromSnapshot(
-	snapshot: string | null,
+  snapshot: string | null,
 ): DeviceExecutionTarget | undefined {
-	// Placement is in the leading session record. The caller only fetches this
-	// prefix, so parsing never materializes the whole transcript.
-	const header = snapshot?.split("\n").find((line) => line.trim());
-	if (!header) return undefined;
-	try {
-		const parsed = JSON.parse(header) as { executionTarget?: unknown };
-		return Value.Check(DeviceExecutionTargetSchema, parsed.executionTarget)
-			? (parsed.executionTarget as DeviceExecutionTarget)
-			: undefined;
-	} catch {
-		return undefined;
-	}
+  // Placement is in the leading session record. The caller only fetches this
+  // prefix, so parsing never materializes the whole transcript.
+  const header = snapshot?.split("\n").find((line) => line.trim());
+  if (!header) return undefined;
+  try {
+    const parsed = JSON.parse(header) as { executionTarget?: unknown };
+    return Value.Check(DeviceExecutionTargetSchema, parsed.executionTarget)
+      ? (parsed.executionTarget as DeviceExecutionTarget)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const CreateAgentRequestSchema = Type.Object({
@@ -161,7 +161,7 @@ const CreateAgentRequestSchema = Type.Object({
   forceNew: Type.Optional(Type.Boolean()),
   dryRun: Type.Optional(Type.Boolean()),
   intent: Type.Optional(AutomationRunIntentSchema),
-	executionTarget: Type.Optional(DeviceExecutionTargetSchema),
+  executionTarget: Type.Optional(DeviceExecutionTargetSchema),
   networkConfig: Type.Optional(NetworkConfigSchema),
   nix: Type.Optional(NixConfigSchema),
 });
@@ -173,7 +173,7 @@ const CreateAgentResponseSchema = Type.Object({
   expiresAt: Type.Number(),
   sseUrl: Type.String(),
   messagesUrl: Type.String(),
-	executionTarget: Type.Optional(DeviceExecutionTargetSchema),
+  executionTarget: Type.Optional(DeviceExecutionTargetSchema),
 });
 
 const SlackRoutingInfoSchema = Type.Object({
@@ -800,7 +800,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       forceNew,
       dryRun,
       intent,
-			executionTarget,
+      executionTarget,
       networkConfig,
       nix: nixConfig,
     } = body;
@@ -1027,50 +1027,50 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
     }
 
-		// Session state has a TTL; the transcript is the durable conversation
-		// substrate. Recover the last completed turn's device placement from its
-		// session header so the thread cannot silently fall back to managed runtime.
-		let candidateExecutionTarget = executionTarget as
-			| DeviceExecutionTarget
-			| undefined;
-		if (!candidateExecutionTarget && effectiveForceNew) {
-			candidateExecutionTarget = existing?.executionTarget;
-		}
-		if (
-			!candidateExecutionTarget &&
-			!existing &&
-			!automationIntent &&
-			effectiveThread &&
-			tokenOrganizationId
-		) {
-			candidateExecutionTarget = executionTargetFromSnapshot(
-				await readSnapshotJsonl({
-					agentId,
-					organizationId: tokenOrganizationId,
-					conversationId,
-					prefixChars: SNAPSHOT_HEADER_CHARS,
-				}),
-			);
-		}
+    // Session state has a TTL; the transcript is the durable conversation
+    // substrate. Recover the last completed turn's device placement from its
+    // session header so the thread cannot silently fall back to managed runtime.
+    let candidateExecutionTarget = executionTarget as
+      | DeviceExecutionTarget
+      | undefined;
+    if (!candidateExecutionTarget && effectiveForceNew) {
+      candidateExecutionTarget = existing?.executionTarget;
+    }
+    if (
+      !candidateExecutionTarget &&
+      !existing &&
+      !automationIntent &&
+      effectiveThread &&
+      tokenOrganizationId
+    ) {
+      candidateExecutionTarget = executionTargetFromSnapshot(
+        await readSnapshotJsonl({
+          agentId,
+          organizationId: tokenOrganizationId,
+          conversationId,
+          prefixChars: SNAPSHOT_HEADER_CHARS,
+        }),
+      );
+    }
 
-		let verifiedExecutionTarget: DeviceExecutionTarget | undefined;
-		if (candidateExecutionTarget) {
-			if (intent || !access.callerUserId || !tokenOrganizationId) {
-				return c.json(
-					{
-						success: false,
-						error: "Device chat requires a workspace user session",
-					},
-					403,
-				);
-			}
-			// `capabilities` is a jsonb array of capability names, so test
-			// membership with the jsonb `?` operator used by worker dispatch.
-			const devices = await getDb()<{
-				id: string;
-				agent_kinds: string[] | string | null;
-				can_execute: boolean;
-			}>`
+    let verifiedExecutionTarget: DeviceExecutionTarget | undefined;
+    if (candidateExecutionTarget) {
+      if (intent || !access.callerUserId || !tokenOrganizationId) {
+        return c.json(
+          {
+            success: false,
+            error: "Device chat requires a workspace user session",
+          },
+          403,
+        );
+      }
+      // `capabilities` is a jsonb array of capability names, so test
+      // membership with the jsonb `?` operator used by worker dispatch.
+      const devices = await getDb()<{
+        id: string;
+        agent_kinds: string[] | string | null;
+        can_execute: boolean;
+      }>`
         SELECT id, agent_kinds, capabilities ? 'automations.execute' AS can_execute
         FROM device_workers
         WHERE id = ${candidateExecutionTarget.deviceWorkerId}::uuid
@@ -1078,24 +1078,24 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           AND organization_id = ${tokenOrganizationId}
         LIMIT 1
       `;
-			const device = devices[0];
-			const advertisedKinds =
-				device?.agent_kinds == null ? [] : parsePgTextArray(device.agent_kinds);
-			if (
-				!device ||
-				!device.can_execute ||
-				!advertisedKinds.includes(candidateExecutionTarget.agentKind)
-			) {
-				return c.json(
-					{
-						success: false,
-						error: "That device cannot run the selected agent",
-					},
-					400,
-				);
-			}
-			verifiedExecutionTarget = candidateExecutionTarget;
-		}
+      const device = devices[0];
+      const advertisedKinds =
+        device?.agent_kinds == null ? [] : parsePgTextArray(device.agent_kinds);
+      if (
+        !device ||
+        !device.can_execute ||
+        !advertisedKinds.includes(candidateExecutionTarget.agentKind)
+      ) {
+        return c.json(
+          {
+            success: false,
+            error: "That device cannot run the selected agent",
+          },
+          400,
+        );
+      }
+      verifiedExecutionTarget = candidateExecutionTarget;
+    }
 
     // Resume (unless forceNew). Refuse cross-tenant resume defensively: even
     // though the userId fallback above is per-org-unique for the default-agent
@@ -1115,21 +1115,21 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         return c.json({ success: false, error: "Forbidden" }, 403);
       }
       if (existing) {
-				const existingTarget = existing.executionTarget;
-				if (
-					verifiedExecutionTarget &&
-					(verifiedExecutionTarget.deviceWorkerId !==
-						existingTarget?.deviceWorkerId ||
-						verifiedExecutionTarget.agentKind !== existingTarget?.agentKind)
-				) {
-					return c.json(
-						{
-							success: false,
-							error: "Conversation execution target cannot change",
-						},
-						409,
-					);
-				}
+        const existingTarget = existing.executionTarget;
+        if (
+          verifiedExecutionTarget &&
+          (verifiedExecutionTarget.deviceWorkerId !==
+            existingTarget?.deviceWorkerId ||
+            verifiedExecutionTarget.agentKind !== existingTarget?.agentKind)
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: "Conversation execution target cannot change",
+            },
+            409,
+          );
+        }
         // Reuse the existing session — touch lastActivity and hand back a
         // freshly minted token for it (tokens are stateless, never stored).
         await sessMgr.touchSession(conversationId);
@@ -1170,9 +1170,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       status: "created",
       provider,
       model,
-			...(verifiedExecutionTarget
-				? { executionTarget: verifiedExecutionTarget }
-				: {}),
+      ...(verifiedExecutionTarget
+        ? { executionTarget: verifiedExecutionTarget }
+        : {}),
       networkConfig: normalizedNetworkConfig,
       nixConfig,
       agentId,
@@ -1800,9 +1800,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         botId: "lobu-api",
         platform: "api",
         messageText: messageTextForTranscript,
-				...(session.executionTarget
-					? { executionTarget: session.executionTarget }
-					: {}),
+        ...(session.executionTarget
+          ? { executionTarget: session.executionTarget }
+          : {}),
         ...(applyEphemeralContext
           ? { ephemeralContext: ephemeralForTurn.slice(0, 2048) }
           : {}),

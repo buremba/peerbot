@@ -63,6 +63,10 @@ import {
   restoreRedactedConfig,
 } from '../../utils/connection-config-redaction';
 import {
+  isChromeNamespaceConnectorKey,
+  selectedConnectorVersionArtifactSql,
+} from '../../utils/connector-execution-placement';
+import {
   nextRunAt,
   validateSchedule,
   validateTimezone,
@@ -378,7 +382,9 @@ async function handleListFeeds(
              THEN 'offline'
            END AS device_status,
            cd.name AS connector_name,
-           cd.required_capability,
+           COALESCE(p.pinned_version, cd.version) AS connector_version,
+           COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
+           cv.artifact_hash AS connector_manifest_hash,
            ap.profile_kind AS auth_profile_kind,
            ap.status AS auth_profile_status,
            (
@@ -403,7 +409,7 @@ async function handleListFeeds(
     JOIN "organization" o ON o.id = c.organization_id
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
-      SELECT name, required_capability
+      SELECT name, version
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -411,6 +417,13 @@ async function handleListFeeds(
       ORDER BY updated_at DESC
       LIMIT 1
     ) cd ON TRUE
+    LEFT JOIN LATERAL (
+      ${selectedConnectorVersionArtifactSql(sql, {
+        connectorKey: sql`c.connector_key`,
+        version: sql`COALESCE(p.pinned_version, cd.version)`,
+        organizationId: sql`p.organization_id`,
+      })}
+    ) cv ON TRUE
     LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
     LEFT JOIN event_counts ec ON ec.connection_id = p.connection_id AND ec.feed_key = p.feed_key
     ORDER BY p.created_at DESC
@@ -446,10 +459,15 @@ async function handleListFeeds(
   const deviceReadiness = await loadDeviceConnectorReadiness({
     sql,
     targets: feeds.flatMap((feed) =>
-      typeof feed.required_capability === 'string' && feed.required_capability.length > 0
+      typeof feed.connector_version === 'string' &&
+      feed.connector_version.length > 0 &&
+      (feed.connector_manifest_backed === true ||
+        isChromeNamespaceConnectorKey(feed.connector_key as string))
         ? [{
             ownerUserId: feed.device_owner_user_id as string | null,
             connectorKey: feed.connector_key as string,
+            connectorVersion: feed.connector_version,
+            manifestHash: feed.connector_manifest_hash as string | null,
             deviceWorkerId: feed.device_worker_id as string | null,
           }]
         : []
@@ -459,6 +477,8 @@ async function handleListFeeds(
     const connectorReadiness = findDeviceConnectorReadiness(deviceReadiness, {
       ownerUserId: feed.device_owner_user_id as string | null,
       connectorKey: feed.connector_key as string,
+      connectorVersion: feed.connector_version as string | null,
+      manifestHash: feed.connector_manifest_hash as string | null,
       deviceWorkerId: feed.device_worker_id as string | null,
     });
     const semantics = deriveFeedHealthSemantics({
@@ -482,7 +502,9 @@ async function handleListFeeds(
     });
     const {
       device_owner_user_id: _deviceOwnerUserId,
-      required_capability: _requiredCapability,
+      connector_version: _connectorVersion,
+      connector_manifest_backed: _connectorManifestBacked,
+      connector_manifest_hash: _connectorManifestHash,
       ...publicFeed
     } = feed;
     return {

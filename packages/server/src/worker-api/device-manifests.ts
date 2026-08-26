@@ -185,6 +185,8 @@ export async function getDeviceManifestSourcesForUser(params: {
   sql: DbClient;
   userId: string;
   connectorKey?: string;
+  /** Include every retained exact artifact instead of only one winner per key. */
+  includeRetainedVersions?: boolean;
 }): Promise<DeviceConnectorSource[]> {
   const rows = (await params.sql`
     SELECT id, platform, capabilities, connector_manifests,
@@ -212,7 +214,6 @@ export async function getDeviceManifestSourcesForUser(params: {
   };
   const candidates: ManifestCandidate[] = [];
   const liveCapabilities = new Map<string, Set<string>>();
-  const winners = new Map<string, StoredDeviceManifest>();
   for (const row of rows) {
     liveCapabilities.set(
       row.id,
@@ -223,14 +224,47 @@ export async function getDeviceManifestSourcesForUser(params: {
       const stored = parseStoredManifest(value);
       if (!stored) continue;
       candidates.push({ stored, deviceId: row.id, platform: row.platform, online: row.online });
-      const existing = winners.get(stored.manifest.key);
-      if (!existing || compareManifestWinner(stored, existing) > 0) {
-        winners.set(stored.manifest.key, stored);
-      }
     }
   }
 
-  return [...winners.values()].flatMap((stored) => {
+  // Prefer the newest manifest that at least one online device can execute.
+  // A newer inventory-only manifest represents incomplete setup; it must not
+  // shadow an older capable advertiser and pause a working feed. When no
+  // capable version exists, keep the newest inventory manifest so readiness
+  // can still surface setup_required instead of making the connector vanish.
+  const retainedManifests = new Map<string, StoredDeviceManifest>();
+  const inventoryWinners = new Map<string, StoredDeviceManifest>();
+  const capableWinners = new Map<string, StoredDeviceManifest>();
+  for (const candidate of candidates) {
+    const { stored } = candidate;
+    retainedManifests.set(
+      `${stored.manifest.key}\u0000${stored.manifest.version}\u0000${stored.manifest_hash}`,
+      stored
+    );
+    const inventoryWinner = inventoryWinners.get(stored.manifest.key);
+    if (!inventoryWinner || compareManifestWinner(stored, inventoryWinner) > 0) {
+      inventoryWinners.set(stored.manifest.key, stored);
+    }
+    if (
+      candidate.online &&
+      liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
+    ) {
+      const capableWinner = capableWinners.get(stored.manifest.key);
+      if (!capableWinner || compareManifestWinner(stored, capableWinner) > 0) {
+        capableWinners.set(stored.manifest.key, stored);
+      }
+    }
+  }
+  const winners = new Map(inventoryWinners);
+  for (const [key, winner] of capableWinners) winners.set(key, winner);
+  const selectedManifests = [
+    ...(params.includeRetainedVersions ? retainedManifests : winners).values(),
+  ].sort(
+    (a, b) =>
+      a.manifest.key.localeCompare(b.manifest.key) || compareManifestWinner(a, b)
+  );
+
+  return selectedManifests.flatMap((stored) => {
     const exactCandidates = candidates.filter(
       (candidate) =>
         candidate.stored.manifest.key === stored.manifest.key &&

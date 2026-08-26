@@ -208,11 +208,13 @@ export default async (_ctx, client) => {
 			"entitySchema.listTypes(input?: { list_scope?: 'accessible' | 'organization' }): Promise<unknown>",
 	},
 	"entitySchema.getType": {
-		summary: "Get an entity type by slug.",
+		summary:
+			"Get an entity type by slug. A missing type resolves rather than throwing: check the nullable `entity_type` field to determine whether the type exists — do not truth-test the wrapper, which is always present.",
 		access: "read",
 		signature:
 			"entitySchema.getType(slug: string): Promise<unknown> // or entitySchema.getType({ slug })",
-		example: "const t = await client.entitySchema.getType('company');",
+		example:
+			"const { entity_type } = await client.entitySchema.getType('company'); // null when absent",
 	},
 	"entitySchema.createType": {
 		summary:
@@ -246,11 +248,13 @@ export default async (_ctx, client) => {
 			"entitySchema.listRelTypes(input?: { list_scope?: 'accessible' | 'organization' }): Promise<unknown>",
 	},
 	"entitySchema.getRelType": {
-		summary: "Get a relationship type by slug.",
+		summary:
+			"Get a relationship type by slug. A missing type resolves rather than throwing: check the nullable `relationship_type` field to determine whether the type exists — do not truth-test the wrapper, which is always present.",
 		access: "read",
 		signature:
 			"entitySchema.getRelType(slug: string): Promise<unknown> // or entitySchema.getRelType({ slug })",
-		example: "const t = await client.entitySchema.getRelType('works-at');",
+		example:
+			"const { relationship_type } = await client.entitySchema.getRelType('works-at'); // null when absent",
 	},
 	"entitySchema.createRelType": {
 		summary: "Create a relationship type.",

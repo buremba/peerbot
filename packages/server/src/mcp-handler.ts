@@ -278,6 +278,7 @@ function mcpAppUiMeta(
   authCtx: SessionAuthContext,
   app: (typeof MCP_APP_RESOURCES)[string]
 ): {
+  domain: string;
   csp: {
     connectDomains: string[];
     resourceDomains: string[];
@@ -288,6 +289,16 @@ function mcpAppUiMeta(
 } {
   const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
   return {
+    // `_meta.ui.domain` is the view's dedicated sandbox origin, and it is not a
+    // request to serve the view from ours: the host derives its own sandbox
+    // hostname from it (ChatGPT renders at
+    // `<domain>.web-sandbox.oaiusercontent.com`) and owns the resulting
+    // document. Omitted, the view lands on the host's default per-conversation
+    // origin: ChatGPT requires the field for plugin submission, and the derived
+    // subdomain is what its fullscreen punch-out needs. The value must be
+    // unique per app, so it is the one origin that already identifies this
+    // deployment.
+    domain: publicOrigin,
     csp: {
       ...app.csp,
       resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],

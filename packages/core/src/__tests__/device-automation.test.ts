@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AutomationPollPayload } from "../contracts/worker/protocol.js";
 import {
+  AGENT_KIND_LABELS,
   AGENT_KINDS,
   DEVICE_AGENT_SPECS,
   DEVICE_AGENT_SPECS_BY_KIND,
@@ -65,6 +66,17 @@ describe("AgentSpec table", () => {
     for (const kind of AGENT_KINDS) {
       expect(DEVICE_AGENT_SPECS_BY_KIND.get(kind)?.kind).toBe(kind);
     }
+  });
+
+  test("every kind has a stable user-facing label", () => {
+    expect(AGENT_KIND_LABELS).toEqual({
+      "claude-code": "Claude Code",
+      codex: "Codex",
+      opencode: "OpenCode",
+      pi: "Pi",
+      agy: "Antigravity (agy)",
+    });
+    expect(Object.keys(AGENT_KIND_LABELS)).toEqual(AGENT_KINDS);
   });
 });
 

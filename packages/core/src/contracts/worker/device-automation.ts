@@ -33,6 +33,19 @@ export const AGENT_KINDS: readonly AgentKind[] = [
   "agy",
 ];
 
+/**
+ * Display copy for each kind. Keyed by `AgentKind` so a new CLI cannot ship
+ * without a label, and in `AGENT_KINDS` order so a selector can iterate it
+ * directly. These strings are user-facing: editing one edits what a picker shows.
+ */
+export const AGENT_KIND_LABELS: Readonly<Record<AgentKind, string>> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  pi: "Pi",
+  agy: "Antigravity (agy)",
+};
+
 /** How a CLI takes its prompt. `claude`/`agy` behind a flag; others positional. */
 export type PromptDelivery =
   | { kind: "flag"; flag: string }

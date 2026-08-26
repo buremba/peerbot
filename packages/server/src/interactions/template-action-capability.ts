@@ -54,9 +54,7 @@ export function issueTemplateActionCapability(
 	if (
 		normalizedSourceEventIds.length === 0 ||
 		normalizedSourceEventIds.length > MAX_TEMPLATE_ACTION_SOURCE_EVENTS ||
-		!normalizedSourceEventIds.every(
-			(id) => Number.isSafeInteger(id) && Number(id) > 0,
-		)
+		!normalizedSourceEventIds.every((id) => Number.isSafeInteger(id) && id > 0)
 	) {
 		throw new Error(
 			`Template action capabilities require 1-${MAX_TEMPLATE_ACTION_SOURCE_EVENTS} positive integer source event ids.`,

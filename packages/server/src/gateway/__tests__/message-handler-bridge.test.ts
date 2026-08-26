@@ -1170,6 +1170,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       userId: "users/clicker-a",
       channelId: CHANNEL_ID,
       conversationId: THREAD_ID,
+      teamId: "gchat-workspace-1",
       value: "Vote B",
       thread,
       interactionId: "interaction-gchat-card-click-1",
@@ -1181,6 +1182,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(payload.messageId).toBe(
       "interaction-gchat-card-click-1:automation:91"
     );
+    expect(payload.teamId).toBe("gchat-workspace-1");
     expect(payload.platformMetadata).toMatchObject({
       senderId: "users/clicker-a",
       automationId: 91,

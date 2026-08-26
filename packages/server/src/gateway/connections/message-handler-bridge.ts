@@ -673,6 +673,10 @@ export class MessageHandlerBridge {
       channelId: string;
       conversationId: string;
       responseThreadId?: string;
+      payloadTeamId?: string;
+      spanName?: string;
+      logMessage?: string;
+      logExtra?: Record<string, unknown>;
     }
   ): Promise<void> {
     const { connection } = this;
@@ -1339,7 +1343,8 @@ export class MessageHandlerBridge {
         isDirect: source === "interaction" ? undefined : !isGroup,
         thread,
         teamId,
-        payloadTeamId: isGroup ? channelId : platform,
+        payloadTeamId:
+          routing?.payloadTeamId ?? (isGroup ? channelId : platform),
         model: target.model,
         conversationHistory: sharedHistory,
         recordHistory: false,
@@ -1367,8 +1372,10 @@ export class MessageHandlerBridge {
           ...(sessionReset && { sessionReset: true }),
           ...(bangBash && { bangBash }),
         },
-        spanName: "message_received",
-        logMessage: "Message enqueued via Chat SDK bridge",
+        spanName: routing?.spanName ?? "message_received",
+        logMessage:
+          routing?.logMessage ?? "Message enqueued via Chat SDK bridge",
+        logExtra: routing?.logExtra,
       });
       if ("automationId" in target && target.minCooldownSeconds === 0) {
         // The turn is already durably enqueued, so this cursor is pure
@@ -1697,6 +1704,10 @@ export class MessageHandlerBridge {
         channelId,
         conversationId,
         responseThreadId: responseThreadId ?? conversationId,
+        payloadTeamId: teamId || this.connection.platform,
+        spanName: "question_click_received",
+        logMessage: "Question click enqueued via Chat SDK bridge",
+        logExtra: { value },
       }
     );
   }

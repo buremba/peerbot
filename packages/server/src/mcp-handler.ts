@@ -74,6 +74,8 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
+const APPROVAL_CAPABILITY_META_KEY = 'lobu/approval-capability';
+const EVENT_ACTION_CAPABILITY_META_KEY = 'lobu/event-action-capability';
 // ---------------------------------------------------------------------------
 // Session store
 // ---------------------------------------------------------------------------
@@ -103,35 +105,27 @@ export function hostConversationIdFromMeta(value: unknown): string | null {
   return trimmed && trimmed.length <= 512 ? trimmed : null;
 }
 
-function approvalCapabilityFromMeta(value: unknown): string | null {
+function capabilityFromMeta(value: unknown, key: string): string | null {
   if (typeof value !== 'object' || value === null) return null;
-  const token = (value as Record<string, unknown>)['lobu/approval-capability'];
+  const token = (value as Record<string, unknown>)[key];
   if (typeof token !== 'string') return null;
   const trimmed = token.trim();
   return trimmed && trimmed.length <= 4_096 ? trimmed : null;
 }
 
-function eventActionCapabilityFromMeta(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const token = (value as Record<string, unknown>)['lobu/event-action-capability'];
-  if (typeof token !== 'string') return null;
-  const trimmed = token.trim();
-  return trimmed && trimmed.length <= 4_096 ? trimmed : null;
-}
-
-function approvalCapabilityFromCompatArgs(value: unknown): string | null {
+/**
+ * ChatGPT's legacy `window.openai.callTool` shim treats a request-level `_meta`
+ * as tool arguments, so the capability arrives nested inside the arguments bag.
+ * Read it from there; the caller strips it before schema validation, which
+ * rejects unknown argument keys.
+ */
+function capabilityFromCompatArgs(value: unknown, key: string): string | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const compatMeta = (value as Record<string, unknown>)._meta;
-  return approvalCapabilityFromMeta(compatMeta);
+  return capabilityFromMeta(compatMeta, key);
 }
 
-function eventActionCapabilityFromCompatArgs(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  const compatMeta = (value as Record<string, unknown>)._meta;
-  return eventActionCapabilityFromMeta(compatMeta);
-}
-
-function stripApprovalCompatMeta(
+function stripCapabilityCompatMeta(
   value: Record<string, unknown> | undefined
 ): Record<string, unknown> | undefined {
   if (!value) return value;
@@ -454,21 +448,26 @@ function createServerForContext(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const compatApprovalCapability =
-      name === 'resolve_approval' ? approvalCapabilityFromCompatArgs(args) : null;
+      name === 'resolve_approval'
+        ? capabilityFromCompatArgs(args, APPROVAL_CAPABILITY_META_KEY)
+        : null;
     const compatEventActionCapability =
-      name === 'invoke_event_action' ? eventActionCapabilityFromCompatArgs(args) : null;
+      name === 'invoke_event_action'
+        ? capabilityFromCompatArgs(args, EVENT_ACTION_CAPABILITY_META_KEY)
+        : null;
     const callArgs =
       compatApprovalCapability || compatEventActionCapability
-        ? stripApprovalCompatMeta(args)
+        ? stripCapabilityCompatMeta(args)
         : args;
     const callAuthCtx = {
       ...authCtx,
       mcpAppsSupported,
       mcpConversationId: hostConversationIdFromMeta(request.params._meta),
       mcpAppApprovalCapability:
-        approvalCapabilityFromMeta(request.params._meta) ?? compatApprovalCapability,
+        capabilityFromMeta(request.params._meta, APPROVAL_CAPABILITY_META_KEY) ??
+        compatApprovalCapability,
       mcpAppEventActionCapability:
-        eventActionCapabilityFromMeta(request.params._meta) ??
+        capabilityFromMeta(request.params._meta, EVENT_ACTION_CAPABILITY_META_KEY) ??
         compatEventActionCapability,
     };
     const tool = getTool(name);

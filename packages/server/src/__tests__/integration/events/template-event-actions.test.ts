@@ -119,11 +119,13 @@ describe("template event actions", () => {
 			organizationId: workspace.org.id,
 			originId: "poll-opened-1",
 			title: "Ship this release?",
+			content: "Choose the release outcome.",
 			payloadType: "empty",
 			payloadData: { poll_id: "poll-1", quorum: 2 },
 			semanticType: "poll_opened",
 			metadata: {
 				notification_type: "generic",
+				resource_url: "https://app.lobu.ai/template-action-poll",
 				delivery: [
 					{
 						connectionId: "91",
@@ -270,7 +272,7 @@ describe("template event actions", () => {
 		__setChatInstanceManagerForTests({ editMessageContent });
 		await api.knowledge.save({
 			entity_ids: [poll.id],
-			content: "Poll closed",
+			content: "Closed after quorum was reached.",
 			semantic_type: "poll_closed",
 			title: "Ship this release? Closed",
 			payload_type: "empty",
@@ -286,6 +288,12 @@ describe("template event actions", () => {
 			messageId: "spaces/AAA/messages/poll-1",
 			content: expect.objectContaining({ card: expect.anything() }),
 		});
+		const refreshedCard = JSON.stringify(
+			editMessageContent.mock.calls[0]?.[1]?.content,
+		);
+		expect(refreshedCard).toContain("Closed after quorum was reached.");
+		expect(refreshedCard).toContain("Open in Lobu");
+		expect(refreshedCard).toContain("/template-action-poll");
 		const [closed] = await sql<{
 			id: number;
 			metadata: { delivery?: unknown };

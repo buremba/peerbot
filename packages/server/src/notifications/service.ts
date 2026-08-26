@@ -408,11 +408,19 @@ export async function findNotificationByIdempotencyKey(
  */
 interface NotificationDeliveryRecord {
 	connectionId: string;
-	/** Platform-prefixed channel id, or `dm`; absent only on legacy records. */
-	channelKey?: string;
+	/** Platform-prefixed channel id, or `dm` for the owner-routed tier. */
+	channelKey: string;
 	messageId: string;
 	threadId: string;
 }
+
+type PersistedNotificationDeliveryRecord = Omit<
+	NotificationDeliveryRecord,
+	"channelKey"
+> & {
+	/** Old delivery metadata predates channel-key persistence. */
+	channelKey?: string;
+};
 
 /**
  * Stamp where the notification was delivered onto the event that represents it.
@@ -430,6 +438,14 @@ interface NotificationDeliveryRecord {
 async function recordDelivery(
 	eventId: number,
 	deliveries: NotificationDeliveryRecord[],
+	card?: CardElement,
+): Promise<void> {
+	return persistDeliveryMetadata(eventId, deliveries, card);
+}
+
+async function persistDeliveryMetadata(
+	eventId: number,
+	deliveries: PersistedNotificationDeliveryRecord[],
 	card?: CardElement,
 ): Promise<void> {
 	// A record exists to be addressed later, and `editMessage(threadId, messageId)`
@@ -490,7 +506,7 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 
 function deliveryRecords(
 	metadata: Record<string, unknown>,
-): NotificationDeliveryRecord[] {
+): PersistedNotificationDeliveryRecord[] {
 	return (Array.isArray(metadata.delivery) ? metadata.delivery : []).flatMap(
 		(entry) => {
 			const row = jsonRecord(entry);
@@ -652,14 +668,16 @@ async function refreshInteractiveEventCard(
 		title: string | null;
 		entity_ids: unknown;
 		semantic_type: string;
+		payload_text: string | null;
 		payload_data: unknown;
 		metadata: unknown;
 		source_entity_ids: unknown;
 		source_semantic_type: string;
 		source_metadata: unknown;
 	}>`
-    SELECT replacement.title, replacement.entity_ids,
-           replacement.semantic_type, replacement.payload_data,
+	    SELECT replacement.title, replacement.entity_ids,
+	           replacement.semantic_type, replacement.payload_text,
+	           replacement.payload_data,
            replacement.metadata,
            source.entity_ids AS source_entity_ids,
            source.semantic_type AS source_semantic_type,
@@ -673,7 +691,8 @@ async function refreshInteractiveEventCard(
     LIMIT 1
   `;
 	if (!row) return;
-	const deliveries = deliveryRecords(jsonRecord(row.source_metadata));
+	const sourceMetadata = jsonRecord(row.source_metadata);
+	const deliveries = deliveryRecords(sourceMetadata);
 	if (deliveries.length === 0) return;
 	const sourceKind = await resolveEventKindDefinition(
 		row.source_semantic_type,
@@ -701,13 +720,23 @@ async function refreshInteractiveEventCard(
 		jsonTemplate: kind.jsonTemplate,
 		data,
 		title: row.title ?? row.semantic_type,
+		body: row.payload_text ?? undefined,
+		url: toAbsolutePermalink(
+			typeof metadata.resource_url === "string"
+				? metadata.resource_url
+				: typeof sourceMetadata.resource_url === "string"
+					? sourceMetadata.resource_url
+					: undefined,
+		),
 		sourceEventId: replacementEventId,
 		interactions: kind.interactions,
 	});
 	if (!card) return;
 	const content: AdapterPostableMessage = {
 		card,
-		fallbackText: row.title ?? row.semantic_type,
+		fallbackText: row.payload_text
+			? `${row.title ?? row.semantic_type}\n\n${row.payload_text}`
+			: row.title ?? row.semantic_type,
 	};
 	const successfulDeliveries = (
 		await Promise.all(
@@ -728,9 +757,16 @@ async function refreshInteractiveEventCard(
 				}
 			}),
 		)
-	).filter((delivery): delivery is NotificationDeliveryRecord => delivery !== null);
+	).filter(
+		(delivery): delivery is PersistedNotificationDeliveryRecord =>
+			delivery !== null,
+	);
 	if (kind.interactions && Object.keys(kind.interactions).length > 0) {
-		await recordDelivery(replacementEventId, successfulDeliveries, card);
+		await persistDeliveryMetadata(
+			replacementEventId,
+			successfulDeliveries,
+			card,
+		);
 	}
 }
 

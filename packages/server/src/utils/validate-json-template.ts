@@ -71,7 +71,7 @@ function validateComponentHandlers(
 function validateNode(
 	node: unknown,
 	path: string,
-	portableActions?: Set<string>,
+	portableActions: Set<string>,
 ): void {
 	if (!isPlainObject(node)) {
 		fail(path, "each node must be an object");
@@ -143,7 +143,7 @@ function validateNode(
 			}
 			validateComponentHandlers(node, path);
 			const action = portableActionName(node);
-			if (action) portableActions?.add(action);
+			if (action) portableActions.add(action);
 			if (node.children !== undefined) {
 				if (!Array.isArray(node.children)) {
 					fail(`${path}.children`, "children must be an array of nodes");
@@ -200,49 +200,35 @@ function portableActionName(node: Record<string, unknown>): string | null {
 		: null;
 }
 
-/**
- * Validate handler bindings and return the portable button/select actions in
- * the same strict traversal. This avoids parsing an authored template again
- * when an event-kind interaction registry is installed.
- */
-export function validateTemplateHandlers(template: unknown): Set<string> {
-	const portableActions = new Set<string>();
-	if (!isPlainObject(template)) return portableActions;
+/** Validate handler bindings without imposing a storage shape on the template. */
+export function validateTemplateHandlers(template: unknown): void {
+	if (!isPlainObject(template)) return;
 	if ("type" in template) {
-		walkHandlers(template, "", portableActions);
+		walkHandlers(template, "");
 	} else if (isPlainObject(template.root)) {
-		walkHandlers(template.root, ".root", portableActions);
+		walkHandlers(template.root, ".root");
 	}
-	return portableActions;
 }
 
-function walkHandlers(
-	node: unknown,
-	path: string,
-	portableActions: Set<string>,
-): void {
+function walkHandlers(node: unknown, path: string): void {
 	if (!isPlainObject(node)) return;
 	if (node.type === "if") {
-		walkHandlers(node.then, `${path}.then`, portableActions);
-		if (node.else !== undefined) {
-			walkHandlers(node.else, `${path}.else`, portableActions);
-		}
+		walkHandlers(node.then, `${path}.then`);
+		if (node.else !== undefined) walkHandlers(node.else, `${path}.else`);
 		return;
 	}
 	if (node.type === "each") {
 		if (typeof node.render !== "string") {
-			walkHandlers(node.render, `${path}.render`, portableActions);
+			walkHandlers(node.render, `${path}.render`);
 		}
 		return;
 	}
 	if (node.type === "text" || node.type === "data") return;
 
 	validateComponentHandlers(node, path);
-	const action = portableActionName(node);
-	if (action) portableActions.add(action);
 	if (Array.isArray(node.children)) {
 		node.children.forEach((child, i) => {
-			walkHandlers(child, `${path}.children[${i}]`, portableActions);
+			walkHandlers(child, `${path}.children[${i}]`);
 		});
 	}
 }

@@ -67,7 +67,7 @@ export function issueMcpAppCapability<T extends Record<string, unknown>>(
 export function readMcpAppCapability(
 	token: string | null | undefined,
 	maxLength = 4_096,
-): unknown | null {
+): unknown {
 	if (!token || token.length > maxLength) return null;
 	try {
 		return JSON.parse(decrypt(token));

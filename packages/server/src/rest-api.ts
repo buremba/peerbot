@@ -355,17 +355,11 @@ export async function restInvokeEventAction(c: Context<{ Bindings: Env }>) {
 				401,
 			);
 		}
-		if (!hasRequiredMcpScope("write", ctx.scopes)) {
-			throw new ToolUserError(
-				"This interaction requires write access.",
-				403,
-			);
-		}
-		if (resolveMaxAccessLevel(ctx.memberRole, ctx.scopes) === "read") {
-			throw new ToolUserError(
-				"This interaction requires write access.",
-				403,
-			);
+		if (
+			!hasRequiredMcpScope("write", ctx.scopes) ||
+			resolveMaxAccessLevel(ctx.memberRole, ctx.scopes) === "read"
+		) {
+			throw new ToolUserError("This interaction requires write access.", 403);
 		}
 		const rawEventId = c.req.param("eventId");
 		const action = c.req.param("action");

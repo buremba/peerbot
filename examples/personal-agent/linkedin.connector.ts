@@ -470,12 +470,6 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // share the FeedType suffix but must never drive another post's controls.
     rowSelector:
       'div[componentkey^="expanded"][componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
-    identity: {
-      selector:
-        '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]',
-      take: "attr",
-      attr: "id",
-    },
     expected: {
       // Keep this aligned with the post-level comment count fields below. The
       // count is not always interactive: LinkedIn also renders it as a plain

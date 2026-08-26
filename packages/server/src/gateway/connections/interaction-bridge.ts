@@ -68,10 +68,11 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * Exact webhook retries must converge on one Automation delivery id, while two
- * intentional taps on the same card must remain distinct. Platform action
- * payloads carry a per-delivery timestamp/id in `raw`, so hash that verified
- * envelope instead of branching on Slack/GChat/Telegram-specific fields.
+ * Exact webhook retries must converge on one Automation delivery id. Platforms
+ * normally put a per-delivery timestamp/id in `raw`, so intentional taps with
+ * distinct envelopes remain distinct without branching on provider fields. If
+ * a provider repeats an identical envelope, the server has no honest signal
+ * that can distinguish a retry from another tap.
  */
 export function interactionDeliveryId(event: any): string {
 	if (!event?.raw) return `interaction-${randomUUID()}`;
@@ -854,7 +855,7 @@ export function registerInteractionBridge(
           thread,
           responseThreadId:
             typeof thread?.id === "string" ? thread.id : undefined,
-			interactionId: interactionDeliveryId(actionEvent),
+          interactionId: interactionDeliveryId(actionEvent),
         });
       })().catch((error) => {
         logger.error(
@@ -935,7 +936,7 @@ export function registerInteractionBridge(
         value: prompt.message,
         thread: routedThread ?? thread,
         responseThreadId: suggestion.conversationId,
-			interactionId: interactionDeliveryId(actionEvent),
+        interactionId: interactionDeliveryId(actionEvent),
       });
     },
 		async (sourceEventId, action, value, actionEvent) => {
@@ -1461,12 +1462,12 @@ export function registerActionHandlers(
       }
       try {
         await onSuggestionClick(
-				suggestionId,
-				promptIndex,
-				thread,
-				event.user,
-				event,
-			);
+          suggestionId,
+          promptIndex,
+          thread,
+          event.user,
+          event,
+        );
       } catch (error) {
         logger.error(
           { connectionId: connection.id, error: String(error) },

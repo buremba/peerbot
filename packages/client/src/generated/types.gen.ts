@@ -3154,7 +3154,7 @@ export type ManageFeedsData = {
            */
           feed_id: number;
           /**
-           * Connector-native filter/search query. Omit for an unfiltered source read; use `sort` for ordering.
+           * Connector-native search query. Omit for an unfiltered source read.
            */
           query?: string;
           /**

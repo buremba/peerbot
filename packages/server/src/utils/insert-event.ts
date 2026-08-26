@@ -1386,7 +1386,7 @@ export async function insertConnectionlessAuditEvent(
       params.organizationId,
       idempotencyKey,
       {
-        semanticType: formattedEventType,
+        semanticType: params.semanticType,
         originType: params.originType,
         originId: params.originId,
         parentOriginId: params.parentOriginId,

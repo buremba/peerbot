@@ -54,6 +54,13 @@ import { ToolUserError } from "../../utils/errors.js";
 
 const logger = createLogger("chat-interaction-bridge");
 
+interface InteractionDeliveryEvent {
+	actionId?: string;
+	messageId?: string;
+	user?: { userId?: string };
+	raw?: unknown;
+}
+
 function canonicalJson(value: unknown): string {
 	if (value === null || typeof value !== "object") {
 		return JSON.stringify(value) ?? "null";
@@ -76,7 +83,7 @@ function canonicalJson(value: unknown): string {
  * `raw` at all gives nothing to hash, so each delivery gets a fresh id and is
  * treated as a distinct tap rather than silently collapsing unrelated clicks.
  */
-export function interactionDeliveryId(event: any): string {
+export function interactionDeliveryId(event: InteractionDeliveryEvent): string {
 	if (!event?.raw) return `interaction-${randomUUID()}`;
 	const digest = createHash("sha256")
 		.update(

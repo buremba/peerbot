@@ -345,7 +345,7 @@ const makeCardVisitor = (
 				.map((opt) => {
 					const o = (opt ?? {}) as Record<string, unknown>;
 					const value = templateInteractionValue(o.value ?? o.label);
-					return value === null
+					return value === null || value === ""
 						? null
 						: SelectOption({ label: clamp(str(o.label, value), 75), value });
 				})

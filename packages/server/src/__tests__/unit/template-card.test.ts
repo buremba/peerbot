@@ -598,6 +598,7 @@ describe("template-declared controls", () => {
 							onChange: "@choose",
 							options: [
 								{ label: "Invalid", value: { id: 1 } },
+								{ label: "Empty", value: "" },
 								{ label: "Valid", value: 2 },
 							],
 						},

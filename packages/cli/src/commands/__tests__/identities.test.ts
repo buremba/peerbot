@@ -191,4 +191,13 @@ describe("identities rekey", () => {
     ).rejects.toThrow(/empty tenant key/i);
     expect(calls).toEqual([]);
   });
+
+  test("rejects NUL in tenant keys before making a request", async () => {
+    await expect(
+      identitiesRekeyCommand("crm_customer", {
+        mapping: await mappingFile({ "101": "tenant\u0000a" }),
+      })
+    ).rejects.toThrow(/must not contain NUL/i);
+    expect(calls).toEqual([]);
+  });
 });

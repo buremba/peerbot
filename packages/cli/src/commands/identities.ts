@@ -56,6 +56,11 @@ async function readIdentityMapping(path: string): Promise<IdentityMapping> {
         `--mapping value for identity ${id} must not be an empty tenant key.`
       );
     }
+    if (typeof value === "string" && value.includes("\u0000")) {
+      throw new ValidationError(
+        `--mapping value for identity ${id} must not contain NUL.`
+      );
+    }
     mapping[id] = value;
   }
   return mapping;

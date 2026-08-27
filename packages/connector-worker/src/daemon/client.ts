@@ -56,6 +56,10 @@ export interface ExecutorClient {
     runId: number,
     req: CompleteAutomationRequest
   ): Promise<CompleteAutomationResponse>;
+  completeDeviceChat(
+    runId: number,
+    req: CompleteDeviceChatRequest
+  ): Promise<CompleteDeviceChatResponse>;
   /** MCP endpoint + bearer the automation arm wires into the spawned CLI. */
   readonly mcpWiring?: { url: string; bearer?: string };
   /** Terminal ACP transcript upload authenticated by the per-run agent token. */
@@ -82,6 +86,8 @@ export type {
   CompleteAuthRequest,
   CompleteAutomationRequest,
   CompleteAutomationResponse,
+  CompleteDeviceChatRequest,
+  CompleteDeviceChatResponse,
   CompleteEmbeddingsRequest,
   CompleteRequest,
   ContentItem,
@@ -101,6 +107,8 @@ import type {
   CompleteAuthRequest,
   CompleteAutomationRequest,
   CompleteAutomationResponse,
+  CompleteDeviceChatRequest,
+  CompleteDeviceChatResponse,
   CompleteEmbeddingsRequest,
   CompleteRequest,
   DispatchChromeActionRequest,
@@ -531,6 +539,16 @@ export class WorkerClient implements ExecutorClient {
       );
     }
     return interpretCompleteAutomationResponse(body);
+  }
+
+  async completeDeviceChat(
+    runId: number,
+    req: CompleteDeviceChatRequest
+  ): Promise<CompleteDeviceChatResponse> {
+    return this.requestJson<CompleteDeviceChatResponse>(
+      `/api/workers/me/runs/${runId}/complete-chat`,
+      req
+    );
   }
 
   get mcpWiring(): { url: string; bearer?: string } | undefined {

@@ -33,6 +33,15 @@ export const AGENT_KINDS: readonly AgentKind[] = [
   "agy",
 ];
 
+/** User-facing runtime labels shared by device Automation and chat selectors. */
+export const AGENT_KIND_LABELS: Readonly<Record<AgentKind, string>> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  pi: "Pi",
+  agy: "Antigravity (agy)",
+};
+
 /** How a CLI takes its prompt. `claude`/`agy` behind a flag; others positional. */
 export type PromptDelivery =
   | { kind: "flag"; flag: string }

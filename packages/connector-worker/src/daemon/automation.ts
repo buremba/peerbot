@@ -19,9 +19,9 @@
  * spawned agent CLI runs in the user's environment (PATH, HOME) minus the
  * `WORKER_API_TOKEN` env var, so the child cannot act as the worker/poll loop.
  * Its Lobu credential is the poll envelope's per-run `agent_session` when the
- * server minted one (see `resolveAutomationRunAccess`): the run authenticates
- * as the Automation's assigned agent, not as the daemon or the user's ambient
- * CLI session. Capable standalone Mac daemons fail closed when that session is
+ * server minted one (see `resolveDeviceAgentRunAccess`): the run authenticates
+ * as the run's assigned agent, not as the daemon or the user's ambient CLI
+ * session. Capable standalone Mac daemons fail closed when that session is
  * absent; legacy workers retain the pre-session fallback.
  */
 
@@ -106,6 +106,48 @@ export interface AutomationExecutorConfig {
   acpAdapters?: AutomationAcpAdapters;
 }
 
+/** Shared liveness/cancellation control for every device-local agent run. */
+export function monitorDeviceAgentRun(
+  client: ExecutorClient,
+  runId: number,
+  cfg: AutomationExecutorConfig,
+  label: string,
+) {
+  const abortController = new AbortController();
+  let shutdownRequested = false;
+  const onShutdown = () => {
+    shutdownRequested = true;
+    abortController.abort();
+  };
+  cfg.shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
+  if (cfg.shutdownSignal?.aborted) onShutdown();
+
+  const heartbeat = setInterval(() => {
+    client.heartbeat(runId).catch((error) => {
+      if (error instanceof WorkerHttpError && error.status === 409) {
+        if (!abortController.signal.aborted) {
+          log.info(
+            `[executor] ${label} run ${runId} is no longer active; stopping the local CLI`,
+          );
+          abortController.abort();
+          clearInterval(heartbeat);
+        }
+        return;
+      }
+      log.debug(`[executor] ${label} heartbeat failed:`, error);
+    });
+  }, cfg.heartbeatIntervalMs ?? 30_000);
+
+  return {
+    abortController,
+    shutdownRequested: () => shutdownRequested,
+    stop: () => {
+      clearInterval(heartbeat);
+      cfg.shutdownSignal?.removeEventListener('abort', onShutdown);
+    },
+  };
+}
+
 /** Local-CLI run result, mirrored from the Mac app's `ExecutorResult`. */
 export interface ExecutorResult {
   output: string;
@@ -131,7 +173,8 @@ const OPENCODE_DIAGNOSTIC_CAP = 32 * 1024;
  * was killed and its output discarded.
  */
 const OPENCODE_DIAGNOSTIC_SETTLE_MS = 1_500;
-const DEFAULT_TIMEOUT_MS = 600_000;
+/** Wall-clock cap for a device-local agent CLI without a per-run override. */
+export const DEFAULT_DEVICE_AGENT_TIMEOUT_MS = 600_000;
 /** Cap on the CLI-output tail folded into `runs.error_message`. */
 const DETAIL_TAIL_CHARS = 500;
 const LOCAL_MAX_ROUNDS = 8;
@@ -332,8 +375,8 @@ function buildMcp(
   return { mcpArgs, mcpEnv, cleanup };
 }
 
-/** The credential set one automation run's spawned CLI executes with. */
-export interface AutomationRunAccess {
+/** The run-scoped credential set used by any spawned local agent CLI. */
+export interface DeviceAgentRunAccess {
   /** Lobu MCP wiring for the CLI's mcp config (buildMcp). */
   wiring: { url: string; bearer?: string } | undefined;
   /** Extra env for the child process (LOBU_API_TOKEN / LOBU_MEMORY_URL). */
@@ -366,20 +409,20 @@ function claudeSessionMeta(
 }
 
 /**
- * Resolve what credential the spawned CLI runs with. When the poll envelope
- * carries a per-run `agent_session`, the CLI authenticates as the automation's
- * assigned agent for exactly this run: the session token goes into the MCP
- * wiring AND into LOBU_API_TOKEN/LOBU_MEMORY_URL, which `lobu memory` prefers
+ * Resolve what credential the spawned CLI runs with — the boundary shared by
+ * Automation and device-chat CLIs. When the poll envelope carries a per-run
+ * `agent_session`, the CLI authenticates as the run's assigned agent for
+ * exactly this run: the session token goes into the MCP wiring AND into
+ * LOBU_API_TOKEN/LOBU_MEMORY_URL, which `lobu memory` prefers
  * over the device's ambient CLI session — so an unattended run never acts as
  * the human user or the daemon. Without a session (older server, or a run with
  * no usable assigned agent) fall back to the daemon's own wiring, the
  * pre-session dispatch path.
  */
-export function resolveAutomationRunAccess(
-  payload: AutomationPollPayload,
+export function resolveDeviceAgentRunAccess(
+  session: AutomationPollPayload['context']['agent_session'],
   daemonWiring: { url: string; bearer?: string } | undefined
-): AutomationRunAccess {
-  const session = payload.context.agent_session;
+): DeviceAgentRunAccess {
   if (!session) return { wiring: daemonWiring, env: {} };
   return {
     wiring: { url: session.mcp_url, bearer: session.token },
@@ -407,7 +450,7 @@ export async function runCli(
   spec: AgentSpec,
   prompt: string,
   config: AutomationPollPayload['automation']['execution_config'],
-  access: AutomationRunAccess,
+  access: DeviceAgentRunAccess,
   timeoutMs: number,
   binaryPath?: string,
   abortSignal?: AbortSignal,
@@ -704,6 +747,11 @@ export async function executeAutomationRun(
     await completeAutomationWithError(client, runId, message, 'error_message');
     return { itemsCollected: 0, error: message };
   }
+  if (!('automation' in payload)) {
+    const message = 'automation run received a non-automation payload envelope';
+    await completeAutomationWithError(client, runId, message, 'error_message');
+    return { itemsCollected: 0, error: message };
+  }
 
   if (cfg.requireRunScopedSession && !payload.context.agent_session) {
     const message = 'macOS Automation run is missing its required run-scoped agent session';
@@ -730,7 +778,7 @@ export async function executeAutomationRun(
   const timeoutMs =
     configuredTimeout != null && configuredTimeout > 0
       ? configuredTimeout * 1000
-      : (cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      : (cfg.timeoutMs ?? DEFAULT_DEVICE_AGENT_TIMEOUT_MS);
 
   // Daemon startup detects the inherited session once and attaches it
   // internally; per-run detection is not repeated here.
@@ -746,38 +794,15 @@ export async function executeAutomationRun(
     ? 'undecided'
     : 'subprocess';
 
-  // Heartbeat the run while the CLI executes so the server's stale-run sweeper
-  // can distinguish a live turn from an abandoned one.
-  const runAbort = new AbortController();
-  let shutdownRequested = false;
-  const onShutdown = () => {
-    shutdownRequested = true;
-    runAbort.abort();
-  };
-  cfg.shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
-  if (cfg.shutdownSignal?.aborted) onShutdown();
-  const heartbeat = setInterval(() => {
-    client.heartbeat(runId).catch((err) => {
-      if (err instanceof WorkerHttpError && err.status === 409) {
-        if (!runAbort.signal.aborted) {
-          log.info(
-            `[executor] Automation run ${runId} is no longer active; waiting for the local CLI to exit`
-          );
-          runAbort.abort();
-          // The outcome is already settled server-side; stop beating at a run
-          // that will 409 for the rest of the terminal grace.
-          clearInterval(heartbeat);
-        }
-        return;
-      }
-      log.debug('[executor] Automation heartbeat failed:', err);
-    });
-  }, cfg.heartbeatIntervalMs ?? 30_000);
+  const monitor = monitorDeviceAgentRun(client, runId, cfg, 'Automation');
+  const runAbort = monitor.abortController;
 
   const io: AutomationRunIo = {
     run: async (finalizeNudge) => {
       if (runAbort.signal.aborted) {
-        if (!shutdownRequested) throw new AutomationRunNoLongerActiveError();
+        if (!monitor.shutdownRequested()) {
+          throw new AutomationRunNoLongerActiveError();
+        }
         return {
           output: '',
           error: null,
@@ -890,7 +915,10 @@ export async function executeAutomationRun(
         spec,
         prompt,
         payload.automation.execution_config,
-        resolveAutomationRunAccess(payload, client.mcpWiring),
+        resolveDeviceAgentRunAccess(
+          payload.context.agent_session,
+          client.mcpWiring
+        ),
         timeoutMs,
         cfg.binaryOverrides?.[spec.kind],
         runAbort.signal,
@@ -942,8 +970,7 @@ export async function executeAutomationRun(
   try {
     return await dispatchAutomationResumeLoop(io);
   } finally {
-    clearInterval(heartbeat);
-    cfg.shutdownSignal?.removeEventListener('abort', onShutdown);
+    monitor.stop();
   }
 }
 

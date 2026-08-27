@@ -28,6 +28,15 @@ import type {
  */
 export type JobType = "message" | "exec";
 
+/** Where a chat turn executes. Absence means Lobu's managed agent runtime. */
+export interface DeviceExecutionTarget {
+  kind: "device";
+  /** Surrogate `device_workers.id`, never the caller-supplied worker handle. */
+  deviceWorkerId: string;
+  /** Local CLI kind the device advertised (Claude Code, Codex, OpenCode, …). */
+  agentKind: string;
+}
+
 /**
  * A `!`-bash control action carried on `platformMetadata.bangBash`. Set by the
  * gateway at ingress when the user's message is `!cmd` / `!!cmd`; read by the
@@ -92,6 +101,9 @@ export interface MessagePayload {
 
   // ── Message content (used by worker) ───────────────────────────────
   messageText: string;
+
+  /** Optional device placement for this turn; conversation ownership stays `agentId`. */
+  executionTarget?: DeviceExecutionTarget;
 
   /**
    * Ephemeral context prepended to the user prompt for this turn only.

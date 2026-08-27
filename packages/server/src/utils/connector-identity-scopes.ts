@@ -207,6 +207,21 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         hashtext(${`${params.organizationId}:${params.metadata.key}`})
       )
     `;
+    // The registry is introduced empty on upgrade. Recover the connector's
+    // actual pre-registry declaration from its active definition so the first
+    // post-upgrade apply cannot present a changed shape as a brand-new one.
+    const activeDefinitionRows = await tx<{ feeds_schema: Record<string, unknown> | null }>`
+      SELECT feeds_schema
+      FROM connector_definitions
+      WHERE organization_id = ${params.organizationId}
+        AND key = ${params.metadata.key}
+        AND status = 'active'
+      LIMIT 1
+    `;
+    const activeDeclarations = connectorIdentityScopeDeclarations({
+      key: params.metadata.key,
+      feeds: asRecord(activeDefinitionRows[0]?.feeds_schema),
+    });
     for (const declaration of [...declarations.values()].sort((left, right) =>
       left.namespace.localeCompare(right.namespace)
     )) {
@@ -233,6 +248,35 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
       `;
       const current = rows[0];
       if (!current) {
+        const activeDeclaration = activeDeclarations.get(declaration.namespace);
+        if (activeDeclaration && !sameShape(activeDeclaration, declaration)) {
+          const counts = await tx<{ count: number | string }>`
+            SELECT count(*)::bigint AS count
+            FROM entity_identities
+            WHERE organization_id = ${params.organizationId}
+              AND namespace = ${declaration.namespace}
+              AND deleted_at IS NULL
+          `;
+          const liveCount = Number(counts[0]?.count ?? 0);
+          if (liveCount > 0) {
+            await tx`
+              INSERT INTO connector_identity_scope_registry (
+                organization_id, connector_key, namespace, scope, scope_key_path,
+                pending_scope, pending_scope_key_path
+              ) VALUES (
+                ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
+                ${activeDeclaration.scope}, ${activeDeclaration.scopeKeyPath},
+                ${declaration.scope}, ${declaration.scopeKeyPath}
+              )
+            `;
+            blockedMessage =
+              `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
+              `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
+              `Old shape: ${renderShape(activeDeclaration)}. New shape: ${renderShape(declaration)}. ` +
+              `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
+            break;
+          }
+        }
         await tx`
           INSERT INTO connector_identity_scope_registry (
             organization_id, connector_key, namespace, scope, scope_key_path

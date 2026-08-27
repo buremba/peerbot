@@ -19,10 +19,11 @@ const namespace = 'erp_customer';
 
 function metadata(
   version: string,
-  shape: { scope?: 'organization' | 'tenant'; scopeKeyPath?: string }
+  shape: { scope?: 'organization' | 'tenant'; scopeKeyPath?: string },
+  key = connectorKey
 ): ConnectorMetadata {
   return {
-    key: connectorKey,
+    key,
     name: 'Scope lifecycle ERP',
     version,
     authSchema: null,
@@ -250,6 +251,83 @@ describe('connector identity scope lifecycle', () => {
         AND deleted_at IS NULL
     `;
     expect(activatedRows).toEqual([{ scope_key: 'tenant-c' }]);
+  });
+
+  it('recovers an empty upgrade registry from the active definition before changing shape', async () => {
+    const { org } = await seedRows();
+    const sql = getTestDb();
+    await sql`
+      DELETE FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id}
+        AND connector_key = ${connectorKey}
+        AND namespace = ${namespace}
+    `;
+
+    await expect(
+      install(
+        org.id,
+        metadata('2.0.0', { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' })
+      )
+    ).rejects.toThrow(/erp_customer.*2 live identity rows.*Old shape.*organization.*New shape.*tenant/i);
+
+    const rows = await sql<
+      { scope: string; scope_key_path: string | null; pending_scope: string | null }[]
+    >`
+      SELECT scope, scope_key_path, pending_scope
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id}
+        AND connector_key = ${connectorKey}
+        AND namespace = ${namespace}
+    `;
+    expect(rows).toEqual([
+      { scope: 'organization', scope_key_path: null, pending_scope: 'tenant' },
+    ]);
+  });
+
+  it('requires every connector sharing a namespace to converge before re-key', async () => {
+    const { org, ids } = await seedRows();
+    const secondConnectorKey = 'scope-lifecycle-secondary';
+    await install(org.id, metadata('1.0.0', {}, secondConnectorKey));
+    const target = { scope: 'tenant' as const, scopeKeyPath: 'metadata.tenant_id' };
+
+    await expect(install(org.id, metadata('2.0.0', target))).rejects.toThrow(
+      /2 live identity rows/i
+    );
+    const mapping = { [ids[0]!]: 'tenant-a', [ids[1]!]: 'tenant-b' };
+    await expect(
+      rekeyEntityIdentities({ organizationId: org.id, namespace, mapping })
+    ).rejects.toThrow(/scope-lifecycle-secondary.*every connector sharing the namespace/i);
+
+    await expect(
+      install(org.id, metadata('2.0.0', target, secondConnectorKey))
+    ).rejects.toThrow(/2 live identity rows/i);
+    const dryRun = await rekeyEntityIdentities({
+      organizationId: org.id,
+      namespace,
+      mapping,
+    });
+    expect(dryRun.connectorKeys).toEqual([connectorKey, secondConnectorKey]);
+    expect(dryRun.targetScope).toBe('tenant');
+
+    const applied = await rekeyEntityIdentities({
+      organizationId: org.id,
+      namespace,
+      mapping,
+      apply: true,
+    });
+    expect(applied.applied).toBe(true);
+    const registryRows = await getTestDb()<
+      { connector_key: string; scope: string; pending_scope: string | null }[]
+    >`
+      SELECT connector_key, scope, pending_scope
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id} AND namespace = ${namespace}
+      ORDER BY connector_key
+    `;
+    expect(registryRows).toEqual([
+      { connector_key: connectorKey, scope: 'tenant', pending_scope: null },
+      { connector_key: secondConnectorKey, scope: 'tenant', pending_scope: null },
+    ]);
   });
 
   it('rejects ids outside the org+namespace and proposed unique-key collisions', async () => {

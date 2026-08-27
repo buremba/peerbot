@@ -64,30 +64,37 @@ async function loadTarget(
   const lock = forUpdate ? db`FOR UPDATE` : db``;
   const rows = await db<{
     connector_key: string;
-    pending_scope: 'organization' | 'tenant';
+    scope: 'organization' | 'tenant';
+    scope_key_path: string | null;
+    pending_scope: 'organization' | 'tenant' | null;
     pending_scope_key_path: string | null;
   }>`
-    SELECT connector_key, pending_scope, pending_scope_key_path
+    SELECT connector_key, scope, scope_key_path, pending_scope, pending_scope_key_path
     FROM connector_identity_scope_registry
     WHERE organization_id = ${organizationId}
       AND namespace = ${namespace}
-      AND pending_scope IS NOT NULL
     ORDER BY connector_key
     ${lock}
   `;
-  if (rows.length === 0) {
+  const pending = rows.filter(
+    (row): row is typeof row & { pending_scope: 'organization' | 'tenant' } =>
+      row.pending_scope !== null
+  );
+  if (pending.length === 0) {
     throw new IdentityRekeyError(
       `Identity namespace '${namespace}' has no pending scope change. Run lobu apply with the new connector declaration first.`
     );
   }
-  const first = rows[0]!;
-  for (const row of rows.slice(1)) {
-    if (
-      row.pending_scope !== first.pending_scope ||
-      row.pending_scope_key_path !== first.pending_scope_key_path
-    ) {
+  const first = pending[0]!;
+  for (const row of rows) {
+    const targetScope = row.pending_scope ?? row.scope;
+    const targetScopeKeyPath =
+      row.pending_scope === null ? row.scope_key_path : row.pending_scope_key_path;
+    if (targetScope !== first.pending_scope || targetScopeKeyPath !== first.pending_scope_key_path) {
       throw new IdentityRekeyError(
-        `Identity namespace '${namespace}' has conflicting pending declaration shapes across connectors.`
+        `Identity namespace '${namespace}' cannot be re-keyed while connector ` +
+          `'${row.connector_key}' remains registered with a different declaration shape. ` +
+          'Every connector sharing the namespace must already match or have the same pending target.'
       );
     }
   }

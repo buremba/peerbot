@@ -141,6 +141,44 @@ describe("automation health surfacing (#2033)", () => {
     expect(row?.health).toBe("healthy");
   });
 
+  it("3.1 (integration): list and detail surface a durable schedule auto-pause", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    await sql`
+      UPDATE automations
+      SET consecutive_scheduled_failures = 5,
+          schedule_auto_paused_at = date_trunc('milliseconds', current_timestamp)
+      WHERE id = ${automationId}
+    `;
+
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (automation) =>
+        String((automation as { automation_id?: unknown }).automation_id) ===
+        String(automationId),
+    ) as Record<string, unknown> | undefined;
+    expect(row?.next_run_at).toBeNull();
+    expect(Number(row?.consecutive_scheduled_failures)).toBe(5);
+    expect(row?.schedule_auto_paused_at).not.toBeNull();
+    expect(row?.health).toBe("degraded");
+    expect((row?.health_reasons as string[] | undefined)?.[0]).toBe(
+      "schedule auto-paused after 5 consecutive execution failures",
+    );
+
+    const detail = await getAutomation(
+      { automation_id: String(automationId) },
+      {} as Env,
+      ctx,
+    );
+    expect(detail.automation?.next_run_at).toBeNull();
+    expect(detail.automation?.consecutive_scheduled_failures).toBe(5);
+    expect(detail.automation?.schedule_auto_paused_at).not.toBeNull();
+    expect(detail.automation?.health_reasons?.[0]).toBe(
+      "schedule auto-paused after 5 consecutive execution failures",
+    );
+  });
+
   it("3.1 (integration): a failed latest run degrades an on-schedule automation", async () => {
     const { automationId, ctx } = await createScheduledAutomation();
     const sql = getTestDb();

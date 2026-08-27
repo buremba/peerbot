@@ -8,6 +8,7 @@ import {
 	advanceScheduleAfterTerminalFailure,
 	providerQuotaResetNotBefore,
 } from "./schedule-cursor";
+import { recordScheduledExecutionFailure } from "./scheduled-failure-policy";
 import {
 	AUTOMATION_EVAL_RUN_TYPE,
 	AUTOMATION_RUN_TYPE,
@@ -177,6 +178,11 @@ async function markAutomationRunFailed(
 		// failing eval (a quota 429, a scoring rerun) would advance — or park for
 		// a day — the live Automation's cron cursor it is merely replaying.
 		if (failed.run_type === AUTOMATION_RUN_TYPE) {
+			await recordScheduledExecutionFailure(
+				tx,
+				failed.automation_id == null ? null : Number(failed.automation_id),
+				failed.dispatch_source,
+			);
 			await advanceScheduleAfterTerminalFailure(
 				tx,
 				failed.automation_id == null ? null : Number(failed.automation_id),

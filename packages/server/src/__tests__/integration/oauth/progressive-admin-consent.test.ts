@@ -550,6 +550,55 @@ describe('Progressive mcp:admin consent', () => {
     );
   });
 
+  it('rejects an empty workspace selection without issuing an authorization code', async () => {
+    const app = buildApp();
+    const sql = getTestDb();
+    const organization = await createTestOrganization({ name: 'Empty Grant Org' });
+    const user = await createTestUser({ name: 'Empty Grant User' });
+    await addUserToOrganization(user.id, organization.id, 'owner');
+    const session = await createTestSession(user.id);
+    const redirectUri = `${ORIGIN}/empty-grant-callback`;
+    const registration = await call(app, 'POST', '/oauth/register', {
+      body: {
+        client_name: 'Empty Grant Client',
+        redirect_uris: [redirectUri],
+        grant_types: ['authorization_code', 'refresh_token'],
+        token_endpoint_auth_method: 'none',
+      },
+    });
+    expect(registration.status).toBe(201);
+    const client = (await registration.json()) as { client_id: string };
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+
+    const response = await call(app, 'POST', '/oauth/authorize/consent', {
+      body: {
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        scope: 'mcp:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        resource: `${ORIGIN}/mcp`,
+        organization_id: organization.id,
+        organization_ids: [],
+        workspace_access: 'selected',
+        approved: true,
+      },
+      headers: { Cookie: session.cookieHeader },
+      env: { LOBU_OAUTH_MULTI_WORKSPACE_GRANTS: '1' },
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'invalid_request',
+      error_description: 'The workspace selection is empty or too large',
+    });
+
+    const authorizationCodes = await sql`
+      SELECT 1 FROM oauth_authorization_codes WHERE client_id = ${client.client_id}
+    `;
+    expect(authorizationCodes).toHaveLength(0);
+  });
+
   it('persists an explicit bare-MCP workspace snapshot through userinfo and refresh', async () => {
     const app = buildApp();
     const sql = getTestDb();

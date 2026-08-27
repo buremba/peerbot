@@ -6,12 +6,13 @@
  * connection-token endpoint's scope gate, the device-code grant behind
  * `lobu login` must carry `connections:token`.
  *
- * Crucially, the scope is granted ONLY when the first-party `lobu login`
- * device-code grant EXPLICITLY REQUESTS it (the CLI now includes
+ * Crucially, the scope is granted ONLY when the `lobu login` device-code grant
+ * EXPLICITLY REQUESTS it (the CLI now includes
  * `connections:token` in its requested scope). The server no longer
  * auto-appends it on the device path — so a device client that does NOT request
- * it (or the generic authorization-code consent path arbitrary third-party MCP
- * clients use) never gets it, and tokens are never silently widened.
+ * it (or any authorization-code client) never gets it, and tokens are never
+ * silently widened. Open DCR does not authenticate a first-party client; this
+ * test proves the device-flow provenance and explicit-scope boundary.
  *
  * This drives the real grants end-to-end against the mounted `oauthRoutes`:
  *   - device-code:  register → device_authorization (requesting
@@ -182,12 +183,11 @@ describe('Stage 1 — login token carries connections:token', () => {
     expect((rows[0].scope ?? '').split(' ')).toContain('mcp:admin');
   });
 
-  it('an authorization-code grant covers Slack-style over-request of first-party scopes', async () => {
+  it('an authorization-code grant strips Slack-style over-request of device scopes', async () => {
     // Slack MCP caches scopes_supported and keeps requesting every entry it
     // once saw (including device_worker:run / connections:token). The token
-    // `scope` field must cover the full request or Slack fails with
-    // "must accept all the required permissions". Discovery no longer
-    // advertises those scopes for new clients; this path is compatibility.
+    // grant must exclude those high-privilege device-only scopes even when the
+    // client has stale discovery metadata.
     const app = buildApp();
     const sql = getTestDb();
 
@@ -247,10 +247,11 @@ describe('Stage 1 — login token carries connections:token', () => {
       scope?: string;
       resource?: string;
     };
-    // Token response must cover every requested scope (Slack checks this).
-    for (const s of fullScope.split(' ')) {
+    for (const s of 'mcp:read mcp:write mcp:admin profile:read'.split(' ')) {
       expect((tokens.scope ?? '').split(' ')).toContain(s);
     }
+    expect((tokens.scope ?? '').split(' ')).not.toContain('device_worker:run');
+    expect((tokens.scope ?? '').split(' ')).not.toContain('connections:token');
     expect(tokens.resource).toBe(`${ORIGIN}/mcp/${org.slug}`);
 
     const rows = (await sql`
@@ -262,8 +263,8 @@ describe('Stage 1 — login token carries connections:token', () => {
     expect(rows.length).toBe(1);
     const granted = (rows[0].scope ?? '').split(' ').filter(Boolean);
     expect(granted).toContain('mcp:read');
-    expect(granted).toContain('device_worker:run');
-    expect(granted).toContain('connections:token');
+    expect(granted).not.toContain('device_worker:run');
+    expect(granted).not.toContain('connections:token');
     expect(rows[0].resource).toBe(`${ORIGIN}/mcp/${org.slug}`);
   });
 

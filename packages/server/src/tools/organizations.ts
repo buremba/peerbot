@@ -17,6 +17,7 @@ import type { Env } from '../index';
 import { getWorkspaceProvider } from '../workspace';
 import type { OrgInfo } from '../workspace/types';
 import { withValidatedArgs } from './validate-args';
+import { listLiveGrantedMemberWorkspaces } from '../auth/oauth/workspace-grants';
 
 export const ListOrganizationsSchema = Type.Object({
   search: Type.Optional(
@@ -33,16 +34,43 @@ export const listOrganizations = withValidatedArgs(
 async function listOrganizationsImpl(
   args: Static<typeof ListOrganizationsSchema>,
   _env: Env,
-  ctx: { userId: string; currentOrganizationId: string | null }
+  ctx: {
+    userId: string;
+    currentOrganizationId: string | null;
+    grantedOrganizationIds: string[] | null;
+  }
 ): Promise<unknown> {
   const provider = getWorkspaceProvider();
   const orgs = await provider.listOrganizations(args.search, ctx.userId);
-  return orgs.map((o: OrgInfo) => ({
-    slug: o.slug,
-    name: o.name,
-    is_member: o.is_member,
-    is_current: ctx.currentOrganizationId !== null && o.id === ctx.currentOrganizationId,
-    visibility: o.visibility,
-    ...(o.managed_auth ? { managed_auth: o.managed_auth } : {}),
-  }));
+  const allowedIds =
+    ctx.grantedOrganizationIds !== null
+      ? new Set(
+          (
+            await listLiveGrantedMemberWorkspaces({
+              userId: ctx.userId,
+              grantedOrganizationIds: ctx.grantedOrganizationIds,
+            })
+          ).map((workspace) => workspace.id)
+        )
+      : null;
+  // Only PRIVATE memberships outside the grant snapshot are confidential.
+  // Public workspaces are visible to any caller (including anonymous), so
+  // hiding one from its own member would only break managed-auth onboarding.
+  return orgs
+    .filter(
+      (o: OrgInfo) =>
+        allowedIds === null ||
+        !o.is_member ||
+        o.visibility === 'public' ||
+        allowedIds.has(o.id)
+    )
+    .map((o: OrgInfo) => ({
+      slug: o.slug,
+      name: o.name,
+      is_member: o.is_member,
+      is_personal: o.is_personal,
+      is_current: ctx.currentOrganizationId !== null && o.id === ctx.currentOrganizationId,
+      visibility: o.visibility,
+      ...(o.managed_auth ? { managed_auth: o.managed_auth } : {}),
+    }));
 }

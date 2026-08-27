@@ -202,6 +202,8 @@ function buildToolContext(requestUrl: string, organizationId: string): ToolConte
     scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
     scopedToOrg: true,
     allowCrossOrg: false,
+    grantedOrganizationIds: null,
+    directSearchFederation: false,
     requestUrl,
     baseUrl: getPublicOrigin(requestUrl),
   };

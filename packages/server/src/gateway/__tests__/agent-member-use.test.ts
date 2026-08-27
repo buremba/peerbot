@@ -366,6 +366,59 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
         .executionTarget,
     ).toEqual(target);
 
+    // The canonical conversation without a thread suffix has the same durable
+    // placement contract. Session expiry must not make it fall back to managed
+    // execution merely because the request omits `thread`.
+    const noThreadConversationId = buildApiConversationId({
+      agentId: AGENT_ID,
+      userId: MEMBER_ID,
+      organizationId: AGENT_ORG,
+    });
+    const [noThreadRun] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, queue_name, status, run_at, action_input
+      ) VALUES (
+        ${AGENT_ORG}, 'chat_message', 'messages', 'completed', now(), ${sql.json({})}
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO agent_transcript_snapshot (
+        organization_id, agent_id, conversation_id, run_id,
+        snapshot_jsonl, byte_size, terminal_status
+      ) VALUES (
+        ${AGENT_ORG}, ${AGENT_ID}, ${noThreadConversationId}, ${noThreadRun.id},
+        ${snapshot}, ${Buffer.byteLength(snapshot)}, 'completed'
+      )
+    `;
+    sessions.store.clear();
+    const recoveredWithoutThread = await postCreate(
+      app,
+      {},
+      { "x-lobu-org": AGENT_ORG }
+    );
+    expect(recoveredWithoutThread.status).toBe(201);
+    expect(
+      (
+        (await recoveredWithoutThread.json()) as {
+          executionTarget: typeof target;
+        }
+      ).executionTarget
+    ).toEqual(target);
+
+    // Restore the threaded session cleared by the independent no-thread case
+    // before asserting that an existing conversation cannot change placement.
+    sessions.store.clear();
+    expect(
+      (
+        await postCreate(
+          app,
+          { thread: "device-thread" },
+          { "x-lobu-org": AGENT_ORG },
+        )
+      ).status,
+    ).toBe(201);
+
     const changedTarget = await postCreate(
       app,
       {
@@ -683,7 +736,24 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
   });
 
   test("an org admin keeps oversight of a member's session", async () => {
+    const sql = getDb();
     const shared = makeSessionManager();
+    const [memberDevice] = await sql<{ id: string }>`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id, agent_kinds
+      ) VALUES (
+        ${MEMBER_ID}, 'member-admin-oversight-device', 'macos',
+        ${sql.json(["automations.execute"])}, 'Member oversight Mac',
+        ${AGENT_ORG}, '{pi}'::text[]
+      )
+      RETURNING id
+    `;
+    if (!memberDevice) throw new Error("Failed to seed member device");
+    const target = {
+      kind: "device" as const,
+      deviceWorkerId: memberDevice.id,
+      agentKind: "pi",
+    };
 
     setAuthProvider(() => sessionFor(MEMBER_ID));
     const member = makeApp(
@@ -694,7 +764,7 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
     );
     const created = await postCreate(
       member.app,
-      { thread: "member-thread" },
+      { thread: "member-thread", executionTarget: target },
       { "x-lobu-org": AGENT_ORG }
     );
     expect(created.status).toBe(201);
@@ -709,5 +779,26 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
     );
 
     expect((await getStatus(admin.app, memberKey)).status).toBe(200);
+    const resumed = await postCreate(
+      admin.app,
+      { userId: MEMBER_ID, thread: "member-thread" },
+      { "x-lobu-org": AGENT_ORG }
+    );
+    expect(resumed.status).toBe(201);
+    expect(
+      ((await resumed.json()) as { executionTarget: typeof target })
+        .executionTarget
+    ).toEqual(target);
+
+    const newMemberDeviceSession = await postCreate(
+      admin.app,
+      {
+        userId: MEMBER_ID,
+        thread: "admin-created-member-device-thread",
+        executionTarget: target,
+      },
+      { "x-lobu-org": AGENT_ORG }
+    );
+    expect(newMemberDeviceSession.status).toBe(400);
   });
 });

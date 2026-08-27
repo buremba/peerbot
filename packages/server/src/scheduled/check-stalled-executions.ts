@@ -541,7 +541,15 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       // Device-placed chat turns are claimed by the device's own poller, so the
       // connector reaper above never sees them; they terminalize through the
       // adapter that also publishes their thread_response.
-      const deviceChatsReaped = await sweepStaleDeviceChatRuns(thresholdSeconds);
+      let deviceChatsReaped = 0;
+      try {
+        deviceChatsReaped = await sweepStaleDeviceChatRuns(thresholdSeconds);
+      } catch (err) {
+        logger.error(
+          { error: String(err) },
+          '[reaper] Failed to sweep stale device chat runs'
+        );
+      }
 
       const reapedRow = reaped[0];
       const reapedCount =

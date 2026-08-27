@@ -37,6 +37,10 @@ import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
 import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
+import {
+  insertThreadResponseRow,
+  notifyThreadResponse,
+} from '../gateway/orchestration/turn-liveness';
 import type { Env } from '../index';
 import { claimPendingAutomationRun } from '../runs/queue-service';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
@@ -80,6 +84,9 @@ import {
 // evidence about the agent regardless of the message, so no message
 // classification applies.
 const DISPATCH_FAILURE_OUTCOME: RunOutcome = 'infra_error';
+const DEVICE_CHAT_HISTORY_TAIL_CHARS = 1024 * 1024;
+const DEVICE_CHAT_DISPATCH_ERROR =
+  'The selected device could not start this message.';
 
 const DUE_FEEDS_LOCK_KEY = 71001;
 
@@ -150,6 +157,76 @@ export async function failClaimedWorkerRun(params: {
     }
     return true;
   });
+}
+
+/** Fail a claimed device-chat dispatch and emit its visible terminal response atomically. */
+async function failClaimedDeviceChatRun(params: {
+  runId: number;
+  workerId: string;
+  errorMessage: string;
+  message: Record<string, unknown> | null;
+  organizationId: string;
+}): Promise<boolean> {
+  const messageId =
+    typeof params.message?.messageId === 'string'
+      ? params.message.messageId
+      : '';
+  if (!messageId) {
+    return failClaimedWorkerRun({
+      runId: params.runId,
+      workerId: params.workerId,
+      errorMessage: params.errorMessage,
+    });
+  }
+
+  const sql = getDb();
+  const transitioned = await sql.begin(async (tx) => {
+    const rows = await tx`
+      UPDATE public.runs
+      SET status = 'failed',
+          outcome = ${DISPATCH_FAILURE_OUTCOME},
+          completed_at = current_timestamp,
+          error_message = ${params.errorMessage}
+      WHERE id = ${params.runId}
+        AND status = 'running'
+        AND claimed_by = ${params.workerId}
+        AND run_type = 'chat_message'
+        AND queue_name = 'messages'
+      RETURNING id
+    `;
+    if (rows.length === 0) return false;
+
+    const stringField = (key: string): string | undefined => {
+      const value = params.message?.[key];
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    };
+    const platformMetadata = params.message?.platformMetadata;
+    await insertThreadResponseRow(
+      tx,
+      {
+        messageId,
+        channelId: stringField('channelId'),
+        conversationId: stringField('conversationId'),
+        userId: stringField('userId'),
+        teamId: stringField('teamId') ?? 'api',
+        platform: stringField('platform') ?? 'api',
+        organizationId: params.organizationId,
+        platformMetadata:
+          platformMetadata &&
+          typeof platformMetadata === 'object' &&
+          !Array.isArray(platformMetadata)
+            ? platformMetadata
+            : undefined,
+        error: DEVICE_CHAT_DISPATCH_ERROR,
+        processedMessageIds: [messageId],
+        timestamp: Date.now(),
+      },
+      params.organizationId
+    );
+    return true;
+  });
+  if (transitioned) await notifyThreadResponse();
+  return transitioned;
 }
 
 /** jsonb columns arrive as objects, text columns as JSON strings — normalize to an object or null. */
@@ -1149,10 +1226,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       !row.organization_slug
     ) {
       const failure = 'device chat run has an incomplete execution envelope';
-      await failClaimedWorkerRun({
+      await failClaimedDeviceChatRun({
         runId: row.run_id,
         workerId: worker_id,
         errorMessage: failure,
+        message,
+        organizationId: row.organization_id,
       });
       return c.json({
         next_poll_seconds: 1,
@@ -1185,10 +1264,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       };
     } catch (err) {
       const failure = 'failed to mint the required device chat run session';
-      await failClaimedWorkerRun({
+      await failClaimedDeviceChatRun({
         runId: row.run_id,
         workerId: worker_id,
         errorMessage: failure,
+        message,
+        organizationId: row.organization_id,
       });
       logger.error({ run_id: row.run_id, err }, failure);
       return c.json({
@@ -1203,6 +1284,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       organizationId: row.organization_id,
       agentId: row.chat_agent_id,
       conversationId,
+      // History returns at most twelve 16 KB messages. A 1 MB suffix keeps the
+      // poll request bounded while leaving ample room for JSONL overhead and
+      // ordinary longer raw replies; parseSessionEntries ignores a cut line.
+      suffixChars: DEVICE_CHAT_HISTORY_TAIL_CHARS,
     });
     const history = snapshot
       ? parseSessionEntries(snapshot).entries

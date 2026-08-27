@@ -694,6 +694,13 @@ describe("agent_transcript_snapshot — history fallback", () => {
       prefixChars: 32,
     });
     expect(prefix).toBe(jsonl.slice(0, 32));
+    const suffix = await readSnapshotJsonl({
+      agentId,
+      organizationId: orgId,
+      conversationId,
+      suffixChars: 32,
+    });
+    expect(suffix).toBe(jsonl.slice(-32));
   });
 
   test("dead-worker-no-snapshot: readSnapshotJsonl returns null on miss (no 500)", async () => {

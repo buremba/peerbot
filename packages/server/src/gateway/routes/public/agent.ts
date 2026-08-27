@@ -15,13 +15,17 @@ import {
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../../events/sse-abort-bridge.js";
+import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import {
   defineRoute,
   getValidated,
   type RouteSpec,
 } from "../shared/define-route.js";
 import { getDb, parsePgTextArray } from "../../../db/client.js";
-import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
+import {
+  getCachedMembershipRole,
+  getCachedOrgBySlug,
+} from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
@@ -1002,6 +1006,16 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // Read the session this request would resume or overwrite once, then run
     // both guards over it.
     const existing = await sessMgr.getSession(conversationId);
+    const callerMembershipRole =
+      access.kind === "membership"
+        ? access.memberRole
+        : access.callerUserId && tokenOrganizationId
+          ? await getCachedMembershipRole(
+              tokenOrganizationId,
+              access.callerUserId,
+            )
+          : undefined;
+    const hasOrgOversight = isAdminOrOwnerRole(callerMembershipRole);
 
     // A human may only resume — or overwrite with `forceNew` — a session they
     // created themselves. Org members can now USE an agent they do not own, and
@@ -1021,8 +1035,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       const unstampedAndNotOursToTake =
         existing.createdByUserId === undefined &&
         access.kind === "membership" &&
-        isRestrictedOrgAgentMember(access.memberRole);
-      if (creatorMismatch || unstampedAndNotOursToTake) {
+        !hasOrgOversight;
+      if ((creatorMismatch && !hasOrgOversight) || unstampedAndNotOursToTake) {
         return c.json({ success: false, error: "Forbidden" }, 403);
       }
     }
@@ -1032,6 +1046,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // session header so the thread cannot silently fall back to managed runtime.
     let candidateExecutionTarget: DeviceExecutionTarget | undefined =
       executionTarget;
+    let recoveredExecutionTarget = false;
     if (!candidateExecutionTarget && effectiveForceNew) {
       candidateExecutionTarget = existing?.executionTarget;
     }
@@ -1039,7 +1054,6 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       !candidateExecutionTarget &&
       !existing &&
       !automationIntent &&
-      effectiveThread &&
       tokenOrganizationId
     ) {
       candidateExecutionTarget = executionTargetFromSnapshot(
@@ -1050,6 +1064,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           prefixChars: SNAPSHOT_HEADER_CHARS,
         }),
       );
+      recoveredExecutionTarget = candidateExecutionTarget !== undefined;
     }
 
     let verifiedExecutionTarget: DeviceExecutionTarget | undefined;
@@ -1065,6 +1080,13 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
       // `capabilities` is a jsonb array of capability names, so test
       // membership with the jsonb `?` operator used by worker dispatch.
+      // An org owner/admin may resume a member's existing conversation and
+      // therefore verify its already-pinned device. Ordinary callers remain
+      // confined to devices they own.
+      const targetDeviceOwnerId =
+        hasOrgOversight && (existing != null || recoveredExecutionTarget)
+        ? (existing?.createdByUserId ?? userId)
+        : access.callerUserId;
       const devices = await getDb()<{
         id: string;
         agent_kinds: string[] | string | null;
@@ -1073,7 +1095,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         SELECT id, agent_kinds, capabilities ? 'automations.execute' AS can_execute
         FROM device_workers
         WHERE id = ${candidateExecutionTarget.deviceWorkerId}::uuid
-          AND user_id = ${access.callerUserId}
+          AND user_id = ${targetDeviceOwnerId}
           AND organization_id = ${tokenOrganizationId}
         LIMIT 1
       `;

@@ -15,16 +15,23 @@ export async function readSnapshotJsonl(args: {
 	conversationId: string;
 	/** Read only the leading characters when the caller needs the session header. */
 	prefixChars?: number;
+	/** Read only the trailing characters when the caller needs recent history. */
+	suffixChars?: number;
 	/** Keep completion read + append on the caller's transaction snapshot. */
 	client?: DbClient;
 }): Promise<string | null> {
 	const { agentId, organizationId, conversationId } = args;
 	if (!organizationId) return null;
+	if (args.prefixChars && args.suffixChars) {
+		throw new Error("Snapshot reads cannot request both a prefix and a suffix");
+	}
 
 	const sql = args.client ?? getDb();
 	const snapshotJsonl = args.prefixChars
 		? sql`left(snapshot_jsonl, ${args.prefixChars})`
-		: sql`snapshot_jsonl`;
+		: args.suffixChars
+			? sql`right(snapshot_jsonl, ${args.suffixChars})`
+			: sql`snapshot_jsonl`;
 	const rows = await sql<{ snapshot_jsonl: string }>`
     SELECT ${snapshotJsonl} AS snapshot_jsonl
     FROM public.agent_transcript_snapshot

@@ -49,6 +49,7 @@ describe('mcp session refresh is update-only', () => {
       isAuthenticated: true,
       scopedToOrg: false,
       supportsMcpApps: true,
+      supportsAppSandboxDomain: true,
       lastAccessedAt: Date.now(),
       expiresAt: Date.now() + 3_600_000,
     };
@@ -63,6 +64,41 @@ describe('mcp session refresh is update-only', () => {
     const row = await store.getSession(session.sessionId);
     expect(row).not.toBeNull();
     expect(row?.supportsMcpApps).toBe(true);
+    expect(row?.supportsAppSandboxDomain).toBe(true);
+  });
+
+  it('preserves MCP Apps domain metadata for a row written by the previous binary', async () => {
+    await getTestDb()`
+      INSERT INTO mcp_sessions (
+        session_id,
+        user_id,
+        client_id,
+        organization_id,
+        member_role,
+        requested_agent_id,
+        is_authenticated,
+        scoped_to_org,
+        supports_mcp_apps,
+        last_accessed_at,
+        expires_at
+      ) VALUES (
+        ${session.sessionId},
+        ${session.userId},
+        ${session.clientId},
+        ${session.organizationId},
+        ${session.memberRole},
+        ${session.requestedAgentId},
+        ${session.isAuthenticated},
+        ${session.scopedToOrg},
+        ${session.supportsMcpApps},
+        ${new Date(session.lastAccessedAt)},
+        ${new Date(session.expiresAt)}
+      )
+    `;
+
+    const row = await store.getSession(session.sessionId);
+    expect(row?.supportsMcpApps).toBe(true);
+    expect(row?.supportsAppSandboxDomain).toBe(true);
   });
 
   it('does NOT resurrect a row deleted by a concurrent revoke', async () => {

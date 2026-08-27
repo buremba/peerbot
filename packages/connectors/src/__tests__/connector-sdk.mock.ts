@@ -112,6 +112,37 @@ export function connectorSdkMock() {
     }
   }
   class IntegrationConnector extends ConnectorRuntime {}
+  // Connectors create their HTTP client as a class field at construction, so a
+  // throwing stub would break `new XConnector()`. `get`/`post` are faithful
+  // minimal implementations over global fetch (HttpStatusError on non-2xx,
+  // mirroring connector-sdk/src/http-client.ts) so tests can drive a
+  // connector's real request and error paths by stubbing `globalThis.fetch`.
+  // The remaining methods throw only IF actually called — tests that need
+  // them override `connector.http` / `connector.requestJson` first.
+  const createHttpClient = () => ({
+    get: async (url: string) => {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new HttpStatusError({ status: response.status, body: await response.text() });
+      }
+      return response.json();
+    },
+    json: notUsed('http.json'),
+    request: notUsed('http.request'),
+    raw: notUsed('http.raw'),
+    post: async (url: string, body?: unknown) => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new HttpStatusError({ status: response.status, body: await response.text() });
+      }
+      return response.json();
+    },
+  });
+
   return {
     // Sole platform entity-type slug for ACL-gated resources. Inlined (not
     // imported from connector-sdk/src) to keep this mock valid when copied
@@ -192,36 +223,7 @@ export function connectorSdkMock() {
         apiCallCount,
       };
     },
-    // Connectors create their HTTP client as a class field at construction, so a
-    // throwing stub would break `new XConnector()`. `get`/`post` are faithful
-    // minimal implementations over global fetch (HttpStatusError on non-2xx,
-    // mirroring connector-sdk/src/http-client.ts) so tests can drive a
-    // connector's real request and error paths by stubbing `globalThis.fetch`.
-    // The remaining methods throw only IF actually called — tests that need
-    // them override `connector.http` / `connector.requestJson` first.
-    createHttpClient: () => ({
-      get: async (url: string) => {
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new HttpStatusError({ status: response.status, body: await response.text() });
-        }
-        return response.json();
-      },
-      json: notUsed('http.json'),
-      request: notUsed('http.request'),
-      raw: notUsed('http.raw'),
-      post: async (url: string, body?: unknown) => {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) {
-          throw new HttpStatusError({ status: response.status, body: await response.text() });
-        }
-        return response.json();
-      },
-    }),
+    createHttpClient,
     // Faithful copy of connector-sdk checkpoint/timestamp-watermark.ts — must
     // honor the checkpoint arg; a passthrough stub leaks via Bun's global mock
     // registry and breaks the SDK's timestamp-watermark.test when connector tests run first.
@@ -236,7 +238,21 @@ export function connectorSdkMock() {
     },
     sleep: async () => {},
     validatePublicUrl: (url: string) => url,
-    requireBearerClient: notUsed('requireBearerClient'),
+    // Mirrors the missing-credential throw of connector-sdk/src/http-client.ts
+    // `requireBearerClient` — connector tests assert this message, so the label
+    // fallback order must stay in step. On the success path it hands back the
+    // mock client above, which is unauthenticated: the token is dropped, so
+    // tests here cannot assert what the SDK would have sent on the wire.
+    requireBearerClient: (
+      credentials: { accessToken?: string } | null,
+      options: { label?: string; errorPrefix?: string } = {}
+    ) => {
+      if (!credentials?.accessToken) {
+        const label = options.label ?? options.errorPrefix ?? 'This connector';
+        throw new Error(`${label} requires OAuth authentication.`);
+      }
+      return createHttpClient();
+    },
     paginateByCursor,
     paginateByOffset,
     ConnectorRuntime,

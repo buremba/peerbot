@@ -257,6 +257,7 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
     const folder = (config.folder as string) ?? 'inbox';
     const maxResults = (config.max_results as number) ?? 50;
     const lookbackDays = (config.lookback_days as number) ?? 30;
+    const encodedFolder = encodeURIComponent(folder);
 
     const since = new Date();
     since.setDate(since.getDate() - lookbackDays);
@@ -264,7 +265,7 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
 
     const events: EventEnvelope[] = [];
     const firstUrl =
-      `${this.API_BASE}/me/mailFolders/${folder}/messages` +
+      `${this.API_BASE}/me/mailFolders/${encodedFolder}/messages` +
       `?$top=${Math.min(maxResults, this.PAGE_SIZE)}` +
       '&$orderby=receivedDateTime desc' +
       `&$filter=receivedDateTime ge ${sinceFilter}` +

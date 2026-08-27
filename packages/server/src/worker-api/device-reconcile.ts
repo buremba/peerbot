@@ -513,8 +513,8 @@ async function ensureDeviceConnectorWired(
       // not required: multi-device auto-wiring leaves the connection unpinned.
       // The live-row anti-join makes an explicit reconnect the sole way to
       // clear the opt-out without mutating the tombstone during heartbeat
-      // reconciliation. `handleDelete` is the only path that soft-deletes a
-      // connection at all, so no system retirement can plant this marker.
+      // reconciliation. Only `handleDelete` writes this reserved marker;
+      // system retirement paths may tombstone rows but never create an opt-out.
       const suppressed = (await tx`
         SELECT 1
         FROM connections

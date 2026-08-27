@@ -104,10 +104,11 @@ beforeEach(async () => {
   await sql`
     INSERT INTO oauth_tokens (
       id, token_type, token_hash, client_id, user_id, organization_id,
-      scope, expires_at
+      granted_organization_ids, authorization_grant_type, scope, expires_at
     ) VALUES (
       'pause-wiring-oauth-token', 'access', ${hashToken(oauthToken)},
-      'pause-wiring-client', ${USER}, ${ORG}, 'mcp:read mcp:write mcp:admin',
+      'pause-wiring-client', ${USER}, ${ORG}, ARRAY[${ORG}, ${OTHER_ORG}]::text[],
+      'authorization_code', 'mcp:read mcp:write mcp:admin',
       now() + interval '1 hour'
     )
   `;
@@ -253,7 +254,7 @@ describe('promotions pause is enforced in the auth funnel', () => {
     expect(res.reached).toBe(true);
   });
 
-  test('OAuth resolves the requested member org before consulting its pause', async () => {
+  test('OAuth resolves an explicitly granted member org before consulting its pause', async () => {
     await pauseOrg(OTHER_ORG);
     const res = await request({
       method: 'PATCH',

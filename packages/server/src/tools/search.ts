@@ -1492,7 +1492,12 @@ async function searchWorkspaceImpl(
     // this workspace's visibility boundary. Never reinterpret `event 123` as
     // semantic text and accidentally return unrelated recall. The outward
     // shape deliberately does not distinguish missing from inaccessible.
-    const result = emptyResult({ ...(title ? { title } : {}) });
+    const result = emptyResult({
+      ...(title ? { title } : {}),
+      suggestion:
+        `No readable memory record matches id ${exactContentId} in this workspace. ` +
+        'To run a text search instead, add words around the number.',
+    });
     return applyCoverageScope(
       withRecall(result, {
         coverage: await coverageForLocalSources(connectionScope, workspaceSlug, ['events']),

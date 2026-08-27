@@ -20,12 +20,14 @@ describe('insertConnectionlessAuditEvent idempotency', () => {
     organizationId = org.id;
   });
 
-  it('a second call with the same origin_id reuses the first row', async () => {
-    const originId = `workspace_member_created_test_${Date.now()}_idem`;
+  it('a second call reuses the first row after lineage is NUL-stripped', async () => {
+    const originId = `workspace_member_created_test_${Date.now()}_idem\0origin`;
+    const parentOriginId = 'workspace_parent\0member';
     const params = {
       entityIds: [] as number[],
       organizationId,
       originId,
+      parentOriginId,
       title: 'Member "a member" added',
       semanticType: 'change',
       originType: 'workspace_member_created',
@@ -45,48 +47,6 @@ describe('insertConnectionlessAuditEvent idempotency', () => {
 
     expect(second.change).toBe('unchanged');
     expect(second.id).toBe(first.id);
-
-    const sql = getDb();
-    const rows = await sql`
-      SELECT id FROM events
-      WHERE organization_id = ${organizationId}
-        AND metadata->>'_lobu_idempotency_key' = ${`audit:${originId}`}
-    `;
-    expect(rows).toHaveLength(1);
-  });
-
-  it('reconciles exact retries against NUL-stripped lineage', async () => {
-    const originId = `workspace_member_created_test_${Date.now()}_nul\0origin`;
-    const parentOriginId = 'workspace_parent\0member';
-    const params = {
-      entityIds: [] as number[],
-      organizationId,
-      originId,
-      parentOriginId,
-      title: 'Member with sanitized lineage added',
-      semanticType: 'change',
-      originType: 'workspace_member_created',
-      payloadType: 'empty' as const,
-      payloadData: { state: { id: 'member_nul', role: 'member' } },
-      metadata: {
-        category: 'workspace',
-        _lobu_workspace_audit: true,
-        resource_kind: 'member',
-        resource_id: 'member_nul',
-        op: 'created',
-      },
-    };
-
-    const first = await insertConnectionlessAuditEvent(params, {
-      subject: 'member',
-      op: 'created',
-    });
-    const second = await insertConnectionlessAuditEvent(params, {
-      subject: 'member',
-      op: 'created',
-    });
-
-    expect(second).toMatchObject({ id: first.id, change: 'unchanged' });
     expect(second.origin_id).toBe(originId.replaceAll('\0', ''));
 
     const sql = getDb();

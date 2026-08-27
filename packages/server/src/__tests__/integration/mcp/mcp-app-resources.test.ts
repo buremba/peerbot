@@ -99,11 +99,13 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       sessionToken?: string;
       agentId?: string;
       advertiseMcpApps?: boolean;
+      advertiseOpenAIVisibility?: boolean;
       headers?: Record<string, string>;
     } = {}
   ): Promise<string> {
     const sessionToken = options.sessionToken ?? token;
     const advertiseMcpApps = options.advertiseMcpApps ?? true;
+    const advertiseOpenAIVisibility = options.advertiseOpenAIVisibility ?? true;
     const initResponse = await post(path, {
       body: {
         jsonrpc: '2.0',
@@ -118,6 +120,13 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
                     mimeTypes: ['text/html;profile=mcp-app'],
                   },
                 },
+                ...(advertiseOpenAIVisibility
+                  ? {
+                      experimental: {
+                        'openai/visibility': { enabled: true },
+                      },
+                    }
+                  : {}),
               }
             : {},
           clientInfo: {
@@ -385,18 +394,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource._meta?.ui?.domain).toBe('http://localhost');
   });
 
-  it('omits the app domain for a host that renders Apps without advertising the UI extension', async () => {
+  it('omits the app domain for a host that advertises Apps without OpenAI visibility', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`, {
-      advertiseMcpApps: false,
+      advertiseOpenAIVisibility: false,
     });
-    // Exercise the persisted capability across a replica-local session miss:
-    // the compatibility decision must not depend on process affinity.
-    clearInMemoryMcpSessionsForTests();
-
-    const listResponse = await post(`/mcp/${org.slug}`, {
+    const liveListResponse = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
-        id: 'claude-resources-list',
+        id: 'non-openai-resources-list',
         method: 'resources/list',
       },
       headers: {
@@ -405,18 +410,41 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       },
       token,
     });
-    expect(listResponse.status).toBe(200);
-    const listBody = await listResponse.json();
-    const listed = listBody.result?.resources?.find(
+    expect(liveListResponse.status).toBe(200);
+    const liveListBody = await liveListResponse.json();
+    const liveResource = liveListBody.result?.resources?.find(
       (resource: { uri?: string }) => resource.uri === LOBU_INTERACTION_RESOURCE_URI
     );
-    expect(listed?._meta?.ui?.domain).toBeUndefined();
-    expect(listed?._meta?.ui?.csp).toBeTruthy();
+    expect(liveResource?._meta?.ui?.domain).toBeUndefined();
+    expect(liveResource?._meta?.ui?.csp).toBeTruthy();
+
+    // Exercise persisted session-capability recovery across a replica-local
+    // miss: the compatibility decision must not depend on process affinity.
+    clearInMemoryMcpSessionsForTests();
+
+    const toolsResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'non-openai-tools-list',
+        method: 'tools/list',
+      },
+      headers: {
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+    const toolsBody = await toolsResponse.json();
+    expect(
+      toolsBody.result?.tools?.some(
+        (tool: { name?: string }) => tool.name === 'resolve_approval'
+      )
+    ).toBe(true);
 
     const readResponse = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
-        id: 'claude-resources-read',
+        id: 'non-openai-resources-read',
         method: 'resources/read',
         params: { uri: LOBU_INTERACTION_RESOURCE_URI },
       },

@@ -96,6 +96,7 @@ const mcpSessionStore = new McpSessionStore();
 type SessionAuthContext = AuthContext & {
   instructions?: string;
   supportsMcpApps?: boolean;
+  supportsAppSandboxDomain?: boolean;
 };
 
 export function hostConversationIdFromMeta(value: unknown): string | null {
@@ -283,6 +284,20 @@ function supportsMcpApps(capabilities: Record<string, unknown> | null | undefine
   return Array.isArray(mimeTypes) && mimeTypes.includes(MCP_APP_MIME_TYPE);
 }
 
+function supportsAppSandboxDomain(
+  capabilities: Record<string, unknown> | null | undefined
+): boolean {
+  if (!supportsMcpApps(capabilities)) return false;
+  const experimental = capabilities?.experimental;
+  if (!experimental || typeof experimental !== 'object') return false;
+  const visibility = (experimental as Record<string, unknown>)['openai/visibility'];
+  return (
+    !!visibility &&
+    typeof visibility === 'object' &&
+    (visibility as Record<string, unknown>).enabled === true
+  );
+}
+
 function mcpAppUiMeta(
   authCtx: SessionAuthContext,
   app: (typeof MCP_APP_RESOURCES)[string]
@@ -307,14 +322,12 @@ function mcpAppUiMeta(
     // unique per app, so it is the one origin that already identifies this
     // deployment.
     //
-    // Only a host that negotiated the UI extension gets it. Claude renders the
-    // same App without advertising the extension, but treats the field as an
-    // unusable iframe origin and leaves the card on a spinner. Omitted, its
-    // view lands on the host's default per-conversation origin — where the card
-    // rendered before this field existed. The negotiated capability is
-    // persisted with the MCP session, so the decision survives cross-replica
-    // recovery without a user-agent or client-name allowlist.
-    ...(authCtx.supportsMcpApps ? { domain: publicOrigin } : {}),
+    // Some hosts negotiate the MCP Apps UI extension without advertising the
+    // OpenAI visibility capability. Such hosts can treat this field as an
+    // unusable iframe origin and leave the card on a spinner. Omitted, the view
+    // lands on the host's default per-conversation origin. Keying on the
+    // negotiated capability avoids a user-agent or client-name allowlist.
+    ...(authCtx.supportsAppSandboxDomain ? { domain: publicOrigin } : {}),
     csp: {
       ...app.csp,
       resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],
@@ -778,6 +791,7 @@ function buildPersistedSession(
     isAuthenticated: authCtx.isAuthenticated,
     scopedToOrg: authCtx.scopedToOrg,
     supportsMcpApps: authCtx.supportsMcpApps ?? false,
+    supportsAppSandboxDomain: authCtx.supportsAppSandboxDomain ?? false,
     lastAccessedAt,
     expiresAt: lastAccessedAt + SESSION_MAX_AGE_MS,
   };
@@ -900,6 +914,7 @@ async function recoverSessionAuthContext(
   }
   authCtx.requestedAgentId = persisted.requestedAgentId ?? authCtx.requestedAgentId;
   authCtx.supportsMcpApps = persisted.supportsMcpApps;
+  authCtx.supportsAppSandboxDomain = persisted.supportsAppSandboxDomain;
   authCtx.instructions = authCtx.organizationId
     ? ((await buildWorkspaceInstructions(authCtx.organizationId)) ?? undefined)
     : undefined;
@@ -1488,6 +1503,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     await hydrateScopedMemberRole(c.env, authCtx);
     await recordMcpClientActivity(c.env, authCtx, req, initialize);
     authCtx.supportsMcpApps = supportsMcpApps(initialize?.capabilities);
+    authCtx.supportsAppSandboxDomain = supportsAppSandboxDomain(initialize?.capabilities);
     const { transport, server } = createSessionTransport(
       c.env,
       authCtx,

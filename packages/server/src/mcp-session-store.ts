@@ -10,6 +10,7 @@ export interface PersistedMcpSession {
   isAuthenticated: boolean;
   scopedToOrg: boolean;
   supportsMcpApps: boolean;
+  supportsAppSandboxDomain: boolean;
   lastAccessedAt: number;
   expiresAt: number;
 }
@@ -47,6 +48,7 @@ export class McpSessionStore {
         is_authenticated,
         scoped_to_org,
         supports_mcp_apps,
+        supports_app_sandbox_domain,
         last_accessed_at,
         expires_at
       ) VALUES (
@@ -59,6 +61,7 @@ export class McpSessionStore {
         ${session.isAuthenticated},
         ${session.scopedToOrg},
         ${session.supportsMcpApps},
+        ${session.supportsAppSandboxDomain},
         ${new Date(session.lastAccessedAt)},
         ${new Date(session.expiresAt)}
       )
@@ -71,6 +74,7 @@ export class McpSessionStore {
         is_authenticated = EXCLUDED.is_authenticated,
         scoped_to_org = EXCLUDED.scoped_to_org,
         supports_mcp_apps = EXCLUDED.supports_mcp_apps,
+        supports_app_sandbox_domain = EXCLUDED.supports_app_sandbox_domain,
         last_accessed_at = EXCLUDED.last_accessed_at,
         expires_at = EXCLUDED.expires_at
     `;
@@ -99,6 +103,7 @@ export class McpSessionStore {
         is_authenticated = ${session.isAuthenticated},
         scoped_to_org = ${session.scopedToOrg},
         supports_mcp_apps = ${session.supportsMcpApps},
+        supports_app_sandbox_domain = ${session.supportsAppSandboxDomain},
         last_accessed_at = ${new Date(session.lastAccessedAt)},
         expires_at = ${new Date(session.expiresAt)}
       WHERE session_id = ${session.sessionId}
@@ -119,6 +124,7 @@ export class McpSessionStore {
     if (rows.length === 0) return null;
 
     const row = rows[0] as Record<string, unknown>;
+    const supportsMcpApps = fromBool(row.supports_mcp_apps);
     return {
       sessionId: String(row.session_id),
       userId: typeof row.user_id === 'string' ? row.user_id : null,
@@ -128,7 +134,11 @@ export class McpSessionStore {
       requestedAgentId: typeof row.requested_agent_id === 'string' ? row.requested_agent_id : null,
       isAuthenticated: fromBool(row.is_authenticated),
       scopedToOrg: fromBool(row.scoped_to_org),
-      supportsMcpApps: fromBool(row.supports_mcp_apps),
+      supportsMcpApps,
+      supportsAppSandboxDomain:
+        row.supports_app_sandbox_domain == null
+          ? supportsMcpApps
+          : fromBool(row.supports_app_sandbox_domain),
       lastAccessedAt: fromDate(row.last_accessed_at) ?? Date.now(),
       expiresAt: fromDate(row.expires_at) ?? Date.now(),
     };

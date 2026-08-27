@@ -1172,9 +1172,8 @@ async function findConnectionlessEventByIdempotencyKey(
   // Reconcile against those persisted lineage values so an exact retry does
   // not rethrow the unique violation merely because its raw IDs contained NUL.
   const expectedOriginId = stripNul(expected.originId);
-  const expectedParentOriginId = expected.parentOriginId
-    ? stripNul(expected.parentOriginId)
-    : null;
+  const expectedParentOriginId =
+    expected.parentOriginId == null ? null : stripNul(expected.parentOriginId);
   if (
     row.semantic_type !== expected.semanticType ||
     row.origin_type !== (expected.originType ?? null) ||

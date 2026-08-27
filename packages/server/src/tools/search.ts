@@ -190,6 +190,11 @@ export const PublicSearchSchema = Type.Object(
 
 type SearchArgs = Static<typeof SearchSchema>;
 
+export function resolveEntityLimit(args: SearchArgs): number {
+  const defaultLimit = args.query_embedding?.length ? 20 : (args.fuzzy ?? true) ? 5 : 1;
+  return Math.min(args.limit ?? defaultLimit, 100);
+}
+
 // ============================================
 // Type Definitions
 // ============================================
@@ -460,8 +465,7 @@ function workspaceUnavailable(): ToolUserError {
 }
 
 async function currentWorkspaceSlug(organizationId: string): Promise<string | null> {
-  const slugs = await getWorkspaceProvider().getOrgSlugs([organizationId]);
-  return slugs.get(organizationId) ?? null;
+  return getWorkspaceProvider().getOrgSlug(organizationId);
 }
 
 async function resolveSingleWorkspace(
@@ -628,10 +632,7 @@ export function mergeFederatedSearchResults(
     throw new ToolUserError('Search is temporarily unavailable for this connection.', 503);
   }
 
-  const entityLimit = Math.min(
-    args.limit ?? (args.query_embedding?.length ? 20 : (args.fuzzy ?? true) ? 5 : 1),
-    100
-  );
+  const entityLimit = resolveEntityLimit(args);
   const contentLimit = Math.min(args.content_limit ?? 5, 50);
   const allMatches = deduplicateBy(
     fulfilled.flatMap((result) => result.matches),
@@ -1749,8 +1750,7 @@ async function queryEntities(
   const fuzzyEnabled = args.fuzzy ?? true;
   const embedding = args.query_embedding;
   const hasEmbedding = !!embedding?.length;
-  const defaultLimit = hasEmbedding ? 20 : fuzzyEnabled ? 5 : 1;
-  const limit = args.limit ?? defaultLimit;
+  const limit = resolveEntityLimit(args);
 
   // Build dynamic WHERE conditions
   const conditions: string[] = ['e.deleted_at IS NULL'];

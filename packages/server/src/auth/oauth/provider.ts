@@ -50,6 +50,13 @@ import {
   verifyCodeChallenge,
 } from './utils';
 
+class OAuthTransactionRollback extends Error {
+  constructor(readonly response: OAuthError) {
+    super(response.error_description ?? response.error);
+    this.name = 'OAuthTransactionRollback';
+  }
+}
+
 /**
  * OAuth 2.1 Server Provider
  */
@@ -916,39 +923,55 @@ export class OAuthProvider {
 
     // Atomically claim approved device codes to prevent TOCTOU race conditions.
     // DELETE...RETURNING ensures only one concurrent request can consume the code.
-    const approvedExchange = await this.sql.begin(async (tx) => {
-      await tx`
-        SELECT id FROM oauth_clients WHERE id = ${params.client_id} FOR UPDATE
-      `;
-      const approved = await tx`
-        DELETE FROM oauth_device_codes
-        WHERE device_code = ${params.device_code}
-          AND client_id = ${params.client_id}
-          AND status = 'approved'
-          AND (resource IS NULL OR resource = ${params.resource || null})
-          AND expires_at > NOW()
-        RETURNING *
-      `;
+    // Returning an OAuth error from a postgres.js transaction would commit the
+    // DELETE, so throw expected errors and translate them back after rollback.
+    let approvedExchange: OAuthTokenResponse | null;
+    try {
+      approvedExchange = await this.sql.begin(async (tx) => {
+        await tx`
+          SELECT id FROM oauth_clients WHERE id = ${params.client_id} FOR UPDATE
+        `;
+        const approved = await tx`
+          DELETE FROM oauth_device_codes
+          WHERE device_code = ${params.device_code}
+            AND client_id = ${params.client_id}
+            AND status = 'approved'
+            AND (resource IS NULL OR resource = ${params.resource || null})
+            AND expires_at > NOW()
+          RETURNING *
+        `;
 
-      if (approved.length === 0) return null;
-      const deviceCode = approved[0] as StoredDeviceCode;
-      if (!deviceCode.user_id) {
-        return createOAuthError('server_error', 'Approved device code missing user_id');
+        if (approved.length === 0) return null;
+        const deviceCode = approved[0] as StoredDeviceCode;
+        if (!deviceCode.user_id) {
+          throw new OAuthTransactionRollback(
+            createOAuthError('server_error', 'Approved device code missing user_id')
+          );
+        }
+        const issued = await this.issueTokens(
+          deviceCode.client_id,
+          deviceCode.user_id,
+          deviceCode.organization_id,
+          deviceCode.scope,
+          deviceCode.resource,
+          'device_code',
+          normalizeStoredGrantedOrganizationIds(
+            deviceCode.granted_organization_ids,
+            deviceCode.organization_id
+          ),
+          tx
+        );
+        if ('error' in issued) {
+          throw new OAuthTransactionRollback(issued);
+        }
+        return issued;
+      });
+    } catch (error) {
+      if (error instanceof OAuthTransactionRollback) {
+        return error.response;
       }
-      return this.issueTokens(
-        deviceCode.client_id,
-        deviceCode.user_id,
-        deviceCode.organization_id,
-        deviceCode.scope,
-        deviceCode.resource,
-        'device_code',
-        normalizeStoredGrantedOrganizationIds(
-          deviceCode.granted_organization_ids,
-          deviceCode.organization_id
-        ),
-        tx
-      );
-    });
+      throw error;
+    }
 
     if (approvedExchange) return approvedExchange;
 

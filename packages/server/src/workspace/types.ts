@@ -59,7 +59,7 @@ export type HonoContext = Context<{ Bindings: Env }>;
 
 export interface ResolvedOwner {
   slug: string;
-  type: 'user' | 'organization';
+  type: 'organization';
   id: string;
   name: string | null;
 }
@@ -87,5 +87,5 @@ export interface WorkspaceProvider {
   getOrgSlugs(orgIds: string[]): Promise<Map<string, string>>;
 
   /** Resolve an owner (namespace) by slug and type */
-  resolveOwner(slug: string, type: 'user' | 'organization'): Promise<ResolvedOwner | null>;
+  resolveOwner(slug: string, type: 'organization'): Promise<ResolvedOwner | null>;
 }

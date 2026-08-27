@@ -14,6 +14,7 @@ import type { ResolvedOwner } from './types';
 
 // Caches – module-level singletons (survive across requests).
 export const orgSlugCache = new TtlCache<{ id: string; visibility: string }>(60_000); // 60s
+export const orgIdSlugCache = new TtlCache<string | null>(60_000); // 60s
 export const memberRoleCache = new TtlCache<string | null>(60_000); // 60s
 export const ownerCache = new TtlCache<ResolvedOwner | null>(300_000); // 5min
 export const sessionCache = new TtlCache<{ user: any; session: any } | null>(30_000); // 30s
@@ -25,6 +26,7 @@ export const sessionCache = new TtlCache<{ user: any; session: any } | null>(30_
  */
 export function clearMultiTenantCachesForTests(): void {
   orgSlugCache.clear();
+  orgIdSlugCache.clear();
   memberRoleCache.clear();
   ownerCache.clear();
   sessionCache.clear();

@@ -68,6 +68,10 @@ export type SearchMemoryData = {
      * Also search public-catalog orgs (visibility=public) — canonical world entities like HMRC, banks, currencies. Defaults to true so agents can discover entities to reference cross-org.
      */
     include_public_catalogs?: boolean;
+    /**
+     * Narrow this read to one workspace granted to the connection. Omit it on a direct bare OAuth search to search every currently accessible granted workspace.
+     */
+    workspace?: string;
   };
   path: {
     /**
@@ -119,6 +123,7 @@ export type SearchMemoryResponses = {
       parent_slug: string | null;
       parent_entity_type: string | null;
       organization_slug: string | null;
+      workspace_slug: string | null;
       stats: {
         content_count: number;
         connection_count: number;
@@ -142,6 +147,7 @@ export type SearchMemoryResponses = {
       parent_slug: string | null;
       parent_entity_type: string | null;
       organization_slug: string | null;
+      workspace_slug: string | null;
       stats: {
         content_count: number;
         connection_count: number;
@@ -164,6 +170,8 @@ export type SearchMemoryResponses = {
       created_at: string;
       updated_at: string | null;
       content_count: number;
+      entity_id: number;
+      workspace_slug: string;
     }>;
     children?: Array<{
       id: number;
@@ -171,6 +179,8 @@ export type SearchMemoryResponses = {
       type: string;
       market: string | null;
       content_count: number;
+      parent_entity_id: number;
+      workspace_slug: string;
     }>;
     content?: Array<{
       id: number;
@@ -182,8 +192,11 @@ export type SearchMemoryResponses = {
       occurred_at: string | null;
       similarity?: number;
       entity_ids: Array<number>;
+      workspace_slug: string;
+      workspace_slugs: Array<string>;
     }>;
     conversation_messages?: Array<{
+      message_id: number;
       platform: string;
       channel_id: string;
       thread_id: string | null;
@@ -191,8 +204,12 @@ export type SearchMemoryResponses = {
       author_entity_id: number | null;
       text: string;
       occurred_at: string | null;
+      workspace_slug: string;
     }>;
     coverage?: {
+      scope: "current_workspace" | "selected_workspace" | "all_granted";
+      status: "complete" | "partial";
+      workspace_slug?: string;
       local_sources: Array<"events" | "channel_messages">;
       source_queried: false;
       source_feed_discovery: "complete" | "unavailable";
@@ -203,19 +220,30 @@ export type SearchMemoryResponses = {
         connector_key: string;
         display_name: string | null;
         status: "not_queried";
+        workspace_slug: string;
       }>;
       more_source_feeds: boolean;
+      workspaces?: Array<{
+        workspace_slug: string;
+        status: "complete" | "partial" | "unavailable";
+        local_sources: Array<"events" | "channel_messages">;
+        source_queried: false;
+        source_feed_discovery: "complete" | "unavailable";
+        source_feeds: Array<{
+          feed_id: number;
+          feed_key: string;
+          connection_slug: string;
+          connector_key: string;
+          display_name: string | null;
+          status: "not_queried";
+          workspace_slug: string;
+        }>;
+        more_source_feeds: boolean;
+      }>;
     };
     discovery_status?: "not_found" | "complete" | "discovering";
     suggestion?: string;
     view_url?: string;
-    existing_entities?: Array<{
-      entity_type: string;
-      entities: Array<{
-        id: number;
-        name: string;
-      }>;
-    }>;
     metadata: {
       total_matches: number;
       page_size: number;

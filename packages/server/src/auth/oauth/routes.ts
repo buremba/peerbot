@@ -26,6 +26,7 @@ import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } fro
 import { createOAuthError, validateRedirectUri } from './utils';
 import {
   canonicalizeGrantedOrganizationIds,
+  type GrantedMemberWorkspace,
   isMultiWorkspaceGrantIssuanceEnabled,
   listLiveGrantedMemberWorkspaces,
   MAX_GRANTED_ORGANIZATIONS,
@@ -137,7 +138,12 @@ async function resolveSubmittedWorkspaceGrant(params: {
   workspaceAccess: unknown;
   multiWorkspaceGrantsEnabled: boolean;
 }): Promise<
-  | { organizationId: string; memberRole: string; grantedOrganizationIds: string[] }
+  | {
+      organizationId: string;
+      memberRole: string;
+      grantedOrganizationIds: string[];
+      liveGrantedWorkspaces: GrantedMemberWorkspace[];
+    }
   | { error: ReturnType<typeof createOAuthError>; status: number }
 > {
   if (params.workspaceAccess !== 'all_current' && params.workspaceAccess !== 'selected') {
@@ -213,6 +219,7 @@ async function resolveSubmittedWorkspaceGrant(params: {
     organizationId,
     memberRole: anchor.role,
     grantedOrganizationIds,
+    liveGrantedWorkspaces: workspaces,
   };
 }
 
@@ -885,19 +892,24 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
       grantedOrganizationIds = validSubmittedGrant?.grantedOrganizationIds ?? [
         orgResult.organizationId,
       ];
+      const liveGrantedWorkspaces =
+        validSubmittedGrant?.liveGrantedWorkspaces ??
+        (resourceOrgSlug === null
+          ? await listLiveGrantedMemberWorkspaces({
+              sql,
+              userId: user.id,
+              grantedOrganizationIds,
+            })
+          : []);
       // A scoped resource is governed by its one bound workspace. For /mcp,
       // the resolved org is only the session default; target workspace role
       // checks remain authoritative at runtime.
       const grantRole =
         resourceOrgSlug !== null
           ? orgResult.memberRole
-          : (
-                await listLiveGrantedMemberWorkspaces({
-                  sql,
-                  userId: user.id,
-                  grantedOrganizationIds,
-                })
-              ).some((workspace) => workspace.role === 'owner' || workspace.role === 'admin')
+          : liveGrantedWorkspaces.some(
+                (workspace) => workspace.role === 'owner' || workspace.role === 'admin'
+              )
             ? 'admin'
             : 'member';
       const filtered = filterScopeByRole(body.scope, grantRole);
@@ -1260,6 +1272,7 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     const memberRole = memberRow[0]?.role ?? null;
     organizationId = personalOrg.id;
     grantedOrganizationIds = [personalOrg.id];
+    let submittedGrantWorkspaces: GrantedMemberWorkspace[] | null = null;
     if (
       deviceHasMcpScopes &&
       (isBareMcpResource(deviceCode.resource) || deviceCode.resource === null) &&
@@ -1288,14 +1301,11 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
       // Device placement remains anchored to personal. The additional IDs are
       // an explicit bare-MCP read grant, not a device-data destination.
       grantedOrganizationIds = submittedGrant.grantedOrganizationIds;
+      submittedGrantWorkspaces = submittedGrant.liveGrantedWorkspaces;
     }
-    const grantRole = (
-      await listLiveGrantedMemberWorkspaces({
-        sql,
-        userId: user.id,
-        grantedOrganizationIds,
-      })
-    ).some((workspace) => workspace.role === 'owner' || workspace.role === 'admin')
+    const grantRole = submittedGrantWorkspaces?.some(
+      (workspace) => workspace.role === 'owner' || workspace.role === 'admin'
+    )
       ? 'admin'
       : memberRole;
     scopeOverride = filterScopeByRole(deviceCode.scope, grantRole);
@@ -1356,16 +1366,21 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     grantedOrganizationIds = validSubmittedGrant?.grantedOrganizationIds ?? [
       orgResult.organizationId,
     ];
+    const liveGrantedWorkspaces =
+      validSubmittedGrant?.liveGrantedWorkspaces ??
+      (resourceOrgSlug === null
+        ? await listLiveGrantedMemberWorkspaces({
+            sql,
+            userId: user.id,
+            grantedOrganizationIds,
+          })
+        : []);
     const grantRole =
       resourceOrgSlug !== null
         ? orgResult.memberRole
-        : (
-              await listLiveGrantedMemberWorkspaces({
-                sql,
-                userId: user.id,
-                grantedOrganizationIds,
-              })
-            ).some((workspace) => workspace.role === 'owner' || workspace.role === 'admin')
+        : liveGrantedWorkspaces.some(
+              (workspace) => workspace.role === 'owner' || workspace.role === 'admin'
+            )
           ? 'admin'
           : 'member';
     scopeOverride = filterScopeByRole(deviceCode.scope, grantRole);

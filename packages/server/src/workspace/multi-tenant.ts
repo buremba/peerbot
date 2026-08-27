@@ -34,6 +34,7 @@ import type {
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
+  orgIdSlugCache,
   orgSlugCache,
   ownerCache,
   sessionCache,
@@ -63,7 +64,17 @@ export function invalidateMembershipRoleCache(
 
 export function invalidateOrgSlugCache(slug: string | null | undefined): void {
   if (!slug) return;
+  const cached = orgSlugCache.get(slug);
+  if (cached) orgIdSlugCache.delete(cached.id);
   orgSlugCache.delete(slug);
+}
+
+function cacheOrganizationSlug(
+  slug: string,
+  record: { id: string; visibility: string }
+): void {
+  orgSlugCache.set(slug, record);
+  orgIdSlugCache.set(record.id, slug);
 }
 
 /**
@@ -105,7 +116,7 @@ export async function getCachedOrgBySlug(
     id: rows[0].id as string,
     visibility: (rows[0].visibility as string) ?? "private",
   };
-  orgSlugCache.set(slug, record);
+  cacheOrganizationSlug(slug, record);
   return record;
 }
 
@@ -188,7 +199,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         } else {
           requestedOrgId = orgResult[0].id as string;
           requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
-          orgSlugCache.set(requestedOrgSlug, {
+          cacheOrganizationSlug(requestedOrgSlug, {
             id: requestedOrgId,
             visibility: requestedOrgVisibility,
           });
@@ -880,25 +891,55 @@ export class MultiTenantProvider implements WorkspaceProvider {
   }
 
   async getOrgSlug(orgId: string): Promise<string | null> {
+    const cached = orgIdSlugCache.get(orgId);
+    if (cached !== undefined) return cached;
     const sql = getDb();
     const rows = await sql`
-      SELECT slug FROM "organization" WHERE id = ${orgId} LIMIT 1
+      SELECT slug, visibility FROM "organization" WHERE id = ${orgId} LIMIT 1
     `;
-    return rows[0]?.slug ?? null;
+    if (!rows[0]) {
+      orgIdSlugCache.set(orgId, null);
+      return null;
+    }
+    const slug = rows[0].slug as string;
+    cacheOrganizationSlug(slug, {
+      id: orgId,
+      visibility: (rows[0].visibility as string) ?? 'private',
+    });
+    return slug;
   }
 
   async getOrgSlugs(orgIds: string[]): Promise<Map<string, string>> {
     if (orgIds.length === 0) return new Map();
+    const result = new Map<string, string>();
+    const missing: string[] = [];
+    for (const orgId of new Set(orgIds)) {
+      const cached = orgIdSlugCache.get(orgId);
+      if (cached === undefined) missing.push(orgId);
+      else if (cached !== null) result.set(orgId, cached);
+    }
+    if (missing.length === 0) return result;
+
     const sql = getDb();
-    const placeholders = orgIds.map((_, i) => `$${i + 1}`).join(', ');
-    const rows = await sql.unsafe<{ id: string; slug: string }>(
-      `SELECT id, slug FROM "organization" WHERE id IN (${placeholders})`,
-      orgIds
+    const placeholders = missing.map((_, i) => `$${i + 1}`).join(', ');
+    const rows = await sql.unsafe<{ id: string; slug: string; visibility: string }>(
+      `SELECT id, slug, visibility FROM "organization" WHERE id IN (${placeholders})`,
+      missing
     );
-    return new Map(rows.map((row) => [row.id, row.slug]));
+    for (const row of rows) {
+      result.set(row.id, row.slug);
+      cacheOrganizationSlug(row.slug, {
+        id: row.id,
+        visibility: row.visibility ?? 'private',
+      });
+    }
+    for (const orgId of missing) {
+      if (!result.has(orgId)) orgIdSlugCache.set(orgId, null);
+    }
+    return result;
   }
 
-  async resolveOwner(slug: string, type: 'user' | 'organization'): Promise<ResolvedOwner | null> {
+  async resolveOwner(slug: string, type: 'organization'): Promise<ResolvedOwner | null> {
     const cacheKey = `${type}:${slug}`;
     const cached = ownerCache.get(cacheKey);
     if (cached !== undefined) return cached;
@@ -909,53 +950,48 @@ export class MultiTenantProvider implements WorkspaceProvider {
         n.slug,
         n.type,
         n.ref_id,
-        u.name as user_name,
         o.name as org_name
       FROM namespace n
-      LEFT JOIN "user" u ON n.type = 'user' AND n.ref_id = u.id
       LEFT JOIN organization o ON n.type = 'organization' AND n.ref_id = o.id
       WHERE n.slug = ${slug}
         AND n.type = ${type}
     `;
     if (rows.length === 0) {
       // Fallback: namespace entry may be missing, query organization table directly
-      if (type === 'organization') {
-        const orgRows = await sql`
-          SELECT id, name, slug FROM organization WHERE slug = ${slug} LIMIT 1
+      const orgRows = await sql`
+        SELECT id, name, slug FROM organization WHERE slug = ${slug} LIMIT 1
+      `;
+      if (orgRows.length > 0) {
+        const org = orgRows[0] as { id: string; name: string; slug: string };
+        // Self-heal: backfill the missing namespace entry
+        await sql`
+          INSERT INTO namespace (slug, type, ref_id)
+          VALUES (${slug}, 'organization', ${org.id})
+          ON CONFLICT (slug) DO NOTHING
         `;
-        if (orgRows.length > 0) {
-          const org = orgRows[0] as { id: string; name: string; slug: string };
-          // Self-heal: backfill the missing namespace entry
-          await sql`
-            INSERT INTO namespace (slug, type, ref_id)
-            VALUES (${slug}, 'organization', ${org.id})
-            ON CONFLICT (slug) DO NOTHING
-          `;
-          const result: ResolvedOwner = {
-            slug: org.slug,
-            type: 'organization',
-            id: org.id,
-            name: org.name,
-          };
-          ownerCache.set(cacheKey, result);
-          return result;
-        }
+        const result: ResolvedOwner = {
+          slug: org.slug,
+          type: 'organization',
+          id: org.id,
+          name: org.name,
+        };
+        ownerCache.set(cacheKey, result);
+        return result;
       }
       ownerCache.set(cacheKey, null);
       return null;
     }
     const row = rows[0] as {
       slug: string;
-      type: 'user' | 'organization';
+      type: 'organization';
       ref_id: string;
-      user_name: string | null;
       org_name: string | null;
     };
     const result: ResolvedOwner = {
       slug: row.slug,
       type: row.type,
       id: row.ref_id,
-      name: row.type === 'user' ? row.user_name : row.org_name,
+      name: row.org_name,
     };
     ownerCache.set(cacheKey, result);
     return result;

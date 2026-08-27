@@ -391,10 +391,17 @@ async function _resolvePath(
     throw new ToolUserError(`Owner '${ownerSlug}' is reserved`, 400);
   }
 
+  // User namespaces have no workspace visibility/grant record to authorize
+  // against. Reject them before owner resolution so this hidden direct tool
+  // cannot become a username oracle or spend a pointless database lookup.
+  if (isUserSpace) {
+    throw new ToolUserError('Workspace is not available for this authorization', 404);
+  }
+
   const sql = getDb();
 
   const resolved = await Sentry.startSpan({ name: 'resolveOwner', op: 'db' }, () =>
-    getWorkspaceProvider().resolveOwner(ownerSlug, isUserSpace ? 'user' : 'organization')
+    getWorkspaceProvider().resolveOwner(ownerSlug, 'organization')
   );
 
   if (!resolved) {
@@ -407,13 +414,6 @@ async function _resolvePath(
     id: resolved.id,
     name: resolved.name,
   };
-
-  // User namespaces have no workspace visibility/grant record to authorize
-  // against. Do not turn this hidden direct tool into a username/name oracle;
-  // organization namespaces are the only externally resolvable workspaces.
-  if (workspace.type !== 'organization') {
-    throw new ToolUserError('Workspace is not available for this authorization', 404);
-  }
 
   // The request boundary has already freshly verified this token/session's
   // membership in ctx.organizationId. Only body-selected foreign targets need

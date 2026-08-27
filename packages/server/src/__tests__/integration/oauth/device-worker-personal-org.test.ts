@@ -278,7 +278,7 @@ describe('device-worker grant always binds to the personal org', () => {
     expect(info.organizations.some((o) => o.slug === teamOrg.slug)).toBe(false);
   });
 
-  it('keeps a combined CLI device grant personal-anchored while snapshotting selected MCP workspaces', async () => {
+  it('keeps a combined CLI device grant personal-anchored and rolls back a disabled exchange', async () => {
     const app = buildApp();
     const sql = getTestDb();
     const personalOrg = await createTestOrganization({ name: 'CLI Personal' });
@@ -351,6 +351,35 @@ describe('device-worker grant always binds to the personal org', () => {
       env: multiWorkspaceEnv,
     });
     expect(approve.status).toBe(200);
+
+    // Approval can land on an enabled pod immediately before token exchange
+    // reaches a disabled pod during rollout. The exchange must fail closed
+    // without consuming the approved code, so a later enabled pod can finish.
+    const disabledTokenRes = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: da.device_code,
+        client_id: client.client_id,
+      },
+    });
+    expect(disabledTokenRes.status).toBe(400);
+    expect(await disabledTokenRes.json()).toMatchObject({
+      error: 'invalid_grant',
+      error_description: 'Multiple-workspace authorization is not enabled',
+    });
+    const preservedCodeRows = await sql`
+      SELECT status, granted_organization_ids
+      FROM oauth_device_codes
+      WHERE device_code = ${da.device_code}
+    `;
+    expect(preservedCodeRows[0]?.status).toBe('approved');
+    expect(
+      parsePgTextArray(preservedCodeRows[0]?.granted_organization_ids as string | null)
+    ).toEqual([personalOrg.id, teamOrg.id]);
+    const disabledExchangeTokens = await sql`
+      SELECT 1 FROM oauth_tokens WHERE client_id = ${client.client_id}
+    `;
+    expect(disabledExchangeTokens).toHaveLength(0);
 
     const tokenRes = await call(app, 'POST', '/oauth/token', {
       body: {

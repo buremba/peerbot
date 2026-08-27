@@ -28,6 +28,8 @@ interface QuerySqlResult {
 
 describe('MCP query_sdk / run_sdk tool surface', () => {
   let token: string;
+  let ownerUserId: string;
+  let oauthClientId: string;
   let ownerOrgId: string;
   let ownerSlug: string;
   let publicSlug: string;
@@ -39,8 +41,10 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     ownerOrgId = org.id;
     ownerSlug = org.slug;
     const owner = await createTestUser({ email: 'query-tool@test.example.com' });
+    ownerUserId = owner.id;
     await addUserToOrganization(owner.id, org.id, 'owner');
     const oauthClient = await createTestOAuthClient();
+    oauthClientId = oauthClient.client_id;
     token = (await createTestAccessToken(owner.id, org.id, oauthClient.client_id, { scope: 'mcp:read mcp:write mcp:admin' })).token;
     const publicOrg = await createTestOrganization({
       name: 'Query Tool Public',
@@ -95,6 +99,30 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(byName.has('search')).toBe(false);
     expect(byName.has('query')).toBe(false);
     expect(byName.has('run')).toBe(false);
+  });
+
+  // Authorization is explicitly pinned separately from host-facing safety
+  // hints. This prevents a future annotation refactor from silently hiding an
+  // audited retrieval tool from a read-only client.
+  it('keeps audited-read tools reachable with only mcp:read', async () => {
+    const readOnly = await createTestAccessToken(ownerUserId, ownerOrgId, oauthClientId, {
+      scope: 'mcp:read',
+    });
+    const result = await mcpListTools({ token: readOnly.token, orgSlug: ownerSlug });
+    const names = new Set(result.tools.map((t) => t.name));
+
+    for (const name of [
+      'search_memory',
+      'search_sdk',
+      'query_sdk',
+      'query_sql',
+      'get_approval',
+    ]) {
+      expect(names.has(name), `${name} must list for an mcp:read token`).toBe(true);
+    }
+    // Proves the read-only filter actually ran: write tools are withheld.
+    expect(names.has('run_sdk')).toBe(false);
+    expect(names.has('save_memory')).toBe(false);
   });
 
   it('does not advertise the retired legacy ChatGPT plugin manifest', async () => {

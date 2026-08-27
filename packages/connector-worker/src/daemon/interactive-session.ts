@@ -70,7 +70,11 @@ export function attachedInteractiveSession(target: object): InteractiveSession |
 
 export type InteractiveSessionCompletion =
   | { kind: 'completed'; durationMs: number; output: string }
-  | { kind: 'timeout' | 'disconnected' | 'shutdown'; durationMs: number; error: string };
+  | {
+      kind: 'timeout' | 'disconnected' | 'shutdown' | 'terminal';
+      durationMs: number;
+      error: string;
+    };
 
 export type InteractiveSessionDelivery =
   | { kind: 'not-delivered'; reason: string }
@@ -89,6 +93,7 @@ export interface InteractiveSessionHandoffOptions {
   memoryUrl: string;
   timeoutMs: number;
   shutdownSignal?: AbortSignal;
+  terminalSignal?: AbortSignal;
   cliLaunch?: { command: string; args: string[] };
   /** Exact installed Codex command; injected by tests or a binary override. */
   codexCommand?: string;
@@ -733,6 +738,7 @@ export async function handoffToInteractiveSession(
   let timeout: NodeJS.Timeout | undefined;
   let disconnectCheck: NodeJS.Timeout | undefined;
   let onShutdown: (() => void) | undefined;
+  let onTerminal: (() => void) | undefined;
   const nonce = randomBytes(32).toString('hex');
   const helperSockets = new Set<net.Socket>();
 
@@ -839,6 +845,9 @@ export async function handoffToInteractiveSession(
     if (opts.shutdownSignal && onShutdown) {
       opts.shutdownSignal.removeEventListener('abort', onShutdown);
     }
+    if (opts.terminalSignal && onTerminal) {
+      opts.terminalSignal.removeEventListener('abort', onTerminal);
+    }
     process.removeListener('exit', cleanup);
     for (const socket of helperSockets) socket.destroy();
     helperSockets.clear();
@@ -943,6 +952,17 @@ export async function handoffToInteractiveSession(
       };
       if (opts.shutdownSignal.aborted) onShutdown();
       else opts.shutdownSignal.addEventListener('abort', onShutdown, { once: true });
+    }
+    if (opts.terminalSignal) {
+      onTerminal = () => {
+        settle({
+          kind: 'terminal',
+          durationMs: Date.now() - started,
+          error: 'automation run became terminal before the interactive session completed it',
+        });
+      };
+      if (opts.terminalSignal.aborted) onTerminal();
+      else opts.terminalSignal.addEventListener('abort', onTerminal, { once: true });
     }
   }
 

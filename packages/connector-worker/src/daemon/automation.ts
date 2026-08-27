@@ -114,6 +114,7 @@ export function monitorDeviceAgentRun(
   label: string,
 ) {
   const abortController = new AbortController();
+  const terminalController = new AbortController();
   let shutdownRequested = false;
   const onShutdown = () => {
     shutdownRequested = true;
@@ -129,6 +130,7 @@ export function monitorDeviceAgentRun(
           log.info(
             `[executor] ${label} run ${runId} is no longer active; stopping the local CLI`,
           );
+          terminalController.abort();
           abortController.abort();
           clearInterval(heartbeat);
         }
@@ -140,6 +142,7 @@ export function monitorDeviceAgentRun(
 
   return {
     abortController,
+    terminalSignal: terminalController.signal,
     shutdownRequested: () => shutdownRequested,
     stop: () => {
       clearInterval(heartbeat);
@@ -824,6 +827,7 @@ export async function executeAutomationRun(
           token: agentSession.token,
           memoryUrl: agentSession.mcp_url,
           timeoutMs,
+          terminalSignal: monitor.terminalSignal,
           ...(selectedSession.kind === 'codex' && cfg.binaryOverrides?.codex
             ? { codexCommand: cfg.binaryOverrides.codex }
             : {}),
@@ -840,6 +844,21 @@ export async function executeAutomationRun(
               output: completion.output,
               error: null,
               exitCode: 0,
+              exitSignal: null,
+              exitReason: 'ok',
+              durationMs: completion.durationMs,
+            };
+          }
+          if (completion.kind === 'terminal') {
+            // Heartbeat 409 proves the server owns this run's terminal outcome.
+            // A follow-up exit report can only stamp first-report device
+            // provenance on a completed run or ack idempotently; it cannot
+            // overwrite that outcome. Report the intentional local stop as clean
+            // rather than inventing a timeout the session never hit.
+            return {
+              output: '',
+              error: null,
+              exitCode: null,
               exitSignal: null,
               exitReason: 'ok',
               durationMs: completion.durationMs,

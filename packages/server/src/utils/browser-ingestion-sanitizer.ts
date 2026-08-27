@@ -26,6 +26,23 @@ const MAX_ENCODED_CALLBACK_PROBE_DEPTH = 8;
 const MAX_NESTED_BROWSER_DEPTH = 16;
 const MAX_BROWSER_CONTAINERS = 10_000;
 const BROWSER_TEXT_TOKEN_RE = /[^\s<>'"`]+/g;
+/**
+ * A parameter separator captured out of untrusted page content, where a literal
+ * `&` may instead arrive HTML-escaped — including repeatedly, when a URL has
+ * been escaped more than once — or as a numeric character reference. Matching
+ * only `&amp;` lets `code=` ride in behind any other spelling and skip
+ * redaction, so every form is accepted here and the patterns using it are
+ * case-insensitive.
+ *
+ * The entity run is wrapped in an atomic group (`(?=(x))\N`, since JS has no
+ * possessive quantifier) so a long chain of escapes that ultimately fails to
+ * reach `=` is rejected at once. Plain `(?:...)*` backtracks into every shorter
+ * prefix of the run, which is quadratic on hostile input like `&amp;amp;…!`.
+ * Each pattern below passes the group number its own capture takes.
+ */
+function paramSeparator(group: number): string {
+	return `&(?=((?:amp;|#0*38;|#[xX]0*26;)*))\\${group}`;
+}
 const URL_FIELD_KEYS = new Set([
 	"url",
 	"urls",
@@ -102,11 +119,12 @@ function encodeNestedValue(value: string): string {
 }
 
 function containsSensitiveParameter(value: string): boolean {
+	// Group 1 is the atomic separator's lookahead capture; key and value follow.
 	for (const match of value.matchAll(
-		/(?:^|[?#]|&(?:amp;)?)([^=&?#\s]+)=([^&#\s<>'"`]*)/g,
+		new RegExp(`(?:^|[?#]|${paramSeparator(1)})([^=&?#\\s]+)=([^&#\\s<>'"\`]*)`, "gi"),
 	)) {
-		if (!SENSITIVE_KEYS.has(decodeParamKey(match[1] ?? ""))) continue;
-		const decodedValue = decodeValue(match[2] ?? "");
+		if (!SENSITIVE_KEYS.has(decodeParamKey(match[2] ?? ""))) continue;
+		const decodedValue = decodeValue(match[3] ?? "");
 		if (decodedValue && decodedValue !== BROWSER_REDACTED_MARKER) return true;
 	}
 	return false;
@@ -147,9 +165,10 @@ function redactParameterPart(part: string, depth: number): string {
 }
 
 function redactUrlPart(url: string, depth: number): string {
+	// Group 1 is the whole separator; group 2 is its atomic lookahead capture.
 	return url.replace(
-		/(^|[?#]|&(?:amp;)?)([^=&?#\s]+)=([^&#\s<>'"`]+)/g,
-		(_match, separator: string, key: string, value: string) =>
+		new RegExp(`(^|[?#]|${paramSeparator(2)})([^=&?#\\s]+)=([^&#\\s<>'"\`]+)`, "gi"),
+		(_match, separator: string, _entities: string, key: string, value: string) =>
 			`${separator}${redactParameterPart(`${key}=${value}`, depth)}`,
 	);
 }

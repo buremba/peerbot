@@ -400,7 +400,18 @@ describe("method-metadata", () => {
 					"run_id?: number",
 				],
 			],
-			["connections.update", ["display_name?: string"]],
+			[
+				"connections.update",
+				[
+					"display_name?: string",
+					"device_worker_id?: string | null",
+					"replace_config?: boolean",
+				],
+			],
+			[
+				"automations.create",
+				["device_worker_id?: string | null", "'agy' | null"],
+			],
 			["classifiers.classify", ["classifier_slug: string", "'llm' | 'user'"]],
 			[
 				"classifiers.create",

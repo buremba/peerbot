@@ -10,6 +10,10 @@ import { getErrorMessage, parseJsonObject } from "@lobu/core";
 import { getDb } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
+import {
+	DEVICE_AUTOWIRE_SUPPRESSION_ERROR,
+	hasDeviceAutowireSuppressionMarker,
+} from "../../../../utils/device-autowire-suppression";
 import logger from "../../../../utils/logger";
 import {
 	actionModesChanged,
@@ -423,6 +427,11 @@ export async function handleUpdateConnectorDefaultConfig(
 	args: Extract<ConnectionsArgs, { action: "update_connector_default_config" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+	// Auto-wire seeds these defaults into the connection rows it creates, so
+	// this is a config-write path for the reserved suppression marker too.
+	if (hasDeviceAutowireSuppressionMarker(args.default_connection_config)) {
+		return { error: DEVICE_AUTOWIRE_SUPPRESSION_ERROR };
+	}
 	// This is a full replacement, so removal is a modes change too. Compare and
 	// write under one row lock to preserve a concurrent human edit.
 	const sql = getDb();

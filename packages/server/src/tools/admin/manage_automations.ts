@@ -33,7 +33,7 @@ import {
   type ManageAutomationsResult,
 } from '@lobu/core/contracts/tools/manage-automations';
 import { resolveActingPrincipal, resolveWritePolicyDecision } from '../../authz/entity-policy';
-import { createDbClientFromEnv, getDb, getLockDb } from '../../db/client';
+import { createDbClientFromEnv, getDb, withSessionAdvisoryLock } from '../../db/client';
 import type { Env } from '../../index';
 import {
   currentMcpActivityAttribution,
@@ -279,19 +279,8 @@ async function resolveTargetAutomationGroupId(
  * tx-scoped `pg_advisory_xact_lock`) is required because the guard read and the
  * mutation write happen on different pooled connections and across separate
  * transactions — a tx-scoped lock would release at the guard's implicit commit,
- * before the mutation runs. We acquire + release on ONE reserved connection so
- * the session identity is stable (any pool connection could otherwise serve the
- * unlock and PG would error `you don't own a lock of type ExclusiveLock`).
- *
- * The reserved connection comes from the DEDICATED lock pool (getLockDb), not
- * the main pool. Lock holders camp on a connection for the whole critical
- * section while `fn` runs its reads/transactions on the MAIN pool; if holders
- * camped on the main pool, N >= DB_POOL_MAX concurrent group-locked writes
- * (same group or distinct groups alike) would consume every slot and starve
- * their own handlers — a permanent pool-wide deadlock. With a separate pool
- * the dependency is one-directional and deadlock-free; excess lock requests
- * queue FIFO and progress as holders finish. The lock pool's `lock_timeout`
- * bounds the advisory-lock wait itself (55P03 → coded 409 below).
+ * before the mutation runs. {@link withSessionAdvisoryLock} owns the reserved
+ * lock-pool connection, the `lock_timeout` bound, and the release path.
  *
  * Only the mutating write-gate actions with a resolvable target group are locked;
  * read-only actions and `create` (no pre-existing group) run `fn` directly.
@@ -305,33 +294,20 @@ async function withAutomationGroupLock<T>(
   const groupId = await resolveTargetAutomationGroupId(args, ctx);
   if (groupId == null) return fn();
 
-  const reserved = await getLockDb().reserve();
-  try {
-    // Session GUC (not a startup parameter — poolers reject lock_timeout on
-    // connect). Bounds advisory-lock wait: 55P03 → coded 409 below.
-    await reserved`SELECT set_config('lock_timeout', '30s', false)`;
-    try {
-      await reserved`SELECT pg_advisory_lock(hashtext(${AUTOMATION_GROUP_LOCK_NS}), ${groupId})`;
-    } catch (err) {
+  return withSessionAdvisoryLock(
+    { namespace: AUTOMATION_GROUP_LOCK_NS, value: groupId },
+    fn,
+    {
       // lock_timeout expiry (55P03): another holder kept the group busy past
-      // the bound. We do NOT hold the lock here — surface a clean retryable
+      // the bound. We do NOT hold the lock — surface a clean retryable
       // conflict instead of an unbounded stall.
-      if ((err as { code?: string }).code === '55P03') {
-        throw new ToolUserError(
+      onAcquireTimeout: () =>
+        new ToolUserError(
           'Another change to this Automation group is in progress; retry shortly.',
           409
-        );
-      }
-      throw err;
+        ),
     }
-    try {
-      return await fn();
-    } finally {
-      await reserved`SELECT pg_advisory_unlock(hashtext(${AUTOMATION_GROUP_LOCK_NS}), ${groupId})`;
-    }
-  } finally {
-    reserved.release();
-  }
+  );
 }
 
 /** Maps a manage_automations action to its agent_config write verb, or null for a

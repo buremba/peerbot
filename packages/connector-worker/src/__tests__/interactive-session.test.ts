@@ -780,6 +780,34 @@ describe('handoffToInteractiveSession', () => {
     expect(existsSync(helperDir)).toBe(false);
   });
 
+  test('a terminal heartbeat completes only its active handoff and removes the helper', async () => {
+    const fixture = await parentFixture();
+    const terminal = new AbortController();
+    const delivery = await handoffToInteractiveSession({
+      session: fixture.session,
+      runId: 85,
+      prompt: 'Do work',
+      token: 'secret',
+      memoryUrl: 'https://gateway.test/mcp/test',
+      // Long enough that only the terminal latch can settle this handoff — a
+      // short timeout would let the deadline win the race and pass for the
+      // wrong reason.
+      timeoutMs: 10_000,
+      disconnectCheckIntervalMs: 10_000,
+      terminalSignal: terminal.signal,
+    });
+
+    expect(delivery.kind).toBe('handed-off');
+    if (delivery.kind !== 'handed-off') throw new Error(delivery.reason);
+    const helperDir = path.dirname(delivery.helperPath);
+    terminal.abort();
+    expect(await delivery.completion).toMatchObject({
+      kind: 'terminal',
+      error: 'automation run became terminal before the interactive session completed it',
+    });
+    expect(existsSync(helperDir)).toBe(false);
+  });
+
   test('daemon shutdown destroys a half-open helper connection before cleanup', async () => {
     const fixture = await parentFixture();
     const shutdown = new AbortController();

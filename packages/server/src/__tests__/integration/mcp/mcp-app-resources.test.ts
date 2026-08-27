@@ -225,6 +225,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
     expect(content?._meta?.ui?.domain).toBe('http://localhost');
+    expect(content?._meta?.['openai/widgetDescription']).toBe(
+      'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.'
+    );
   });
 
   it('serves the stamped external template and registered stable assets', async () => {
@@ -393,6 +396,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toBe('http://localhost');
+    // Same reason as `domain`: ChatGPT reads the component's model-facing
+    // summary off the template it captured at connect time, so the key rides
+    // the listing, not only `resources/read`.
+    expect(resource._meta?.['openai/widgetDescription']).toBe(resource.description);
   });
 
   it('omits the app domain for a host that advertises Apps without OpenAI visibility', async () => {

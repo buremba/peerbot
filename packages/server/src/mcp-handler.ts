@@ -214,7 +214,12 @@ const MCP_APP_RESOURCES: Record<
   string,
   {
     name: string;
-    /** Surfaced on `resources/list` — clients show it in resource browsers. */
+    /**
+     * Surfaced as the resource's typed `description` on `resources/list`, where
+     * clients show it in resource browsers, and as `openai/widgetDescription`
+     * on both the listed and the read template, where ChatGPT gives it to the
+     * model when the component loads instead of narrating the card itself.
+     */
     description: string;
     appDir: string;
     /**
@@ -341,6 +346,24 @@ function mcpAppUiMeta(
   };
 }
 
+/**
+ * Root `_meta` for an MCP App resource. `openai/widgetDescription` sits beside
+ * the nested `ui` block rather than inside it: it is an OpenAI-namespaced key,
+ * and ChatGPT hands it to the model when the component loads so the model stops
+ * re-describing the rendered card in prose. Like `ui.domain`, it has to ride the
+ * listed template as well as the read one because a host captures that copy at
+ * connect time.
+ */
+function mcpAppResourceMeta(
+  authCtx: SessionAuthContext,
+  app: (typeof MCP_APP_RESOURCES)[string]
+) {
+  return {
+    ui: mcpAppUiMeta(authCtx, app),
+    'openai/widgetDescription': app.description,
+  };
+}
+
 function createServerForContext(
   env: Env,
   authCtx: SessionAuthContext,
@@ -426,9 +449,7 @@ function createServerForContext(
         name: meta.name,
         description: meta.description,
         mimeType: MCP_APP_MIME_TYPE,
-        _meta: {
-          ui: mcpAppUiMeta(authCtx, meta),
-        },
+        _meta: mcpAppResourceMeta(authCtx, meta),
       })),
       ...Object.entries(MCP_SKILL_RESOURCES).map(([uri, meta]) => ({
         uri,
@@ -474,9 +495,7 @@ function createServerForContext(
           uri,
           mimeType: MCP_APP_MIME_TYPE,
           text: html,
-          _meta: {
-            ui: mcpAppUiMeta(authCtx, app),
-          },
+          _meta: mcpAppResourceMeta(authCtx, app),
         },
       ],
     };

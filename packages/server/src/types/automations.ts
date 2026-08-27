@@ -132,6 +132,10 @@ export const AutomationMetadataSchema = Type.Object({
   status: Type.Union([Type.Literal('active'), Type.Literal('archived')]),
   triggers: Type.Optional(Type.Array(AutomationTriggerSchema)),
   next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  consecutive_scheduled_failures: Type.Optional(Type.Integer({ minimum: 0 })),
+  schedule_auto_paused_at: Type.Optional(
+    Type.Union([Type.String(), Type.Null()])
+  ),
   agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   delivery_target: Type.Optional(
     Type.Union([AutomationDeliveryTargetSchema, Type.Null()])

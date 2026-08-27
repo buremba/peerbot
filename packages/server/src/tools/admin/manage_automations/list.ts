@@ -58,6 +58,8 @@ export async function handleList(
       i.updated_at,
       i.triggers,
       i.next_run_at,
+      i.consecutive_scheduled_failures,
+      i.schedule_auto_paused_at,
       i.last_event_activation_at AS health_last_event_activation_at,
       i.agent_id,
       i.device_worker_id,
@@ -253,6 +255,9 @@ export async function handleList(
 		const automationHealth = computeAutomationHealth({
 			status: automation.status,
 			nextRunAt: automation.next_run_at,
+			consecutiveScheduledFailures:
+				automation.consecutive_scheduled_failures,
+			scheduleAutoPausedAt: automation.schedule_auto_paused_at,
 			latestRunStatus: automation.automation_run_status,
 			latestRunCreatedAt: automation.automation_run_created_at,
 			latestRunError: (rest as Record<string, unknown>).automation_run_error as

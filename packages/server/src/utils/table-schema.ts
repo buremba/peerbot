@@ -464,6 +464,8 @@ export const QUERYABLE_SCHEMA = {
         'timezone',
         'triggers',
         'next_run_at',
+        'consecutive_scheduled_failures',
+        'schedule_auto_paused_at',
         'agent_id',
         'model_config',
         'execution_config',

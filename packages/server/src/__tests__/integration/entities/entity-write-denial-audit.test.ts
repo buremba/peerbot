@@ -4,11 +4,13 @@
  * denial row committed first; the attempted entity mutation must never run.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
 import { manageEntity } from "../../../tools/admin/manage_entity";
 import type { ToolContext } from "../../../tools/registry";
-import { persistEntityWritePolicyDenial } from "../../../utils/entity-write-denial-audit";
+import { recordEntityWriteDenial } from "../../../utils/entity-write-denial-audit";
+import { createEntity } from "../../../utils/entity-management";
 import { ToolUserError } from "../../../utils/errors";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -45,8 +47,8 @@ function agentContext(
 async function policyEffect(
 	organizationId: string,
 	principalId: string,
-	action: "create" | "delete",
-	effect: "approval" | "deny",
+	action: "create" | "update" | "delete",
+	effect: "auto" | "approval" | "deny",
 ): Promise<void> {
 	const sql = getTestDb();
 	const [policy] = await sql<{ id: number }[]>`
@@ -61,6 +63,53 @@ async function policyEffect(
 		INSERT INTO write_policy_action_effects (policy_id, action, effect)
 		VALUES (${policy.id}, ${action}, ${effect})
 	`;
+}
+
+const DENY_ATTEMPTS_RULE = `
+export default (row) => {
+  if (row.op === "create" && row.next.status === "blocked") {
+    row.deny("blocked invoices cannot be created");
+  }
+  if (row.op === "update" && row.changed("status") && row.next.status === "blocked") {
+    row.deny("blocked is not a legal status");
+  }
+  if (row.op === "update" && row.changed("$deleted") && row.next.$deleted) {
+    row.deny("this invoice cannot be deleted");
+  }
+  if (row.op === "update" && row.changed("$merged_into") && row.next.$merged_into) {
+    row.deny("this invoice cannot be merged");
+  }
+};
+`;
+
+let denyAttemptsCompiled: string;
+
+async function ruledWorkspace() {
+	const sql = getTestDb();
+	const org = await createTestOrganization({ name: "Denied Rule Audit Org" });
+	const user = await createTestUser();
+	await addUserToOrganization(user.id, org.id, "owner");
+	const agent = await createTestAgent({
+		organizationId: org.id,
+		ownerUserId: user.id,
+	});
+	await sql`
+		INSERT INTO entity_types (
+			organization_id, slug, name, metadata_schema, rules_compiled,
+			created_at, updated_at
+		) VALUES (
+			${org.id}, 'invoice', 'Invoice', ${sql.json({ type: "object" })},
+			${denyAttemptsCompiled}, current_timestamp, current_timestamp
+		)
+	`;
+	return { org, user, agent };
+}
+
+function humanContext(organizationId: string, userId: string): ToolContext {
+	return {
+		...agentContext(organizationId, userId, ""),
+		agentId: null,
+	} as ToolContext;
 }
 
 async function denialEvents(organizationId: string) {
@@ -78,6 +127,10 @@ async function denialEvents(organizationId: string) {
 }
 
 describe("manage_entity policy-denial audit", () => {
+	beforeAll(async () => {
+		denyAttemptsCompiled = await compileEntityRule(DENY_ATTEMPTS_RULE);
+	}, 60_000);
+
 	beforeEach(async () => {
 		await cleanupTestDatabase();
 		await initWorkspaceProvider();
@@ -255,9 +308,12 @@ describe("manage_entity policy-denial audit", () => {
 			userId: "user_missing_for_audit_fk",
 		};
 		const audit = {
+			organizationId: org.id,
 			attemptId,
+			denialSource: "policy" as const,
 			operation: "create" as const,
 			reason: "Policy denied creating brand",
+			deniedFields: [],
 			entityId: null,
 			entityType: "brand",
 			entityOrganizationId: null,
@@ -271,12 +327,12 @@ describe("manage_entity policy-denial audit", () => {
 		};
 
 		await expect(
-			persistEntityWritePolicyDenial({ ...audit, ctx: invalidCtx }),
+			recordEntityWriteDenial({ ...audit, ctx: invalidCtx }),
 		).rejects.toThrow(
 			"Entity write was blocked, but its denial audit could not be persisted",
 		);
-		await persistEntityWritePolicyDenial({ ...audit, ctx: validCtx });
-		await persistEntityWritePolicyDenial({ ...audit, ctx: validCtx });
+		await recordEntityWriteDenial({ ...audit, ctx: validCtx });
+		await recordEntityWriteDenial({ ...audit, ctx: validCtx });
 
 		const events = await denialEvents(org.id);
 		expect(events).toHaveLength(1);
@@ -391,5 +447,182 @@ describe("manage_entity policy-denial audit", () => {
 			WHERE organization_id = ${org.id} AND name = 'Deferred entity'
 		`;
 		expect(entities).toHaveLength(0);
+	});
+
+	it("persists an update policy denial after rollback with field names only", async () => {
+		const org = await createTestOrganization({ name: "Denied Update Audit Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const entity = await createTestEntity({
+			organization_id: org.id,
+			entity_type: "brand",
+			name: "Policy protected",
+			created_by: user.id,
+		});
+		await policyEffect(org.id, agent.agentId, "update", "deny");
+		const secretValue = "attempted-update-value-must-not-persist";
+
+		await expect(
+			manageEntity(
+				{
+					action: "update",
+					entity_id: entity.id,
+					metadata: { private_attempt: secretValue },
+				},
+				env,
+				agentContext(org.id, user.id, agent.agentId),
+			),
+		).rejects.toMatchObject({ httpStatus: 403 });
+
+		const [storedEntity] = await getTestDb()`
+			SELECT metadata FROM entities WHERE id = ${entity.id}
+		`;
+		expect(storedEntity.metadata).toEqual({});
+		const events = await denialEvents(org.id);
+		expect(events).toHaveLength(1);
+		expect(events[0].metadata).toMatchObject({
+			denial_source: "policy",
+			operation: "update",
+			denied_fields: ["private_attempt"],
+			entity_id: entity.id,
+			entity_type: "brand",
+		});
+		expect(JSON.stringify(events[0])).not.toContain(secretValue);
+	});
+
+	it("persists create and update rule denials after rollback without attempted values", async () => {
+		const { org, user, agent } = await ruledWorkspace();
+		const ctx = agentContext(org.id, user.id, agent.agentId);
+		const createSecret = "blocked-create-secret";
+
+		await expect(
+			manageEntity(
+				{
+					action: "create",
+					entity_type: "invoice",
+					name: "Denied invoice",
+					metadata: { status: "blocked", private_attempt: createSecret },
+				},
+				env,
+				ctx,
+			),
+		).rejects.toThrow("blocked invoices cannot be created");
+
+		const invoice = await createEntity({
+			entity_type: "invoice",
+			name: "Legal invoice",
+			organization_id: org.id,
+			created_by: user.id,
+			metadata: { status: "draft", untouched: "keep" },
+		});
+		const updateSecret = "blocked-update-secret";
+		await expect(
+			manageEntity(
+				{
+					action: "update",
+					entity_id: invoice.id,
+					metadata: { status: "blocked", private_attempt: updateSecret },
+				},
+				env,
+				ctx,
+			),
+		).rejects.toThrow("blocked is not a legal status");
+
+		const [stored] = await getTestDb()`
+			SELECT metadata FROM entities WHERE id = ${invoice.id}
+		`;
+		expect(stored.metadata).toMatchObject({ status: "draft", untouched: "keep" });
+		const events = await denialEvents(org.id);
+		expect(events).toHaveLength(2);
+		expect(events[0].metadata).toMatchObject({
+			denial_source: "rule",
+			operation: "create",
+			entity_id: null,
+			entity_type: "invoice",
+		});
+		expect(events[0].metadata.denied_fields).toEqual(
+			expect.arrayContaining(["status", "private_attempt"]),
+		);
+		expect(events[1].metadata).toMatchObject({
+			denial_source: "rule",
+			operation: "update",
+			denied_fields: ["status", "private_attempt"],
+			entity_id: invoice.id,
+			entity_type: "invoice",
+		});
+		const serialized = JSON.stringify(events);
+		expect(serialized).not.toContain(createSecret);
+		expect(serialized).not.toContain(updateSecret);
+	});
+
+	it("audits real delete and merge rule denials but not their dry-run previews", async () => {
+		const { org, user, agent } = await ruledWorkspace();
+		await policyEffect(org.id, agent.agentId, "delete", "auto");
+		const first = await createEntity({
+			entity_type: "invoice",
+			name: "First invoice",
+			organization_id: org.id,
+			created_by: user.id,
+			metadata: { status: "draft" },
+		});
+		const second = await createEntity({
+			entity_type: "invoice",
+			name: "Second invoice",
+			organization_id: org.id,
+			created_by: user.id,
+			metadata: { status: "draft" },
+		});
+		const agentCtx = agentContext(org.id, user.id, agent.agentId);
+
+		await manageEntity(
+			{ action: "delete", entity_id: first.id, dry_run: true },
+			env,
+			agentCtx,
+		);
+		await manageEntity(
+			{
+				action: "merge",
+				entity_id: first.id,
+				winner_entity_id: second.id,
+				dry_run: true,
+			},
+			env,
+			humanContext(org.id, user.id),
+		);
+		expect(await denialEvents(org.id)).toHaveLength(0);
+
+		await expect(
+			manageEntity(
+				{ action: "delete", entity_id: first.id },
+				env,
+				agentCtx,
+			),
+		).rejects.toThrow("this invoice cannot be deleted");
+		await expect(
+			manageEntity(
+				{
+					action: "merge",
+					entity_id: first.id,
+					winner_entity_id: second.id,
+				},
+				env,
+				humanContext(org.id, user.id),
+			),
+		).rejects.toThrow("this invoice cannot be merged");
+
+		const events = await denialEvents(org.id);
+		expect(events).toHaveLength(2);
+		expect(events.map((event) => event.metadata.operation)).toEqual([
+			"delete",
+			"merge",
+		]);
+		expect(events.map((event) => event.metadata.denied_fields)).toEqual([
+			["$deleted"],
+			["$merged_into"],
+		]);
 	});
 });

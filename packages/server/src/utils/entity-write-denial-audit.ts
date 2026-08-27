@@ -1,22 +1,45 @@
 import { retryWithBackoff } from "@lobu/core";
 import type { ActingPrincipal } from "../authz/entity-policy";
+import type { DbClient } from "../db/client";
 import { currentMcpActivityEventMetadata } from "../lobu/stores/mcp-client-conversations";
 import type { ToolContext } from "../tools/registry";
+import { ToolUserError } from "./errors";
 import { insertConnectionlessAuditEvent } from "./insert-event";
 import logger from "./logger";
+import { isUniqueViolation } from "./pg-errors";
 
-export type EntityWriteDenialOperation = "create" | "delete";
-
-export interface EntityWritePolicyDenialAudit {
-	ctx: ToolContext;
-	attemptId: string;
-	operation: EntityWriteDenialOperation;
+export interface EntityWriteDenialDescription {
+	denialSource: "policy" | "rule";
+	operation: string;
 	reason: string;
+	deniedFields: string[];
 	entityId: number | null;
-	entityType: string;
+	entityType: string | null;
 	entityOrganizationId: string | null;
-	actor: ActingPrincipal;
+}
+
+export interface EntityWriteDenialAudit extends EntityWriteDenialDescription {
+	organizationId: string;
+	ctx?: ToolContext;
+	attemptId: string;
+	actor: Pick<ActingPrincipal, "kind" | "id"> | null;
 	automationId: number | null;
+	runId?: number | null;
+	createdBy?: string | null;
+	clientId?: string | null;
+	/** A healthy caller-owned transaction, never the transaction that rejected. */
+	sql?: DbClient;
+}
+
+/** Explicitly marks a policy refusal that originated inside a transaction. */
+export class EntityPolicyDenialError extends ToolUserError {
+	readonly denial: EntityWriteDenialDescription;
+
+	constructor(denial: Omit<EntityWriteDenialDescription, "denialSource">) {
+		super(denial.reason, 403);
+		this.name = "EntityPolicyDenialError";
+		this.denial = { ...denial, denialSource: "policy" };
+	}
 }
 
 const LOAD_BEARING_AUDIT_RETRY = {
@@ -24,83 +47,126 @@ const LOAD_BEARING_AUDIT_RETRY = {
 	baseDelay: 500,
 } as const;
 
+const AUDIT_IDEMPOTENCY_INDEX = "idx_events_org_idempotency_key";
+
 /**
- * Persist the append-only policy-denial row before manage_entity returns its
- * 403. This write is deliberately load-bearing: if the audit cannot commit,
- * the caller receives an operational failure and the guarded mutation remains
- * unreachable.
+ * Persist one privacy-safe, append-only entity-write denial.
+ *
+ * Pool writes retry once and reconcile through the existing event idempotency
+ * key. Caller-owned transaction writes use a savepoint so a concurrent replay
+ * cannot poison the surrounding completion transaction. Automation rows and
+ * approvals supply durable attempt ids; manage_entity supplies one UUID per
+ * invocation because its transport exposes no stable cross-delivery id.
  */
-export async function persistEntityWritePolicyDenial(
-	params: EntityWritePolicyDenialAudit,
+export async function recordEntityWriteDenial(
+	params: EntityWriteDenialAudit,
 ): Promise<void> {
 	const {
+		organizationId,
 		ctx,
 		attemptId,
+		denialSource,
 		operation,
 		reason,
+		deniedFields,
 		entityId,
 		entityType,
 		entityOrganizationId,
 		actor,
 		automationId,
+		sql,
 	} = params;
+	const runId = params.runId ?? ctx?.actingRunId ?? null;
+	const createdBy = params.createdBy ?? ctx?.userId ?? null;
+	const clientId = params.clientId ?? ctx?.clientId ?? null;
 	const sameOrgEntityIds =
-		entityId !== null && entityOrganizationId === ctx.organizationId
+		entityId !== null && entityOrganizationId === organizationId
 			? [entityId]
 			: [];
 	const originId = `entity_write_denial:v1:${attemptId}:${operation}`;
+	const idempotencyKey = `audit:${originId}`;
+	const event = {
+		entityIds: sameOrgEntityIds,
+		organizationId,
+		originId,
+		title: `Entity ${operation} denied by ${denialSource}`,
+		payloadType: "empty" as const,
+		semanticType: "change" as const,
+		originType: "entity_write_denial",
+		metadata: {
+			category: "entity_write_denial",
+			denial_source: denialSource,
+			operation,
+			reason,
+			denied_fields: deniedFields,
+			entity_id: entityId,
+			entity_type: entityType,
+			principal_kind: actor?.kind ?? null,
+			principal_id: actor?.id ?? null,
+			automation_id: automationId,
+			run_id: runId,
+			tool_call_id_or_equivalent: attemptId,
+			...(ctx ? currentMcpActivityEventMetadata(ctx) : {}),
+		},
+		createdBy,
+		clientId,
+		automationId,
+		runId,
+	};
+
+	const insertOnPool = () =>
+		insertConnectionlessAuditEvent(
+			event,
+			{ subject: "entity", op: "denied" },
+			{ lockAndPruneEntityRefs: true },
+		);
+	const findExisting = (db: DbClient) => db<{ id: number }>`
+		SELECT id FROM events
+		WHERE organization_id = ${organizationId}
+		  AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+		LIMIT 1
+	`;
+	const insertOnTransaction = async (tx: DbClient): Promise<void> => {
+		if ((await findExisting(tx)).length > 0) return;
+		try {
+			await tx.savepoint((sp) =>
+				insertConnectionlessAuditEvent(
+					event,
+					{ subject: "entity", op: "denied" },
+					{ sql: sp, lockAndPruneEntityRefs: true },
+				),
+			);
+		} catch (error) {
+			if (
+				!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX) ||
+				(await findExisting(tx)).length === 0
+			) {
+				throw error;
+			}
+		}
+	};
 
 	try {
-		await retryWithBackoff(
-			() =>
-				insertConnectionlessAuditEvent(
-					{
-						entityIds: sameOrgEntityIds,
-						organizationId: ctx.organizationId,
-						originId,
-						title: `Entity ${operation} denied by policy`,
-						payloadType: "empty",
-						semanticType: "change",
-						originType: "entity_write_denial",
-						metadata: {
-							category: "entity_write_denial",
-							denial_source: "policy",
-							operation,
-							reason,
-							denied_fields: [],
-							entity_id: entityId,
-							entity_type: entityType,
-							principal_kind: actor.kind,
-							principal_id: actor.id,
-							automation_id: automationId,
-							run_id: ctx.actingRunId ?? null,
-							tool_call_id_or_equivalent: attemptId,
-							...currentMcpActivityEventMetadata(ctx),
-						},
-						createdBy: ctx.userId,
-						clientId: ctx.clientId ?? null,
-						automationId,
-						runId: ctx.actingRunId ?? null,
-					},
-					{ subject: "entity", op: "denied" },
-				),
-			LOAD_BEARING_AUDIT_RETRY,
-		);
+		if (sql) {
+			await insertOnTransaction(sql);
+		} else {
+			await retryWithBackoff(insertOnPool, LOAD_BEARING_AUDIT_RETRY);
+		}
 	} catch (err) {
 		logger.error(
 			{
 				err,
-				organizationId: ctx.organizationId,
+				organizationId,
 				attemptId,
 				operation,
-				denialSource: "policy",
+				denialSource,
 				reason,
 				entityId,
 				entityType,
-				principalKind: actor.kind,
-				principalId: actor.id,
+				principalKind: actor?.kind ?? null,
+				principalId: actor?.id ?? null,
 				automationId,
-				runId: ctx.actingRunId ?? null,
+				runId,
 			},
 			"[entity-write-denial] load-bearing denial audit failed; entity mutation remains blocked",
 		);

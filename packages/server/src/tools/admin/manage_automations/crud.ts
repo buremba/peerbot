@@ -670,6 +670,10 @@ export async function handleUpdate(
   const touchesCadence = args.triggers !== undefined;
   const effectiveSchedule = touchesCadence ? triggerWrite.schedule : currentRow.schedule;
   const effectiveTimezone = touchesCadence ? triggerWrite.timezone : currentRow.timezone;
+  const cadenceChanged =
+    touchesCadence &&
+    (effectiveSchedule !== currentRow.schedule ||
+      effectiveTimezone !== currentRow.timezone);
   const projectionNow = new Date();
   const currentGranularity = inferAutomationGranularityFromSchedule(currentRow.schedule);
   const effectiveGranularity = inferAutomationGranularityFromSchedule(effectiveSchedule);
@@ -689,6 +693,8 @@ export async function handleUpdate(
       timezone = CASE WHEN ${touchesCadence} THEN ${triggerWrite.timezone ?? null} ELSE timezone END,
       triggers = CASE WHEN ${has('triggers')} THEN ${toJsonParam(sql, patch.triggers)} ELSE triggers END,
       next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+      consecutive_scheduled_failures = CASE WHEN ${cadenceChanged} THEN 0 ELSE consecutive_scheduled_failures END,
+      schedule_auto_paused_at = CASE WHEN ${cadenceChanged} THEN NULL ELSE schedule_auto_paused_at END,
       next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
       completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
       window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,

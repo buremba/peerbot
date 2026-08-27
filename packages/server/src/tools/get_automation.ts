@@ -227,6 +227,8 @@ interface AutomationQueryRow {
   schedule: string | null;
   triggers: AutomationTrigger[] | null;
   next_run_at: string | null;
+  consecutive_scheduled_failures: number;
+  schedule_auto_paused_at: string | null;
   last_event_activation_at: string | null;
   agent_id: string | null;
   delivery_target: {
@@ -565,6 +567,8 @@ async function getAutomationImpl(
         i.schedule,
         i.triggers,
         i.next_run_at,
+        i.consecutive_scheduled_failures,
+        i.schedule_auto_paused_at,
         i.last_event_activation_at,
         i.agent_id,
         i.delivery_target,
@@ -798,6 +802,9 @@ async function getAutomationImpl(
     const automationHealth = computeAutomationHealth({
       status: automationRow.status,
       nextRunAt: automationRow.next_run_at,
+      consecutiveScheduledFailures:
+        automationRow.consecutive_scheduled_failures,
+      scheduleAutoPausedAt: automationRow.schedule_auto_paused_at,
       latestRunStatus: automationRow.automation_run_status,
       latestRunCreatedAt: automationRow.automation_run_created_at,
       latestRunError: automationRunError,
@@ -814,6 +821,9 @@ async function getAutomationImpl(
       status: automationRow.status as 'active' | 'archived',
       triggers: automationRow.triggers ?? [],
       next_run_at: automationRow.next_run_at,
+      consecutive_scheduled_failures:
+        automationRow.consecutive_scheduled_failures,
+      schedule_auto_paused_at: automationRow.schedule_auto_paused_at,
       agent_id: automationRow.agent_id,
       delivery_target: automationRow.delivery_target ?? null,
       device_worker_id: automationRow.device_worker_id ?? null,

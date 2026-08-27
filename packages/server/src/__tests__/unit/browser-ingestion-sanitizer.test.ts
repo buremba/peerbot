@@ -45,6 +45,34 @@ describe("browser ingestion sanitizer", () => {
 		expect(sanitizeBrowserText("https://example.test/?keep=1&amp;code=secret")).toBe(
 			"https://example.test/?keep=1&amp;code=REDACTED",
 		);
+		// An escaped separator must not smuggle a sensitive parameter past
+		// redaction, whatever spelling the page used for `&`.
+		for (const separator of [
+			"&AMP;",
+			"&Amp;",
+			"&amp;amp;",
+			"&AMP;AMP;",
+			"&#38;",
+			"&#038;",
+			"&#x26;",
+			"&#X26;",
+			"&#x0026;",
+			"&amp;#38;",
+		]) {
+			expect(sanitizeBrowserText(`https://example.test/?keep=1${separator}code=secret`)).toBe(
+				`https://example.test/?keep=1${separator}code=REDACTED`,
+			);
+		}
+		expect(sanitizeBrowserText("https://example.test/?keep=1&AMP;CODE=secret")).toBe(
+			"https://example.test/?keep=1&AMP;CODE=REDACTED",
+		);
+		// Keys that merely begin with "amp" are ordinary parameters, not separators.
+		expect(sanitizeBrowserText("https://example.test/?keep=1&amplitude=7")).toBe(
+			"https://example.test/?keep=1&amplitude=7",
+		);
+		expect(sanitizeBrowserText("https://example.test/?q=research&amp;lang=en")).toBe(
+			"https://example.test/?q=research&amp;lang=en",
+		);
 		expect(sanitizeBrowserText("code%3Dencoded-query-secret")).toBe("REDACTED");
 		expect(sanitizeBrowserText("https://example.test/?next=code%3Dnested-secret")).toBe(
 			"https://example.test/?next=REDACTED",

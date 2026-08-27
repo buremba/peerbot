@@ -24,6 +24,7 @@ const SOURCE_SQL = 'SELECT id, name, amount FROM vfsurf_ext ORDER BY id';
 
 describe('explicit feed source reads', () => {
   let orgId: string;
+  let orgSlug: string;
   let ownerId: string;
   let ownerCtx: ToolContext;
   let publicFeedId: number;
@@ -35,6 +36,7 @@ describe('explicit feed source reads', () => {
     contentAgentId: undefined,
     contentLimit: 10,
     env: {} as Env,
+    workspaceSlug: orgSlug,
   });
   const ownerScope = (): AuthzScope => ({ organizationId: orgId, principal: ownerId });
   const memberScope = (): AuthzScope => ({ organizationId: orgId, principal: 'member-x' });
@@ -53,6 +55,7 @@ describe('explicit feed source reads', () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'ExplicitFeedReads' });
     orgId = org.id;
+    orgSlug = org.slug;
     const user = await createTestUser({ email: 'explicit-feed-read@test.com' });
     ownerId = user.id;
     await addUserToOrganization(user.id, org.id, 'owner');

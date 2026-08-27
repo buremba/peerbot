@@ -153,10 +153,14 @@ export interface ToolContext {
   /** True when the MCP URL pinned an org slug (e.g. `/mcp/acme`). */
   scopedToOrg: boolean;
   /**
-   * Whether `client.org(other)` is allowed inside the sandbox. Computed at session
-   * start as `tokenType === 'oauth' && !scopedToOrg`.
+   * Whether `client.org(slug)` is allowed inside the sandbox. True only for a
+   * bare `/mcp` OAuth context with an explicit effective grant and no bound identity.
    */
   allowCrossOrg: boolean;
+  /** Explicit OAuth workspace snapshot; null for PAT/session/internal contexts. */
+  grantedOrganizationIds: string[] | null;
+  /** Whether an unqualified direct search should fan out over live grants. */
+  directSearchFederation: boolean;
   /**
    * Set by the sandbox when the script's wall-clock budget runs out. Handlers
    * that opt in (today: `query_sql` and `client.query`) race their work

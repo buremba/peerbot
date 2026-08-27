@@ -84,13 +84,8 @@ beforeEach(async () => {
 
   // Both caches are module-level and survive resetTestDatabase, so a prior
   // test's slug→id and org:user→role entries would outlive the rows.
-  const { invalidateMembershipRoleCache, invalidateOrgSlugCache } = await import(
-    '../multi-tenant.js'
-  );
-  invalidateOrgSlugCache(ORG);
-  invalidateOrgSlugCache(OTHER_ORG);
-  invalidateMembershipRoleCache(ORG, USER);
-  invalidateMembershipRoleCache(OTHER_ORG, USER);
+  const { clearMultiTenantCachesForTests } = await import('../multi-tenant-caches.js');
+  clearMultiTenantCachesForTests();
 
   const { PersonalAccessTokenService } = await import('../../auth/tokens.js');
   token = (await new PersonalAccessTokenService(sql).create(USER, ORG, 'pause-wiring')).token;
@@ -104,10 +99,11 @@ beforeEach(async () => {
   await sql`
     INSERT INTO oauth_tokens (
       id, token_type, token_hash, client_id, user_id, organization_id,
-      scope, expires_at
+      granted_organization_ids, authorization_grant_type, scope, expires_at
     ) VALUES (
       'pause-wiring-oauth-token', 'access', ${hashToken(oauthToken)},
-      'pause-wiring-client', ${USER}, ${ORG}, 'mcp:read mcp:write mcp:admin',
+      'pause-wiring-client', ${USER}, ${ORG}, ARRAY[${ORG}, ${OTHER_ORG}]::text[],
+      'authorization_code', 'mcp:read mcp:write mcp:admin',
       now() + interval '1 hour'
     )
   `;
@@ -198,6 +194,27 @@ async function request(opts: {
 }
 
 describe('promotions pause is enforced in the auth funnel', () => {
+  test('org slug lookups cache both directions and invalidate together', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const { invalidateOrgSlugCache, MultiTenantProvider } = await import('../multi-tenant.js');
+    const sql = getDb();
+    const provider = new MultiTenantProvider();
+
+    expect(await provider.getOrgSlug(ORG)).toBe(ORG);
+    expect(await provider.getOrgSlugs([ORG, OTHER_ORG])).toEqual(
+      new Map([
+        [ORG, ORG],
+        [OTHER_ORG, OTHER_ORG],
+      ])
+    );
+
+    const renamed = `${ORG}-renamed`;
+    await sql`UPDATE organization SET slug = ${renamed} WHERE id = ${ORG}`;
+    expect(await provider.getOrgSlug(ORG)).toBe(ORG);
+    invalidateOrgSlugCache(ORG);
+    expect(await provider.getOrgSlug(ORG)).toBe(renamed);
+  });
+
   test('a paused org refuses an apply-run mutation before the handler runs', async () => {
     await pauseOrg();
     const res = await request({ method: 'PATCH', applyId: APPLY_ID });
@@ -253,7 +270,7 @@ describe('promotions pause is enforced in the auth funnel', () => {
     expect(res.reached).toBe(true);
   });
 
-  test('OAuth resolves the requested member org before consulting its pause', async () => {
+  test('OAuth resolves an explicitly granted member org before consulting its pause', async () => {
     await pauseOrg(OTHER_ORG);
     const res = await request({
       method: 'PATCH',

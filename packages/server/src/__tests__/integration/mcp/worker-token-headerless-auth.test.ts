@@ -126,6 +126,42 @@ describe('worker-token MCP auth without the direct-auth header', () => {
     expect(body.error).toBe('insufficient_scope');
   });
 
+  it('keeps an Automation worker resolve_path call pinned to its signed workspace', async () => {
+    const initResponse = await post(`/mcp/${org.slug}`, {
+      body: INITIALIZE_BODY,
+      token: workerToken,
+    });
+    const sessionId = initResponse.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    await post(`/mcp/${org.slug}`, {
+      body: { jsonrpc: '2.0', method: 'notifications/initialized' },
+      token: workerToken,
+      headers: { 'mcp-session-id': sessionId as string },
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'resolve_path',
+          arguments: { path: `/${otherOrg.slug}`, include_bootstrap: true },
+        },
+      },
+      token: workerToken,
+      headers: { 'mcp-session-id': sessionId as string },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      result: {
+        isError: true,
+        content: [{ text: 'Workspace is not available for this authorization' }],
+      },
+    });
+  });
+
   it('refuses a worker token with no signed organization context', async () => {
     const orglessToken = generateWorkerToken(AGENT_ID, 'orgless-conversation', 'api-orgless', {
       channelId: 'api-orgless',

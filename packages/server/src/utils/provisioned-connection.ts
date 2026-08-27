@@ -52,6 +52,8 @@ export async function createProvisionedConnection(
         scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
         scopedToOrg: true,
         allowCrossOrg: false,
+        grantedOrganizationIds: null,
+        directSearchFederation: false,
         requestUrl: params.requestUrl,
         baseUrl: getConfiguredPublicOrigin() ?? undefined,
       }

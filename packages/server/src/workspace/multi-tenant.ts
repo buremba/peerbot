@@ -34,6 +34,7 @@ import type {
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
+  orgIdSlugCache,
   orgSlugCache,
   ownerCache,
   sessionCache,
@@ -63,7 +64,17 @@ export function invalidateMembershipRoleCache(
 
 export function invalidateOrgSlugCache(slug: string | null | undefined): void {
   if (!slug) return;
+  const cached = orgSlugCache.get(slug);
+  if (cached) orgIdSlugCache.delete(cached.id);
   orgSlugCache.delete(slug);
+}
+
+function cacheOrganizationSlug(
+  slug: string,
+  record: { id: string; visibility: string }
+): void {
+  orgSlugCache.set(slug, record);
+  orgIdSlugCache.set(record.id, slug);
 }
 
 /**
@@ -105,28 +116,12 @@ export async function getCachedOrgBySlug(
     id: rows[0].id as string,
     visibility: (rows[0].visibility as string) ?? "private",
   };
-  orgSlugCache.set(slug, record);
+  cacheOrganizationSlug(slug, record);
   return record;
 }
 
 /// Bootstrap identity constants — must match the constants in
 /// `packages/server/src/embedded-runtime.ts` (BOOTSTRAP_USER_ID + BOOTSTRAP_ORG_ID).
-/**
- * Direct org lookup by id. Uncached — ids are a fallback path for the sandbox's
- * `.org(slugOrId)` accessor, so the TTL cache hit rate would be near-zero.
- */
-export async function getOrgById(
-  organizationId: string
-): Promise<{ slug: string; visibility: string } | null> {
-  const rows = await getDb()`
-      SELECT slug, visibility FROM "organization" WHERE id = ${organizationId} LIMIT 1
-    `;
-  if (rows.length === 0) return null;
-  return {
-    slug: rows[0].slug as string,
-    visibility: (rows[0].visibility as string) ?? "private",
-  };
-}
 
 
 export class MultiTenantProvider implements WorkspaceProvider {
@@ -139,6 +134,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
   async resolveAuth(c: HonoContext, next: ResolveAuthNext): Promise<Response | undefined> {
     const authHeader = c.req.header('Authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const sql = getDb();
     const baseUrl = getConfiguredPublicOrigin() ?? new URL(c.req.url).origin;
     const requestPath = new URL(c.req.url).pathname;
@@ -159,6 +155,22 @@ export class MultiTenantProvider implements WorkspaceProvider {
       requestPath === '/mcp';
     const requestedOrgSlug = c.req.param('orgSlug') || c.get('subdomainOrg') || null;
     const requestedToolName = c.req.param('toolName') || null;
+    const organizationNotFound = () =>
+      c.json(
+        {
+          error: 'invalid_request',
+          error_description: `Organization '${requestedOrgSlug}' not found`,
+        },
+        404
+      );
+    const oauthWorkspaceUnavailable = () =>
+      c.json(
+        {
+          error: 'forbidden',
+          error_description: 'Workspace is not available for this authorization',
+        },
+        403
+      );
 
     c.set('mcpAuthInfo', null);
     c.set('mcpIsAuthenticated', false);
@@ -170,6 +182,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
     let requestedOrgId: string | null = null;
     let requestedOrgVisibility: string | null = null;
+    let requestedOrgMissing = false;
     if (requestedOrgSlug) {
       const cached = orgSlugCache.get(requestedOrgSlug);
       if (cached) {
@@ -182,21 +195,28 @@ export class MultiTenantProvider implements WorkspaceProvider {
           LIMIT 1
         `;
         if (orgResult.length === 0) {
-          return c.json(
-            {
-              error: 'invalid_request',
-              error_description: `Organization '${requestedOrgSlug}' not found`,
-            },
-            404
-          );
+          requestedOrgMissing = true;
+        } else {
+          requestedOrgId = orgResult[0].id as string;
+          requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
+          cacheOrganizationSlug(requestedOrgSlug, {
+            id: requestedOrgId,
+            visibility: requestedOrgVisibility,
+          });
         }
-        requestedOrgId = orgResult[0].id as string;
-        requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
-        orgSlugCache.set(requestedOrgSlug, {
-          id: requestedOrgId,
-          visibility: requestedOrgVisibility,
-        });
       }
+    }
+
+    // Preserve the existing named 404 for anonymous, session, PAT, and worker
+    // callers. OAuth is the exception: authenticate it below before answering
+    // so an access token cannot distinguish a guessed private workspace slug
+    // from a nonexistent one. Tokens with a non-OAuth envelope are safe to
+    // classify here; opaque bearer/session tokens fall through to verification.
+    if (
+      requestedOrgMissing &&
+      (!bearerToken || bearerToken.startsWith('owl_pat_') || looksLikeWorkerToken(bearerToken))
+    ) {
+      return organizationNotFound();
     }
 
     /** Apply the existing public-read policy to a declared fixed-action GET. */
@@ -307,7 +327,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
     // without that header. Ordinary worker tokens are rejected on both paths;
     // non-worker bearers still fall through to PAT, OAuth, or session auth.
     const directAuthHeader = c.req.header('x-lobu-memory-direct-auth') === '1';
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const directAuthBearer = bearerToken && isMcpRoute ? bearerToken : null;
     const gatewayMcpTokenData =
       directAuthBearer && directAuthHeader && looksLikeWorkerToken(directAuthBearer)
@@ -435,6 +454,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         mcpAuthInfo: {
           userId: directAuthUserId,
           organizationId: requestedOrgId,
+          grantedOrganizationIds: [requestedOrgId],
           clientId: 'lobu-worker',
           scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
           expiresAt: Math.floor((tokenData.timestamp + 2 * 60 * 60 * 1000) / 1000),
@@ -489,6 +509,12 @@ export class MultiTenantProvider implements WorkspaceProvider {
         : await new OAuthProvider(sql, baseUrl).verifyAccessToken(token);
 
       if (!authInfo) {
+        // Before this request was known to be OAuth, retain the legacy
+        // unknown-workspace 404 for invalid and Better Auth bearer tokens.
+        // Valid OAuth tokens take the indistinguishable grant-denial path
+        // below.
+        if (requestedOrgMissing) return organizationNotFound();
+
         // PATs are recognisable by their `owl_pat_` prefix — if one is sent
         // and verify fails, it's truly invalid, refuse fast. For everything
         // else (a bearer that's not a PAT and not an OAuth access token),
@@ -516,10 +542,13 @@ export class MultiTenantProvider implements WorkspaceProvider {
       }
 
       // RFC 8707-bound OAuth tokens are valid only for the exact MCP resource
-      // named during authorization. Legacy unbound tokens remain accepted for
-      // the first-party device/CLI compatibility flow.
-      if (!isPat && authInfo.resource && isMcpRoute) {
-        const requestedResource = getMcpResourceForRequest(publicMcpRequestUrl(c.req.raw));
+      // named during authorization and cannot be replayed against REST routes.
+      // Legacy unbound tokens remain accepted for the device/CLI compatibility
+      // flow, subject to their immutable workspace grant below.
+      if (!isPat && authInfo.resource) {
+        const requestedResource = isMcpRoute
+          ? getMcpResourceForRequest(publicMcpRequestUrl(c.req.raw))
+          : null;
         if (!requestedResource || authInfo.resource !== requestedResource) {
           return c.json(
             {
@@ -530,6 +559,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
             { 'WWW-Authenticate': bearerChallenge('invalid_token') }
           );
         }
+      }
+
+      if (!isPat && requestedOrgMissing) {
+        return oauthWorkspaceUnavailable();
       }
 
       let effectiveOrgId = requestedOrgId;
@@ -582,6 +615,8 @@ export class MultiTenantProvider implements WorkspaceProvider {
         );
       }
 
+      const oauthTargetGranted =
+        isPat || (authInfo.grantedOrganizationIds ?? []).includes(effectiveOrgId);
       const role = await getMembershipRole(effectiveOrgId, authInfo.userId, { bypassCache: true });
       const allowPublicOrgWithoutMembership =
         !role &&
@@ -589,11 +624,17 @@ export class MultiTenantProvider implements WorkspaceProvider {
         requestedOrgVisibility === 'public' &&
         isMcpRoute;
 
+      if (!oauthTargetGranted && !allowPublicOrgWithoutMembership) {
+        return oauthWorkspaceUnavailable();
+      }
+
       if (!role && !allowPublicOrgWithoutMembership) {
         return c.json(
           {
             error: 'forbidden',
-            error_description: 'Token owner is not a member of this organization',
+            error_description: !isPat
+              ? 'Workspace is not available for this authorization'
+              : 'Token owner is not a member of this organization',
           },
           403
         );
@@ -797,7 +838,8 @@ export class MultiTenantProvider implements WorkspaceProvider {
       const searchClause = search ? `AND o.name ILIKE $${params.push(`%${search}%`)}` : '';
 
       organizations = (await sql.unsafe(
-        `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at, false as is_member, o.visibility
+        `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at,
+                false as is_member, false as is_personal, o.visibility
          FROM "organization" o
          WHERE o.visibility = 'public' ${searchClause}
          ORDER BY o.name ASC`,
@@ -809,7 +851,9 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       organizations = (await sql.unsafe(
         `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at,
-                (m."userId" IS NOT NULL) as is_member, o.visibility
+                (m."userId" IS NOT NULL) as is_member,
+                COALESCE((o.metadata::jsonb)->>'personal_org_for_user_id' = $1, false) as is_personal,
+                o.visibility
          FROM "organization" o
          LEFT JOIN "member" m ON o.id = m."organizationId" AND m."userId" = $1
          WHERE (m."userId" IS NOT NULL OR o.visibility = 'public') ${searchClause}
@@ -847,25 +891,55 @@ export class MultiTenantProvider implements WorkspaceProvider {
   }
 
   async getOrgSlug(orgId: string): Promise<string | null> {
+    const cached = orgIdSlugCache.get(orgId);
+    if (cached !== undefined) return cached;
     const sql = getDb();
     const rows = await sql`
-      SELECT slug FROM "organization" WHERE id = ${orgId} LIMIT 1
+      SELECT slug, visibility FROM "organization" WHERE id = ${orgId} LIMIT 1
     `;
-    return rows[0]?.slug ?? null;
+    if (!rows[0]) {
+      orgIdSlugCache.set(orgId, null);
+      return null;
+    }
+    const slug = rows[0].slug as string;
+    cacheOrganizationSlug(slug, {
+      id: orgId,
+      visibility: (rows[0].visibility as string) ?? 'private',
+    });
+    return slug;
   }
 
   async getOrgSlugs(orgIds: string[]): Promise<Map<string, string>> {
     if (orgIds.length === 0) return new Map();
+    const result = new Map<string, string>();
+    const missing: string[] = [];
+    for (const orgId of new Set(orgIds)) {
+      const cached = orgIdSlugCache.get(orgId);
+      if (cached === undefined) missing.push(orgId);
+      else if (cached !== null) result.set(orgId, cached);
+    }
+    if (missing.length === 0) return result;
+
     const sql = getDb();
-    const placeholders = orgIds.map((_, i) => `$${i + 1}`).join(', ');
-    const rows = await sql.unsafe<{ id: string; slug: string }>(
-      `SELECT id, slug FROM "organization" WHERE id IN (${placeholders})`,
-      orgIds
+    const placeholders = missing.map((_, i) => `$${i + 1}`).join(', ');
+    const rows = await sql.unsafe<{ id: string; slug: string; visibility: string }>(
+      `SELECT id, slug, visibility FROM "organization" WHERE id IN (${placeholders})`,
+      missing
     );
-    return new Map(rows.map((row) => [row.id, row.slug]));
+    for (const row of rows) {
+      result.set(row.id, row.slug);
+      cacheOrganizationSlug(row.slug, {
+        id: row.id,
+        visibility: row.visibility ?? 'private',
+      });
+    }
+    for (const orgId of missing) {
+      if (!result.has(orgId)) orgIdSlugCache.set(orgId, null);
+    }
+    return result;
   }
 
-  async resolveOwner(slug: string, type: 'user' | 'organization'): Promise<ResolvedOwner | null> {
+  async resolveOwner(slug: string, type: 'organization'): Promise<ResolvedOwner | null> {
     const cacheKey = `${type}:${slug}`;
     const cached = ownerCache.get(cacheKey);
     if (cached !== undefined) return cached;
@@ -876,53 +950,48 @@ export class MultiTenantProvider implements WorkspaceProvider {
         n.slug,
         n.type,
         n.ref_id,
-        u.name as user_name,
         o.name as org_name
       FROM namespace n
-      LEFT JOIN "user" u ON n.type = 'user' AND n.ref_id = u.id
       LEFT JOIN organization o ON n.type = 'organization' AND n.ref_id = o.id
       WHERE n.slug = ${slug}
         AND n.type = ${type}
     `;
     if (rows.length === 0) {
       // Fallback: namespace entry may be missing, query organization table directly
-      if (type === 'organization') {
-        const orgRows = await sql`
-          SELECT id, name, slug FROM organization WHERE slug = ${slug} LIMIT 1
+      const orgRows = await sql`
+        SELECT id, name, slug FROM organization WHERE slug = ${slug} LIMIT 1
+      `;
+      if (orgRows.length > 0) {
+        const org = orgRows[0] as { id: string; name: string; slug: string };
+        // Self-heal: backfill the missing namespace entry
+        await sql`
+          INSERT INTO namespace (slug, type, ref_id)
+          VALUES (${slug}, 'organization', ${org.id})
+          ON CONFLICT (slug) DO NOTHING
         `;
-        if (orgRows.length > 0) {
-          const org = orgRows[0] as { id: string; name: string; slug: string };
-          // Self-heal: backfill the missing namespace entry
-          await sql`
-            INSERT INTO namespace (slug, type, ref_id)
-            VALUES (${slug}, 'organization', ${org.id})
-            ON CONFLICT (slug) DO NOTHING
-          `;
-          const result: ResolvedOwner = {
-            slug: org.slug,
-            type: 'organization',
-            id: org.id,
-            name: org.name,
-          };
-          ownerCache.set(cacheKey, result);
-          return result;
-        }
+        const result: ResolvedOwner = {
+          slug: org.slug,
+          type: 'organization',
+          id: org.id,
+          name: org.name,
+        };
+        ownerCache.set(cacheKey, result);
+        return result;
       }
       ownerCache.set(cacheKey, null);
       return null;
     }
     const row = rows[0] as {
       slug: string;
-      type: 'user' | 'organization';
+      type: 'organization';
       ref_id: string;
-      user_name: string | null;
       org_name: string | null;
     };
     const result: ResolvedOwner = {
       slug: row.slug,
       type: row.type,
       id: row.ref_id,
-      name: row.type === 'user' ? row.user_name : row.org_name,
+      name: row.org_name,
     };
     ownerCache.set(cacheKey, result);
     return result;

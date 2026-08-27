@@ -57,6 +57,8 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
     scopedToOrg: true,
     allowCrossOrg: false,
+    grantedOrganizationIds: null,
+    directSearchFederation: false,
     // The reaction IS this automation acting autonomously. Stamping the automation id
     // here makes EVERY gated write it performs (connector ops, entity mutations,
     // automation edits) resolve the automation's owning agent and evaluate in

@@ -68,6 +68,7 @@ import { validateToolResult } from './tools/validate-args';
 import { renderMcpAppTemplate } from './utils/mcp-app-bundle';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
+import { listLiveGrantedMemberWorkspaces } from './auth/oauth/workspace-grants';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -175,7 +176,10 @@ export async function revokeInMemoryMcpSessionsForClient(
   const revokedSessionIds: string[] = [];
 
   for (const [sessionId, entry] of sessions.entries()) {
-    if (entry.authCtx.clientId !== clientId || entry.authCtx.organizationId !== organizationId) {
+    const appliesToWorkspace =
+      entry.authCtx.organizationId === organizationId ||
+      (entry.authCtx.grantedOrganizationIds ?? []).includes(organizationId);
+    if (entry.authCtx.clientId !== clientId || !appliesToWorkspace) {
       continue;
     }
     if (userId && entry.authCtx.userId !== userId) {
@@ -381,13 +385,15 @@ function createServerForContext(
     // its authorization ceiling. Advertise the full scope-bounded SDK surface;
     // client.org(target) resolves membership again and every leaf method gates
     // against that target role.
-    const discoveryRole = authCtx.allowCrossOrg ? 'owner' : authCtx.memberRole;
+    const effectiveCrossOrg =
+      authCtx.allowCrossOrg && !authCtx.agentId && !authCtx.actingAutomationId;
+    const discoveryRole = effectiveCrossOrg ? 'owner' : authCtx.memberRole;
     const publicOnly = !!authCtx.organizationId && !discoveryRole;
     const maxAccessLevel = resolveMaxAccessLevel(discoveryRole, authCtx.scopes);
     const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
-      adminScopeEligible: authCtx.allowCrossOrg || isAdminOrOwnerRole(authCtx.memberRole),
+      adminScopeEligible: effectiveCrossOrg || isAdminOrOwnerRole(authCtx.memberRole),
     })
       .filter((t) => {
         const visibility = (t._meta?.ui as { visibility?: unknown } | undefined)?.visibility;
@@ -864,6 +870,55 @@ async function resolveMembershipRole(
   return rows.length > 0 ? ((rows[0].role as string) ?? null) : null;
 }
 
+async function buildSessionInstructions(authCtx: AuthContext): Promise<string | undefined> {
+  const base = authCtx.organizationId
+    ? ((await buildWorkspaceInstructions(authCtx.organizationId)) ?? '')
+    : '';
+  if (
+    authCtx.tokenType !== 'oauth' ||
+    !authCtx.userId ||
+    authCtx.grantedOrganizationIds === null
+  ) {
+    return base || undefined;
+  }
+  const grantedOrganizationIds =
+    authCtx.agentId || authCtx.actingAutomationId
+      ? authCtx.organizationId
+        ? [authCtx.organizationId]
+        : []
+      : authCtx.grantedOrganizationIds;
+  const workspaces = await listLiveGrantedMemberWorkspaces({
+    userId: authCtx.userId,
+    grantedOrganizationIds,
+  });
+  if (workspaces.length === 0) return base || undefined;
+  const labels = workspaces.map((workspace) => {
+    const qualifiers = [
+      workspace.id === authCtx.organizationId ? 'primary' : null,
+      workspace.personal ? 'personal' : null,
+    ].filter((value): value is string => value !== null);
+    return qualifiers.length > 0
+      ? `${workspace.slug} (${qualifiers.join(', ')})`
+      : workspace.slug;
+  });
+  const grantLine =
+    `Granted workspaces: ${labels.join(', ')}. ` +
+    (authCtx.directSearchFederation
+      ? 'Unqualified search searches all granted workspaces; writes default to the primary workspace unless you target one explicitly.'
+      : 'Search and writes use the primary workspace.');
+  return [base, grantLine].filter(Boolean).join('\n\n');
+}
+
+/** Agent/Automation policy is workspace-bound; it must never inherit a user's
+ * broader bare-MCP navigation/search grant. Keep the raw token array intact so
+ * per-request token refresh can still detect grant changes, and project the
+ * effective singleton at instruction/tool-context boundaries. */
+function restrictBoundIdentityWorkspaceAccess(authCtx: AuthContext): void {
+  if (!authCtx.agentId && !authCtx.actingAutomationId) return;
+  authCtx.allowCrossOrg = false;
+  authCtx.directSearchFederation = false;
+}
+
 /**
  * Populate `memberRole` for an authenticated SCOPED (`/mcp/{slug}`) session.
  *
@@ -883,14 +938,25 @@ async function hydrateScopedMemberRole(env: Env, authCtx: AuthContext): Promise<
   authCtx.memberRole = await resolveMembershipRole(env, authCtx.organizationId, authCtx.userId);
 }
 
+const RECOVERY_OAUTH_BEARER_REQUIRED = Symbol('recovery-oauth-bearer-required');
+
 async function recoverSessionAuthContext(
   c: Context<{ Bindings: Env }>,
   sessionId: string
-): Promise<SessionAuthContext | null> {
+): Promise<SessionAuthContext | typeof RECOVERY_OAUTH_BEARER_REQUIRED | null> {
   const persisted = await mcpSessionStore.getSession(sessionId);
   if (!persisted) return null;
 
   const authCtx = await resolveAuthWithInstructions(c);
+
+  // OAuth sessions are identifiable by their persisted client FK. A missing
+  // (or non-OAuth) bearer is an authentication failure, not evidence that the
+  // server-issued session id is invalid. Preserve the row so an unauthenticated
+  // request cannot terminate a victim's cross-replica session and a bearer
+  // retry can recover it normally.
+  if (persisted.isAuthenticated && persisted.clientId && authCtx.tokenType !== 'oauth') {
+    return RECOVERY_OAUTH_BEARER_REQUIRED;
+  }
 
   if (persisted.isAuthenticated) {
     if (!authCtx.isAuthenticated) return null;
@@ -899,6 +965,18 @@ async function recoverSessionAuthContext(
   }
 
   if (persisted.scopedToOrg !== authCtx.scopedToOrg) {
+    return null;
+  }
+
+  if (
+    authCtx.tokenType === 'oauth' &&
+    // Scoped routes were already authorized by the current request's
+    // multi-tenant middleware. This exception preserves public read-only
+    // sessions whose workspace intentionally is not an OAuth member grant.
+    !persisted.scopedToOrg &&
+    persisted.organizationId &&
+    !(authCtx.grantedOrganizationIds ?? []).includes(persisted.organizationId)
+  ) {
     return null;
   }
 
@@ -934,14 +1012,12 @@ async function recoverSessionAuthContext(
   authCtx.requestedAgentId = persisted.requestedAgentId ?? authCtx.requestedAgentId;
   authCtx.supportsMcpApps = persisted.supportsMcpApps;
   authCtx.supportsAppSandboxDomain = persisted.supportsAppSandboxDomain;
-  authCtx.instructions = authCtx.organizationId
-    ? ((await buildWorkspaceInstructions(authCtx.organizationId)) ?? undefined)
-    : undefined;
-
   const bindingError = await syncAgentBinding(authCtx);
   if (bindingError) {
     return null;
   }
+  restrictBoundIdentityWorkspaceAccess(authCtx);
+  authCtx.instructions = await buildSessionInstructions(authCtx);
 
   return authCtx;
 }
@@ -1141,9 +1217,7 @@ async function resolveAuthWithInstructions(
     // initialize metadata used by ordinary MCP clients when auth has none.
     authCtx.requestedAgentId = authCtx.requestedAgentId ?? initialize?.requestedAgentId ?? null;
   }
-  if (authCtx.organizationId) {
-    authCtx.instructions = (await buildWorkspaceInstructions(authCtx.organizationId)) ?? undefined;
-  }
+  authCtx.instructions = await buildSessionInstructions(authCtx);
   return authCtx;
 }
 
@@ -1281,6 +1355,19 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     const session = sessions.get(sessionId)!;
     session.lastAccessedAt = Date.now();
 
+    // The transport session is routing state, not an OAuth credential. Require
+    // a freshly verified OAuth bearer on every request so token revocation and
+    // live membership changes cannot be bypassed with only mcp-session-id.
+    // Keep the live session intact on a missing header: a compliant retry with
+    // the same bearer can continue without an unnecessary re-initialize.
+    const freshRequestAuthCtx = c.var.mcpIsAuthenticated ? extractAuthContext(c) : null;
+    if (session.authCtx.tokenType === 'oauth' && freshRequestAuthCtx?.tokenType !== 'oauth') {
+      return buildUnauthorizedResponse(
+        req,
+        'A valid OAuth bearer token is required on every authenticated MCP request.'
+      );
+    }
+
     // The persisted row is the cross-replica revocation signal: revoking on any
     // pod DELETEs it. Refresh update-only and treat "no row" as revoked, so a
     // live transport on another pod cannot keep serving a revoked client. This
@@ -1304,8 +1391,8 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
 
     // Refresh authenticated session context on every request so role changes,
     // scope changes, and auth upgrades are reflected immediately.
-    if (c.var.mcpIsAuthenticated) {
-      const freshCtx = extractAuthContext(c);
+    if (freshRequestAuthCtx) {
+      const freshCtx = freshRequestAuthCtx;
 
       if (session.authCtx.isAuthenticated) {
         if (session.authCtx.userId && freshCtx.userId !== session.authCtx.userId) {
@@ -1320,16 +1407,37 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
           clearSession();
           return buildJsonRpcErrorResponse('Session client changed. Re-initialize.', null, 400);
         }
+        // Grant stability only applies to an already-authenticated session; an
+        // anonymous session upgrading in place legitimately gains its first
+        // workspace snapshot below.
+        const oldGrantIds = session.authCtx.grantedOrganizationIds ?? [];
+        const freshGrantIds = freshCtx.grantedOrganizationIds ?? [];
+        if (
+          oldGrantIds.length !== freshGrantIds.length ||
+          oldGrantIds.some((id, index) => id !== freshGrantIds[index])
+        ) {
+          clearSession();
+          return buildJsonRpcErrorResponse(
+            'Session workspace access changed. Re-initialize.',
+            null,
+            400
+          );
+        }
       }
 
       session.authCtx.isAuthenticated = true;
       session.authCtx.userId = freshCtx.userId;
       session.authCtx.clientId = freshCtx.clientId;
+      session.authCtx.tokenType = freshCtx.tokenType;
       // `extractAuthContext` always yields a concrete scope array (real scopes
       // for token callers, the not-applicable sentinel for session/anonymous).
       // Assign it straight through — `hasRequiredMcpScope` fails closed on
       // null, so coercing to null would wrongly deny a valid refreshed session.
       session.authCtx.scopes = freshCtx.scopes;
+      session.authCtx.grantedOrganizationIds = freshCtx.grantedOrganizationIds;
+      session.authCtx.directSearchFederation = freshCtx.directSearchFederation;
+      session.authCtx.allowCrossOrg = freshCtx.allowCrossOrg;
+      session.authCtx.tokenOrganizationId = freshCtx.tokenOrganizationId;
       // Identity belongs to the MCP session, but worker-originated source
       // conversation is per request. The gateway may reuse the same upstream
       // MCP session across turns for the same user/agent, so keep the mutable
@@ -1341,6 +1449,8 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
         clearSession();
         return buildJsonRpcErrorResponse('Session agent changed. Re-initialize.', null, 400);
       }
+
+      restrictBoundIdentityWorkspaceAccess(session.authCtx);
 
       if (session.authCtx.scopedToOrg) {
         if (freshCtx.organizationId !== session.authCtx.organizationId) {
@@ -1356,9 +1466,6 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
         // role-gated tools, mirroring the unscoped branch below.
         await hydrateScopedMemberRole(c.env, freshCtx);
         session.authCtx.memberRole = freshCtx.memberRole;
-        session.authCtx.instructions = freshCtx.organizationId
-          ? ((await buildWorkspaceInstructions(freshCtx.organizationId)) ?? undefined)
-          : undefined;
       } else if (session.authCtx.organizationId && freshCtx.userId) {
         session.authCtx.memberRole = await resolveMembershipRole(
           c.env,
@@ -1374,6 +1481,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
           );
         }
       }
+      session.authCtx.instructions = await buildSessionInstructions(session.authCtx);
     }
 
     await recordMcpClientActivity(c.env, session.authCtx, req);
@@ -1440,6 +1548,12 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
         // unknown/expired session must instead yield 404 so the client starts a
         // fresh session via `initialize` with a new server-generated id.
         const recoveredAuthCtx = await recoverSessionAuthContext(c, sessionId);
+        if (recoveredAuthCtx === RECOVERY_OAUTH_BEARER_REQUIRED) {
+          return buildUnauthorizedResponse(
+            req,
+            'A valid OAuth bearer token is required on every authenticated MCP request.'
+          );
+        }
         if (recoveredAuthCtx) {
           const { transport, server } = createSessionTransport(
             c.env,
@@ -1516,10 +1630,12 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     if (bindingError) {
       return buildJsonRpcErrorResponse(bindingError, initialize?.id ?? null, 400);
     }
+    restrictBoundIdentityWorkspaceAccess(authCtx);
     // Resolve the caller's membership role for scoped `/mcp/{slug}` sessions
     // before the session is created/persisted — extractAuthContext leaves it
     // null, which would deny role-gated actions to a real owner/admin.
     await hydrateScopedMemberRole(c.env, authCtx);
+    authCtx.instructions = await buildSessionInstructions(authCtx);
     await recordMcpClientActivity(c.env, authCtx, req, initialize);
     authCtx.supportsMcpApps = supportsMcpApps(initialize?.capabilities);
     authCtx.supportsAppSandboxDomain = supportsAppSandboxDomain(initialize?.capabilities);

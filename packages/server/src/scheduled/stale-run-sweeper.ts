@@ -17,9 +17,10 @@
  *
  * `buildStaleRunWhereSql` returns the WHERE fragment so the connector reaper
  * can keep its atomic timeout-plus-retry CTE (the UPDATE must stay inside
- * that single statement); `markStaleRunsAsTimeout` runs the plain UPDATE for
- * callers without a retry lane. The fragments are inlined via `sql.unsafe`,
- * so every input is validated against a strict literal pattern first.
+ * that single statement); `markStaleRunsAsTimeout` returns the transitioned
+ * rows so Automation callers can apply lane-specific terminal policy in the
+ * same transaction. The fragments are inlined via `sql.unsafe`, so every
+ * input is validated against a strict literal pattern first.
  */
 
 import { PG_INTERVAL_PATTERN } from "../config/intervals";
@@ -165,9 +166,18 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
 
 /**
  * Mark every stale in-progress run matched by the spec as `timeout` in one
- * UPDATE, stamping the path-appropriate error message. Returns the number of
- * rows transitioned.
+ * statement, stamping the path-appropriate error message. The locked CTE
+ * retains each row's prior status so callers can distinguish work that was
+ * actually running from a claim that never reached execution.
  */
+export interface TimedOutStaleRun {
+	id: number;
+	automation_id: number | null;
+	run_type: string;
+	previous_status: string;
+	dispatch_source: string | null;
+}
+
 export async function markStaleRunsAsTimeout(
 	sql: DbClient,
 	spec: StaleRunSweepSpec & {
@@ -176,22 +186,37 @@ export async function markStaleRunsAsTimeout(
 		/** error_message for rows reaped via the coarse TTL backstop. */
 		coarseErrorMessage: string;
 	},
-): Promise<number> {
+): Promise<TimedOutStaleRun[]> {
 	const result = await sql.unsafe(
-		`UPDATE runs
+		`WITH stale AS MATERIALIZED (
+       SELECT id,
+              status AS previous_status,
+              automation_id,
+              run_type,
+              approved_input->>'dispatch_source' AS dispatch_source,
+              CASE
+                WHEN ${hasHeartbeatSql(spec.heartbeatSemantics)} THEN $1
+                ELSE $2
+              END AS timeout_error
+       FROM runs
+       WHERE ${buildStaleRunWhereSql(spec)}
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE runs AS r
      SET status = 'timeout',
          outcome = $3,
          completed_at = current_timestamp,
-         error_message = CASE
-           WHEN ${hasHeartbeatSql(spec.heartbeatSemantics)} THEN $1
-           ELSE $2
-         END
-     WHERE ${buildStaleRunWhereSql(spec)}`,
+         error_message = stale.timeout_error
+     FROM stale
+     WHERE r.id = stale.id
+       AND r.status = stale.previous_status
+     RETURNING r.id, r.automation_id, r.run_type,
+               stale.previous_status, stale.dispatch_source`,
 		[
 			spec.heartbeatErrorMessage,
 			spec.coarseErrorMessage,
 			classifyRunOutcome({ status: "timeout" }),
 		],
 	);
-	return Number(result.count ?? 0);
+	return result as unknown as TimedOutStaleRun[];
 }

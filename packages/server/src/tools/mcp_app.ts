@@ -791,7 +791,19 @@ async function findApprovalRow(
     env,
     ctx
   );
-  const row = result.content.find((item) => isApprovalContentItem(item, runId));
+  const listedRow = result.content.find((item) => isApprovalContentItem(item, runId));
+  if (!listedRow) throw new ToolUserError(`Approval run ${runId} was not found`, 404);
+
+  // Agent-facing list reads intentionally bound nested event JSON. The
+  // host-authored card still needs the full canonical approval context so it
+  // can redact secrets first and then apply its own view limits. Re-read the
+  // already-authorized event through the exact-id path rather than bypassing
+  // get_content visibility with a direct table query.
+  const exact = await getContent({ content_ids: [listedRow.id] }, env, ctx);
+  const row = exact.content.find(
+    (item): item is ApprovalContentItem =>
+      isApprovalContentItem(item, runId) && item.id === listedRow.id
+  );
   if (!row) throw new ToolUserError(`Approval run ${runId} was not found`, 404);
   return row;
 }

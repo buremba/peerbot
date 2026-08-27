@@ -195,9 +195,13 @@ export interface ContentRow {
   origin_type?: string | null;
   payload_type?: 'text' | 'markdown' | 'json_template' | 'media' | 'empty' | null;
   payload_text?: string | null;
+  payload_truncated?: boolean | null;
+  content_length?: number | string | null;
   payload_data?: Record<string, unknown> | null;
   payload_template?: Record<string, unknown> | null;
   attachments?: unknown[] | null;
+  attachments_truncated?: boolean | null;
+  attachments_bytes?: number | string | null;
   author_name?: string | null;
   title: string | null;
   source_url?: string | null;

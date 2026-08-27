@@ -33,8 +33,8 @@ describe('query_sql connection pushdown', () => {
 
     const db = getTestDb();
     await db`DROP TABLE IF EXISTS qsp_ext`;
-    await db`CREATE TABLE qsp_ext (id bigserial primary key, name text, amount numeric)`;
-    await db`INSERT INTO qsp_ext (name, amount) VALUES ('a', 10), ('b', 5), ('c', 7)`;
+    await db`CREATE TABLE qsp_ext (id bigserial primary key, name text, amount numeric, payload jsonb)`;
+    await db`INSERT INTO qsp_ext (name, amount, payload) VALUES ('a', 10, '{}'::jsonb), ('b', 5, '{}'::jsonb), ('c', 7, '{}'::jsonb)`;
 
     const profile = await createAuthProfile({
       organizationId: orgId,
@@ -81,6 +81,31 @@ describe('query_sql connection pushdown', () => {
     expect(res.error).toBeUndefined();
     expect(res.rows.map((r) => r.name)).toEqual(['a', 'b', 'c']);
     expect(Number(res.rows[0].amount)).toBe(10);
+  }, 60_000);
+
+  it('bounds oversized text and nested JSON on the external connection branch', async () => {
+    const db = getTestDb();
+    await db`
+      INSERT INTO qsp_ext (name, amount, payload)
+      VALUES (${'x'.repeat(8_000)}, 99, ${db.json({ body: 'p'.repeat(32 * 1024) })})
+    `;
+    try {
+      const res = await querySql(
+        {
+          sql: 'SELECT id, name, payload FROM qsp_ext WHERE amount = 99',
+          connection: 'qsp-ext-db',
+          limit: 10,
+        },
+        {},
+        ctx
+      );
+
+      expect(res.error).toBeUndefined();
+      expect(String(res.rows[0].name)).toMatch(/… \[truncated\]$/);
+      expect(res.rows[0].payload).toEqual({ _truncated: true, bytes: expect.any(Number) });
+    } finally {
+      await db`DELETE FROM qsp_ext WHERE amount = 99`;
+    }
   }, 60_000);
 
   it('pushes sort + pagination down', async () => {

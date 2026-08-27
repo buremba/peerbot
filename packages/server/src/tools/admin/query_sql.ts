@@ -21,6 +21,7 @@ import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
+import { finalizeDynamicQueryRows } from '../../utils/content-read-bounds';
 
 export const QuerySqlSchema = Type.Object({
   title: Type.Optional(
@@ -132,6 +133,13 @@ export const QuerySqlResultSchema = Type.Object({
   ),
   total_count: Type.Integer(),
   has_more: Type.Boolean(),
+  omitted_rows: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      description:
+        'Rows fetched for this page but omitted by the serialized response-size ceiling. When present, continue from offset + rows.length rather than offset + limit, or retry with a smaller limit.',
+    })
+  ),
   execution_time_ms: Type.Number(),
   error: Type.Optional(Type.String()),
   error_code: Type.Optional(Type.String()),
@@ -145,12 +153,45 @@ interface QuerySqlResult {
   columns: { name: string; type: string }[];
   total_count: number;
   has_more: boolean;
+  omitted_rows?: number;
   execution_time_ms: number;
   error?: string;
   /** Structured error code (lobu#2051 Item 2), set alongside `error`. */
   error_code?: ToolErrorCode;
   /** Whether retrying the identical query may succeed. Advisory for the agent. */
   retryable?: boolean;
+}
+
+/**
+ * Final response chokepoint for every successful dynamic SELECT * branch
+ * (internal scoped SQL and external connection pushdown). The database/source
+ * columns remain typed; only oversized final cells are replaced.
+ */
+function finalizeQuerySqlResult(
+  result: QuerySqlResult,
+  maxSerializedRowsBytes?: number
+): QuerySqlResult {
+  const finalized = finalizeDynamicQueryRows(result.rows, maxSerializedRowsBytes);
+  const columns = [...result.columns];
+  const known = new Set(columns.map((column) => column.name));
+  const additiveColumns = [
+    ['payload_truncated', 'boolean'],
+    ['content_length', 'integer'],
+    ['attachments_truncated', 'boolean'],
+    ['attachments_bytes', 'integer'],
+  ] as const;
+  for (const [name, type] of additiveColumns) {
+    if (known.has(name) || !finalized.rows.some((row) => name in row)) continue;
+    columns.push({ name, type });
+    known.add(name);
+  }
+  return {
+    ...result,
+    rows: finalized.rows,
+    columns,
+    has_more: result.has_more || finalized.omittedRows > 0,
+    ...(finalized.omittedRows > 0 ? { omitted_rows: finalized.omittedRows } : {}),
+  };
 }
 
 // Cost-attribution ledger: a single expensive user/derived query is how an org
@@ -208,7 +249,8 @@ export const querySql = withValidatedArgs('query_sql', QuerySqlSchema, querySqlI
 export async function querySqlImpl(
   args: QuerySqlArgs,
   _env: unknown,
-  ctx: ToolContext
+  ctx: ToolContext,
+  options?: { maxSerializedRowsBytes?: number }
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
   const title = args.title?.trim() || undefined;
@@ -309,15 +351,18 @@ export async function querySqlImpl(
           ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
           : undefined,
       });
-      return {
-        ...(title ? { title } : {}),
-        sql: baseSql,
-        rows: r.rows,
-        columns: r.columns,
-        total_count: r.total ?? r.rows.length,
-        has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
-        execution_time_ms: Date.now() - startTime,
-      };
+      return finalizeQuerySqlResult(
+        {
+          ...(title ? { title } : {}),
+          sql: baseSql,
+          rows: r.rows,
+          columns: r.columns,
+          total_count: r.total ?? r.rows.length,
+          has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
+          execution_time_ms: Date.now() - startTime,
+        },
+        options?.maxSerializedRowsBytes
+      );
     } catch (err) {
       // A pushdown failure is a hard tool
       // error, never a success-shaped empty table (#2042).
@@ -465,15 +510,18 @@ export async function querySqlImpl(
         'query_sql slow/expensive query (cost ledger)'
       );
     }
-    return {
-      ...(title ? { title } : {}),
-      sql: baseSql,
-      rows,
-      columns,
-      total_count: totalCount,
-      has_more: offset + limit < totalCount,
-      execution_time_ms: executionTimeMs,
-    };
+    return finalizeQuerySqlResult(
+      {
+        ...(title ? { title } : {}),
+        sql: baseSql,
+        rows,
+        columns,
+        total_count: totalCount,
+        has_more: offset + limit < totalCount,
+        execution_time_ms: executionTimeMs,
+      },
+      options?.maxSerializedRowsBytes
+    );
   } catch (error) {
     const msg = getErrorMessage(error);
     logger.error({ error }, 'query_sql error');

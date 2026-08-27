@@ -22,6 +22,7 @@ import type { Env } from '../../index';
 import type { Outputs, UnprocessedRange, AutomationSource } from '../../types/automations';
 import { ToolUserError } from '../../utils/errors';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
+import { finalizeDynamicQueryRows } from '../../utils/content-read-bounds';
 import logger from '../../utils/logger';
 import { runMetric } from '../../metrics/run-metric';
 import { getRecentFeedbackSummary } from '../../utils/automation-feedback';
@@ -38,6 +39,7 @@ import {
 } from '../../utils/window-utils';
 import {
   DEFAULT_AUTOMATION_SOURCE_QUERY,
+  buildBoundedAutomationEventPageSelect,
   type NormalizedAutomationSource,
   normalizeAutomationSources,
 } from '../../automations/source-refs';
@@ -68,7 +70,9 @@ interface ContentQueryParams {
    * result — see `excludeProducedByAutomationId` in execute-data-sources.
    */
   automationId: number;
-	throwOnSourceError?: boolean;
+  throwOnSourceError?: boolean;
+  /** Preserve the pre-bounds source row shape used by skip_if_unchanged. */
+  fingerprintMode?: boolean;
   /** Exclude workspace-identity audit rows for ordinary-member reads. */
   excludeWorkspaceAudit?: boolean;
   page?: {
@@ -116,15 +120,18 @@ async function queryContentData(
   const eventSourceNames = new Set(
     normalizedSources.filter((source) => source.kind === 'event').map((source) => source.name)
   );
+  const controlledEventSourceNames = new Set(
+    normalizedSources
+      .filter((source) => source.controlledEventProjection)
+      .map((source) => source.name)
+  );
+  const dynamicEventSourceNames = new Set(
+    normalizedSources.filter((source) => source.dynamicEventProjection).map((source) => source.name)
+  );
   const sqlSources = normalizedSources
     .filter((source) => source.kind !== 'metric')
     .map(({ name, query }) => ({ name, query }));
-  // Every SQL-backed source is part of the agent-facing knowledge.read payload,
-  // including context:true entity rows and streaming channel context. Bound all
-  // of them when this is a paged read so one large context source cannot turn a
-  // 25-row Automation read into a six-figure-token model request. Metric sources
-  // are already aggregate outputs and bypass executeDataSources.
-  const boundedSourceNames = new Set(sqlSources.map((source) => source.name));
+  const pagedSourceNames = new Set(sqlSources.map((source) => source.name));
   const metricSources = normalizedSources.filter(isMetricSource);
 
   const results = await executeDataSources(sqlSources, queryContext, sql, {
@@ -174,18 +181,57 @@ async function queryContentData(
           nextParams.push(sourceLimit + 1);
           const limitParam = `$${nextParams.length}`;
 
+          // security-allowed: scopedQuery is an internally-built SQL fragment;
+          // where[] entries use $N placeholders.
+          const pageSql =
+            `SELECT * FROM (${scopedQuery}) AS _automation_page ` +
+            `WHERE ${where.join(' AND ')} ` +
+            'ORDER BY _automation_page.occurred_at DESC NULLS LAST, _automation_page.id DESC ' +
+            `LIMIT ${limitParam}`;
           return {
-            // security-allowed: scopedQuery is an internally-built SQL fragment; where[] entries use $N placeholders.
-            sql:
-              `SELECT * FROM (${scopedQuery}) AS _automation_page ` +
-              `WHERE ${where.join(' AND ')} ` +
-              'ORDER BY _automation_page.occurred_at DESC NULLS LAST, _automation_page.id DESC ' +
-              `LIMIT ${limitParam}`,
+            // Ref-backed event sources have a known canonical projection, so
+            // their selected page is bounded in SQL. The default SELECT * and
+            // arbitrary custom SQL keep their declared projections unchanged.
+            sql: controlledEventSourceNames.has(sourceName)
+              ? buildBoundedAutomationEventPageSelect(pageSql)
+              : pageSql,
             params: nextParams,
           };
         }
       : undefined,
   });
+
+  if (page) {
+    for (const sourceName of dynamicEventSourceNames) {
+      // The default source historically exposes SELECT * rows. Preserve every
+      // column while bounding string/JSON cells after the cursor and LIMIT have
+      // selected this page. Keep the limit+1 sentinel so sources_page and the
+      // chronological cursor retain their existing row-count contract.
+      const sourceRows = (results[sourceName] ?? []) as Record<string, unknown>[];
+      results[sourceName] = finalizeDynamicQueryRows(
+        sourceRows,
+        Number.POSITIVE_INFINITY
+      ).rows;
+    }
+  }
+
+  if (params.fingerprintMode) {
+    // Ref-backed event sources add stored content_length solely so paged agent
+    // reads can bound payload_text after LIMIT. It is derived from the full text
+    // and was absent from their historical fingerprint projection, so hashing
+    // it would cause a one-time skip_if_unchanged fleet re-fire. Default sources
+    // retain SELECT * and therefore keep their existing row shape unchanged.
+    for (const source of normalizedSources) {
+      if (!source.ref || !source.controlledEventProjection) continue;
+      results[source.name] = (results[source.name] ?? []).map((row) => {
+        const { content_length: _derivedContentLength, ...legacyRow } = row as Record<
+          string,
+          unknown
+        >;
+        return legacyRow;
+      });
+    }
+  }
   await Promise.all(
     metricSources.map(async (source) => {
       try {
@@ -197,7 +243,7 @@ async function queryContentData(
           excludeWorkspaceAudit: params.excludeWorkspaceAudit,
         });
       } catch (err) {
-		if (params.throwOnSourceError) throw err;
+        if (params.throwOnSourceError) throw err;
         logger.warn(
           {
             error: err instanceof Error ? err.message : String(err),
@@ -215,21 +261,25 @@ async function queryContentData(
   // automations even when content existed. Count over each normalized event source,
   // scoped the same way as the content query (org / entity_ids / window).
   // @metric / @entity sources are context, not content, so they're excluded.
-  // Char estimates use to_jsonb(row)->>'payload_text' so custom SQL/default
-  // sources still contribute when they project payload_text, but safely count 0
-  // when they don't.
+  // A canonical event projection always carries the stored `content_length`, so
+  // read that column directly instead of serializing every row (a 5MB
+  // payload_text included) through to_jsonb. Custom SQL keeps the to_jsonb
+  // shape, which safely counts 0 when the source projects no payload_text.
   const statsEventSources = normalizedSources.filter((source) => source.kind === 'event');
   let totalCount = 0;
   let totalCountChars = 0;
   if (statsEventSources.length > 0) {
     const statsSources = statsEventSources.map((source, idx) => {
       const alias = `__stats_s_${idx}`;
+      const charsExpr = source.controlledEventProjection || source.dynamicEventProjection
+        ? `${alias}.content_length`
+        : `LENGTH(to_jsonb(${alias})->>'payload_text')`;
       return {
         name: `__stats_${idx}`,
         // security-allowed: source.query is an internally-built SQL fragment
-        // (org-scoped eventSelect for refs, or caller-SQL that already passed
-        // read-only validation + id-projection guard at save time).
-        query: `SELECT COUNT(*)::int AS c, COALESCE(SUM(LENGTH(to_jsonb(${alias})->>'payload_text')), 0)::bigint AS ch FROM (${source.query}) AS ${alias}`,
+        // (org-scoped buildAutomationEventSelect for refs, or caller-SQL that
+        // already passed read-only validation + id-projection guard at save time).
+        query: `SELECT COUNT(*)::int AS c, COALESCE(SUM(${charsExpr}), 0)::bigint AS ch FROM (${source.query}) AS ${alias}`,
       };
     });
     const statsResults = await executeDataSources(statsSources, queryContext, sql, {
@@ -253,7 +303,7 @@ async function queryContentData(
   // result set into the model turn.
   const sourcesPage: Record<string, { returned: number; limit: number; has_more: boolean }> = {};
   if (page) {
-    for (const sourceName of boundedSourceNames) {
+    for (const sourceName of pagedSourceNames) {
       if (sourceName === page.sourceName && eventSourceNames.has(sourceName)) continue;
       const rows = results[sourceName] ?? [];
       const sourceLimit = Math.max(
@@ -319,9 +369,17 @@ async function queryContentData(
           origin_type: rec.origin_type ?? null,
           payload_type: rec.payload_type ?? 'text',
           payload_text: rec.payload_text ?? rec.text_content,
+          payload_truncated: rec.payload_truncated === true ? true : undefined,
+          content_length:
+            rec.content_length == null ? undefined : Number(rec.content_length),
           payload_data: rec.payload_data ?? {},
           payload_template: rec.payload_template ?? null,
-          attachments: parseRecordArray(rec.attachments),
+          attachments:
+            rec.attachments_truncated === true ? [] : parseRecordArray(rec.attachments),
+          attachments_truncated:
+            rec.attachments_truncated === true ? true : undefined,
+          attachments_bytes:
+            rec.attachments_bytes == null ? undefined : Number(rec.attachments_bytes),
           author_name: rec.author_name ?? rec.author,
           title: rec.title,
           text_content: rec.payload_text ?? rec.text_content,
@@ -388,7 +446,8 @@ export async function fingerprintAutomationSources(args: {
     // fingerprints these rows, so an Automation that saw its own output would
     // register its own write as a change and re-fire on every tick forever.
     automationId: args.automationId,
-	throwOnSourceError: true,
+    throwOnSourceError: true,
+    fingerprintMode: true,
   });
   const sourceState = Object.fromEntries(
     Object.entries(result.sourcesContent).map(([sourceName, sourceRows]) => [
@@ -667,6 +726,9 @@ export async function handleAutomationMode(
     sources = [
       {
         name: sourceName,
+        // Exact durable pointers retain the historical SELECT * shape so they
+        // stay unbounded. The scoped events CTE still enforces org/window/entity
+        // access before this source is paged.
         query: `SELECT * FROM events
           WHERE id = ANY(string_to_array({{query.eventContentIds}}, ',')::bigint[])
           ORDER BY occurred_at DESC`,

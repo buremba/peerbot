@@ -11,6 +11,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { queryDerivedEntityView } from '../../../utils/entity-management';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -19,6 +20,7 @@ import {
   createTestOAuthClient,
   createTestOrganization,
   createTestUser,
+  ownerToolContext,
 } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
 import { TestApiClient } from '../../setup/test-mcp-client';
@@ -42,6 +44,7 @@ describe('derived entity routing (list + resolve_path)', () => {
   let orgAId: string;
   let orgBId: string;
   let orgSlug: string;
+  let userId: string;
   let token: string;
 
   beforeAll(async () => {
@@ -52,6 +55,7 @@ describe('derived entity routing (list + resolve_path)', () => {
     orgBId = orgB.id;
     orgSlug = orgA.slug;
     const user = await createTestUser({ email: 'derived-routing@test.com' });
+    userId = user.id;
     await addUserToOrganization(user.id, orgA.id, 'owner');
     api = await TestApiClient.for({
       organizationId: orgA.id,
@@ -181,6 +185,88 @@ describe('derived entity routing (list + resolve_path)', () => {
     expect(Number(result.entity?.metadata.total_spend)).toBe(15);
     // measure_columns is inferred from the backing SQL (same as get_type).
     expect((result.entity?.measure_columns ?? []).sort()).toEqual(['purchases', 'total_spend']);
+  });
+
+  it('resolve_path continues after a serialized-row cap shortens a derived page', async () => {
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        createTestEvent({
+          organization_id: orgAId,
+          content: `large route ${index + 1}`,
+          metadata: { large_route: String(index + 1) },
+        })
+      )
+    );
+    // Distinct 4,000-character cells stay within the per-cell bound while the
+    // 20-row result exceeds the aggregate 1 MiB response ceiling.
+    const largeViewSql = `
+      SELECT
+        'large-' || (metadata->>'large_route') AS id,
+        'large-' || (metadata->>'large_route') AS slug,
+        'Large ' || (metadata->>'large_route') AS name,
+        repeat('x', 4000) AS pad01,
+        repeat('x', 4000) AS pad02,
+        repeat('x', 4000) AS pad03,
+        repeat('x', 4000) AS pad04,
+        repeat('x', 4000) AS pad05,
+        repeat('x', 4000) AS pad06,
+        repeat('x', 4000) AS pad07,
+        repeat('x', 4000) AS pad08,
+        repeat('x', 4000) AS pad09,
+        repeat('x', 4000) AS pad10,
+        repeat('x', 4000) AS pad11,
+        repeat('x', 4000) AS pad12,
+        repeat('x', 4000) AS pad13,
+        repeat('x', 4000) AS pad14,
+        repeat('x', 4000) AS pad15,
+        repeat('x', 4000) AS pad16
+      FROM events
+      WHERE metadata->>'large_route' IS NOT NULL
+      ORDER BY (metadata->>'large_route')::int
+    `;
+    await api.entity_schema.createType({
+      slug: 'large-derived-page',
+      name: 'Large derived page',
+      backing: { sql: largeViewSql },
+    });
+
+    const first = await queryDerivedEntityView(
+      largeViewSql,
+      undefined,
+      { limit: 500, offset: 0 },
+      ownerToolContext(orgAId, userId)
+    );
+    expect(first.error).toBeUndefined();
+    expect(first.rows.length).toBeLessThan(20);
+    expect(first.has_more).toBe(true);
+    expect(first.omitted_rows).toBe(20 - first.rows.length);
+    const second = await queryDerivedEntityView(
+      largeViewSql,
+      undefined,
+      { limit: 500, offset: first.rows.length },
+      ownerToolContext(orgAId, userId)
+    );
+    expect(second.rows.some((row) => row.slug === 'large-20')).toBe(true);
+
+    const listed = (await api.entities.list({
+      entity_type: 'large-derived-page',
+      limit: 20,
+      offset: 0,
+    })) as {
+      entities: Array<{ slug: string }>;
+      metadata?: { has_more?: boolean; total_count?: number };
+    };
+    expect(listed.entities).toHaveLength(20);
+    expect(listed.entities.some((entity) => entity.slug === 'large-20')).toBe(true);
+    expect(listed.metadata?.has_more).toBe(false);
+    expect(listed.metadata?.total_count).toBe(20);
+
+    const result = (await resolvePath({
+      path: `/${orgSlug}/large-derived-page/large-20`,
+    })) as { entity?: { name: string; slug: string; is_derived?: boolean } };
+    expect(result.entity?.name).toBe('Large 20');
+    expect(result.entity?.slug).toBe('large-20');
+    expect(result.entity?.is_derived).toBe(true);
   });
 
   it('resolve_path 404s an unknown derived slug (no silent fallback)', async () => {

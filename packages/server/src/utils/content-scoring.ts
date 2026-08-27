@@ -21,6 +21,11 @@ import type { DbClient } from '../db/client';
 import logger from './logger';
 import { getScoringFormulaSql, resolveStoredScoringProfile } from './scoring-profiles';
 import { validateAndFormatIds, validateNumericId } from './sql-validation';
+import {
+  boundedAttachmentsSql,
+  boundedJsonSql,
+  boundedPayloadTextSql,
+} from './content-read-bounds';
 
 interface NormalizedScoreFilters {
   connection_ids?: number[];
@@ -76,6 +81,12 @@ interface NormalizedScoreContent {
   origin_id: string;
   title: string | null;
   payload_text: string;
+  payload_truncated?: boolean;
+  payload_data?: Record<string, unknown>;
+  payload_template?: Record<string, unknown> | null;
+  attachments?: Array<Record<string, unknown>> | null;
+  attachments_truncated?: boolean;
+  attachments_bytes?: number;
   author_name: string | null;
   source_url: string | null;
   occurred_at: string;
@@ -441,6 +452,9 @@ export async function getNormalizedScoreContent(
         f.origin_id,
         f.title,
         f.payload_text,
+        f.payload_data,
+        f.payload_template,
+        f.attachments,
         f.author_name,
         f.source_url,
         f.occurred_at,
@@ -469,6 +483,11 @@ export async function getNormalizedScoreContent(
       LEFT JOIN automation_versions wv ON wv.id = f.automation_version_id
       ${joinClause}
       WHERE ${whereClause}
+    ), ranked_content AS (
+      SELECT *
+      FROM scored_content
+      ORDER BY calculated_score DESC, COALESCE(occurred_at, created_at) DESC, id DESC
+      LIMIT ${limit} OFFSET ${offset}
     )
     SELECT
       sc.id,
@@ -481,22 +500,24 @@ export async function getNormalizedScoreContent(
       sc.automation_name,
       sc.origin_id,
       sc.title,
-      sc.payload_text,
+      ${boundedPayloadTextSql('sc')},
+      ${boundedJsonSql('sc', 'payload_data')},
+      ${boundedJsonSql('sc', 'payload_template')},
+      ${boundedAttachmentsSql('sc')},
       sc.author_name,
       sc.source_url,
       sc.occurred_at,
       sc.semantic_type,
       sc.raw_score,
-      sc.metadata,
+      ${boundedJsonSql('sc', 'metadata')},
       sc.created_at,
       sc.origin_parent_id,
-      sc.content_length,
       sc.platform,
       sc.interaction_type,
       sc.interaction_status,
-      sc.interaction_input_schema,
-      sc.interaction_input,
-      sc.interaction_output,
+      ${boundedJsonSql('sc', 'interaction_input_schema')},
+      ${boundedJsonSql('sc', 'interaction_input')},
+      ${boundedJsonSql('sc', 'interaction_output')},
       sc.interaction_error,
       sc.supersedes_event_id,
       sc.root_origin_id,
@@ -511,9 +532,8 @@ export async function getNormalizedScoreContent(
       -- classifications came from latest_event_classifications, a never-populated cache (dropped) —
       -- always '{}'. Kept empty for response-shape parity with the date-sort path.
       '{}'::jsonb as classifications
-    FROM scored_content sc
+    FROM ranked_content sc
     ORDER BY sc.calculated_score DESC, COALESCE(sc.occurred_at, sc.created_at) DESC, sc.id DESC
-    LIMIT ${limit} OFFSET ${offset}
   `;
 
   logger.debug({ query: query.substring(0, 500) }, 'Executing normalized score query');

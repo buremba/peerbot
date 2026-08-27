@@ -2,6 +2,11 @@ import type { DbClient } from '../db/client';
 import { slugToRuntimeConnectionId } from '../lobu/stores/connections-projection';
 import type { AutomationSource } from '../types/automations';
 import { executeDataSources } from '../utils/execute-data-sources';
+import {
+  boundedAttachmentsSql,
+  boundedJsonSql,
+  boundedPayloadTextSql,
+} from '../utils/content-read-bounds';
 
 /**
  * Validate a custom-SQL Automation source at save time. Runs the SAME scoped
@@ -60,6 +65,13 @@ export type AutomationSourceRef =
 export interface NormalizedAutomationSource extends AutomationSource {
   kind: AutomationSourceKind;
   ref?: AutomationSourceRef;
+  /**
+   * This ref-backed source has the canonical event projection and can be
+   * bounded in SQL after paging.
+   */
+  controlledEventProjection?: boolean;
+  /** The default SELECT * source keeps every selected event column and is bounded in JS. */
+  dynamicEventProjection?: boolean;
 }
 
 const REF_RE = /^@([a-z_][a-z0-9_-]*):(.+)$/i;
@@ -103,14 +115,28 @@ function sqlString(value: string): string {
 export const DEFAULT_AUTOMATION_SOURCE_QUERY =
   "SELECT * FROM events WHERE semantic_type NOT IN ('change', 'audit') ORDER BY occurred_at DESC";
 
-function eventSelect(where: string): string {
-  return (
-    'SELECT id, organization_id, entity_ids, origin_id, title, payload_type, payload_text, ' +
-    'payload_data, payload_template, attachments, author_name, source_url, occurred_at, score, ' +
-    'metadata, created_at, origin_parent_id, origin_type, connector_key, connection_id, feed_key, ' +
-    'feed_id, semantic_type ' +
-    `FROM events WHERE ${where} ORDER BY occurred_at DESC`
-  );
+const AUTOMATION_EVENT_COLUMNS =
+  'id, organization_id, entity_ids, origin_id, title, payload_type, payload_text, ' +
+  'content_length, payload_data, payload_template, attachments, author_name, source_url, ' +
+  'occurred_at, score, metadata, created_at, origin_parent_id, origin_type, connector_key, ' +
+  'connection_id, feed_key, feed_id, semantic_type';
+
+/** Raw canonical event source. Agent reads bound it only after cursor/limit selection. */
+function buildAutomationEventSelect(where: string): string {
+  return `SELECT ${AUTOMATION_EVENT_COLUMNS} FROM events WHERE ${where} ORDER BY occurred_at DESC`;
+}
+
+/** Final SQL projection over an already cursor-filtered and limited event page. */
+export function buildBoundedAutomationEventPageSelect(pageSql: string): string {
+  const a = 'event_page';
+  return `SELECT ${a}.id, ${a}.organization_id, ${a}.entity_ids, ${a}.origin_id, ${a}.title,
+    ${a}.payload_type, ${boundedPayloadTextSql(a)}, ${boundedJsonSql(a, 'payload_data')},
+    ${boundedJsonSql(a, 'payload_template')}, ${boundedAttachmentsSql(a)}, ${a}.author_name,
+    ${a}.source_url, ${a}.occurred_at, ${a}.score, ${boundedJsonSql(a, 'metadata')},
+    ${a}.created_at, ${a}.origin_parent_id, ${a}.origin_type, ${a}.connector_key,
+    ${a}.connection_id, ${a}.feed_key, ${a}.feed_id, ${a}.semantic_type
+    FROM (${pageSql}) AS ${a}
+    ORDER BY ${a}.occurred_at DESC NULLS LAST, ${a}.id DESC`;
 }
 
 export function parseAutomationSourceRef(query: string): AutomationSourceRef | null {
@@ -321,7 +347,11 @@ async function compileRefToQuery(
   sql: DbClient,
   organizationId: string,
   ref: AutomationSourceRef
-): Promise<{ query: string | null; kind: AutomationSourceKind }> {
+): Promise<{
+  query: string | null;
+  kind: AutomationSourceKind;
+  controlledEventProjection?: boolean;
+}> {
   switch (ref.type) {
     case 'feed': {
       const feeds = await resolveFeeds(sql, organizationId, ref.value);
@@ -353,26 +383,37 @@ async function compileRefToQuery(
         return { query: channelMessagesSelect(channelFeeds), kind: 'channel' };
       }
       return {
-        query: eventSelect(`feed_id IN (${eventFeeds.map((f) => f.id).join(',')})`),
+        query: buildAutomationEventSelect(
+          `feed_id IN (${eventFeeds.map((f) => f.id).join(',')})`
+        ),
         kind: 'event',
+        controlledEventProjection: true,
       };
     }
     case 'connection': {
       const id = await resolveConnectionId(sql, organizationId, ref.value);
-      return { query: eventSelect(`connection_id = ${id}`), kind: 'event' };
+      return {
+        query: buildAutomationEventSelect(`connection_id = ${id}`),
+        kind: 'event',
+        controlledEventProjection: true,
+      };
     }
     case 'connector': {
       if (!SAFE_CONNECTOR_RE.test(ref.value)) {
         throw new Error('@connector refs must be plain connector keys');
       }
-      return { query: eventSelect(`connector_key = ${sqlString(ref.value)}`), kind: 'event' };
+      return {
+        query: buildAutomationEventSelect(`connector_key = ${sqlString(ref.value)}`),
+        kind: 'event',
+        controlledEventProjection: true,
+      };
     }
     case 'channel': {
       const raw = ref.value.startsWith('#') ? ref.value.slice(1) : ref.value;
       const channel = sqlString(raw);
       const hashChannel = sqlString(`#${raw}`);
       return {
-        query: eventSelect(
+        query: buildAutomationEventSelect(
           [
             `metadata->>'channel' IN (${channel}, ${hashChannel})`,
             `metadata->>'channel_name' IN (${channel}, ${hashChannel})`,
@@ -383,6 +424,7 @@ async function compileRefToQuery(
           ].join(' OR ')
         ),
         kind: 'event',
+        controlledEventProjection: true,
       };
     }
     case 'entity':
@@ -501,15 +543,27 @@ export async function normalizeAutomationSources(
       // rows reach the agent but are never linked into automation_run_events
       // (so its `id` may be an entity id, sidestepping the events FK). A plain
       // SQL source stays event content and its `id` must be an `events.id`.
-      normalized.push({ ...source, kind: source.context ? 'entity' : 'event' });
+      normalized.push({
+        ...source,
+        kind: source.context ? 'entity' : 'event',
+        // The default source historically exposes every events column. Preserve
+        // that projection and bound only its selected page in the JS fallback.
+        dynamicEventProjection:
+          !source.context && source.query === DEFAULT_AUTOMATION_SOURCE_QUERY,
+      });
       continue;
     }
-    const { query, kind } = await compileRefToQuery(sql, organizationId, ref);
+    const { query, kind, controlledEventProjection } = await compileRefToQuery(
+      sql,
+      organizationId,
+      ref
+    );
     normalized.push({
       name: source.name,
       query: query ?? source.query,
       kind,
       ref,
+      controlledEventProjection,
     });
   }
   return normalized;

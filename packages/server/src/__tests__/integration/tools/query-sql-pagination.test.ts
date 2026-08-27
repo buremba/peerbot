@@ -19,6 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
+import { QUERY_SQL_ROWS_MAX_BYTES } from '../../../utils/content-read-bounds';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -59,6 +60,7 @@ describe('query_sql internal-path pagination contract', () => {
     expect(res.rows).toHaveLength(2);
     expect(res.total_count).toBe(5);
     expect(res.has_more).toBe(true);
+    expect(res.omitted_rows).toBeUndefined();
     // The internal window column must never leak into rows or columns.
     expect(res.columns.map((c) => c.name)).not.toContain('__lobu_total_count__');
     expect(Object.keys(res.rows[0])).not.toContain('__lobu_total_count__');
@@ -76,6 +78,26 @@ describe('query_sql internal-path pagination contract', () => {
     expect(res.total_count).toBe(25);
     expect(res.rows[0]).toEqual({ row_number: 1 });
     expect(res.rows[24]).toEqual({ row_number: 25 });
+  });
+
+  it('caps the serialized dynamic row list and reports omitted rows as more data', async () => {
+    const res = await querySql(
+      {
+        sql: "SELECT generate_series(1, 500) AS id, repeat('x', 8000) AS body",
+        limit: 500,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.total_count).toBe(500);
+    expect(res.rows.length).toBeLessThan(500);
+    expect(res.omitted_rows).toBe(500 - res.rows.length);
+    expect(res.has_more).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(res.rows), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_ROWS_MAX_BYTES
+    );
   });
 
   it('keeps total_count exact on an out-of-range offset (empty page fallback)', async () => {

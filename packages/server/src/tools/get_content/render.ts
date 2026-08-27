@@ -352,9 +352,15 @@ export async function buildContentItems(opts: {
       origin_type: f.origin_type ?? null,
       payload_type: f.payload_type ?? 'text',
       payload_text: f.payload_text ?? '',
+      payload_truncated: f.payload_truncated === true ? true : undefined,
+      content_length:
+        f.content_length == null ? undefined : Number(f.content_length),
       payload_data: parseJsonObject(f.payload_data),
       payload_template: f.payload_template ? parseJsonObject(f.payload_template) : null,
-      attachments: parseRecordArray(f.attachments),
+      attachments: f.attachments_truncated === true ? [] : parseRecordArray(f.attachments),
+      attachments_truncated: f.attachments_truncated === true ? true : undefined,
+      attachments_bytes:
+        f.attachments_bytes == null ? undefined : Number(f.attachments_bytes),
       author_name: f.author_name ?? null,
       client_id: includePrivateAttribution
         ? (f.client_id ?? attribution?.client_id ?? null)

@@ -14,6 +14,11 @@ import {
 import { buildSemanticTypeFilterSql } from '../../utils/content-search/params';
 import logger from '../../utils/logger';
 import { validateNumericId } from '../../utils/sql-validation';
+import {
+  boundedAttachmentsSql,
+  boundedJsonSql,
+  boundedPayloadTextSql,
+} from '../../utils/content-read-bounds';
 import type { GetContentArgs } from './schema';
 import type { ClassificationStatsRow, ContentRow, GetContentResult } from './types';
 
@@ -49,13 +54,65 @@ function buildContentQuery(opts: {
   orderBy: string;
   limit: number;
   offset: number;
+  /** Explicit content_ids reads keep the full payload; list/history reads do not. */
+  boundAgentContent?: boolean;
 }): string {
-  const { table, alias: a, join = '', where, orderBy, limit, offset } = opts;
+  const {
+    table,
+    alias: a,
+    join = '',
+    where,
+    orderBy,
+    limit,
+    offset,
+    boundAgentContent = true,
+  } = opts;
+  const payloadTextColumns = boundAgentContent
+    ? boundedPayloadTextSql(a)
+    : `${a}.payload_text, ${a}.content_length, false AS payload_truncated`;
+  const payloadData = boundAgentContent
+    ? boundedJsonSql(a, 'payload_data')
+    : `${a}.payload_data`;
+  const payloadTemplate = boundAgentContent
+    ? boundedJsonSql(a, 'payload_template')
+    : `${a}.payload_template`;
+  const attachments = boundAgentContent
+    ? boundedAttachmentsSql(a)
+    : `${a}.attachments, false AS attachments_truncated, NULL::int AS attachments_bytes`;
+  const metadata = boundAgentContent ? boundedJsonSql(a, 'metadata') : `${a}.metadata`;
+  const interactionInputSchema = boundAgentContent
+    ? boundedJsonSql(a, 'interaction_input_schema')
+    : `${a}.interaction_input_schema`;
+  const interactionInput = boundAgentContent
+    ? boundedJsonSql(a, 'interaction_input')
+    : `${a}.interaction_input`;
+  const interactionOutput = boundAgentContent
+    ? boundedJsonSql(a, 'interaction_output')
+    : `${a}.interaction_output`;
+  // The only bounded caller is fetchIncludeSuperseded. Select its page first,
+  // then run octet_length/json replacement in the outer projection so large
+  // JSON cells outside the page are never measured. Exact-ID reads stay on the
+  // original direct query below because they are intentionally full fidelity.
+  const source = boundAgentContent
+    ? `(
+        SELECT ${a}.*
+        FROM ${table} ${a}
+        ${join}
+        LEFT JOIN connections c ON c.id = ${a}.connection_id
+        WHERE ${where}
+        ORDER BY ${orderBy}
+        LIMIT ${limit}
+        OFFSET ${offset}
+      )`
+    : table;
+  const sourceJoin = boundAgentContent ? '' : join;
+  const sourceWhere = boundAgentContent ? 'TRUE' : where;
+  const sourceLimit = boundAgentContent ? '' : `LIMIT ${limit}\n    OFFSET ${offset}`;
   return `
     SELECT
       ${a}.id,
       ${a}.entity_ids,
-      ${a}.payload_text,
+      ${payloadTextColumns},
       ${a}.title,
       ${a}.author_name,
       ${a}.source_url,
@@ -67,18 +124,18 @@ function buildContentQuery(opts: {
       CASE WHEN ${a}.origin_parent_id IS NULL THEN 0 ELSE 1 END as depth,
       ${a}.origin_type,
       ${a}.payload_type,
-      ${a}.payload_data,
-      ${a}.payload_template,
-      ${a}.attachments,
+      ${payloadData},
+      ${payloadTemplate},
+      ${attachments},
       ${a}.score,
-      ${a}.metadata,
+      ${metadata},
       ${a}.created_at,
       COALESCE(${a}.connector_key, c.connector_key) as platform,
       ${a}.interaction_type,
       ${a}.interaction_status,
-      ${a}.interaction_input_schema,
-      ${a}.interaction_input,
-      ${a}.interaction_output,
+      ${interactionInputSchema},
+      ${interactionInput},
+      ${interactionOutput},
       ${a}.interaction_error,
       ${a}.supersedes_event_id,
       ${a}.superseded_by,
@@ -127,16 +184,15 @@ function buildContentQuery(opts: {
         ),
         '{}'::jsonb
       ) as classifications
-    FROM ${table} ${a}
-    ${join}
+    FROM ${source} ${a}
+    ${sourceJoin}
     LEFT JOIN connections c ON c.id = ${a}.connection_id
     LEFT JOIN oauth_clients oc ON oc.id = ${a}.client_id
     LEFT JOIN feeds fd ON fd.id = ${a}.feed_id
     LEFT JOIN automation_versions wv ON wv.id = ${a}.automation_version_id
-    WHERE ${where}
+    WHERE ${sourceWhere}
     ORDER BY ${orderBy}
-    LIMIT ${limit}
-    OFFSET ${offset}
+    ${sourceLimit}
   `;
 }
 
@@ -270,6 +326,7 @@ export async function fetchByContentIds(opts: {
       orderBy: 'ri.chain_key ASC, f.occurred_at ASC, f.id ASC',
       limit,
       offset,
+      boundAgentContent: false,
     })}
   `,
     queryParams

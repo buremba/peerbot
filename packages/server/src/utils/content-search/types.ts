@@ -122,6 +122,8 @@ export interface ContentSearchResult {
   automation_id?: number | null;
   automation_name?: string | null;
   payload_text: string;
+  payload_truncated?: boolean | null;
+  content_length?: number | string | null;
   title: string | null;
   author_name: string | null;
   source_url: string | null;
@@ -135,6 +137,8 @@ export interface ContentSearchResult {
   payload_data?: Record<string, unknown> | null;
   payload_template?: Record<string, unknown> | null;
   attachments?: unknown[] | null;
+  attachments_truncated?: boolean | null;
+  attachments_bytes?: number | string | null;
   score: number;
   interaction_type?: 'none' | 'approval' | null;
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed' | null;

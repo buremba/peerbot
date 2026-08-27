@@ -69,7 +69,13 @@ async function setupDeviceAutomation() {
 		userId,
 		memberRole: "owner",
 	});
-	return { sql, api, automationId, deviceId: device.id };
+	return {
+		sql,
+		api,
+		automationId,
+		deviceId: device.id,
+		organizationId: workspace.org.id,
+	};
 }
 
 async function cursor(sql: ReturnType<typeof getTestDb>, automationId: number) {
@@ -225,6 +231,49 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 			WHERE id = ${deviceId}::uuid
 		`;
 		expect((await materializeDueAutomationRuns({} as Env)).runsCreated).toBe(1);
+	});
+
+	it("counts stale running executions but not claims that never started", async () => {
+		const { sql, automationId, organizationId } =
+			await setupDeviceAutomation();
+
+		const insertStale = async (status: "claimed" | "running") => {
+			await sql`
+				INSERT INTO runs (
+					organization_id, run_type, automation_id, status,
+					claimed_at, claimed_by, created_at, approved_input
+				) VALUES (
+					${organizationId}, 'automation', ${automationId}, ${status},
+					current_timestamp - interval '3 hours', 'stale-device-worker',
+					current_timestamp - interval '3 hours',
+					${sql.json({ dispatch_source: "scheduled" })}
+				)
+			`;
+		};
+
+		await insertStale("claimed");
+		expect((await sweepStaleAutomationRuns(sql)).timedOut).toBe(1);
+		let [automation] = await sql`
+			SELECT consecutive_scheduled_failures, schedule_auto_paused_at
+			FROM automations WHERE id = ${automationId}
+		`;
+		expect(Number(automation.consecutive_scheduled_failures)).toBe(0);
+		expect(automation.schedule_auto_paused_at).toBeNull();
+
+		for (let attempt = 1; attempt <= 5; attempt += 1) {
+			await insertStale("running");
+			expect((await sweepStaleAutomationRuns(sql)).timedOut).toBe(1);
+		}
+
+		[automation] = await sql`
+			SELECT status, next_run_at, consecutive_scheduled_failures,
+			       schedule_auto_paused_at
+			FROM automations WHERE id = ${automationId}
+		`;
+		expect(automation.status).toBe("active");
+		expect(automation.next_run_at).toBeNull();
+		expect(Number(automation.consecutive_scheduled_failures)).toBe(5);
+		expect(automation.schedule_auto_paused_at).not.toBeNull();
 	});
 
 	it("completes every missed period oldest-first, then advances to the next cron", async () => {

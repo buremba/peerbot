@@ -18,6 +18,7 @@ import { cleanupExpiredMcpSessions } from '../mcp-handler';
 import { cleanupExpiredMcpAppResultSnapshots } from '../mcp-app-result-snapshots';
 import logger from '../utils/logger';
 import { runAutomationTick } from '../automations/automation';
+import { runAutomationAutoPauseNotificationSweep } from '../automations/auto-pause-notifications';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { retryPendingFeedAutoPausedSignals } from '../automations/platform-events';
@@ -274,6 +275,20 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '*/15 * * * *' }
+  );
+
+  scheduler.register(
+    'automation-auto-pause-notifications',
+    async () => {
+      const result = await runAutomationAutoPauseNotificationSweep();
+      if (result.attempted > 0 || result.errors > 0) {
+        logger.info(
+          { ...result },
+          '[task] automation-auto-pause-notifications swept'
+        );
+      }
+    },
+    { cron: '*/5 * * * *' },
   );
 
   // Read-only detector for members whose trusted $member claim is missing or
